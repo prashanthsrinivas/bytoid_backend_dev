@@ -1,0 +1,59 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+dist/
+build/
+*.whl
+pip-wheel-metadata/
+.pypirc
+
+# Flask
+instance/
+.env
+*.env
+*.flaskenv
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Cache and Temporary Files
+*.cache
+*.bak
+*.swp
+*~
+cust_helpers/messages/*
+cust_helpers/test/*
+# Testing
+.pytest_cache/
+coverage/
+.coverage
+htmlcov/
+
+# Miscellaneous
+*.db
+*.sqlite3
+migrations/
+
+1q.py
+client_secrets.json
+client_secrets1.json
+credentials.json
+new_service_secrets.json
+service_secret.json

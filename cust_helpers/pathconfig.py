@@ -1,0 +1,5 @@
+basepath = "cust_helpers"
+smb_path = f"{basepath}/smb_usecases.yaml"
+agent_template = f"{basepath}/agent_templates.yaml"
+play_template = f"{basepath}/playbook_templates.yaml"
+conv_template = f"{basepath}/conversation_template.yaml"

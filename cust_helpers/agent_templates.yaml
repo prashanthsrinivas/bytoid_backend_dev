@@ -1,0 +1,292 @@
+generate_user_query: |
+  Generate {n} realistic and short customer support messages (1 per line),
+  written by users with different emotions, writing styles, and tech familiarity.
+  Include typos, slang, emojis, or overly formal phrasing. The messages should match a {industry} business context.
+  Make sure the messages are respectful and do not include sexual content, hate speech, or anything that could offend or emotionally harm others.
+
+grading_prompt: |
+  You are an evaluator. Grade this AI reply from 0–100 based on:
+
+  - Clarity (15)
+  - Correctness / Factual Accuracy (20)
+  - Relevance (25)
+  - Tone & Empathy (20)
+  - Efficiency / Brevity (10)
+  - Confidence & Guidance (10)
+  - Personalization to Industry/User Persona (5)
+
+  Ensure the response does NOT contain:
+  - Sexual, violent, offensive, or emotionally harmful language
+  - Disrespectful tone or sarcasm
+  - Inappropriate emojis or suggestive content
+
+  User: "{user}"
+  AI Response: "{response}"
+
+  Return only a number like: 98.5
+
+response_validator: |
+  You are an AI validator for chatbot replies in the "{industry}" domain.
+
+  Input:
+  User: "{user}"
+  AI Response: "{response}"
+
+  Task:
+  - Check if the AI response is clearly related to the user query.
+  - Confirm if it reflects practical knowledge of the "{industry}" domain.
+  - If valid, return a short chatbot-style reply (max 50 words) based on the document (AI response).
+  - If invalid, return a brief explanation (max 50 words), starting with: "The document does not contain..." and describe what is missing.
+
+  Reply in JSON:
+  {{
+    "related": true|false,
+    "has_usecase_details": true|false,
+    "explanation": "Short chatbot-style answer or reason for rejection, max 50 words"
+  }}
+
+new_response_validator: |
+  You are an AI validator helping a new business improve customer support in the "{industry}" domain.
+
+  A user has uploaded a document containing business information. Based on this, we have generated common customer questions and attempted answers using the document content.
+
+  Input:
+  User Question: "{user}"
+  AI Response: "{response}"
+
+  Task:
+  - Check if the AI response correctly addresses the user (customer) question.
+  - Confirm if the answer reflects practical and helpful knowledge of the "{industry}" domain.
+  - If the response is valid:
+    - Return a short, chatbot-style reply (max 50 words) that could be shown to a customer.
+  - If the response is invalid (i.e., the document lacks the information to answer the question):
+    - Return a friendly, natural explanation (max 50 words) that:
+      - Begins with: "We're sorry — the document doesn't..." or "We couldn’t find details in the document..."
+      - Clearly identifies what type of information is missing from the business's document
+      - Ends with a gentle request for the user to add this info to help improve the AI's ability to support future customer questions
+
+  Reply in JSON:
+  {{
+    "related": true|false,
+    "has_usecase_details": true|false,
+    "explanation": "Short chatbot-style reply if valid, or a friendly message starting with 'We're sorry — the document doesn't...' and ending with a helpful suggestion to add missing info"
+  }}
+
+
+# usecase_prompt_template:
+#   instructions: |
+#     You are a customer support assistant helping identify potential gaps in a business’s documentation by generating realistic, relevant customer questions.
+
+#     Your Task:
+#     For each use case in the list below, do the following:
+#     - Carefully compare the use case with the associated service documentation.
+#     - Generate **exactly 5 questions** per use case.
+#     - Use a maximum of **3 unique quotes** from the documentation when writing the questions.
+
+#     Each question must be returned in three parts:
+#     1. **rephrased** – A friendly, conversational-style question including the quote inline (e.g., "I saw '...' — in that context, ...?")
+#     2. **actual_one** – A simplified, clear customer-facing version of the question (under 50 words)
+#     3. **quote** – The **exact quote** from the documentation that inspired the question
+
+#     Guidelines:
+#     - Use **plain English**, no jargon
+#     - Avoid time-sensitive words like “currently,” “today,” “soon”
+#     - Stay focused on **availability, clarity, or presence** of services
+#     - Base all questions on **exact phrases** or **quotes** from the documentation
+#     - Do **not** repeat similar questions across use cases
+#     - Do **not** use more than 3 distinct quotes per use case
+#     - Avoid trailing commas and markdown formatting in your response
+#     - If a quote contains backslashes (`\`), escape them as `\\` to ensure valid JSON
+
+
+#     Inputs:
+#     - Industry: {industry}
+#     - UseCasesWithDocs:
+#       {usecases_with_docs}
+
+#     Output:
+#     Respond with a **strict JSON array**, no markdown code blocks, no explanations. Each array item must include:
+#     - "usecase": the original use case
+#     - "questions": a list of 5 objects, each with:
+#         - "rephrased": the conversational version (with the quote inline)
+#         - "actual_one": the direct customer question
+#         - "quote": the exact phrase or sentence from the documentation used
+
+#     ⚠️ Important:
+#     - Do **not** include ```json or any markdown formatting
+#     - Do **not** include comments or extra text
+#     - Do **not** add trailing commas
+#     - Ensure it's a **valid JSON** array that can be parsed by `json.loads`
+
+#     Format Example:
+#     [
+#       {{
+#         "usecase": "Looking for same-day delivery options",
+#         "questions": [
+#           {{
+#             "rephrased": "I saw 'We offer next-day and standard delivery through FedEx and UPS'. In that context, do you offer same-day delivery as well?",
+#             "actual_one": "Do you offer same-day delivery, or is next-day the fastest option?",
+#             "quote": "We offer next-day and standard delivery through FedEx and UPS"
+#           }},
+#           ...
+#         ]
+#       }}
+#     ]
+usecase_prompt_template:
+  instructions: |
+    You are a customer support assistant helping identify potential gaps in a business’s documentation by generating realistic, relevant customer questions.
+
+    Your Task:
+    For each use case in the list below, do the following:
+    - Carefully compare the use case with the associated service documentation.
+    - Generate **a minimum of 3 and a maximum of 5 questions** per use case.
+    - create until you have 3 questions per usecase that are **genuinely useful**, highlighting ambiguity, missing detail, or potential confusion.
+    - Only generate a 4th or 5th question if it highlights a **new and valuable concern**. Stop at 3 if no more important questions exist.
+    - Each question must be clearly linked to a quote from the documentation and focus on **clarity, availability, or completeness**.
+
+    - Use a maximum of **3 unique quotes** from the documentation when writing the questions.
+
+    Each question must be returned in three parts:
+    1. **rephrased** – A friendly, conversational-style question including the quote inline (e.g., "I saw '...' — in that context, ...?")
+    2. **actual_one** – A simplified, clear customer-facing version of the question (under 50 words)
+    3. **quote** – The **exact quote** from the documentation that inspired the question
+
+    Guidelines:
+    - Use **plain English**, no jargon
+    - Avoid time-sensitive words like “currently,” “today,” “soon”
+    - Stay focused on **availability, clarity, or presence** of services
+    - Base all questions on **exact phrases** or **quotes** from the documentation
+    - Do **not** repeat similar questions across use cases
+    - Do **not** use more than 3 distinct quotes per use case
+    - Avoid trailing commas and markdown formatting in your response
+    - If a quote contains backslashes (`\`), escape them as `\\` to ensure valid JSON
+    - Only generate questions that highlight **clear gaps, ambiguities, or missing context** in the documentation. Do **not** ask obvious, already-answered, vague, or repetitive questions.
+    - Ask only **important and relevant** questions that a real customer might ask when unclear about the quoted information.
+
+    Inputs:
+    - Industry: {industry}
+    - UseCasesWithDocs:
+      {usecases_with_docs}
+
+    Output:
+    Respond with a **strict JSON array**, no markdown code blocks, no explanations. Each array item must include:
+    - "usecase": the original use case
+    - "questions": a list of 5 objects, each with:
+        - "rephrased": the conversational version (with the quote inline)
+        - "actual_one": the direct customer question
+        - "quote": the exact phrase or sentence from the documentation used
+
+    ⚠️ Important:
+    - Do **not** include ```json or any markdown formatting
+    - Do **not** include comments or extra text
+    - Do **not** add trailing commas
+    - Ensure it's a **valid JSON** array that can be parsed by `json.loads`
+    
+    Bad Question Example:
+    - Quote: "Custom menus available upon request"
+    - Bad: "How can I make modifications using custom menus?"
+    - Why: The quote is already clear and doesn’t warrant a question. Avoid restating obvious info.
+
+
+    Format Example:
+    [
+      {{
+        "usecase": "Looking for same-day delivery options",
+        "questions": [
+          {{
+            "rephrased": "I saw 'We offer next-day and standard delivery through FedEx and UPS'. In that context, do you offer same-day delivery as well?",
+            "actual_one": "Do you offer same-day delivery, or is next-day the fastest option?",
+            "quote": "We offer next-day and standard delivery through FedEx and UPS"
+          }}
+        ]
+      }}
+    ]
+
+
+
+customer_response_checker: |
+  You are an AI assistant tasked with evaluating and refining a company owner's message.
+  ---
+  **User Query/Company Usecase:**
+  {user}
+
+  **Company Owner's Message (Response to Query):**
+  {response}
+
+  **Industry Type:**
+  {industry}
+
+  ---
+
+  Your goal is to assess the 'response' (the company owner's message) based on its relevance to the 'user' query and the specified 'industry'.
+
+  Perform the following checks:
+
+  1. **Relevance Check:**  
+     * Determine if the 'response' clearly answers the 'user' query in the context of the industry.
+     * If the response is a short "Yes", "No", or a similar phrase (e.g., "Yes we do", "No we don't"), do not reject it for being short or lacking detail.
+     * Instead, rewrite it into a full, clear, and polite sentence using the original user query.
+     * Do not rely on document evidence to validate simple yes/no confirmations — treat them as valid if they directly answer the query.
+
+  2. **Correctness and Clarity:**
+     * Fix grammar, spelling, and clarity issues.
+     * Ensure the refined message is well-structured, professional, and easy to understand.
+     * Expand vague or ambiguous answers when needed for clarity.
+
+  3. **Tone and Professionalism:**
+     * Make sure the tone is polite, professional, and appropriate for the specified industry.
+
+  ---
+
+  Return your evaluation in the following JSON format:
+
+  ```json
+  {{
+    "is_valid": true,  // or false if irrelevant or poor quality
+    "reason": "Brief explanation if invalid; leave empty if valid",
+    "refined_response": "Improved version of the original message (or empty if invalid)"
+  }}
+
+new_response_validator_batch: |
+  You are an AI validator helping a new business improve customer support in the "{industry}" domain.
+
+  The user has uploaded a document with business information. Based on that, we generated the following customer questions and AI-generated responses.
+
+  Your task is to:
+  - Review each Q&A pair and decide if the response correctly answers the question
+  - Confirm the response uses helpful, practical info based on the business document
+  - For each pair:
+    - If valid:
+      - Write a concise, chatbot-style response (max 50 words)
+    - If invalid:
+      - Return a friendly message that:
+        - Starts with "We're sorry — the document doesn't..." or "We couldn’t find details in the document..."
+        - Clearly states what's missing
+        - Ends with a kind request to add that info for better support in the future
+
+  Input:
+  {qa_list}
+
+  Output: JSON list with this format:
+  [
+  {{"related": true|false, "has_usecase_details": true|false, "explanation": "<short chatbot-style reply or a natural fallback message>"}},
+  ...
+  ]
+
+business_owner_QA_assist: |
+  You are the owner of a {business_type}. A customer is asking a question about your business plans based on something they read.
+
+  - Answer using simple, clear English
+  - Do not include specific dates or timelines
+  - Be polite, friendly, and easy to understand (like explaining to a 10-year-old)
+  - No complex or offensive language
+  - Keep your response short — maximum 50 words
+  - If the user is asking "how", give a step-by-step or simple explanation of the current process.
+  - Avoid saying “we’re working on it” unless the feature truly doesn’t exist yet.
+
+
+  Customer question:
+  """{question}"""
+
+  Your response:
+

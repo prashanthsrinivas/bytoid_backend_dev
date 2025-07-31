@@ -1,0 +1,91 @@
+- UseCase: Schedule security audit consultations or emergency incident response via
+    chat
+  questions:
+  - rephrased: I saw 'Ongoing monitoring and management to detect and respond to threats
+      in real-time.' In that context, can I schedule security audit consultations
+      via chat?
+    actual_one: Can I schedule security audit consultations via chat for real-time
+      threat detection?
+    quote: Ongoing monitoring and management to detect and respond to threats in real-time.
+  - rephrased: I saw 'Continuous monitoring of network traffic, logs, and endpoints.'
+      In that context, can I request emergency incident response via chat?
+    actual_one: Can I request emergency incident response via chat for continuous
+      monitoring of network traffic?
+    quote: Continuous monitoring of network traffic, logs, and endpoints.
+- UseCase: Answer FAQs about services (penetration testing, compliance, monitoring)
+    and experience (certifications)
+  questions:
+  - rephrased: I saw 'Utilize automated vulnerability scanning tools combined with
+      manual testing techniques.' In that context, do you provide information on penetration
+      testing FAQs?
+    actual_one: Do you provide information on penetration testing FAQs using automated
+      tools and manual testing techniques?
+    quote: Utilize automated vulnerability scanning tools combined with manual testing
+      techniques.
+  - rephrased: I saw 'Advise on secure cloud adoption, including configurations for
+      AWS, Azure, and Google Cloud.' In that context, can I find FAQs related to compliance
+      and monitoring?
+    actual_one: Can I find FAQs related to compliance and monitoring, including secure
+      cloud adoption advice for AWS, Azure, and Google Cloud?
+    quote: Advise on secure cloud adoption, including configurations for AWS, Azure,
+      and Google Cloud.
+- UseCase: Collect basic information on a security issue from prospects (systems affected,
+    symptoms) to prioritize response
+  questions:
+  - rephrased: I saw 'Assist with GDPR, PIPEDA, HIPAA, PCI-DSS, and other relevant
+      regulations.' In that context, can I provide basic information on security issues
+      to prioritize response?
+    actual_one: Can I provide basic information on security issues to prioritize response,
+      considering GDPR, PIPEDA, HIPAA, and PCI-DSS regulations?
+    quote: Assist with GDPR, PIPEDA, HIPAA, PCI-DSS, and other relevant regulations.
+- UseCase: Provide status updates during incident response (containment done, analysis
+    ongoing)
+  questions:
+  - rephrased: I saw 'Continuous monitoring of network traffic, logs, and endpoints.'
+      In that context, can I receive status updates during incident response?
+    actual_one: Can I receive status updates during incident response with continuous
+      monitoring of network traffic, logs, and endpoints?
+    quote: Continuous monitoring of network traffic, logs, and endpoints.
+- UseCase: Share best-practice resources or checklist via chatbot for general inquiries
+    (â€œHow to improve password securityâ€\x9d)
+  questions:
+  - rephrased: I saw 'Continuous monitoring of network traffic, logs, and endpoints.'
+      In that context, can I access best-practice resources via chatbot for general
+      inquiries?
+    actual_one: Can I access best-practice resources via chatbot for general inquiries
+      with continuous monitoring of network traffic, logs, and endpoints?
+    quote: Continuous monitoring of network traffic, logs, and endpoints.
+- UseCase: Route critical breach alerts from clients directly to on-call security
+    engineers
+  questions:
+  - rephrased: I saw 'Utilize automated vulnerability scanning tools combined with
+      manual testing techniques.' In that context, can critical breach alerts be routed
+      directly to on-call security engineers?
+    actual_one: Can critical breach alerts be routed directly to on-call security
+      engineers using automated tools and manual testing techniques?
+    quote: Utilize automated vulnerability scanning tools combined with manual testing
+      techniques.
+- UseCase: Notify clients of new vulnerabilities or patches (and upsell a service
+    to handle it)
+  questions:
+  - rephrased: I saw 'Prepare documentation and evidence to support audits and certifications.'
+      In that context, can clients be notified of new vulnerabilities or patches?
+    actual_one: Can clients be notified of new vulnerabilities or patches with documentation
+      and evidence support for audits and certifications?
+    quote: Prepare documentation and evidence to support audits and certifications.
+- UseCase: Handle contract and NDA process by sending/receiving documents securely
+  questions:
+  - rephrased: I saw 'Continuous monitoring of network traffic, logs, and endpoints.'
+      In that context, can contracts and NDAs be securely handled by sending/receiving
+      documents?
+    actual_one: Can contracts and NDAs be securely handled by sending/receiving documents
+      with continuous monitoring of network traffic, logs, and endpoints?
+    quote: Continuous monitoring of network traffic, logs, and endpoints.
+- UseCase: Answer compliance-related queries (GDPR, HIPAA) quickly with prepared info
+  questions:
+  - rephrased: I saw 'Prepare documentation and evidence to support audits and certifications.'
+      In that context, can compliance-related queries (GDPR, HIPAA) be quickly answered
+      with prepared info?
+    actual_one: Can compliance-related queries (GDPR, HIPAA) be quickly answered with
+      prepared info for audits and certifications support?
+    quote: Prepare documentation and evidence to support audits and certifications.

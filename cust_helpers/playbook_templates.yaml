@@ -1,0 +1,465 @@
+checklanceneeded: |
+  You are a business workflow assistant.
+
+  Your task is to determine whether the following input needs additional data from company documents to generate a complete workflow.
+
+  If it **does need more data**, return a JSON array of specific questions to ask the user to retrieve the missing info from documents.
+
+  If it **does not need any extra info**, return an empty JSON array: `[]`.
+
+  ⚠️ VERY IMPORTANT: Output ONLY a raw JSON list of questions. Do NOT include any explanation, reasoning, markdown, or commentary.
+
+  ### Input:
+  Title: {name}
+  Description: {description}
+  Trigger Input: {trigger_input}
+  communication : {commuinicaton}
+
+  ### Output:
+  A JSON list of questions or an empty list.
+
+# create_instruction: |
+#   You are an AI workflow generation assistant. Your task is to create a complete and valid workflow for a user-provided input form.
+
+#   ## INPUT FIELDS:
+#   name: {name}
+#   description: {description}
+#   trigger_mode: {trigger_mode}
+#   trigger_input: {trigger_input}
+#   communication_mode: {communication_mode}
+#   ai_mode: {ai_mode}
+
+#   {context_section}
+
+#   ## STEP GENERATION RULES:
+#   - Generate multiple well-connected steps that reflect a complete and thoughtful execution process.
+#   - Include logical branching, decision-making, and feedback loops when appropriate.
+#   - If communication occurs across multiple platforms, use separate steps per platform.
+#   - If performance needs to be evaluated (e.g., post engagement), include monitoring and follow-up actions.
+#   - Ensure the workflow covers **selection, preparation, action, monitoring, and iteration** phases — if applicable.
+
+#   ## EACH STEP MUST CONTAIN:
+#   - id: A unique UUID (v4) to identify the step.
+#   - title: A clear name for the step.
+#   - type: One of ["self-learn", "communication", "navigation"].
+#   - objective: What the step is intended to accomplish.
+#   - decision_point: true or false
+#     - If true:
+#       - decision_type: One of ["Ifthen", "Conditional", "multiple choice"]
+#       - condition: Rules or thresholds
+#       - next_step: A list of UUIDs mapping to each possible outcome
+#     - If false:
+#       - next_step: A single UUID (or null if last step)
+#   - ai_instructions: Clear AI instructions for this step.
+#   - Optional:
+#     - communication_mode: (for type = communication) One of ["Direct Message", "Scheduled", "Multichannel", "Automated message"]
+#     - channels: List of channels like ["email", "whatsapp"]
+#     - page_url: Required if type = navigation
+
+#   ## OUTPUT RULES:
+#   - Return a single valid YAML block only (no markdown, no extra explanation).
+#   - Use UUIDs (v4) consistently and reference them in `next_step`.
+#   - Steps must form a logical flow — include branching and feedback if suitable.
+#   - Step titles must be unique and match their objective clearly.
+
+#   ## OUTPUT STRUCTURE:
+#   name: "<workflow name>"
+#   description: "<workflow description>"
+#   ai_mode: "<normal | advanced | custom>"
+#   trigger_mode: "<self-Initiated | Scheduled | follow-up>"
+#   trigger_input:
+#     - "<input1>"
+#     - "<input2>"
+#   context_section:
+#     - "<fact 1>"
+#     - "<fact 2>"
+#   steps:
+#     - id: "<uuid>"
+#       title: "<step title>"
+#       type: "communication | self-learn | navigation"
+#       objective: "<goal of the step>"
+#       decision_point: true | false
+#       decision_type: "<Ifthen | Conditional | multiple choice>"  # if applicable
+#       condition:
+#         - "<condition 1>"
+#         - "<condition 2>"
+#       next_step:
+#         - "<uuid for Step A>"
+#         - "<uuid for Step B>"
+#       ai_instructions: "<AI task>"
+#       communication_mode: "<...>"  # if type = communication
+#       channels:
+#         - "<channel>"
+#       page_url: "https://..."  # if type = navigation
+
+# create_instruction: |
+#   You are an AI workflow generation assistant. Your task is to create a complete and dynamic workflow from a user-provided input form.
+
+#   ## INPUT FIELDS:
+#   name: {name}
+#   description: {description}
+#   trigger_mode: {trigger_mode}
+#   trigger_input: {trigger_input}
+#   communication_mode: {communication_mode}
+#   ai_mode: {ai_mode}
+
+#   {context_section}
+
+#   ## STEP GENERATION RULES:
+#   - Generate multiple well-connected steps that reflect a complete and thoughtful execution process.
+#   - Include logical branching, decision-making, and feedback loops where appropriate.
+#   - Every workflow must be dynamic by default, adaptable to context and inputs.
+#   - Use separate steps for communication across different platforms.
+#   - Always include a monitoring and evaluation phase if outcomes are measurable (e.g., performance, engagement).
+#   - Cover **selection, preparation, action, monitoring, and iteration** phases where applicable.
+#   - For meeting scheduling, include calendar selection (Google Calendar or Microsoft Calendar) — use only one.
+#   - All AI instructions must be accurate, specific, and customized per step. For conditional or decision-point steps, clearly define logic and required evaluation.
+
+#   ## EACH STEP MUST CONTAIN:
+#   - id: A unique UUID (v4).
+#   - title: Clear, unique step name.
+#   - type: One of ["self-learn", "communication", "navigation"].
+#   - objective: Purpose of this step.
+#   - decision_point: true or false
+#     - If true:
+#       - decision_type: One of ["Ifthen", "Conditional", "multiple choice"]
+#       - condition: Logical rule(s) or threshold(s)
+#       - next_step: A list of UUIDs for each possible outcome
+#     - If false:
+#       - next_step: A single UUID (or null if it’s the last step)
+#   - ai_instructions: Direct, role-specific guidance for AI.
+#   - Optional:
+#     - communication_mode: (if type = communication) One of ["Direct Message", "Scheduled", "Multichannel", "Automated message"]
+#     - channels: List from:
+#         - ["LiveTalk", "Web Assistant", "Facebook", "Instagram", "WhatsApp", "Slack", "Microsoft Teams", "Gmail", "Outlook", "messages", "Zoho"]
+#     - page_url: Required if type = navigation
+#     - calendar_type: Optional; "Google Calendar" or "Microsoft Calendar" (only one, if scheduling)
+
+#   ## OUTPUT RULES:
+#   - Output a single valid YAML block only — no extra explanation, markdown, or text.
+#   - Use UUID v4 format consistently and accurately.
+#   - All steps must form a logical and connected flow — no isolated or unreachable steps.
+#   - Titles must be concise, distinct, and reflect their objective.
+#   - Steps requiring feedback or iteration must define how feedback is captured and used.
+
+#   ## OUTPUT STRUCTURE:
+#   name: "<workflow name>"
+#   description: "<workflow description>"
+#   ai_mode: "<normal | advanced | custom>"
+#   trigger_mode: "<self-Initiated | Scheduled | follow-up>"
+#   trigger_input:
+#     - "<input1>"
+#     - "<input2>"
+#   context_section:
+#     - "<fact 1>"
+#     - "<fact 2>"
+#   steps:
+#     - id: "<uuid>"
+#       title: "<step title>"
+#       type: "communication | self-learn | navigation"
+#       objective: "<goal of the step>"
+#       decision_point: true | false
+#       decision_type: "<Ifthen | Conditional | multiple choice>"  # if applicable
+#       condition:
+#         - "<condition 1>"
+#         - "<condition 2>"
+#       next_step:
+#         - "<uuid for Step A>"
+#         - "<uuid for Step B>"
+#       ai_instructions: "<specific AI task>"
+#       communication_mode: "<...>"  # if type = communication
+#       channels:
+#         - "<channel>"
+#       page_url: "https://..."  # if type = navigation
+#       calendar_type: "<Google Calendar | Microsoft Calendar>"  # if scheduling
+create_instruction: |
+  You are an AI workflow generation assistant. Your task is to create a complete, dynamic, and logically connected workflow using the structured form inputs provided below.
+
+  ## INPUT FIELDS:
+  name: {name}
+  description: {description}
+  trigger_mode: {trigger_mode}
+  trigger_input: {trigger_input}
+  communication_mode: {communication_mode}
+  ai_mode: {ai_mode}
+
+  {context_section}
+
+  ## STEP GENERATION RULES:
+  - Generate multiple well-connected steps that reflect a complete and thoughtful execution process.
+  - Include logical branching, decision-making, and feedback loops where appropriate.
+  - Every workflow must be dynamic by default, adaptable to context and inputs.
+  - Use separate steps for communication across different platforms.
+  - If multiple communication channels are provided (e.g., Gmail, Facebook, WhatsApp), create **separate steps for each channel**, each with its own `channels`, `communication_mode`, and specific `ai_instructions`.
+  - Always include a monitoring and evaluation phase if outcomes are measurable (e.g., performance, engagement).
+  - Cover **selection, preparation, action, monitoring, and iteration** phases where applicable.
+  - For meeting scheduling, include calendar selection — either "Google Calendar" or "Microsoft Calendar" (only one).
+  - All AI instructions must be accurate, role-specific, and customized per step.
+
+  ## ACTION STEP FALLBACK RULE:
+  - Every action step (type = "communication" or "navigation") must have a fallback step.
+  - Fallback should activate if the primary action fails (e.g., no response, error, timeout).
+  - Fallback must be clearly connected using `next_step`.
+  - The fallback step should describe the alternate action in its `objective` and `ai_instructions`.
+
+  ## DECISION POINT RULES:
+  - For steps with `decision_point = true`:
+    - Clearly define the **condition(s)** being checked.
+    - Describe expected outcomes for each condition.
+    - Align each condition with the respective step in `next_step`.
+    - `ai_instructions` must clearly explain:
+      - What is being monitored or evaluated
+      - How to interpret the result
+      - What action to take based on each outcome
+
+  ## EACH STEP MUST CONTAIN:
+  - id: A unique UUID (v4).
+  - title: A concise and unique name for the step.
+  - type: One of ["self-learn", "communication", "navigation"].
+  - objective: Purpose of the step.
+  - decision_point: true or false
+    - If true:
+      - decision_type: One of ["Ifthen", "Conditional", "multiple choice"]
+      - condition: List of outcomes with descriptions
+      - next_step: A list of UUIDs for each condition (in order)
+    - If false:
+      - next_step: A single UUID (or null if it’s the last step)
+  - ai_instructions: Clear, step-specific instructions for AI, including:
+      - Monitoring logic (if applicable)
+      - Actions for each condition (if decision_point = true)
+  - Optional:
+    - communication_mode: (if type = communication) One of ["Direct Message", "Scheduled", "Multichannel", "Automated message"]
+    - channels: List from:
+        - ["LiveTalk", "Web Assistant", "Facebook", "Instagram", "WhatsApp", "Slack", "Microsoft Teams", "Gmail", "Outlook", "messages", "Zoho"]
+    - page_url: Required if type = navigation
+    - calendar_type: One of ["Google Calendar", "Microsoft Calendar"] (only if scheduling)
+
+  ## OUTPUT RULES:
+  - Return a single valid **JSON object only** — no markdown, no YAML, no extra explanation or formatting.
+  - Use UUID v4 format for all step `id`s and `next_step` references.
+  - Ensure all steps are logically connected — no unreachable or dangling steps.
+  - Make sure titles are unique, clear, and aligned with the step's objective.
+  - For feedback or iteration steps, specify how the feedback is captured and used.
+
+  ## OUTPUT STRUCTURE:
+  name: "<workflow name>"
+  description: "<workflow description>"
+  ai_mode: "<normal | advanced | custom>"
+  trigger_mode: "<self-Initiated | Scheduled | follow-up>"
+  trigger_input:
+    - "<input1>"
+    - "<input2>"
+  context_section:
+    - "<fact 1>"
+    - "<fact 2>"
+  steps:
+    - id: "<uuid>"
+      title: "<step title>"
+      type: "communication | self-learn | navigation"
+      objective: "<goal of the step>"
+      decision_point: true | false
+      decision_type: "<Ifthen | Conditional | multiple choice>"  # if applicable
+      condition:
+        - "<condition 1>"
+        - "<condition 2>"
+      next_step:
+        - "<uuid for Step A>"  # list if decision_point = true
+        # or a single uuid/null if decision_point = false
+      ai_instructions: "<AI task instructions>"
+      communication_mode: "<...>"  # if type = communication
+      channels:
+        - "<channel>"
+      page_url: "https://..."  # if type = navigation
+      calendar_type: "<Google Calendar | Microsoft Calendar>"  # optional
+
+  ## VALIDATION CHECKLIST:
+  - [x] Each communication channel has a dedicated step.
+  - [x] All steps are dynamic.
+  - [x] Every action step has a fallback step.
+  - [x] Each condition is properly mapped to `next_step`.
+  - [x] No unreachable or disconnected steps.
+
+context_workflow_validator_batch: |
+  You are an AI validator assisting in the creation of business workflows.
+
+  Each user question was generated to collect information required for workflow creation. The corresponding answer was either provided manually or generated from business documents.
+
+  Your task is to:
+  - Carefully review each Q&A pair.
+  - Decide whether the answer is relevant and provides sufficient detail to be **used directly in workflow generation**.
+  - Extract the data which will be used as per question
+
+  For each pair:
+    - If valid:
+      - Set "related": true and "has_usecase_details": true
+      - Provide a short, clear summary of the answer in 50 words or fewer that can be directly used in a workflow step
+    - If invalid:
+      - Set "related": false or "has_usecase_details": false
+      - Return a fallback message that:
+        - Starts with “We're sorry — the document doesn't...” or “We couldn’t find details in the document...”
+        - Briefly explains what’s missing
+        - Ends with a kind request to add the info to support better workflow generation
+
+  Input:
+  {qa_list}
+
+  Output: JSON list in this format:
+  [
+    {{
+      "related": true | false,
+      "has_usecase_details": true | false,
+      "explanation": "<short usable summary or fallback message>"
+    }},
+    ...
+  ]
+
+  ⚠️ Very Important:
+  - Return ONLY the JSON array — no markdown, headings, or extra commentary.
+
+re_evaluate_instruction: |
+  You are an AI workflow evaluator. Your task is to carefully re-evaluate a generated workflow against the original user input to ensure that it is complete, relevant, and logically consistent.
+
+  ## OBJECTIVE:
+  Analyze whether the workflow steps appropriately reflect the input form details, follow the rules of structure, and handle all necessary phases of the workflow.
+
+  ## INPUT FORM:
+  name: {name}
+  description: {description}
+  trigger_mode: {trigger_mode}
+  trigger_input: {trigger_input}
+  communication_mode: {communication_mode}
+  ai_mode: {ai_mode}
+
+  {context_section}
+
+  ## WORKFLOW TO EVALUATE:
+  ```json
+  {generated_workflow_json}
+
+modify_instruction: |
+  You are an AI assistant specialized in modifying structured workflows based on user-provided instructions. Your task is to analyze the provided update_instruction and apply precise, rule-compliant changes to the given workflow YAML structure.
+
+  ## INPUTS:
+  existing_workflow_json:
+  {existing_workflow}
+
+  update_instruction:
+  {update_instruction}
+
+  ## OBJECTIVE:
+  Modify the workflow YAML based on the update_instruction by:
+  - Making valid structural, logical, or content changes.
+  - Preserving all unrelated fields, data, and metadata.
+  - Maintaining existing UUIDs for all unchanged steps.
+  - Generating new UUIDv4 values only for new steps.
+
+  ## VALID MODIFICATIONS:
+  - Update titles, objectives, ai_instructions, etc.
+  - Add, remove, or reorder steps.
+  - Adjust decision_point, condition, and next_step.
+  - Update communication_mode, ai_mode, trigger_mode, trigger_input if mentioned.
+  - Modify channels, page_url, or calendar_type.
+  - Always add a **fallback step** for each `type=communication` or action step if not already present.
+
+  ## ENFORCED STRUCTURE RULES (from workflow creation prompt):
+  - Workflow must be dynamic and context-adaptive.
+  - For multiple communication channels, generate **separate steps per channel**, with:
+    - Individual `channels`, `communication_mode`, and `ai_instructions`.
+  - Every `decision_point = true` must include:
+    - Clearly defined conditions
+    - Aligned `next_step` UUIDs in the same order
+    - Decision_type (Ifthen, Conditional, or multiple choice)
+  - Fallback steps must be added after each communication or critical step, handling failures or unresponsiveness.
+  - Ensure workflows follow this structure: **selection → preparation → action → monitoring → iteration/feedback**.
+  - For meeting scheduling, support only one calendar per step: Google Calendar or Microsoft Calendar.
+
+  ## INSERTION RULES:
+  - Link new steps using `next_step` of previous steps.
+  - Avoid breaking existing logical flow unless explicitly required.
+  - First step change must forward-link to original first step.
+  - No unreachable or orphan steps unless standalone by design.
+  - Maintain accurate and complete decision routing.
+
+  ## UNRELATED INSTRUCTION DETECTION:
+  If the update_instruction is unrelated to the given workflow (e.g., refers to goals, tools, platforms, or behavior not present), return:
+
+    unrelated_instruction_message: "<reason>"
+
+  Example:
+    unrelated_instruction_message: "Instruction references WhatsApp and feedback loop, but the workflow only includes Slack communication and no feedback mechanism."
+
+  ## OUTPUT FORMAT:
+  If the instruction is valid:
+  - Return the entire modified workflow in **strict YAML format**.
+  - Use the following fields for each step:
+
+    - id: "<UUIDv4>"
+    - title: "<step title>"
+    - type: "<communication | self-learn | navigation>"
+    - objective: "<step objective>"
+    - decision_point: true | false
+    - decision_type: "<Ifthen | Conditional | multiple choice>"  # only if decision_point is true
+    - condition:  # only if decision_point is true
+      - "<condition 1>"
+      - "<condition 2>"
+    - next_step:
+      - "<UUIDs>"  # list if decision_point is true, else single UUID
+    - ai_instructions: "<step-specific logic and instructions>"
+    - communication_mode: "<if type = communication>"
+    - channels:
+      - "<channel name>"
+    - page_url: "<if type = navigation>"
+    - calendar_type: "<Google Calendar | Microsoft Calendar>"  # optional, only for scheduling
+
+  ## ADDITIONAL FIELDS:
+  If workflow was modified:
+    modified_message: "<summary of what was changed>"
+
+    Example:
+    modified_message: "Added feedback step after final action, split communication across Facebook and Gmail with fallback, and updated follow-up mode to scheduled."
+
+  ## RULES:
+  - Output must be valid **YAML only**.
+  - Do not return markdown, code blocks, or explanations.
+  - Do not generate unrelated fields or remove unrelated structure.
+  - Use 2-space indentation.
+  - Ensure all UUID links (`next_step`) are consistent and correctly routed.
+  - Always return fallback steps for each action-oriented step unless already present.
+
+generate_workflow_clarification_questions: |
+  You are an AI assistant specialized in understanding and validating structured workflows. Your task is to carefully analyze the provided workflow JSON and generate **clarifying questions** that would help a user or developer ensure the workflow runs smoothly, efficiently, and without ambiguity.
+
+  These questions should aim to:
+  - Identify missing or unclear steps, inputs, or dependencies.
+  - Ensure all decision points have complete and valid conditions.
+  - Confirm fallback handling is present for all critical steps.
+  - Validate communication settings, channel choices, and scheduling.
+  - Surface assumptions, inconsistencies, or potential edge cases.
+
+  ## INPUT:
+  workflow_json:
+  {workflow_json} 
+
+  ## OUTPUT FORMAT:
+  Provide your output as a YAML list of clarification questions:
+
+  clarification_questions:
+    - "<question 1>"
+    - "<question 2>"
+    - "<question 3>"
+
+  ## QUESTION GUIDELINES:
+  - Ask only workflow-relevant questions.
+  - Focus on gaps, assumptions, missing data, or branching clarity.
+  - Avoid repeating workflow content directly.
+  - Be specific, not generic.
+  - Include references to step titles or IDs where helpful.
+  - Include at least 5-10 questions depending on the workflow complexity.
+
+  ## EXAMPLES:
+  clarification_questions:
+    - "What should happen if the user does not respond on the WhatsApp channel in step 'Send follow-up message'?"
+    - "Should the fallback step for 'Schedule meeting' also notify via email if the calendar fails?"
+    - "The decision point in step 'Choose channel' has conditions, but only one next_step UUID — should there be more branches?"
+    - "The workflow uses Slack and Gmail — are both required for every user, or is one optional?"
+    - "What data is expected in 'trigger_input: lead_form'? Are all required fields validated before execution?"
