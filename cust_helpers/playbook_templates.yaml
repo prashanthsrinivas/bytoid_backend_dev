@@ -368,6 +368,45 @@ modify_instruction: |
   - All `next_step` values must reference valid step IDs.
   - If unrelated, return only `{"unrelated_instruction_message": "..."}` — nothing else.
 
+# generate_workflow_clarification_questions: |
+#   You are an AI assistant specialized in improving workflows. Your task is to read the workflow JSON and suggest **easy-to-understand clarification questions** for any step that might be confusing, incomplete, or unclear.
+
+#   ## GOAL:
+#   - Go through each step in the workflow.
+#   - If something is missing or could be confusing to a non-technical person, ask a clear, basic question to help them fill in the blanks.
+#   - Keep the questions **short, simple, and friendly** — no technical terms or software jargon.
+
+#   ## HOW TO GROUP:
+#   - For each unclear step, group questions under the step's title using the `quote` field.
+#   - Ask 1 to 3 questions per unclear step.
+#   - Only include steps that **really need** clarification.
+
+#   ## FOCUS AREAS:
+#   - Missing details (e.g., how, when, who)
+#   - Unclear logic (e.g., what happens next?)
+#   - Any action that assumes something (e.g., assumes the user has an account)
+#   - Decisions that might confuse a regular user
+#   - Cases where something might fail or go wrong (and no backup is mentioned)
+
+#   ## INPUT:
+#   workflow_json:
+#   {workflow_json}
+
+#   ## OUTPUT FORMAT:
+#   clarification_questions:
+#     - quote: "Step Title"
+#       questions:
+#         - question: "Simple, clear question?"
+#           answer: null
+#         - question: "Another one if needed?"
+#           answer: null
+
+#   ## IMPORTANT RULES:
+#   - Don’t include questions unless they are truly needed.
+#   - Don’t copy the step instructions as a question.
+#   - Avoid software or API words (e.g., “API”, “endpoint”, “OAuth”).
+#   - Every question must be written for someone who does **not** have a technical background.
+#   - The `answer` field must always be `null`.
 generate_workflow_clarification_questions: |
   You are an AI assistant specialized in improving workflows. Your task is to read the workflow JSON and suggest **easy-to-understand clarification questions** for any step that might be confusing, incomplete, or unclear.
 
@@ -393,20 +432,26 @@ generate_workflow_clarification_questions: |
   {workflow_json}
 
   ## OUTPUT FORMAT:
-  clarification_questions:
-    - quote: "Step Title"
-      questions:
-        - question: "Simple, clear question?"
-          answer: null
-        - question: "Another one if needed?"
-          answer: null
+  Return a **valid JSON object** using the exact structure below:
 
-  ## IMPORTANT RULES:
-  - Don’t include questions unless they are truly needed.
-  - Don’t copy the step instructions as a question.
-  - Avoid software or API words (e.g., “API”, “endpoint”, “OAuth”).
-  - Every question must be written for someone who does **not** have a technical background.
-  - The `answer` field must always be `null`.
+  ```json
+  {
+    "clarification_questions": [
+      {
+        "quote": "Step Title",
+        "questions": [
+          {
+            "question": "Simple, clear question?",
+            "answer": null
+          },
+          {
+            "question": "Another one if needed?",
+            "answer": null
+          }
+        ]
+      }
+    ]
+  }
 
 evaluate_clarification_answer: |
   You are an expert AI assistant reviewing user answers to clarification questions related to a workflow.
@@ -446,9 +491,9 @@ evaluate_clarification_answer: |
   }}
 
 ai_suggest_workflow_ans: |
-  You are an expert AI assistant for answering workflow-related questions.
+  You are an expert AI assistant responsible for generating direct answers used during automated workflow execution.
 
-  Your task is to read the provided workflow JSON and give a short, helpful answer to the user's question within the given category.
+  Your job is to read the user’s question and the provided workflow, and return a short, clear **answer** that the system can use exactly as-is during execution.
 
   ## Category:
   {category}
@@ -456,16 +501,17 @@ ai_suggest_workflow_ans: |
   ## Workflow JSON:
   {workflow_json}
 
-  ## Question:
+  ## User Question:
   {question}
 
   ## Instructions:
-  - Focus only on what's relevant to the workflow logic.
-  - Base your answer on the actual workflow — do not assume things that aren’t present.
-  - Keep your answer short and directly actionable (max 50 words).
-  - Suggest changes, improvements, or confirm the behavior clearly.
-  - If something is missing in the workflow, point it out briefly.
-  - If the question is unclear or irrelevant to the workflow, respond politely asking for clarification.
+  - Return only the final answer that should be used during execution — such as a message to send, a confirmation, or an instruction for the user.
+  - Do not include any suggestions, explanations, clarifications, or follow-up questions.
+  - Do not repeat or reword the original question.
+  - If required details are missing from the workflow, generate a simple default answer that fits the situation.
+  - The answer must be in plain language and under 30 words.
+  - Avoid technical terms like “step,” “workflow,” “JSON,” or “AI instruction.”
+  - If the question is completely unrelated to execution, say: "Please clarify your question."
 
   ## Output Format:
-  Return only the answer as plain text. Do not include the question, category, or workflow in the response.
+  Return only the answer text — no extra structure, tags, or commentary.

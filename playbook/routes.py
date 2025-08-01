@@ -297,7 +297,9 @@ def delete_instruction():
         return jsonify({"error": f"Failed to delete instruction: {str(e)}"}), 500
 
 
-def save_playbook_to_s3(playbook, user_id, success_message, filname):
+def save_playbook_to_s3(
+    playbook, user_id, success_message, filname, clarifications=None
+):
     with tempfile.NamedTemporaryFile(
         delete=False, suffix=".json", mode="w"
     ) as tmp_file:
@@ -308,11 +310,24 @@ def save_playbook_to_s3(playbook, user_id, success_message, filname):
         file_path=temp_file_path, type="workflow", user_id=user_id, file_name=filname
     )
     os.remove(temp_file_path)
-
-    return (
-        jsonify({"status": "success", "message": success_message, "data": playbook}),
-        200,
-    )
+    if clarifications:
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "message": success_message,
+                    "data": playbook["clarification_questions"],
+                }
+            ),
+            200,
+        )
+    else:
+        return (
+            jsonify(
+                {"status": "success", "message": success_message, "data": playbook}
+            ),
+            200,
+        )
 
 
 def format_step_data(stepdata: dict) -> dict:
@@ -743,6 +758,106 @@ def modify_instruction():
         )
 
 
+# @playbook_bp.route("/workflow-clarifications", methods=["POST"])
+# def generate_clarification_questions():
+#     try:
+#         body = request.json
+#         user_id = body.get("user_id")
+#         filename = body.get("filename")
+
+#         if not user_id or not filename:
+#             return (
+#                 jsonify({"status": "error", "message": "Missing user_id or filename"}),
+#                 400,
+#             )
+
+#         # ⛓ Get config path
+#         result = returnconfigandpath(user_id)
+#         if isinstance(result, tuple) and len(result) == 3:
+#             _, config_path, _ = result
+#         else:
+#             return result  # Early return if returnconfigandpath() returned an error response
+
+#         # Load prompt + workflow JSON
+#         yaml_data = load_yaml_file(path=pathconfig.play_template)
+#         workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
+
+#         if workflow_json and workflow_json.get("clarification_questions"):
+#             return (
+#                 jsonify(
+#                     {
+#                         "status": "success",
+#                         "message": "clarifications already made",
+#                         "data": workflow_json,
+#                     }
+#                 ),
+#                 200,
+#             )
+
+#         update_prompt_template = yaml_data.get(
+#             "generate_workflow_clarification_questions"
+#         )
+#         if not update_prompt_template:
+#             return (
+#                 jsonify(
+#                     {
+#                         "status": "error",
+#                         "message": "Prompt 'generate_workflow_clarification_questions' not found",
+#                     }
+#                 ),
+#                 500,
+#             )
+
+#         workflow_json_str = json.dumps(workflow_json, indent=2)
+#         full_prompt = update_prompt_template.replace(
+#             "{workflow_json}", workflow_json_str
+#         )
+
+#         modified_yaml = get_fireworks_response(full_prompt, role="system")
+#         cleaned_output = re.sub(
+#             r"```(?:yaml|json)?\n([\s\S]+?)```", r"\1", modified_yaml
+#         ).strip()
+#         parsed_yaml = yaml.safe_load(cleaned_output)
+
+#         if (
+#             not isinstance(parsed_yaml, dict)
+#             or "clarification_questions" not in parsed_yaml
+#         ):
+#             return (
+#                 jsonify(
+#                     {
+#                         "status": "error",
+#                         "message": "LLM output missing 'clarification_questions'",
+#                     }
+#                 ),
+#                 500,
+#             )
+
+#         questions = parsed_yaml["clarification_questions"]
+#         workflow_json["clarifications_generated"] = True
+#         workflow_json["clarification_questions"] = questions
+
+#         # 🔄 Update clarifications count in config
+#         update_playbook_clarifications(
+#             configpath=config_path,
+#             user_id=user_id,
+#             name=filename,
+#             clarifications_required=len(questions),
+#         )
+
+#         return save_playbook_to_s3(
+#             workflow_json,
+#             user_id,
+#             "clarifications added",
+#             filename,
+#             clarifications=True,
+#         )
+
+#     except Exception as e:
+#         print("⚠️ Error while generating workflow clarifications:", str(e))
+#         return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @playbook_bp.route("/workflow-clarifications", methods=["POST"])
 def generate_clarification_questions():
     try:
@@ -798,31 +913,52 @@ def generate_clarification_questions():
             "{workflow_json}", workflow_json_str
         )
 
-        modified_yaml = get_fireworks_response(full_prompt, role="system")
-        cleaned_output = re.sub(
-            r"```(?:yaml|json)?\n([\s\S]+?)```", r"\1", modified_yaml
-        ).strip()
-        parsed_yaml = yaml.safe_load(cleaned_output)
+        # 🔥 Get LLM output
+        llm_output = get_fireworks_response(full_prompt, role="system")
+
+        # 🧼 Extract valid JSON block (remove any ```json or ```yaml markdown)
+        json_match = re.search(r"```(?:json)?\n([\s\S]+?)```", llm_output)
+        if json_match:
+            cleaned_output = json_match.group(1).strip()
+        else:
+            cleaned_output = llm_output.strip()
+
+        # ✅ Parse JSON
+        try:
+            parsed_json = json.loads(cleaned_output)
+        except json.JSONDecodeError as je:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Failed to parse JSON: {str(je)}",
+                        "raw_output": cleaned_output,
+                    }
+                ),
+                500,
+            )
 
         if (
-            not isinstance(parsed_yaml, dict)
-            or "clarification_questions" not in parsed_yaml
+            not isinstance(parsed_json, dict)
+            or "clarification_questions" not in parsed_json
         ):
             return (
                 jsonify(
                     {
                         "status": "error",
                         "message": "LLM output missing 'clarification_questions'",
+                        "raw_output": cleaned_output,
                     }
                 ),
                 500,
             )
 
-        questions = parsed_yaml["clarification_questions"]
+        # ✅ Store questions
+        questions = parsed_json["clarification_questions"]
         workflow_json["clarifications_generated"] = True
         workflow_json["clarification_questions"] = questions
 
-        # 🔄 Update clarifications count in config
+        # 🔄 Update clarification count in config
         update_playbook_clarifications(
             configpath=config_path,
             user_id=user_id,
@@ -830,9 +966,11 @@ def generate_clarification_questions():
             clarifications_required=len(questions),
         )
 
+        # 💾 Save updated workflow
         return save_playbook_to_s3(
             workflow_json, user_id, "clarifications added", filename
         )
+        # clarifications=True,
 
     except Exception as e:
         print("⚠️ Error while generating workflow clarifications:", str(e))
@@ -986,9 +1124,10 @@ def answer_clarification_question():
         # Save updated workflow
         return save_playbook_to_s3(
             workflow_json,
-            user_id=user_id,
-            success_message="Clarification answer added successfully",
-            filname=filename,
+            user_id,
+            "clarifications added",
+            filename,
+            clarifications=True,
         )
 
     except Exception as e:
