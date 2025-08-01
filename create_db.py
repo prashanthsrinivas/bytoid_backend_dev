@@ -454,12 +454,12 @@ def createticketstable():
         create_table_sql = """
             CREATE TABLE IF NOT EXISTS tickets (
                 tickets_id VARCHAR(36) PRIMARY KEY,
-                communication_id_fk VARCHAR(36),
+                conversation_id_fk VARCHAR(36),
                 priority ENUM('High','Medium','Low'),
                 status ENUM('Open','In-Progress','Resolved','Closed'),
                 created_in DATETIME,
                 updated_in DATETIME,
-                FOREIGN KEY (communication_id_fk) REFERENCES communication(communication_id)
+                FOREIGN KEY (conversation_id_fk) REFERENCES threads(conversation_id)
             );
         """
         cursor.execute(create_table_sql)
@@ -502,6 +502,94 @@ def createTableAssigned():
         connection.close()
 
 
+def rename_columns_in_tickets():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed.")
+        return
+
+    cursor = connection.cursor()
+    try:
+        # Rename user_id → user_id_fk
+        alter_user_id = """
+            ALTER TABLE tickets
+            CHANGE communication_id_fk conversation_id_fk VARCHAR(36);
+        """
+        cursor.execute(alter_user_id)
+
+        connection.commit()
+        print("✅ Columns renamed successfully!")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def updateticket():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed.")
+        return
+
+    cursor = connection.cursor()
+    try:
+        alter_theads = """
+            ALTER TABLE tickets
+            ADD COLUMN ticket_name VARCHAR(36);
+        """
+        cursor.execute(alter_theads)
+
+        connection.commit()
+        print("✅ Columns added successfully!")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+def create_new_threads():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS threads (
+            conversation_id VARCHAR(36) PRIMARY KEY,
+            integration_id_fk VARCHAR(36),
+            tickets_id_fk VARCHAR(36),
+            external_user_id VARCHAR(36),
+            started_at DATETIME,
+            last_message_at DATETIME,
+            status VARCHAR(36),
+            CONSTRAINT fk_integration
+                FOREIGN KEY (integration_id_fk)
+                REFERENCES integrations(integration_id),
+            CONSTRAINT fk_tickets
+                FOREIGN KEY (tickets_id_fk)
+                REFERENCES tickets(tickets_id)
+        );
+        """
+        cursor.execute(create_table_query)
+        connection.commit()
+        print("✅ Created 'threads' table successfully!")
+
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # create_tables()
@@ -515,4 +603,7 @@ if __name__ == "__main__":
     # updatethreadstoticket()
     # createticketstable()
     # createTableAssigned()
-    print("creating table file")
+    # print("creating table file")
+    # rename_columns_in_tickets()
+    updateticket()
+    # create_new_threads()

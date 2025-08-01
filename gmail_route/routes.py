@@ -174,12 +174,12 @@ def fetch_gmail_messages(user_id):
         #     )
         print("*********saved the messags json file locally for gmail")
 
-        # # Upload to S3
+        # Upload to S3
         upload_any_file(
             file_path=filepath, user_id=user_id, type="messages", file_name=filename
         )
         print(" json uploaded for gmail")
-        # return jsonify({"status": "ok", "new_messages": count_new})
+        return jsonify({"status": "ok", "new_messages": count_new})
         return {
         "status": "success",
         "new_messages": count_new

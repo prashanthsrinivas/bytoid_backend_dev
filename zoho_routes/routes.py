@@ -54,6 +54,7 @@ SCOPES = (
     "ZohoMail.messages.READ",
     "ZohoMail.messages.CREATE",
     "ZohoMail.accounts.READ",
+    "MailApps.messages.READ",
     "WorkDrive.files.ALL",
     # "WorkDrive.files.CREATE",
     "WorkDrive.teamfolders.ALL",
@@ -316,6 +317,7 @@ def fetch_zoho_emails(user_id):
                     return mails_response.status_code, mails_response.text
 
                 mails_data = mails_response.json().get("data", [])
+                # print(f"****mails data: {mails_data}")
 
                 grouped_messages = defaultdict(list)
                 connection = connect_to_rds()
@@ -333,7 +335,7 @@ def fetch_zoho_emails(user_id):
                 try:
                     existing = read_json_from_s3(filepath=s3_key)
                     input_data = existing.get("input_data", {})
-                    # print(f" ***** got input data: {input_data}")
+                    print(f" ***** got input data: {input_data}")
                 except Exception as e:
                     print(f"⚠️ S3 file missing or unreadable: {e}")
                     input_data = {}
@@ -354,11 +356,26 @@ def fetch_zoho_emails(user_id):
                         print(f"⏭️ Message {message_id} already exists. Skipping.")
                         continue
                 
+                    # h_headers = {"Authorization": f"Zoho-oauthtoken {access_token}, 'Accept': 'application/json'"}
+                    # url = f'https://mail.zoho.in/api/accounts/{account_id}/messages/{message_id}/header'
+                    # response = requests.get(url, headers=h_headers)
+                    # response.raise_for_status()
+                    # headers = response.json().get('data', {}).get('headers', [])
+                    # print(f"******headers are:{headers}")
+                    
+                    # in_reply_to = next((h['value'] for h in headers if h['name'].lower() == 'in-reply-to'), None)
+                    # references = next((h['value'] for h in headers if h['name'].lower() == 'references'), None)
+
+
                     subject = mail_data.get("subject")
                     from_address = mail_data.get("fromAddress")
                     raw_to_address = mail_data.get("toAddress")
                     decoded_address = html.unescape(raw_to_address)
                     name, email_only = parseaddr(decoded_address)
+
+                    folder_id = mail_data.get("folderId")
+
+                    # result = test_message_endpoints(account_id, folder_id, message_id, access_token)
 
                     zoho_timestamp_ms = mail_data.get("receivedTime")
                     timestamp_dt = datetime.fromtimestamp(
@@ -373,7 +390,7 @@ def fetch_zoho_emails(user_id):
                     conversation_id = from_address if direction == "inbound" else email_only
                     participant = from_address if direction == "inbound" else email_only
                     client_id = get_users_client_id(participant, cursor)
-
+                    
                     if client_id:
 
                         message = {
@@ -389,6 +406,8 @@ def fetch_zoho_emails(user_id):
                             "direction": direction,
                             "user_id": user_id,
                             "conversation_id": conversation_id,
+                            # "reply-to":reply_to,
+                            # "references":references
                             # "internet_message_id": message_id,
                         }
 
@@ -415,9 +434,11 @@ def fetch_zoho_emails(user_id):
                                     {
                                         "conv_id": "",
                                         "ticket_id": "",
+                                        "ticket_name": "",
                                         "subject": "",
                                         "channel": "",
                                         "updated_date": "",
+                                        "subject":""
                                     }
                                 ],
                             }
@@ -471,7 +492,36 @@ def fetch_zoho_emails(user_id):
         print(f"[ERROR] → zoho fetch_mail failed: {e}")
         return {"error": str(e), "status": "failed"}
 
+# def test_message_endpoints(account_id, folder_id, message_id, auth_token):
+#     base_url = "https://mail.zoho.in/api/accounts"
+#     endpoints = {
+#         "originalmessage": f"{base_url}/{account_id}/messages/{message_id}/originalmessage",
+#         # "header": f"{base_url}/{account_id}/folders/{folder_id}/messages/{message_id}/header",
+#         # "content": f"{base_url}/{account_id}/folders/{folder_id}/messages/{message_id}/content"
+#     }
 
+#     headers = {
+#         "Accept": "application/json",
+#         "Authorization": f"Zoho-oauthtoken {auth_token}"
+#     }
+
+#     for name, url in endpoints.items():
+#         try:
+#             response = requests.get(url, headers=headers)
+#             print(f"\n[{name}] → Status: {response.status_code}")
+#             if response.status_code == 200:
+#                 print("✅ Success! Sample response:")
+#                 try:
+#                     json_data = response.json()
+#                     print(str(json_data)[:500])  # Preview first 500 chars
+                    
+#                 except Exception:
+#                     print("📦 Response wasn't JSON. Raw content:")
+#                     print(response.text[:500])
+#             else:
+#                 print(f"❌ Failed with status {response.status_code}")
+#         except Exception as e:
+#             print(f"🔥 Error with {name}: {e}")
 
 @zoho_bp.route("/zoho/send_email")
 def send_zoho_email(
