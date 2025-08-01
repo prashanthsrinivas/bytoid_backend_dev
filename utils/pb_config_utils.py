@@ -131,6 +131,55 @@ def update_playbook_config(
         return False
 
 
+def update_playbook_clarifications(configpath, user_id, name, clarifications_required):
+    """
+    Updates the 'clarifications_required' field for a specific playbook entry
+    in the user's playbooksconfig.json file.
+    """
+    config_filename = "playbooksconfig.json"
+    local_config_path = f"data/tmp_json/{config_filename}"
+    user_id = str(user_id)
+    ensure_dir(os.path.dirname(local_config_path))
+
+    # Step 1: Read existing config from S3
+    config_data = read_json_from_s3(configpath)
+    if not config_data or user_id not in config_data:
+        return False  # Cannot update if user or config doesn't exist
+
+    playbook_list = config_data[user_id].get("playbooklist", [])
+    updated = False
+
+    # Step 2: Find and update the matching playbook entry
+    for entry in playbook_list:
+        if entry.get("name") == name:
+            entry["clarifications_required"] = clarifications_required
+            updated = True
+            break
+
+    if not updated:
+        return False  # No matching playbook found
+
+    # Step 3: Save locally
+    with open(local_config_path, "w") as f:
+        json.dump(config_data, f, indent=2)
+
+    # Step 4: Upload updated config to S3
+    upload_any_file(
+        file_path=local_config_path,
+        user_id=user_id,
+        file_name=configpath,
+        type="workflow",
+    )
+
+    try:
+        os.remove(local_config_path)
+        print(f"🧹 Deleted local temp file: {local_config_path}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to delete temp file: {e}")
+        return False
+
+
 def deleteConfigdata(configpath, user_id, name):
     config_filename = "playbooksconfig.json"
     local_config_path = f"data/tmp_json/{config_filename}"
