@@ -38,25 +38,37 @@ def returninsructdata(data):
 
     if triggermode.lower() == "scheduled":
         schedule = data.get("scheduled_options", {})
-        frequency = schedule.get("frequency", "daily")
+        frequency = schedule.get("frequency", "daily").lower()
         start_time = schedule.get("startTime", "09:00")
-        end_time = schedule.get("endTime", "17:00")
+        end_time = schedule.get("endTime")  # optional
 
-        trigger_input_list.extend(
-            [
-                f"schedule: {frequency}",
-                f"in_time: {start_time}",
-                f"out_time: {end_time}",
-            ]
-        )
+        # Always add frequency and start time
+        trigger_input_list.append(f"schedule: {frequency}")
+        trigger_input_list.append(f"in_time: {start_time}")
 
-        if frequency == "custom":
-            start_date = schedule.get("startDate", "")
-            end_date = schedule.get("endDate", "")
+        # Add end time only if present
+        if end_time:
+            trigger_input_list.append(f"out_time: {end_time}")
+
+        # Add frequency-specific values
+        if frequency == "weekly":
+            weekly_day = schedule.get("weeklyDay")
+            if weekly_day:
+                trigger_input_list.append(f"day: {weekly_day}")
+
+        elif frequency == "monthly":
+            monthly_date = schedule.get("monthlyDate")
+            if monthly_date is not None:
+                trigger_input_list.append(f"date: {monthly_date}")
+
+        elif frequency == "custom":
+            start_date = schedule.get("startDate")
+            end_date = schedule.get("endDate")  # optional
             if start_date:
                 trigger_input_list.append(f"start_date: {start_date}")
             if end_date:
                 trigger_input_list.append(f"end_date: {end_date}")
+
     else:
         raw_input = data.get("trigger_input", "")
         if raw_input:
@@ -974,6 +986,99 @@ def generate_clarification_questions():
 
     except Exception as e:
         print("⚠️ Error while generating workflow clarifications:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/workflow-clarifications/remove-question", methods=["POST"])
+def remove_clarification_question():
+    try:
+        body = request.json
+        user_id = body.get("user_id")
+        filename = body.get("filename")
+        quote = body.get("quote")  # Step title
+        target_question = body.get("question")  # Exact question string to remove
+
+        if not all([user_id, filename, quote, target_question]):
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Missing one or more required fields: user_id, filename, quote, question",
+                    }
+                ),
+                400,
+            )
+
+        # 🔍 Load the workflow
+        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
+        if not workflow_json:
+            return (
+                jsonify({"status": "error", "message": "Workflow file not found"}),
+                404,
+            )
+
+        clarification_data = workflow_json.get("clarification_questions", [])
+        updated_clarifications = []
+
+        quote_found = False
+        question_found = False
+
+        # 🔄 Process each quote entry
+        for entry in clarification_data:
+            if entry.get("quote") == quote:
+                quote_found = True
+                updated_questions = [
+                    q
+                    for q in entry.get("questions", [])
+                    if q.get("question") != target_question
+                ]
+
+                if len(updated_questions) < len(entry.get("questions", [])):
+                    question_found = True
+
+                if updated_questions:
+                    updated_clarifications.append(
+                        {"quote": quote, "questions": updated_questions}
+                    )
+                # else: this quote is removed entirely (0 questions left)
+            else:
+                updated_clarifications.append(entry)
+
+        if not quote_found:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Quote '{quote}' not found in clarification questions",
+                    }
+                ),
+                404,
+            )
+
+        if not question_found:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Question not found under quote '{quote}'",
+                    }
+                ),
+                404,
+            )
+
+        # 💾 Save updated clarifications
+        workflow_json["clarification_questions"] = updated_clarifications
+
+        return save_playbook_to_s3(
+            workflow_json,
+            user_id,
+            "clarification question removed",
+            filename,
+            clarifications=True,
+        )
+
+    except Exception as e:
+        print("⚠️ Error while removing clarification question:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
