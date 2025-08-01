@@ -149,6 +149,7 @@ def create_playbook(data, filename=None):
         "filename": filename,
         "input_data": data,  # original data from frontend
         "workflow": response_dict,  # AI-generated YAML parsed into dict
+        "clarifications_generated": False,
     }
     # full_output = convert_dates(full_outputs)
 
@@ -162,17 +163,21 @@ def create_playbook(data, filename=None):
     return full_output, res["s3_key"]
 
 
-@playbook_bp.route("/create_instruction", methods=["POST"])
-def create_new_instruction():
-    data = request.json
-    userid = data["user_id"]
+def returnconfigandpath(userid):
     if not userid:
         return jsonify({"error": "userid is required"}), 400
     subagent_id = get_subagent_by_userid(userid)
     if not subagent_id:
         return jsonify({"error": "no agent found"}), 400
-    playbook_id, config_path = None, None
     playbook_id, config_path = check_subagent_by_playbook(subagent_id)
+    return playbook_id, config_path, subagent_id
+
+
+@playbook_bp.route("/create_instruction", methods=["POST"])
+def create_new_instruction():
+    data = request.json
+    userid = data["user_id"]
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
     if not playbook_id:
         config_s3_path = create_empty_playbook_config(userid)
         print("created new empty playbook")
@@ -204,13 +209,8 @@ def updateInstruction():
     data = request.json
     userid = data["user_id"]
     filename = data["filename"]
-    if not userid:
-        return jsonify({"error": "userid is required"}), 400
-    subagent_id = get_subagent_by_userid(userid)
-    if not subagent_id:
-        return jsonify({"error": "no agent found"}), 400
-    playbook_id, config_path = None, None
-    playbook_id, config_path = check_subagent_by_playbook(subagent_id)
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+
     full_output, npath = create_playbook(data, filename)
     print("made the new instruction", npath)
     update_playbook_config(
@@ -363,64 +363,6 @@ def format_step_data(stepdata: dict) -> dict:
     return out
 
 
-# @playbook_bp.route("/add_a_step", methods=["POST"])
-# def add_a_step():
-#     body = request.json
-#     step_data = body.get("stepdata")
-#     user_id = body.get("user_id")
-#     filename = body.get("filename")
-#     previous_step_id = (
-#         step_data.get("parentStepId") if "parentStepId" in step_data else None
-#     )  # optional
-
-#     if not step_data or not user_id:
-#         return jsonify({"status": "error", "message": "Missing step or user_id"}), 400
-
-#     playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
-#     workflow = playbook.setdefault("workflow", {})
-#     steps = workflow.setdefault("steps", [])
-
-#     # Check for duplicate title
-#     step_title = step_data.get("title", "").strip().lower()
-#     for s in steps:
-#         if s.get("title", "").strip().lower() == step_title:
-#             return (
-#                 jsonify(
-#                     {
-#                         "status": "error",
-#                         "message": "Step with this title already exists",
-#                     }
-#                 ),
-#                 409,
-#             )
-
-#     # Assign UUID if not already present
-#     new_step_id = str(uuid.uuid4())
-#     step_data["id"] = step_data.get("id", new_step_id)
-
-#     # Add to previous step's next_step if applicable
-#     if previous_step_id:
-#         for step in steps:
-#             if step.get("id") == previous_step_id:
-#                 if step.get("decision_point", False):
-#                     step.setdefault("next_step", [])
-#                     if isinstance(step["next_step"], list):
-#                         step["next_step"].append(step_data["id"])
-#                 else:
-#                     step["next_step"] = step_data["id"]
-#                 break
-#         else:
-#             return (
-#                 jsonify({"status": "error", "message": "Previous step ID not found"}),
-#                 404,
-#             )
-
-#     # Append new step
-#     steps.append(step_data)
-#     playbook["workflow"]["steps"] = steps
-
-
-#     return save_playbook_to_s3(playbook, user_id, "Step added successfully", filename)
 @playbook_bp.route("/add_a_step", methods=["POST"])
 def add_a_step():
     body = request.json
@@ -600,6 +542,15 @@ def is_inappropriate(instruction: str) -> bool:
     return False
 
 
+def extract_json_from_llm_output(text):
+    text = text.strip()
+    if text.startswith("```json") and text.endswith("```"):
+        return text[7:-3].strip()  # remove ```json and ```
+    if text.startswith("```") and text.endswith("```"):
+        return text[3:-3].strip()  # remove generic ```
+    return text
+
+
 @playbook_bp.route("/modify_instruction", methods=["POST"])
 def modify_instruction():
     try:
@@ -678,45 +629,40 @@ def modify_instruction():
         ).replace("{update_instruction}", update_instruction)
 
         # Call LLM
-        modified_yaml = get_fireworks_response(full_prompt, role="system")
-        # 1. Clean markdown code block if present
-        if modified_yaml.strip().startswith("```"):
-            # remove triple backticks and optional language hints (e.g., ```yaml or ```python)
-            lines = modified_yaml.strip().splitlines()
-            lines = [line for line in lines if not line.strip().startswith("```")]
-            modified_yaml = "\n".join(lines)
+        llm_response = get_fireworks_response(full_prompt, role="system")
 
         try:
-            parsed_yaml = yaml.safe_load(modified_yaml)
+            cleaned_response = extract_json_from_llm_output(llm_response)
 
-            # Detect unrelated instruction with reasons
+            # Now parse
+            parsed_json = json.loads(cleaned_response)
+
             if (
-                isinstance(parsed_yaml, dict)
-                and "unrelated_instruction_message" in parsed_yaml
+                isinstance(parsed_json, dict)
+                and "unrelated_instruction_message" in parsed_json
             ):
                 return (
                     jsonify(
                         {
                             "status": "error",
-                            "message": parsed_yaml["unrelated_instruction_message"],
+                            "message": parsed_json["unrelated_instruction_message"],
                         }
                     ),
                     400,
                 )
 
-            # Validate structure
-            if not parsed_yaml or "steps" not in parsed_yaml:
+            if not parsed_json or "steps" not in parsed_json:
                 return (
                     jsonify(
                         {
                             "status": "error",
-                            "message": "Modified YAML is missing 'steps' section.",
+                            "message": "Modified JSON is missing 'steps' section.",
                         }
                     ),
                     500,
                 )
 
-            # Update dynamic fields
+            # Sync top-level fields
             fields_to_sync = [
                 "name",
                 "description",
@@ -725,48 +671,51 @@ def modify_instruction():
                 "trigger_input",
             ]
             for field in fields_to_sync:
-                new_value = parsed_yaml.get(field)
+                new_value = parsed_json.get(field)
                 if new_value is not None:
                     original_json["workflow"][field] = new_value
                     if field in original_json["workflow"].get("input_data", {}):
                         original_json["input_data"][field] = new_value
-                    elif field == "name":  # compatibility fallback
+                    elif field == "name":
                         original_json["input_data"]["title"] = new_value
                     elif field == "description":
                         original_json["input_data"]["description"] = new_value
 
-            # Optional sections
-            # optional_sections = ["context_section", "clarification_questions"]
-            # for section in optional_sections:
-            #     if section in parsed_yaml:
-            #         original_json[section] = parsed_yaml[section]
-            section = "context_section"
-            if section in parsed_yaml:
-                original_json[section] = parsed_yaml[section]
+            # Optional context section
+            if "context_section" in parsed_json:
+                original_json["context_section"] = parsed_json["context_section"]
 
             # Always update steps
-            original_json["workflow"]["steps"] = parsed_yaml["steps"]
+            original_json["workflow"]["steps"] = parsed_json["steps"]
 
-            # Determine message
-            message = parsed_yaml.get(
+            message = parsed_json.get(
                 "modified_message", "Workflow updated successfully."
             )
-
-            return save_playbook_to_s3(
-                original_json,
-                user_id,
-                message,
-                filename,
+            result = returnconfigandpath(user_id)
+            if isinstance(result, tuple) and len(result) == 3:
+                _, config_path, _ = result
+            else:
+                return result
+            update_playbook_config(
+                configpath=config_path,
+                user_id=user_id,
+                name=original_json["filename"],
+                filepath=f"{user_id}/workflow/{filename}",
+                title=original_json["workflow"]["name"],
+                description=original_json["workflow"]["description"],
+                num_steps=len(original_json["workflow"]["steps"]),
             )
 
-        except yaml.YAMLError as yerr:
-            print(f"⚠️ YAML parsing failed: {yerr}")
+            return save_playbook_to_s3(original_json, user_id, message, filename)
+
+        except json.JSONDecodeError as jerr:
+            print(f"⚠️ JSON parsing failed: {jerr}")
             return (
                 jsonify(
                     {
                         "status": "error",
-                        "message": "Invalid YAML returned from LLM.",
-                        "raw_output": modified_yaml,
+                        "message": "Invalid JSON returned from LLM.",
+                        "raw_output": llm_response,
                     }
                 ),
                 500,
@@ -778,7 +727,7 @@ def modify_instruction():
                 jsonify(
                     {
                         "status": "error",
-                        "message": f"Unexpected error during YAML processing: {inner_e}",
+                        "message": f"Unexpected error during JSON processing: {inner_e}",
                     }
                 ),
                 500,
@@ -807,9 +756,28 @@ def generate_clarification_questions():
                 400,
             )
 
+        # ⛓ Get config path
+        result = returnconfigandpath(user_id)
+        if isinstance(result, tuple) and len(result) == 3:
+            _, config_path, _ = result
+        else:
+            return result  # Early return if returnconfigandpath() returned an error response
+
         # Load prompt + workflow JSON
         yaml_data = load_yaml_file(path=pathconfig.play_template)
         workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
+
+        if workflow_json and workflow_json.get("clarification_questions"):
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": "clarifications already made",
+                        "data": workflow_json,
+                    }
+                ),
+                200,
+            )
 
         update_prompt_template = yaml_data.get(
             "generate_workflow_clarification_questions"
@@ -825,14 +793,12 @@ def generate_clarification_questions():
                 500,
             )
 
-        # Inject workflow into the prompt
         workflow_json_str = json.dumps(workflow_json, indent=2)
         full_prompt = update_prompt_template.replace(
             "{workflow_json}", workflow_json_str
         )
 
-        # Get model output
-        modified_yaml = get_fireworks_response(full_prompt,role="system")
+        modified_yaml = get_fireworks_response(full_prompt, role="system")
         cleaned_output = re.sub(
             r"```(?:yaml|json)?\n([\s\S]+?)```", r"\1", modified_yaml
         ).strip()
@@ -853,42 +819,51 @@ def generate_clarification_questions():
             )
 
         questions = parsed_yaml["clarification_questions"]
-
-        # Validate structure
-        for entry in questions:
-            if "quote" not in entry or "questions" not in entry:
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": "Each item must contain 'quote' and 'questions'",
-                        }
-                    ),
-                    500,
-                )
-            for q in entry["questions"]:
-                if "question" not in q or "answer" not in q:
-                    return (
-                        jsonify(
-                            {
-                                "status": "error",
-                                "message": "Each question must have 'question' and 'answer'",
-                            }
-                        ),
-                        500,
-                    )
-
-        # Append to workflow JSON
+        workflow_json["clarifications_generated"] = True
         workflow_json["clarification_questions"] = questions
 
-        # Save back to S3
+        # 🔄 Update clarifications count in config
+        update_playbook_clarifications(
+            configpath=config_path,
+            user_id=user_id,
+            name=filename,
+            clarifications_required=len(questions),
+        )
+
         return save_playbook_to_s3(
             workflow_json, user_id, "clarifications added", filename
         )
 
     except Exception as e:
-        print("⚠️ Error while generating workflow suggestions:", str(e))
+        print("⚠️ Error while generating workflow clarifications:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def answer_clarification_question_validate(prompt_template, question, answer):
+    try:
+        # Format the prompt with the question and answer
+        prompt_input = prompt_template.format(
+            question=question.strip(), answer=answer.strip()
+        )
+
+        # Get LLM response
+        llm_output = get_fireworks_response(prompt_input, role="system")
+
+        # Clean and parse JSON
+        cleaned = llm_output.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
+        validated = json.loads(cleaned)
+
+        # Ensure required keys exist
+        if not isinstance(validated, dict) or "status" not in validated:
+            return {"status": "no", "message": "Invalid response format from LLM."}
+
+        return validated
+
+    except Exception as e:
+        return {"status": "no", "message": f"Failed to parse LLM output: {e}"}
 
 
 @playbook_bp.route("/workflow-clarifications-answer", methods=["POST"])
@@ -901,6 +876,7 @@ def answer_clarification_question():
         question_text = body.get("question")
         answer_text = body.get("answer")
 
+        # Validate input
         if not all([user_id, filename, quote, question_text, answer_text]):
             return (
                 jsonify(
@@ -912,33 +888,67 @@ def answer_clarification_question():
                 400,
             )
 
-        # Load the workflow from S3
-        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
+        # Load paths
+        result = returnconfigandpath(user_id)
+        if not isinstance(result, tuple) or len(result) != 3:
+            return result  # Error returned from helper
 
-        # Pull existing clarifications and answers
+        _, config_path, _ = result
+
+        # Load validation prompt
+        promptfile = load_yaml_file(path=pathconfig.play_template)
+        validation_prompt = promptfile.get("evaluate_clarification_answer")
+
+        if not validation_prompt:
+            return (
+                jsonify({"status": "error", "message": "Prompt template not found"}),
+                500,
+            )
+
+        # Validate with LLM
+        validated = answer_clarification_question_validate(
+            validation_prompt, question_text, answer_text
+        )
+
+        if validated.get("status") != "yes":
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": validated.get(
+                            "message", "Answer not valid for this question."
+                        ),
+                    }
+                ),
+                400,
+            )
+
+        corrected_answer = validated.get("corrected_answer", answer_text)
+
+        # Load workflow
+        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
         clarifications = workflow_json.get("clarification_questions", [])
         clarification_answers = workflow_json.get("clarification_answers", [])
 
         found = False
-
-        # Iterate and remove the question from clarification_questions
         updated_clarifications = []
+
         for entry in clarifications:
             if entry.get("quote") == quote:
                 remaining_questions = []
                 for q in entry.get("questions", []):
                     if q.get("question") == question_text:
-                        # Add to answered list
                         clarification_answers.append(
                             {
                                 "quote": quote,
                                 "question": question_text,
-                                "answer": answer_text,
+                                "answer": corrected_answer,
                             }
                         )
                         found = True
                     else:
                         remaining_questions.append(q)
+
                 if remaining_questions:
                     updated_clarifications.append(
                         {"quote": quote, "questions": remaining_questions}
@@ -957,10 +967,23 @@ def answer_clarification_question():
                 404,
             )
 
-        # Update workflow JSON
+        # Update workflow with answers
         workflow_json["clarification_questions"] = updated_clarifications
         workflow_json["clarification_answers"] = clarification_answers
 
+        # Update config count
+        remaining_count = sum(
+            len(e.get("questions", [])) for e in updated_clarifications
+        )
+
+        update_playbook_clarifications(
+            configpath=config_path,
+            user_id=user_id,
+            name=filename,
+            clarifications_required=remaining_count,
+        )
+
+        # Save updated workflow
         return save_playbook_to_s3(
             workflow_json,
             user_id=user_id,
@@ -971,3 +994,82 @@ def answer_clarification_question():
     except Exception as e:
         print("⚠️ Error while updating clarification answer:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/workflow-aisuggest", methods=["POST"])
+def workflow_ai_suggest():
+    try:
+        body = request.json
+        user_id = body.get("user_id")
+        category = body.get("quote")  # "quote" is the category
+        question = body.get("question")
+        filename = body.get("filename")
+
+        # Validate required fields
+        if not all([user_id, category, question, filename]):
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Missing required fields: user_id, quote (category), question, or filename.",
+                    }
+                ),
+                400,
+            )
+
+        # Load prompt template from YAML
+        promptfile = load_yaml_file(path=pathconfig.play_template)
+        workflow_json = read_json_from_s3(filepath=f"{user_id}/workflow/{filename}")
+        validation_prompt = promptfile.get("ai_suggest_workflow_ans")
+
+        if not validation_prompt:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Prompt template 'ai_suggest_workflow_ans' not found.",
+                    }
+                ),
+                500,
+            )
+
+        # Format the prompt
+        prompt_input = validation_prompt.format(
+            category=category.strip() if category else "",
+            question=question.strip() if question else "",
+            workflow_json=json.dumps(workflow_json, indent=2),
+        )
+
+        # Call LLM
+        llm_output = get_fireworks_response(prompt_input, role="system")
+        ai_answer = llm_output.strip()
+
+        # Clean markdown formatting if returned (optional safety)
+        if ai_answer.startswith("```"):
+            ai_answer = ai_answer.strip("` \n")
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "user_id": user_id,
+                    "filename": filename,
+                    "category": category,
+                    "question": question,
+                    "ai_answer": ai_answer,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "An error occurred while processing the question.",
+                    "details": str(e),
+                }
+            ),
+            500,
+        )
