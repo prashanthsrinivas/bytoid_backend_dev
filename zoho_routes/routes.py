@@ -405,7 +405,7 @@ def fetch_zoho_emails(user_id):
                             "source": "zoho",
                             "direction": direction,
                             "user_id": user_id,
-                            "conversation_id": conversation_id,
+                            # "conversation_id": conversation_id,
                             # "reply-to":reply_to,
                             # "references":references
                             # "internet_message_id": message_id,

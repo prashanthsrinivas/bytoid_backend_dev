@@ -27,6 +27,9 @@ from utils.normal import ensure_dir
 from utils.s3_utils import upload_any_file, read_json_from_s3, list_all_files
 from cust_helpers import pathconfig
 from utils.normal import ensure_dir, load_yaml_file
+from utils.fireworkzz import get_fireworks_response
+import yaml
+import re
 
 
 from gmail_route.routes import fetch_gmail_messages
@@ -767,102 +770,118 @@ def getall(user_id):
     print("*********calling all zoho msg**********")
     zoho = fetch_zoho_emails(user_id)
 
+    analyze_and_collect_messages(user_id)
+
     return "OK"
 
-@twilio_bp.route("/analyze_and_collect_messages/<user_id>", methods=["GET"])
-def analyze_and_collect_messages(user_id):
 
+def get_existing_messages(user_id):
+    print(f"\n🚀 Starting message analysis for user_id: {user_id}")
     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
     ensure_dir(user_folder)
+    print(f"📁 Ensured user folder exists at: {user_folder}")
 
     timestamp = datetime.now(timezone.utc)
     date_str = timestamp.strftime("%Y-%m-%d")
     filename = f"{date_str}.json"
     user_filepath = os.path.join(user_folder, filename)
+    print(f"📄 Looking for user message file: {filename}")
+
     with open(user_filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     grouped_messages = data.get("input_data", {})
-    # print(f"**********[DEBUG] grouped_messages type: {type(grouped_messages)}")
-    # print(f"************[DEBUG] grouped_messages content: {grouped_messages}")
+    print(f"📦 Loaded grouped_messages for {len(grouped_messages)} clients")
 
+
+
+@twilio_bp.route("/analyze_and_collect_messages/<user_id>", methods=["GET"])
+def analyze_and_collect_messages(user_id):
+    
+    print(f"\n🚀 Starting message analysis for user_id: {user_id}")
+    user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+    ensure_dir(user_folder)
+    print(f"📁 Ensured user folder exists at: {user_folder}")
+
+    timestamp = datetime.now(timezone.utc)
+    date_str = timestamp.strftime("%Y-%m-%d")
+    filename = f"{date_str}.json"
+    user_filepath = os.path.join(user_folder, filename)
+    print(f"📄 Looking for user message file: {filename}")
+
+    with open(user_filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    grouped_messages = data.get("input_data", {})
+    print(f"📦 Loaded grouped_messages for {len(grouped_messages)} clients")
 
     new_messages = []
 
     for client_id, channel_data in grouped_messages.items():
-
+        print(f"\n🔍 Processing client_id: {client_id}")
         connection = connect_to_rds()
         if connection is None:
+            print("❌ Failed to connect to RDS")
             return None
 
         cursor = connection.cursor()
-        cursor.execute("SELECT email_id FROM users_clients WHERE users_clients_id = %s", (client_id,))
+        cursor.execute(
+            "SELECT email_id FROM users_clients WHERE users_clients_id = %s", (client_id,)
+        )
         client_row = cursor.fetchone()
         if not client_row:
-                    # return {"error": "User not found in users or business_info tables"}, 404
-                print("error : User not found in users or business_info tables")
+            print("❌ Error: User not found in users_clients table")
+            continue
 
         client_email = client_row[0]
-        print(f"client email is: {client_email}")
+        print(f"📧 Client email: {client_email}")
 
-
-        # print(f"entered in loop for client_id: {client_id}")
         config_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
         ensure_dir(config_folder)
+        print(f"📁 Ensured config folder exists: {config_folder}")
 
         config_filepath = os.path.join(config_folder, "config.json")
         try:
             with open(config_filepath, "r", encoding="utf-8") as f:
                 config_data = json.load(f)
-
+            print("✅ Loaded config.json successfully")
         except FileNotFoundError:
             config_data = {}
-            print("no config file")
+            print("⚠️ Config file not found")
 
         existing_channels = {
-            convo.get("channel") 
-            for convo in config_data.get("conversations", []) 
+            convo.get("channel")
+            for convo in config_data.get("conversations", [])
             if convo.get("channel")
         }
+        print(f"📡 Existing channels in config: {existing_channels}")
 
         for channel, channel_msgs in channel_data.items():
+            print(f"\n📨 Processing channel: {channel} with {len(channel_msgs)} messages")
             channel_msgs.sort(key=lambda x: x.get("timestamp", ""))  # optional
-
             latest_msg = channel_msgs[-1] if channel_msgs else None
-
-            if not latest_msg:
-                classification = "No messages"
-            elif channel in existing_channels:
-                classification = "Reply"
-            elif latest_msg.get("direction") == "outbound":
-                classification = "User initiated"
-            else:
-                classification = "Client initiated"
-
-
 
             output_filename = f"{channel}_new_messages.json"
             output_path = os.path.join(config_folder, output_filename)
+            print(f"📂 Output file path: {output_path}")
 
-            # Load existing messages safely
             new_msg_data = {}
             try:
                 with open(output_path, "r", encoding="utf-8") as f:
                     new_msg_data = json.load(f)
+                print("📖 Opened existing new_messages file")
             except Exception as e:
                 print(f"⚠️ Couldn't read existing messages: {e}")
 
             existing_new_msg = {
-                msg.get("msg_id"): msg 
-                for msg in new_msg_data.get("new_messages", [])
+                msg.get("msg_id"): msg for msg in new_msg_data.get("new_messages", [])
             }
-
             merged_messages = new_msg_data.get("new_messages", [])
 
             for m in channel_msgs:
                 msg_id = m.get("id")
                 if msg_id in existing_new_msg:
-                    print(f"✅ Message {msg_id} already exists in {channel}_new_messages.json")
+                    print(f"🔄 Message {msg_id} already exists — skipping")
                     continue
 
                 new_msg = {
@@ -871,127 +890,404 @@ def analyze_and_collect_messages(user_id):
                     "from": "client" if m.get("from") == client_email else "user",
                     "to": "client" if m.get("to") == client_email else "user",
                     "date": m.get("timestamp"),
-                    "status": classification,
-                    "channel": channel
+                    # "status": classification,
+                    "channel": channel,
                 }
                 merged_messages.append(new_msg)
+                print(f"➕ Added new message {msg_id}")
 
-            # Write updated list back
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump({"new_messages": merged_messages}, f, indent=2)
+            print(f"💾 Saved updated messages to {output_filename}")
 
-            print(f"📦 Stored {len(merged_messages)} unique messages in {output_filename} for client_id: {client_id}")
-           
+            print("🔧 Generating subjects using generate_subject()")
+            subjects = generate_subject(user_id, output_path,existing_new_msg)
+
+            print("🧩 Appending subjects to messages using append_subject_to_messages()")
+            grouped_messages = append_subject_to_messages(grouped_messages, subjects,user_id,existing_new_msg)
+
+            with open(user_filepath, "w", encoding="utf-8") as f:
+                json.dump(grouped_messages, f, indent=2)
+
+        upload_any_file(
+                    file_path=user_filepath, user_id=user_id, type="messages", file_name=filename
+                )
+        
+        print(f"📝 Injected subject metadata into user message file: {filename}")
+        print(f"📦 Stored {len(merged_messages)} unique messages in {output_filename} for client_id: {client_id}")
+
+    print("✅ Finished message collection and classification.")
     return new_messages
+
             
 
 @twilio_bp.route("/subject_summarisations/<user_id>", methods=["POST"])
-def generate_subject(user_id):
+def generate_subject(user_id, output_path,existing_new_msg):
     try:
-        body = request.json
-        user_id = body.get("user_id")
-        filename = body.get("filename")
+        if not user_id or not output_path:
+            print("❌ Missing user_id or filename")
+            return None
 
-        user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-        ensure_dir(user_folder)
-
-        timestamp = datetime.now(timezone.utc)
-        date_str = timestamp.strftime("%Y-%m-%d")
-        filename = f"{date_str}.json"
-        user_filepath = os.path.join(user_folder, filename)
-        with open(user_filepath, "r", encoding="utf-8") as f:
+        with open(output_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        if not user_id or not filename:
-            return (
-                jsonify({"status": "error", "message": "Missing user_id or filename"}),
-                400,
-            )
-
-        # Load prompt + workflow JSON
+        # Load prompt + workflow YAML
         yaml_data = load_yaml_file(path=pathconfig.conv_template)
-        # workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
-
-
-        update_prompt_template = yaml_data.get(
-            "generate_workflow_clarification_questions"
-        )
+        update_prompt_template = yaml_data.get("summarize_message_body")
         if not update_prompt_template:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Prompt 'generate_workflow_clarification_questions' not found",
-                    }
-                ),
-                500,
-            )
+            print("❌ Prompt 'summarize_message_body' not found in template")
+            return None
 
-        # Inject workflow into the prompt
-        workflow_json_str = json.dumps(workflow_json, indent=2)
-        full_prompt = update_prompt_template.replace(
-            "{workflow_json}", workflow_json_str
-        )
+        # Inject message data into prompt
+        message_payload = json.dumps(data.get("new_messages", []), indent=2)
+        full_prompt = update_prompt_template.replace("{full_text_message_body}", message_payload)
+        print(f"📨 Full prompt:\n{full_prompt}")
 
-        # Get model output
-        modified_yaml = get_fireworks_response(full_prompt,user)
-        cleaned_output = re.sub(
-            r"```(?:yaml|json)?\n([\s\S]+?)```", r"\1", modified_yaml
-        ).strip()
-        parsed_yaml = yaml.safe_load(cleaned_output)
+        # Generate YAML output from model
+        modified_yaml = get_fireworks_response(full_prompt, role="system")
 
-        if (
-            not isinstance(parsed_yaml, dict)
-            or "clarification_questions" not in parsed_yaml
-        ):
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "LLM output missing 'clarification_questions'",
-                    }
-                ),
-                500,
-            )
+        print(f"raw ouput is: {modified_yaml}")
 
-        questions = parsed_yaml["clarification_questions"]
+        # Extract subject_groups block from output
+        # yaml_match = re.search(
+        #     r"(subject_groups:\s*-[\s\S]+?)\n(?:Note:|$)", modified_yaml, re.DOTALL
+        # )
 
-        # Validate structure
-        for entry in questions:
-            if "quote" not in entry or "questions" not in entry:
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": "Each item must contain 'quote' and 'questions'",
-                        }
-                    ),
-                    500,
-                )
-            for q in entry["questions"]:
-                if "question" not in q or "answer" not in q:
-                    return (
-                        jsonify(
-                            {
-                                "status": "error",
-                                "message": "Each question must have 'question' and 'answer'",
-                            }
-                        ),
-                        500,
-                    )
+        # yaml_match = re.search(
+        #     r"^subject_groups:\s*\n(?:\s*-\s*summary:\s*\".*?\"\s*\n\s*message_ids:\s*\n(?:\s*-\s*\d+\s*\n?)+)+",
+        #     modified_yaml,
+        #     re.MULTILINE
+        # )
 
-        # Append to workflow JSON
-        workflow_json["clarification_questions"] = questions
+        # yaml_block = yaml_match.group(0).strip() if yaml_match else modified_yaml.strip()
+        # parsed_yaml = yaml.safe_load(yaml_block)
 
-        # Save back to S3
-        return save_playbook_to_s3(
-            workflow_json, user_id, "clarifications added", filename
-        )
+        # if yaml_match:
+        #     cleaned_output = yaml_match.group(0).strip()
+        # else:
+        #     print("❌ No clean YAML content found")
+        #     return None
 
+        try:
+            parsed_yaml = yaml.safe_load(modified_yaml.strip())
+            if "subject_groups" in parsed_yaml:
+                print("✅ Subject groups successfully extracted")
+                return parsed_yaml["subject_groups"]
+            else:
+                print("⚠️ Key 'subject_groups' missing after parsing")
+                return None
+        except Exception as e:
+            print(f"🔥 YAML parse failed: {e}")
+            return None
+
+        # parsed_yaml = yaml.safe_load(cleaned_output)
+        # if not isinstance(parsed_yaml, dict):
+        #     parsed_yaml = {"subject_groups": parsed_yaml}
+
+        try:
+            if yaml_match:
+                parsed_yaml = yaml.safe_load(yaml_match.group(0))
+            else:
+                raise ValueError("Could not extract valid subject_groups YAML block.")
+
+            if "subject_groups" not in parsed_yaml:
+                print("⚠️ Key 'subject_groups' missing after parsing")
+                return None
+
+            print("✅ Subject groups successfully extracted")
+            return parsed_yaml["subject_groups"]
+
+        except Exception as e:
+            print(f"🔥 Exception during summarisation: {str(e)}")
+            return None
     except Exception as e:
-        print("⚠️ Error while generating workflow suggestions:", str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
+            print(f"🔥 Exception during summarisation: {str(e)}")
+            return None
 
+
+def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_msg):
+    # Build a lookup of message_id → subject
+    subject_map = {}
+    for group in subjects:
+        subject = group["summary"]
+        for mid in group["message_ids"]:
+            subject_map[str(mid)] = subject
+    print(f"subject map is :{subject_map}")
+
+    updated_date = datetime.now(timezone.utc).isoformat()
+    created_date = updated_date
+
+    connection = connect_to_rds()
+    if connection is None:
+        print("⚠️ DB connection failed inside append_subject_to_messages")
+        return None
+
+    cursor = connection.cursor()
+
+    # Iterate through grouped_messages structure
+    for client_id, channels in grouped_messages.items():
+        config_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+        ensure_dir(config_folder)
+        config_filepath = os.path.join(config_folder, "config.json")
+
+        try:
+            with open(config_filepath, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+        except FileNotFoundError:
+            config_data = {}
+            print("no config file")
+
+        for channel, messages in channels.items():
+
+            if channel == "zoho":
+                # Build subject lookup per client
+                    config_subject_lookup = {}
+                    if config_data:
+                        for conv in config_data.get("conversations", []):
+                            if conv.get("channel", "").lower() != "zoho":
+                                continue
+                            conf_subj = conv.get("subject", "")
+                            conf_ticket_name = conv.get("ticket_name", "")
+                            conf_conv_id = conv.get("conv_id", "")
+                            conf_ticket_id = conv.get("ticket_id", "")
+                            if conf_subj:
+                                config_subject_lookup[conf_subj] = {
+                                    "conv_id": conf_conv_id,
+                                    "ticket_id": conf_ticket_id,
+                                    "ticket_name": conf_ticket_name,
+                                }
+            for msg in messages:
+                        
+                
+                        msg_id = msg.get("id")
+
+                        if msg_id in existing_new_msg:
+                            print(f"🔄 Message {msg_id} already exists — skipping")
+                            continue
+                        subject = msg.get("subject", "")                    
+                        is_reply = subject.lower().startswith("re:") or "wrote:" in msg.get("summary", "").lower()
+
+                        if channel == "zoho" and is_reply:
+                    
+                            normalized_subject = re.sub(r"^re:\s*", "", subject, flags=re.IGNORECASE)
+                            config_thread = config_subject_lookup.get(normalized_subject)
+                            if config_thread:
+                                c_id = config_thread["conv_id"]
+                                t_id = config_thread["ticket_id"]
+                                t_name = config_thread["ticket_name"]
+                                msg["conversation_id"] = c_id
+                                msg["ticket_id"] = t_id
+                                msg["ticket_name"] = t_name
+
+
+                                cursor.execute(
+                                        "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
+                                        (updated_date, "In-Progress", c_id)
+                                    )
+
+                                cursor.execute(
+                                        "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
+                                        (updated_date, c_id)
+                                    )
+
+                                cursor.execute(
+                                        "UPDATE messages SET update_at = %s WHERE conversation_id = %s",
+                                        (updated_date, c_id)
+                                    )
+
+                                for conv in config_data.get("conversations", []):
+                                    if conv.get("ticket_id") == t_id:
+                                        conv["updated_date"] = updated_date
+                                        break
+                                
+                                continue
+
+                        thread_id = msg.get("thread_id")
+                        direction = msg.get("direction")
+
+                        if thread_id:
+                            cursor.execute(
+                                "SELECT conversation_id FROM threads WHERE conversation_id = %s",
+                                (thread_id)
+                            )
+                            existing_thread = cursor.fetchone()
+                            if existing_thread:
+                                msg["conversation_id"] = thread_id
+                                cursor.execute(
+                                    "SELECT tickets_id, ticket_name FROM tickets WHERE conversation_id_fk = %s",
+                                    (thread_id)
+                                )
+                                ticket_row = cursor.fetchone()
+                                if ticket_row:
+                                    msg["ticket_id"] = ticket_row[0]
+                                    msg["ticket_name"] = ticket_row[1]
+
+                                    cursor.execute(
+                                        "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
+                                        (updated_date, "In-Progress", thread_id)
+                                    )
+
+                                    cursor.execute(
+                                        "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
+                                        (updated_date, thread_id)
+                                    )
+                            
+                                    cursor.execute(
+                                        "UPDATE messages SET update_at = %s WHERE conversation_id = %s",
+                                        (updated_date, thread_id)
+                                    )
+
+                                    for conv in config_data.get("conversations", []):
+                                        if conv.get("ticket_id") == t_id:
+                                            conv["updated_date"] = updated_date
+                                            break
+
+                                else:
+                                    print(f"⚠️ No ticket found for thread: {thread_id}")
+                                continue
+
+                        # Thread does not exist — create new thread and optionally ticket
+                        new_conversation_id = str(uuid.uuid4())
+                        msg["conversation_id"] = new_conversation_id
+
+                        cursor.execute(
+                                """
+                                INSERT INTO threads (conversation_id, started_at, status, last_message_at)
+                                VALUES (%s, %s, %s, %s)
+                                """,
+                                (new_conversation_id, created_date, "Open", updated_date)
+                            )
+
+                        print(f"inserted new row into threads table - msg_id: {msg_id}")
+
+                        if direction == "inbound":
+                            print("direction is inbound. so new id and name")
+                            new_ticket_id = str(uuid.uuid4())
+                            
+                            print(f"🔍 Looking up subject for msg_id: {repr(msg_id)}")
+                            print(f"🎯 Subject map keys: {list(subject_map.keys())}")
+
+                            ticket_name = subject_map.get(str(msg_id))
+                            subject = msg.get("subject")
+                            msg["ticket_id"] = new_ticket_id
+                            msg["ticket_name"] = ticket_name
+
+                            cursor.execute(
+                                "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority) VALUES (%s, %s, %s,%s,%s)",
+                                (new_ticket_id, ticket_name, new_conversation_id,"Open","Medium")
+                            )
+                            print(f"inserted new row into tickets table - msg_id: {msg_id}")
+
+                            cursor.execute(
+                                """
+                                UPDATE threads
+                                SET ticket_id_fk = %s
+                                WHERE conversation_id = %s
+                                """,
+                                (new_ticket_id, new_conversation_id)
+                            )
+
+                            
+                            cursor.execute(
+                                """
+                                INSERT INTO messages (
+                                    message_id,
+                                    conversation_id_fk,
+                                    sender_id,
+                                    content_ref,
+                                    message_type,
+                                    is_summary,
+                                    created_at,
+                                    update_at
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    msg_id,
+                                    new_conversation_id,
+                                    client_id,
+                                    "ref",
+                                    "inbound",
+                                    subject,
+                                    created_date,
+                                    updated_date
+                                )
+                            )
+
+
+                            # Update config immediately
+                            updated_entry = {
+                                "conv_id": new_conversation_id,
+                                "ticket_id": new_ticket_id,
+                                "ticket_name": ticket_name,
+                                "subject": subject_map.get(str(msg_id)),
+                                "channel": channel,
+                                "updated_date": updated_date
+                            }
+                            config_data.setdefault("userclients_id", client_id)
+                            config_data.setdefault("conversations", []).append(updated_entry)
+
+                            with open(config_filepath, "w", encoding="utf-8") as f:
+                                json.dump(config_data, f, indent=2)
+
+                        else:
+                            msg["ticket_id"] = None
+                            msg["ticket_name"] = None
+
+                            updated_entry = {
+                                "conv_id": new_conversation_id,
+                                "ticket_id": new_ticket_id,
+                                "ticket_name": ticket_name,
+                                "subject": subject_map.get(str(msg_id)),
+                                "channel": channel,
+                                "updated_date": datetime.now(timezone.utc).isoformat()
+                            }
+                            config_data.setdefault("userclients_id", client_id)
+                            config_data.setdefault("conversations", []).append(updated_entry)
+
+                            cursor.execute(
+                                """
+                                UPDATE threads
+                                SET ticket_id_fk = %s
+                                WHERE conversation_id = %s
+                                """,
+                                (None, new_conversation_id)
+                            )
+
+                            cursor.execute(
+                                """
+                                INSERT INTO messages (
+                                    message_id,
+                                    conversation_id_fk,
+                                    sender_id,
+                                    content_ref,
+                                    message_type,
+                                    is_summary,
+                                    created_at,
+                                    update_at
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    msg_id,
+                                    new_conversation_id,
+                                    client_id,
+                                    "ref",
+                                    "outbound",
+                                    subject,
+                                    created_date,
+                                    updated_date
+                                )
+                            )
+
+                        with open(config_filepath, "w", encoding="utf-8") as f:
+                                json.dump(config_data, f, indent=2)
+                            
+                        print("direction is oubound. so no id and name")
+
+                        connection.commit()
+    connection.close()
+    return grouped_messages
 
 
 @twilio_bp.route("/conversations/<user_id>", methods=["GET"])

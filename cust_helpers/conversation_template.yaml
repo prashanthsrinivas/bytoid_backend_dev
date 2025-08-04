@@ -31,6 +31,22 @@ summarize_message_body: |
       message_ids:
         - msg_00077
 
+
+  ⚠️ Important:
+    - Respond only with a **YAML object**.
+    - Do not include markdown formatting (e.g., ```yaml).
+    - Do not include any comments or text before or after.
+    - Do not include comments, explanations, or any text before or after the YAML.
+    - Do not add trailing commas.
+    - Ensure the output is a valid YAML object that contains a `subject_groups` key.
+    - Each subject group should have:
+      - a summary string
+      - a list of `message_ids`
+    - Output must be cleanly parseable using `yaml.safe_load`.
+    - Nothing else should be included in the output — only the YAML object.
+
+
+
   ## EXAMPLES:
   subject_groups:
     - summary: "Pricing request"

@@ -588,6 +588,38 @@ def create_new_threads():
         connection.close()
 
 
+def create_new_messages():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS messages (
+                message_id VARCHAR(36) PRIMARY KEY,
+                conversation_id_fk VARCHAR(36),
+                sender_type ENUM('facebook_messenger', 'instagram_dm', 'whatsapp', 'waldo_sms'),
+                sender_id VARCHAR(36),
+                content_ref VARCHAR(128),
+                message_type ENUM('inbound','outbound'),
+                is_summary VARCHAR(36),
+                created_at DATETIME,
+                update_at DATETIME
+        );
+        """
+        cursor.execute(create_table_query)
+        connection.commit()
+        print("✅ Created 'messages' table successfully!")
+
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+
 
 
 # Run this when ready to create tables
@@ -605,5 +637,6 @@ if __name__ == "__main__":
     # createTableAssigned()
     # print("creating table file")
     # rename_columns_in_tickets()
-    updateticket()
+    # updateticket()
     # create_new_threads()
+    create_new_messages()
