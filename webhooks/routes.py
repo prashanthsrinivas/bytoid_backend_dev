@@ -100,97 +100,179 @@ all_messages = {}
 #     return ensure_contact_loaded(user_id, identity,direction=direction)
 
 
+# def build_grouped(user_id):
+#     grouped = defaultdict(dict)
+#     now = datetime.now(timezone.utc)
+
+#     prefix = f"{user_id}/messages/"
+
+#     file_list = list_all_files(prefix)
+#     # print(f"file list: {file_list}")
+
+#     # for file_obj in file_list.values()
+#     for file_obj in file_list:
+#         key = file_obj["Key"]
+#         input_data = read_json_from_s3(key).get("input_data", {})
+
+#         if isinstance(input_data, dict):
+#             messages = input_data.values()
+#         elif isinstance(input_data, list):
+#             messages = input_data
+#         else:
+#             messages = []
+
+#         for msg in messages:
+
+#             # for msg in input_data.values():
+#             # for msg in input_data:
+
+#             # --- Determine participant based on source ---
+#             source = msg.get("source")
+#             direction = msg.get("direction")
+#             participant = None
+
+#             if source == "slack":
+#                 # Slack channels (C = channel, G = group/DM)
+#                 if msg.get("to", "").startswith(("C", "G")):
+#                     participant = msg["to"]
+#             elif source == "outlook":
+#                 participant = (
+#                     msg.get("from_email")
+#                     if direction == "inbound"
+#                     else msg.get("to_email")
+#                 )
+#             elif source == "gmail":
+#                 address_field = (
+#                     msg.get("from") if direction == "inbound" else msg.get("to")
+#                 )
+#                 participant = parseaddr(address_field)[1] if address_field else None
+#             elif source == "whatsapp":
+#                 number = msg.get("from") if direction == "inbound" else msg.get("to")
+#                 if number:
+#                     participant = number.replace("whatsapp:", "")
+#             else:
+#                 participant = (
+#                     msg.get("from") if direction == "inbound" else msg.get("to")
+#                 )
+
+#             # --- Skip messages with no identifiable participant ---
+#             if not participant:
+#                 continue
+
+#             print(f"participant: {participant}")
+
+#             # --- Check if participant is a known contact ---
+#             contact = find_contact_by_identity(
+#                 user_id, participant, direction=direction
+#             )
+#             if not contact or contact["id"] == user_id:
+#                 continue
+
+#             contact_id = contact["id"]
+#             contact_name = contact["name"]
+#             channels = contact.get("channels", {})
+
+#             print(f"[MATCH] {participant} → {contact['id'] if contact else 'UNKNOWN'}")
+
+#             # --- Cache contact info ---
+#             if user_id not in CONTACTS:
+#                 CONTACTS[user_id] = {}
+
+#             if contact_id not in CONTACTS[user_id]:
+#                 CONTACTS[user_id][contact_id] = {
+#                     "name": contact_name,
+#                     "channels": channels,
+#                 }
+
+#             # --- Add message to group if not already there ---
+#             if msg["id"] not in grouped[contact_id]:
+#                 msg["contact_id"] = contact_id
+#                 msg["contact_name"] = contact_name
+#                 grouped[contact_id][msg["id"]] = msg
+
+#     return grouped
+
+
 def build_grouped(user_id):
+    from collections import defaultdict
+    from email.utils import parseaddr
+    from datetime import datetime, timezone
+
     grouped = defaultdict(dict)
     now = datetime.now(timezone.utc)
-
     prefix = f"{user_id}/messages/"
-
     file_list = list_all_files(prefix)
-    # print(f"file list: {file_list}")
 
-    # for file_obj in file_list.values()
+    print(f"\n[INFO] Found {len(file_list)} files under prefix: {prefix}\n")
+
     for file_obj in file_list:
         key = file_obj["Key"]
-        input_data = read_json_from_s3(key).get("input_data", {})
+        print(f"[PROCESSING FILE] {key}")
 
-        if isinstance(input_data, dict):
-            messages = input_data.values()
-        elif isinstance(input_data, list):
-            messages = input_data
-        else:
-            messages = []
+        raw_data = read_json_from_s3(key)
+        input_data = raw_data.get("input_data", {})
 
-        for msg in messages:
+        if not isinstance(input_data, dict):
+            print("[WARN] Skipping non-dict input_data")
+            continue
 
-            # for msg in input_data.values():
-            # for msg in input_data:
+        for client_id, channels in input_data.items():
+            print(f"  [CLIENT] {client_id}")
 
-            # --- Determine participant based on source ---
-            source = msg.get("source")
-            direction = msg.get("direction")
-            participant = None
+            for channel, messages in channels.items():
+                print(f"    [CHANNEL] {channel} — {len(messages)} message(s)")
 
-            if source == "slack":
-                # Slack channels (C = channel, G = group/DM)
-                if msg.get("to", "").startswith(("C", "G")):
-                    participant = msg["to"]
-            elif source == "outlook":
-                participant = (
-                    msg.get("from_email")
-                    if direction == "inbound"
-                    else msg.get("to_email")
-                )
-            elif source == "gmail":
-                address_field = (
-                    msg.get("from") if direction == "inbound" else msg.get("to")
-                )
-                participant = parseaddr(address_field)[1] if address_field else None
-            elif source == "whatsapp":
-                number = msg.get("from") if direction == "inbound" else msg.get("to")
-                if number:
-                    participant = number.replace("whatsapp:", "")
-            else:
-                participant = (
-                    msg.get("from") if direction == "inbound" else msg.get("to")
-                )
+                for msg in messages:
+                    source = msg.get("source")
+                    direction = msg.get("direction")
+                    participant = None
 
-            # --- Skip messages with no identifiable participant ---
-            if not participant:
-                continue
+                    # Resolve participant based on source
+                    if source == "slack":
+                        if msg.get("to", "").startswith(("C", "G")):
+                            participant = msg["to"]
+                    elif source == "outlook":
+                        participant = msg.get("from_email") if direction == "inbound" else msg.get("to_email")
+                    elif source == "gmail":
+                        address_field = msg.get("from") if direction == "inbound" else msg.get("to")
+                        participant = parseaddr(address_field)[1] if address_field else None
+                    elif source == "whatsapp":
+                        number = msg.get("from") if direction == "inbound" else msg.get("to")
+                        participant = number.replace("whatsapp:", "") if number else None
+                    else:
+                        participant = msg.get("from") if direction == "inbound" else msg.get("to")
 
-            print(f"participant: {participant}")
+                    print(f"      [PARTICIPANT] {participant or '—'}")
 
-            # --- Check if participant is a known contact ---
-            contact = find_contact_by_identity(
-                user_id, participant, direction=direction
-            )
-            if not contact or contact["id"] == user_id:
-                continue
+                    if not participant:
+                        print("      [SKIP] No valid participant")
+                        continue
 
-            contact_id = contact["id"]
-            contact_name = contact["name"]
-            channels = contact.get("channels", {})
+                    # Try to resolve contact
+                    contact = find_contact_by_identity(user_id, participant, direction=direction)
+                    if not contact or contact["id"] == user_id:
+                        print(f"      [SKIP] Unknown or self contact: {participant}")
+                        continue
 
-            print(f"[MATCH] {participant} → {contact['id'] if contact else 'UNKNOWN'}")
+                    contact_id = contact["id"]
+                    contact_name = contact["name"]
+                    channels = contact.get("channels", {})
+                    print(f"      [MATCH] {participant} → {contact_name} ({contact_id})")
 
-            # --- Cache contact info ---
-            if user_id not in CONTACTS:
-                CONTACTS[user_id] = {}
+                    CONTACTS.setdefault(user_id, {}).setdefault(contact_id, {
+                        "name": contact_name,
+                        "channels": channels
+                    })
 
-            if contact_id not in CONTACTS[user_id]:
-                CONTACTS[user_id][contact_id] = {
-                    "name": contact_name,
-                    "channels": channels,
-                }
+                    if msg["id"] not in grouped[contact_id]:
+                        msg["contact_id"] = contact_id
+                        msg["contact_name"] = contact_name
+                        grouped[contact_id][msg["id"]] = msg
+                        print(f"      [GROUPED] msg_id={msg['id']} added under {contact_id}")
 
-            # --- Add message to group if not already there ---
-            if msg["id"] not in grouped[contact_id]:
-                msg["contact_id"] = contact_id
-                msg["contact_name"] = contact_name
-                grouped[contact_id][msg["id"]] = msg
-
+    print(f"\n[SUMMARY] Grouped messages for {len(grouped)} contact(s)\n")
     return grouped
+
 
 
 # def ensure_contact_loaded(user_id, identity: str,direction):
@@ -900,18 +982,18 @@ def analyze_and_collect_messages(user_id):
                 json.dump({"new_messages": merged_messages}, f, indent=2)
             print(f"💾 Saved updated messages to {output_filename}")
 
-            print("🔧 Generating subjects using generate_subject()")
-            subjects = generate_subject(user_id, output_path,existing_new_msg)
+            print(f"🔧 Generating subjects for channel: {channel}")
+            subjects = generate_subject(user_id, output_path, existing_new_msg, channel)
 
-            print("🧩 Appending subjects to messages using append_subject_to_messages()")
-            grouped_messages = append_subject_to_messages(grouped_messages, subjects,user_id,existing_new_msg)
+            print(f"🧩 Appending subjects to messages for channel: {channel}")
+            grouped_messages = append_subject_to_messages(grouped_messages,channel,subjects,user_id,existing_new_msg)
 
             with open(user_filepath, "w", encoding="utf-8") as f:
                 json.dump(grouped_messages, f, indent=2)
 
-        upload_any_file(
-                    file_path=user_filepath, user_id=user_id, type="messages", file_name=filename
-                )
+        # upload_any_file(
+        #             file_path=user_filepath, user_id=user_id, type="messages", file_name=filename
+        #         )
         
         print(f"📝 Injected subject metadata into user message file: {filename}")
         print(f"📦 Stored {len(merged_messages)} unique messages in {output_filename} for client_id: {client_id}")
@@ -922,7 +1004,7 @@ def analyze_and_collect_messages(user_id):
             
 
 @twilio_bp.route("/subject_summarisations/<user_id>", methods=["POST"])
-def generate_subject(user_id, output_path,existing_new_msg):
+def generate_subject(user_id, output_path,existing_new_msg,channel):
     try:
         if not user_id or not output_path:
             print("❌ Missing user_id or filename")
@@ -931,6 +1013,18 @@ def generate_subject(user_id, output_path,existing_new_msg):
         with open(output_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        all_messages = data.get("new_messages", [])
+        if channel:
+            filtered_messages = [msg for msg in all_messages if msg.get("channel") == channel]
+            print(f"🔍 Filtered {len(filtered_messages)} messages for channel: {channel}")
+        else:
+            filtered_messages = all_messages
+            print(f"📦 Processing all {len(filtered_messages)} messages (no channel filter)")
+
+        if not filtered_messages:
+            print(f"⚠️ No messages found for channel: {channel}")
+            return []
+        
         # Load prompt + workflow YAML
         yaml_data = load_yaml_file(path=pathconfig.conv_template)
         update_prompt_template = yaml_data.get("summarize_message_body")
@@ -939,34 +1033,15 @@ def generate_subject(user_id, output_path,existing_new_msg):
             return None
 
         # Inject message data into prompt
-        message_payload = json.dumps(data.get("new_messages", []), indent=2)
+        # message_payload = json.dumps(data.get("new_messages", []), indent=2)
+        message_payload = json.dumps(filtered_messages, indent=2)
         full_prompt = update_prompt_template.replace("{full_text_message_body}", message_payload)
         print(f"📨 Full prompt:\n{full_prompt}")
 
         # Generate YAML output from model
         modified_yaml = get_fireworks_response(full_prompt, role="system")
+        print(f"🤖 Raw output for channel {channel}: {modified_yaml}")
 
-        print(f"raw ouput is: {modified_yaml}")
-
-        # Extract subject_groups block from output
-        # yaml_match = re.search(
-        #     r"(subject_groups:\s*-[\s\S]+?)\n(?:Note:|$)", modified_yaml, re.DOTALL
-        # )
-
-        # yaml_match = re.search(
-        #     r"^subject_groups:\s*\n(?:\s*-\s*summary:\s*\".*?\"\s*\n\s*message_ids:\s*\n(?:\s*-\s*\d+\s*\n?)+)+",
-        #     modified_yaml,
-        #     re.MULTILINE
-        # )
-
-        # yaml_block = yaml_match.group(0).strip() if yaml_match else modified_yaml.strip()
-        # parsed_yaml = yaml.safe_load(yaml_block)
-
-        # if yaml_match:
-        #     cleaned_output = yaml_match.group(0).strip()
-        # else:
-        #     print("❌ No clean YAML content found")
-        #     return None
 
         try:
             parsed_yaml = yaml.safe_load(modified_yaml.strip())
@@ -979,10 +1054,6 @@ def generate_subject(user_id, output_path,existing_new_msg):
         except Exception as e:
             print(f"🔥 YAML parse failed: {e}")
             return None
-
-        # parsed_yaml = yaml.safe_load(cleaned_output)
-        # if not isinstance(parsed_yaml, dict):
-        #     parsed_yaml = {"subject_groups": parsed_yaml}
 
         try:
             if yaml_match:
@@ -1005,7 +1076,7 @@ def generate_subject(user_id, output_path,existing_new_msg):
             return None
 
 
-def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_msg):
+def append_subject_to_messages(grouped_messages,channel, subjects, user_id,existing_new_msg):
     # Build a lookup of message_id → subject
     subject_map = {}
     for group in subjects:
@@ -1037,9 +1108,11 @@ def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_
             config_data = {}
             print("no config file")
 
-        for channel, messages in channels.items():
+        # for channel, messages in channels.items():
+        messages = grouped_messages.get(client_id, {}).get(channel, [])
+        print(f"[INFO] Processing {len(messages)} messages for channel: {channel}")
 
-            if channel == "zoho":
+        if channel == "zoho":
                 # Build subject lookup per client
                     config_subject_lookup = {}
                     if config_data:
@@ -1056,7 +1129,7 @@ def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_
                                     "ticket_id": conf_ticket_id,
                                     "ticket_name": conf_ticket_name,
                                 }
-            for msg in messages:
+        for msg in messages:
                         
                 
                         msg_id = msg.get("id")
@@ -1099,7 +1172,9 @@ def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_
                                     if conv.get("ticket_id") == t_id:
                                         conv["updated_date"] = updated_date
                                         break
-                                
+                                grouped_messages[client_id][channel] = messages
+                                update_or_create_conversation_file(grouped_messages, user_id, client_id, channel)
+
                                 continue
 
                         thread_id = msg.get("thread_id")
@@ -1141,6 +1216,9 @@ def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_
                                         if conv.get("ticket_id") == t_id:
                                             conv["updated_date"] = updated_date
                                             break
+                                        
+                                    grouped_messages[client_id][channel] = messages
+                                    update_or_create_conversation_file(grouped_messages, user_id, client_id, channel)
 
                                 else:
                                     print(f"⚠️ No ticket found for thread: {thread_id}")
@@ -1279,6 +1357,9 @@ def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_
                                     updated_date
                                 )
                             )
+                        grouped_messages[client_id][channel] = messages
+
+                        update_or_create_conversation_file(grouped_messages,user_id,client_id,channel)
 
                         with open(config_filepath, "w", encoding="utf-8") as f:
                                 json.dump(config_data, f, indent=2)
@@ -1286,8 +1367,59 @@ def append_subject_to_messages(grouped_messages, subjects, user_id,existing_new_
                         print("direction is oubound. so no id and name")
 
                         connection.commit()
+                    
     connection.close()
     return grouped_messages
+
+def update_or_create_conversation_file(grouped_messages, user_id, client_id, channel):
+    prefix = f"{user_id}/messages/{client_id}"
+    config_key = f"{prefix}/config.json"
+    print(f"[DEBUG] Reading config from: {config_key}")
+
+    config_data = read_json_from_s3(config_key)
+    print(f"[DEBUG] Config data loaded: {config_data}")
+
+    # Pull existing conversation IDs for the specified channel
+    existing_conversations = {
+        conv["conv_id"] for conv in config_data.get("conversations", [])
+        if conv.get("channel") == channel and conv.get("conv_id")
+    }
+    print(f"[DEBUG] Existing conv_ids for channel={channel}: {existing_conversations}")
+
+    channel_messages = grouped_messages.get(client_id, {}).get(channel, [])
+    print(f"[DEBUG] Retrieved {len(channel_messages)} messages for client={client_id}, channel={channel}")
+
+    if not channel_messages:
+        print(f"[INFO] No messages found for client={client_id}, channel={channel}")
+        return
+
+    # Group messages by conversation_id
+    conversation_groups = {}
+    for msg in channel_messages:
+        conv_id = msg.get("conversation_id")
+        if conv_id:
+            conversation_groups.setdefault(conv_id, []).append(msg)
+    print(f"[DEBUG] Grouped messages by conversation_id: {list(conversation_groups.keys())}")
+
+    for conv_id, messages in conversation_groups.items():
+        file_key = f"{prefix}/{conv_id}.json"
+        print(f"[DEBUG] Processing conv_id={conv_id} with {len(messages)} messages")
+
+        if conv_id in existing_conversations:
+            print(f"[INFO] Appending to existing file: {file_key}")
+            raw_data = read_json_from_s3(file_key)
+            print(f"[DEBUG] Existing file data loaded with {len(raw_data.get('input_data', []))} messages")
+
+            input_data = raw_data.get("input_data", [])
+            input_data.extend(messages)
+            upload_any_file(file_key, user_id,types="messages",file_name= input_data)
+            print(f"[DEBUG] Uploaded updated message list to: {file_key}")
+        else:
+            print(f"[INFO] Creating new file: {file_key}")
+            upload_any_file(file_key, user_id,types="messages",file_name= input_data)
+            print(f"[DEBUG] Uploaded new message list to: {file_key}")
+            # Optionally update config here, if needed
+
 
 
 @twilio_bp.route("/conversations/<user_id>", methods=["GET"])
