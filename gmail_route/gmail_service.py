@@ -1,14 +1,11 @@
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from email.message import EmailMessage
-import json
 import base64
 from email.mime.text import MIMEText
-import pymysql
 from db.rds_db import connect_to_rds
 from data import MESSAGES  # delete this later, this is just for testing
 from datetime import datetime, timezone
-from flask import session, jsonify
 
 
 class GmailService:

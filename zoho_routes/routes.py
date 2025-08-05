@@ -447,8 +447,27 @@ def fetch_zoho_emails(user_id):
                                 json.dump(dummy_config, f, indent=2)
 
                             print(f"*************✅ Config file created at {config_filepath} in zoho")
+
+                            s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                            s3_data = read_json_from_s3(s3_config_key)
+                            if s3_data is None:
+                                print(
+                                    f"🪣 Config not found in S3. Uploading to: {s3_config_key}"
+                                )
+                                upload_any_file(
+                                    config_filepath,
+                                    user_id,
+                                    type="messages",
+                                    s3_key_C=s3_config_key,
+                                )
+                            else:
+                                print(f"✅ Config already exists in S3: {s3_config_key}")
                         else:
                             print(f"📁 Config file already exists: {config_filepath}")
+                        
+                        
+        
+
 
                 # Write file locally
                 user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
@@ -478,9 +497,9 @@ def fetch_zoho_emails(user_id):
                 print("*********saved the zoho messags json file locally")
 
                 # # Upload to S3
-                upload_any_file(
-                    file_path=filepath, user_id=user_id, type="messages", file_name=filename
-                )
+                # upload_any_file(
+                #     file_path=filepath, user_id=user_id, type="messages", file_name=filename
+                # )
 
                 # return jsonify({"status": "ok", "new_messages": count_new})
                 return {

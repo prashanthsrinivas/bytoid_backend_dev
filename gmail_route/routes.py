@@ -18,9 +18,6 @@ from umail_helper.helper import get_users_client_id
 from collections import defaultdict
 
 
-
-
-
 gmail_bp = Blueprint("gmail", __name__)
 
 
@@ -66,7 +63,9 @@ def fetch_gmail_messages(user_id):
         for client_channels in input_data.values():
             for channel_msgs in client_channels.values():
                 for msg in channel_msgs:
-                    existing_ids.add(msg.get("id"))  # or "message_id" depending on structure
+                    existing_ids.add(
+                        msg.get("id")
+                    )  # or "message_id" depending on structure
 
         count_new = 0
         for msg in threads:
@@ -74,7 +73,6 @@ def fetch_gmail_messages(user_id):
             if message_id in existing_ids:
                 print(f"⏭️ Message {message_id} already exists. Skipping.")
                 continue
-
 
             dt = parsedate_to_datetime(msg["date"])
             timestamp_iso = dt.isoformat()
@@ -126,6 +124,7 @@ def fetch_gmail_messages(user_id):
                 ensure_dir(config_folder)
 
                 config_filepath = os.path.join(config_folder, "config.json")
+
                 if not os.path.exists(config_filepath):
                     dummy_config = {
                         "userclients_id": client_id,
@@ -143,7 +142,25 @@ def fetch_gmail_messages(user_id):
                     with open(config_filepath, "w", encoding="utf-8") as f:
                         json.dump(dummy_config, f, indent=2)
 
-                    print(f"*************✅ Config file created at {config_filepath} in gmail")
+                    print(
+                        f"*************✅ Config file created at {config_filepath} in gmail"
+                    )
+
+                    s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                    s3_data = read_json_from_s3(s3_config_key)
+                    if s3_data is None:
+                        print(
+                            f"🪣 Config not found in S3. Uploading to: {s3_config_key}"
+                        )
+                        upload_any_file(
+                                    config_filepath,
+                                    user_id,
+                                    type="messages",
+                                    s3_key_C=s3_config_key,
+                                )
+                    else:
+                        print(f"✅ Config already exists in S3: {s3_config_key}")
+
                 else:
                     print(f"📁 Config file already exists: {config_filepath}")
 
@@ -162,11 +179,14 @@ def fetch_gmail_messages(user_id):
         # Add current Gmail messages to merged structure
         for client_id, channels in grouped_messages.items():
             for channel, messages in channels.items():
-                merged_messages.setdefault(client_id, {}).setdefault("gmail", []).extend(messages)
+                merged_messages.setdefault(client_id, {}).setdefault(
+                    "gmail", []
+                ).extend(messages)
 
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump({"filename": filename, "input_data": merged_messages}, f, indent=2)
-
+            json.dump(
+                {"filename": filename, "input_data": merged_messages}, f, indent=2
+            )
 
         # with open(filepath, "w", encoding="utf-8") as f:
         #     json.dump(
@@ -175,15 +195,12 @@ def fetch_gmail_messages(user_id):
         print("*********saved the messags json file locally for gmail")
 
         # Upload to S3
-        upload_any_file(
-            file_path=filepath, user_id=user_id, type="messages", file_name=filename
-        )
-        print(" json uploaded for gmail")
+        # upload_any_file(
+        #     file_path=filepath, user_id=user_id, type="messages", file_name=filename
+        # )
+        # print(" json uploaded for gmail")
         return jsonify({"status": "ok", "new_messages": count_new})
-        return {
-        "status": "success",
-        "new_messages": count_new
-    }
+        return {"status": "success", "new_messages": count_new}
 
     except Exception as e:
         print(f"[ERROR] → fetch_mail failed: {e}")

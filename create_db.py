@@ -552,6 +552,7 @@ def updateticket():
         cursor.close()
         connection.close()
 
+
 def create_new_threads():
     connection = connect_to_rds()
     if connection is None:
@@ -579,7 +580,6 @@ def create_new_threads():
         cursor.execute(create_table_query)
         connection.commit()
         print("✅ Created 'threads' table successfully!")
-
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -612,6 +612,46 @@ def create_new_messages():
         connection.commit()
         print("✅ Created 'messages' table successfully!")
 
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_plans():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        create_table_query = """
+        CREATE TABLE plans (
+            plans_id VARCHAR(36) PRIMARY KEY,
+            subscribe_id VARCHAR(36),
+            plans ENUM(
+                'Bytoid:tm: Support for Consultants',
+                'Bytoid:tm: Support - Part-time AI Worker',
+                'Bytoid:tm: Support - Full time AI Worker',
+                'Bytoid:tm: Support - 24/7 AI Worker'
+            ),
+            credits ENUM('250', '500', '1000', '1500', '2500', '5000', '7500', '15000'),
+            `add-ons` ENUM(
+                'Bytoid:tm: LiveTalk',
+                'Bytoid:tm: LiveResolve',
+                'Bytoid:tm: Reporting Agent'
+            ),
+            add_ons_measurement JSON,
+            created_in DATETIME,
+            updated_in DATETIME,
+            logged_in_at DATETIME,
+            logged_out_at DATETIME
+        );
+        """
+        cursor.execute(create_table_query)
+        connection.commit()
+        print("✅ Created 'Plans' table successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -620,6 +660,59 @@ def create_new_messages():
         connection.close()
 
 
+def create_subscribe():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        create_table_query = """
+        CREATE TABLE subscribe (
+            subscribe_id VARCHAR(36) PRIMARY KEY,
+            user_id VARCHAR(36),
+            plans_id VARCHAR(36),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (plans_id) REFERENCES plans(plans_id)
+        );
+        """
+        cursor.execute(create_table_query)
+        connection.commit()
+        print("✅ Created 'Subscibe' table successfully! and updated users table")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def alter_tables_users_subscribe():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+
+        alter_table_add_column = """
+            ALTER TABLE users ADD COLUMN subscribe_id VARCHAR(36);
+        """
+        cursor.execute(alter_table_add_column)
+
+        alter_table_add_fk = """
+            ALTER TABLE users
+            ADD CONSTRAINT fk_users_subscribe
+            FOREIGN KEY (subscribe_id) REFERENCES subscribe(subscribe_id);
+        """
+        cursor.execute(alter_table_add_fk)
+        print("✅ updated 'users-Subscibe' table successfully!")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
 
 
 # Run this when ready to create tables
@@ -635,8 +728,11 @@ if __name__ == "__main__":
     # updatethreadstoticket()
     # createticketstable()
     # createTableAssigned()
-    # print("creating table file")
+    print("creating table file")
     # rename_columns_in_tickets()
     # updateticket()
     # create_new_threads()
-    create_new_messages()
+    # create_new_messages()
+    # create_plans()
+    # create_subscribe()
+    alter_tables_users_subscribe()
