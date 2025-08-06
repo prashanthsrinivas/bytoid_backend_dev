@@ -896,3 +896,56 @@ def workflow_ai_suggest():
             ),
             500,
         )
+
+
+# @playbook_bp.route("/run_workflow", methods=["POST"])
+# def runWorkflow():
+#     from .wf_runner import WorkflowRunner
+#     from db.db_checkers import get_userinfo
+
+#     data = request.json
+#     userid = data.get("user_id")
+#     filename = data.get("filename")
+#     if not userid:
+#         return {"Not a valid userid"}, 400
+#     if not filename:
+#         return {"Not a valid filename"}, 400
+#     data = get_userinfo(userid)
+#     # details=
+#     # runner = WorkflowRunner(userid=userid, filename=filename,userdetails=data)
+#     # runner.execute()
+#     # return jsonify(runner.get_execution_log())
+#     return jsonify(data)
+
+
+@playbook_bp.route("/run_workflow", methods=["POST"])
+def runWorkflow():
+    from .wf_runner import WorkflowRunner
+
+    data = request.json
+    userid = data.get("user_id")
+    filename = data.get("filename")
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    # # Meeting details
+    # details = {
+    #     "summary": "Test Meeting",
+    #     "start_time": "2025-08-07T15:00:00+05:30",
+    #     "end_time": "2025-08-07T15:30:00+05:30",
+    #     "timezone": "Asia/Kolkata",
+    #     "hangoutLink": "https://meet.google.com/test-link",
+    # }
+
+    try:
+        runner = WorkflowRunner(userid=userid, filename=filename)
+        bad = runner.execute()
+        print(bad)
+        result = runner.get_execution_log()
+        print("dasdsad", result)
+        return jsonify({"status": "success", "gmail_api_response": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500

@@ -1,17 +1,21 @@
 import uuid
 import logging
 from typing import List, Dict, Any, Optional
+from gmail_route.gmail_service import GmailService
 from utils.fireworkzz import get_fireworks_response
 from utils.s3_utils import read_json_from_s3
 from collections import defaultdict
+from db.db_checkers import get_userinfo, fetch_contacts_by_user
+import re
 
 
 class WorkflowRunner:
-    def __init__(self, userid: str, filename: str):
+    def __init__(self, userid: str, filename: str, contacts=None):
         self.userid = userid
         self.filename = filename
         self.wf_loc = f"{userid}/workflow/{filename}"
         self.workflow_json = read_json_from_s3(self.wf_loc)
+        self.userdetails = get_userinfo(self.userid)
         self.maxRetries = 2
         self.workflow = self.workflow_json.get("workflow", {})
         self.steps = {step["id"]: step for step in self.workflow.get("steps", [])}
@@ -20,9 +24,11 @@ class WorkflowRunner:
             item["quote"]: item["answer"]
             for item in self.workflow_json.get("clarification_answers", [])
         }
+        self.contacts = contacts or fetch_contacts_by_user(self.userid)
         self.execution_log: List[Dict[str, Any]] = []
         self.logger = logging.getLogger(f"WorkflowRunner-{userid}-{filename}")
         self.logger.setLevel(logging.INFO)
+        self.meetingDetails = None
         if (
             not self.logger.handlers
         ):  # Prevent adding multiple handlers in debug mode or multiple runs
@@ -108,16 +114,42 @@ class WorkflowRunner:
             raise ValueError(f"Unknown step type: {step_type}")
 
     def _handle_communication(self, step: Dict[str, Any]) -> Dict[str, Any]:
-        # Simulate sending a message or content via a channel
-        ai_output = (
-            f"[COMMUNICATION] via {step.get('channels')} - {step['ai_instructions']}"
-        )
+        allowed_modes = [
+            "Direct Message",
+            "Scheduled",
+            "Multichannel",
+            "Automated message",
+        ]
+
+        communication_mode = step.get("communication_mode")
+        channels = step.get("channels", [])
+
+        if communication_mode not in allowed_modes:
+            self.logger.error(
+                f"Invalid communication_mode: '{communication_mode}'. Must be one of {allowed_modes}"
+            )
+            raise ValueError("Invalid communication_mode")
+
+        ai_output = f"[COMMUNICATION] via {channels} ({communication_mode}) - {step['ai_instructions']}"
         self.logger.info(ai_output)
 
+        # 👉 Route to appropriate handlers
+        if "calendar_type" in step and step["calendar_type"] == "Google Calendar":
+            # Call your Google Meet creation handler
+            print("calling befor meet method")
+            return self._handleGoogleMeet(step)
+
+        elif "Gmail" in channels:
+            # Call your Gmail invitation handler
+            print("calling befor Gmail method")
+            return self._handleGoogleMeetMail(step)
+
+        # If it's a decision point, handle separately
         if step.get("decision_point"):
+            print(f"Condition type: {step.get('decision_type', 'N/A')}")
             return self._handle_decision(step, ai_output)
-        else:
-            return {"output": ai_output, "next_step": step.get("next_step")}
+
+        return {"output": ai_output, "next_step": step.get("next_step")}
 
     def _handle_navigation(self, step: Dict[str, Any]) -> Dict[str, Any]:
         # Simulate opening a page
@@ -126,51 +158,23 @@ class WorkflowRunner:
         return {"output": ai_output, "next_step": step.get("next_step")}
 
     def _handle_self_learn(self, step: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Handle 'self-learn' type steps. These may involve:
-        - Autonomous AI-driven actions using ai_instructions.
-        - Decision branching based on AI interpretation.
-        - Optional use of clarification answers or querying external sources.
-        """
+        ai_output = f"[SELF-LEARN] {step['ai_instructions']}"
+        self.logger.info(ai_output)
 
-        ai_instruction = step.get("ai_instructions", "")
-        user_context = self.user_data or ""
-        clarifications = self.clarification_answers or ""
+        # Pre-fill contacts if relevant
+        objective = step.get("objective", "").lower()
+        if re.search(
+            r"\b(create|prepare|fetch|get)\b.*\b(contact list|contacts)\b", objective
+        ):
+            if len(self.contacts) < 1:
+                self.contacts = fetch_contacts_by_user(self.userid)
+            return {"output": ai_output, "next_step": step.get("next_step")}
 
-        full_prompt = f"""You are executing an autonomous step in a workflow.
-
-        AI Instruction:
-        {ai_instruction}
-
-        User Data:
-        {user_context}
-
-        Clarification Answers:
-        {clarifications}
-
-        Respond appropriately based on the instruction above.
-        """
-
-        # Run AI decision
-        ai_output = get_fireworks_response(full_prompt, role="system")
-
-        self.logger.info(f"[SELF-LEARN AI] Instruction: {ai_instruction}")
-        self.logger.info(f"[SELF-LEARN AI] Output: {ai_output}")
-
-        # # Optional: fallback to knowledge retrieval if defined
-        # if step.get("use_external_docs"):
-        #     question = step.get("objective", "") or ai_instruction
-        #     kb_response = agent.query_vector(question)
-        #     self.logger.info(
-        #         f"[SELF-LEARN External Doc] Query: {question} → Response: {kb_response}"
-        #     )
-        #     ai_output += f"\n\n[Knowledge Base Response]\n{kb_response}"
-
-        # Decision logic if applicable
+        # Handle decision-based logic
         if step.get("decision_point"):
             return self._handle_decision(step, ai_output)
 
-        # Default next step
+        # Non-decision self-learn step
         return {"output": ai_output, "next_step": step.get("next_step")}
 
     def _handle_decision(self, step: Dict[str, Any], ai_output: str) -> Dict[str, Any]:
@@ -205,6 +209,95 @@ class WorkflowRunner:
             if step["id"] != original_step["id"]:
                 return step
         return None
+
+    def _handleGoogleMeet(self, step):
+        from .services.meet_Service import GoogleMeetService
+        from datetime import datetime
+
+        print("called meet thing")
+
+        email = self.userdetails["email"]
+        token = self.userdetails["token"]
+        scheduled_options = self.input_data.get("scheduled_options", {})
+
+        # Set fallback/defaults
+        start_time = scheduled_options.get("startTime", "09:00")
+        end_time = scheduled_options.get("endTime", "10:00")
+        start_date = scheduled_options.get("startDate", None)
+        timezone = scheduled_options.get("timezone", "Asia/Kolkata")
+
+        # Combine date and time
+        if start_date:
+            full_start = f"{start_date}T{start_time}:00"
+            full_end = f"{start_date}T{end_time}:00"
+        else:
+            today = datetime.now().strftime("%Y-%m-%d")
+            full_start = f"{today}T{start_time}:00"
+            full_end = f"{today}T{end_time}:00"
+
+        summary = f"Meeting Scheduled By {email} on {full_start}"
+        service = GoogleMeetService(access_token=token, user_email=email)
+        contacts = [item.get("email") for item in self.contacts if "email" in item]
+
+        try:
+            response = service.create_meeting(
+                summary=summary,
+                start_time=full_start,
+                end_time=full_end,
+                attendees=contacts,
+                timezone=timezone,
+            )
+            self.logger.info(f"[GoogleMeet Created] {response}")
+            self.meetingDetails = response
+            return {
+                "status": "success",
+                "output": f"Meeting scheduled successfully: {response.get('hangoutLink')}",
+                "next_step": step.get("next_step"),
+            }
+        except Exception as e:
+            self.logger.error(f"[GoogleMeet Error] {e}")
+            return {"status": "error", "message": str(e)}
+
+    def _handleGoogleMeetMail(self, step):
+        from gmail_route.gmail_service import GmailService
+        from .helperzz import generate_meeting_email_body
+
+        print("called meet mail thing")
+
+        details = self.meetingDetails
+        user_email = self.userdetails["email"]
+        contacts = [item.get("email") for item in self.contacts if "email" in item]
+
+        subject = "Meeting Scheduled"
+        body = (
+            generate_meeting_email_body(details, self.userdetails)
+            or f"""
+        Hi,
+
+        A meeting has been scheduled.
+
+        Summary: {details.get('summary')}
+        Date & Time: {details.get('start_time')} to {details.get('end_time')} ({details.get('timezone')})
+        Meeting Link: {details.get('hangoutLink', 'Link not available')}
+
+        Regards,
+        """
+        )
+
+        try:
+            service = GmailService(self.userid)
+            sent = service.send_Meet_mail(
+                to_email=user_email, bcc_list=contacts, subject=subject, body=body
+            )
+            self.logger.info(f"Email sent successfully: {sent['id']}")
+            return {
+                "status": "success",
+                "output": f"Email sent to {user_email} and bcc to {len(contacts)} people.",
+                "next_step": step.get("next_step"),
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to send email: {e}")
+            return {"status": "error", "message": str(e)}
 
     def get_execution_log(self) -> List[Dict[str, Any]]:
         return self.execution_log

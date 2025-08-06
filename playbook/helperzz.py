@@ -470,3 +470,51 @@ def answer_clarification_question_validate(prompt_template, question, answer):
 
     except Exception as e:
         return {"status": "no", "message": f"Failed to parse LLM output: {e}"}
+
+
+def generate_meeting_email_body(details: dict, field_data: dict) -> str:
+    summary = details.get("summary", "")
+    start_time = details.get("start_time", "")
+    end_time = details.get("end_time", "")
+    timezone = details.get("timezone", "")
+    hangout_link = details.get("hangoutLink", "Link not available")
+
+    first_name = field_data.get("first_name", "there")
+    last_name = field_data.get("last_name", "")
+    business_name = field_data.get("BusinessName", "")
+    line_of_business = field_data.get("LineOfBusiness", "")
+    billing_address = field_data.get("BillingAddress", "")
+    business_email = field_data.get("BusinessEmail", "")
+    website = field_data.get("WebsiteUrl", "")
+    social_links = field_data.get("sociallinks", "")
+
+    return f"""
+<div style="max-width:600px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;font-family:sans-serif;color:#1f2937;">
+  <p style="font-size:16px;margin-bottom:16px;">Hi <strong>{first_name}</strong>,</p>
+  <p style="margin-bottom:24px;">A meeting has been scheduled for you. Below are the details:</p>
+
+  <div style="margin-bottom:24px;">
+    <h2 style="color:#1d4ed8;font-size:18px;font-weight:600;margin-bottom:8px;">📌 Meeting Details</h2>
+    <ul style="padding-left:20px;">
+      {"<li><strong>Summary:</strong> " + summary + "</li>" if summary else ""}
+      {"<li><strong>Date & Time:</strong> " + start_time + " to " + end_time + " (" + timezone + ")</li>" if start_time and end_time else ""}
+      <li><strong>Join Link:</strong> <a href="{hangout_link}" style="color:#2563eb;text-decoration:underline;">{hangout_link}</a></li>
+    </ul>
+  </div>
+
+  {"<div style='margin-bottom:24px;'><h2 style='color:#047857;font-size:18px;font-weight:600;margin-bottom:8px;'>🧾 Business Info</h2><ul style='padding-left:20px;'>" if business_name or line_of_business else ""}
+    {f"<li><strong>Business Name:</strong> {business_name}</li>" if business_name else ""}
+    {f"<li><strong>Line of Business:</strong> {line_of_business}</li>" if line_of_business else ""}
+  {"</ul></div>" if business_name or line_of_business else ""}
+
+  {"<div style='margin-bottom:24px;'><h2 style='color:#7c3aed;font-size:18px;font-weight:600;margin-bottom:8px;'>📍 Contact Info</h2><ul style='padding-left:20px;'>" if billing_address or business_email or website else ""}
+    {f"<li><strong>Billing Address:</strong> {billing_address}</li>" if billing_address else ""}
+    {f"<li><strong>Business Email:</strong> {business_email}</li>" if business_email else ""}
+    {f"<li><strong>Website:</strong> <a href='{website}' style='color:#2563eb;text-decoration:underline;'>{website}</a></li>" if website else ""}
+  {"</ul></div>" if billing_address or business_email or website else ""}
+
+  {f"<div style='margin-bottom:24px;'><h2 style='color:#be185d;font-size:18px;font-weight:600;margin-bottom:8px;'>🌐 Social Links</h2><p>{social_links}</p></div>" if social_links else ""}
+
+  <p style="margin-top:32px;font-size:14px;color:#6b7280;">Regards,<br><strong>Your Team</strong></p>
+</div>
+"""
