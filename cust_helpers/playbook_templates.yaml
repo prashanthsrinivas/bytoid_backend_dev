@@ -41,6 +41,10 @@ create_instruction: |
   - Cover **selection, preparation, action, monitoring, and iteration** phases where applicable.
   - For meeting scheduling, include calendar selection — either "Google Calendar" or "Microsoft Calendar" (only one).
   - All AI instructions must be accurate, role-specific, and customized per step.
+  - Classify steps using the correct `type`:
+    - Use `type: communication` for actions that involve user interaction or external communication (e.g., sending messages, creating/updating/deleting meetings or calendars).
+    - Use `type: self-learn` for AI-driven internal logic (e.g., checking availability, generating documents, preparing data).
+    - Use `type: navigation` when the step involves the user visiting or interacting with an external page, dashboard, or third-party tool. In this case, include `page_url`.
 
   ## ACTION STEP FALLBACK RULE:
   - Every action step (type = "communication" or "navigation") must have a fallback step.
@@ -74,7 +78,7 @@ create_instruction: |
       - Monitoring logic (if applicable)
       - Actions for each condition (if decision_point = true)
   - Optional:
-    - communication_mode: (if type = communication) One of ["Direct Message", "Scheduled", "Multichannel", "Automated message"]
+    - communication_mode: (if type = communication) Must be exactly one of ["Direct Message", "Scheduled", "Multichannel", "Automated message"]. Do not use abbreviations like "auto".
     - channels: List from:
         - ["LiveTalk", "Web Assistant", "Facebook", "Instagram", "WhatsApp", "Slack", "Microsoft Teams", "Gmail", "Outlook", "messages", "Zoho"]
     - page_url: Required if type = navigation

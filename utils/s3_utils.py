@@ -33,24 +33,26 @@ def list_all_files(folder=None):
 
 
 # Call the function
-def upload_any_file(file_path, user_id, type="workflow", file_name=None):
+def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_C=None):
     s3 = s3bucket()
 
     if not os.path.isfile(file_path):
         print(f"❌ File not found: {file_path}")
         return
+    if not s3_key_C:
+        # Use provided name or extract from file_path
+        final_name = os.path.basename(file_name) or os.path.basename(file_path)
 
-    # Use provided name or extract from file_path
-    final_name = os.path.basename(file_name) or os.path.basename(file_path)
-
-    if type == "workflow":
-        s3_key = f"{user_id}/workflow/{final_name}"
-    elif type == "yaml":
-        s3_key = f"{user_id}/yaml/{final_name}"
-    elif type == "user":
-        s3_key = f"{user_id}/media/{final_name}"
-    elif type == "messages":
-        s3_key = f"{user_id}/messages/{final_name}"
+        if type == "workflow":
+            s3_key = f"{user_id}/workflow/{final_name}"
+        elif type == "yaml":
+            s3_key = f"{user_id}/yaml/{final_name}"
+        elif type == "user":
+            s3_key = f"{user_id}/media/{final_name}"
+        elif type == "messages":
+            s3_key = f"{user_id}/messages/{final_name}"
+    else:
+        s3_key = s3_key_C
 
     try:
         s3.upload_file(file_path, S3_BUCKET, s3_key)
