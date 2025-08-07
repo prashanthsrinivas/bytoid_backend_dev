@@ -218,11 +218,43 @@ def zoho_callback():
 def get_zoho_account_id(access_token):
     mail_headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     mail_list_url = "https://mail.zoho.in/api/accounts"
-    accounts_response = requests.get(mail_list_url, headers=mail_headers)
-    accounts = accounts_response.json()
-    # print(f"accounts : {accounts}")
 
-    return accounts["data"][0]["accountId"]
+    try:
+        accounts_response = requests.get(mail_list_url, headers=mail_headers)
+        print(f"[DEBUG] Zoho account fetch → Status: {accounts_response.status_code}")
+        print(f"[DEBUG] Zoho account fetch → URL: {accounts_response.request.url}")
+        print(f"[DEBUG] Zoho account fetch → Headers: {accounts_response.request.headers}")
+
+        try:
+            accounts = accounts_response.json()
+            print(f"[DEBUG] Zoho account response JSON: {json.dumps(accounts, indent=2)}")
+        except Exception as parse_err:
+            print(f"[ERROR] Failed to parse Zoho account response JSON: {parse_err}")
+            print(f"[DEBUG] Raw response text: {accounts_response.text}")
+            return None
+
+        if "data" not in accounts:
+            print(f"[ERROR] No 'data' field in Zoho response")
+            return None
+
+        if not accounts["data"]:
+            print(f"[ERROR] Empty 'data' list returned from Zoho")
+            return None
+
+        account_id = accounts["data"][0].get("accountId")
+        if not account_id:
+            print(f"[ERROR] 'accountId' missing in first data item: {accounts['data'][0]}")
+            return None
+
+        print(f"[INFO] Successfully retrieved Zoho account_id: {account_id}")
+        return account_id
+
+    except Exception as e:
+        import traceback
+        print("❌ Exception in get_zoho_account_id:")
+        print(traceback.format_exc())
+        return None
+
 
 
 def refresh_zoho_token(refresh_token, client_id, client_secret):
@@ -438,7 +470,8 @@ def fetch_zoho_emails(user_id):
                                         "subject": "",
                                         "channel": "",
                                         "updated_date": "",
-                                        "subject":""
+                                        "subject":"",
+                                        "parsed_timestamp" : ""
                                     }
                                 ],
                             }
@@ -543,66 +576,156 @@ def fetch_zoho_emails(user_id):
 #             print(f"🔥 Error with {name}: {e}")
 
 @zoho_bp.route("/zoho/send_email")
-def send_zoho_email(
-    user_id, to_email, subject, body_text, from_user_email, conversation_id
-):
+def send_zoho_email(user_id, to_email, subject, body_text,from_user_email):
     try:
-
         conn = connect_to_rds()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))
-        row = cursor.fetchone()
+        # cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))
+        # row = cursor.fetchone()
 
-        if not row:
-            return jsonify({"error": "Access token not found for user"}), 404
+        # if not row:
+        #     return {"error": "Access token not found for user"}, 404
 
-        access_token = row[0]
-        print("access token inside sendzoho mail :", access_token)
+        # access_token = row[0]
+
+
+        print("searching in buisness_info table")
+        print(f"usr id is : {user_id}")
+        cursor.execute("SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,))
+        biz_row = cursor.fetchone()
+        if not biz_row:
+                    # return {"error": "User not found in users or business_info tables"}, 404
+            print("error : User not found in users or business_info tables")
+
+
+        user_email = biz_row[0]
+        print(f"buisness email is: {user_email}")
+
+                # Step 3: Get token info using BusinessEmail
+        cursor.execute("SELECT token FROM users WHERE email = %s", (user_email,))
+        token_row = cursor.fetchone()
+
+        if not token_row:
+            print("error : No token found for business email")
+                    # return {"error": "No token found for business email"}, 404
+
+        access_token = token_row[0]       
+        print("access token inside sendzoho mail:", access_token)
+
         account_id = get_zoho_account_id(access_token)
-        print(f"account_id inside zoho {account_id}")
+        print(f"account_id inside zoho: {account_id}")
+
         send_url = f"https://mail.zoho.in/api/accounts/{account_id}/messages"
         send_data = {
-            "fromAddress": from_user_email,
+            "fromAddress": user_email,
             "toAddress": to_email,
             "subject": subject,
             "content": body_text,
         }
-        print(f"send data for zoho:{send_data}")
+
         headers = {
             "Authorization": f"Zoho-oauthtoken {access_token}",
             "Content-Type": "application/json",
         }
+
         send_response = requests.post(send_url, headers=headers, json=send_data)
         print(f"status code: {send_response.status_code}")
         print(f"response text: {send_response.text}")
         print(f"request url: {send_response.request.url}")
         print(f"request body: {send_response.request.body}")
 
-        print(f"status code:{send_response.status_code}")
+       
+
         if send_response.status_code in [200, 201]:
             result = send_response.json()
             message_id = result.get("message", {}).get("messageId", str(uuid.uuid4()))
-            timestamp_dt = datetime.now(timezone.utc).isoformat()
-
-            direction = "outbound"
-            MESSAGES[message_id] = {
-                "id": message_id,
-                "from": from_user_email,
-                "to": to_email,
-                "body": body_text,
-                "subject": subject,
-                "timestamp": timestamp_dt,
+            return {
+                "message_id": message_id,
                 "status": "sent",
-                "source": "zoho",
-                "direction": direction,
-                "conversation_id": conversation_id,
-            }
-        print(f"messages send in zoho are:{MESSAGES}")
-        return send_response.status_code, send_response.text
+                "status_code": send_response.status_code
+            }, send_response.status_code
+
+        # Handle non-200 errors gracefully
+        try:
+            error_details = send_response.json()
+        except Exception:
+            error_details = {"raw_response": send_response.text}
+
+        return {
+            "error": "Failed to send email via Zoho",
+            "status_code": send_response.status_code,
+            "zoho_error": error_details
+        }, send_response.status_code
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        print("❌ Exception in send_zoho_email:")
+        print(traceback.format_exc())
+        return {"error": str(e)}, 500
+
+
+# @zoho_bp.route("/zoho/send_email")
+# def send_zoho_email(
+#     user_id, to_email, subject, body_text, from_user_email
+# ):
+#     try:
+
+#         conn = connect_to_rds()
+#         cursor = conn.cursor()
+
+#         cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))
+#         row = cursor.fetchone()
+
+#         if not row:
+#             return jsonify({"error": "Access token not found for user"}), 404
+
+#         access_token = row[0]
+#         print("access token inside sendzoho mail :", access_token)
+#         account_id = get_zoho_account_id(access_token)
+#         print(f"account_id inside zoho {account_id}")
+#         send_url = f"https://mail.zoho.in/api/accounts/{account_id}/messages"
+#         send_data = {
+#             "fromAddress": from_user_email,
+#             "toAddress": to_email,
+#             "subject": subject,
+#             "content": body_text,
+#         }
+#         print(f"send data for zoho:{send_data}")
+#         headers = {
+#             "Authorization": f"Zoho-oauthtoken {access_token}",
+#             "Content-Type": "application/json",
+#         }
+#         send_response = requests.post(send_url, headers=headers, json=send_data)
+#         print(f"status code: {send_response.status_code}")
+#         print(f"response text: {send_response.text}")
+#         print(f"request url: {send_response.request.url}")
+#         print(f"request body: {send_response.request.body}")
+
+#         print(f"status code:{send_response.status_code}")
+#         if send_response.status_code in [200, 201]:
+#             result = send_response.json()
+#             message_id = result.get("message", {}).get("messageId", str(uuid.uuid4()))
+#             timestamp_dt = datetime.now(timezone.utc).isoformat()
+
+#             direction = "outbound"
+#             # MESSAGES[message_id] = {
+#             #     "id": message_id,
+#             #     "from": from_user_email,
+#             #     "to": to_email,
+#             #     "body": body_text,
+#             #     "subject": subject,
+#             #     "timestamp": timestamp_dt,
+#             #     "status": "sent",
+#             #     "source": "zoho",
+#             #     "direction": direction,
+#             #     "conversation_id": conversation_id,
+#             # }
+#         # print(f"messages send in zoho are:{MESSAGES}")
+#         return send_response.status_code, send_response.text
+
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
 
 
 # @zoho_bp.route("/zoho/workdrive/root/<userId>", methods=["GET", "POST"])

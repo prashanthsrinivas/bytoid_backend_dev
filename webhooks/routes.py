@@ -1053,7 +1053,7 @@ def analyze_and_collect_messages(user_id):
 
             print(f"🔧 Generating subjects for channel: {channel}")
             print(f"existing_new_msg sent to ai: {existing_new_msg}")
-            subjects = generate_subject(user_id, output_path, existing_new_msg, channel)
+            subjects = generate_subject(user_id, output_path, channel)
 
             print(f"🧩 Appending subjects to messages for channel: {channel}")
             grouped_messages = append_subject_to_messages(grouped_messages,channel,subjects,user_id,existing_new_msg)
@@ -1074,7 +1074,7 @@ def analyze_and_collect_messages(user_id):
             
 
 @twilio_bp.route("/subject_summarisations/<user_id>", methods=["POST"])
-def generate_subject(user_id, output_path,existing_new_msg,channel):
+def generate_subject(user_id, output_path,channel):
     try:
         if not user_id or not output_path:
             print("❌ Missing user_id or filename")
@@ -1241,6 +1241,15 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                 for conv in config_data.get("conversations", []):
                                     if conv.get("ticket_id") == t_id:
                                         conv["updated_date"] = updated_date
+
+                                        try:
+                                            if updated_date.endswith('Z'):
+                                                parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
+                                            else:
+                                                parsed_ts = datetime.fromisoformat(updated_date)
+                                            conv["parsed_timestamp"] = parsed_ts.isoformat()
+                                        except Exception as e:
+                                            print(f"[WARN] Could not parse updated_date '{updated_date}': {e}")
                                         break
                                 grouped_messages[client_id][channel] = messages
                                 update_or_create_conversation_file(grouped_messages, user_id, client_id, channel)
@@ -1285,6 +1294,16 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                     for conv in config_data.get("conversations", []):
                                         if conv.get("ticket_id") == t_id:
                                             conv["updated_date"] = updated_date
+
+                                            try:
+                                                if updated_date.endswith('Z'):
+                                                    parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
+                                                else:
+                                                    parsed_ts = datetime.fromisoformat(updated_date)
+                                                conv["parsed_timestamp"] = parsed_ts.isoformat()
+                                            except Exception as e:
+                                                print(f"[WARN] Could not parse updated_date '{updated_date}': {e}")
+                                        
                                             break
                                         
                                     grouped_messages[client_id][channel] = messages
@@ -1365,13 +1384,21 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
 
 
                             # Update config immediately
+                            try:
+                                if updated_date.endswith('Z'):
+                                    parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
+                                else:
+                                    parsed_ts = datetime.fromisoformat(updated_date)
+                            except Exception as e:
+                                            print(f"[WARN] Could not parse updated_date '{updated_date}': {e}")
                             updated_entry = {
                                 "conv_id": new_conversation_id,
                                 "ticket_id": new_ticket_id,
                                 "ticket_name": ticket_name,
                                 "subject": subject_map.get(str(msg_id)),
                                 "channel": channel,
-                                "updated_date": updated_date
+                                "updated_date": updated_date,
+                                "parsed_timestamp": parsed_ts.isoformat()
                             }
                             config_data.setdefault("userclients_id", client_id)
                             config_data.setdefault("conversations", []).append(updated_entry)
@@ -1682,37 +1709,34 @@ def update_or_create_conversation_file(grouped_messages, user_id, client_id, cha
 
 def get_latest_convo_info(config):
     """
-    Get the latest conversation from a config file based on updated_date
-    This function is now adapted for the new config structure
+    Get the latest conversation from a config file based on parsed_timestamp
     """
     print("[DEBUG] Entered get_latest_convo_info()")
 
     if not config or "conversations" not in config:
-        print("[DEBUG] Missing config or input_data key")
+        print("[DEBUG] Missing config or conversations key")
         return None
-    
+
     config_data = config.get("conversations", [])
     print(f"[DEBUG] Found {len(config_data)} config_data in input_data")
+    client_id=config.get("userclients_id", [])
 
     if not config_data:
         print("[DEBUG] input_data is empty")
         return None
-    
+
     conversations = {}
 
     for msg in config_data:
         conv_id = msg.get("conv_id")
-        timestamp_str = msg.get("updated_date")
+        ts_str = msg.get("parsed_timestamp")
 
-        if not conv_id or not timestamp_str:
-            print(f"[DEBUG] Skipping message due to missing conv_id or timestamp")
+        if not conv_id or not ts_str:
+            print(f"[DEBUG] Skipping message due to missing conv_id or parsed_timestamp")
             continue
-            
+
         try:
-            if timestamp_str.endswith('Z'):
-                msg_ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            else:
-                msg_ts = datetime.fromisoformat(timestamp_str)
+            msg_ts = datetime.fromisoformat(ts_str)
 
             if conv_id not in conversations or msg_ts > conversations[conv_id]["parsed_timestamp"]:
                 conversations[conv_id] = {
@@ -1721,23 +1745,24 @@ def get_latest_convo_info(config):
                 }
                 print(f"[DEBUG] Updated latest timestamp for conv_id={conv_id} → {msg_ts.isoformat()}")
         except Exception as e:
-            print(f"[WARN] Failed to parse timestamp '{timestamp_str}': {e}")
+            print(f"[WARN] Failed to parse parsed_timestamp '{ts_str}': {e}")
             continue
-    
+
     if not conversations:
         print("[DEBUG] No valid conversations found after grouping")
         return None
-    
+
     latest_conv = max(conversations.values(), key=lambda x: x["parsed_timestamp"])
     latest_msg = latest_conv["message"]
 
     print(f"[DEBUG] Selected latest conversation → conv_id={latest_msg.get('conv_id')} at {latest_conv['parsed_timestamp'].isoformat()}")
-    
+
     return {
         "updated_date": latest_conv["parsed_timestamp"].isoformat(),
         "conv_id": latest_msg.get("conv_id"),
-        "client_id": latest_msg.get("user_id"),
+        "client_id": client_id,  
     }
+
 
 def extract_unique_client_folders(file_list, base_prefix):
     client_folders = set()
@@ -1851,7 +1876,7 @@ def get_latest_conversations(user_id):
                             }
                             
                             disp_messages.append(disp_message)
-                            print(f"  [SUCCESS] Added display message for conversation {conv_id}")
+                            # print(f"  [SUCCESS] Added display message for conversation {conv_id} : {disp_message}")
                     
                 except Exception as e:
                     print(f"  [WARN] Failed to read conversation {conv_id}: {e}")
@@ -1866,156 +1891,260 @@ def get_latest_conversations(user_id):
 
     
     print(f"\n[SUMMARY] Found {len(disp_messages)} latest conversations across all clients")
-    print(f"latest message to be displayed is: {disp_messages}")
+    # print(f"latest message to be displayed is: {disp_messages}")
     
     return disp_messages
 
 
+def get_conv_order(config):
+    """
+    Return sorted list of conv_ids based on parsed_timestamp
+    """
+    print("[DEBUG] Entered get_conv_order()")
 
-# # Example usage function to demonstrate the output
-# def display_latest_conversations(user_id):
-#     """
-#     Display the latest conversations in a readable format
-#     """
-#     latest_convos = get_latest_conversations(user_id)
-    
-#     if not latest_convos:
-#         print("No conversations found.")
-#         return
-    
-#     print(f"\n{'='*80}")
-#     print(f"LATEST CONVERSATIONS FOR USER: {user_id}")
-#     print(f"{'='*80}")
-    
-#     for i, convo in enumerate(latest_convos, 1):
-#         print(f"\n{i}. CLIENT: {convo['client_id']}")
-#         print(f"   Conversation ID: {convo['conv_id']}")
-#         print(f"   Ticket ID: {convo.get('ticket_id', 'N/A')}")
-#         print(f"   Subject: {convo.get('subject', 'N/A')}")
-#         print(f"   Channel: {convo.get('channel', 'N/A')}")
-#         print(f"   Last Updated: {convo['updated_date']}")
-#         print(f"   {'-'*60}")
-    
-#     return latest_convos
+    if not config or "conversations" not in config:
+        print("[DEBUG] Missing config or conversations key")
+        return None
+
+    config_data = config.get("conversations", [])
+    print(f"[DEBUG] Found {len(config_data)} config_data in input_data")
+
+    if not config_data:
+        print("[DEBUG] input_data is empty")
+        return None
+
+    conversations = []
+
+    for msg in config_data:
+        conv_id = msg.get("conv_id")
+        ts_str = msg.get("parsed_timestamp")
+
+        if not conv_id or not ts_str:
+            print(f"[DEBUG] Skipping message due to missing conv_id or parsed_timestamp")
+            continue
+
+        try:
+            msg_ts = datetime.fromisoformat(ts_str)
+            conversations.append((conv_id, msg_ts))
+            print(f"[DEBUG] Added conv_id={conv_id} with timestamp={msg_ts.isoformat()}")
+        except Exception as e:
+            print(f"[WARN] Failed to parse parsed_timestamp '{ts_str}': {e}")
+            continue
+
+    if not conversations:
+        print("[DEBUG] No valid conversations found after timestamp parsing")
+        return None
+
+    sorted_convos = sorted(conversations, key=lambda x: x[1], reverse=True)
+    sorted_ids = [conv_id for conv_id, _ in sorted_convos]
+
+    print(f"[DEBUG] Final sorted conv_ids: {sorted_ids}")
+    return sorted_ids
+
+
+    # latest_conv = max(conversations.values(), key=lambda x: x["parsed_timestamp"])
+    # latest_msg = latest_conv["message"]
+
+    # print(f"[DEBUG] Selected latest conversation → conv_id={latest_msg.get('conv_id')} at {latest_conv['parsed_timestamp'].isoformat()}")
+
+    # return {
+    #     "updated_date": latest_conv["parsed_timestamp"].isoformat(),
+    #     "conv_id": latest_msg.get("conv_id"),
+    #     "client_id": client_id,  
+    # }
+
 
 @twilio_bp.route("/conversations/<conversation_id>/<user_id>", methods=["GET"])
-def get_conversation(conversation_id, user_id):
-    print(f"[INFO] → Entered /conversations/{conversation_id}")
+def get_selected_conv(conversation_id, user_id):
+    print(f"[DEBUG] Entered get_selected_conv() for a : {conversation_id}, b :{user_id}")
 
-    grouped = build_grouped(user_id=user_id)
-    grouped_by_conv_id = defaultdict(list)
+    try:
+        connection = connect_to_rds()
+        if connection is None:
+            print("⚠️ DB connection failed inside get_selected_conv()")
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = connection.cursor()
 
-    print(f"[DEBUG] → Keys in grouped: {list(grouped.keys())}")
-    seen_msg_ids = set()
-
-    for contact_id, msg_dict in grouped.items():
-        for m in msg_dict.values():
-            msg_id = m.get("id")
-            if not msg_id or msg_id in seen_msg_ids:
-                continue
-            seen_msg_ids.add(msg_id)
-
-            conv_id = m.get("conversation_id")
-            if conv_id:
-                grouped_by_conv_id[conv_id].append(m)
-
-    print(
-        f"[DEBUG] → Grouped by conversation ID keys: {list(grouped_by_conv_id.keys())}"
-    )
-
-    # ✅ Step 1: Lookup contact from CONTACTS
-    user_contacts = CONTACTS.get(user_id, {})
-    contact = None
-    for cid, c in user_contacts.items():
-        all_channels = list(c.get("channels", {}).values())
-        if conversation_id == cid or conversation_id in all_channels:
-            contact = c
-            conversation_id = cid  # normalize the ID
-            break
-
-    # Optional fallback using IDENTITY_MAP (if you still keep that structure)
-    if not contact:
-        contact = IDENTITY_MAP.get(user_id, {}).get(conversation_id)
-
-    new_name = contact["name"] if contact else "Unknown"
-
-    if contact:
-        identities = set(contact.get("channels", {}).values())
-        identities.add(conversation_id)
-        print(f"[DEBUG] → Found contact: {contact}")
-    else:
-        identities = {conversation_id}
-        print(f"[WARN] → No contact found for id: {conversation_id}")
-
-    print(f"[DEBUG] → Resolved identities: {identities}")
-
-    selected_threads = []
-    now = datetime.now(timezone.utc)
-
-    for conv_id, msgs in grouped_by_conv_id.items():
-        _, parsed_email = parseaddr(conv_id)
-        print(f"[LOOP] → Checking conv_id={conv_id}, parsed_email={parsed_email}")
-
-        if conv_id in identities or parsed_email in identities:
-            print(f"[MATCH] → conv_id matched identities → {conv_id}")
-            msgs.sort(key=lambda m: m["timestamp"])
-            last = msgs[-1]
-
-            name = new_name
-
-            subject = last.get("subject")
-            from_raw = last.get("from_email") or last.get("from") or ""
-            _, raw_email = parseaddr(from_raw)
-            from_addr = raw_email or from_raw
-            channel = last.get("source")
-
-            print(
-                f"[INFO] → Thread Info — name: {name}, id: {conv_id}, channel: {channel}"
+        try:
+            cursor.execute(
+                "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
+                (conversation_id,)
             )
+            client_id_row = cursor.fetchone()
+            if client_id_row is None:
+                print(f"⚠️ No sender_id found for conversation_id {conversation_id}")
+                return jsonify({"error": "Conversation not found"}), 404
+            client_id = client_id_row[0]
+        except Exception as e:
+            print(f"❌ Error executing sender_id query: {e}")
+            return jsonify({"error": "Failed to retrieve client_id"}), 500
 
-            thread = {
-                "id": conv_id,
-                "name": name,
-                "channel": channel,
-                "from_addr": from_addr,
-                "messages": [],
-                "subject": subject,
-            }
+        config_path = f"{user_id}/messages/{client_id}/config.json"
+        try:
+            config = read_json_from_s3(config_path)
+            print("[DEBUG] Successfully read config")
+        except Exception as e:
+            print(f"❌ Failed to read config from S3: {config_path} — {e}")
+            return jsonify({"error": "Failed to load config"}), 500
 
-            for m in msgs:
-                msg_time = datetime.fromisoformat(m["timestamp"].replace("Z", "+00:00"))
-                delta = now - msg_time
-                relative_time = humanize.naturaltime(delta)
+        try:
+            recent_msg = get_conv_order(config)
+            print(f"[DEBUG] Extracted {len(recent_msg)} ordered conversation IDs : recent_msg")
+        except Exception as e:
+            print(f"❌ Failed to get conversation order from config: {e}")
+            return jsonify({"error": "Invalid config format"}), 500
 
-                thread["messages"].append(
-                    {
-                        "id": m["id"],
-                        "subject": m["subject"],
-                        "text": m["body"],
-                        "senderName": (
-                            new_name if m["direction"] == "inbound" else "You"
-                        ),
-                        "timestamp": relative_time,
-                        "isoTimestamp": m["timestamp"],
-                        "channel": m["source"],
-                    }
-                )
+        messages = []
+        for conv in recent_msg:
+            try:
+                convo_path = f"{user_id}/messages/{client_id}/{conv}.json"
+                print(f"[DEBUG] Loading full conversation from path: {convo_path}")
+                convo_data = read_json_from_s3(convo_path)
+                print("[DEBUG] Successfully read full conversation")
+                convo_messages = convo_data.get("input_data", [])
+                print(f"[DEBUG] Found {len(convo_messages)} messages in conversation file")
 
-            selected_threads.append(thread)
-            print(
-                f"[INFO] → Thread created for ID: {conv_id} with {len(thread['messages'])} messages"
-            )
+                # messages.extend(convo_messages)
+                channel = convo_messages[0].get("source") if convo_messages else "unknown"
+                messages.append({
+                    "id": conv,
+                    "channel": channel,
+                    "messages": convo_messages
+                })
 
-    selected_threads.sort(
-        key=lambda t: max(
-            datetime.fromisoformat(m["isoTimestamp"].replace("Z", "+00:00"))
-            for m in t["messages"]
-        ),
-        reverse=True,
-    )
+            except Exception as e:
+                print(f"❌ Failed to read or parse {convo_path}: {e}")
+                continue  # Skip to next conversation
+        print(f"********messages are: {messages}")
+        return jsonify(messages)
 
-    print(f"[DONE] → Returning {len(selected_threads)} threads")
-    return jsonify(selected_threads)
+    except Exception as e:
+        print(f"❌ Unexpected error in get_selected_conv(): {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+    
+
+
+
+# @twilio_bp.route("/conversations/<conversation_id>/<user_id>", methods=["GET"])
+# def get_conversation(conversation_id, user_id):
+#     print(f"[INFO] → Entered /conversations/{conversation_id}")
+
+#     grouped = build_grouped(user_id=user_id)
+#     grouped_by_conv_id = defaultdict(list)
+
+#     print(f"[DEBUG] → Keys in grouped: {list(grouped.keys())}")
+#     seen_msg_ids = set()
+
+#     for contact_id, msg_dict in grouped.items():
+#         for m in msg_dict.values():
+#             msg_id = m.get("id")
+#             if not msg_id or msg_id in seen_msg_ids:
+#                 continue
+#             seen_msg_ids.add(msg_id)
+
+#             conv_id = m.get("conversation_id")
+#             if conv_id:
+#                 grouped_by_conv_id[conv_id].append(m)
+
+#     print(
+#         f"[DEBUG] → Grouped by conversation ID keys: {list(grouped_by_conv_id.keys())}"
+#     )
+
+#     # ✅ Step 1: Lookup contact from CONTACTS
+#     user_contacts = CONTACTS.get(user_id, {})
+#     contact = None
+#     for cid, c in user_contacts.items():
+#         all_channels = list(c.get("channels", {}).values())
+#         if conversation_id == cid or conversation_id in all_channels:
+#             contact = c
+#             conversation_id = cid  # normalize the ID
+#             break
+
+#     # Optional fallback using IDENTITY_MAP (if you still keep that structure)
+#     if not contact:
+#         contact = IDENTITY_MAP.get(user_id, {}).get(conversation_id)
+
+#     new_name = contact["name"] if contact else "Unknown"
+
+#     if contact:
+#         identities = set(contact.get("channels", {}).values())
+#         identities.add(conversation_id)
+#         print(f"[DEBUG] → Found contact: {contact}")
+#     else:
+#         identities = {conversation_id}
+#         print(f"[WARN] → No contact found for id: {conversation_id}")
+
+#     print(f"[DEBUG] → Resolved identities: {identities}")
+
+#     selected_threads = []
+#     now = datetime.now(timezone.utc)
+
+#     for conv_id, msgs in grouped_by_conv_id.items():
+#         _, parsed_email = parseaddr(conv_id)
+#         print(f"[LOOP] → Checking conv_id={conv_id}, parsed_email={parsed_email}")
+
+#         if conv_id in identities or parsed_email in identities:
+#             print(f"[MATCH] → conv_id matched identities → {conv_id}")
+#             msgs.sort(key=lambda m: m["timestamp"])
+#             last = msgs[-1]
+
+#             name = new_name
+
+#             subject = last.get("subject")
+#             from_raw = last.get("from_email") or last.get("from") or ""
+#             _, raw_email = parseaddr(from_raw)
+#             from_addr = raw_email or from_raw
+#             channel = last.get("source")
+
+#             print(
+#                 f"[INFO] → Thread Info — name: {name}, id: {conv_id}, channel: {channel}"
+#             )
+
+#             thread = {
+#                 "id": conv_id,
+#                 "name": name,
+#                 "channel": channel,
+#                 "from_addr": from_addr,
+#                 "messages": [],
+#                 "subject": subject,
+#             }
+
+#             for m in msgs:
+#                 msg_time = datetime.fromisoformat(m["timestamp"].replace("Z", "+00:00"))
+#                 delta = now - msg_time
+#                 relative_time = humanize.naturaltime(delta)
+
+#                 thread["messages"].append(
+#                     {
+#                         "id": m["id"],
+#                         "subject": m["subject"],
+#                         "text": m["body"],
+#                         "senderName": (
+#                             new_name if m["direction"] == "inbound" else "You"
+#                         ),
+#                         "timestamp": relative_time,
+#                         "isoTimestamp": m["timestamp"],
+#                         "channel": m["source"],
+#                     }
+#                 )
+
+#             selected_threads.append(thread)
+#             print(
+#                 f"[INFO] → Thread created for ID: {conv_id} with {len(thread['messages'])} messages"
+#             )
+
+#     selected_threads.sort(
+#         key=lambda t: max(
+#             datetime.fromisoformat(m["isoTimestamp"].replace("Z", "+00:00"))
+#             for m in t["messages"]
+#         ),
+#         reverse=True,
+#     )
+
+#     print(f"[DONE] → Returning {len(selected_threads)} threads")
+#     return jsonify(selected_threads)
 
 
 @twilio_bp.route("/start-conversation", methods=["POST"])
@@ -2104,293 +2233,775 @@ def start_conversation():
         return jsonify({"error": str(e)}), 500
 
 
+# @twilio_bp.route("/send-reply", methods=["POST"])
+# def send_reply():
+#     print("[INFO] → Received request to send reply")
+#     data = request.json
+#     print(f"[DEBUG] → Payload: {data}")
+
+#     user_id = data.get("user_id")
+#     # user_id='60044116526.100657136'
+#     channel = data.get("channel")
+#     text = data.get("text")
+#     conversation_id = data.get("conversation_id")
+#     contact_id = data.get("contact_id")
+#     print(f"user id is:{user_id}")
+#     # contact = ensure_contact_loaded(contact_id)
+#     # ensure_contact_loaded("You")
+
+#     contact = ensure_contact_loaded(user_id, contact_id, direction="outbound")
+#     ensure_contact_loaded(user_id, user_id, direction="outbound")
+#     if not conversation_id:
+
+#         print(f"contact found is:{contact}")
+#         if contact:
+#             if channel in ["gmail", "outlook", "zoho"]:
+#                 conversation_id = contact["channels"].get("email")
+#             # elif channel == "zoho":
+#             #     conversation_id = contact["channels"].get("zoho")
+#             elif channel == "whatsapp":
+#                 conversation_id = contact["channels"].get("whatsapp")
+#             elif channel == "messages":
+#                 conversation_id = contact["channels"].get("messages")
+#             elif channel == "slack":
+#                 conversation_id = contact["channels"].get("slack")
+#             elif channel == "slackworkspace":
+#                 conversation_id = contact["channels"].get("slackworkspace")
+
+#         # fallback if still none
+#         # if not conversation_id:
+#         #     conversation_id = f"new:{channel}:{contact_id}"
+
+#     print(f"[INFO] → Generated conversation_id: {conversation_id}")
+#     print(
+#         f"[DEBUG] → user_id: {user_id}, channel: {channel}, text: {text}, conversation_id: {conversation_id}"
+#     )
+
+#     if not channel or not text or not conversation_id:
+#         print("[ERROR] → Missing required fields")
+#         return jsonify({"error": "Missing required fields"}), 400
+
+#     grouped = build_grouped(user_id=user_id)
+
+#     msg_dict = grouped.get(conversation_id)
+
+#     # fallback: loop through keys to find matching identity
+#     if not msg_dict:
+#         print(
+#             "[WARN] → conversation_id not found directly in grouped keys, checking inside identities"
+#         )
+#         for cid, messages in grouped.items():
+#             for m in messages.values():
+#                 identities = {
+#                     m.get("conversation_id"),
+#                     m.get("from"),
+#                     m.get("to"),
+#                     m.get("from_email"),
+#                     m.get("to_email"),
+#                 }
+#                 if conversation_id in identities:
+#                     print(
+#                         f"[MATCH] → Found fallback match for conversation_id '{conversation_id}' in contact '{cid}'"
+#                     )
+#                     msg_dict = messages
+#                     break
+#             if msg_dict:
+#                 break
+
+#     if not msg_dict:
+#         print(
+#             f"[ERROR] → No messages found for conversation_id or fallback: {conversation_id}"
+#         )
+#         msg_dict = {}
+
+#     relevant_messages = list(msg_dict.values())
+
+#     print(
+#         f"[DEBUG] → Found {len(relevant_messages)} messages for conversation_id: {conversation_id}"
+#     )
+
+#     messages_for_channel = [m for m in relevant_messages if m["source"] == channel]
+#     original_message = (
+#         sorted(messages_for_channel, key=lambda m: m["timestamp"], reverse=True)[0]
+#         if messages_for_channel
+#         else None
+#     )
+
+#     if original_message:
+#         print(f"[DEBUG] → Selected original message: {original_message}")
+#     else:
+#         print(
+#             "[WARN] → No previous message found for this channel; will construct fresh reply"
+#         )
+#     print(f"user_id before calling contacts.get :{user_id}")
+#     my_contact = ensure_contact_loaded(user_id, user_id, direction="outbound")
+#     print(f"my_contact is:{my_contact}")
+#     from_user_email = None
+
+#     if my_contact:
+#         if channel in ["gmail", "outlook", "zoho"]:
+#             from_user_email = my_contact["channels"].get("email")
+#         elif channel == "whatsapp" and from_user_email:
+#             from_user_email = my_contact["channels"].get(channel)
+#             from_user_email = f"whatsapp:{from_user_email}"
+#         else:
+#             from_user_email = my_contact["channels"].get(channel)
+
+#         print(f"[DEBUG] → From user email: {from_user_email} for channel {channel}")
+
+#     if not from_user_email:
+#         print("[WARN] → No from_user_email found for this channel")
+
+#     contact = ensure_contact_loaded(user_id, contact_id, direction="outbound")
+#     print(f"***contact is {contact}")
+
+#     recipient_email = None
+#     recipient_phone = None
+#     slack_channel_id = None
+
+#     if contact:
+#         if channel in ["gmail", "outlook", "zoho"]:
+#             recipient_email = contact["channels"].get("email")
+#             print(f"[DEBUG] → Recipient email: {recipient_email}")
+#         # elif channel == "zoho":
+#         #     recipient_email = contact["channels"].get("zoho")
+#         elif channel == "whatsapp":
+#             whatsapp_value = contact["channels"].get("whatsapp")
+#             recipient_phone = f"whatsapp:{whatsapp_value}" if whatsapp_value else None
+#             print(f"[DEBUG] → Recipient phone: {recipient_phone}")
+#         elif channel == "messages":
+#             recipient_phone = contact["channels"].get("messages")
+#             print(f"[DEBUG] → Recipient phone: {recipient_phone}")
+#         elif channel == "slackworkspace":
+#             slack_channel_id = contact["channels"].get("slackworkspace")
+#             print(f"[DEBUG] → Slack workspace: {slack_channel_id}")
+#         elif channel == "slack":
+#             slack_channel_id = contact["channels"].get("slack")
+#             print(f"[DEBUG] → Slack DM: {slack_channel_id}")
+
+#     if not recipient_email and original_message:
+#         recipient_email = (
+#             original_message.get("from_email") or original_message.get("from")
+#             if original_message.get("direction") == "inbound"
+#             else original_message.get("to_email") or original_message.get("to")
+#         )
+
+#     if not recipient_phone and original_message:
+#         recipient_phone = (
+#             original_message.get("from")
+#             if original_message.get("direction") == "inbound"
+#             else original_message.get("to")
+#         )
+
+#     if not slack_channel_id and original_message:
+#         slack_channel_id = original_message.get("to")
+
+#     # Determine correct conversation ID reuse logic
+#     conv_id = None
+#     for msg in relevant_messages:
+#         if msg["source"] == channel:
+#             conv_id = msg.get("conversation_id") or msg.get("id")
+#             print(
+#                 f"[INFO] → Reusing existing conversation_id: {conv_id} for channel: {channel}"
+#             )
+#             break
+
+#     if not conv_id:
+#         if channel in ["whatsapp", "messages"]:
+#             conv_id = recipient_phone or f"new:{channel}:{conversation_id}"
+#         elif channel in ["gmail", "outlook", "zoho"]:
+#             conv_id = recipient_email or f"new:{channel}:{conversation_id}"
+#         elif channel in ["slack", "slackworkspace"]:
+#             conv_id = slack_channel_id or f"new:{channel}:{conversation_id}"
+#         else:
+#             conv_id = f"new:{channel}:{conversation_id}"
+#         print(f"[INFO] → Created new conversation_id: {conv_id}")
+
+#     try:
+#         if channel == "whatsapp":
+#             print(f"[INFO] → Sending WhatsApp to {recipient_phone} | body: {text}")
+#             sid = send_whatsapp(
+#                 from_number=from_user_email,
+#                 to_number=recipient_phone,
+#                 body=text,
+#                 conversation_id=conv_id,
+#                 subject="Reply",
+#             )
+#             return jsonify({"status": "sent", "sid": sid, "channel": "whatsapp"})
+
+#         elif channel == "messages":
+#             print(f"[INFO] → Sending SMS to {recipient_phone} | body: {text}")
+#             sid = send_sms(
+#                 from_number=from_user_email,
+#                 to_number=recipient_phone,
+#                 body=text,
+#                 conversation_id=conv_id,
+#                 subject="Reply",
+#             )
+#             return jsonify({"status": "sent", "sid": sid, "channel": "messages"})
+
+#         elif channel == "gmail":
+#             print(f"[INFO] → Sending Gmail to {recipient_email}")
+
+#             if user_id:
+#                 if original_message and original_message["source"] == "gmail":
+#                     to_address = (
+#                         recipient_email
+#                         if original_message.get("from") == from_user_email
+#                         else original_message.get("from")
+#                     )
+#                     sent = gmail_reply(
+#                         user_id,
+#                         conv_id,
+#                         to=to_address,
+#                         subject=original_message.get("subject", "No subject"),
+#                         thread_id=original_message.get("thread_id"),
+#                         in_reply_to=original_message.get("message_id"),
+#                         body_text=text,
+#                     )
+#                 else:
+
+#                     sent = send_mail(
+#                         user_id,
+#                         conv_id,
+#                         to=recipient_email,
+#                         subject="Reply",
+#                         body_text=text,
+#                     )
+#                 sent_id = sent[0] if isinstance(sent, tuple) else sent.get("id")
+#                 return jsonify({"status": "sent", "id": sent_id, "channel": "gmail"})
+#             else:
+#                 print("[WARN] → Missing user_id for Gmail send")
+
+#         elif channel == "zoho":
+#             print(f"usr_id :{user_id}")
+#             print(f"[INFO] → Sending zoho email to {recipient_email}")
+#             sent = send_zoho_email(
+#                 user_id=user_id,
+#                 to_email=recipient_email,
+#                 subject="Reply",
+#                 body_text=text,
+#                 from_user_email=from_user_email,
+#                 conversation_id=conv_id,
+#             )
+#             if not sent:
+#                 return jsonify({"error": "Zoho send failed, no response"}), 500
+#             sent_id = sent[0] if isinstance(sent, tuple) else sent.get("id")
+#             return jsonify({"status": "sent", "id": sent_id, "channel": "zoho"})
+
+#         elif channel == "outlook":
+#             print(f"[INFO] → Sending Outlook email to {recipient_email}")
+#             sent = send_outlook_email(
+#                 to_email=recipient_email,
+#                 subject="Reply",
+#                 body_text=text,
+#                 from_user_email=from_user_email,
+#                 conversation_id=conv_id,
+#             )
+#             if not sent:
+#                 return jsonify({"error": "Outlook send failed, no response"}), 500
+#             sent_id = sent[0] if isinstance(sent, tuple) else sent.get("id")
+#             return jsonify({"status": "sent", "id": sent_id, "channel": "outlook"})
+
+#         elif channel == "slack":
+#             sender_name = (
+#                 original_message.get("sender_name") if original_message else "MyAppBot"
+#             )
+#             send_slack_message(
+#                 channel_id=slack_channel_id,
+#                 text=text,
+#                 subject="Reply",
+#                 sender_name=sender_name,
+#             )
+#             return jsonify({"status": "sent", "channel": "slack"})
+
+#         else:
+#             print(f"[ERROR] → Unsupported channel: {channel}")
+#             return jsonify({"error": "Unsupported channel"}), 400
+
+#     except Exception as e:
+#         tb = traceback.format_exc()
+#         print(f"[EXCEPTION] → {tb}")
+#         return jsonify({"error": str(e), "traceback": tb}), 500
+
+
+def match_email_to_channel(email, channel):
+    """Returns True if the email matches the given channel."""
+    if not email or "@" not in email:
+        return False
+    domain = email.lower().split("@")[1]
+    return channel.lower() in domain
+
 @twilio_bp.route("/send-reply", methods=["POST"])
-def send_reply():
+def send_messages():
     print("[INFO] → Received request to send reply")
-    data = request.json
-    print(f"[DEBUG] → Payload: {data}")
-
-    user_id = data.get("user_id")
-    # user_id='60044116526.100657136'
-    channel = data.get("channel")
-    text = data.get("text")
-    conversation_id = data.get("conversation_id")
-    contact_id = data.get("contact_id")
-    print(f"user id is:{user_id}")
-    # contact = ensure_contact_loaded(contact_id)
-    # ensure_contact_loaded("You")
-
-    contact = ensure_contact_loaded(user_id, contact_id, direction="outbound")
-    ensure_contact_loaded(user_id, user_id, direction="outbound")
-    if not conversation_id:
-
-        print(f"contact found is:{contact}")
-        if contact:
-            if channel in ["gmail", "outlook", "zoho"]:
-                conversation_id = contact["channels"].get("email")
-            # elif channel == "zoho":
-            #     conversation_id = contact["channels"].get("zoho")
-            elif channel == "whatsapp":
-                conversation_id = contact["channels"].get("whatsapp")
-            elif channel == "messages":
-                conversation_id = contact["channels"].get("messages")
-            elif channel == "slack":
-                conversation_id = contact["channels"].get("slack")
-            elif channel == "slackworkspace":
-                conversation_id = contact["channels"].get("slackworkspace")
-
-        # fallback if still none
-        # if not conversation_id:
-        #     conversation_id = f"new:{channel}:{contact_id}"
-
-    print(f"[INFO] → Generated conversation_id: {conversation_id}")
-    print(
-        f"[DEBUG] → user_id: {user_id}, channel: {channel}, text: {text}, conversation_id: {conversation_id}"
-    )
-
-    if not channel or not text or not conversation_id:
-        print("[ERROR] → Missing required fields")
-        return jsonify({"error": "Missing required fields"}), 400
-
-    grouped = build_grouped(user_id=user_id)
-
-    msg_dict = grouped.get(conversation_id)
-
-    # fallback: loop through keys to find matching identity
-    if not msg_dict:
-        print(
-            "[WARN] → conversation_id not found directly in grouped keys, checking inside identities"
-        )
-        for cid, messages in grouped.items():
-            for m in messages.values():
-                identities = {
-                    m.get("conversation_id"),
-                    m.get("from"),
-                    m.get("to"),
-                    m.get("from_email"),
-                    m.get("to_email"),
-                }
-                if conversation_id in identities:
-                    print(
-                        f"[MATCH] → Found fallback match for conversation_id '{conversation_id}' in contact '{cid}'"
-                    )
-                    msg_dict = messages
-                    break
-            if msg_dict:
-                break
-
-    if not msg_dict:
-        print(
-            f"[ERROR] → No messages found for conversation_id or fallback: {conversation_id}"
-        )
-        msg_dict = {}
-
-    relevant_messages = list(msg_dict.values())
-
-    print(
-        f"[DEBUG] → Found {len(relevant_messages)} messages for conversation_id: {conversation_id}"
-    )
-
-    messages_for_channel = [m for m in relevant_messages if m["source"] == channel]
-    original_message = (
-        sorted(messages_for_channel, key=lambda m: m["timestamp"], reverse=True)[0]
-        if messages_for_channel
-        else None
-    )
-
-    if original_message:
-        print(f"[DEBUG] → Selected original message: {original_message}")
-    else:
-        print(
-            "[WARN] → No previous message found for this channel; will construct fresh reply"
-        )
-    print(f"user_id before calling contacts.get :{user_id}")
-    my_contact = ensure_contact_loaded(user_id, user_id, direction="outbound")
-    print(f"my_contact is:{my_contact}")
-    from_user_email = None
-
-    if my_contact:
-        if channel in ["gmail", "outlook", "zoho"]:
-            from_user_email = my_contact["channels"].get("email")
-        elif channel == "whatsapp" and from_user_email:
-            from_user_email = my_contact["channels"].get(channel)
-            from_user_email = f"whatsapp:{from_user_email}"
-        else:
-            from_user_email = my_contact["channels"].get(channel)
-
-        print(f"[DEBUG] → From user email: {from_user_email} for channel {channel}")
-
-    if not from_user_email:
-        print("[WARN] → No from_user_email found for this channel")
-
-    contact = ensure_contact_loaded(user_id, contact_id, direction="outbound")
-    print(f"***contact is {contact}")
-
-    recipient_email = None
-    recipient_phone = None
-    slack_channel_id = None
-
-    if contact:
-        if channel in ["gmail", "outlook", "zoho"]:
-            recipient_email = contact["channels"].get("email")
-            print(f"[DEBUG] → Recipient email: {recipient_email}")
-        # elif channel == "zoho":
-        #     recipient_email = contact["channels"].get("zoho")
-        elif channel == "whatsapp":
-            whatsapp_value = contact["channels"].get("whatsapp")
-            recipient_phone = f"whatsapp:{whatsapp_value}" if whatsapp_value else None
-            print(f"[DEBUG] → Recipient phone: {recipient_phone}")
-        elif channel == "messages":
-            recipient_phone = contact["channels"].get("messages")
-            print(f"[DEBUG] → Recipient phone: {recipient_phone}")
-        elif channel == "slackworkspace":
-            slack_channel_id = contact["channels"].get("slackworkspace")
-            print(f"[DEBUG] → Slack workspace: {slack_channel_id}")
-        elif channel == "slack":
-            slack_channel_id = contact["channels"].get("slack")
-            print(f"[DEBUG] → Slack DM: {slack_channel_id}")
-
-    if not recipient_email and original_message:
-        recipient_email = (
-            original_message.get("from_email") or original_message.get("from")
-            if original_message.get("direction") == "inbound"
-            else original_message.get("to_email") or original_message.get("to")
-        )
-
-    if not recipient_phone and original_message:
-        recipient_phone = (
-            original_message.get("from")
-            if original_message.get("direction") == "inbound"
-            else original_message.get("to")
-        )
-
-    if not slack_channel_id and original_message:
-        slack_channel_id = original_message.get("to")
-
-    # Determine correct conversation ID reuse logic
-    conv_id = None
-    for msg in relevant_messages:
-        if msg["source"] == channel:
-            conv_id = msg.get("conversation_id") or msg.get("id")
-            print(
-                f"[INFO] → Reusing existing conversation_id: {conv_id} for channel: {channel}"
-            )
-            break
-
-    if not conv_id:
-        if channel in ["whatsapp", "messages"]:
-            conv_id = recipient_phone or f"new:{channel}:{conversation_id}"
-        elif channel in ["gmail", "outlook", "zoho"]:
-            conv_id = recipient_email or f"new:{channel}:{conversation_id}"
-        elif channel in ["slack", "slackworkspace"]:
-            conv_id = slack_channel_id or f"new:{channel}:{conversation_id}"
-        else:
-            conv_id = f"new:{channel}:{conversation_id}"
-        print(f"[INFO] → Created new conversation_id: {conv_id}")
 
     try:
-        if channel == "whatsapp":
-            print(f"[INFO] → Sending WhatsApp to {recipient_phone} | body: {text}")
-            sid = send_whatsapp(
-                from_number=from_user_email,
-                to_number=recipient_phone,
-                body=text,
-                conversation_id=conv_id,
-                subject="Reply",
+        data = request.json
+        print(f"[DEBUG] → Payload: {data}")
+
+        user_id = data.get("user_id")
+        channel = data.get("channel")
+        text = data.get("text")
+        conversation_id = data.get("conversation_id")
+        print(f"****conv id : {conversation_id}")
+        contact_id = data.get("contact_id")
+
+        if not all([user_id, channel, text]):
+            print("[WARN] → Missing one or more required fields")
+            return jsonify({"error": "Missing required payload fields"}), 400
+
+        print(f"\n🚀 Starting message analysis for sending msg for user_id: {user_id}")
+        connection = connect_to_rds()
+        if connection is None:
+            print("⚠️ DB connection failed")
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = connection.cursor()
+
+        is_reply = False
+        client_id = None
+
+         # getting client id
+        try:
+            cursor.execute(
+                "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
+                (conversation_id,)
             )
-            return jsonify({"status": "sent", "sid": sid, "channel": "whatsapp"})
+            client_id_row = cursor.fetchone()
+            if client_id_row is None:
+                print(f"⚠️ No sender_id found for conversation_id {conversation_id}")
+                return jsonify({"error": "Conversation not found"}), 404
+            client_id = client_id_row[0]
+        except Exception as e:
+            print(f"❌ SQL Error: {e}")
+            return jsonify({"error": "Failed to retrieve client_id"}), 500
+        
 
-        elif channel == "messages":
-            print(f"[INFO] → Sending SMS to {recipient_phone} | body: {text}")
-            sid = send_sms(
-                from_number=from_user_email,
-                to_number=recipient_phone,
-                body=text,
-                conversation_id=conv_id,
-                subject="Reply",
-            )
-            return jsonify({"status": "sent", "sid": sid, "channel": "messages"})
+        # conv_folder = os.path.join(pathconfig.basepath, user_id,"messages",client_id)
+        # ensure_dir(conv_folder)
+        # file_name = f"{conversation_id}.json"
+        # conv_filepath = os.path.join(conv_folder, file_name)
 
-        elif channel == "gmail":
-            print(f"[INFO] → Sending Gmail to {recipient_email}")
+        if conversation_id:
+            print(f"inside if conv id : {conversation_id}")
+            # Check if conversation_id exists in threads table and matches the channel
+            try:
+            # Load config file
+                # with open(conv_filepath, "r", encoding="utf-8") as f:
+                #     config_data = json.load(f)
 
-            if user_id:
-                if original_message and original_message["source"] == "gmail":
-                    to_address = (
-                        recipient_email
-                        if original_message.get("from") == from_user_email
-                        else original_message.get("from")
-                    )
-                    sent = gmail_reply(
-                        user_id,
-                        conv_id,
-                        to=to_address,
-                        subject=original_message.get("subject", "No subject"),
-                        thread_id=original_message.get("thread_id"),
-                        in_reply_to=original_message.get("message_id"),
-                        body_text=text,
-                    )
-                else:
+                s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                config_data = read_json_from_s3(s3_config_key)
 
-                    sent = send_mail(
-                        user_id,
-                        conv_id,
-                        to=recipient_email,
-                        subject="Reply",
-                        body_text=text,
-                    )
-                sent_id = sent[0] if isinstance(sent, tuple) else sent.get("id")
-                return jsonify({"status": "sent", "id": sent_id, "channel": "gmail"})
+                # Check if conversation_id exists and channel matches
+                conv_list = config_data.get("conversations", [])
+                for conv in conv_list:
+                    print(f"********conv in config file: {conv}")
+                    if conv.get("channel") == channel:
+                        is_reply = True
+                        print(f"✅ Found matching conversation in config file — this is a reply")
+                        conversation_id = conv.get("conv_id")
+                        break
+                    else:
+                        print(f"⚠️ Conversation_id not found or channel mismatch — treating as user-initiated")
+
+            except FileNotFoundError:
+                print(f"⚠️ Config file not found at {conv_filepath} — treating as user-initiated")
+            except Exception as e:
+                print(f"❌ Error checking config file for reply status: {e}")
+                
+        if not is_reply:
+            print(f"🆕 Processing user-initiated message")
+            conversation_id = str(uuid.uuid4())
+            print(f"🆔 Generated new conversation_id: {conversation_id}")
+
+       
+
+
+     # getting email from tables to check which one to use
+        cursor.execute("SELECT email FROM users WHERE user_id = %s", (user_id,))
+        u_email = cursor.fetchone()
+        if not u_email:
+            print("error : No email found from user table")
+                    # return {"error": "No token found for business email"}, 404
+
+        user_email = u_email[0]       
+        print("user email found:", user_email)
+
+
+        cursor.execute("SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,))
+        b_email = cursor.fetchone()
+        if not b_email:
+            print("error : No email found from business_info table")
+                    # return {"error": "No token found for business email"}, 404
+        business_email = b_email[0]       
+        print("user email found:", business_email)
+
+
+        try:
+            # Choose email based on channel
+            selected_email = None
+            if match_email_to_channel(user_email, channel):
+                selected_email = user_email
+            elif match_email_to_channel(business_email, channel):
+                selected_email = business_email
+
+            if selected_email:
+                print(f"📬 Selected email for channel '{channel}':", selected_email)
             else:
-                print("[WARN] → Missing user_id for Gmail send")
+                print(f"⚠️ No email matched the channel '{channel}'")
+                # return {"error": f"No email matched the channel '{desired_channel}'"}, 404
 
-        elif channel == "zoho":
-            print(f"usr_id :{user_id}")
-            print(f"[INFO] → Sending zoho email to {recipient_email}")
-            sent = send_zoho_email(
-                user_id=user_id,
-                to_email=recipient_email,
-                subject="Reply",
-                body_text=text,
-                from_user_email=from_user_email,
-                conversation_id=conv_id,
-            )
-            if not sent:
-                return jsonify({"error": "Zoho send failed, no response"}), 500
-            sent_id = sent[0] if isinstance(sent, tuple) else sent.get("id")
-            return jsonify({"status": "sent", "id": sent_id, "channel": "zoho"})
+        except Exception as e:
+            print("🔥 Exception occurred while selecting email by channel:", str(e))
 
-        elif channel == "outlook":
-            print(f"[INFO] → Sending Outlook email to {recipient_email}")
-            sent = send_outlook_email(
-                to_email=recipient_email,
-                subject="Reply",
-                body_text=text,
-                from_user_email=from_user_email,
-                conversation_id=conv_id,
-            )
-            if not sent:
-                return jsonify({"error": "Outlook send failed, no response"}), 500
-            sent_id = sent[0] if isinstance(sent, tuple) else sent.get("id")
-            return jsonify({"status": "sent", "id": sent_id, "channel": "outlook"})
+        # getting client email
+        cursor.execute("SELECT email_id FROM users_clients WHERE users_clients_id = %s", (client_id,))
+        c_email = cursor.fetchone()
+        if not c_email:
+            print("error : No email found from users_client table")
+        client_email = c_email[0]       
+        print("client email found:", client_email)
 
-        elif channel == "slack":
-            sender_name = (
-                original_message.get("sender_name") if original_message else "MyAppBot"
-            )
-            send_slack_message(
-                channel_id=slack_channel_id,
-                text=text,
-                subject="Reply",
-                sender_name=sender_name,
-            )
-            return jsonify({"status": "sent", "channel": "slack"})
+        conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+        ensure_dir(conv_folder)
+        file_name = f"{conversation_id}.json"
+        conv_filepath = os.path.join(conv_folder, file_name)
+
+        # Handle subject, ticket info, and thread_id based on message type
+        if is_reply:
+            print("📋 Processing reply - getting info from config file")
+            
+            # Read config file to get ticket info and subject
+            config_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+            config_filepath = os.path.join(config_folder, "config.json")
+            
+            try:
+                s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                config_data = read_json_from_s3(s3_config_key)
+                
+                # Find the conversation in config
+                ticket_id = ticket_name = subject = thread_id = None
+                for conv in config_data.get("conversations", []):
+                    if conv.get("conv_id") == conversation_id:
+                        ticket_id = conv.get("ticket_id")
+                        ticket_name = conv.get("ticket_name")
+                        subject = conv.get("subject")
+                        thread_id = conv.get("thread_id") if channel == "gmail" else None
+                        break
+                        
+                if not subject:
+                    print("[WARN] → Subject not found in config")
+                    return jsonify({"error": "Subject not found for this conversation"}), 400
+                    
+            except Exception as e:
+                print(f"❌ Failed to read config file: {e}")
+                return jsonify({"error": "Failed to read conversation config"}), 500
+                
+
 
         else:
-            print(f"[ERROR] → Unsupported channel: {channel}")
+            print("🆕 Processing user-initiated message - generating subject")
+
+       # Create temporary conversation file for AI processing
+            conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+            ensure_dir(conv_folder)
+            file_name = f"{conversation_id}.json"
+            conv_filepath = os.path.join(conv_folder, file_name)
+            
+            # Create initial message structure
+            now_utc = datetime.now(timezone.utc)
+            formatted_time = now_utc.isoformat(timespec="seconds")
+            msg_id = str(uuid.uuid4())
+            
+            initial_message = {
+                "id": msg_id,
+                "from": "user",
+                "to": "client",
+                "body": text,
+                "timestamp": formatted_time,
+                "channel": channel,
+                "direction": "outbound",
+            }
+            
+            # Save temporary file for subject generation
+            with open(conv_filepath, "w", encoding="utf-8") as f:
+                json.dump({"new_messages": [initial_message]}, f, indent=2)
+            
+            # Generate subject using AI
+            subjects = generate_subject(user_id, conv_filepath, channel)
+            
+            # Get subject from AI response
+            subject = ticket_name = None
+            ticket_id = str(uuid.uuid4())
+            
+            for group in subjects:
+                if msg_id in group.get("message_ids", []):
+                    subject = ticket_name = group.get("summary")
+                    break
+                    
+            if not subject:
+                subject = ticket_name = f"Message from {client_email}"  # Fallback subject
+                
+            thread_id = None  # New conversation, no thread_id yet
+        # assigning ticket_id and ticket_name
+        now_utc = datetime.now(timezone.utc)
+        formatted_time = now_utc.isoformat(timespec="seconds")
+        msg_id = str(uuid.uuid4())
+
+        message = {
+            "id": msg_id,
+            "from": selected_email,
+            "to": client_email,
+            "body": text,
+            "timestamp": formatted_time,
+            "channel": channel,
+            "direction": "outbound",
+            "subject": subject,
+            "status": "pending",
+            "source": channel,
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "conversation_id": conversation_id,
+            "ticket_id": ticket_id,
+            "ticket_name": ticket_name
+        }
+        # Send the message via appropriate channel
+        sent_message_id = None
+
+        # sending messages
+        if channel == "gmail":
+            print(f"[INFO] → Dispatching Gmail message to {to}")
+            try:
+                sent_id = gmail_reply(
+                    user_id,
+                    to=client_email,
+                    subject=subject,
+                    thread_id=thread_id,
+                    body_text=text,
+                )
+                return jsonify({"status": "sent", "id": sent_id, "channel": "gmail"}), 200
+            except Exception as e:
+                print(f"❌ Gmail send failed: {e}")
+                return jsonify({"error": "Gmail send failed"}), 500
+
+        elif channel == "zoho":
+            print(f"[INFO] → Dispatching Zoho message to {client_email}")
+            try:
+                response_payload, status_code = send_zoho_email(
+                                                    user_id=user_id,
+                                                    to_email=client_email,
+                                                    subject=subject,
+                                                    body_text=text,
+                                                    from_user_email=selected_email,
+                                                )
+
+                if status_code in [200, 201]:
+                    message_id = response_payload.get("message_id")
+                    print(f" received msg_id: {message_id}")
+                
+                else:
+                    print(f"Zoho send failed: {response_payload.get('error')}")
+                    return jsonify({"error": response_payload.get('error')}), status_code
+
+            except Exception as e:
+                print(f"❌ Zoho send failed: {e}")
+                return jsonify({"error": "Zoho send failed"}), 500
+
+        else:
+            print(f"[WARN] → Unsupported channel: {channel}")
             return jsonify({"error": "Unsupported channel"}), 400
+        
+
+        updated_date = datetime.now(timezone.utc).isoformat()
+        created_date = updated_date
+        try:
+            print("🔄 Starting DB operations for message persistence")
+
+            if not is_reply:
+                print("🆕 New conversation — inserting thread and ticket")
+                cursor.execute(
+                    """
+                    INSERT INTO threads (conversation_id, started_at, status, last_message_at)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (conversation_id, created_date, "Open", updated_date)
+                )
+                # You can add ticket insert here if needed
+            else:
+                print("🔁 Existing conversation — updating thread and ticket status")
+                cursor.execute(
+                    "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
+                    (updated_date, "In-Progress", conversation_id)
+                )
+                cursor.execute(
+                    "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
+                    (updated_date, conversation_id)
+                )
+
+            print("📨 Inserting message into messages table")
+            cursor.execute(
+                """
+                INSERT INTO messages (
+                    message_id,
+                    conversation_id_fk,
+                    sender_id,
+                    content_ref,
+                    message_type,
+                    is_summary,
+                    created_at,
+                    update_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    msg_id,
+                    conversation_id,
+                    client_id,
+                    "ref",
+                    "outbound",
+                    subject,
+                    created_date,
+                    updated_date
+                )
+            )
+
+            connection.commit()
+            print("✅ Database operations committed successfully")
+
+        except Exception as e:
+            connection.rollback()
+            print(f"❌ Database operation failed — rolled back: {e}")
+            return jsonify({"error": "Database operation failed"}), 500
+
+        # ------------------ Update Conversation File ------------------
+
+        conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+        ensure_dir(conv_folder)
+        file_name = f"{conversation_id}.json"
+        conv_filepath = os.path.join(conv_folder, file_name)
+        s3_conv_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
+
+        try:
+            print(f"📁 Updating conversation file at: {conv_filepath}")
+            try:
+                raw_data = read_json_from_s3(s3_conv_key)
+                input_data = raw_data.get("input_data", [])
+                print(f"[DEBUG] Found existing conversation with {len(input_data)} messages")
+            except Exception as e:
+                print(f"[DEBUG] No existing conversation file found — initializing new: {e}")
+                input_data = []
+
+            input_data.append(message)
+            conversation_data = {"input_data": input_data}
+
+            with open(conv_filepath, "w", encoding="utf-8") as f:
+                json.dump(conversation_data, f, indent=2)
+            print("✅ Local conversation file updated")
+
+            upload_any_file(
+                conv_filepath,
+                user_id,
+                type="messages",
+                s3_key_C=s3_conv_key,
+            )
+            print("✅ Conversation file uploaded to S3")
+
+        except Exception as e:
+            print(f"❌ Failed to update conversation file: {e}")
+            return jsonify({"error": "Failed to save conversation"}), 500
+
+        # ------------------ Update Config File ------------------
+
+        config_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+        ensure_dir(config_folder)
+        config_filepath = os.path.join(config_folder, "config.json")
+
+        try:
+            s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+            config_data = read_json_from_s3(s3_config_key)
+            print(f"[DEBUG] Loaded config from S3: {s3_config_key}")
+        except Exception as e:
+            print(f"[DEBUG] No config file found — creating new: {e}")
+            config_data = {"userclients_id": client_id, "conversations": []}
+
+
+        try:
+            if updated_date.endswith('Z'):
+                parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
+            else:
+                parsed_ts = datetime.fromisoformat(updated_date)
+        except Exception as e:
+            print(f"[WARN] Could not parse updated_date '{updated_date}': {e}")
+            
+        updated_entry = {
+            "conv_id": conversation_id,
+            "ticket_id": ticket_id,
+            "ticket_name": ticket_name,
+            "subject": subject,
+            "channel": channel,
+            "thread_id": thread_id,
+            "updated_date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "parsed_timestamp": parsed_ts.isoformat()
+        }
+
+        conversation_exists = False
+        for i, conv in enumerate(config_data.get("conversations", [])):
+            if conv.get("conv_id") == conversation_id:
+                config_data["conversations"][i] = updated_entry
+                conversation_exists = True
+                print(f"🔁 Updated existing conversation entry in config")
+                break
+
+        if not conversation_exists:
+            config_data.setdefault("conversations", []).append(updated_entry)
+            print(f"🆕 Added new conversation entry to config")
+
+        config_data["userclients_id"] = client_id
+        update_config_file(user_id, client_id, config_data)
+        print("✅ Config file updated successfully")
+
+        # ------------------ Final Response ------------------
+
+        print("✅ Message sent successfully")
+        return jsonify({
+            "status": "sent", 
+            "id": sent_message_id or msg_id, 
+            "channel": channel,
+            "conversation_id": conversation_id,
+            "is_reply": is_reply
+        }), 200
 
     except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[EXCEPTION] → {tb}")
-        return jsonify({"error": str(e), "traceback": tb}), 500
+            print(f"❌ Unexpected error: {e}")
+            return jsonify({"error": "Internal server error"}), 500
+
+    finally:
+            if 'connection' in locals():
+                connection.close()
+                print("🔒 DB connection closed")
+            
+
+                
+
+            
+
+            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    

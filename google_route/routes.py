@@ -391,7 +391,7 @@ def google_login():
 
 
 @google_bp.route("/auth/google/token", methods=["POST"])
-def get_token(inuser=None, value=None):
+def get_token(inuser=None, value=None, in_connection=None):
     """
     sending token for the user for the drive and picker.
     making sure if the token expired and making a new one
@@ -404,7 +404,10 @@ def get_token(inuser=None, value=None):
         or inuser
         or data["userid"]
     )
-    connection = connect_to_rds()
+    if not in_connection:
+        connection = connect_to_rds()
+    else:
+        connection = in_connection
     try:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -446,9 +449,10 @@ def get_token(inuser=None, value=None):
                             "https://www.googleapis.com/auth/gmail.readonly",
                             "https://www.googleapis.com/auth/gmail.send",
                             "https://www.googleapis.com/auth/gmail.modify",
-                            "https://www.googleapis.com/auth/drive",
-                            "https://www.googleapis.com/auth/drive.readonly",
+                            "https://www.googleapis.com/auth/gmail.compose",
                             "https://www.googleapis.com/auth/drive.metadata.readonly",
+                            "https://www.googleapis.com/auth/drive",
+                            "https://www.googleapis.com/auth/calendar",
                             "openid",
                         ],
                     )
@@ -489,7 +493,7 @@ def get_token(inuser=None, value=None):
         return jsonify({"error": "Internal server error"}), 500
 
     finally:
-        if connection:
+        if not in_connection and connection:
             connection.close()
 
 
