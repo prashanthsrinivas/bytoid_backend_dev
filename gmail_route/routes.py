@@ -49,31 +49,65 @@ def fetch_gmail_messages(user_id):
         filename = f"{date_str}.json"
         s3_key = f"{user_id}/messages/{filename}"
 
-        # Try to load existing messages
+       
+
+        # collecting messags from local file
+        user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+        ensure_dir(user_folder)
+        filepath = os.path.join(user_folder, filename)
+
+        input_data_local = {} 
         try:
-            existing = read_json_from_s3(filepath=s3_key)
-            input_data = existing.get("input_data", {})
-            # print(f" ***** got input data: {input_data}")
+            existing_data_local = {}
+            if os.path.exists(filepath):
+                with open(filepath, "r", encoding="utf-8") as f:
+                    existing_data_local = json.load(f)
+                    input_data_local_raw = existing_data_local.get("input_data", {})
+                    if isinstance(input_data_local_raw, dict):
+                        input_data_local = input_data_local_raw
+                    else:
+                        print(f"⚠️ Unexpected input_data_local format: {type(input_data_local_raw)}")
+                        input_data_local = {}
         except Exception as e:
-            print(f"⚠️ S3 file missing or unreadable: {e}")
-            input_data = {}
+            print(f"⚠️ local file missing or unreadable: {e}")
+            input_data_local = {}
+
+
+        existing_ids_local = set()
+
+        if isinstance(input_data_local, dict):
+            for client_data in input_data_local.values():
+                if isinstance(client_data, dict):
+                    for client_channels in client_data.values():
+                        if isinstance(client_channels, dict):
+                            for channel_msgs in client_channels.values():
+                                if isinstance(channel_msgs, list):
+                                    for msg in channel_msgs:
+                                        if isinstance(msg, dict):
+                                            msg_id = msg.get("id")
+                                            if msg_id:
+                                                existing_ids_local.add(msg_id)
+
+
+        
 
         # Flatten all existing message IDs for deduplication
-        existing_ids = set()
-        for client_channels in input_data.values():
-            for channel_msgs in client_channels.values():
-                for msg in channel_msgs:
-                    existing_ids.add(
-                        msg.get("id")
-                    )  # or "message_id" depending on structure
-
+        
         count_new = 0
         for msg in threads:
             message_id = msg["messageId"]
-            if message_id in existing_ids:
-                print(f"⏭️ Message {message_id} already exists. Skipping.")
+            
+            cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (message_id,))
+            m_id = cursor.fetchone()
+            if m_id:
+                print(f"⏭️ Message {message_id} already exists in messages table. Skipping.")
                 continue
-
+            
+            if message_id in existing_ids_local:
+                print(f"⏭️ Message {message_id} already exists locally. Skipping.")
+                continue
+            
+            thread_id=msg["thread_id"]
             dt = parsedate_to_datetime(msg["date"])
             timestamp_iso = dt.isoformat()
             direction = (
@@ -101,8 +135,7 @@ def fetch_gmail_messages(user_id):
                     "source": "gmail",
                     "direction": direction,
                     "user_id": user_id,
-                    "thread_id": msg["id"],
-                    "message_id": message_id,
+                    "thread_id": thread_id,
                     "conversation_id": (
                         from_email if direction == "inbound" else user_email
                     ),
@@ -130,12 +163,14 @@ def fetch_gmail_messages(user_id):
                         "userclients_id": client_id,
                         "conversations": [
                             {
-                                "conv_id": "",
-                                "ticket_id": "",
-                                "subject": "",
-                                "channel": "",
-                                "updated_date": "",
-                                "parsed_timestamp": ""
+                                        "conv_id": "",
+                                        "ticket_id": "",
+                                        "ticket_name": "",
+                                        "subject": "",
+                                        "channel": "",
+                                        "updated_date": "",
+                                        "parsed_timestamp" : "",
+                                        "thread_id": ""
                             }
                         ],
                     }
@@ -166,9 +201,9 @@ def fetch_gmail_messages(user_id):
                     print(f"📁 Config file already exists: {config_filepath}")
 
         # Write file locally
-        user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-        ensure_dir(user_folder)
-        filepath = os.path.join(user_folder, filename)
+        # user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+        # ensure_dir(user_folder)
+        # filepath = os.path.join(user_folder, filename)
 
         existing_data = {}
         if os.path.exists(filepath):
@@ -208,96 +243,6 @@ def fetch_gmail_messages(user_id):
         return {"error": str(e), "status": "failed"}
 
 
-# @gmail_bp.route("/gmail/reply", methods=["POST"])
-# def gmail_reply(
-#     user_id, conversation_id, to, subject, thread_id, in_reply_to, body_text
-# ):
-
-#     print(f"User ID : {user_id}")
-#     gmail_service = GmailService(user_id)
-#     user_email = gmail_service.user_email
-
-#     print(f"my email address is: {user_email}")
-
-#     if not to:
-#         raise ValueError("Recipient email 'to' is required")
-#     if not subject:
-#         raise ValueError("Subject is required")
-#     if not thread_id:
-#         raise ValueError("Thread ID is required")
-#     if not in_reply_to:
-#         raise ValueError("In-Reply-To message ID is required")
-
-#     message = EmailMessage()
-#     message["To"] = to
-#     message["Subject"] = (
-#         f"Re: {subject}" if not subject.lower().startswith("re:") else subject
-#     )
-#     message["In-Reply-To"] = in_reply_to
-#     message["References"] = in_reply_to
-#     message.set_content(body_text)
-
-#     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-#     message_body = {"raw": raw, "threadId": thread_id}
-
-#     sent = gmail_service.send_reply(
-#         conversation_id=conversation_id,
-#         to=to,
-#         subject=subject,
-#         thread_id=thread_id,
-#         in_reply_to=in_reply_to,
-#         body_text=body_text,
-#         user_id=user_id,
-#     )
-
-#     timestamp_ = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-#     message_id = sent["id"]
-
-#     timestamp = datetime.now(timezone.utc)
-#     date_str = timestamp.strftime("%Y-%m-%d")
-#     filename = f"{date_str}.json"
-#     s3_key = f"{user_id}/messages/{filename}"
-
-#     # Try to load existing messages
-#     try:
-#         existing = read_json_from_s3(filepath=s3_key)
-#         input_data = existing.get("input_data", {})
-#     except Exception as e:
-#         print(f"⚠️ S3 file missing or unreadable: {e}")
-#         input_data = {}
-
-#     input_data[message_id] = {
-#         "id": message_id,
-#         "from": user_email,
-#         "to": to,
-#         "body": body_text,
-#         "subject": subject,
-#         "timestamp": timestamp_,
-#         "status": "sent",
-#         "source": "gmail",
-#         "direction": "outbound",
-#         "user_id": user_id,
-#         "thread_id": thread_id,
-#         "message_id": message_id,
-#         "conversation_id": conversation_id,
-#     }
-#     print("✅ Saved sent message to MESSAGES:")
-#     # print(MESSAGES[message_id])
-
-#     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-#     ensure_dir(user_folder)
-#     filepath = os.path.join(user_folder, filename)
-
-#     with open(filepath, "w", encoding="utf-8") as f:
-#         json.dump({"filename": filename, "input_data": input_data}, f, indent=2)
-
-#     # Upload to S3
-#     upload_any_file(
-#         file_path=filepath, user_id=user_id, type="messages", file_name=filename
-#     )
-
-#     return sent
 
 def gmail_reply(user_id, to, subject, thread_id, body_text):
     print(f"[DEBUG] Gmail reply — user_id: {user_id}, to: {to}, subject: {subject}")
@@ -334,8 +279,42 @@ def gmail_reply(user_id, to, subject, thread_id, body_text):
 
 
 
-# @gmail_bp.route("/gmail/send_mail", methods=["POST"])
-def send_mail(user_id, conversation_id, to, subject, body_text):
+# # @gmail_bp.route("/gmail/send_mail", methods=["POST"])
+# def send_mail(user_id,to, subject, body_text):
+
+#     try:
+#         print(f"to inside send_mail is : {to}")
+#         print(f"User ID from session: {user_id}")
+#         gmail_service = GmailService(user_id)
+#         user_email = gmail_service.user_email
+
+#         print(f"my email address is: {user_email}")
+
+#         # message = EmailMessage()
+#         # message["To"] = to
+#         # message["Subject"] = subject
+#         # message.set_content(body_text)
+#         # raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+#         # message_body = {"raw": raw}
+#         sent = gmail_service.send_email(
+#              to=to, subject=subject, body_text=body_text
+#         )
+
+#         message_id = sent.get("id")
+#         thread_id = sent.get("thread_id")
+#         print("✅ Saved sent message to MESSAGES:")
+
+#         print(f"[DEBUG] GmailService.send_email returned: {sent}")
+
+#         return message_id, thread_id
+
+#     except Exception as e:
+#         print(f"[ERROR] → send_mail failed: {e}")
+#         return {"error": str(e), "status": "failed"}
+
+def send_mail(user_id, to, subject, body_text):
+    message_id = None
+    thread_id = None
 
     try:
         print(f"to inside send_mail is : {to}")
@@ -345,68 +324,26 @@ def send_mail(user_id, conversation_id, to, subject, body_text):
 
         print(f"my email address is: {user_email}")
 
-        message = EmailMessage()
-        message["To"] = to
-        message["Subject"] = subject
-        message.set_content(body_text)
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        message_body = {"raw": raw}
         sent = gmail_service.send_email(
-            conversation_id=conversation_id, to=to, subject=subject, body_text=body_text
+            to=to, subject=subject, body_text=body_text
         )
 
-        timestamp_ = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        if not sent or "id" not in sent:
+            raise ValueError("No message ID returned from Gmail API")
+
         message_id = sent["id"]
-        thread_id = sent.get("threadId")
-
-        timestamp = datetime.now(timezone.utc)
-        date_str = timestamp.strftime("%Y-%m-%d")
-        filename = f"{date_str}.json"
-        s3_key = f"{user_id}/messages/{filename}"
-
-        # Try to load existing messages
-        try:
-            existing = read_json_from_s3(filepath=s3_key)
-            input_data = existing.get("input_data", {})
-        except Exception as e:
-            print(f"⚠️ S3 file missing or unreadable: {e}")
-            input_data = {}
-
-        input_data[message_id] = {
-            "id": message_id,
-            "from": user_email,
-            "to": to,
-            "body": body_text,
-            "subject": subject,
-            "timestamp": timestamp_,
-            "status": "sent",
-            "source": "gmail",
-            "direction": "outbound",
-            "user_id": "user_id",
-            "message_id": message_id,
-            "conversation_id": conversation_id,
-            "thread_id": thread_id,
-        }
+        thread_id = sent.get("thread_id")
         print("✅ Saved sent message to MESSAGES:")
+        print(f"[DEBUG] GmailService.send_email returned: {sent}")
 
-        user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-        ensure_dir(user_folder)
-        filepath = os.path.join(user_folder, filename)
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump({"filename": filename, "input_data": input_data}, f, indent=2)
-
-        # Upload to S3
-        upload_any_file(
-            file_path=filepath, user_id=user_id, type="messages", file_name=filename
-        )
-
-        return sent
+        return message_id, thread_id  
 
     except Exception as e:
         print(f"[ERROR] → send_mail failed: {e}")
         return {"error": str(e), "status": "failed"}
 
+    
 
 @gmail_bp.route("/gmail/drafts", methods=["GET"])
 def list_drafts():

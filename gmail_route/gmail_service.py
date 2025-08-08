@@ -102,7 +102,7 @@ class GmailService:
 
             thread_data.append(
                 {
-                    "id": thread_id,
+                    "thread_id": thread_id,
                     "messageId": message_id,
                     "from": parsed.get("from", "Unknown Sender"),
                     "email": email,
@@ -209,59 +209,76 @@ class GmailService:
         )
         return draft
 
-    def send_email(self, conversation_id, to, subject, body_text):
-        message = EmailMessage()
-        message["To"] = to
-        message["Subject"] = subject
-        message.set_content(body_text)
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        message_body = {"raw": raw}
-        print(f"to inside gmail service before sending mail is:{to}")
+    def send_email(self, to, subject, body_text):
+           
+        try:  
+            message = EmailMessage()
+            message["To"] = to
+            message["Subject"] = subject
+            message.set_content(body_text)
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            message_body = {"raw": raw}
+            print(f"to inside gmail service before sending mail is:{to}")
 
-        sent = (
-            self.service.users()
-            .messages()
-            .send(userId="me", body=message_body)
-            .execute()
-        )
-        print(f"to inside gmail service after sending mail is:{to}")
+            sent = (
+                self.service.users()
+                .messages()
+                .send(userId="me", body=message_body)
+                .execute()
+            )
+            print(f"to inside gmail service after sending mail is:{to}")
 
-        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        message_id = sent["id"]
+            timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            message_id = sent["id"]
+            thread_id = sent["threadId"]
 
-        MESSAGES[message_id] = {
-            "id": message_id,
-            "from": self.user_email,
-            "to": to,
-            "body": body_text,
-            "subject": subject,
-            "timestamp": timestamp,
-            "status": "sent",
-            "source": "gmail",
-            "direction": "outbound",
-            "user_id": "user_id",
-            "message_id": message_id,
-            "conversation_id": conversation_id,
-        }
+            MESSAGES[message_id] = {
+                "id": message_id,
+                "thread_id": thread_id,
+                "from": self.user_email,
+                "to": to,
+                "body": body_text,
+                "subject": subject,
+                "timestamp": timestamp,
+                "status": "sent",
+                "source": "gmail",
+                "direction": "outbound",
+                "user_id": "user_id",
+                "message_id": message_id,
+            }
 
-        return sent
+            return MESSAGES[message_id]
+        
+        except Exception as e:
+            print(f"❌ Error sending email: {e}")
+            raise
 
     def send_Meet_mail(
-        self, to_email: str, bcc_list: list[str], subject: str, body: str
+        self, to_email: str, bcc_list: list[str], subject: str, body_html: str
     ):
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
         import base64
+        import re
 
-        message = MIMEMultipart()
+        # Create plain-text fallback by stripping HTML tags
+        plain_text = re.sub(r"<[^>]+>", "", body_html)
+
+        # multipart/alternative ensures the client picks the best format
+        message = MIMEMultipart("alternative")
         message["to"] = to_email
-        message["bcc"] = ", ".join(bcc_list)
+        if bcc_list:
+            message["bcc"] = ", ".join(bcc_list)
         message["subject"] = subject
-        message.attach(MIMEText(body, "plain"))
+
+        # Attach plain and HTML versions
+        part1 = MIMEText(plain_text, "plain")
+        part2 = MIMEText(body_html, "html")
+        message.attach(part1)
+        message.attach(part2)
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         msg = {"raw": raw}
-
         sent = self.service.users().messages().send(userId="me", body=msg).execute()
         return sent
 
@@ -321,7 +338,9 @@ class GmailService:
 
     #     return sent
 
-    def send_reply(self, conversation_id, to, subject, thread_id, in_reply_to, body_text, user_id):
+    def send_reply(
+        self, conversation_id, to, subject, thread_id, in_reply_to, body_text, user_id
+    ):
         if not to:
             raise ValueError("Recipient email 'to' is required")
         if not subject:
@@ -352,7 +371,6 @@ class GmailService:
 
         print(f"[DEBUG] Message sent to Gmail API. ID: {sent['id']}")
         return sent
-
 
     def send_forward(self, to, subject, body_text):
         message = EmailMessage()

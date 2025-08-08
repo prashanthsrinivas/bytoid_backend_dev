@@ -221,13 +221,13 @@ def get_zoho_account_id(access_token):
 
     try:
         accounts_response = requests.get(mail_list_url, headers=mail_headers)
-        print(f"[DEBUG] Zoho account fetch → Status: {accounts_response.status_code}")
-        print(f"[DEBUG] Zoho account fetch → URL: {accounts_response.request.url}")
-        print(f"[DEBUG] Zoho account fetch → Headers: {accounts_response.request.headers}")
+        # print(f"[DEBUG] Zoho account fetch → Status: {accounts_response.status_code}")
+        # print(f"[DEBUG] Zoho account fetch → URL: {accounts_response.request.url}")
+        # print(f"[DEBUG] Zoho account fetch → Headers: {accounts_response.request.headers}")
 
         try:
             accounts = accounts_response.json()
-            print(f"[DEBUG] Zoho account response JSON: {json.dumps(accounts, indent=2)}")
+            # print(f"[DEBUG] Zoho account response JSON: {json.dumps(accounts, indent=2)}")
         except Exception as parse_err:
             print(f"[ERROR] Failed to parse Zoho account response JSON: {parse_err}")
             print(f"[DEBUG] Raw response text: {accounts_response.text}")
@@ -246,7 +246,7 @@ def get_zoho_account_id(access_token):
             print(f"[ERROR] 'accountId' missing in first data item: {accounts['data'][0]}")
             return None
 
-        print(f"[INFO] Successfully retrieved Zoho account_id: {account_id}")
+        # print(f"[INFO] Successfully retrieved Zoho account_id: {account_id}")
         return account_id
 
     except Exception as e:
@@ -363,41 +363,47 @@ def fetch_zoho_emails(user_id):
                 filename = f"{date_str}.json"
                 s3_key = f"{user_id}/messages/{filename}"
 
-                # Try to load existing messages
-                try:
-                    existing = read_json_from_s3(filepath=s3_key)
-                    input_data = existing.get("input_data", {})
-                    print(f" ***** got input data: {input_data}")
-                except Exception as e:
-                    print(f"⚠️ S3 file missing or unreadable: {e}")
-                    input_data = {}
+                
+                # collecting messags from local file
+                user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+                ensure_dir(user_folder)
+                filepath = os.path.join(user_folder, filename)
 
-                count_new = 0
+                # input_data_local = {} 
+                # try:
+                #     existing_data_local = {}
+                #     if os.path.exists(filepath):
+                #         with open(filepath, "r", encoding="utf-8") as f:
+                #             existing_data_local = json.load(f)
+                #             input_data_local = existing_data_local.get("input_data", {})
+                            
+                # except Exception as e:
+                #     print(f"⚠️ local file missing or unreadable: {e}")
 
-                existing_ids = set()
-                for client_channels in input_data.values():
-                    for channel_msgs in client_channels.values():
-                        for msg in channel_msgs:
-                            existing_ids.add(msg.get("id"))
+                # existing_ids_local = set()
+                # for client_id in input_data_local.values():
+                #     for client_channels in client_id.values():
+                #         for channel_msgs in client_channels.values():
+                #             for msg in channel_msgs:
+                #                 existing_ids_local.add(msg.get("id"))
+
 
                 for mail_data in mails_data:
                     # print(f"mail_data:{mail_data}")
                     message_id = mail_data.get("messageId")
 
-                    if message_id in existing_ids:
-                        print(f"⏭️ Message {message_id} already exists. Skipping.")
+                    cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (message_id,))
+                    m_id = cursor.fetchone()
+                    if m_id:
+                        print(f"⏭️ Message {message_id} already exists in messages table. Skipping.")
                         continue
-                
-                    # h_headers = {"Authorization": f"Zoho-oauthtoken {access_token}, 'Accept': 'application/json'"}
-                    # url = f'https://mail.zoho.in/api/accounts/{account_id}/messages/{message_id}/header'
-                    # response = requests.get(url, headers=h_headers)
-                    # response.raise_for_status()
-                    # headers = response.json().get('data', {}).get('headers', [])
-                    # print(f"******headers are:{headers}")
                     
-                    # in_reply_to = next((h['value'] for h in headers if h['name'].lower() == 'in-reply-to'), None)
-                    # references = next((h['value'] for h in headers if h['name'].lower() == 'references'), None)
-
+                            
+                    # if message_id in existing_ids_local:
+                    #     print(f"⏭️ Message {message_id} already exists locally. Skipping.")
+                    #     continue
+                        
+                
 
                     subject = mail_data.get("subject")
                     from_address = mail_data.get("fromAddress")
@@ -406,8 +412,6 @@ def fetch_zoho_emails(user_id):
                     name, email_only = parseaddr(decoded_address)
 
                     folder_id = mail_data.get("folderId")
-
-                    # result = test_message_endpoints(account_id, folder_id, message_id, access_token)
 
                     zoho_timestamp_ms = mail_data.get("receivedTime")
                     timestamp_dt = datetime.fromtimestamp(
@@ -437,17 +441,14 @@ def fetch_zoho_emails(user_id):
                             "source": "zoho",
                             "direction": direction,
                             "user_id": user_id,
-                            # "conversation_id": conversation_id,
-                            # "reply-to":reply_to,
-                            # "references":references
-                            # "internet_message_id": message_id,
+                
                         }
 
                         grouped_messages.setdefault(client_id, {}).setdefault(
                             "zoho", []
                         ).append(message)
 
-                        count_new += 1
+                        # count_new += 1
 
                         print(
                             f"******[DEBUG] for zoho user_id={user_id} ({type(user_id)}), client_id={client_id} ({type(client_id)}), basepath={pathconfig.basepath}"
@@ -502,10 +503,6 @@ def fetch_zoho_emails(user_id):
         
 
 
-                # Write file locally
-                user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-                ensure_dir(user_folder)
-                filepath = os.path.join(user_folder, filename)
 
                 existing_data = {}
                 if os.path.exists(filepath):
@@ -523,21 +520,13 @@ def fetch_zoho_emails(user_id):
                     json.dump({"filename": filename, "input_data": merged_messages}, f, indent=2)
 
 
-                # with open(filepath, "w", encoding="utf-8") as f:
-                #     json.dump(
-                #         {"filename": filename, "input_data": grouped_messages}, f, indent=2
-                #     )
+                
                 print("*********saved the zoho messags json file locally")
 
-                # # Upload to S3
-                # upload_any_file(
-                #     file_path=filepath, user_id=user_id, type="messages", file_name=filename
-                # )
-
-                # return jsonify({"status": "ok", "new_messages": count_new})
+           
                 return {
                 "status": "success",
-                "new_messages": count_new
+                # "new_messages": count_new
             }
 
     except Exception as e:
