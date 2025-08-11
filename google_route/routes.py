@@ -508,27 +508,51 @@ def xor_decrypt(encoded, key):
     return decrypted.decode()
 
 
-@google_bp.route("/creds")
+@google_bp.route("/creds", methods=["GET"])
 def sendCredits():
     """
-    Here we are sending the client id, accesstoken and secretkey to frontend as a encrypted one
-    where frontend needs to decrypt it with secret key
+    Send the client ID, access token, and other credentials to the frontend in encrypted form.
+    The frontend must decrypt them using the provided secret key.
     """
-
-    client_id = os.getenv("CLIENTID")
-    client_name = os.getenv("ACCESSTOKEN")
+    pr = request.args.get("pr", "GM")  # Default to GM
     secretkey = os.getenv("SECRETKEY")
 
-    if not client_id or not client_name:
-        return jsonify({"error": "Missing environment variables"}), 500
+    if not secretkey:
+        return jsonify({"error": "Missing SECRETKEY"}), 500
 
-    return jsonify(
-        {
-            "value": xor_encrypt(client_id, secretkey),
-            "name": xor_encrypt(client_name, secretkey),
-            "mod": secretkey,
-        }
-    )
+    # Common env values
+    client_id = os.getenv("CLIENTID")
+    access_token = os.getenv("ACCESSTOKEN")
+    zoho_client_id = os.getenv("ZOHO_CLIENT_ID")
+    microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID")
+
+    if pr == "GM":
+        if not client_id or not access_token:
+            return jsonify({"error": "Missing CLIENTID or ACCESSTOKEN"}), 500
+        return jsonify(
+            {
+                "value": xor_encrypt(client_id, secretkey),
+                "name": xor_encrypt(access_token, secretkey),
+                "mod": secretkey,
+            }
+        )
+
+    elif pr == "ZH":
+        if not zoho_client_id:
+            return jsonify({"error": "Missing ZOHO_CLIENT_ID"}), 500
+        return jsonify(
+            {"value": xor_encrypt(zoho_client_id, secretkey), "mod": secretkey}
+        )
+
+    elif pr == "MS":
+        if not microsoft_client_id:
+            return jsonify({"error": "Missing MICROSOFT_CLIENT_ID"}), 500
+        return jsonify(
+            {"value": xor_encrypt(microsoft_client_id, secretkey), "mod": secretkey}
+        )
+
+    else:
+        return jsonify({"error": f"Unknown pr value: {pr}"}), 400
 
 
 # --- Flask Route ---
