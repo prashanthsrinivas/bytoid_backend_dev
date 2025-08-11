@@ -1,3 +1,5 @@
+import json
+
 from .rds_db import connect_to_rds
 from datetime import datetime
 import uuid
@@ -303,3 +305,109 @@ def updateTicketConversation(conversation_id, ticket_id, connection=None):
     finally:
         if own_connection and connection:
             connection.close()
+
+
+def get_userinfo(userid, connection=None):
+    from google_route.routes import get_token
+
+    own_connection = False
+    try:
+        if connection is None:
+            connection = connect_to_rds()
+            own_connection = True
+
+        with connection.cursor() as cursor:
+            query = """
+                SELECT
+                    u.first_name,
+                    u.last_name,
+                    u.email,
+                    u.sociallinks,
+                    b.business_info_id,
+                    b.BusinessName,
+                    b.LineOfBusiness,
+                    b.BillingAddress,
+                    b.BusinessEmail,
+                    b.WebsiteUrl
+                FROM users u
+                LEFT JOIN business_info b ON u.user_id = b.user_id_fk
+                WHERE u.user_id = %s
+            """
+            cursor.execute(query, (userid,))
+            row = cursor.fetchone()
+
+        connection.commit()
+
+        if not row:
+            return {"status": "error", "message": "User not found"}
+
+        field_names = [
+            "first_name",
+            "last_name",
+            "email",
+            "sociallinks",
+            "business_info_id",
+            "BusinessName",
+            "LineOfBusiness",
+            "BillingAddress",
+            "BusinessEmail",
+            "WebsiteUrl",
+        ]
+        token_access = get_token(userid, value=True, in_connection=connection)
+        result = dict(zip(field_names, row))
+
+        # 🔽 Decode sociallinks JSON string
+        if result.get("sociallinks"):
+            try:
+                result["sociallinks"] = json.loads(result["sociallinks"])
+            except Exception as e:
+                print("Could not decode sociallinks:", e)
+                result["sociallinks"] = {}
+        if token_access:
+            result["token"] = token_access
+
+        return result
+
+    except Exception as e:
+        print(f"Error fetching user info: {e}")
+        return {"status": "error", "message": str(e)}
+
+    finally:
+        if own_connection and connection:
+            connection.close()
+
+
+def fetch_contacts_by_user(userid):
+    """
+    Fetch all contacts (name, gmail) linked to a user_id through communication.
+    """
+
+    print(f"User ID for getting contacts: {userid}")
+    connection = connect_to_rds()
+    with connection.cursor() as cursor:
+        query = """
+            SELECT uc.users_clients_id, uc.first_name, uc.last_name, uc.email_id
+            FROM users_clients uc
+            JOIN communication c
+                ON uc.communication_id_fk = c.communication_id
+            WHERE c.user_id_fk = %s
+        """
+        cursor.execute(query, (userid,))
+        rows = cursor.fetchall()
+
+        contacts = []
+        for (
+            users_clients_id,
+            first_name,
+            last_name,
+            email,
+        ) in rows:
+            full_name = (
+                f"{(first_name or '').strip()} {(last_name or '').strip()}".strip()
+            )
+            if full_name or email:
+                contacts.append(
+                    {"id": users_clients_id, "name": full_name, "email": email}
+                )
+        print(f"contacts from backend: {contacts}")
+    return contacts

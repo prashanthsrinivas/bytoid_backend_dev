@@ -1,4 +1,4 @@
-from googleapiclient.errors import HttpError 
+from googleapiclient.errors import HttpError
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -8,11 +8,12 @@ from utils.normal import ensure_dir
 import os
 import io
 import time
-import requests 
+import requests
+
 load_dotenv()
 DOWNLOAD_DIR = "data"
-SCOPES = ['https://www.googleapis.com/auth/drive']
-SERVICE_ACCOUNT_FILE = 'new_service_secrets.json'
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+SERVICE_ACCOUNT_FILE = "new_service_secrets.json"
 # SERVICE_ACCOUNT_FILE = 'service_secret.json'
 SERVICE_ACCOUNT_EMAIL = os.getenv("SERVICE_CLIENT_EMAIL")  # Replace this
 
@@ -22,7 +23,7 @@ try:
     creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE, scopes=SCOPES
     )
-    Main_service = build('drive', 'v3', credentials=creds)
+    Main_service = build("drive", "v3", credentials=creds)
     print("Google Drive service initialized successfully.")
 except Exception as e:
     print(f"Error initializing Google Drive service: {e}")
@@ -31,7 +32,10 @@ except Exception as e:
 # --- Export map for Google Docs types ---
 export_map = {
     "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
-    "application/vnd.google-apps.spreadsheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
+    "application/vnd.google-apps.spreadsheet": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xlsx",
+    ),
     "application/vnd.google-apps.presentation": ("application/pdf", ".pdf"),
 }
 
@@ -42,36 +46,59 @@ def get_files_in_folder(service_instance, folder_id):
         return []
     try:
         query = f"'{folder_id}' in parents and trashed = false"
-        results = service_instance.files().list(q=query, fields="files(id, name, mimeType)").execute()
-        return results.get('files', [])
+        results = (
+            service_instance.files()
+            .list(q=query, fields="files(id, name, mimeType)")
+            .execute()
+        )
+        return results.get("files", [])
     except HttpError as error:
         print(f"An error occurred while listing files in folder {folder_id}: {error}")
         return []
 
+
 def share_file_with_email(file_id, user_service):
     new_permission = {
-        'type': 'user',
-        'role': 'commenter',
-        'emailAddress': SERVICE_ACCOUNT_EMAIL
+        "type": "user",
+        "role": "commenter",
+        "emailAddress": SERVICE_ACCOUNT_EMAIL,
     }
-    print(f"Sharing file {file_id} with {SERVICE_ACCOUNT_EMAIL} is been called")
-    print(f"service: {user_service}")
+
+    print(f"📤 Sharing file {file_id} with {SERVICE_ACCOUNT_EMAIL} is being called")
+    print(f"🔧 service: {user_service}")
+
     try:
-        print("sharing file with email initated")
-        request = user_service.permissions().create(
-        fileId=file_id,
-        body=new_permission,
-        fields='id',
-        sendNotificationEmail=False
+        # --- Get file metadata before attempting to share ---
+        print("📄 Fetching file metadata...")
+        file_metadata = (
+            user_service.files()
+            .get(fileId=file_id, fields="id, name, owners, permissions, capabilities")
+            .execute()
         )
-        print("Prepared request object:", request)
+
+        print("📂 File Metadata:", file_metadata)
+        if not file_metadata.get("capabilities", {}).get("canShare", False):
+            print("🚫 This account does NOT have permission to share this file.")
+            return None
+
+        print("🔄 Sharing file with email initiated...")
+        request = user_service.permissions().create(
+            fileId=file_id,
+            body=new_permission,
+            fields="id",
+            sendNotificationEmail=False,
+        )
+        print("📬 Prepared request object:", request)
 
         result = request.execute()
-        print("Type of result:", type(result))
-        print("Result content:", result)
-        permission_id = result.get('id')
-        print(f"✅ Shared file {file_id} with {SERVICE_ACCOUNT_EMAIL}, permission ID: {permission_id}")
+        print("📊 Type of result:", type(result))
+        print("✅ Result content:", result)
+        permission_id = result.get("id")
+        print(
+            f"🎯 Shared file {file_id} with {SERVICE_ACCOUNT_EMAIL}, permission ID: {permission_id}"
+        )
         return permission_id
+
     except HttpError as error:
         print(f"❌ HttpError while sharing file {file_id}: {error}")
         raise error
@@ -79,17 +106,20 @@ def share_file_with_email(file_id, user_service):
         print(f"❌ Unexpected error while sharing file {file_id}: {e}")
         raise e
 
+
 def revoke_permission(file_id, permission_id, user_service):
     try:
         user_service.permissions().delete(
-            fileId=file_id,
-            permissionId=permission_id
+            fileId=file_id, permissionId=permission_id
         ).execute()
         print(f"🗑️ Revoked permission {permission_id} from file {file_id}")
     except HttpError as error:
-        print(f"❌ Failed to revoke permission {permission_id} from file {file_id}: {error}")
+        print(
+            f"❌ Failed to revoke permission {permission_id} from file {file_id}: {error}"
+        )
 
-def download_file(f,userid, base_dir=None):
+
+def download_file(f, userid, base_dir=None):
     service_instance = Main_service
     file_id = f.get("id")
     name = f.get("name")
@@ -106,24 +136,31 @@ def download_file(f,userid, base_dir=None):
     base_dir = base_dir or DOWNLOAD_DIR
     print(f"Processing: '{name}' (ID: {file_id}, Type: {mime_type})")
 
-    if mime_type.startswith("application/vnd.google-apps") and mime_type != "application/vnd.google-apps.folder":
+    if (
+        mime_type.startswith("application/vnd.google-apps")
+        and mime_type != "application/vnd.google-apps.folder"
+    ):
         export_info = export_map.get(mime_type)
         if not export_info:
-            print(f"Unsupported Google Docs type for export: {mime_type} for file '{name}'. Skipping.")
+            print(
+                f"Unsupported Google Docs type for export: {mime_type} for file '{name}'. Skipping."
+            )
             return None
 
         export_mime, extension = export_info
         save_path = os.path.join(base_dir, userid, f"{name}{extension}")
 
         try:
-            request_export = service_instance.files().export_media(fileId=file_id, mimeType=export_mime)
+            request_export = service_instance.files().export_media(
+                fileId=file_id, mimeType=export_mime
+            )
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, request_export)
             done = False
             while not done:
                 status, done = downloader.next_chunk()
 
-            with open(save_path, 'wb') as f_out:
+            with open(save_path, "wb") as f_out:
                 f_out.write(fh.getvalue())
             print(f"✅ Successfully downloaded (exported) '{name}' to: {save_path}")
             return save_path
@@ -139,20 +176,28 @@ def download_file(f,userid, base_dir=None):
         try:
             ensure_dir(folder_path)
         except Exception as e:
-            print(f"❌ Failed to create local directory for folder '{name}': {e}. Skipping contents.")
+            print(
+                f"❌ Failed to create local directory for folder '{name}': {e}. Skipping contents."
+            )
             return None
 
         children = get_files_in_folder(service_instance, file_id)
 
         if len(children) == 0:
-            print(f"⚠️ Folder '{name}' (ID: {file_id}) has 0 items. Retrying in 4 seconds...")
+            print(
+                f"⚠️ Folder '{name}' (ID: {file_id}) has 0 items. Retrying in 4 seconds..."
+            )
             time.sleep(4)
             children = get_files_in_folder(service_instance, file_id)
 
-        print(f"📂 Folder '{name}' (ID: {file_id}) has {len(children)} items. Starting recursive download.")
+        print(
+            f"📂 Folder '{name}' (ID: {file_id}) has {len(children)} items. Starting recursive download."
+        )
         downloaded_files = []
         for child in children:
-            result = result = download_file(child, userid=userid, base_dir=folder_path)  # 🔁 <== pass updated path!
+            result = result = download_file(
+                child, userid=userid, base_dir=folder_path
+            )  # 🔁 <== pass updated path!
             if isinstance(result, list):
                 downloaded_files.extend(result)
             elif result:
@@ -169,7 +214,7 @@ def download_file(f,userid, base_dir=None):
             while not done:
                 status, done = downloader.next_chunk()
 
-            with open(save_path, 'wb') as f_out:
+            with open(save_path, "wb") as f_out:
                 f_out.write(fh.getvalue())
             print(f"✅ Successfully downloaded '{name}' to: {save_path}")
             return save_path
@@ -180,46 +225,63 @@ def download_file(f,userid, base_dir=None):
             print(f"❌ I/O error saving '{name}': {error}")
             return None
 
+
 def GetEmailandDriveService(access_token):
     try:
         user_creds = UserCredentials(token=access_token)
-        user_service = build('drive', 'v3', credentials=user_creds)
+        user_service = build("drive", "v3", credentials=user_creds)
+
+        # Test the service by fetching user info
+        about_info = user_service.about().get(fields="user").execute()
+        print("✅ Drive service is working for:", about_info["user"]["emailAddress"])
+
         return user_service
 
     except Exception as e:
         print(f"Exception in GetEmailandDriveService: {e}")
-        return None, None
-    
-def Mediatorservice(data,userid,user_service):
+        return None
+
+
+def Mediatorservice(data, userid, user_service):
     files_to_download = data.get("files", [])
     all_downloaded_paths = []
     failed_downloads = []
     ensure_dir(f"data/{userid}")
 
     print(f"\nReceived request to download {len(files_to_download)} files/folders.")
-    perm=None
+    perm = None
 
     for f_metadata in files_to_download:
         try:
             if user_service:
                 print("making a share request")
-                perm=share_file_with_email(f_metadata.get("id"),  user_service)
-                print(f"Permission: {perm}")
+                try:
+                    perm = share_file_with_email(f_metadata.get("id"), user_service)
+                    print(f"Permission: {perm}")
+                except Exception as e:
+                    print(f"⚠ Skipping share due to error: {e}")
+                    return
 
-            result = download_file(f_metadata,userid)
+            result = download_file(f_metadata, userid)
             if isinstance(result, list):
                 all_downloaded_paths.extend(result)
             elif result:
                 all_downloaded_paths.append(result)
             else:
-                failed_downloads.append(f_metadata.get("name", f_metadata.get("id", "Unknown File")))
+                failed_downloads.append(
+                    f_metadata.get("name", f_metadata.get("id", "Unknown File"))
+                )
         except Exception as e:
-            print(f"An unhandled error occurred during download of {f_metadata.get('name', f_metadata.get('id', 'Unknown'))}: {e}")
-            failed_downloads.append(f_metadata.get("name", f_metadata.get("id", "Unknown File")))
+            print(
+                f"An unhandled error occurred during download of {f_metadata.get('name', f_metadata.get('id', 'Unknown'))}: {e}"
+            )
+            failed_downloads.append(
+                f_metadata.get("name", f_metadata.get("id", "Unknown File"))
+            )
 
     if failed_downloads:
-        return None,False
+        return None, False
     else:
         if perm:
             revoke_permission(f_metadata.get("id"), perm, user_service)
-        return all_downloaded_paths,True
+        return all_downloaded_paths, True

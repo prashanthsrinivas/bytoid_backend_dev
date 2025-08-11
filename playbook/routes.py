@@ -12,6 +12,7 @@ from utils.fireworkzz import get_fireworks_response
 from .helperzz import *
 from utils.pb_config_utils import *
 from utils.normal import load_yaml_file
+from .wf_runner import WorkflowRunner
 
 playbook_bp = Blueprint("playbook", __name__)
 
@@ -898,30 +899,27 @@ def workflow_ai_suggest():
         )
 
 
-# @playbook_bp.route("/run_workflow", methods=["POST"])
-# def runWorkflow():
-#     from .wf_runner import WorkflowRunner
-#     from db.db_checkers import get_userinfo
-
-#     data = request.json
-#     userid = data.get("user_id")
-#     filename = data.get("filename")
-#     if not userid:
-#         return {"Not a valid userid"}, 400
-#     if not filename:
-#         return {"Not a valid filename"}, 400
-#     data = get_userinfo(userid)
-#     # details=
-#     # runner = WorkflowRunner(userid=userid, filename=filename,userdetails=data)
-#     # runner.execute()
-#     # return jsonify(runner.get_execution_log())
-#     return jsonify(data)
+@playbook_bp.route("/clarifications-reset", methods=["POST"])
+def workflow_clarifications_reset():
+    try:
+        data = request.json
+        user_id = data.get("user_id")
+        filename = data.get("filename")
+        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
+        workflow_json["clarifications_generated"] = False
+        if "clarification_questions" in workflow_json:
+            workflow_json.pop("clarification_questions")
+            return save_playbook_to_s3(
+                workflow_json, user_id, "clarifications reset", filename
+            )
+        else:
+            return {"message": "no clarifications present"}
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @playbook_bp.route("/run_workflow", methods=["POST"])
 def runWorkflow():
-    from .wf_runner import WorkflowRunner
-
     data = request.json
     userid = data.get("user_id")
     filename = data.get("filename")
@@ -930,16 +928,6 @@ def runWorkflow():
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-
-    # # Meeting details
-    # details = {
-    #     "summary": "Test Meeting",
-    #     "start_time": "2025-08-07T15:00:00+05:30",
-    #     "end_time": "2025-08-07T15:30:00+05:30",
-    #     "timezone": "Asia/Kolkata",
-    #     "hangoutLink": "https://meet.google.com/test-link",
-    # }
-
     try:
         runner = WorkflowRunner(userid=userid, filename=filename)
         bad = runner.execute()
@@ -947,5 +935,43 @@ def runWorkflow():
         result = runner.get_execution_log()
         print("dasdsad", result)
         return jsonify({"status": "success", "gmail_api_response": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/run_workflow_step", methods=["POST"])
+def run_workflow_step():
+    data = request.json
+    userid = data.get("user_id")
+    filename = data.get("filename")
+    step_id = data.get("step_id")
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    try:
+        runner = WorkflowRunner(userid=userid, filename=filename)
+        steps = runner.steps
+        # step_id is likely a UUID string
+        selected_step = steps[step_id]
+        if not selected_step:
+            return jsonify({"message": "Step not found", "status": "error"}), 404
+
+        # Execute and capture the actual output
+        step_result = runner._execute_single_step(selected_step)
+
+        # Also include log if you want
+        execution_log = runner.get_execution_log()
+
+        return jsonify(
+            {
+                "status": "success",
+                "workflow_step_result": step_result,
+                "execution_log": execution_log,
+            }
+        )
+
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

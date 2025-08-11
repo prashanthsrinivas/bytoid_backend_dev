@@ -126,7 +126,9 @@ def generate_yaml_ques_batch(usecases_with_docs, prompts, industry):
     return all_entries
 
 
-def fetch_ques_with_docs(usecases: list[str], userid: str) -> list[dict]:
+def fetch_ques_with_docs(
+    usecases: list[str], userid: str, filenames: list[str]
+) -> list[dict]:
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-large",
         openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -134,7 +136,12 @@ def fetch_ques_with_docs(usecases: list[str], userid: str) -> list[dict]:
     )
 
     vectors = embeddings.embed_documents(usecases)
-    payload = {"user_id": userid, "embeddings": vectors, "top_k": 1}
+    payload = {
+        "user_id": userid,
+        "embeddings": vectors,
+        "top_k": 1,
+        "filenames": filenames,
+    }
 
     try:
         response = requests.post(f"{dburl}/query_batch", json=payload)
@@ -158,7 +165,9 @@ def fetch_ques_with_docs(usecases: list[str], userid: str) -> list[dict]:
     return usecases_with_docs
 
 
-def fetch_usecases_with_docs(usecases: list[str], userid: str) -> list[dict]:
+def fetch_usecases_with_docs(
+    usecases: list[str], userid: str, filenames: list[str]
+) -> list[dict]:
     """
     Embeds all use cases and sends a single batch query to the LanceDB vector index.
     Returns a list of dictionaries with each use case and the top matching document.
@@ -175,7 +184,12 @@ def fetch_usecases_with_docs(usecases: list[str], userid: str) -> list[dict]:
     vectors = embeddings.embed_documents(usecases)
 
     # Step 2: Prepare and send batch query to LanceDB
-    batch_payload = {"user_id": userid, "embeddings": vectors, "top_k": 1}
+    batch_payload = {
+        "user_id": userid,
+        "embeddings": vectors,
+        "top_k": 1,
+        "filenames": filenames,
+    }
 
     try:
         response = requests.post(f"{dburl}/query_batch", json=batch_payload)
@@ -211,22 +225,63 @@ def fetch_usecases_with_docs(usecases: list[str], userid: str) -> list[dict]:
 
     return usecases_with_docs
 
+    # --- Helper: Remove old entries for given files ---
 
-def preProcessDocWithUsecases(industry=None, userid=None):
+
+def remove_entries_for_files(filepath, filenames):
+    if not os.path.exists(filepath):
+        return []
+    with open(filepath, "r", encoding="utf-8") as f:
+        existing = yaml.safe_load(f) or []
+
+    # Flatten nested lists, if any
+    flat_existing = []
+    for item in existing:
+        if isinstance(item, list):
+            flat_existing.extend(item)
+        else:
+            flat_existing.append(item)
+
+    # Normalize filenames for comparison (strip/lower/no extension)
+    filenames_norm = [os.path.splitext(f.strip().lower())[0] for f in filenames]
+
+    filtered = []
+    for entry in flat_existing:
+        if isinstance(entry, dict):
+            file_val = (entry.get("filename") or "").strip().lower()
+            file_val_no_ext = os.path.splitext(file_val)[0]
+            if file_val_no_ext not in filenames_norm:
+                filtered.append(entry)
+        else:
+            filtered.append(entry)
+
+    return filtered
+
+
+def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
+    """
+    Generate questions and answers for specific files (new or updated).
+    Merge results into existing passed_ques.yaml and failed_ques.yaml without losing old entries.
+    """
+
+    if not filenames or not isinstance(filenames, list):
+        logger.warning("⚠ No filenames passed for QA processing.")
+        return None
+
     data = load_yaml_file(path=pathconfig.smb_path)
     prompts = load_yaml_file(path=pathconfig.agent_template)
 
-    if data is None and prompts is None:
+    if not data and not prompts:
+        logger.error("❌ Missing usecase or prompt data.")
         return None
 
-    industry = industry
-    userid = userid
     usecases = get_usecases_for_smb(industry, data)
-    print("usecases", len(usecases))
+    if not usecases:
+        logger.warning(f"⚠ No usecases found for industry: {industry}")
+        return None
 
-    all_entries = []
-    usecases_with_docs = []
-    # lance_client = LanceClient(user_id=userid)
+    logger.info(f"📂 Processing QAs for files: {filenames}")
+
     main_folder = f"{pathconfig.basepath}/{userid}"
     os.makedirs(main_folder, exist_ok=True)
 
@@ -234,80 +289,61 @@ def preProcessDocWithUsecases(industry=None, userid=None):
     passes_files = os.path.join(main_folder, "passed_ques.yaml")
     failed_ques = os.path.join(main_folder, "failed_ques.yaml")
 
-    if os.path.exists(ques_filepath):
-        os.remove(ques_filepath)  # Clear previous questions file
-    if os.path.exists(passes_files):
-        os.remove(passes_files)
-    if os.path.exists(failed_ques):
-        os.remove(failed_ques)
+    # Step 1: Fetch docs & generate questions only for these files
+    usecases_with_docs = fetch_usecases_with_docs(usecases, userid, filenames=filenames)
+    all_entries = generate_yaml_ques_batch(usecases_with_docs, prompts, industry)
 
-    if usecases:
-        usecases_with_docs = fetch_usecases_with_docs(usecases, userid)
-        all_entries = generate_yaml_ques_batch(usecases_with_docs, prompts, industry)
-        print(f"✅ Generated {len(all_entries)} questions for {industry} industry.")
+    logger.info(f"✅ Generated {len(all_entries)} question entries for {industry}.")
 
-        with open(ques_filepath, "w", encoding="utf-8") as f:
-            yaml.dump(
-                all_entries,
-                f,
-                sort_keys=False,
-                allow_unicode=True,
-                default_flow_style=False,
-            )
-
-    # Build flat list of actual questions and a mapping from actual -> rephrased
+    # Step 2: Extract actual questions & mappings
     all_ques = []
     actual_to_rephrased = {}
     actual_to_quote = {}
-    with open(ques_filepath, "r", encoding="utf-8") as f:
-        all_entries = yaml.safe_load(f) or []
-
     for entry in all_entries:
         for q in entry.get("questions", []):
             actual = q.get("actual_one", "").strip()
             rephrased = q.get("rephrased", "").strip()
             quote = q.get("quote", "").strip()
             if actual:
-                all_ques.append(actual)  # ✅ CORRECT
+                all_ques.append(actual)
                 actual_to_rephrased[actual] = rephrased
                 actual_to_quote[actual] = quote
-    # print(len(all_ques), "all ques length")
-    # Fetch AI-generated answers for each question
-    content = fetch_ques_with_docs(all_ques, userid)
+
+    logger.info(f"filenames type: {type(filenames)}, value: {filenames}")
+    logger.info(f"usecases type: {type(all_ques)}, value: {all_ques}")
+
+    # Step 3: Get answers from LanceDB
+    content = fetch_ques_with_docs(all_ques, userid, filenames=filenames)
     batch_size = 10
     valid_responses = []
     clarification_responses = []
 
-    print(len(content), "content length")
+    logger.info(f"📊 Total questions for evaluation: {len(content)}")
 
     for i in range(0, len(content), batch_size):
-        print("loop index", i)
         batch = content[i : i + batch_size]
-
         res_raw = evaluator_batch_llama(
             prompts.get("new_response_validator_batch"), batch, industry
         )
 
-        # Extract the JSON array block using regex
         match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)
         if match:
-            json_block = match.group(0)
             try:
-                res_json = yaml.safe_load(json_block)
-                print("✅ Extracted & parsed response block.")
+                res_json = yaml.safe_load(match.group(0))
+                logger.INFO("✅ Extracted JSON block from evaluator.")
             except Exception as e:
-                print(f"❌ YAML parsing error: {e}")
+                logger.error(f"❌ Error parsing evaluator JSON: {e}")
                 res_json = []
         else:
-            print("❌ Could not extract JSON list from model output.")
+            logger.error("❌ No JSON array block found in evaluator output.")
             res_json = []
 
-        # Evaluate results
         for original_item, eval_result in zip(batch, res_json):
             actual_q = original_item["query"]
             related_res = eval_result.get("related", False)
             usecase_res = eval_result.get("has_usecase_details", False)
             filename = original_item.get("filename", "").strip()
+
             entry_obj = {
                 "User": actual_q,
                 "Rephrased Question": actual_to_rephrased.get(actual_q, ""),
@@ -321,20 +357,21 @@ def preProcessDocWithUsecases(industry=None, userid=None):
             else:
                 clarification_responses.append(entry_obj)
 
-    # Save results
+    # Step 4: Merge into existing YAMLs
+    existing_passed = remove_entries_for_files(passes_files, filenames)
+    existing_failed = remove_entries_for_files(failed_ques, filenames)
+
     if valid_responses:
-        save_yaml_file(valid_responses, filepath=passes_files)
+        merged_passed = existing_passed + valid_responses
+        save_yaml_file(merged_passed, filepath=passes_files)
 
     if clarification_responses:
-        save_yaml_file(clarification_responses, filepath=failed_ques)
+        merged_failed = existing_failed + clarification_responses
+        save_yaml_file(merged_failed, filepath=failed_ques)
 
-    logger.info(f"✅ Processed {len(all_ques)} questions for {industry} industry.")
-    logger.info(f"✅ Valid responses saved to: {passes_files}")
-    logger.info(
-        f"❗ Clarification needed for {len(clarification_responses)} questions. Saved to: {failed_ques}"
-    )
+    logger.info(f"✅ Merged QAs into {passes_files} and {failed_ques}")
     return {
-        "quespath": ques_filepath,
+        "processed_files": filenames,
         "passed_path": passes_files,
         "failed_path": failed_ques,
     }

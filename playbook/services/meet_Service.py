@@ -178,7 +178,6 @@ class GoogleMeetService:
                 calendarId="primary",
                 body=event,
                 conferenceDataVersion=1,
-                # sendUpdates="all",
             )
             .execute()
         )
@@ -187,8 +186,8 @@ class GoogleMeetService:
             "event_id": created_event.get("id"),
             "summary": created_event.get("summary"),
             "meet_link": created_event.get("hangoutLink"),
-            "start": created_event["start"],
-            "end": created_event["end"],
+            "start_time": created_event["start"],
+            "end_time": created_event["end"],
             "attendees": created_event.get("attendees", []),
         }
 
@@ -446,9 +445,9 @@ class GoogleMeetService:
 
                 if not overlap:
                     return {
-                        "start": slot_start.isoformat(),
-                        "end": slot_end.isoformat(),
-                        "date": slot_start.date().isoformat(),
+                        "startTime": slot_start.isoformat(),
+                        "endTime": slot_end.isoformat(),
+                        "startDate": slot_start.date().isoformat(),
                     }
 
                 slot_start += timedelta(minutes=15)

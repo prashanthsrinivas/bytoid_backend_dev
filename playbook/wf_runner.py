@@ -1,12 +1,47 @@
 import uuid
 import logging
 from typing import List, Dict, Any, Optional
+from cust_helpers import pathconfig
 from gmail_route.gmail_service import GmailService
 from utils.fireworkzz import get_fireworks_response
+from utils.normal import load_yaml_file
 from utils.s3_utils import read_json_from_s3
 from collections import defaultdict
 from db.db_checkers import get_userinfo, fetch_contacts_by_user
 import re
+from .services.meet_Service import GoogleMeetService
+from datetime import datetime, timedelta, timezone
+import json
+import pytz
+from dateutil import parser
+
+
+def normalize_scheduled_options(meeting_details: dict) -> dict:
+    # Handle 'tomorrow' or relative date
+    date_str = meeting_details.get("date", "")
+    if date_str.lower() == "tomorrow":
+        start_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        try:
+            start_date = parser.parse(date_str).strftime("%Y-%m-%d")
+        except Exception:
+            start_date = datetime.now().strftime("%Y-%m-%d")  # fallback
+
+    # Handle time
+    try:
+        time_obj = parser.parse(meeting_details.get("time", "09:00"))
+        start_time = time_obj.strftime("%H:%M")
+        end_time = (time_obj + timedelta(hours=1)).strftime("%H:%M")
+    except Exception:
+        start_time = "09:00"
+        end_time = "10:00"
+
+    return {
+        "startTime": start_time,
+        "endTime": end_time,
+        "startDate": start_date,
+        "timezone": "Asia/Kolkata",  # or dynamic if needed
+    }
 
 
 class WorkflowRunner:
@@ -29,6 +64,7 @@ class WorkflowRunner:
         self.logger = logging.getLogger(f"WorkflowRunner-{userid}-{filename}")
         self.logger.setLevel(logging.INFO)
         self.meetingDetails = None
+        self.ai_made_output = {}
         if (
             not self.logger.handlers
         ):  # Prevent adding multiple handlers in debug mode or multiple runs
@@ -113,6 +149,9 @@ class WorkflowRunner:
         else:
             raise ValueError(f"Unknown step type: {step_type}")
 
+    def _execute_single_step(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        return self._execute_step(step)
+
     def _handle_communication(self, step: Dict[str, Any]) -> Dict[str, Any]:
         allowed_modes = [
             "Direct Message",
@@ -161,21 +200,113 @@ class WorkflowRunner:
         ai_output = f"[SELF-LEARN] {step['ai_instructions']}"
         self.logger.info(ai_output)
 
-        # Pre-fill contacts if relevant
+        # Check if it's a contact preparation step
         objective = step.get("objective", "").lower()
         if re.search(
             r"\b(create|prepare|fetch|get)\b.*\b(contact list|contacts)\b", objective
         ):
             if len(self.contacts) < 1:
                 self.contacts = fetch_contacts_by_user(self.userid)
-            return {"output": ai_output, "next_step": step.get("next_step")}
+            return {
+                "output": {"contacts": self.contacts},
+                "next_step": step.get("next_step"),
+            }
+            # Handle special logic for checking availability
+        elif "availability" in objective and "google calendar" in objective:
+            self.logger.info("Checking availability using Google Calendar")
+            availability = self._handleavailability_google()
 
-        # Handle decision-based logic
+            if step.get("decision_point"):
+                if availability:
+                    selected_next_step = step["next_step"][0]  # "Time slot available"
+                    condition_msg = "Time slot available"
+
+                    # Optionally update scheduled_options for future steps
+                    self.input_data["scheduled_options"] = {
+                        "startTime": availability["startTime"][-8:-3],  # Extract HH:MM
+                        "endTime": availability["endTime"][-8:-3],
+                        "startDate": availability["startDate"],
+                        "timezone": self.input_data.get("scheduled_options", {}).get(
+                            "timezone", "Asia/Kolkata"
+                        ),
+                    }
+
+                else:
+                    selected_next_step = step["next_step"][
+                        1
+                    ]  # "Time slot not available"
+                    condition_msg = "Time slot not available"
+
+                return {
+                    "output": f"[AVAILABILITY] {availability or 'No slot found'}\nDecision: {condition_msg}",
+                    "next_step": selected_next_step,
+                }
+
+            return {
+                "output": f"{availability or 'No slot found'}",
+                "next_step": step.get("next_step"),
+            }
+        self.logger.info("Triggering AI prompt for meeting/email generation")
+        promptloc = load_yaml_file(path=pathconfig.play_template)
+        prompttempl = promptloc.get("self-learn-context", "")
+
+        inputprompt = (
+            prompttempl.replace("{{input_data}}", json.dumps(self.input_data, indent=2))
+            .replace("{{stepData}}", json.dumps(step, indent=2))
+            .replace("{{userData}}", json.dumps(self.userdetails, indent=2))
+            .replace(
+                "{{clarificationData}}",
+                json.dumps(self.clarification_answers, indent=2),
+            )
+        )
+
+        content = get_fireworks_response(inputprompt, role="system")
+
+        # Step 1: Normalize the output
+        if hasattr(content, "text"):
+            content_str = content.text
+        elif isinstance(content, dict):
+            content_str = content.get("message", "")
+        else:
+            content_str = str(content)
+
+        # Step 2: Parse JSON from markdown or raw body
+        match = re.search(r"```(?:json)?\s*(.*?)```", content_str, re.DOTALL)
+        if match:
+            cleaned_json = match.group(1).strip()
+            try:
+                parsed_output = json.loads(cleaned_json)
+            except Exception as e:
+                self.logger.error(f"Error parsing JSON from code block: {e}")
+                parsed_output = {"message": cleaned_json}
+        else:
+            if (
+                content_str.strip().lower().startswith("<!doctype html>")
+                or "<html>" in content_str.lower()
+            ):
+                parsed_output = {"html_email_body": content_str.strip()}
+            else:
+                parsed_output = {"message": content_str.strip()}
+
+        self.logger.warning(f"main parsed output -> {parsed_output}")
+        if (
+            "meeting_details" in parsed_output
+            and "scheduled_options" not in self.input_data
+        ):
+            self.input_data = {
+                "scheduled_options": normalize_scheduled_options(
+                    parsed_output.get("meeting_details", {})
+                )
+            }
+
+        # Save result
+        self.ai_made_output[step["id"]] = parsed_output
+
+        # Decision handling
         if step.get("decision_point"):
-            return self._handle_decision(step, ai_output)
+            return self._handle_decision(step, parsed_output)
 
-        # Non-decision self-learn step
-        return {"output": ai_output, "next_step": step.get("next_step")}
+        return {"output": parsed_output, "next_step": step.get("next_step")}
 
     def _handle_decision(self, step: Dict[str, Any], ai_output: str) -> Dict[str, Any]:
         # Placeholder: simulate a decision outcome (first condition as default for now)
@@ -210,63 +341,89 @@ class WorkflowRunner:
                 return step
         return None
 
-    def _handleGoogleMeet(self, step):
-        from .services.meet_Service import GoogleMeetService
-        from datetime import datetime
-
-        print("called meet thing")
-
-        email = self.userdetails["email"]
-        token = self.userdetails["token"]
-        scheduled_options = self.input_data.get("scheduled_options", {})
-
-        # Set fallback/defaults
-        start_time = scheduled_options.get("startTime", "09:00")
-        end_time = scheduled_options.get("endTime", "10:00")
-        start_date = scheduled_options.get("startDate", None)
-        timezone = scheduled_options.get("timezone", "Asia/Kolkata")
-
-        # Combine date and time
-        if start_date:
-            full_start = f"{start_date}T{start_time}:00"
-            full_end = f"{start_date}T{end_time}:00"
-        else:
-            today = datetime.now().strftime("%Y-%m-%d")
-            full_start = f"{today}T{start_time}:00"
-            full_end = f"{today}T{end_time}:00"
-
-        summary = f"Meeting Scheduled By {email} on {full_start}"
-        service = GoogleMeetService(access_token=token, user_email=email)
-        contacts = [item.get("email") for item in self.contacts if "email" in item]
+    def _handleGoogleMeet(self, step: Dict[str, Any]) -> Dict[str, Any]:
 
         try:
-            response = service.create_meeting(
-                summary=summary,
-                start_time=full_start,
-                end_time=full_end,
-                attendees=contacts,
-                timezone=timezone,
+            # Get token/email
+            token = self.userdetails["token"]
+            email = self.userdetails["email"]
+            meetData = self.input_data
+            scheduled_options = meetData.get("scheduled_options", {})
+
+            # Use dateutil.parser to handle timezones gracefully
+            now = datetime.now(timezone.utc)
+            timezone_str = scheduled_options.get("timezone", "Asia/Kolkata")
+
+            # Handle time parsing for start time
+            start_time_str = scheduled_options.get("startTime")
+            start_date = scheduled_options.get("startDate") or now.strftime("%Y-%m-%d")
+
+            if start_time_str:
+                # Use parser for robustness
+                start_datetime = parser.parse(f"{start_date} {start_time_str}")
+            else:
+                # If no startTime, round to next full hour and make it timezone-aware
+                next_hour = (now + timedelta(hours=1)).replace(
+                    minute=0, second=0, microsecond=0
+                )
+                start_datetime = next_hour
+
+            # Handle time parsing for end time
+            end_time_str = scheduled_options.get("endTime")
+            if end_time_str:
+                # Use parser for robustness
+                end_datetime = parser.parse(f"{start_date} {end_time_str}")
+            else:
+                # If no endTime, set it one hour after start_datetime
+                end_datetime = start_datetime + timedelta(hours=1)
+
+            self.logger.info(
+                f"[GoogleMeet] Start: {start_datetime}, End: {end_datetime}, Timezone: {timezone_str}"
             )
-            self.logger.info(f"[GoogleMeet Created] {response}")
-            self.meetingDetails = response
+
+            # Collect basic info
+            topic = meetData.get(
+                "topic",
+                f"Meeting Scheduled By {email} on {start_datetime.strftime('%Y-%m-%d %H:%M')}",
+            )
+            attendees = [item["email"] for item in self.contacts if "email" in item]
+
+            # Init service
+            service = GoogleMeetService(access_token=token, user_email=email)
+
+            # Create event
+            # --- FIX: Convert datetime objects to ISO format strings for JSON serialization ---
+            eventData = service.create_meeting(
+                summary=topic,
+                description=f"Auto-created meeting for {topic}",
+                attendees=attendees,
+                start_time=start_datetime.isoformat(),
+                end_time=end_datetime.isoformat(),
+                timezone=timezone_str,
+            )
+
+            self.meetingDetails = eventData
+
+            self.logger.info(f"[GoogleMeet Created] {eventData}")
             return {
                 "status": "success",
-                "output": f"Meeting scheduled successfully: {response.get('hangoutLink')}",
+                "output": f"Google Meet created successfully: {eventData.get('meet_link')}",
                 "next_step": step.get("next_step"),
             }
+
         except Exception as e:
             self.logger.error(f"[GoogleMeet Error] {e}")
-            return {"status": "error", "message": str(e)}
+            # The original error is a TypeError, but if another error occurs, this will catch it.
+            return {"output": f"[GoogleMeet Error] {e}"}
 
     def _handleGoogleMeetMail(self, step):
-        from gmail_route.gmail_service import GmailService
         from .helperzz import generate_meeting_email_body
 
         print("called meet mail thing")
 
         details = self.meetingDetails
         user_email = self.userdetails["email"]
-        contacts = [item.get("email") for item in self.contacts if "email" in item]
+        contacts = [item["email"] for item in self.contacts if "email" in item]
 
         subject = "Meeting Scheduled"
         body = (
@@ -298,6 +455,44 @@ class WorkflowRunner:
         except Exception as e:
             self.logger.error(f"Failed to send email: {e}")
             return {"status": "error", "message": str(e)}
+
+    def _handleavailability_google(self):
+        from datetime import datetime
+
+        # Extract user info
+        email = self.userdetails["email"]
+        token = self.userdetails["token"]
+
+        # Extract contact emails
+        contacts = [item.get("email") for item in self.contacts if "email" in item]
+
+        # Fallback/defaults
+        scheduled_options = self.input_data.get("scheduled_options", {}) or {}
+        start_time = scheduled_options.get("startTime", "10:00")
+        end_time = scheduled_options.get("endTime", "11:00")
+        start_date = scheduled_options.get("startDate")
+        timezone = scheduled_options.get("timezone", "Asia/Kolkata")
+        duration_minutes = int(scheduled_options.get("duration_minutes", 30))
+        days_to_check = int(scheduled_options.get("days_to_check", 3))
+
+        # Use today's date if not provided
+        preferred_date = start_date or datetime.now().strftime("%Y-%m-%d")
+
+        # Initialize service
+        service = GoogleMeetService(access_token=token, user_email=email)
+
+        # Call to get available slot
+        available_slot = service.get_first_available_slot(
+            attendees=contacts,
+            preferred_date=preferred_date,
+            start_time=start_time,
+            end_time=end_time,
+            duration_minutes=duration_minutes,
+            timezone=timezone,
+            days_to_check=days_to_check,
+        )
+
+        return available_slot
 
     def get_execution_log(self) -> List[Dict[str, Any]]:
         return self.execution_log

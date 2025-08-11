@@ -99,6 +99,7 @@ class LanceClient:
 
         # Use the created prompt_template object in the RunnableSequence
         self.relevance_chain = self.prompt_template | self.llm
+
     def check_user(self):
         """
         Check if the user exists in the LanceDB.
@@ -219,7 +220,7 @@ class LanceClient:
         )
         return docs
 
-    def process_document(self, file_path: str,filename: str):
+    def process_document(self, file_path: str, filename: str):
         documents = self.langchainprocessDocs(file_path)
         vector_batch = []
 
@@ -296,10 +297,13 @@ class LanceClient:
         )  # This will print the AIMessage object
         # You need to access .content from the AIMessage object
         return response.content.strip()
-    
+
     def delete_file_Data(self, foldername: str):
         try:
-            response = requests.post(f"{self.lancedb_url}/delete_folder", json={"user_id": self.user_id,"foldername":foldername})
+            response = requests.post(
+                f"{self.lancedb_url}/delete_folder",
+                json={"user_id": self.user_id, "foldername": foldername},
+            )
             if response.status_code == 200:
                 logger.info(f"[✔] Successfully deleted file with ID: {foldername}")
                 return {"status": "success", "message": f"File {foldername} deleted."}

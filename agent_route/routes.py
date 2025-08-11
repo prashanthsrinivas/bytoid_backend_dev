@@ -325,6 +325,56 @@ def checkquerywithApiKey():
         return jsonify({"error": str(e)}), 400
 
 
+def deletefilebasedData(filename, userid):
+    try:
+        main_folder = f"{pathconfig.basepath}/{userid}"
+        os.makedirs(main_folder, exist_ok=True)
+
+        for ques_file in ["passed_ques.yaml", "failed_ques.yaml"]:
+            ques_path = os.path.join(main_folder, ques_file)
+            if os.path.exists(ques_path):
+                with open(ques_path, "r") as f:
+                    ques_data = yaml.safe_load(f) or []
+
+                # Flatten in case there are nested lists
+                flat_data = []
+                for item in ques_data:
+                    if isinstance(item, list):
+                        flat_data.extend(item)
+                    else:
+                        flat_data.append(item)
+
+                target_name = filename.strip().lower()
+
+                filtered_data = []
+                for q in flat_data:
+                    if isinstance(q, dict):
+                        file_value = (q.get("filename") or "").strip().lower()
+                        if (
+                            os.path.splitext(file_value)[0]
+                            != os.path.splitext(target_name)[0]
+                        ):
+                            filtered_data.append(q)
+                    else:
+                        # Keep unexpected data untouched
+                        filtered_data.append(q)
+
+                if filtered_data:
+                    with open(ques_path, "w") as f:
+                        yaml.safe_dump(filtered_data, f, sort_keys=False)
+                else:
+                    os.remove(ques_path)
+
+        return True
+
+    except Exception as e:
+        logging.error(
+            f"Error deleting question entries for user {userid}, file {filename}: {e}",
+            exc_info=True,
+        )
+        return False
+
+
 @agent_bp.route("/process-drive", methods=["POST"])
 def download_files():
     """
@@ -336,11 +386,7 @@ def download_files():
 
     if not Main_service:
         return (
-            jsonify(
-                {
-                    "error": "Google Drive service not initialized. Check service_secret.json and credentials."
-                }
-            ),
+            jsonify({"error": "Google Drive service not initialized."}),
             500,
         )
 
@@ -390,10 +436,6 @@ def download_files():
             )
             if is_downloaded and len(all_downloaded_paths) > 0:
                 folderpath = os.path.commonpath(all_downloaded_paths)
-                # lance_client = LanceClient(user_id=userid)
-                # lance_client.process_document(
-                #     file_path=folderpath, foldername=data["files"][0]["name"]
-                # )
                 processed_filenames = []
                 for path in all_downloaded_paths:
                     filename = os.path.basename(
@@ -466,12 +508,17 @@ def download_files():
                 )
                 matched_industry = find_matching_industry(industry, indusries)
                 if matched_industry:
+                    new_or_updated_files = [
+                        item["filename"] for item in processed_filenames
+                    ]
                     # need to make this queue process
-                    run_background_task(
+                    result = run_background_task(
                         userid=userid,
                         industry=matched_industry,
+                        filenames=new_or_updated_files,
                         func=preProcessDocWithUsecases,
                     )
+                    print(f"[DEBUG] Background task queued: {result}")
 
                 with open(yaml_path, "r") as f:
                     all_file_data = yaml.safe_load(f) or []
@@ -518,17 +565,7 @@ def makeuserDocClarifications(userid=None, industry=None):
                 ),
                 400,
             )
-    # fetched_industry = data.get("industry") or industry or "Restaurant"
-    # connection=connect_to_rds()
-    # fetched_industry=None
-    # with connection.cursor() as cursor:
-    #     cursor.execute("SELECT LineOfBusiness FROM business_info WHERE user_id_fk = %s ", (fetched_userid,))
-    #     user_row = cursor.fetchone()
-    #     if not user_row:
-    #         return jsonify({"error": "No line of business present"}), 401
-    #     fetched_industry = user_row[0]
-    #     print("fetched_industry", fetched_industry)
-    #     connection.close()
+
     fetched_industry = get_line_of_business(fetched_userid)
     if not fetched_industry:
         return jsonify({"error": "No line of business present"}), 401
@@ -539,27 +576,44 @@ def makeuserDocClarifications(userid=None, industry=None):
     failed_path = f"{pathconfig.basepath}/{fetched_userid}/failed_ques.yaml"
     failed_entries = load_yaml_file(failed_path)
 
-    if failed_entries is None:
-        # File doesn't exist, trigger preProcessDocWithUsecases
-        print("File not found, calling preprocess")
-        lance_agent = LanceClient(user_id=fetched_userid)
-        check_user = lance_agent.check_user()
-        if not check_user:
+    if not failed_entries:
+        logger.info("⚠ failed_ques.yaml not found or empty, regenerating QAs...")
+
+        # Load file metadata to get all Present files
+        user_files_path = os.path.join(
+            f"{pathconfig.basepath}/{fetched_userid}", "users_fileData.yaml"
+        )
+        if not os.path.exists(user_files_path):
             return (
                 jsonify({"error": "Please upload a document to have clarifications"}),
                 404,
             )
-        run_background_task(
-            userid=userid, industry=fetched_industry, func=preProcessDocWithUsecases
+
+        file_data = load_yaml_file(user_files_path) or []
+        present_files = [
+            entry["filename"]
+            for entry in file_data
+            if entry.get("FileStatus") == "Present"
+        ]
+
+        if not present_files:
+            return (
+                jsonify({"error": "Please upload a document to have clarifications"}),
+                404,
+            )
+
+        # Trigger background QA generation for all present files
+        result = run_background_task(
+            userid=fetched_userid,
+            industry=fetched_industry,
+            filenames=present_files,
+            func=preProcessDocWithUsecases,
         )
+        print(f"[DEBUG] Background task queued: {result}")
         return (
-            jsonify({"message": "currently generating clarifications for the user."}),
+            jsonify({"message": "Currently generating clarifications for the user."}),
             400,
         )
-        # res = preProcessDocWithUsecases(industry=fetched_industry, userid=fetched_userid)
-        # if res is not None:
-        #     print("Found clarifications")
-        #     failed_entries = load_yaml_file(res["failed_path"])
 
     if not failed_entries:
         # File exists but is empty
@@ -800,6 +854,8 @@ def delete_file():
     Deletes vector data from LanceDB via LanceClient and updates the YAML metadata:
     - Sets 'FileStatus' to 'Deleted'
     - Sets 'updated_date' to current datetime
+    - Removes entries from passed_ques.yaml and failed_ques.yaml with matching filename
+    - Deletes passed/failed YAML files if they become empty
     """
     userid = request.json.get("userid")
     filename = request.json.get("filename")
@@ -813,11 +869,11 @@ def delete_file():
     if not os.path.exists(yaml_path):
         return jsonify({"error": "No documents found for this user"}), 404
 
-    # Load YAML
+    # Load main file metadata YAML
     with open(yaml_path, "r") as f:
         all_file_data = yaml.safe_load(f) or []
 
-    # Step 1: Delete vectors from LanceDB using the agent
+    # Step 1: Delete vectors from LanceDB
     lance_agent = LanceClient(user_id=userid)
     delete_result = lance_agent.delete_file_Data(foldername=filename)
 
@@ -841,14 +897,21 @@ def delete_file():
     if not file_found:
         return jsonify({"error": "Filename not found in YAML"}), 404
 
-    # Step 3: Save YAML
+    # Step 3: Save updated users_fileData.yaml
     with open(yaml_path, "w") as f:
         yaml.safe_dump(all_file_data, f, sort_keys=False)
+
+    success = deletefilebasedData(filename, userid)
+    if not success:
+        # Optionally log or handle this scenario
+        logging.warning(
+            f"Failed to delete question entries for user {userid}, file {filename}"
+        )
 
     return (
         jsonify(
             {
-                "message": "File deleted and metadata updated successfully",
+                "message": "File deleted and related question entries removed successfully",
                 "filename": filename,
                 "status": "Deleted",
                 "updated_date": current_time,
