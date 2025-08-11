@@ -1,7 +1,15 @@
-- - User: Is it possible to book a private dining event for less than 50 guests?
-    Rephrased Question: I saw 'Private dining for up to 50 guests' — can I book a
-      private event for a smaller group?
-    Ai Response: Yes, private dining events can be booked for less than 50 guests.
-      Please contact us for more information.
+- - User: How can I place a takeout order using the direct website?
+    Rephrased Question: It says 'App-based ordering via Uber Eats, DoorDash, and direct
+      website'. How can I place an order for takeout using the direct website?
+    Ai Response: You can place a takeout order using our direct website by clicking
+      on the 'Order Now' button. Simply select your items, choose your preferred pickup
+      time, and pay online.
+    quote: App-based ordering via Uber Eats, DoorDash, and direct website
+    filename: Savory_Haven_Bistro.docx
+  - User: Are there any restrictions on the number of guests for event hosting?
+    Rephrased Question: The documentation mentions 'Private dining for up to 50 guests'.
+      Are there any restrictions on the number of guests for event hosting?
+    Ai Response: Yes, there are restrictions on the number of guests for event hosting.
+      We can accommodate up to 50 guests for private dining events.
     quote: Private dining for up to 50 guests
     filename: Savory_Haven_Bistro.docx
