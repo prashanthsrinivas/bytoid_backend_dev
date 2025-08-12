@@ -10,6 +10,8 @@ from webhooks.routes import twilio_bp
 from contacts_route.route import contacts_bp
 from playbook.routes import playbook_bp
 from zoho_routes.routes import zoho_bp
+from credits_route.route import credits_bp
+from umail.routes import umail_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -84,6 +86,11 @@ CORS(
 )
 CORS(
     zoho_bp,
+    supports_credentials=True,
+    origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
+)
+CORS(
+    umail_bp,
     supports_credentials=True,
     origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
 )
@@ -172,6 +179,8 @@ app.register_blueprint(users_bp)
 app.register_blueprint(contacts_bp)
 app.register_blueprint(playbook_bp)
 app.register_blueprint(zoho_bp)
+app.register_blueprint(credits_bp)
+app.register_blueprint(umail_bp)
 
 
 

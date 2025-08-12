@@ -147,6 +147,7 @@ def fetch_gmail_messages(user_id):
 
                 count_new += 1
 
+                print(f"thread id of {message_id}  : {thread_id}")
                 print(
                     f"******[DEBUG] user_id={user_id} ({type(user_id)}), client_id={client_id} ({type(client_id)}), basepath={pathconfig.basepath}"
                 )

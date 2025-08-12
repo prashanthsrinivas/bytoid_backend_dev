@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 import requests
 from db.rds_db import connect_to_rds
-from data import MESSAGES    # delete this later, this is just for testing
+from data import MESSAGES  # delete this later, this is just for testing
 import uuid
 from data import MESSAGES  # delete this later
 from bs4 import BeautifulSoup
@@ -73,7 +73,6 @@ def microsoft_callback():
         "name": id_token_claims.get("name"),
         "email": id_token_claims.get("preferred_username"),
     }
-    
 
     access_token = result["access_token"]
     refresh_token = result["refresh_token"]
@@ -93,7 +92,7 @@ def microsoft_callback():
         given_name = userinfo.get("givenName")
         family_name = userinfo.get("surname")
         user_id = userinfo.get("id")
-        print("email from microsoft",email)
+        print("email from microsoft", email)
 
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -242,31 +241,29 @@ def microsoft_get_email():
 
             user_email = "riya@bytoid.io"
 
-####################################
-        # headers = {
-        #     "Authorization": f"Bearer {access_token}",
-        #     "Accept": "application/json"
-        # }
+            ####################################
+            # headers = {
+            #     "Authorization": f"Bearer {access_token}",
+            #     "Accept": "application/json"
+            # }
 
-        # url = f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders"
+            # url = f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders"
 
-        # try:
-        #     resp = requests.get(url, headers=headers)
-        #     resp.raise_for_status()
+            # try:
+            #     resp = requests.get(url, headers=headers)
+            #     resp.raise_for_status()
 
-        #     folders = resp.json()
-        #     for f in folders.get("value", []):
-        #         print("Folder Name:", f["displayName"])
-        #         print("Folder ID:  ", f["id"])
-        #         print("-" * 40)
+            #     folders = resp.json()
+            #     for f in folders.get("value", []):
+            #         print("Folder Name:", f["displayName"])
+            #         print("Folder ID:  ", f["id"])
+            #         print("-" * 40)
 
-        # except requests.exceptions.HTTPError as e:
-        #     print("HTTP error:", e)
-        #     print("Response text:", resp.text)
+            # except requests.exceptions.HTTPError as e:
+            #     print("HTTP error:", e)
+            #     print("Response text:", resp.text)
 
-
-###########################################
-
+            ###########################################
 
             emails = response.json().get("value", [])
 
@@ -288,23 +285,27 @@ def microsoft_get_email():
                 plain_text = soup.get_text().strip()
                 subject = email_data.get("subject")
                 sent_time = email_data.get("sentDateTime")
-                
-                from_address = email_data.get("from", {}).get("emailAddress", {}).get("address", "")
-                direction = "inbound" if from_address.lower() != email.lower() else "outbound"
+
+                from_address = (
+                    email_data.get("from", {})
+                    .get("emailAddress", {})
+                    .get("address", "")
+                )
+                direction = (
+                    "inbound" if from_address.lower() != email.lower() else "outbound"
+                )
                 from_email = email_data["from"]["emailAddress"]["address"]
-                to_email =  email_data['toRecipients'][0]['emailAddress']['address']
+                to_email = email_data["toRecipients"][0]["emailAddress"]["address"]
 
                 conversation_id = from_email if direction == "inbound" else to_email
-                
-
 
                 message_id = str(uuid.uuid4())
                 MESSAGES[email_id] = {
                     "id": message_id,
                     "from": email_data["from"]["emailAddress"]["name"],
-                    "to": email_data['toRecipients'][0]['emailAddress']['name'],
-                    "to_email": to_email, # remove after session is working
-                    "from_email" : from_email,
+                    "to": email_data["toRecipients"][0]["emailAddress"]["name"],
+                    "to_email": to_email,  # remove after session is working
+                    "from_email": from_email,
                     "body": plain_text,
                     "subject": subject,
                     "timestamp": sent_time,
@@ -326,134 +327,124 @@ def microsoft_get_email():
         return jsonify({"error": str(e)}), 500
 
 
+def send_outlook_email(to_email, subject, body_text, from_user_email, conversation_id):
 
-def send_outlook_email(to_email, subject, body_text, from_user_email,conversation_id):
-    
-        print("Sending Outlook email...")
-        print(f"To: {to_email}, Subject: {subject}, Body: {body_text}")
+    print("Sending Outlook email...")
+    print(f"To: {to_email}, Subject: {subject}, Body: {body_text}")
 
-        # email = session.get("user", {}).get("email")  # remove after session is working
-        email=from_user_email
-        if not email:
-            raise Exception("No user email found in session.")
+    # email = session.get("user", {}).get("email")  # remove after session is working
+    email = from_user_email
+    if not email:
+        raise Exception("No user email found in session.")
 
-        # Fetch token
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
+    # Fetch token
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+    cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
 
-        if not row:
-            raise Exception("Access token not found for user.")
+    if not row:
+        raise Exception("Access token not found for user.")
 
-        access_token = row[0]
+    access_token = row[0]
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body_text},
+            "toRecipients": [{"emailAddress": {"address": to_email}}],
+        },
+        "saveToSentItems": "true",
+    }
+
+    if from_user_email:
+        url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/sendMail"
+        print(f"Using from_user_email: {from_user_email}")
+    else:
+        url = "https://graph.microsoft.com/v1.0/me/sendMail"
+        print("Using current user's email for sending.")
+
+    # Send mail
+    response = requests.post(url, headers=headers, json=payload)
+
+    if not response.ok:
+        print("Graph API returned an error!")
+        print("Status:", response.status_code)
+        print("Response text:", response.text)
+        response.raise_for_status()
+        response.raise_for_status()
+
+    # Fetch last sent message to get conversationId
+    if from_user_email:
+        sent_items_url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
+    else:
+        sent_items_url = "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
+    sent_response = requests.get(sent_items_url, headers=headers)
+    sent_response.raise_for_status()
+
+    sent_data = sent_response.json()
+    if sent_data.get("value"):
+        last_msg = sent_data["value"][0]
+
+        # conversation_id = last_msg.get("conversationId")
+        real_message_id = last_msg.get("id")
+        timestamp = last_msg.get("sentDateTime")
+        subject_saved = last_msg.get("subject", subject)
+        body_saved = last_msg.get("body", {}).get("content", body_text)
+        message_id = str(uuid.uuid4())
+
+        # Save the message to MESSAGES
+        MESSAGES[real_message_id] = {
+            "id": message_id,
+            "from": email,
+            "to": to_email,
+            "body": body_saved,
+            "subject": subject_saved,
+            "timestamp": timestamp,
+            "status": "sent",
+            "source": "outlook",
+            "direction": "outbound",
+            "user_id": email,
+            "conversation_id": conversation_id,
         }
 
-        payload = {
-            "message": {
-                "subject": subject,
-                "body": {
-                    "contentType": "Text",
-                    "content": body_text
-                },
-                "toRecipients": [
-                    {
-                        "emailAddress": {
-                            "address": to_email
-                        }
-                    }
-                ]
-            },
-            "saveToSentItems": "true"
+        print(
+            f"✅ Saved Outlook message. Conversation ID: {conversation_id} messages:{MESSAGES[real_message_id]}"
+        )
+
+        return {"id": message_id, "conversation_id": conversation_id}
+
+    else:
+        # fallback if no message found
+        fallback_id = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        MESSAGES[fallback_id] = {
+            "id": fallback_id,
+            "from": email,
+            "to": to_email,
+            "body": body_text,
+            "subject": subject,
+            "timestamp": timestamp,
+            "status": "sent",
+            "source": "outlook",
+            "direction": "outbound",
+            "user_id": email,
+            "conversation_id": None,
+            "message_id": fallback_id,
         }
 
-        if from_user_email:
-            url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/sendMail"
-            print(f"Using from_user_email: {from_user_email}")
-        else:
-            url = "https://graph.microsoft.com/v1.0/me/sendMail"
-            print("Using current user's email for sending.")
-
-        # Send mail
-        response = requests.post(url, headers=headers, json=payload)
-          
-        if not response.ok:
-            print("Graph API returned an error!")
-            print("Status:", response.status_code)
-            print("Response text:", response.text)
-            response.raise_for_status()
-            response.raise_for_status()
-
-        # Fetch last sent message to get conversationId
-        if from_user_email:
-            sent_items_url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
-        else:
-            sent_items_url = "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
-        sent_response = requests.get(sent_items_url, headers=headers)
-        sent_response.raise_for_status()
-
-        sent_data = sent_response.json()
-        if sent_data.get("value"):
-            last_msg = sent_data["value"][0]
-
-            # conversation_id = last_msg.get("conversationId")
-            real_message_id = last_msg.get("id")
-            timestamp = last_msg.get("sentDateTime")
-            subject_saved = last_msg.get("subject", subject)
-            body_saved = last_msg.get("body", {}).get("content", body_text)
-            message_id = str(uuid.uuid4())
-
-            # Save the message to MESSAGES
-            MESSAGES[real_message_id] = {
-                "id": message_id,
-                "from": email,
-                "to": to_email,
-                "body": body_saved,
-                "subject": subject_saved,
-                "timestamp": timestamp,
-                "status": "sent",
-                "source": "outlook",
-                "direction": "outbound",
-                "user_id": email,
-                "conversation_id": conversation_id,
-            }
-
-            print(f"✅ Saved Outlook message. Conversation ID: {conversation_id} messages:{MESSAGES[real_message_id]}")
-
-            return {
-                "id": message_id,
-                "conversation_id": conversation_id
-            }
-
-        else:
-            # fallback if no message found
-            fallback_id = str(uuid.uuid4())
-            timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-            MESSAGES[fallback_id] = {
-                "id": fallback_id,
-                "from": email,
-                "to": to_email,
-                "body": body_text,
-                "subject": subject,
-                "timestamp": timestamp,
-                "status": "sent",
-                "source": "outlook",
-                "direction": "outbound",
-                "user_id": email,
-                "conversation_id": None,
-                "message_id": fallback_id
-            }
-
-            print(f"⚠️ Could not find sent mail. Saved fallback message with no conversation ID.")
-            return {"id": fallback_id}
-
+        print(
+            f"⚠️ Could not find sent mail. Saved fallback message with no conversation ID."
+        )
+        return {"id": fallback_id}
 
 
 @microsoft_bp.route("/microsoft/send_mail", methods=["POST"])
@@ -829,6 +820,29 @@ def microsoft_list_trash():
 
 #     except Exception as e:
 #         return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/process-outlook", methods=["POST"])
+def process_outlook():
+    data = request.get_json()
+    userid = data.get("user_id")
+    files = data.get("files")
+    for i in files:
+        file_url = i.get("file_url")
+        file_name = i.get("file_name")
+        if not file_url or not file_name:
+            return jsonify({"error": "Missing url or name"}), 400
+
+        resp = requests.get(file_url)
+        if resp.status_code != 200:
+            return jsonify({"error": "Failed to download file"}), 500
+
+        save_path = os.path.join("downloads", file_name)
+        os.makedirs("downloads", exist_ok=True)
+        with open(save_path, "wb") as f:
+            f.write(resp.content)
+
+    return jsonify({"message": "File downloaded", "path": save_path})
 
 
 @microsoft_bp.route("/logout")

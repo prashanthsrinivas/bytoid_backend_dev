@@ -210,8 +210,8 @@ class GmailService:
         return draft
 
     def send_email(self, to, subject, body_text):
-           
-        try:  
+
+        try:
             message = EmailMessage()
             message["To"] = to
             message["Subject"] = subject
@@ -248,7 +248,7 @@ class GmailService:
             }
 
             return MESSAGES[message_id]
-        
+
         except Exception as e:
             print(f"❌ Error sending email: {e}")
             raise

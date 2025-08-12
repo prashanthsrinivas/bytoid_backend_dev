@@ -5,8 +5,6 @@ from db.rds_db import connect_to_rds
 import uuid
 
 
-
-
 contacts_bp = Blueprint("contacts", __name__)
 
 
@@ -35,7 +33,6 @@ contacts_bp = Blueprint("contacts", __name__)
 #         instagram_id = data.get("instagramId","")
 #         slack_id = data.get("slackId","")
 #         slack_workspace = data.get("slackWorkspace","")
-       
 
 
 #         # Validate required fields
@@ -68,16 +65,16 @@ contacts_bp = Blueprint("contacts", __name__)
 #                 SELECT uc.users_clients_id, c.communication_id
 #                 FROM users_clients uc
 #                 JOIN communication c ON c.users_clients_id_fk = uc.users_clients_id
-#                 WHERE c.user_id_fk = %s 
-             
+#                 WHERE c.user_id_fk = %s
+
 #                 LIMIT 1;
 #                 """
-            
+
 
 #             cursor.execute(sql, (user_id,))
- 
+
 #             exists = cursor.fetchone()
-            
+
 #             users_client_id,communication_id=exists
 #             print(f"existe - {exists}")
 
@@ -114,7 +111,7 @@ contacts_bp = Blueprint("contacts", __name__)
 #                         instagram_id,
 #                         slack_id,
 #                         slack_workspace
-                        
+
 #                     )
 #                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 #                 """
@@ -132,7 +129,7 @@ contacts_bp = Blueprint("contacts", __name__)
 #                         instagram_id,
 #                         slack_id,
 #                         slack_workspace
-                        
+
 #                     )
 #                 )
 
@@ -143,12 +140,12 @@ contacts_bp = Blueprint("contacts", __name__)
 #                     WHERE communication_id = %s
 #                 """
 #                 cursor.execute(link_sql, (users_clients_id, communication_id))
-            
+
 #             else:
 #                 print("updating existing communiaction and users_clients")
 #                 users_clients_id, communication_id = exists
 
-#                 # check the input email,mobile allotherfileds 
+#                 # check the input email,mobile allotherfileds
 #                 sql="""
 #                 select users_clients_id from users_clients where email_id=%s and communication_id_fk  =%s
 #                 """
@@ -159,7 +156,7 @@ contacts_bp = Blueprint("contacts", __name__)
 #                 if not users_id:
 #                     print("creating new contact")
 #                     users_clients_id = str(uuid.uuid4())
-                    
+
 #                     create_users_clients = """
 #                     INSERT INTO users_clients (
 #                         first_name, last_name, phone_number, whatsapp_number, email_id,
@@ -167,7 +164,7 @@ contacts_bp = Blueprint("contacts", __name__)
 #                     )
 #                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 #                     """
-                    
+
 #                     cursor.execute(create_users_clients, (first_name, last_name, phone_number, whatsapp_number, email_id, facebook_id, instagram_id, slack_id, slack_workspace,  communication_id ))
 #                     return jsonify({
 #                             "status": "success",
@@ -176,7 +173,7 @@ contacts_bp = Blueprint("contacts", __name__)
 #                         })
 #                 else:
 #                     return {"message":"account already exists"},400
-            
+
 
 #     except Exception as e:
 #         traceback.print_exc()
@@ -185,9 +182,7 @@ contacts_bp = Blueprint("contacts", __name__)
 #         connection.commit()
 
 
-
-
-@contacts_bp.route('/contacts/save', methods=['POST'])
+@contacts_bp.route("/contacts/save", methods=["POST"])
 def save_contact():
     try:
         data = request.get_json() or {}
@@ -210,8 +205,25 @@ def save_contact():
             return jsonify({"error": "First name is required"}), 400
         if not last_name:
             return jsonify({"error": "Last name is required"}), 400
-        if not any([phone_number, whatsapp_number, email_id, facebook_id, instagram_id, slack_id, slack_workspace]):
-            return jsonify({"error": "At least one contact identifier is required (phone, email, or social handle)."}), 400
+        if not any(
+            [
+                phone_number,
+                whatsapp_number,
+                email_id,
+                facebook_id,
+                instagram_id,
+                slack_id,
+                slack_workspace,
+            ]
+        ):
+            return (
+                jsonify(
+                    {
+                        "error": "At least one contact identifier is required (phone, email, or social handle)."
+                    }
+                ),
+                400,
+            )
 
         connection = connect_to_rds()
 
@@ -231,16 +243,26 @@ def save_contact():
                 )
                 LIMIT 1;
             """
-            cursor.execute(check_contact_sql, (
-                user_id,
-                phone_number, phone_number,
-                whatsapp_number, whatsapp_number,
-                email_id, email_id,
-                facebook_id, facebook_id,
-                instagram_id, instagram_id,
-                slack_id, slack_id,
-                slack_workspace, slack_workspace
-            ))
+            cursor.execute(
+                check_contact_sql,
+                (
+                    user_id,
+                    phone_number,
+                    phone_number,
+                    whatsapp_number,
+                    whatsapp_number,
+                    email_id,
+                    email_id,
+                    facebook_id,
+                    facebook_id,
+                    instagram_id,
+                    instagram_id,
+                    slack_id,
+                    slack_id,
+                    slack_workspace,
+                    slack_workspace,
+                ),
+            )
             exists = cursor.fetchone()
 
             if not exists:
@@ -274,19 +296,22 @@ def save_contact():
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
-                cursor.execute(insert_sql, (
-                    users_clients_id,
-                    communication_id,
-                    first_name,
-                    last_name,
-                    phone_number,
-                    whatsapp_number,
-                    email_id,
-                    facebook_id,
-                    instagram_id,
-                    slack_id,
-                    slack_workspace
-                ))
+                cursor.execute(
+                    insert_sql,
+                    (
+                        users_clients_id,
+                        communication_id,
+                        first_name,
+                        last_name,
+                        phone_number,
+                        whatsapp_number,
+                        email_id,
+                        facebook_id,
+                        instagram_id,
+                        slack_id,
+                        slack_workspace,
+                    ),
+                )
 
                 link_sql = """
                     UPDATE communication
@@ -307,7 +332,7 @@ def save_contact():
                     "facebook_id": facebook_id,
                     "instagram_id": instagram_id,
                     "slack_id": slack_id,
-                    "slack_workspace": slack_workspace
+                    "slack_workspace": slack_workspace,
                 }
                 set_clauses = []
                 values = []
@@ -325,11 +350,13 @@ def save_contact():
                     cursor.execute(update_query, tuple(values))
 
             connection.commit()
-            return jsonify({
-                "status": "success",
-                "communication_id": communication_id,
-                "users_clients_id": users_clients_id
-            })
+            return jsonify(
+                {
+                    "status": "success",
+                    "communication_id": communication_id,
+                    "users_clients_id": users_clients_id,
+                }
+            )
 
     except Exception as e:
         traceback.print_exc()
@@ -346,14 +373,15 @@ def save_contact():
 #     if this present:
 #         e
 
-@contacts_bp.route('/contacts/list', methods=['GET'])
-def get_contacts_by_user():
+
+@contacts_bp.route("/contacts/list", methods=["GET"])
+def get_contacts_by_user(userid=None):
     """
     Fetch all contacts (name, gmail) linked to a user_id through communication.
     """
 
     try:
-        user_id = request.args.get("user_id") or session.get("user_id")
+        user_id = request.args.get("user_id") or session.get("user_id") or userid
         print(f"User ID for getting contacts: {user_id}")
         connection = connect_to_rds()
         with connection.cursor() as cursor:
@@ -368,16 +396,20 @@ def get_contacts_by_user():
             rows = cursor.fetchall()
 
             contacts = []
-            for users_clients_id,first_name, last_name, email, in rows:
-                full_name = f"{(first_name or '').strip()} {(last_name or '').strip()}".strip()
+            for (
+                users_clients_id,
+                first_name,
+                last_name,
+                email,
+            ) in rows:
+                full_name = (
+                    f"{(first_name or '').strip()} {(last_name or '').strip()}".strip()
+                )
                 if full_name or email:
-                    contacts.append({
-                        "id":users_clients_id,
-                        "name": full_name,
-                        "email": email
-                    })
+                    contacts.append(
+                        {"id": users_clients_id, "name": full_name, "email": email}
+                    )
             print(f"contacts from backend: {contacts}")
-
         return jsonify(contacts)
 
     except Exception as e:

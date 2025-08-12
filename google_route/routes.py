@@ -525,6 +525,7 @@ def sendCredits():
     access_token = os.getenv("ACCESSTOKEN")
     zoho_client_id = os.getenv("ZOHO_CLIENT_ID")
     microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID")
+    microsoft_tenantid = os.getenv("MICROSOFT_TENANT_ID")
 
     if pr == "GM":
         if not client_id or not access_token:
@@ -548,7 +549,11 @@ def sendCredits():
         if not microsoft_client_id:
             return jsonify({"error": "Missing MICROSOFT_CLIENT_ID"}), 500
         return jsonify(
-            {"value": xor_encrypt(microsoft_client_id, secretkey), "mod": secretkey}
+            {
+                "value": xor_encrypt(microsoft_client_id, secretkey),
+                "name": xor_encrypt(microsoft_tenantid, secretkey),
+                "mod": secretkey,
+            }
         )
 
     else:

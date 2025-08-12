@@ -484,10 +484,13 @@ def createTableAssigned():
     try:
         create_table_sql = """
             CREATE TABLE IF NOT EXISTS assigned (
-                users_clients_id VARCHAR(36),
+                assigned_id VARCHAR(36) PRIMARY KEY,
+                user_id_fk VARCHAR(36),
+                users_clients_id_fk VARCHAR(36),
                 ticket_id_fk VARCHAR(36),
-                PRIMARY KEY (users_clients_id, ticket_id_fk),
-                FOREIGN KEY (ticket_id_fk) REFERENCES tickets(tickets_id)
+                FOREIGN KEY (user_id_fk) REFERENCES users(user_id),
+                FOREIGN KEY (ticket_id_fk) REFERENCES tickets(tickets_id),
+                FOREIGN KEY (users_clients_id_fk) REFERENCES users_clients(users_clients_id)
             );
         """
         cursor.execute(create_table_sql)
@@ -715,6 +718,32 @@ def alter_tables_users_subscribe():
         connection.close()
 
 
+def updateticketsla():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed.")
+        return
+
+    cursor = connection.cursor()
+    try:
+        alter_theads = """
+            ALTER TABLE tickets
+            ADD COLUMN SLA INTEGER;
+        """
+        cursor.execute(alter_theads)
+
+        connection.commit()
+        print("✅ Columns added successfully!")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # create_tables()
@@ -727,12 +756,13 @@ if __name__ == "__main__":
     # renameConnectandcreatePlaybook()
     # updatethreadstoticket()
     # createticketstable()
-    # createTableAssigned()
-    print("creating table file")
+    createTableAssigned()
+    # print("creating table file")
     # rename_columns_in_tickets()
     # updateticket()
     # create_new_threads()
     # create_new_messages()
     # create_plans()
     # create_subscribe()
-    alter_tables_users_subscribe()
+    # alter_tables_users_subscribe()
+    # updateticketsla()
