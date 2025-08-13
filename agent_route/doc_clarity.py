@@ -330,7 +330,7 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
         if match:
             try:
                 res_json = yaml.safe_load(match.group(0))
-                logger.INFO("✅ Extracted JSON block from evaluator.")
+                logger.info("✅ Extracted JSON block from evaluator.")
             except Exception as e:
                 logger.error(f"❌ Error parsing evaluator JSON: {e}")
                 res_json = []

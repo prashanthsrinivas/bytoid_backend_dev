@@ -1,82 +1,274 @@
-- - User: Can I order breakfast items during lunch hours?
-    Rephrased Question: I saw 'Full-service lunch and dinner' mentioned. Can I order
-      breakfast items during lunch hours?
-    Ai Response: We're sorry — the document doesn't provide information on ordering
-      breakfast items during lunch hours. Please add this information to help us better
-      support your customers in the future.
-    quote: Full-service lunch and dinner
+- - User: Can I book an interactive dining experience where chefs explain dish inspiration
+      and offer recommendations?
+    Rephrased Question: I saw 'Guests can book exclusive interactive dining experiences
+      where chefs explain the inspiration behind each dish and offer personalized
+      recommendations.' — can I book an interactive dining experience?
+    Ai Response: We're sorry — the document doesn't provide information on booking
+      an interactive dining experience. Please add details about this service for
+      better support in the future.
+    quote: Guests can book exclusive interactive dining experiences where chefs explain
+      the inspiration behind each dish and offer personalized recommendations.
     filename: Savory_Haven_Bistro.docx
-  - User: How can I track the preparation status of my lunch order?
-    Rephrased Question: I noticed 'Full-service lunch and dinner' in the documentation.
-      How can I track the preparation status of my lunch order?
-    Ai Response: We couldn't find details in the document on how to track the preparation
-      status of your lunch order. Please add this information to help us better support
-      your customers in the future.
-    quote: Full-service lunch and dinner
+  - User: How does the AI on the website/app suggest dishes based on my dietary preferences?
+    Rephrased Question: I saw 'Our website/app features AI that suggests dishes based
+      on previous orders and dietary preferences.' — how does the AI suggest dishes
+      based on dietary preferences?
+    Ai Response: We couldn't find details in the document about how the AI on the
+      website/app suggests dishes based on dietary preferences. Please provide more
+      information on this feature for better support.
+    quote: Our website/app features AI that suggests dishes based on previous orders
+      and dietary preferences.
     filename: Savory_Haven_Bistro.docx
-  - User: How can I check the current wait time for a table?
-    Rephrased Question: The documentation mentions 'Comfortable indoor and outdoor
-      seating'. How can I check the current wait time for a table?
-    Ai Response: We're sorry — the document doesn't provide information on how to
-      check the current wait time for a table. Please add this information to help
-      us better support your customers in the future.
-    quote: Comfortable indoor and outdoor seating
+  - User: When is the next themed night event, like wine pairing dinners or cultural
+      food festivals?
+    Rephrased Question: I saw 'Regularly hosts themed nights such as wine pairing
+      dinners, live acoustic music, and cultural food festivals celebrating diverse
+      cuisines.' — when is the next themed night event?
+    Ai Response: We're sorry — the document doesn't provide information on upcoming
+      themed night events. Please add details about these events for better support
+      in the future.
+    quote: Regularly hosts themed nights such as wine pairing dinners, live acoustic
+      music, and cultural food festivals celebrating diverse cuisines.
     filename: Savory_Haven_Bistro.docx
-  - User: How can I receive personalized menu suggestions based on my dietary preferences?
-    Rephrased Question: I saw 'Full-service lunch and dinner' mentioned. How can I
-      receive personalized menu suggestions based on my dietary preferences?
-    Ai Response: We couldn't find details in the document on how to receive personalized
-      menu suggestions based on dietary preferences. Please add this information to
-      help us better support your customers in the future.
-    quote: Full-service lunch and dinner
+  - User: How can I get a complimentary dessert for celebrating a milestone at your
+      restaurant?
+    Rephrased Question: I saw 'Complimentary dessert and personalized greeting cards
+      for guests celebrating milestones.' — how can I receive a complimentary dessert
+      for celebrating a milestone?
+    Ai Response: We couldn't find details in the document about getting a complimentary
+      dessert for celebrating a milestone. Please provide more information on this
+      offer for better support.
+    quote: Complimentary dessert and personalized greeting cards for guests celebrating
+      milestones.
     filename: Savory_Haven_Bistro.docx
-  - User: How can I make modifications to my order due to allergies?
-    Rephrased Question: The documentation mentions 'Comfortable indoor and outdoor
-      seating'. How can I make modifications to my order due to allergies?
-    Ai Response: We're sorry — the document doesn't provide information on how to
-      make modifications to your order due to allergies. Please add this information
-      to help us better support your customers in the future.
-    quote: Comfortable indoor and outdoor seating
+  - User: How does the CRM system manage guest preferences for reservations and loyalty?
+    Rephrased Question: I saw 'Integrated CRM system for efficient reservation handling,
+      guest preferences, and loyalty management.' — how does the CRM system handle
+      guest preferences?
+    Ai Response: We're sorry — the document doesn't provide information on how the
+      CRM system manages guest preferences for reservations and loyalty. Please add
+      details about this system for better support in the future.
+    quote: Integrated CRM system for efficient reservation handling, guest preferences,
+      and loyalty management.
     filename: Savory_Haven_Bistro.docx
-  - User: Can I split the bill and pay using different payment types via chat?
-    Rephrased Question: I noticed 'Comfortable indoor and outdoor seating' in the
-      documentation. Can I split the bill and pay using different payment types via
-      chat?
-    Ai Response: We couldn't find details in the document on how to split the bill
-      and pay using different payment types via chat. Please add this information
-      to help us better support your customers in the future.
-    quote: Comfortable indoor and outdoor seating
+  - User: How does the POS system track orders in real-time and ensure accuracy?
+    Rephrased Question: I saw 'Advanced POS system linked directly to kitchen display
+      for real-time order tracking and accuracy.' — how does the POS system track
+      orders in real-time?
+    Ai Response: We couldn't find details in the document about how the POS system
+      tracks orders in real-time and ensures accuracy. Please provide more information
+      on this system for better support.
+    quote: Advanced POS system linked directly to kitchen display for real-time order
+      tracking and accuracy.
     filename: Savory_Haven_Bistro.docx
-  - User: How can I find out about high-margin items or combo deals?
-    Rephrased Question: The documentation mentions 'Monthly seasonal specials and
-      tasting menus'. How can I find out about high-margin items or combo deals?
-    Ai Response: We're sorry — the document doesn't provide information on high-margin
-      items or combo deals. Please add this information to help us better support
-      your customers in the future.
-    quote: Monthly seasonal specials and tasting menus
+  - User: How does the AI personalize menu suggestions based on my dietary preferences
+      on the website/app?
+    Rephrased Question: 'I saw ''AI-Powered Recommendations: Our website/app features
+      AI that suggests dishes based on previous orders and dietary preferences.''
+      — how does the AI personalize menu suggestions based on dietary preferences?'
+    Ai Response: We're sorry — the document doesn't provide information on how the
+      AI personalizes menu suggestions based on dietary preferences on the website/app.
+      Please add details about this feature for better support in the future.
+    quote: 'AI-Powered Recommendations: Our website/app features AI that suggests
+      dishes based on previous orders and dietary preferences.'
     filename: Savory_Haven_Bistro.docx
-  - User: How can I enroll in the loyalty program or update my details?
-    Rephrased Question: I saw 'Loyalty program (Savory Points)' mentioned. How can
-      I enroll in the loyalty program or update my details?
-    Ai Response: We couldn't find details in the document on how to enroll in the
-      loyalty program or update your details. Please add this information to help
-      us better support your customers in the future.
-    quote: Loyalty program (Savory Points)
+  - User: How can I remotely join the waitlist and receive SMS notifications when
+      my table is ready?
+    Rephrased Question: 'I saw ''Real-Time Waitlist: Guests can join the waitlist
+      remotely and receive SMS notifications when their table is ready.'' — how can
+      I join the waitlist remotely?'
+    Ai Response: We're sorry — the document doesn't contain information about remotely
+      joining the waitlist and receiving SMS notifications when your table is ready.
+      Please add this information for better support in the future.
+    quote: 'Real-Time Waitlist: Guests can join the waitlist remotely and receive
+      SMS notifications when their table is ready.'
     filename: Savory_Haven_Bistro.docx
-  - User: How can I make a table reservation during the specified operating hours?
-    Rephrased Question: 'The documentation mentions ''Operating Hours: 11 AM – 10
-      PM (Weekdays), 9 AM – 11 PM (Weekends)''. How can I make a table reservation
-      during these hours?'
+  - User: How do I access live cooking sessions with chefs through the app to recreate
+      dishes at home?
+    Rephrased Question: I saw 'Access live and recorded sessions with our chefs through
+      the app, allowing customers to recreate favorite dishes at home.' — how can
+      I access live cooking sessions with chefs through the app?
+    Ai Response: We're sorry — the document doesn't contain information about accessing
+      live cooking sessions with chefs through the app to recreate dishes at home.
+      Please add this information for better support in the future.
+    quote: 'Virtual Cooking Classes: Access live and recorded sessions with our chefs
+      through the app, allowing customers to recreate favorite dishes at home.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How do the monthly workshops on culinary trends and safety protocols ensure
+      top-tier team performance?
+    Rephrased Question: I saw 'Monthly workshops on culinary trends, customer service
+      excellence, and safety protocols to ensure the team remains top-tier.' — how
+      do the monthly workshops ensure top-tier team performance?
+    Ai Response: We're sorry — the document doesn't contain information about how
+      the monthly workshops on culinary trends and safety protocols ensure top-tier
+      team performance. Please add this information for better support in the future.
+    quote: 'Continuous Training Programs: Monthly workshops on culinary trends, customer
+      service excellence, and safety protocols to ensure the team remains top-tier.'
+    filename: Savory_Haven_Bistro.docx
+  - User: Can I split bills and process payments using the AI on the website/app that
+      suggests dishes based on my preferences?
+    Rephrased Question: I saw 'Our website/app features AI that suggests dishes based
+      on previous orders and dietary preferences.' — can I split bills and process
+      payments using the AI on the website/app?
+    Ai Response: We're sorry — the document doesn't contain information about splitting
+      bills and processing payments using the AI on the website/app. Please add this
+      information for better support in the future.
+    quote: 'AI-Powered Recommendations: Our website/app features AI that suggests
+      dishes based on previous orders and dietary preferences.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How can I split bills and process multiple payment types via chat after
+      joining the waitlist remotely?
+    Rephrased Question: I saw 'Guests can join the waitlist remotely and receive SMS
+      notifications when their table is ready.' — how can I split bills and process
+      multiple payment types via chat?
+    Ai Response: We're sorry — the document doesn't contain information about splitting
+      bills and processing multiple payment types via chat after joining the waitlist
+      remotely. Please add this information for better support in the future.
+    quote: 'Real-Time Waitlist: Guests can join the waitlist remotely and receive
+      SMS notifications when their table is ready.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How does the team training cover handling multiple payment types via chat
+      for splitting bills?
+    Rephrased Question: I saw 'Monthly workshops on culinary trends, customer service
+      excellence, and safety protocols to ensure the team remains top-tier.' — how
+      does the team training include handling multiple payment types via chat?
+    Ai Response: We're sorry — the document doesn't contain information about how
+      the team training covers handling multiple payment types via chat for splitting
+      bills. Please add this information for better support in the future.
+    quote: 'Continuous Training Programs: Monthly workshops on culinary trends, customer
+      service excellence, and safety protocols to ensure the team remains top-tier.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How do the kitchen protocols enhance the promotion of high-margin items
+      or combo deals?
+    Rephrased Question: I saw 'Kitchen protocols minimize cross-contamination risks.'
+      — how do the kitchen protocols enhance the promotion of high-margin items or
+      combo deals?
+    Ai Response: We're sorry — the document doesn't contain information about how
+      the kitchen protocols enhance the promotion of high-margin items or combo deals.
+      Please add this information for better support in the future.
+    quote: Kitchen protocols minimize cross-contamination risks.
+    filename: Savory_Haven_Bistro.docx
+  - User: How are the wellness beverages promoted as high-margin items alongside cocktails
+      and coffees?
+    Rephrased Question: 'I saw ''Wellness Beverages: In addition to cocktails and
+      coffees, we offer herbal infusions, detox waters, and adaptogenic elixirs designed
+      to promote health and wellness.'' — how are the wellness beverages promoted
+      as high-margin items?'
+    Ai Response: We're sorry — the document doesn't contain information about how
+      the wellness beverages are promoted as high-margin items alongside cocktails
+      and coffees. Please add this information for better support in the future.
+    quote: 'Wellness Beverages: In addition to cocktails and coffees, we offer herbal
+      infusions, detox waters, and adaptogenic elixirs designed to promote health
+      and wellness.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How do interactive dining experiences contribute to upselling high-margin
+      items or combo deals with personalized recommendations?
+    Rephrased Question: I saw 'Guests can book exclusive interactive dining experiences
+      where chefs explain the inspiration behind each dish and offer personalized
+      recommendations.' — how do the interactive dining experiences contribute to
+      upselling high-margin items or combo deals?
+    Ai Response: We're sorry — the document doesn't contain information on how interactive
+      dining experiences contribute to upselling high-margin items or combo deals
+      with personalized recommendations. Please add this information for better support
+      in the future.
+    quote: 'Interactive Chef’s Table: Guests can book exclusive interactive dining
+      experiences where chefs explain the inspiration behind each dish and offer personalized
+      recommendations.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How do the kitchen protocols relate to enrolling customers in loyalty programs?
+    Rephrased Question: I saw 'Kitchen protocols minimize cross-contamination risks.'
+      — how do the kitchen protocols relate to enrolling customers in loyalty programs?
+    Ai Response: We're sorry — the document doesn't contain information on how kitchen
+      protocols relate to enrolling customers in loyalty programs. Please add this
+      information for better support in the future.
+    quote: Kitchen protocols minimize cross-contamination risks.
+    filename: Savory_Haven_Bistro.docx
+  - User: How are the wellness beverages linked to updating loyalty programs alongside
+      cocktails and coffees?
+    Rephrased Question: 'I saw ''Wellness Beverages: In addition to cocktails and
+      coffees, we offer herbal infusions, detox waters, and adaptogenic elixirs designed
+      to promote health and wellness.'' — how are the wellness beverages linked to
+      updating loyalty programs?'
+    Ai Response: We're sorry — the document doesn't contain information on how wellness
+      beverages are linked to updating loyalty programs alongside cocktails and coffees.
+      Please add this information for better support in the future.
+    quote: 'Wellness Beverages: In addition to cocktails and coffees, we offer herbal
+      infusions, detox waters, and adaptogenic elixirs designed to promote health
+      and wellness.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How do interactive dining experiences assist in enrolling customers in loyalty
+      programs with personalized recommendations?
+    Rephrased Question: I saw 'Guests can book exclusive interactive dining experiences
+      where chefs explain the inspiration behind each dish and offer personalized
+      recommendations.' — how do the interactive dining experiences assist in enrolling
+      customers in loyalty programs?
+    Ai Response: We're sorry — the document doesn't contain information on how interactive
+      dining experiences assist in enrolling customers in loyalty programs with personalized
+      recommendations. Please add this information for better support in the future.
+    quote: 'Interactive Chef’s Table: Guests can book exclusive interactive dining
+      experiences where chefs explain the inspiration behind each dish and offer personalized
+      recommendations.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How do the kitchen protocols impact managing table reservations and waitlists?
+    Rephrased Question: I saw 'Kitchen protocols minimize cross-contamination risks.'
+      — how do the kitchen protocols impact managing table reservations and waitlists?
+    Ai Response: We're sorry — the document doesn't contain information on how kitchen
+      protocols impact managing table reservations and waitlists. Please add this
+      information for better support in the future.
+    quote: Kitchen protocols minimize cross-contamination risks.
+    filename: Savory_Haven_Bistro.docx
+  - User: How are the wellness beverages integrated into managing table reservations
+      and waitlists alongside cocktails and coffees?
+    Rephrased Question: 'I saw ''Wellness Beverages: In addition to cocktails and
+      coffees, we offer herbal infusions, detox waters, and adaptogenic elixirs designed
+      to promote health and wellness.'' — how are the wellness beverages integrated
+      into managing table reservations and waitlists?'
+    Ai Response: We're sorry — the document doesn't contain information on how wellness
+      beverages are integrated into managing table reservations and waitlists alongside
+      cocktails and coffees. Please add this information for better support in the
+      future.
+    quote: 'Wellness Beverages: In addition to cocktails and coffees, we offer herbal
+      infusions, detox waters, and adaptogenic elixirs designed to promote health
+      and wellness.'
+    filename: Savory_Haven_Bistro.docx
+  - User: How do interactive dining experiences help in managing table reservations
+      and waitlists with personalized recommendations?
+    Rephrased Question: I saw 'Guests can book exclusive interactive dining experiences
+      where chefs explain the inspiration behind each dish and offer personalized
+      recommendations.' — how do the interactive dining experiences help in managing
+      table reservations and waitlists?
+    Ai Response: We're sorry — the document doesn't contain information on how interactive
+      dining experiences help in managing table reservations and waitlists with personalized
+      recommendations. Please add this information for better support in the future.
+    quote: 'Interactive Chef’s Table: Guests can book exclusive interactive dining
+      experiences where chefs explain the inspiration behind each dish and offer personalized
+      recommendations.'
+    filename: Savory_Haven_Bistro.docx
+  - User: What options are available for full-service lunch and dinner under Dine-In?
+    Rephrased Question: I saw 'Dine-In' — what options are available for full-service
+      lunch and dinner?
+    Ai Response: We're sorry — the document doesn't contain information on options
+      available for full-service lunch and dinner under Dine-In. Please add this information
+      for better support in the future.
+    quote: Dine-In
+    filename: Savory_Haven_Bistro.docx
+  - User: How can I provide feedback after ordering through Uber Eats or DoorDash
+      with seamless ordering?
+    Rephrased Question: I saw 'Seamless ordering via Uber Eats, DoorDash, and direct
+      website/app.' — how can I provide feedback after ordering through Uber Eats
+      or DoorDash?
     Ai Response: We're sorry — the document doesn't contain information on how to
-      make a table reservation. Please add reservation details for better support
-      in the future.
-    quote: 'Operating Hours: 11 AM – 10 PM (Weekdays), 9 AM – 11 PM (Weekends)'
+      provide feedback after ordering through Uber Eats or DoorDash with seamless
+      ordering. Please add this information for better support in the future.
+    quote: Seamless ordering via Uber Eats, DoorDash, and direct website/app.
     filename: Savory_Haven_Bistro.docx
-  - User: How can I provide feedback after a meal to help improve the service?
-    Rephrased Question: I noticed 'Full-service lunch and dinner' in the documentation.
-      How can I provide feedback after a meal to help improve the service?
-    Ai Response: We couldn't find details in the document on how to provide feedback
-      after a meal. Please add information on feedback channels for better support
-      in the future.
-    quote: Full-service lunch and dinner
+  - User: How does the eco-friendly packaging contribute to quality tracking post-meal
+      to minimize waste?
+    Rephrased Question: I saw 'Environmentally responsible eco-friendly packaging
+      to minimize waste.' — how does the eco-friendly packaging contribute to quality
+      tracking post-meal?
+    Ai Response: We're sorry — the document doesn't contain information on how eco-friendly
+      packaging contributes to quality tracking post-meal to minimize waste. Please
+      add this information for better support in the future.
+    quote: Environmentally responsible eco-friendly packaging to minimize waste.
     filename: Savory_Haven_Bistro.docx

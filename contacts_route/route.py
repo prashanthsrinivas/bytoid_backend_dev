@@ -409,7 +409,6 @@ def get_contacts_by_user(userid=None):
                     contacts.append(
                         {"id": users_clients_id, "name": full_name, "email": email}
                     )
-            print(f"contacts from backend: {contacts}")
         return jsonify(contacts)
 
     except Exception as e:

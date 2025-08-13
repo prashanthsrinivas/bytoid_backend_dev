@@ -1,9 +1,34 @@
-
+import re
 from create_db import connect_to_rds
 
 
 IDENTITY_MAP = {}
 CONTACTS = {}
+
+
+def extract_reply_content(body):
+    if not body:
+        return ""
+
+    # Normalize HTML entities like &lt; and &gt;
+    body = body.replace("&lt;", "<").replace("&gt;", ">")
+
+    # Define patterns for reply markers
+    patterns = [
+        r"On\s.+?wrote:",  # Gmail-style
+        r"From:\s.+?Sent:",  # Zoho-style
+        r"From:\s.+?Subject:",  # Alternate Zoho fallback
+        r"-----Original Message-----",  # Outlook-style
+        r"---------- Forwarded message ----------",  # Forwarded
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, body, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return body[:match.start()].strip()
+
+    return body.strip()
+
 
 
 def get_contact_by_identity(user_id, participant,direction):

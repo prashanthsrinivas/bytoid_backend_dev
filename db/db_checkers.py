@@ -409,5 +409,4 @@ def fetch_contacts_by_user(userid):
                 contacts.append(
                     {"id": users_clients_id, "name": full_name, "email": email}
                 )
-        print(f"contacts from backend: {contacts}")
     return contacts

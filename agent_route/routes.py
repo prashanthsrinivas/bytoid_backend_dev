@@ -375,6 +375,115 @@ def deletefilebasedData(filename, userid):
         return False
 
 
+def process_and_update_yaml(all_downloaded_paths, userid, provider, folderpath):
+    """
+    Process files, delete processed ones, and store/update metadata in a provider-based YAML structure.
+
+    :param all_downloaded_paths: list of downloaded file paths
+    :param userid: ID of the user
+    :param provider: Provider name (e.g., "google", "zoho")
+    :param folderpath: Temporary folder path containing files
+    :param pathconfig: Config object containing basepath
+    """
+
+    processed_filenames = []
+    connection = connect_to_rds()
+    industry = None
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT LineOfBusiness FROM business_info WHERE user_id_fk = %s ", (userid,)
+        )
+        user_row = cursor.fetchone()
+        if not user_row:
+            return jsonify({"error": "No line of business present"}), 401
+        industry = user_row[0]
+    connection.close()
+    for path in all_downloaded_paths:
+        filename = os.path.basename(path)
+        lance_client = LanceClient(user_id=userid)
+        result = lance_client.process_document(file_path=path, filename=filename)
+
+        if result.get("vectors_made", 0) > 0:
+            current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            processed_filenames.append(
+                {
+                    "filename": filename,
+                    "FileStatus": "Present",
+                    "upload_date": current_date,
+                    "updated_date": None,
+                }
+            )
+            os.remove(path)
+            logger.info(f"[🗑] Deleted processed file: {path}")
+
+    if not processed_filenames:
+        return  # Nothing to merge
+
+    # Remove the folder after processing
+    if os.path.isdir(folderpath):
+        shutil.rmtree(folderpath)
+
+    # Ensure user directory exists
+    ensure_dir(f"{pathconfig.basepath}/{userid}")
+    yaml_path = os.path.join(f"{pathconfig.basepath}/{userid}", "users_fileData.yaml")
+
+    # Load existing YAML or initialize structure
+    if os.path.exists(yaml_path):
+        with open(yaml_path, "r") as f:
+            existing_data = yaml.safe_load(f) or {}
+    else:
+        existing_data = {}
+
+    if provider not in existing_data:
+        existing_data[provider] = []
+
+    provider_files = existing_data[provider]
+
+    # Merge processed filenames into provider section
+    for item in processed_filenames:
+        fname = item["filename"]
+        file_status = item["FileStatus"]
+
+        existing_non_deleted = next(
+            (
+                entry
+                for entry in provider_files
+                if entry["filename"] == fname and entry["FileStatus"] != "Deleted"
+            ),
+            None,
+        )
+
+        if existing_non_deleted:
+            existing_non_deleted["updated_date"] = item["upload_date"]
+            existing_non_deleted["FileStatus"] = file_status
+        else:
+            provider_files.append(item)
+
+    # Write back to YAML
+    with open(yaml_path, "w") as f:
+        yaml.safe_dump(existing_data, f, sort_keys=False)
+
+    logger.info(
+        f"[✅] Updated YAML for provider '{provider}' with {len(processed_filenames)} files."
+    )
+    indusries = get_industry_names_from_yaml(f"{pathconfig.basepath}/smb_usecases.yaml")
+    matched_industry = find_matching_industry(industry, indusries)
+    if matched_industry:
+        new_or_updated_files = [item["filename"] for item in processed_filenames]
+        # need to make this queue process
+        result = run_background_task(
+            userid=userid,
+            industry=matched_industry,
+            filenames=new_or_updated_files,
+            func=preProcessDocWithUsecases,
+        )
+        print(f"[DEBUG] Background task queued: {result}")
+    yaml_path = os.path.join(f"{pathconfig.basepath}/{userid}", "users_fileData.yaml")
+    with open(yaml_path, "r") as f:
+        all_file_data = yaml.safe_load(f) or {}
+    return all_file_data
+
+
 @agent_bp.route("/process-drive", methods=["POST"])
 def download_files():
     """
@@ -416,17 +525,7 @@ def download_files():
         return jsonify({"error": "User ID not found for the provided API key"}), 401
     access_token = get_token(userid, value=True)
     print("mainaccess", access_token)
-    connection = connect_to_rds()
-    industry = None
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT LineOfBusiness FROM business_info WHERE user_id_fk = %s ", (userid,)
-        )
-        user_row = cursor.fetchone()
-        if not user_row:
-            return jsonify({"error": "No line of business present"}), 401
-        industry = user_row[0]
-        connection.close()
+
     user_service = None
     if access_token:
         user_service = GetEmailandDriveService(access_token)
@@ -436,93 +535,12 @@ def download_files():
             )
             if is_downloaded and len(all_downloaded_paths) > 0:
                 folderpath = os.path.commonpath(all_downloaded_paths)
-                processed_filenames = []
-                for path in all_downloaded_paths:
-                    filename = os.path.basename(
-                        path
-                    )  # e.g., "Convenience_Store_Profile.docx"
-                    lance_client = LanceClient(user_id=userid)
-                    result = lance_client.process_document(
-                        file_path=path, filename=filename
-                    )
-                    if result.get("vectors_made", 0) > 0:
-                        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        processed_filenames.append(
-                            {
-                                "filename": filename,
-                                "FileStatus": "Present",
-                                "upload_date": current_date,
-                                "updated_date": None,  # This will appear as 'null' in YAML
-                            }
-                        )
-                        os.remove(path)
-                        logger.info(f"[🗑] Deleted processed file: {path}")
-
-                # Now merge with existing YAML
-                if processed_filenames:
-                    if os.path.isdir(folderpath):
-                        shutil.rmtree(folderpath)
-
-                    ensure_dir(f"{pathconfig.basepath}/{userid}")
-                    yaml_path = os.path.join(
-                        f"{pathconfig.basepath}/{userid}", "users_fileData.yaml"
-                    )
-
-                    # Load existing entries if present
-                    if os.path.exists(yaml_path):
-                        with open(yaml_path, "r") as f:
-                            existing_data = yaml.safe_load(f) or []
-                    else:
-                        existing_data = []
-
-                    # Append or update
-                    for item in processed_filenames:
-                        fname = item["filename"]
-                        file_status = item["FileStatus"]
-
-                        # Check if there is an existing *non-deleted* version
-                        existing_non_deleted = next(
-                            (
-                                entry
-                                for entry in existing_data
-                                if entry["filename"] == fname
-                                and entry["FileStatus"] != "Deleted"
-                            ),
-                            None,
-                        )
-
-                        if existing_non_deleted:
-                            # Update the non-deleted entry
-                            existing_non_deleted["updated_date"] = item["upload_date"]
-                            existing_non_deleted["FileStatus"] = file_status
-                        else:
-                            # Either no entry, or only deleted ones — add new
-                            existing_data.append(item)
-
-                    # Write back the merged values
-                    with open(yaml_path, "w") as f:
-                        yaml.safe_dump(existing_data, f, sort_keys=False)
-
-                indusries = get_industry_names_from_yaml(
-                    f"{pathconfig.basepath}/smb_usecases.yaml"
+                all_file_data = process_and_update_yaml(
+                    all_downloaded_paths=all_downloaded_paths,
+                    userid=userid,
+                    provider="google",
+                    folderpath=folderpath,
                 )
-                matched_industry = find_matching_industry(industry, indusries)
-                if matched_industry:
-                    new_or_updated_files = [
-                        item["filename"] for item in processed_filenames
-                    ]
-                    # need to make this queue process
-                    result = run_background_task(
-                        userid=userid,
-                        industry=matched_industry,
-                        filenames=new_or_updated_files,
-                        func=preProcessDocWithUsecases,
-                    )
-                    print(f"[DEBUG] Background task queued: {result}")
-
-                with open(yaml_path, "r") as f:
-                    all_file_data = yaml.safe_load(f) or []
-
                 return {
                     "message": "Successfully processed files",
                     "files": all_file_data,  # Return full file history
@@ -590,11 +608,16 @@ def makeuserDocClarifications(userid=None, industry=None):
             )
 
         file_data = load_yaml_file(user_files_path) or []
-        present_files = [
-            entry["filename"]
-            for entry in file_data
-            if entry.get("FileStatus") == "Present"
-        ]
+
+        present_files = []
+        for key, entries in file_data.items():
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        if entry.get("FileStatus") == "Present" and entry.get(
+                            "filename"
+                        ):
+                            present_files.append(entry.get("filename"))
 
         if not present_files:
             return (

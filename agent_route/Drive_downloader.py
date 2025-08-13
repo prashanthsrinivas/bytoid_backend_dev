@@ -246,7 +246,7 @@ def Mediatorservice(data, userid, user_service):
     files_to_download = data.get("files", [])
     all_downloaded_paths = []
     failed_downloads = []
-    ensure_dir(f"data/{userid}")
+    ensure_dir(f"data/{userid}/google")
 
     print(f"\nReceived request to download {len(files_to_download)} files/folders.")
     perm = None

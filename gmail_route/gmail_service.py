@@ -48,9 +48,7 @@ class GmailService:
 
         profile = self.service.users().getProfile(userId="me").execute()
         self.user_email = profile["emailAddress"]
-        print(
-            f"GmailService initialized for user: {self.user_email}, user_id: {user_id}"
-        )
+        
 
     def parse_headers(self, headers):
         header_dict = {}
@@ -218,7 +216,6 @@ class GmailService:
             message.set_content(body_text)
             raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
             message_body = {"raw": raw}
-            print(f"to inside gmail service before sending mail is:{to}")
 
             sent = (
                 self.service.users()
@@ -226,7 +223,6 @@ class GmailService:
                 .send(userId="me", body=message_body)
                 .execute()
             )
-            print(f"to inside gmail service after sending mail is:{to}")
 
             timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             message_id = sent["id"]
@@ -282,61 +278,7 @@ class GmailService:
         sent = self.service.users().messages().send(userId="me", body=msg).execute()
         return sent
 
-    # def send_reply(
-    #     self, conversation_id, to, subject, thread_id, in_reply_to, body_text, user_id
-    # ):
 
-    #     # Defensive checks
-    #     if not to:
-    #         raise ValueError("Recipient email 'to' is required")
-    #     if not subject:
-    #         raise ValueError("Subject is required")
-    #     if not thread_id:
-    #         raise ValueError("Thread ID is required")
-    #     if not in_reply_to:
-    #         raise ValueError("In-Reply-To message ID is required")
-
-    #     message = EmailMessage()
-    #     message["To"] = to
-    #     message["Subject"] = (
-    #         f"Re: {subject}" if not subject.lower().startswith("re:") else subject
-    #     )
-    #     message["In-Reply-To"] = in_reply_to
-    #     message["References"] = in_reply_to
-    #     message.set_content(body_text)
-
-    #     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-    #     message_body = {"raw": raw, "threadId": thread_id}
-
-    #     sent = (
-    #         self.service.users()
-    #         .messages()
-    #         .send(userId="me", body=message_body)
-    #         .execute()
-    #     )
-
-    #     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    #     message_id = sent["id"]
-
-    #     MESSAGES[message_id] = {
-    #         "id": message_id,
-    #         "from": self.user_email,
-    #         "to": to,
-    #         "body": body_text,
-    #         "subject": subject,
-    #         "timestamp": timestamp,
-    #         "status": "sent",
-    #         "source": "gmail",
-    #         "direction": "outbound",
-    #         "user_id": user_id,
-    #         "thread_id": thread_id,
-    #         "message_id": message_id,
-    #         "conversation_id": conversation_id,
-    #     }
-    #     print("✅ Saved sent message to MESSAGES:")
-
-    #     return sent
 
     def send_reply(
         self, conversation_id, to, subject, thread_id, in_reply_to, body_text, user_id
@@ -368,8 +310,6 @@ class GmailService:
             .send(userId="me", body=message_body)
             .execute()
         )
-
-        print(f"[DEBUG] Message sent to Gmail API. ID: {sent['id']}")
         return sent
 
     def send_forward(self, to, subject, body_text):

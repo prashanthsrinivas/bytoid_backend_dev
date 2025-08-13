@@ -12,6 +12,7 @@ from playbook.routes import playbook_bp
 from zoho_routes.routes import zoho_bp
 from credits_route.route import credits_bp
 from umail.routes import umail_bp
+from tickets.routes import tickets_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -91,6 +92,11 @@ CORS(
 )
 CORS(
     umail_bp,
+    supports_credentials=True,
+    origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
+)
+CORS(
+    tickets_bp,
     supports_credentials=True,
     origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
 )
@@ -181,6 +187,8 @@ app.register_blueprint(playbook_bp)
 app.register_blueprint(zoho_bp)
 app.register_blueprint(credits_bp)
 app.register_blueprint(umail_bp)
+app.register_blueprint(tickets_bp)
+
 
 
 

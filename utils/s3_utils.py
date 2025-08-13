@@ -56,7 +56,7 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
 
     try:
         s3.upload_file(file_path, S3_BUCKET, s3_key)
-        print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
+        # print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
         return {"status": "success", "s3_key": s3_key}
     except Exception as e:
         print(f"❌ Upload failed: {e}")
@@ -66,13 +66,13 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
 # upload_any_file(file_path="cust_helpers/test/Daily_Email_Lead_Follow-up_2025-07-21_10-33-54.json",user_id="1234")
 def read_json_from_s3(filepath):
     s3 = s3bucket()  # Full path in bucket
-    print("path for reading is", filepath)
+    # print("path for reading is", filepath)
 
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)
         content = response["Body"].read().decode("utf-8")
         data = json.loads(content)
-        print("✅ JSON content loaded successfully")
+        # print("✅ JSON content loaded successfully")
         return data
     except Exception as e:
         print(f"❌ Error reading JSON file: {e}")

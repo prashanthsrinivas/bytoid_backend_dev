@@ -600,7 +600,7 @@ def create_new_messages():
     try:
         create_table_query = """
         CREATE TABLE IF NOT EXISTS messages (
-                message_id VARCHAR(36) PRIMARY KEY,
+                message_id VARCHAR(255) PRIMARY KEY,
                 conversation_id_fk VARCHAR(36),
                 sender_type ENUM('facebook_messenger', 'instagram_dm', 'whatsapp', 'waldo_sms'),
                 sender_id VARCHAR(36),
@@ -756,12 +756,12 @@ if __name__ == "__main__":
     # renameConnectandcreatePlaybook()
     # updatethreadstoticket()
     # createticketstable()
-    createTableAssigned()
+    # createTableAssigned()
     # print("creating table file")
     # rename_columns_in_tickets()
     # updateticket()
     # create_new_threads()
-    # create_new_messages()
+    create_new_messages()
     # create_plans()
     # create_subscribe()
     # alter_tables_users_subscribe()

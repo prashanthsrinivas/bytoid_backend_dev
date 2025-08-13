@@ -1,3 +1,11 @@
+from agent_route.doc_clarity import (
+    find_matching_industry,
+    get_industry_names_from_yaml,
+    preProcessDocWithUsecases,
+)
+from agent_route.task_manager import run_background_task
+from cust_helpers import pathconfig
+from db.db_checkers import fetch_userid_from_launch
 from flask import Blueprint, request, jsonify, session, redirect
 from msal import ConfidentialClientApplication
 from dotenv import load_dotenv
@@ -9,8 +17,9 @@ import uuid
 from data import MESSAGES  # delete this later
 from bs4 import BeautifulSoup
 import uuid
+import yaml
 from datetime import datetime, timezone
-
+from agent_route.routes import process_and_update_yaml
 
 microsoft_bp = Blueprint("microsoft", __name__)
 
@@ -703,146 +712,51 @@ def microsoft_list_trash():
         return jsonify({"error": str(e)}), 500
 
 
-# @microsoft_bp.route("/microsoft/forward", methods=["POST"])
-# def microsoft_forward():
-#     try:
-
-#         data = request.get_json()
-#         to = data.get("to")
-#         subject = data.get("subject")
-#         body = data.get("body")
-#         message_id = data.get("messageId")
-
-
-#         if not to or not body or not message_id:
-#             return jsonify({"error": "Missing 'to', 'body', or 'messageId' in request"}), 400
-
-#         email = session.get('user', {}).get('email')
-#         if not email:
-#             return jsonify({"error": "User not logged in"}), 400
-
-#         conn = connect_to_rds()
-#         cursor = conn.cursor()
-#         cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-#         row = cursor.fetchone()
-#         cursor.close()
-#         conn.close()
-
-#         if not row:
-#             return jsonify({"error": "Access token not found"}), 404
-
-#         access_token = row[0]
-#         headers = {
-#             'Authorization': f'Bearer {access_token}',
-#             'Content-Type': 'application/json'
-#         }
-
-#         forward_payload = {
-#             "comment": body,
-#             "toRecipients": [
-#                 {
-#                     "emailAddress": {
-#                         "address": to
-#                     }
-#                 }
-#             ]
-#         }
-
-#         url = f"https://graph.microsoft.com/v1.0/me/messages/{message_id}/forward"
-#         forward_response = requests.post(url, headers=headers, json=forward_payload)
-
-#         if forward_response.status_code == 202:
-#             return jsonify({"message": "Message forwarded successfully"}), 200
-#         else:
-#             return jsonify({
-#                 "error": "Failed to forward message",
-#                 "details": forward_response.text
-#             }), forward_response.status_code
-
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
-
-
-# @microsoft_bp.route("/microsoft/reply", methods=["POST"])
-# def microsoft_reply():
-#     try:
-#         data = request.get_json()
-#         message_id = data.get("messageId")
-#         body = data.get("body")
-
-#         if not message_id or not body:
-#             return jsonify({"error": "Missing messageId or body"}), 400
-
-#         email = session.get('user', {}).get('email')
-#         if not email:
-#             return jsonify({"error": "User not logged in"}), 400
-
-#         conn = connect_to_rds()
-#         cursor = conn.cursor()
-#         cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-#         row = cursor.fetchone()
-#         cursor.close()
-#         conn.close()
-
-#         if not row:
-#             return jsonify({"error": "Access token not found"}), 404
-
-#         access_token = row[0]
-#         headers = {
-#             'Authorization': f'Bearer {access_token}',
-#             'Content-Type': 'application/json'
-#         }
-
-
-#         create_reply_url = f"https://graph.microsoft.com/v1.0/me/messages/{message_id}/reply"
-#         create_reply_payload = {
-#             "comment": body
-#         }
-
-#         create_response = requests.post(create_reply_url, headers=headers, json=create_reply_payload)
-
-#         if create_response.status_code != 202:
-#             return jsonify({
-#                 "error": "Failed to create reply draft",
-#                 "details": create_response.text
-#             }), create_response.status_code
-
-#         send_reply_url = f"https://graph.microsoft.com/v1.0/me/messages/{message_id}/reply/send"
-#         send_response = requests.post(send_reply_url, headers=headers)
-
-#         if send_response.status_code == 202:
-#             return jsonify({"message": "Reply sent successfully"}), 200
-#         else:
-#             return jsonify({
-#                 "error": "Failed to send reply",
-#                 "details": send_response.text
-#             }), send_response.status_code
-
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
-
-
 @microsoft_bp.route("/process-outlook", methods=["POST"])
 def process_outlook():
     data = request.get_json()
-    userid = data.get("user_id")
+    apikey = data.get("api_key")
+    userid = fetch_userid_from_launch(apikey)
     files = data.get("files")
+    pathdown = f"data/{userid}/outlook"
+    all_downloaded_paths = []
+
+    # Validate inputs
+    if not userid:
+        return jsonify({"error": "Missing user_id"}), 400
+    if not files or not isinstance(files, list):
+        return jsonify({"error": "Invalid or missing files"}), 400
+
+    # Download files
+    os.makedirs(pathdown, exist_ok=True)
     for i in files:
-        file_url = i.get("file_url")
-        file_name = i.get("file_name")
+        file_url = i.get("downloadUrl")
+        file_name = i.get("name")
         if not file_url or not file_name:
-            return jsonify({"error": "Missing url or name"}), 400
+            return jsonify({"error": "Missing file_url or file_name"}), 400
 
         resp = requests.get(file_url)
         if resp.status_code != 200:
-            return jsonify({"error": "Failed to download file"}), 500
+            return jsonify({"error": f"Failed to download file {file_name}"}), 500
 
-        save_path = os.path.join("downloads", file_name)
-        os.makedirs("downloads", exist_ok=True)
+        save_path = os.path.join(pathdown, file_name)
         with open(save_path, "wb") as f:
             f.write(resp.content)
 
-    return jsonify({"message": "File downloaded", "path": save_path})
+        all_downloaded_paths.append(save_path)
+
+    # Process files and update YAML
+    all_file_data = process_and_update_yaml(
+        all_downloaded_paths=all_downloaded_paths,
+        userid=userid,
+        provider="outlook",  # or "microsoft"
+        folderpath=pathdown,
+    )
+
+    return {
+        "message": "Successfully processed files",
+        "files": all_file_data,  # Full provider-based file history
+    }, 200
 
 
 @microsoft_bp.route("/logout")
