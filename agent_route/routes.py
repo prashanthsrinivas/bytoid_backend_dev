@@ -882,9 +882,10 @@ def delete_file():
     """
     userid = request.json.get("userid")
     filename = request.json.get("filename")
+    source = request.json.get("source")  # e.g., "outlook" or "google"
 
-    if not userid or not filename:
-        return jsonify({"error": "User ID and filename are required"}), 400
+    if not userid or not filename or not source:
+        return jsonify({"error": "User ID, filename, and source are required"}), 400
     if not check_userid_valid(userid):
         return jsonify({"error": "Invalid User ID"}), 404
 
@@ -894,21 +895,23 @@ def delete_file():
 
     # Load main file metadata YAML
     with open(yaml_path, "r") as f:
-        all_file_data = yaml.safe_load(f) or []
+        all_file_data = yaml.safe_load(f) or {}
+
+    if source not in all_file_data or not isinstance(all_file_data[source], list):
+        return jsonify({"error": f"No entries found for source '{source}'"}), 404
 
     # Step 1: Delete vectors from LanceDB
     lance_agent = LanceClient(user_id=userid)
     delete_result = lance_agent.delete_file_Data(foldername=filename)
+    if delete_result.get("status") != "success":
+        return jsonify({"error": delete_result.get("message", "Unknown error")}), 500
 
-    if delete_result["status"] != "success":
-        return jsonify({"error": delete_result["message"]}), 500
-
-    # Step 2: Update YAML entry with FileStatus = Deleted and updated_date
+    # Step 2: Update YAML entry
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     file_found = False
 
-    for entry in all_file_data:
-        if entry.get("filename") == filename:
+    for entry in all_file_data[source]:
+        if isinstance(entry, dict) and entry.get("filename") == filename:
             if entry.get("FileStatus", "").lower() != "deleted":
                 entry["FileStatus"] = "Deleted"
                 entry["updated_date"] = current_time
@@ -918,26 +921,28 @@ def delete_file():
             break
 
     if not file_found:
-        return jsonify({"error": "Filename not found in YAML"}), 404
+        return jsonify({"error": "Filename not found in specified source"}), 404
 
-    # Step 3: Save updated users_fileData.yaml
+    # Step 3: Save updated YAML
     with open(yaml_path, "w") as f:
         yaml.safe_dump(all_file_data, f, sort_keys=False)
 
+    # Step 4: Delete related passed/failed Q&A entries
     success = deletefilebasedData(filename, userid)
     if not success:
-        # Optionally log or handle this scenario
         logging.warning(
             f"Failed to delete question entries for user {userid}, file {filename}"
         )
+
+    # Reload for returning updated data
+    with open(yaml_path, "r") as f:
+        all_file_data = yaml.safe_load(f) or {}
 
     return (
         jsonify(
             {
                 "message": "File deleted and related question entries removed successfully",
-                "filename": filename,
-                "status": "Deleted",
-                "updated_date": current_time,
+                "data": all_file_data,
             }
         ),
         200,

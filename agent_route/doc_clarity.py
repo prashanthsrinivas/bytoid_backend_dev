@@ -49,6 +49,17 @@ def get_industry_names_from_yaml(file_path: str) -> set:
     return industry_names
 
 
+# Flatten nested lists if any
+def flatten_list(lst):
+    flattened = []
+    for item in lst:
+        if isinstance(item, list):
+            flattened.extend(flatten_list(item))
+        else:
+            flattened.append(item)
+    return flattened
+
+
 def get_usecases_for_smb(smb_name, data):
     for entry in data:
         if entry.get("SMB") == smb_name:
@@ -71,16 +82,9 @@ def find_matching_industry(extracted_text: str, industries: set) -> str:
     return None
 
 
-def save_yaml_file(entry, filepath):
+def save_yaml_file(entries, filepath):
     with open(filepath, "a", encoding="utf-8") as f:
-        yaml.dump([entry], f, sort_keys=False, allow_unicode=True)
-
-
-def save_yaml(entry, folder, filename="responses.yaml"):
-    os.makedirs(folder, exist_ok=True)  # Ensure folder exists
-    filepath = os.path.join(folder, filename)
-    with open(filepath, "a", encoding="utf-8") as f:
-        yaml.dump([entry], f, sort_keys=False, allow_unicode=True)
+        yaml.dump(entries, f, sort_keys=False, allow_unicode=True)
 
 
 def clean_question(line):
@@ -159,6 +163,7 @@ def fetch_ques_with_docs(
                     "query": usecase,
                     "response_text": r["text"].strip(),
                     "filename": r.get("foldername", "").strip(),
+                    "doc_value": r.get("_distance", ""),
                 }
             )
 
@@ -229,20 +234,14 @@ def fetch_usecases_with_docs(
 
 
 def remove_entries_for_files(filepath, filenames):
+    """Remove all entries matching any of the given filenames."""
     if not os.path.exists(filepath):
         return []
     with open(filepath, "r", encoding="utf-8") as f:
         existing = yaml.safe_load(f) or []
 
-    # Flatten nested lists, if any
-    flat_existing = []
-    for item in existing:
-        if isinstance(item, list):
-            flat_existing.extend(item)
-        else:
-            flat_existing.append(item)
+    flat_existing = flatten_list(existing)
 
-    # Normalize filenames for comparison (strip/lower/no extension)
     filenames_norm = [os.path.splitext(f.strip().lower())[0] for f in filenames]
 
     filtered = []
@@ -255,7 +254,46 @@ def remove_entries_for_files(filepath, filenames):
         else:
             filtered.append(entry)
 
+    logger.info(f"✅ Removed entries for given files: {len(filtered)} remaining")
     return filtered
+
+
+def merge_entries(existing: list, new: list) -> list:
+    """
+    Merge entries based on full question/answer context:
+    User, Rephrased Question, Ai Response, filename, and quote.
+    Keep the entry with the smaller doc_value if duplicates exist.
+    """
+    merged_dict = {}
+    logger.info("✅ Merging entries initiated (full duplicate check).")
+
+    def entry_key(e):
+        return (
+            (e.get("User") or "").strip().lower(),
+            (e.get("filename") or "").strip().lower(),
+        )
+
+    for e in existing + new:
+        key = entry_key(e)
+        if not key[0]:  # Skip if 'User' missing
+            continue
+
+        try:
+            val = float(e.get("doc_value", 9999))
+        except:
+            val = 9999
+
+        if key not in merged_dict:
+            merged_dict[key] = e
+        else:
+            try:
+                existing_val = float(merged_dict[key].get("doc_value", 9999))
+            except:
+                existing_val = 9999
+            if val < existing_val:
+                merged_dict[key] = e
+
+    return list(merged_dict.values())
 
 
 def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
@@ -343,6 +381,7 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
             related_res = eval_result.get("related", False)
             usecase_res = eval_result.get("has_usecase_details", False)
             filename = original_item.get("filename", "").strip()
+            distvalue = original_item.get("doc_value", "")
 
             entry_obj = {
                 "User": actual_q,
@@ -350,9 +389,11 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
                 "Ai Response": eval_result.get("explanation", ""),
                 "quote": actual_to_quote.get(actual_q, ""),
                 "filename": filename,
+                "doc_value": distvalue,
             }
 
             if related_res and usecase_res:
+                # entry_obj["date_processed"] = # add time and date for reference
                 valid_responses.append(entry_obj)
             else:
                 clarification_responses.append(entry_obj)
@@ -361,15 +402,22 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
     existing_passed = remove_entries_for_files(passes_files, filenames)
     existing_failed = remove_entries_for_files(failed_ques, filenames)
 
-    if valid_responses:
-        merged_passed = existing_passed + valid_responses
+    merged_passed = merge_entries(
+        flatten_list(existing_passed), flatten_list(valid_responses)
+    )
+    merged_failed = merge_entries(
+        flatten_list(existing_failed), flatten_list(clarification_responses)
+    )
+
+    # Save only if there are entries
+    if merged_passed:
         save_yaml_file(merged_passed, filepath=passes_files)
 
-    if clarification_responses:
-        merged_failed = existing_failed + clarification_responses
+    if merged_failed:
         save_yaml_file(merged_failed, filepath=failed_ques)
 
     logger.info(f"✅ Merged QAs into {passes_files} and {failed_ques}")
+
     return {
         "processed_files": filenames,
         "passed_path": passes_files,
