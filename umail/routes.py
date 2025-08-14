@@ -235,8 +235,7 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
         for mid in group["message_ids"]:
             subject_map[str(mid)] = subject
 
-    updated_date = datetime.now(timezone.utc).isoformat()
-    created_date = updated_date
+ 
 
     connection = connect_to_rds()
     if connection is None:
@@ -244,6 +243,11 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
         return None
 
     cursor = connection.cursor()
+
+    dt_utc = datetime.now(timezone.utc)
+    created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
+    updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+
 
     # Iterate through grouped_messages structure
     for client_id, channels in grouped_messages.items():
@@ -328,17 +332,8 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
 
                                 grouped_messages[client_id][channel] = messages
                                 update_or_create_conversation_file(grouped_messages, user_id, client_id, channel)
-
-
-                                try:
-                                                    if updated_date.endswith('Z'):
-                                                        parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
-                                                    else:
-                                                        parsed_ts = datetime.fromisoformat(updated_date)
-                                except Exception as e:
-                                                    print(f"[WARN] Could not parse updated_date '{updated_date}': {e}")
-                                                    parsed_ts = datetime.now(timezone.utc)
-
+            
+                                parsed_ts = dt_utc
                                                     
                                 for i, conv in enumerate(config_data.get("conversations", [])):
                                     if conv.get("conv_id") == c_id:
@@ -357,11 +352,8 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
 
                         # 2. for gmail reply
                         if thread_id:
-                            print(f" ********* thread_id : {thread_id}")
                             mesag_id = msg.get("id")
-                            print(f" ********* mesag_id : {mesag_id}")
                             msg_body = msg.get("body")
-                            print(f" ********* mesag_id : {msg_body}")
 
                             found_existing_conversation = False
                             if config_data:
@@ -372,24 +364,44 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                     None
                                 )
                                 if matching_conv:
-                                        a=matching_conv.get("thread_id")
-                                        b=thread_id
-                                        print(f"a is :{a}; b is :{b}")
-                    
+                                           
                                         conversation_id = matching_conv.get("conv_id")   
-                                        print(f"✅ Found existing thread! Using conversation_id: {conversation_id}")
-                                        print(f"✅ Message will be added to existing conversation, not creating new one")                      
+                                       
                                         if conversation_id:
                                             found_existing_conversation = True 
                                             msg["conversation_id"] = conversation_id
                                             cursor.execute(
                                                 "SELECT tickets_id, ticket_name FROM tickets WHERE conversation_id_fk = %s",
-                                                (conversation_id)
+                                                (conversation_id,)
                                             )
                                             ticket_row = cursor.fetchone()
-                                            ticket_id = ticket_row[0]
-                                            ticket_name = ticket_row[1]
-                                            if ticket_row:
+
+                                            if not ticket_row:
+
+                                                ticket_id = str(uuid.uuid4())
+                                                # ticket_name = subject_map.get(str(msg_id))
+                                                ticket_name = matching_conv.get("subject")   
+
+                                                cursor.execute(
+                                                    "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority,created_in,updated_in) VALUES (%s, %s, %s,%s,%s,%s,%s)",
+                                                    (ticket_id, ticket_name, conversation_id,"Open","Medium",created_date,updated_date)
+                                                )
+
+                                                # insert into assigned table
+                                                assigned_id = str(uuid.uuid4())  
+                                                cursor.execute(
+                                                    """
+                                                    INSERT INTO assigned (assigned_id, user_id_fk, users_clients_id_fk, ticket_id_fk)
+                                                    VALUES (%s, %s, %s, %s)
+                                                    """,
+                                                    (assigned_id, user_id, client_id, ticket_id)
+                                                )
+                                                
+                                            else:
+
+                                                ticket_id = ticket_row[0]
+                                                ticket_name = ticket_row[1]
+                                            if ticket_id and ticket_name:
                                                 msg["ticket_id"] = ticket_id
                                                 msg["ticket_name"] = ticket_name
 
@@ -437,24 +449,18 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                                                     )
                                                                 )
                                                                                 
-                                                print(f"message is {msg}")
                                                 grouped_messages[client_id][channel] = messages
                                                 update_or_create_conversation_file(grouped_messages, user_id, client_id, channel)                                                                      
+                                                                                           
 
-                                               
-                                                try:
-                                                    if updated_date.endswith('Z'):
-                                                        parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
-                                                    else:
-                                                        parsed_ts = datetime.fromisoformat(updated_date)
-                                                except Exception as e:
-                                                    print(f"[WARN] Could not parse updated_date '{updated_date}': {e}")
-                                                    parsed_ts = datetime.now(timezone.utc)
-
+                                                parsed_ts = dt_utc
                                                 for i, conv in enumerate(config_data.get("conversations", [])):
                                                     if conv.get("conv_id") == conversation_id:
                                                         config_data["conversations"][i]["updated_date"] = updated_date
                                                         config_data["conversations"][i]["parsed_timestamp"] = parsed_ts.isoformat()
+                                                        config_data["conversations"][i]["ticket_id"] = ticket_id
+                                                        config_data["conversations"][i]["ticket_name"] = ticket_name
+
                                                         break
 
                                                 update_config_file(user_id, client_id, config_data)
@@ -466,7 +472,6 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                                 print(f"⚠️ No ticket found for conversation: {conversation_id}")
                                     
                             if found_existing_conversation:
-                                print(f"✅ {found_existing_conversation} Gmail reply processed successfully for existing conversation")
                                 continue 
 
                         # Thread does not exist — create new thread and optionally ticket
@@ -492,13 +497,24 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                             msg["ticket_id"] = new_ticket_id
                             msg["ticket_name"] = ticket_name
                             msg["conversation_id"] = new_conversation_id
+                            
 
                             timestamp = msg.get("timestamp")
-                            dt = datetime.fromisoformat(timestamp)
-                            dt_utc = dt.astimezone(pytz.UTC)
-                            created_in = dt_utc.strftime("%Y-%m-%d %H:%M:%S")
-                            updated_in = created_in
-
+                            # dt = datetime.fromisoformat(timestamp)
+                            # dt_utc = dt.astimezone(pytz.UTC)
+                            # created_in = dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+                            # updated_in = created_in
+                            
+                            try:
+                                # Parse the message timestamp (which is offset-aware)
+                                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                dt_utc_msg = dt.astimezone(timezone.utc)
+                                created_in = dt_utc_msg.strftime("%Y-%m-%d %H:%M:%S")
+                            except Exception as e:
+                                print(f"Error parsing timestamp {timestamp}: {e}")
+                                created_in = created_date
                             
 
                             cursor.execute("SELECT 1 FROM tickets WHERE tickets_id = %s", (new_ticket_id,))
@@ -506,7 +522,7 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                 
                                 cursor.execute(
                                     "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority,created_in,updated_in) VALUES (%s, %s, %s,%s,%s,%s,%s)",
-                                    (new_ticket_id, ticket_name, new_conversation_id,"Open","Medium",created_in,updated_in)
+                                    (new_ticket_id, ticket_name, new_conversation_id,"Open","Medium",created_in,updated_date)
                                 )
 
                                 assigned_id = str(uuid.uuid4())  # Generate UUID for assigned_id
@@ -530,8 +546,7 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
 
                             cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (msg_id,))
                             existing = cursor.fetchone()
-                            print("Existing message check:", existing)
-                            print("Inserting message_id:", msg_id)
+                           
                             if not existing:  
                                
                                 cursor.execute(
@@ -555,26 +570,19 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                         "ref",
                                         "inbound",
                                         subject,
-                                        created_date,
+                                        created_in,
                                         updated_date
                                     )
                                 )
 
+                                             
+                            parsed_ts = dt_utc
 
-                            # Update config immediately
-                            try:
-                                if updated_date.endswith('Z'):
-                                    parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
-                                else:
-                                    parsed_ts = datetime.fromisoformat(updated_date)
-                            except Exception as e:
-                                    print(f"[WARN] Could not parse updated_date '{updated_date}': {e}")
-                            
                             updated_entry = {
                                 "conv_id": new_conversation_id,
                                 "ticket_id": new_ticket_id,
                                 "ticket_name": ticket_name,
-                                "subject": subject_map.get(str(msg_id)),
+                                "subject": subject,
                                 "channel": channel,
                                 "updated_date": updated_date,
                                 "parsed_timestamp": parsed_ts.isoformat()
@@ -632,11 +640,11 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
 
                             updated_entry = {
                                 "conv_id": new_conversation_id,
-                                "ticket_id": new_ticket_id,
-                                "ticket_name": ticket_name,
+                                "ticket_id": None,
+                                "ticket_name": None,
                                 "subject": subject_map.get(str(msg_id)),
                                 "channel": channel,
-                                "updated_date": datetime.now(timezone.utc).isoformat()
+                                "updated_date": dt_utc.isoformat()
                             }
                             if channel == "gmail" and thread_id:
                                 updated_entry["thread_id"] = thread_id
@@ -682,14 +690,12 @@ def update_or_create_conversation_file(grouped_messages, user_id, client_id, cha
     prefix = f"{user_id}/messages/{client_id}"
     config_key = f"{prefix}/config.json"
     config_data = read_json_from_s3(config_key)
-    print("config_data is : {config_data}")
 
     # Pull existing conversation IDs for the specified channel
     existing_conversations = {
         conv["conv_id"] for conv in config_data.get("conversations", [])
         if conv.get("channel") == channel and conv.get("conv_id")
     }
-    print(f"existing_conversations : {existing_conversations}")
     channel_messages = grouped_messages.get(client_id, {}).get(channel, [])
     if not channel_messages:
         print(f"[INFO] No messages found for client={client_id}, channel={channel}")
@@ -699,7 +705,6 @@ def update_or_create_conversation_file(grouped_messages, user_id, client_id, cha
     conversation_groups = {}
     for msg in channel_messages:
         conv_id = msg.get("conversation_id")
-        print(f"mesage conv_id to be checked: {conv_id}")
         if conv_id:
             conversation_groups.setdefault(conv_id, []).append(msg)
 
@@ -715,7 +720,6 @@ def update_or_create_conversation_file(grouped_messages, user_id, client_id, cha
 
 
         if conv_id in existing_conversations:
-            print(f"found conv id :{conv_id} in existing")
             raw_data = read_json_from_s3(file_key)
             input_data = raw_data.get("input_data", [])
             messages = normalize_datetimes(messages)   # check this later
@@ -779,7 +783,6 @@ def get_latest_convo_info(config):
         ts_str = msg.get("parsed_timestamp")
 
         if not conv_id or not ts_str:
-            # print(f"[DEBUG] Skipping message due to missing conv_id or parsed_timestamp")
             continue
 
         try:
@@ -1005,10 +1008,11 @@ def get_selected_conv(conversation_id, user_id):
                 convo_messages = convo_data.get("input_data", [])
 
                 channel = convo_messages[0].get("source") if convo_messages else "unknown"
+                
                 messages.append({
                     "id": conv,
                     "channel": channel,
-                    "messages": convo_messages
+                    "messages": convo_messages             
                 })
 
             except Exception as e:
@@ -1140,7 +1144,28 @@ def send_messages():
             client_id = client_id_row[0]
         except Exception as e:
             return jsonify({"error": "Failed to retrieve client_id"}), 500
+   
+        try:
+           
+                s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                config_data = read_json_from_s3(s3_config_key)
 
+                # Check if conversation_id exists and channel matches
+                conv_list = config_data.get("conversations", [])
+                for conv in conv_list:
+                    if conv.get("channel") == channel:
+                        is_reply = True
+                        conversation_id = conv.get("conv_id")
+                        break
+                    
+
+        except FileNotFoundError:
+                print(f"⚠️ Config file not found at {conv_filepath} — treating as user-initiated")
+        except Exception as e:
+                print(f"❌ Error checking config file for reply status: {e}")
+                
+        if not is_reply:
+            conversation_id = str(uuid.uuid4())
 
         conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
         ensure_dir(conv_folder)
@@ -1154,34 +1179,8 @@ def send_messages():
         except Exception as e:
                 input_data = []
 
-        if conversation_id:
-            # Check if conversation_id exists in threads table and matches the channel
-            try:
-            # Load config file
-                # with open(conv_filepath, "r", encoding="utf-8") as f:
-                #     config_data = json.load(f)
 
-                s3_config_key = f"{user_id}/messages/{client_id}/config.json"
-                config_data = read_json_from_s3(s3_config_key)
-
-                # Check if conversation_id exists and channel matches
-                conv_list = config_data.get("conversations", [])
-                for conv in conv_list:
-                    if conv.get("channel") == channel:
-                        is_reply = True
-                        conversation_id = conv.get("conv_id")
-                        break
-                    
-
-            except FileNotFoundError:
-                print(f"⚠️ Config file not found at {conv_filepath} — treating as user-initiated")
-            except Exception as e:
-                print(f"❌ Error checking config file for reply status: {e}")
-                
-        if not is_reply:
-            conversation_id = str(uuid.uuid4())
-
-     # getting email from tables to check which one to use
+        # getting email from tables to check which one to use
         cursor.execute("SELECT email FROM users WHERE user_id = %s", (user_id,))
         u_email = cursor.fetchone()
         if  u_email:
@@ -1191,7 +1190,6 @@ def send_messages():
         b_email = cursor.fetchone()
         if not b_email:
             print("error : No email found from business_info table")
-                    # return {"error": "No token found for business email"}, 404
         business_email = b_email[0]       
 
         try:
@@ -1217,6 +1215,9 @@ def send_messages():
         conv_filepath = os.path.join(conv_folder, file_name)
 
         # Handle subject, ticket info, and thread_id based on message type
+
+        ticket_id = ticket_name = subject = thread_id = None
+
         if is_reply:
             
             # Read config file to get ticket info and subject
@@ -1228,7 +1229,6 @@ def send_messages():
                 config_data = read_json_from_s3(s3_config_key)
                 
                 # Find the conversation in config
-                ticket_id = ticket_name = subject = thread_id = None
                 for conv in config_data.get("conversations", []):
                     if conv.get("conv_id") == conversation_id:
 
@@ -1276,11 +1276,11 @@ def send_messages():
             
             for group in subjects:
                 if msg_id in group.get("message_ids", []):
-                    subject = ticket_name = group.get("summary")
+                    subject = group.get("summary")
                     break
                     
             if not subject:
-                subject = ticket_name = f"Message from {client_email}"  # Fallback subject
+                subject = f"Message from {client_email}"  # Fallback subject
                 
             # thread_id = None  # New conversation, no thread_id yet
         # assigning ticket_id and ticket_name
@@ -1312,7 +1312,6 @@ def send_messages():
         # sending messages
         if channel == "gmail" :
             if thread_id:
-                print(f"[INFO] → Dispatching reply Gmail message to {client_email}")
                 latest_msg = max(
                     input_data,
                     key=lambda msg: datetime.fromisoformat(msg["timestamp"])
@@ -1325,7 +1324,6 @@ def send_messages():
                     reply_subject = f"Re: {latest_subject}"
                 else:
                     reply_subject = latest_subject
-
                 try:
                     sent_message_id = gmail_reply(
                         user_id,
@@ -1336,14 +1334,13 @@ def send_messages():
                         in_reply_to=latest_id
                     )
                     message["id"] = sent_message_id
-                    print(f"sent_message_id : {sent_message_id}")
-                    print(f"thread_id : {thread_id}")
+                  
                 except Exception as e:
                     print(f"❌ Gmail send failed: {e}")
                     return jsonify({"error": "Gmail send failed"}), 500
 
             else:
-                print(f"[INFO] → Dispatching new Gmail message to {client_email}")
+              
                 try:
                     sent_message_id, sent_thread_id = send_mail(
                         user_id,
@@ -1353,7 +1350,6 @@ def send_messages():
                     )
                     message["id"] = sent_message_id
                     message["thread_id"] = sent_thread_id
-                    print(f" sent_message_id :{sent_message_id}")
                       
                 except Exception as e:
                         print(f"❌ Gmail send failed: {e}")
@@ -1403,6 +1399,7 @@ def send_messages():
                     "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
                     (updated_date, "In-Progress", conversation_id)
                 )
+
                 cursor.execute(
                     "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
                     (updated_date, conversation_id)
@@ -1432,7 +1429,8 @@ def send_messages():
                     created_date,
                     updated_date
                 )
-            )
+                            )
+            
 
             connection.commit()
 
@@ -1446,7 +1444,6 @@ def send_messages():
         
         try:
            
-
             input_data.append(message)
             conversation_data = {"input_data": input_data}
 

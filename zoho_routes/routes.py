@@ -28,7 +28,6 @@ zoho_bp = Blueprint("zoho", __name__)
 
 CLIENT_ID = os.environ.get("ZOHO_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("ZOHO_CLIENT_SECRET")
-# REDIRECT_URI = "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/zoho/callback"
 REDIRECT_URI = "https://bytoid.ai/auth/zoho/callback"
 ZOHO_AUTH_URL = "https://accounts.zoho.in/oauth/v2/auth"
 ZOHO_TOKEN_URL = "https://accounts.zoho.in/oauth/v2/token"
@@ -345,7 +344,6 @@ def fetch_zoho_emails(user_id):
                                   
                     
                     subject = mail_data.get("subject")
-                    extracted_subject = extract_reply_content(subject)
                     from_address = mail_data.get("fromAddress")
                     raw_to_address = mail_data.get("toAddress")
                     decoded_address = html.unescape(raw_to_address)
@@ -358,6 +356,7 @@ def fetch_zoho_emails(user_id):
                         int(mail_data.get("receivedTime")) / 1000, tz=timezone.utc
                     ).isoformat()
                     snippet = mail_data.get("summary")
+                    extracted_body = extract_reply_content(snippet)
                     has_attachment = mail_data.get("hasAttachment")
 
                     direction = (
@@ -374,8 +373,8 @@ def fetch_zoho_emails(user_id):
                             "id": message_id,
                             "from": from_address,
                             "to": email_only,
-                            "body": snippet,
-                            "subject": extracted_subject,
+                            "body": extracted_body,
+                            "subject": subject,
                             "timestamp": timestamp_dt,
                             "status": "received",
                             "source": "zoho",

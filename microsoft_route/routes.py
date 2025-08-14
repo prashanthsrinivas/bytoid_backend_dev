@@ -714,49 +714,97 @@ def microsoft_list_trash():
 
 @microsoft_bp.route("/process-outlook", methods=["POST"])
 def process_outlook():
-    data = request.get_json()
-    apikey = data.get("api_key")
-    userid = fetch_userid_from_launch(apikey)
-    files = data.get("files")
-    pathdown = f"data/{userid}/outlook"
-    all_downloaded_paths = []
+    try:
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    # Validate inputs
-    if not userid:
-        return jsonify({"error": "Missing user_id"}), 400
-    if not files or not isinstance(files, list):
-        return jsonify({"error": "Invalid or missing files"}), 400
+        apikey = data.get("api_key")
+        if not apikey:
+            return jsonify({"error": "Missing api_key"}), 400
 
-    # Download files
-    os.makedirs(pathdown, exist_ok=True)
-    for i in files:
-        file_url = i.get("downloadUrl")
-        file_name = i.get("name")
-        if not file_url or not file_name:
-            return jsonify({"error": "Missing file_url or file_name"}), 400
+        userid = fetch_userid_from_launch(apikey)
+        if not userid:
+            return jsonify({"error": "Invalid API key or user not found"}), 401
 
-        resp = requests.get(file_url)
-        if resp.status_code != 200:
-            return jsonify({"error": f"Failed to download file {file_name}"}), 500
+        files = data.get("files")
+        if not files or not isinstance(files, list):
+            return (
+                jsonify({"error": "Invalid or missing 'files' (must be a list)"}),
+                400,
+            )
 
-        save_path = os.path.join(pathdown, file_name)
-        with open(save_path, "wb") as f:
-            f.write(resp.content)
+        pathdown = f"data/{userid}/outlook"
+        os.makedirs(pathdown, exist_ok=True)
+        all_downloaded_paths = []
+        file_errors = []
 
-        all_downloaded_paths.append(save_path)
+        # Download files
+        for file_info in files:
+            file_url = file_info.get("downloadUrl")
+            file_name = file_info.get("name")
 
-    # Process files and update YAML
-    all_file_data = process_and_update_yaml(
-        all_downloaded_paths=all_downloaded_paths,
-        userid=userid,
-        provider="outlook",  # or "microsoft"
-        folderpath=pathdown,
-    )
+            if not file_url or not file_name:
+                file_errors.append(
+                    {
+                        "file": file_name or "unknown",
+                        "error": "Missing file_url or file_name",
+                    }
+                )
+                continue
 
-    return {
-        "message": "Successfully processed files",
-        "files": all_file_data,  # Full provider-based file history
-    }, 200
+            try:
+                resp = requests.get(file_url, timeout=30)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                file_errors.append({"file": file_name, "error": str(e)})
+                continue
+
+            save_path = os.path.join(pathdown, file_name)
+            try:
+                with open(save_path, "wb") as f:
+                    f.write(resp.content)
+                all_downloaded_paths.append(save_path)
+            except OSError as e:
+                file_errors.append(
+                    {"file": file_name, "error": f"File save error: {str(e)}"}
+                )
+
+        if not all_downloaded_paths:
+            return (
+                jsonify(
+                    {
+                        "error": "No files downloaded successfully",
+                        "details": file_errors,
+                    }
+                ),
+                400,
+            )
+
+        # Process files
+        try:
+            all_file_data = process_and_update_yaml(
+                all_downloaded_paths=all_downloaded_paths,
+                userid=userid,
+                provider="outlook",
+                folderpath=pathdown,
+            )
+        except Exception as e:
+            return jsonify({"error": f"Error processing files: {str(e)}"}), 500
+
+        return (
+            jsonify(
+                {
+                    "message": "Files processed",
+                    "files": all_file_data,
+                    "failed_files": file_errors,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"error": f"Unexpected server error: {str(e)}"}), 500
 
 
 @microsoft_bp.route("/logout")

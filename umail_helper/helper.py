@@ -1,33 +1,50 @@
 import re
 from create_db import connect_to_rds
+from email import message_from_string
+
 
 
 IDENTITY_MAP = {}
 CONTACTS = {}
 
 
-def extract_reply_content(body):
-    if not body:
+def extract_reply_content(body_text):
+    """Enhanced email content extractor that handles edge cases"""
+    if not body_text:
         return ""
-
-    # Normalize HTML entities like &lt; and &gt;
-    body = body.replace("&lt;", "<").replace("&gt;", ">")
-
-    # Define patterns for reply markers
-    patterns = [
-        r"On\s.+?wrote:",  # Gmail-style
-        r"From:\s.+?Sent:",  # Zoho-style
-        r"From:\s.+?Subject:",  # Alternate Zoho fallback
-        r"-----Original Message-----",  # Outlook-style
-        r"---------- Forwarded message ----------",  # Forwarded
+    
+    # More specific Gmail pattern - looks for the complete Gmail signature format
+    # This pattern is more restrictive to avoid false matches
+    gmail_patterns = [
+        # Standard Gmail format: "On Wed, 13 Aug, 2025, 8:15 pm Name <email> wrote:"
+        r'On\s+\w{3},\s+\d{1,2}\s+\w{3},?\s+\d{4},?\s+\d{1,2}:\d{2}\s+[ap]m\s+.*?<.*?@.*?>\s+wrote:',
+        
+        # Alternative format: "On Monday, January 15, 2024 at 2:30 PM John Doe wrote:"
+        r'On\s+\w+,\s+\w+\s+\d{1,2},?\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s+[AP]M\s+.*?\s+wrote:',
+        
+        # Simpler format: "On Wed, 13 Aug, 2025 Name wrote:"
+        r'On\s+\w{3},\s+\d{1,2}\s+\w{3},?\s+\d{4}\s+.*?\s+wrote:',
+        
+        # Even more specific - must have email pattern
+        r'On\s+.*?\d{4}.*?<[^>]+@[^>]+>\s+wrote:'
     ]
-
-    for pattern in patterns:
-        match = re.search(pattern, body, flags=re.IGNORECASE | re.DOTALL)
+    
+    content = body_text
+    
+    # Try each pattern and use the first match
+    for pattern in gmail_patterns:
+        match = re.search(pattern, body_text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
         if match:
-            return body[:match.start()].strip()
+            # Take everything before the "On ... wrote:" part
+            content = body_text[:match.start()].strip()
+            break
+    
+    # Clean HTML entities
+    content = content.replace('&lt;', '<').replace('&gt;', '>')
+    content = content.replace('&amp;', '&')
+    
+    return content.strip()
 
-    return body.strip()
 
 
 

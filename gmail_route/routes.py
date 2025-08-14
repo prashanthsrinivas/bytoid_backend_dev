@@ -110,7 +110,9 @@ def fetch_gmail_messages(user_id):
             )
 
             body_content = msg.get("body", "")
-            plain_text = BeautifulSoup(body_content, "html.parser").get_text().strip()
+            print(f"****body : {body_content}")
+            plain_text = BeautifulSoup(body_content, "html.parser").get_text(separator="\n").strip()
+            extracted_body = extract_reply_content(plain_text)
 
             name, from_email = parseaddr(msg["from"])
             name, to_email = parseaddr(msg.get("to", ""))
@@ -118,15 +120,15 @@ def fetch_gmail_messages(user_id):
 
             client_id = get_users_client_id(participant, cursor)
             subject = msg["subject"]
-            extracted_subject = extract_reply_content(subject)
+            
 
             if client_id:
                 message = {
                     "id": message_id,
                     "from": from_email,
                     "to": user_email,
-                    "body": plain_text,
-                    "subject": extracted_subject,
+                    "body": extracted_body,
+                    "subject": subject,
                     "timestamp": timestamp_iso,
                     "status": "received",
                     "source": "gmail",

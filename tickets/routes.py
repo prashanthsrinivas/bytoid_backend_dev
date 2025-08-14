@@ -117,3 +117,29 @@ def get_conversation_details(key):
     except Exception as e:
         print(f"[ERROR] Failed to read conversation file {key}: {e}")
         return {}
+
+@tickets_bp.route("/get_status_priority/<ticket_id>", methods=["GET"])
+def get_status_priority(ticket_id):
+    if not ticket_id:
+        return {"status": None, "priority": None, "ticket_name": None}
+
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            "SELECT status, priority, ticket_name FROM tickets WHERE tickets_id = %s",
+            (ticket_id,)
+        )
+        ticket_row = cursor.fetchone()
+        if ticket_row:
+            return {
+                "status": ticket_row[0],
+                "priority": ticket_row[1],
+                "ticket_name": ticket_row[2]
+            }
+    finally:
+        cursor.close()
+        conn.close()
+
+    return {"status": None, "priority": None, "ticket_name": None}
