@@ -14,6 +14,7 @@ from utils.chatopenzz import (
     generate_usecases_questions,
     generate_usecases_questions_batch,
 )
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ def find_matching_industry(extracted_text: str, industries: set) -> str:
 
 
 def save_yaml_file(entries, filepath):
-    with open(filepath, "a", encoding="utf-8") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         yaml.dump(entries, f, sort_keys=False, allow_unicode=True)
 
 
@@ -241,7 +242,6 @@ def remove_entries_for_files(filepath, filenames):
         existing = yaml.safe_load(f) or []
 
     flat_existing = flatten_list(existing)
-
     filenames_norm = [os.path.splitext(f.strip().lower())[0] for f in filenames]
 
     filtered = []
@@ -258,57 +258,65 @@ def remove_entries_for_files(filepath, filenames):
     return filtered
 
 
-def merge_entries(existing: list, new: list) -> list:
+def append_passed_with_ai_diff(existing, new_entries):
     """
-    Merge entries based on full question/answer context:
-    User, Rephrased Question, Ai Response, filename, and quote.
-    Keep the entry with the smaller doc_value if duplicates exist.
+    Append new entries to existing if AI Response differs,
+    keeping both old and new entries (no overwrite).
     """
-    merged_dict = {}
-    logger.info("✅ Merging entries initiated (full duplicate check).")
+    """
+    Append new entries to existing:
+    - Keep both old and new AI responses if they differ.
+    - Avoid adding exact duplicates (same User, filename, Ai Response).
+    """
+    seen = set()  # (User, filename, Ai Response) triples
 
-    def entry_key(e):
-        return (
-            (e.get("User") or "").strip().lower(),
-            (e.get("filename") or "").strip().lower(),
-        )
+    # Add existing entries to seen
+    for e in existing:
+        key = (e.get("User"), e.get("filename"), e.get("Ai Response"))
+        seen.add(key)
 
-    for e in existing + new:
-        key = entry_key(e)
-        if not key[0]:  # Skip if 'User' missing
-            continue
+    for entry in new_entries:
+        key = (entry.get("User"), entry.get("filename"), entry.get("Ai Response"))
+        if key not in seen:
+            existing.append(entry)
+            seen.add(key)
 
-        try:
-            val = float(e.get("doc_value", 9999))
-        except:
-            val = 9999
+    return existing
 
-        if key not in merged_dict:
-            merged_dict[key] = e
-        else:
-            try:
-                existing_val = float(merged_dict[key].get("doc_value", 9999))
-            except:
-                existing_val = 9999
-            if val < existing_val:
-                merged_dict[key] = e
 
-    return list(merged_dict.values())
+def is_new_file(file_name, passed_data, failed_data):
+    """Check if file has never been processed before."""
+    file_no_ext = os.path.splitext(file_name.strip().lower())[0]
+    return not any(
+        os.path.splitext(e.get("filename", "").strip().lower())[0] == file_no_ext
+        for e in passed_data + failed_data
+    )
+
+
+def append_to_failed_no_duplicates(failed_data, new_entries, passed_data):
+    """
+    Append new entries to failed_data only if not already in failed_data
+    and not already in passed_data.
+    """
+    existing_keys = {(e.get("User"), e.get("filename")) for e in failed_data}
+    passed_keys = {(p.get("User"), p.get("filename")) for p in passed_data}
+
+    for entry in new_entries:
+        key = (entry.get("User"), entry.get("filename"))
+        if key not in existing_keys and key not in passed_keys:
+            failed_data.append(entry)
+            existing_keys.add(key)
+    return failed_data
 
 
 def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
-    """
-    Generate questions and answers for specific files (new or updated).
-    Merge results into existing passed_ques.yaml and failed_ques.yaml without losing old entries.
-    """
-
+    """Generate Q&A for given files, handling new vs updated file logic."""
     if not filenames or not isinstance(filenames, list):
         logger.warning("⚠ No filenames passed for QA processing.")
         return None
 
     data = load_yaml_file(path=pathconfig.smb_path)
     prompts = load_yaml_file(path=pathconfig.agent_template)
-
     if not data and not prompts:
         logger.error("❌ Missing usecase or prompt data.")
         return None
@@ -323,20 +331,26 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
     main_folder = f"{pathconfig.basepath}/{userid}"
     os.makedirs(main_folder, exist_ok=True)
 
-    ques_filepath = os.path.join(main_folder, "main_ques.yaml")
     passes_files = os.path.join(main_folder, "passed_ques.yaml")
     failed_ques = os.path.join(main_folder, "failed_ques.yaml")
 
-    # Step 1: Fetch docs & generate questions only for these files
+    passed_data = flatten_list(load_yaml_file(passes_files) or [])
+    failed_data = flatten_list(load_yaml_file(failed_ques) or [])
+
+    # Determine if all files are new
+    all_new = all(is_new_file(fn, passed_data, failed_data) for fn in filenames)
+
+    if not all_new:
+        # Updated file(s) → remove old entries for those files from failed data only
+        failed_data = remove_entries_for_files(failed_ques, filenames)
+
+    # Step 1: Fetch docs & generate questions
     usecases_with_docs = fetch_usecases_with_docs(usecases, userid, filenames=filenames)
     all_entries = generate_yaml_ques_batch(usecases_with_docs, prompts, industry)
-
     logger.info(f"✅ Generated {len(all_entries)} question entries for {industry}.")
 
-    # Step 2: Extract actual questions & mappings
-    all_ques = []
-    actual_to_rephrased = {}
-    actual_to_quote = {}
+    # Step 2: Extract actual questions
+    all_ques, actual_to_rephrased, actual_to_quote = [], {}, {}
     for entry in all_entries:
         for q in entry.get("questions", []):
             actual = q.get("actual_one", "").strip()
@@ -347,16 +361,10 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
                 actual_to_rephrased[actual] = rephrased
                 actual_to_quote[actual] = quote
 
-    logger.info(f"filenames type: {type(filenames)}, value: {filenames}")
-    logger.info(f"usecases type: {type(all_ques)}, value: {all_ques}")
-
-    # Step 3: Get answers from LanceDB
+    # Step 3: Get answers & evaluate
     content = fetch_ques_with_docs(all_ques, userid, filenames=filenames)
     batch_size = 10
-    valid_responses = []
-    clarification_responses = []
-
-    logger.info(f"📊 Total questions for evaluation: {len(content)}")
+    valid_responses, clarification_responses = [], []
 
     for i in range(0, len(content), batch_size):
         batch = content[i : i + batch_size]
@@ -365,15 +373,10 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
         )
 
         match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)
-        if match:
-            try:
-                res_json = yaml.safe_load(match.group(0))
-                logger.info("✅ Extracted JSON block from evaluator.")
-            except Exception as e:
-                logger.error(f"❌ Error parsing evaluator JSON: {e}")
-                res_json = []
-        else:
-            logger.error("❌ No JSON array block found in evaluator output.")
+        try:
+            res_json = yaml.safe_load(match.group(0)) if match else []
+        except Exception as e:
+            logger.error(f"❌ Error parsing evaluator JSON: {e}")
             res_json = []
 
         for original_item, eval_result in zip(batch, res_json):
@@ -393,30 +396,41 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
             }
 
             if related_res and usecase_res:
-                # entry_obj["date_processed"] = # add time and date for reference
+                entry_obj["date_processed"] = datetime.now().isoformat(
+                    timespec="seconds"
+                )
                 valid_responses.append(entry_obj)
             else:
                 clarification_responses.append(entry_obj)
 
-    # Step 4: Merge into existing YAMLs
-    existing_passed = remove_entries_for_files(passes_files, filenames)
-    existing_failed = remove_entries_for_files(failed_ques, filenames)
+    # Step 4: Append valid_responses to passed_data with AI diff logic
+    npassed_data = append_passed_with_ai_diff(passed_data, valid_responses)
 
-    merged_passed = merge_entries(
-        flatten_list(existing_passed), flatten_list(valid_responses)
+    # Step 5: Remove answered questions from failed_data
+    answered_keys = {(v.get("User"), v.get("filename")) for v in valid_responses}
+    failed_data = [
+        e
+        for e in failed_data
+        if (e.get("User"), e.get("filename")) not in answered_keys
+    ]
+
+    # Step 6: Append clarifications to failed_data (skip those already in passed)
+    passed_keys = {(p.get("User"), p.get("filename")) for p in npassed_data}
+    clarification_responses = [
+        c
+        for c in clarification_responses
+        if (c.get("User"), c.get("filename")) not in passed_keys
+    ]
+    failed_data = append_to_failed_no_duplicates(
+        failed_data, clarification_responses, npassed_data
     )
-    merged_failed = merge_entries(
-        flatten_list(existing_failed), flatten_list(clarification_responses)
-    )
+    # Save results
+    if npassed_data:
+        save_yaml_file(npassed_data, filepath=passes_files)
+    if failed_data:
+        save_yaml_file(failed_data, filepath=failed_ques)
 
-    # Save only if there are entries
-    if merged_passed:
-        save_yaml_file(merged_passed, filepath=passes_files)
-
-    if merged_failed:
-        save_yaml_file(merged_failed, filepath=failed_ques)
-
-    logger.info(f"✅ Merged QAs into {passes_files} and {failed_ques}")
+    logger.info(f"✅ Saved updated QAs to {passes_files} and {failed_ques}")
 
     return {
         "processed_files": filenames,

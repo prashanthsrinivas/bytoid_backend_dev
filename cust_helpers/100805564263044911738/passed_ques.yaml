@@ -1,47 +1,187 @@
-- - User: How do you ensure allergen-free options with protocols to minimize cross-contamination
-      risks?
-    Rephrased Question: I saw 'Kitchen protocols minimize cross-contamination risks.'
-      — in that context, how do you ensure allergen-free options?
-    Ai Response: We ensure allergen-free options by offering nut-free, soy-free, and
-      dairy-free alternatives and following kitchen protocols to minimize cross-contamination
-      risks.
-    quote: Kitchen protocols minimize cross-contamination risks.
-    filename: Savory_Haven_Bistro.docx
-  - User: How can I earn rewards points for feedback submitted through the tablets
-      at the exit?
-    Rephrased Question: I saw 'Tablets at the exit allow quick feedback submission,
-      with instant rewards points added for completed surveys.' — how do I earn rewards
-      points for feedback?
-    Ai Response: You can earn rewards points for feedback submitted through the tablets
-      at the exit. Instant rewards points are added for completed surveys.
-    quote: Tablets at the exit allow quick feedback submission, with instant rewards
-      points added for completed surveys.
-    filename: Savory_Haven_Bistro.docx
-  - User: How do I access the digital menu at my table using QR code scanning?
-    Rephrased Question: I saw 'Fully digital menu accessible via QR code scanning
-      at each table.' — how can I access the digital menu using QR codes?
-    Ai Response: You can access the digital menu at your table using QR code scanning.
-      Our fully digital menu is accessible via QR code scanning at each table.
-    quote: Fully digital menu accessible via QR code scanning at each table.
-    filename: Savory_Haven_Bistro.docx
-  - User: How can I modify my order based on dietary preferences using the AI on the
-      website/app?
-    Rephrased Question: I saw 'Our website/app features AI that suggests dishes based
-      on previous orders and dietary preferences.' — how can I modify my order based
-      on dietary preferences?
-    Ai Response: You can modify your order based on dietary preferences using the
-      AI on our website/app, which suggests dishes based on previous orders and dietary
-      preferences.
-    quote: 'AI-Powered Recommendations: Our website/app features AI that suggests
-      dishes based on previous orders and dietary preferences.'
-    filename: Savory_Haven_Bistro.docx
-  - User: How can I join the waitlist remotely and receive SMS notifications when
-      my table is ready?
-    Rephrased Question: I saw 'Guests can join the waitlist remotely and receive SMS
-      notifications when their table is ready.' — how do I join the waitlist remotely
-      and get notified via SMS?
-    Ai Response: You can join the waitlist remotely and receive SMS notifications
-      when your table is ready through our Real-Time Waitlist feature.
-    quote: 'Real-Time Waitlist: Guests can join the waitlist remotely and receive
-      SMS notifications when their table is ready.'
-    filename: Savory_Haven_Bistro.docx
+- User: How can I track my order status after seamless ordering via Uber Eats, DoorDash,
+    or the website/app?
+  Rephrased Question: I saw 'Seamless ordering via Uber Eats, DoorDash, and direct
+    website/app.' — in that context, how can I track my order status?
+  Ai Response: You can track your order status after ordering via Uber Eats, DoorDash,
+    or our website/app through our real-time order tracking feature.
+  quote: Seamless ordering via Uber Eats, DoorDash, and direct website/app.
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 1.434861183166504
+  date_processed: '2025-08-13T17:05:34'
+- User: What type of eco-friendly packaging is used to minimize waste for takeout
+    and delivery orders?
+  Rephrased Question: I saw 'Environmentally responsible eco-friendly packaging to
+    minimize waste.' — in that context, what type of packaging is used for takeout
+    and delivery orders?
+  Ai Response: We use eco-friendly packaging to minimize waste for takeout and delivery
+    orders.
+  quote: Environmentally responsible eco-friendly packaging to minimize waste.
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 0.9244161248207092
+  date_processed: '2025-08-13T17:05:34'
+- User: How are the low-allergen options prepared to minimize cross-contamination
+    risks?
+  Rephrased Question: 'I saw ''Low-Allergen Options: Beyond common allergens, we offer
+    nut-free, soy-free, and dairy-free alternatives.'' — in that context, how are
+    the low-allergen options prepared to minimize cross-contamination risks?'
+  Ai Response: Our low-allergen options are prepared in a way that minimizes cross-contamination
+    risks, and our kitchen protocols are designed to ensure your safety.
+  quote: 'Low-Allergen Options: Beyond common allergens, we offer nut-free, soy-free,
+    and dairy-free alternatives. Kitchen protocols minimize cross-contamination risks.'
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 0.9329736828804016
+  date_processed: '2025-08-13T17:05:34'
+- User: How can I book the interactive dining experience at the Chef's Table where
+    chefs offer personalized recommendations?
+  Rephrased Question: 'I saw ''Interactive Chef’s Table: Guests can book exclusive
+    interactive dining experiences where chefs explain the inspiration behind each
+    dish and offer personalized recommendations.'' — in that context, how can I book
+    the interactive dining experience at the Chef''s Table?'
+  Ai Response: You can book the interactive dining experience at the Chef's Table
+    by contacting us through our website or app.
+  quote: 'Interactive Chef’s Table: Guests can book exclusive interactive dining experiences
+    where chefs explain the inspiration behind each dish and offer personalized recommendations.'
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 1.0403034687042236
+  date_processed: '2025-08-13T17:05:41'
+- User: How can I access the live cooking classes with the chefs through the app?
+  Rephrased Question: 'I saw ''Virtual Cooking Classes: Access live and recorded sessions
+    with our chefs through the app, allowing customers to recreate favorite dishes
+    at home.'' — in that context, how can I access the live cooking classes?'
+  Ai Response: You can access live cooking classes with our chefs through the app,
+    where you can also find recorded sessions to help you recreate your favorite dishes
+    at home.
+  quote: 'Virtual Cooking Classes: Access live and recorded sessions with our chefs
+    through the app, allowing customers to recreate favorite dishes at home.'
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 1.0214800834655762
+  date_processed: '2025-08-13T17:05:49'
+- User: How are the wellness beverages designed to promote health and wellness?
+  Rephrased Question: 'I saw ''Wellness Beverages: In addition to cocktails and coffees,
+    we offer herbal infusions, detox waters, and adaptogenic elixirs designed to promote
+    health and wellness.'' — in that context, how are the wellness beverages designed
+    to promote health?'
+  Ai Response: Our wellness beverages, including herbal infusions, detox waters, and
+    adaptogenic elixirs, are designed to promote health and wellness.
+  quote: 'Wellness Beverages: In addition to cocktails and coffees, we offer herbal
+    infusions, detox waters, and adaptogenic elixirs designed to promote health and
+    wellness.'
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 1.0403034687042236
+  date_processed: '2025-08-13T17:05:49'
+- User: How can I book the interactive dining experience at the Chef's Table where
+    chefs offer personalized recommendations?
+  Rephrased Question: 'I saw ''Interactive Chef’s Table: Guests can book exclusive
+    interactive dining experiences where chefs explain the inspiration behind each
+    dish and offer personalized recommendations.'' — in that context, how can I book
+    the interactive dining experience at the Chef''s Table?'
+  Ai Response: You can book the interactive dining experience at the Chef's Table
+    by contacting us, where our chefs will offer personalized recommendations and
+    explain the inspiration behind each dish.
+  quote: 'Interactive Chef’s Table: Guests can book exclusive interactive dining experiences
+    where chefs explain the inspiration behind each dish and offer personalized recommendations.'
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 1.0403034687042236
+  date_processed: '2025-08-13T17:05:49'
+- User: How are the low-allergen options prepared to minimize cross-contamination
+    risks?
+  Rephrased Question: 'I saw ''Low-Allergen Options: Beyond common allergens, we offer
+    nut-free, soy-free, and dairy-free alternatives.'' — in that context, how are
+    the low-allergen options prepared to minimize cross-contamination risks?'
+  Ai Response: Our low-allergen options are prepared with kitchen protocols that minimize
+    cross-contamination risks, and we offer nut-free, soy-free, and dairy-free alternatives.
+  quote: 'Low-Allergen Options: Beyond common allergens, we offer nut-free, soy-free,
+    and dairy-free alternatives. Kitchen protocols minimize cross-contamination risks.'
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 0.9863014221191406
+  date_processed: '2025-08-13T17:05:49'
+- User: What type of event packages are offered for birthdays and anniversaries under
+    Event Hosting?
+  Rephrased Question: I saw 'Event Hosting' — in that context, what type of event
+    packages are offered for birthdays and anniversaries?
+  Ai Response: We offer event packages for birthdays, anniversaries, corporate dinners,
+    and celebrations, which include customizable settings and full-service event planning
+    support.
+  quote: Event Hosting
+  filename: Savory_Haven_Bistro.docx
+  doc_value: 1.0881900787353516
+  date_processed: '2025-08-13T17:05:49'
+- User: Can I place dine-in orders through the mobile app?
+  Rephrased Question: 'I saw ''Online ordering via: Uber Eats, DoorDash, Savory Haven
+    Bistro official website and mobile app'' — does the mobile app support dine-in
+    orders as well?'
+  Ai Response: Yes, you can place dine-in orders through our mobile app.
+  quote: 'Online ordering via:'
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.2788701057434082
+  date_processed: '2025-08-13T17:06:17'
+- User: Is the kids' menu available for takeaway orders?
+  Rephrased Question: I saw 'Kids’ menu and high chairs provided.' — can I request
+    a kids' menu for a takeaway order?
+  Ai Response: Yes, our kids' menu is available for takeaway orders.
+  quote: Kids’ menu and high chairs provided.
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.1272450685501099
+  date_processed: '2025-08-13T17:06:17'
+- User: Will I receive updates on my order preparation status through the real-time
+    tracking?
+  Rephrased Question: I saw 'Real-time order tracking via app and delivery partners.'
+    — does the real-time tracking include updates on order preparation status?
+  Ai Response: Yes, you will receive updates on your order preparation status through
+    our real-time tracking system.
+  quote: Real-time order tracking via app and delivery partners.
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.0871937274932861
+  date_processed: '2025-08-13T17:06:17'
+- User: Is it possible to join the loyalty program using the mobile app?
+  Rephrased Question: I saw 'Sign up via app or website.' — can I enroll in the loyalty
+    program through the mobile app?
+  Ai Response: Yes, you can join our loyalty program using our mobile app.
+  quote: Sign up via app or website.
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.098056674003601
+  date_processed: '2025-08-13T17:06:17'
+- User: Can I use the loyalty program contact number for customer support?
+  Rephrased Question: 'I saw ''Phone: +91 12345 67890'' — is the loyalty program contact
+    number the same for customer support inquiries?'
+  Ai Response: Yes, you can use our loyalty program contact number for customer support.
+  quote: 'Phone: +91 12345 67890'
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.1683204174041748
+  date_processed: '2025-08-13T17:06:17'
+- User: Are there menu suggestions tailored to dietary preferences?
+  Rephrased Question: I saw 'Full lunch and dinner menus, including weekend brunch
+    specials.' — do the menus offer personalized suggestions based on dietary preferences?
+  Ai Response: Yes, we offer menu suggestions tailored to dietary preferences. Please
+    contact us for more information.
+  quote: Full lunch and dinner menus, including weekend brunch specials.
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.2898800373077393
+  date_processed: '2025-08-13T17:06:17'
+- User: Is it possible to reserve a table for the weekend brunch specials?
+  Rephrased Question: I saw 'Full lunch and dinner menus, including weekend brunch
+    specials.' — can I make table reservations for the weekend brunch specials?
+  Ai Response: Yes, you can reserve a table for weekend brunch specials. Please use
+    our online booking system or call us directly.
+  quote: Full lunch and dinner menus, including weekend brunch specials.
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.5423977375030518
+  date_processed: '2025-08-13T17:06:31'
+- User: Can I reserve seats for both indoor and patio seating areas?
+  Rephrased Question: I saw 'Comfortable indoor seating (80 seats) and garden patio
+    seating (30 seats).' — are reservations available for both indoor and patio seating?
+  Ai Response: Yes, you can reserve seats for both indoor and patio seating areas.
+    Please use our online booking system or call us directly.
+  quote: Comfortable indoor seating (80 seats) and garden patio seating (30 seats).
+  filename: Savory_Haven_pricings.docx
+  doc_value: 0.9327101707458496
+  date_processed: '2025-08-13T17:06:31'
+- User: Is it possible to book a table with high chairs for children?
+  Rephrased Question: I saw 'Kids’ menu and high chairs provided.' — can I reserve
+    a table with high chairs for children?
+  Ai Response: Yes, you can book a table with high chairs for children. Please use
+    our online booking system or call us directly.
+  quote: Kids’ menu and high chairs provided.
+  filename: Savory_Haven_pricings.docx
+  doc_value: 1.0928621292114258
+  date_processed: '2025-08-13T17:06:31'
