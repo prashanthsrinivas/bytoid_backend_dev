@@ -410,3 +410,99 @@ def fetch_contacts_by_user(userid):
                     {"id": users_clients_id, "name": full_name, "email": email}
                 )
     return contacts
+
+
+def fetch_document_link(agent_id):
+    """
+    Fetch all contacts (name, gmail) linked to a user_id through communication.
+    """
+
+    print(f"User ID for getting doc links: {agent_id}")
+    connection = connect_to_rds()
+    with connection.cursor() as cursor:
+        # agent_id = get_subagent_by_userid(userid, connection)
+        # if not agent_id:
+        #     return []
+        query = """
+            SELECT documentation_link from subagents
+            WHERE sub_agent_id = %s
+        """
+        cursor.execute(query, (agent_id,))
+        row = cursor.fetchone()
+    connection.close()
+    return row[0] if row and row[0] else None
+
+
+def update_agent_document_link(new_link: str, agent_id):
+    """
+    Update the documentation_link for a given sub_agent_id.
+    """
+    print(f"Updating documentation link for agent ID: {agent_id}")
+    connection = connect_to_rds()
+    try:
+        # agent_id = get_subagent_by_userid(userid, connection)
+        with connection.cursor() as cursor:
+            query = """
+                UPDATE subagents
+                SET documentation_link = %s
+                WHERE sub_agent_id = %s
+            """
+            cursor.execute(query, (new_link, agent_id))
+        connection.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating documentation link: {e}")
+        return False
+    finally:
+        connection.close()
+
+
+def delete_agent_document_link(agent_id):
+    """
+    Update the documentation_link for a given sub_agent_id.
+    """
+    print(f"Updating documentation link for agent ID: {agent_id}")
+    connection = connect_to_rds()
+    try:
+        # agent_id = get_subagent_by_userid(userid, connection)
+        with connection.cursor() as cursor:
+            query = """
+                UPDATE subagents
+                SET documentation_link = %s
+                WHERE sub_agent_id = %s
+            """
+            cursor.execute(query, (None, agent_id))
+        connection.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating documentation link: {e}")
+        return False
+    finally:
+        connection.close()
+
+
+def get_user_agent_id(apikey):
+    """
+    Fetch user_id_fk and sub_agent_id_fk for a given api_id.
+    Returns a tuple (user_id_fk, sub_agent_id_fk) if found, else None.
+    """
+    print(f"Fetching user/sub_agent IDs for API key: {apikey}")
+    connection = connect_to_rds()
+    try:
+        with connection.cursor() as cursor:
+            query = """
+                SELECT user_id_fk, sub_agent_id_fk FROM launch
+                WHERE api_id = %s
+            """
+            cursor.execute(query, (apikey,))
+            result = cursor.fetchone()  # get single record
+
+        if result:
+            return result  # (user_id_fk, sub_agent_id_fk)
+        else:
+            return None
+    except Exception as e:
+        print(f"Error fetching user/sub_agent IDs: {e}")
+        return None
+    finally:
+        connection.close()

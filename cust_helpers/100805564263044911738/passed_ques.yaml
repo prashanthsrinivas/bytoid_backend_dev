@@ -185,3 +185,120 @@
   filename: Savory_Haven_pricings.docx
   doc_value: 1.0928621292114258
   date_processed: '2025-08-13T17:06:31'
+- User: How does the AI suggest dishes based on my dietary preferences?
+  rephrased_response: 'I saw ''AI-Powered Recommendations: Our website/app features
+    AI that suggests dishes based on previous orders and dietary preferences.'' —
+    in that context, how does the AI suggest dishes based on dietary preferences?'
+  Ai Response: When you place an order, you have the option to share your dietary
+    preferences with us, such as vegetarian or gluten-free. Our AI then reviews your
+    preferences and suggests dishes that cater to your needs, providing a personalized
+    experience similar to having a personal chef who understands your tastes.
+  quote: 'AI-Powered Recommendations: Our website/app features AI that suggests dishes
+    based on previous orders and dietary preferences.'
+  filename: Savory_Haven_Bistro.docx
+  date_processed: '2025-08-19T17:07:19'
+  doc_value: 1.055405855178833
+- User: How does the AI suggest dishes based on my previous orders?
+  rephrased_response: 'I saw ''AI-Powered Recommendations: Our website/app features
+    AI that suggests dishes based on previous orders and dietary preferences.'' —
+    in that context, how does the AI suggest dishes based on previous orders?'
+  Ai Response: Our AI analyzes your previous orders to identify patterns and preferences.
+    For instance, if you frequently opt for vegetarian dishes, it will suggest additional
+    vegetarian options. Furthermore, it takes into account the preferences of other
+    customers with similar tastes, enabling us to recommend dishes that we believe
+    you will truly enjoy.
+  quote: 'AI-Powered Recommendations: Our website/app features AI that suggests dishes
+    based on previous orders and dietary preferences.'
+  filename: Savory_Haven_Bistro.docx
+  date_processed: '2025-08-19T17:07:50'
+  doc_value: 0.9863014221191406
+- User: How does the POS system ensure real-time order tracking and accuracy by linking
+    to the kitchen display?
+  rephrased_response: I saw 'Advanced POS system linked directly to kitchen display
+    for real-time order tracking and accuracy.' — in that context, how does the POS
+    system ensure real-time order tracking?
+  Ai Response: Our POS system ensures real-time order tracking and accuracy by sending
+    orders directly to the kitchen display as soon as they're placed. This allows
+    our chefs to see orders instantly and start preparing food right away, enabling
+    us to serve meals quickly and accurately.
+  quote: Advanced POS system linked directly to kitchen display for real-time order
+    tracking and accuracy.
+  filename: Savory_Haven_Bistro.docx
+  date_processed: '2025-08-19T17:09:08'
+  doc_value: 1.0355843305587769
+- User: How can I avail the complimentary dessert and personalized greeting cards
+    for birthdays and anniversaries?
+  rephrased_response: 'I saw ''Birthday & Anniversary Specials: Complimentary dessert
+    and personalized greeting cards for guests celebrating milestones.'' — in that
+    context, how can I avail the complimentary dessert for birthdays and anniversaries?'
+  Ai Response: To receive the complimentary dessert and personalized greeting card
+    for birthdays and anniversaries, simply inform us of the occasion when making
+    your reservation or upon arrival at the restaurant. Our staff will ensure that
+    a special dessert and a personalized greeting card are brought to your table to
+    make your day extra special.
+  quote: 'Birthday & Anniversary Specials: Complimentary dessert and personalized
+    greeting cards for guests celebrating milestones.'
+  filename: Savory_Haven_Bistro.docx
+  date_processed: '2025-08-19T17:09:17'
+  doc_value: 1.0554262399673462
+- User: Can I purchase high-margin items or combo deals in both indoor and patio seating
+    areas?
+  rephrased_response: I saw 'Comfortable indoor seating (80 seats) and garden patio
+    seating (30 seats).' — are high-margin items or combo deals available for both
+    indoor and patio seating?
+  Ai Response: Yes, you can purchase high-margin items and combo deals in both our
+    indoor and patio seating areas. Our menu features a variety of options, including
+    signature dishes and combos that pair well with drinks, which can be enjoyed in
+    our cozy indoor seating or beautiful garden patio.
+  quote: Comfortable indoor seating (80 seats) and garden patio seating (30 seats).
+  filename: Savory_Haven_pricings.docx
+  date_processed: '2025-08-19T17:10:03'
+  doc_value: 1.121544599533081
+- User: How can I participate in the themed community events like wine pairing dinners
+    and cultural food festivals?
+  rephrased_response: 'I saw ''Community Events: Regularly hosts themed nights such
+    as wine pairing dinners, live acoustic music, and cultural food festivals celebrating
+    diverse cuisines.'' — in that context, how can I participate in the themed community
+    events?'
+  Ai Response: 'To participate in our themed community events, such as wine pairing
+    dinners and cultural food festivals, you can follow these steps:
+
+    1. Check our website or social media for upcoming event announcements.
+
+    2. Sign up for our email newsletter to get notified about new events.
+
+    3. Call us or visit the restaurant to ask about event details and reserve a spot.
+
+    4. Join our events page on Facebook to stay updated and RSVP.
+
+
+    We look forward to having you join us!'
+  quote: 'Community Events: Regularly hosts themed nights such as wine pairing dinners,
+    live acoustic music, and cultural food festivals celebrating diverse cuisines.'
+  filename: Savory_Haven_Bistro.docx
+  date_processed: '2025-08-19T17:14:18'
+  doc_value: 1.5259709358215332
+- User: What specific concert information should be included in the playbook?
+  rephrased_response: What specific concert information should be included in the
+    playbook?
+  Ai Response: We plan to include concert dates, times, artist names, and ticket prices
+    in our playbook. This will help us stay organized and ensure our staff has the
+    most up-to-date information to share with customers, ultimately providing the
+    best experience for our guests.
+  quote: Concert Playbook
+  filename: a871fd93-9d08-4bf0-a36f-d240654e9784.webm
+  date_processed: '2025-08-20T13:06:03'
+  doc_value: 0
+  is_audio: 100805564263044911738/aud_scripts/faf52157.json
+  rec_id: 937355a7
+- User: Are there any specific contacts or groups within Gmail that should be excluded?
+  rephrased_response: Are there any specific contacts or groups within Gmail that
+    should be excluded?
+  Ai Response: There are no specific contacts or groups within Gmail that should be
+    excluded; please send to all contacts.
+  quote: Concert Playbook
+  filename: a871fd93-9d08-4bf0-a36f-d240654e9784.webm
+  date_processed: '2025-08-20T13:06:46'
+  doc_value: 0
+  is_audio: 100805564263044911738/aud_scripts/faf52157.json
+  rec_id: 937355a7

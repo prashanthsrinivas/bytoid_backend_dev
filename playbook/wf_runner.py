@@ -1,5 +1,5 @@
+from multiprocessing import get_logger
 import uuid
-import logging
 from typing import List, Dict, Any, Optional
 from cust_helpers import pathconfig
 from gmail_route.gmail_service import GmailService
@@ -61,17 +61,9 @@ class WorkflowRunner:
         }
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
         self.execution_log: List[Dict[str, Any]] = []
-        self.logger = logging.getLogger(f"WorkflowRunner-{userid}-{filename}")
-        self.logger.setLevel(logging.INFO)
+        self.logger = get_logger(__name__)
         self.meetingDetails = None
         self.ai_made_output = {}
-        if (
-            not self.logger.handlers
-        ):  # Prevent adding multiple handlers in debug mode or multiple runs
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
 
     def execute(self):
         start_step_id = self._get_first_step()

@@ -1,8 +1,10 @@
+import json
+from agent_route.utils import extract_filename
 from langchain_openai import OpenAIEmbeddings
 import yaml
+from utils.base_logger import get_logger
 from utils.normal import load_yaml_file
 from typing import List
-import logging
 from pydantic import BaseModel
 import os
 import difflib
@@ -16,8 +18,9 @@ from utils.chatopenzz import (
 )
 from datetime import datetime
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from utils.s3_utils import read_json_from_s3, upload_any_file
+
+logger = get_logger(__name__)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -437,3 +440,90 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
         "passed_path": passes_files,
         "failed_path": failed_ques,
     }
+
+
+def clarific_transcriptions(userid, val, filename, config_filename, transcript_path):
+    clarification_responses = []
+    main_folder = f"{pathconfig.basepath}/{userid}"
+    os.makedirs(main_folder, exist_ok=True)
+    failed_ques = os.path.join(main_folder, "failed_ques.yaml")
+
+    # Load existing data if any
+    quote_summary = val["summary"] if "summary" in val else filename
+    # Load existing clarifications (safe fallback)
+    try:
+        failed_data = flatten_list(load_yaml_file(failed_ques) or [])
+    except Exception:
+        failed_data = []
+
+    # Process new clarifications
+    for actual_q in val.get("clarifications", []):
+        actual_q = actual_q.strip()
+        if not actual_q:
+            continue
+
+        entry_obj = {
+            "User": actual_q,
+            "Rephrased Question": actual_q,
+            "Ai Response": "",
+            "quote": quote_summary,
+            "filename": filename,
+            "doc_value": 0,
+            "is_audio": f"{userid}/aud_scripts/{config_filename}",
+            "rec_id": transcript_path,
+        }
+        clarification_responses.append(entry_obj)
+
+    # Merge old + new clarifications
+    updated_data = failed_data + clarification_responses
+
+    # Save back into YAML
+    save_yaml_file(updated_data, filepath=failed_ques)
+
+    return clarification_responses
+
+
+def remove_transcript_clarifications(userid, config_path, rec_id):
+    """Remove one clarification count for a given transcript file in recordings config."""
+    config = read_json_from_s3(config_path)
+    trans_filename = extract_filename(config_path)
+
+    if not config:
+        logger.error(f"❌ Could not load config from {config_path}")
+        return None
+
+    recordings = config.get("recordings", [])
+    logger.info(f"📂 Loaded {len(recordings)} recordings from {config_path}")
+    logger.info(f"🎯 Looking for rec_id={rec_id}")
+
+    changed = False
+    for recording in recordings:
+        logger.debug(
+            f"🔎 Checking recording id={recording.get('id')} (clarifications={recording.get('clarifications')})"
+        )
+        if str(recording.get("id")) == str(rec_id):
+            clari = recording.get("clarifications", 0)
+            if isinstance(clari, int) and clari > 0:
+                recording["clarifications"] = clari - 1
+                changed = True
+                logger.info(
+                    f"✅ Clarification count for {rec_id} decreased: {clari} -> {recording['clarifications']}"
+                )
+            else:
+                logger.warning(f"⚠ No clarifications left to remove for {rec_id}")
+            break
+
+    if changed:
+        config_local_path = os.path.join("/tmp", trans_filename)
+        with open(config_local_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        upload_any_file(
+            config_local_path, user_id=userid, file_name=trans_filename, type="audio"
+        )
+        os.remove(config_local_path)
+
+        return config
+
+    logger.warning(f"⚠ Recording with id={rec_id} not found in {config_path}")
+    return None

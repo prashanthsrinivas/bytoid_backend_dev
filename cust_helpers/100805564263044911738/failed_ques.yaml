@@ -1,14 +1,3 @@
-- User: How does the AI suggest dishes based on my dietary preferences?
-  Rephrased Question: 'I saw ''AI-Powered Recommendations: Our website/app features
-    AI that suggests dishes based on previous orders and dietary preferences.'' —
-    in that context, how does the AI suggest dishes based on dietary preferences?'
-  Ai Response: We're sorry — the document doesn't contain information about how the
-    AI suggests dishes based on dietary preferences. Please add this information to
-    help us better support your customers.
-  quote: 'AI-Powered Recommendations: Our website/app features AI that suggests dishes
-    based on previous orders and dietary preferences.'
-  filename: Savory_Haven_Bistro.docx
-  doc_value: 1.055405855178833
 - User: How can I join the waitlist remotely and receive SMS notifications?
   Rephrased Question: 'I saw ''Real-Time Waitlist: Guests can join the waitlist remotely
     and receive SMS notifications when their table is ready.'' — in that context,
@@ -50,18 +39,6 @@
     and loyalty management.
   filename: Savory_Haven_Bistro.docx
   doc_value: 1.0038466453552246
-- User: How does the POS system ensure real-time order tracking and accuracy by linking
-    to the kitchen display?
-  Rephrased Question: I saw 'Advanced POS system linked directly to kitchen display
-    for real-time order tracking and accuracy.' — in that context, how does the POS
-    system ensure real-time order tracking?
-  Ai Response: We're sorry — the document doesn't contain information about how the
-    POS system ensures real-time order tracking and accuracy by linking to the kitchen
-    display. Please add this information to help us better support your customers.
-  quote: Advanced POS system linked directly to kitchen display for real-time order
-    tracking and accuracy.
-  filename: Savory_Haven_Bistro.docx
-  doc_value: 1.0355843305587769
 - User: How can I provide feedback using the tablets at the exit and earn instant
     rewards points?
   Rephrased Question: 'I saw ''Feedback Kiosk: Tablets at the exit allow quick feedback
@@ -71,39 +48,6 @@
     tablets at the exit and earning instant rewards points.
   quote: 'Feedback Kiosk: Tablets at the exit allow quick feedback submission, with
     instant rewards points added for completed surveys.'
-  filename: Savory_Haven_Bistro.docx
-  doc_value: 0.9863014221191406
-- User: How can I participate in the themed community events like wine pairing dinners
-    and cultural food festivals?
-  Rephrased Question: 'I saw ''Community Events: Regularly hosts themed nights such
-    as wine pairing dinners, live acoustic music, and cultural food festivals celebrating
-    diverse cuisines.'' — in that context, how can I participate in the themed community
-    events?'
-  Ai Response: We're sorry — the document doesn't contain information about participating
-    in themed community events.
-  quote: 'Community Events: Regularly hosts themed nights such as wine pairing dinners,
-    live acoustic music, and cultural food festivals celebrating diverse cuisines.'
-  filename: Savory_Haven_Bistro.docx
-  doc_value: 1.5259709358215332
-- User: How can I avail the complimentary dessert and personalized greeting cards
-    for birthdays and anniversaries?
-  Rephrased Question: 'I saw ''Birthday & Anniversary Specials: Complimentary dessert
-    and personalized greeting cards for guests celebrating milestones.'' — in that
-    context, how can I avail the complimentary dessert for birthdays and anniversaries?'
-  Ai Response: We couldn't find details in the document about availing complimentary
-    dessert and personalized greeting cards for birthdays and anniversaries.
-  quote: 'Birthday & Anniversary Specials: Complimentary dessert and personalized
-    greeting cards for guests celebrating milestones.'
-  filename: Savory_Haven_Bistro.docx
-  doc_value: 1.0554262399673462
-- User: How does the AI suggest dishes based on my previous orders?
-  Rephrased Question: 'I saw ''AI-Powered Recommendations: Our website/app features
-    AI that suggests dishes based on previous orders and dietary preferences.'' —
-    in that context, how does the AI suggest dishes based on previous orders?'
-  Ai Response: We couldn't find details in the document about AI suggesting dishes
-    based on previous orders.
-  quote: 'AI-Powered Recommendations: Our website/app features AI that suggests dishes
-    based on previous orders and dietary preferences.'
   filename: Savory_Haven_Bistro.docx
   doc_value: 0.9863014221191406
 - User: Can I order the weekend brunch specials for takeaway?
@@ -221,17 +165,6 @@
     full event planning assistance.
   filename: Savory_Haven_pricings.docx
   doc_value: 1.3799837827682495
-- User: Can I purchase high-margin items or combo deals in both indoor and patio seating
-    areas?
-  Rephrased Question: I saw 'Comfortable indoor seating (80 seats) and garden patio
-    seating (30 seats).' — are high-margin items or combo deals available for both
-    indoor and patio seating?
-  Ai Response: We're sorry — the document doesn't provide information on purchasing
-    high-margin items or combo deals in both indoor and patio seating areas. Please
-    add this information for better support in the future.
-  quote: Comfortable indoor seating (80 seats) and garden patio seating (30 seats).
-  filename: Savory_Haven_pricings.docx
-  doc_value: 1.121544599533081
 - User: Are high-margin items or combo deals part of the seasonal tasting menus?
   Rephrased Question: I saw 'Seasonal tasting menus and chef’s table experiences available
     by reservation.' — do the tasting menus include high-margin items or combo deals?

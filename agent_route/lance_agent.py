@@ -1,15 +1,11 @@
 import os
 import uuid
-import logging
 import requests
 from dotenv import load_dotenv
 from typing import List
 from pydantic import BaseModel
-import shutil
-import nltk
+from utils.base_logger import get_logger
 
-nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-import numpy as np
 from langchain_community.document_loaders import (
     DirectoryLoader,
     TextLoader,
@@ -21,14 +17,11 @@ from langchain_community.document_loaders import (
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
-from langchain.chains.llm import LLMChain
-from langchain_core.documents import Document
 
 # ────────────────────────
 # Setup Logging
 # ────────────────────────
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ────────────────────────
@@ -251,7 +244,7 @@ class LanceClient:
     def send_batch_to_lancedb(self, vector_batch: List[VectorData]):
         payload = [vec.dict() for vec in vector_batch]
 
-        logger = logging.getLogger("google_route.lance_agent")
+        logger = logger.info("google_route.lance_agent")
 
         try:
             response = requests.post(f"{self.lancedb_url}/insert_batch", json=payload)

@@ -1,37 +1,65 @@
+import json
+import os
+from agent_route.Drive_downloader import (
+    GetEmailandDriveService,
+    Main_service,
+    Mediatorservice,
+)
+from agent_route.ag_helperzz import (
+    deletefilebasedData,
+    process_and_update_yaml,
+    remove_https_prefix,
+    scrape_links,
+)
+from agent_route.doc_clarity import (
+    QueryInput,
+    clarific_transcriptions,
+    preProcessDocWithUsecases,
+    remove_transcript_clarifications,
+)
+from agent_route.lance_agent import LanceClient
+from agent_route.s_t_s import Speech2TextService
+from agent_route.utils import extract_filename, extract_transcript_filename
+from cust_helpers import pathconfig
 from flask import Blueprint, request, jsonify, session, redirect
 from google_route.routes import get_token
-from utils.fireworkzz import evaluator_llama, get_fireworks_response
-from utils.normal import load_yaml_file
-from .lance_agent import *
-from .Drive_downloader import *
-from .doc_clarity import *
+from utils.base_logger import get_logger
+from utils.chatopenzz import check_lancedb
+from utils.fireworkzz import (
+    evaluate_transcript,
+    evaluator_llama,
+    get_fireworks_response,
+)
+from utils.normal import ensure_dir, load_yaml_file
 import uuid
+import asyncio
 import traceback
 from db.rds_db import connect_to_rds
-import json
 import re
 from datetime import datetime
 import yaml
+from werkzeug.utils import secure_filename
+from utils.s3_utils import (
+    delete_file_from_s3,
+    generate_presigned_url,
+    read_json_from_s3,
+    upload_any_file,
+)
 from .task_manager import run_background_task, task_status
 from db.db_checkers import (
     create_ticket_Communication_assigned,
+    fetch_document_link,
     fetch_userid_from_launch,
     check_userid_valid,
     get_line_of_business,
+    get_user_agent_id,
+    update_agent_document_link,
 )
 
 # from app import qa_chain
 
 agent_bp = Blueprint("agent", __name__)
-
-
-def remove_https_prefix(url):
-    """
-    It removes the 'https://' or 'http://' prefix and 'www.' from the URL,
-    and also removes any trailing slash at the end of the URL.
-    """
-    result = re.sub(r"^(https?://)?(www\.)?|/$", "", url)
-    return result
+logger = get_logger(__name__)
 
 
 @agent_bp.route("/save-training-settings", methods=["POST"])
@@ -325,165 +353,6 @@ def checkquerywithApiKey():
         return jsonify({"error": str(e)}), 400
 
 
-def deletefilebasedData(filename, userid):
-    try:
-        main_folder = f"{pathconfig.basepath}/{userid}"
-        os.makedirs(main_folder, exist_ok=True)
-
-        for ques_file in ["passed_ques.yaml", "failed_ques.yaml"]:
-            ques_path = os.path.join(main_folder, ques_file)
-            if os.path.exists(ques_path):
-                with open(ques_path, "r") as f:
-                    ques_data = yaml.safe_load(f) or []
-
-                # Flatten in case there are nested lists
-                flat_data = []
-                for item in ques_data:
-                    if isinstance(item, list):
-                        flat_data.extend(item)
-                    else:
-                        flat_data.append(item)
-
-                target_name = filename.strip().lower()
-
-                filtered_data = []
-                for q in flat_data:
-                    if isinstance(q, dict):
-                        file_value = (q.get("filename") or "").strip().lower()
-                        if (
-                            os.path.splitext(file_value)[0]
-                            != os.path.splitext(target_name)[0]
-                        ):
-                            filtered_data.append(q)
-                    else:
-                        # Keep unexpected data untouched
-                        filtered_data.append(q)
-
-                if filtered_data:
-                    with open(ques_path, "w") as f:
-                        yaml.safe_dump(filtered_data, f, sort_keys=False)
-                else:
-                    os.remove(ques_path)
-
-        return True
-
-    except Exception as e:
-        logging.error(
-            f"Error deleting question entries for user {userid}, file {filename}: {e}",
-            exc_info=True,
-        )
-        return False
-
-
-def process_and_update_yaml(all_downloaded_paths, userid, provider, folderpath):
-    """
-    Process files, delete processed ones, and store/update metadata in a provider-based YAML structure.
-
-    :param all_downloaded_paths: list of downloaded file paths
-    :param userid: ID of the user
-    :param provider: Provider name (e.g., "google", "zoho")
-    :param folderpath: Temporary folder path containing files
-    :param pathconfig: Config object containing basepath
-    """
-
-    processed_filenames = []
-    connection = connect_to_rds()
-    industry = None
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT LineOfBusiness FROM business_info WHERE user_id_fk = %s ", (userid,)
-        )
-        user_row = cursor.fetchone()
-        if not user_row:
-            return jsonify({"error": "No line of business present"}), 401
-        industry = user_row[0]
-    connection.close()
-    for path in all_downloaded_paths:
-        filename = os.path.basename(path)
-        lance_client = LanceClient(user_id=userid)
-        result = lance_client.process_document(file_path=path, filename=filename)
-
-        if result.get("vectors_made", 0) > 0:
-            current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            processed_filenames.append(
-                {
-                    "filename": filename,
-                    "FileStatus": "Present",
-                    "upload_date": current_date,
-                    "updated_date": None,
-                }
-            )
-            os.remove(path)
-            logger.info(f"[🗑] Deleted processed file: {path}")
-
-    if not processed_filenames:
-        return  # Nothing to merge
-
-    # Remove the folder after processing
-    if os.path.isdir(folderpath):
-        shutil.rmtree(folderpath)
-
-    # Ensure user directory exists
-    ensure_dir(f"{pathconfig.basepath}/{userid}")
-    yaml_path = os.path.join(f"{pathconfig.basepath}/{userid}", "users_fileData.yaml")
-
-    # Load existing YAML or initialize structure
-    if os.path.exists(yaml_path):
-        with open(yaml_path, "r") as f:
-            existing_data = yaml.safe_load(f) or {}
-    else:
-        existing_data = {}
-
-    if provider not in existing_data:
-        existing_data[provider] = []
-
-    provider_files = existing_data[provider]
-
-    # Merge processed filenames into provider section
-    for item in processed_filenames:
-        fname = item["filename"]
-        file_status = item["FileStatus"]
-
-        existing_non_deleted = next(
-            (
-                entry
-                for entry in provider_files
-                if entry["filename"] == fname and entry["FileStatus"] != "Deleted"
-            ),
-            None,
-        )
-
-        if existing_non_deleted:
-            existing_non_deleted["updated_date"] = item["upload_date"]
-            existing_non_deleted["FileStatus"] = file_status
-        else:
-            provider_files.append(item)
-
-    # Write back to YAML
-    with open(yaml_path, "w") as f:
-        yaml.safe_dump(existing_data, f, sort_keys=False)
-
-    logger.info(
-        f"[✅] Updated YAML for provider '{provider}' with {len(processed_filenames)} files."
-    )
-    indusries = get_industry_names_from_yaml(f"{pathconfig.basepath}/smb_usecases.yaml")
-    matched_industry = find_matching_industry(industry, indusries)
-    if matched_industry:
-        new_or_updated_files = [item["filename"] for item in processed_filenames]
-        # need to make this queue process
-        result = run_background_task(
-            userid=userid,
-            industry=matched_industry,
-            filenames=new_or_updated_files,
-            func=preProcessDocWithUsecases,
-        )
-        print(f"[DEBUG] Background task queued: {result}")
-    yaml_path = os.path.join(f"{pathconfig.basepath}/{userid}", "users_fileData.yaml")
-    with open(yaml_path, "r") as f:
-        all_file_data = yaml.safe_load(f) or {}
-    return all_file_data
-
-
 @agent_bp.route("/process-drive", methods=["POST"])
 def download_files():
     """
@@ -492,6 +361,10 @@ def download_files():
     then download the files in data folder
     after download preprocess with langchain and send it as embedding to lancedb
     """
+    ok, val = check_lancedb()
+    if not ok:
+        logger.info(f"LanceDB service down: {val}")
+        return jsonify({"error": f"service down! Please try again later"}), 503
 
     if not Main_service:
         return (
@@ -524,7 +397,6 @@ def download_files():
     if not userid:
         return jsonify({"error": "User ID not found for the provided API key"}), 401
     access_token = get_token(userid, value=True)
-    print("mainaccess", access_token)
 
     user_service = None
     if access_token:
@@ -535,11 +407,13 @@ def download_files():
             )
             if is_downloaded and len(all_downloaded_paths) > 0:
                 folderpath = os.path.commonpath(all_downloaded_paths)
-                all_file_data = process_and_update_yaml(
-                    all_downloaded_paths=all_downloaded_paths,
-                    userid=userid,
-                    provider="google",
-                    folderpath=folderpath,
+                all_file_data = asyncio.run(
+                    process_and_update_yaml(
+                        all_downloaded_paths=all_downloaded_paths,
+                        userid=userid,
+                        provider="google",
+                        folderpath=folderpath,
+                    )
                 )
                 return {
                     "message": "Successfully processed files",
@@ -551,13 +425,6 @@ def download_files():
             return {"message": "cant access drive"}, 400
     else:
         redirect("https://bytoid.ai/login")
-
-
-def get_usecases_for_smb(smb_name, data):
-    for entry in data:
-        if entry.get("SMB") == smb_name:
-            return entry.get("Usecases", [])
-    return []
 
 
 @agent_bp.route("/clarifications", methods=["POST"])
@@ -657,39 +524,6 @@ def makeuserDocClarifications(userid=None, industry=None):
     return jsonify(clarifications)
 
 
-def safe_load_yaml_entries(path):
-    """Load YAML file and ensure entries are dictionaries with 'User' and 'Ai Response'."""
-    entries = load_yaml_file(path)
-    sanitized = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            sanitized.append(entry)
-        elif isinstance(entry, list) and len(entry) == 2:
-            sanitized.append({"User": entry[0], "Ai Response": entry[1]})
-        else:
-            print("⚠️ Skipping invalid entry in YAML:", entry)
-    return sanitized
-
-
-def normalize_question(entry):
-    if isinstance(entry, dict):
-        return entry.get("User", "").strip().lower()
-    elif isinstance(entry, list):
-        for item in entry:
-            if isinstance(item, dict):
-                return item.get("User", "").strip().lower()
-    return ""
-
-
-def log_removal(before_list, after_list):
-    """Logs how many items were removed."""
-    removed = len(before_list) - len(after_list)
-    if removed > 0:
-        print(f"✅ Removed {removed} matching entries from failed_entries")
-    else:
-        print("⚠️ No matching entries removed from failed_entries")
-
-
 @agent_bp.route("/clarification_update", methods=["POST"])
 def updateClarifications(userid=None, industry=None):
     data = request.json
@@ -776,8 +610,22 @@ def updateClarifications(userid=None, industry=None):
                         "Ai Response": refined_response,
                         "quote": quote,
                         "filename": filename,
+                        "date_processed": datetime.now().isoformat(timespec="seconds"),
+                        "doc_value": matching_entry.get("doc_value", ""),
                     }
                 )
+                if matching_entry.get("is_audio"):
+                    logger.info(
+                        f"Removing transcript clarifications for {matching_entry['is_audio']}"
+                    )
+                    passed_entries[-1]["is_audio"] = matching_entry["is_audio"]
+                    passed_entries[-1]["rec_id"] = matching_entry.get("rec_id", "")
+                    remove_transcript_clarifications(
+                        userid=fetched_userid,
+                        config_path=matching_entry["is_audio"],
+                        rec_id=matching_entry.get("rec_id", ""),
+                    )
+
         else:
             # If it's not valid, move it to failed entries (if not already there)
             if not any(e.get("User", "") == usecase for e in failed_entries):
@@ -930,7 +778,7 @@ def delete_file():
     # Step 4: Delete related passed/failed Q&A entries
     success = deletefilebasedData(filename, userid)
     if not success:
-        logging.warning(
+        logger.warning(
             f"Failed to delete question entries for user {userid}, file {filename}"
         )
 
@@ -1005,3 +853,370 @@ def create_sub_ticket():
             return {"message": "created ticket successfully"}, 200
     except Exception as e:
         return jsonify({"error": f"Internal server error {e}"}), 500
+
+
+@agent_bp.route("/process_audio", methods=["POST"])
+def process_audio():
+    api_key = request.form.get("api_key")
+    if not api_key:
+        return jsonify({"error": "API key is required"}), 400
+    userid, agentid = get_user_agent_id(api_key)
+    if not userid:
+        return jsonify({"error": "User ID is required"}), 400
+
+    if "audio_file" not in request.files:
+        return jsonify({"error": "Audio file is required"}), 400
+
+    audio_file = request.files["audio_file"]
+    filename = secure_filename(audio_file.filename)
+    local_audio_path = os.path.join("/tmp", filename)
+    audio_file.save(local_audio_path)
+    duration_from_frontend = request.form.get("duration_seconds")
+    transcript_local_path = None
+    config_local_path = None
+
+    try:
+        # 🔹 Load or create per-user config
+        config_present = False
+        config_Exists = fetch_document_link(agentid)
+        if config_Exists is None:
+            logger.info(
+                f"Creating new audio config for user {userid} as no existing config found"
+            )
+            config_filename = f"{uuid.uuid4().hex[:8]}.json"
+            config = {"user_id": userid, "recordings": []}
+            trans_filename = config_filename
+        else:
+            # unwrap tuple if needed
+            if isinstance(config_Exists, (tuple, list)):
+                config_filename = config_Exists[0]
+            else:
+                config_filename = config_Exists
+
+            logger.info(
+                f"Loading existing audio config for user {userid}: {config_filename}"
+            )
+            config = read_json_from_s3(config_filename)
+            trans_filename = extract_filename(config_filename)
+            config_present = True
+        # 🔹 Upload original audio file to S3
+        audio_s3_path = upload_any_file(
+            local_audio_path, user_id=userid, file_name=filename, type="audio"
+        )
+
+        # 🔹 Run Speech-to-Text
+        main_process = Speech2TextService(userid=userid)
+        transcript_text = asyncio.run(main_process.transcribe_audio(local_audio_path))
+
+        if not transcript_text:
+            return jsonify({"error": "Failed to transcribe audio"}), 500
+
+        prompts = load_yaml_file(path=pathconfig.agent_template)
+        clean_transcription_prompt = prompts.get("clean_transcription_prompt")
+        val = evaluate_transcript(clean_transcription_prompt, transcript_text)
+        if not val:
+            return jsonify({"error": "Failed to evaluate transcript"}), 500
+
+        # 🔹 Build transcript metadata
+        now = datetime.utcnow().isoformat(timespec="seconds")
+        transcript_data = {
+            "id": str(uuid.uuid4().hex[:8]),
+            "filename": filename,
+            "date": now,
+            "text": val["clean_text"],
+            "summary": val["summary"],
+            "clarifications": len(val["clarifications"]),
+        }
+
+        # 🔹 Save transcript to JSON
+        transcript_filename = f"{os.path.splitext(filename)[0]}_transcript.json"
+        transcript_local_path = os.path.join("/tmp", transcript_filename)
+        with open(transcript_local_path, "w", encoding="utf-8") as f:
+            json.dump(transcript_data, f, ensure_ascii=False, indent=2)
+
+        # 🔹 Upload transcript file to S3
+        transcript_s3_path = upload_any_file(
+            transcript_local_path,
+            user_id=userid,
+            file_name=transcript_filename,
+            type="audio",
+        )
+        if val["clarifications"]:
+            clarific_transcriptions(
+                userid, val, filename, trans_filename, transcript_data["id"]
+            )
+
+        # 🔹 Add new recording entry
+        config["recordings"].append(
+            {
+                "id": transcript_data["id"],
+                "title": transcript_data["filename"],
+                "date": transcript_data["date"],
+                "preview": " ".join(transcript_text.split()[:20]),
+                "audio_location": audio_s3_path["s3_key"],
+                "transcript_location": transcript_s3_path["s3_key"],
+                "summary": val["summary"],
+                "clarifications": len(val["clarifications"]),
+                "duration": duration_from_frontend or "unknown",
+            }
+        )
+
+        # 🔹 Save updated config
+        config_local_path = os.path.join("/tmp", trans_filename)
+        with open(config_local_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        new_configpath = upload_any_file(
+            config_local_path, user_id=userid, file_name=trans_filename, type="audio"
+        )
+        if not config_present:
+            logger.info(
+                f"New audio config created for user {userid}: {new_configpath['s3_key']}"
+            )
+            update_agent_document_link(new_configpath["s3_key"], agentid)
+
+        return (
+            jsonify(
+                {
+                    "message": "Transcription successful",
+                    "audio_file": audio_s3_path,
+                    "transcript_file": transcript_s3_path,
+                    "config_updated": True,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        # 🔹 Clean up local temp files
+        for f in [local_audio_path, transcript_local_path, config_local_path]:
+            if f and os.path.exists(f):
+                try:
+                    os.remove(f)
+                except Exception as cleanup_err:
+                    print(f"Failed to delete temp file {f}: {cleanup_err}")
+
+
+@agent_bp.route("/get-audio-config", methods=["GET"])
+def get_audio_config():
+    api_key = request.args.get("api_key")
+    if not api_key:
+        return jsonify({"error": "API key is required"}), 400
+    userid, agentid = get_user_agent_id(api_key)
+    if not userid:
+        return jsonify({"error": "User ID is required"}), 400
+    if not check_userid_valid(userid):
+        return jsonify({"error": "Invalid User ID"}), 404
+
+    config_filename = fetch_document_link(agentid)
+    if not config_filename:
+        return jsonify({"error": "No audios found for this user"}), 404
+    try:
+        config = read_json_from_s3(config_filename)
+        for rec in config.get("recordings", []):
+            # Convert S3 paths to public URLs
+            rec["audio_location"] = generate_presigned_url(rec["audio_location"])
+            rec["transcript_location"] = generate_presigned_url(
+                rec["transcript_location"]
+            )
+        return jsonify(config), 200
+    except FileNotFoundError:
+        return jsonify({"error": "No audio config found for this user"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@agent_bp.route("/update-transcript", methods=["POST"])
+def update_transcript():
+    data = request.json or {}
+
+    api_key = data.get("api_key")
+    if not api_key:
+        return jsonify({"error": "API key is required"}), 400
+    userid, agentid = get_user_agent_id(api_key)
+    if not userid:
+        return jsonify({"error": "User ID is required"}), 400
+
+    if not check_userid_valid(userid):
+        return jsonify({"error": "Invalid User ID"}), 404
+
+    filename = data.get("filename")  # title or file reference
+    transcript_data = data.get("transcript_data")
+
+    if not filename:
+        return jsonify({"error": "Filename is required"}), 400
+    if not transcript_data:
+        return jsonify({"error": "Transcript data is required"}), 400
+
+    try:
+        # Load user config JSON
+        config_filename = fetch_document_link(agentid)
+        if not config_filename:
+            return jsonify({"error": "No audio config found for this user"}), 404
+
+        config = read_json_from_s3(config_filename)
+        if not config:
+            return jsonify({"error": "User config file could not be read"}), 404
+
+        update_loc = None
+        for rec in config.get("recordings", []):
+            if rec.get("title") == filename:
+                update_loc = rec.get("transcript_location")
+                rec["updated_date"] = datetime.utcnow().isoformat(timespec="seconds")
+                break
+
+        if not update_loc:
+            return jsonify({"error": "Transcript not found in user config"}), 404
+
+        # Load existing transcript
+        transcript_maindata = read_json_from_s3(update_loc)
+        if not transcript_maindata:
+            return jsonify({"error": "Transcript data not found"}), 404
+
+        # Update transcript text
+        transcript_maindata["text"] = transcript_data
+
+        # Save updated transcript locally
+        local_transcript_path = "/tmp/temp_transcript.json"
+        with open(local_transcript_path, "w", encoding="utf-8") as f:
+            json.dump(transcript_maindata, f, ensure_ascii=False, indent=2)
+
+        # Upload updated transcript
+        upload_any_file(
+            local_transcript_path,
+            user_id=userid,
+            file_name=extract_transcript_filename(update_loc),
+            type="audio",
+        )
+
+        # Save updated config locally
+        local_config_path = "/tmp/temp_config.json"
+        with open(local_config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        # Upload updated config
+        upload_any_file(
+            local_config_path,
+            user_id=userid,
+            file_name=config_filename,
+            type="audio",
+        )
+
+        # Cleanup
+        os.remove(local_config_path)
+        os.remove(local_transcript_path)
+
+        return (
+            jsonify(
+                {
+                    "message": "Transcript updated successfully",
+                    "changed_filename": filename,
+                    "config_updated": True,
+                }
+            ),
+            200,
+        )
+
+    except FileNotFoundError:
+        return jsonify({"error": "Transcript file not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@agent_bp.route("/delete-audio", methods=["DELETE"])
+def delete_audio():
+    data = request.json
+    api_key = data.get("api_key")
+    if not api_key:
+        return jsonify({"error": "API key is required"}), 400
+    userid, agentid = get_user_agent_id(api_key)
+
+    if not userid:
+        return jsonify({"error": "User ID is required"}), 400
+
+    if not check_userid_valid(userid):
+        return jsonify({"error": "Invalid User ID"}), 404
+
+    audio_location = data.get("audio_location")
+    if not audio_location:
+        return jsonify({"error": "Audio location is required"}), 400
+
+    try:
+        # 🔹 Load user config
+        config_filename = fetch_document_link(agentid)
+        if not config_filename:
+            return jsonify({"error": "No audio config found for this user"}), 404
+
+        config = read_json_from_s3(config_filename)
+
+        # 🔹 Find matching recording
+        recording_to_delete = None
+        for rec in config.get("recordings", []):
+            if rec.get("audio_location") in audio_location:
+                recording_to_delete = rec
+                break
+
+        if not recording_to_delete:
+            return jsonify({"error": "Recording not found in config"}), 404
+
+        # 🔹 Delete audio + transcript from S3
+        delete_file_from_s3(recording_to_delete["audio_location"])
+        delete_file_from_s3(recording_to_delete["transcript_location"])
+
+        # 🔹 Remove from config
+        config["recordings"].remove(recording_to_delete)
+
+        # 🔹 Save updated config
+        local_config_path = "/tmp/temp_config.json"
+        with open(local_config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        upload_any_file(
+            local_config_path, user_id=userid, file_name=config_filename, type="audio"
+        )
+        # delete_agent_document_link(userid)
+        os.remove(local_config_path)
+
+        return (
+            jsonify(
+                {
+                    "message": "Audio and transcript deleted successfully",
+                    "config_updated": True,
+                }
+            ),
+            200,
+        )
+
+    except FileNotFoundError:
+        return jsonify({"error": "Config file not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@agent_bp.route("/scrape", methods=["POST"])
+def scrape():
+    data = request.get_json()
+    url = data.get("url")
+    if not url:
+        return jsonify({"error": "URL required"}), 400
+
+    links = scrape_links(url, max_pages=100)  # adjust limit
+    return jsonify({"url": url, "links": links, "count": len(links)})
+
+
+@agent_bp.route("/check-dbfunc", methods=["POST"])
+def check_lancedb():
+    """
+    Checks if the LanceDB service is running and returns its status.
+    """
+    try:
+        data = request.json
+        userid = data.get("userid")
+        val = fetch_document_link(userid)
+        return jsonify({"status": "func is running", "value": val}), 200
+    except Exception as e:
+        logger.error(f"Error checking func: {e}")
+        return jsonify({"error": "Internal server error"}), 500

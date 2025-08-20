@@ -72,66 +72,6 @@ new_response_validator: |
     "explanation": "Short chatbot-style reply if valid, or a friendly message starting with 'We're sorry — the document doesn't...' and ending with a helpful suggestion to add missing info"
   }}
 
-
-# usecase_prompt_template:
-#   instructions: |
-#     You are a customer support assistant helping identify potential gaps in a business’s documentation by generating realistic, relevant customer questions.
-
-#     Your Task:
-#     For each use case in the list below, do the following:
-#     - Carefully compare the use case with the associated service documentation.
-#     - Generate **exactly 5 questions** per use case.
-#     - Use a maximum of **3 unique quotes** from the documentation when writing the questions.
-
-#     Each question must be returned in three parts:
-#     1. **rephrased** – A friendly, conversational-style question including the quote inline (e.g., "I saw '...' — in that context, ...?")
-#     2. **actual_one** – A simplified, clear customer-facing version of the question (under 50 words)
-#     3. **quote** – The **exact quote** from the documentation that inspired the question
-
-#     Guidelines:
-#     - Use **plain English**, no jargon
-#     - Avoid time-sensitive words like “currently,” “today,” “soon”
-#     - Stay focused on **availability, clarity, or presence** of services
-#     - Base all questions on **exact phrases** or **quotes** from the documentation
-#     - Do **not** repeat similar questions across use cases
-#     - Do **not** use more than 3 distinct quotes per use case
-#     - Avoid trailing commas and markdown formatting in your response
-#     - If a quote contains backslashes (`\`), escape them as `\\` to ensure valid JSON
-
-
-#     Inputs:
-#     - Industry: {industry}
-#     - UseCasesWithDocs:
-#       {usecases_with_docs}
-
-#     Output:
-#     Respond with a **strict JSON array**, no markdown code blocks, no explanations. Each array item must include:
-#     - "usecase": the original use case
-#     - "questions": a list of 5 objects, each with:
-#         - "rephrased": the conversational version (with the quote inline)
-#         - "actual_one": the direct customer question
-#         - "quote": the exact phrase or sentence from the documentation used
-
-#     ⚠️ Important:
-#     - Do **not** include ```json or any markdown formatting
-#     - Do **not** include comments or extra text
-#     - Do **not** add trailing commas
-#     - Ensure it's a **valid JSON** array that can be parsed by `json.loads`
-
-#     Format Example:
-#     [
-#       {{
-#         "usecase": "Looking for same-day delivery options",
-#         "questions": [
-#           {{
-#             "rephrased": "I saw 'We offer next-day and standard delivery through FedEx and UPS'. In that context, do you offer same-day delivery as well?",
-#             "actual_one": "Do you offer same-day delivery, or is next-day the fastest option?",
-#             "quote": "We offer next-day and standard delivery through FedEx and UPS"
-#           }},
-#           ...
-#         ]
-#       }}
-#     ]
 usecase_prompt_template:
   instructions: |
     You are a customer support assistant helping identify potential gaps in a business’s documentation by generating realistic, relevant customer questions.
@@ -181,7 +121,7 @@ usecase_prompt_template:
     - Do **not** include comments or extra text
     - Do **not** add trailing commas
     - Ensure it's a **valid JSON** array that can be parsed by `json.loads`
-    
+
     Bad Question Example:
     - Quote: "Custom menus available upon request"
     - Bad: "How can I make modifications using custom menus?"
@@ -201,8 +141,6 @@ usecase_prompt_template:
         ]
       }}
     ]
-
-
 
 customer_response_checker: |
   You are an AI assistant tasked with evaluating and refining a company owner's message.
@@ -290,3 +228,39 @@ business_owner_QA_assist: |
 
   Your response:
 
+clean_transcription_prompt: |
+  You are given a raw audio transcription text.
+  The text may contain:
+  - Grammar mistakes
+  - Misheard or incorrect words
+  - Repeated or stuttered words
+  - Filler words ("uh", "you know", "like")
+  - Informal or broken English
+  - Very long run-on sentences without punctuation
+
+  ### Your Task
+  1. Correct grammar and misheard words while keeping the meaning unchanged.
+  2. Remove only unnecessary filler words and repetitions.
+  3. Rewrite into clear, natural English with proper punctuation.
+  4. Organize into readable sentences and short paragraphs.
+  5. Generate a **concise summary (1–3 words)** of the main idea.
+  6. If the text contains instructions that require clarification, generate a list of clarification questions.
+     - If no clarification is needed, return an empty list.
+
+  ### CRITICAL RULES
+  - Your entire response **must be ONLY valid JSON**.
+  - Do not include explanations, markdown, or any text outside the JSON.
+  - JSON must contain **exactly three keys**:
+      - `"summary"` (string, 1–3 words)
+      - `"clean_text"` (string, full cleaned transcription)
+      - `"clarifications"` (list of strings, may be empty)
+
+  ### Final Output Format
+  {{
+    "summary": "<1–3 word summary>",
+    "clean_text": "<cleaned transcription text>",
+    "clarifications": ["<question1>", "<question2>"]
+  }}
+
+  ### Input Text
+  "{input_text}"
