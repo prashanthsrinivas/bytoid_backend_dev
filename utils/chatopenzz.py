@@ -3,15 +3,16 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.prompts import ChatPromptTemplate
 import json
 import re
-import logging
 from dotenv import load_dotenv
+from utils.base_logger import get_logger
 from utils.normal import load_yaml_file
 from utils.s3_utils import read_json_from_s3
+import os
+import requests
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def evaluator(prompt, model, query, context, industry):
@@ -149,3 +150,18 @@ def reEvaluateinstructionJson():
 
 
 # print(reEvaluateinstructionJson())
+def check_lancedb():
+    """Check if LanceDB service is reachable."""
+    lance_ip = os.getenv("LANCE_DB_IP")
+    if not lance_ip:
+        return False, "LANCE_DB_IP not set"
+
+    try:
+        url = f"{lance_ip}/list"
+        response = requests.get(url, timeout=5)
+        if response.ok:
+            return True, response.json()
+        else:
+            return False, f"LanceDB returned {response.status_code}"
+    except Exception as e:
+        return False, str(e)

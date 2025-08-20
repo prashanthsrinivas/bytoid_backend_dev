@@ -3,6 +3,7 @@ import re
 import yaml
 from dotenv import load_dotenv
 from fireworks.client import Fireworks
+import json
 
 load_dotenv()
 
@@ -90,3 +91,48 @@ def evaluator_context_llama(prompt_template_str, qa_list):
     except Exception as e:
         print(f"🔥 LLaMA Evaluator context Error: {e}")
         return []
+
+
+import json
+import re
+
+
+def enforce_json_keys(data: dict) -> dict:
+    """Ensure output always has summary, clean_text, clarifications."""
+    return {
+        "summary": data.get("summary", ""),
+        "clean_text": data.get("clean_text", ""),
+        "clarifications": data.get(
+            "clarifications", [] if isinstance(data.get("clarifications"), list) else []
+        ),
+    }
+
+
+def evaluate_transcript(prompt_template_str, text):
+    full_prompt = prompt_template_str.format(input_text=text)
+    llama_response = get_fireworks_response(full_prompt, role="system")
+
+    cleaned = llama_response.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
+        cleaned = cleaned.rstrip("`").strip()
+
+    # try direct parse
+    try:
+        parsed = json.loads(cleaned)
+        return enforce_json_keys(parsed)
+    except:
+        # try regex extract
+        match = re.search(r"\{[\s\S]*\}", cleaned)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+                return enforce_json_keys(parsed)
+            except:
+                pass
+        # fallback dummy output
+        return {
+            "summary": "Error",
+            "clean_text": text,
+            "clarifications": ["Model did not return valid JSON."],
+        }

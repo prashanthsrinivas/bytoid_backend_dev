@@ -34,7 +34,7 @@ def connect_to_rds():
             port=3306,
             connect_timeout=10,
         )
-        print("\u2705 Connection successful!")
+        # print("\u2705 Connection successful!")
         return connection
     except pymysql.MySQLError as e:
         print("\u274c Error connecting to RDS:", e)

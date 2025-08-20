@@ -15,6 +15,7 @@ def s3bucket():
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         region_name=S3_REGION,
+        config=boto3.session.Config(signature_version="s3v4"),
     )
     return s3
 
@@ -47,6 +48,8 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
             s3_key = f"{user_id}/workflow/{final_name}"
         elif type == "yaml":
             s3_key = f"{user_id}/yaml/{final_name}"
+        elif type == "audio":
+            s3_key = f"{user_id}/aud_scripts/{final_name}"
         elif type == "user":
             s3_key = f"{user_id}/media/{final_name}"
         elif type == "messages":
@@ -93,7 +96,7 @@ def delete_file_from_s3(filepath):
 
 
 def generate_presigned_url(s3_key, expiration=3600):
-    s3_client = boto3.client("s3")
+    s3_client = s3bucket()
 
     try:
         response = s3_client.generate_presigned_url(
