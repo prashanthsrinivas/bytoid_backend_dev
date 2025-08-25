@@ -20,6 +20,8 @@ logger = get_logger(__name__)
 
 import pymysql, json
 
+# BASE ROLES APIS FOR AMIN
+
 
 @inv_users_bp.route("/admin/roles-add", methods=["POST"])
 def add_role_admin():
@@ -172,6 +174,9 @@ def delete_role(userid, role_id):
         return jsonify({"message": "Role deleted successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# INVITE USER APIS
 
 
 @inv_users_bp.route("/admin/invite_user", methods=["POST"])
@@ -426,6 +431,9 @@ def resend_invite():
             conn.close()
 
 
+# SHARED USER ROLES APIS
+
+
 @inv_users_bp.route("/admin/validate_invite/token=<token>", methods=["GET"])
 def validate_invite(token):
     if not token:
@@ -505,25 +513,26 @@ def validate_invite(token):
         return jsonify({"error": str(e)}), 500
 
 
-@inv_users_bp.route("/admin/edit_invited_role", methods=["POST"])
-def edit_invited_role():
+@inv_users_bp.route("/admin/edit_shared_user_role", methods=["POST"])
+def edit_shared_user_role():
     data = request.get_json()
     user_id = data.get("user_id")
     email = data.get("email")
     role = data.get("role_id")
     try:
-        conn=connect_to_rds()
+        conn = connect_to_rds()
         conn.start()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
-                "SELECT email,roles_creation,permissions FROM users where user_id = %s"(user_id,),
+                "SELECT email,roles_creation,permissions FROM users where user_id = %s"(
+                    user_id,
+                ),
             )
-            admin_Das=cursor.fetchone()
+            admin_Das = cursor.fetchone()
             if not admin_Das:
                 conn.rollback()
                 return jsonify({"error": "User not found"}), 404
-            
-        
+
     except Exception as e:
-        return jsonify({"error":f"base{e}"})
+        return jsonify({"error": f"base{e}"})
     pass

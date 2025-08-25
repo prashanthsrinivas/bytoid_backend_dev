@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from utils.base_logger import get_logger
 from werkzeug.utils import secure_filename
-from utils.s3_utils import generate_presigned_url, upload_any_file
+from utils.s3_utils import attach_CLDFRNT_url, generate_presigned_url, upload_any_file
 
 users_bp = Blueprint("users", __name__)
 
@@ -198,14 +198,14 @@ def get_onboarding():
             # ✅ Add signed URL for ProofOfBusinessFile
             proof_file_key = business_info.get("ProofOfBusinessFile")
             if proof_file_key:
-                business_info["ProofOfBusinessFile"] = generate_presigned_url(
+                business_info["ProofOfBusinessFile"] = attach_CLDFRNT_url(
                     proof_file_key
                 )
 
             # ✅ Add signed URL for BusinessImage
             image_key = business_info.get("BusinessImage")
             if image_key:
-                business_info["BusinessImage"] = generate_presigned_url(image_key)
+                business_info["BusinessImage"] = attach_CLDFRNT_url(image_key)
 
         cursor.close()
         conn.close()

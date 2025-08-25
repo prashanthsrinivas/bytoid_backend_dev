@@ -13,6 +13,8 @@ import asyncio
 
 from typing import Optional
 
+from utils.s3_utils import attach_CLDFRNT_url
+
 
 class GmailService:
     def __init__(self, user_id):
@@ -657,11 +659,12 @@ class GmailService:
                 )
                 extra_text += f"\nLocation: {business_info['businessLocation']}"
             if "BusinessImage" in business_info:
-                extra_html += f"<p><img src='{business_info['BusinessImage']}' alt='Business Logo' style='max-height:80px; margin-top:8px;'></p>"
+                link_base=attach_CLDFRNT_url(business_info['BusinessImage'])
+                extra_html += f"<p><img src='{link_base}' alt='Business Logo' style='max-height:80px; margin-top:8px;'></p>"
 
         # fallback invite link
         if not invite_link:
-            invite_link = f"https://abc.com/invite/{role.get('id')}"
+            invite_link = f"https://bytoid.ai/invite/{role.get('id')}"
 
         # HTML body
         body_html = f"""

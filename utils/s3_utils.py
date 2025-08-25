@@ -110,6 +110,11 @@ def generate_presigned_url(s3_key, expiration=3600):
         return None
 
 
+def attach_CLDFRNT_url(link):
+    clrf = os.getenv("CLOUDFRNT")
+    return f"{clrf}/{link}"
+
+
 # print(list_all_files("112359636982080060072/messages"))
 # print(list_all_files())
 

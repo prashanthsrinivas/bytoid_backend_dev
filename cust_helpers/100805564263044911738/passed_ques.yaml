@@ -282,27 +282,3 @@
   filename: Savory_Haven_Bistro.docx
   date_processed: '2025-08-19T17:14:18'
   doc_value: 1.5259709358215332
-- User: What specific concert information should be included in the playbook?
-  rephrased_response: What specific concert information should be included in the
-    playbook?
-  Ai Response: We plan to include concert dates, times, artist names, and ticket prices
-    in our playbook. This will help us stay organized and ensure our staff has the
-    most up-to-date information to share with customers, ultimately providing the
-    best experience for our guests.
-  quote: Concert Playbook
-  filename: a871fd93-9d08-4bf0-a36f-d240654e9784.webm
-  date_processed: '2025-08-20T13:06:03'
-  doc_value: 0
-  is_audio: 100805564263044911738/aud_scripts/faf52157.json
-  rec_id: 937355a7
-- User: Are there any specific contacts or groups within Gmail that should be excluded?
-  rephrased_response: Are there any specific contacts or groups within Gmail that
-    should be excluded?
-  Ai Response: There are no specific contacts or groups within Gmail that should be
-    excluded; please send to all contacts.
-  quote: Concert Playbook
-  filename: a871fd93-9d08-4bf0-a36f-d240654e9784.webm
-  date_processed: '2025-08-20T13:06:46'
-  doc_value: 0
-  is_audio: 100805564263044911738/aud_scripts/faf52157.json
-  rec_id: 937355a7

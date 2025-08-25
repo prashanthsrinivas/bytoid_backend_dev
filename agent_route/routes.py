@@ -40,6 +40,7 @@ from datetime import datetime
 import yaml
 from werkzeug.utils import secure_filename
 from utils.s3_utils import (
+    attach_CLDFRNT_url,
     delete_file_from_s3,
     generate_presigned_url,
     read_json_from_s3,
@@ -984,8 +985,8 @@ def get_audio_config():
         config = read_json_from_s3(config_filename)
         for rec in config.get("recordings", []):
             # Convert S3 paths to public URLs
-            rec["audio_location"] = generate_presigned_url(rec["audio_location"])
-            rec["transcript_location"] = generate_presigned_url(
+            rec["audio_location"] = attach_CLDFRNT_url(rec["audio_location"])
+            rec["transcript_location"] = attach_CLDFRNT_url(
                 rec["transcript_location"]
             )
         return jsonify(config), 200
