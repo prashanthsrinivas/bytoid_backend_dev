@@ -40,6 +40,7 @@ def login():
             "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/drive.metadata.readonly",
             "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/contacts",
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
@@ -75,6 +76,7 @@ def oauth2callback(url, state):
             "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/drive.metadata.readonly",
             "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/contacts",
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
@@ -453,6 +455,7 @@ def get_token(inuser=None, value=None, in_connection=None):
                             "https://www.googleapis.com/auth/drive.metadata.readonly",
                             "https://www.googleapis.com/auth/drive",
                             "https://www.googleapis.com/auth/calendar",
+                            "https://www.googleapis.com/auth/contacts",
                             "openid",
                         ],
                     )
@@ -523,7 +526,7 @@ def sendCredits():
     # Common env values
     client_id = os.getenv("CLIENTID")
     access_token = os.getenv("ACCESSTOKEN")
-    zoho_client_id = os.getenv("ZOHO_CLIENT_ID")
+    zoho_client_id = os.getenv("ZOHO_FRNT_CLIENT_ID")
     microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID")
     microsoft_tenantid = os.getenv("MICROSOFT_TENANT_ID")
 

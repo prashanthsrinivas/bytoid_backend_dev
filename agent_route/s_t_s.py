@@ -27,7 +27,7 @@ class Speech2TextService:
         # Prepare client
         client = AudioInference(
             model=self.model_name,
-            base_url="https://audio-turbo.us-virginia-1.direct.fireworks.ai",
+            base_url="https://audio-prod.us-virginia-1.direct.fireworks.ai",
             api_key=FK_VAL,
         )
 

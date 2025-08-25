@@ -241,8 +241,7 @@ def remove_entries_for_files(filepath, filenames):
     """Remove all entries matching any of the given filenames."""
     if not os.path.exists(filepath):
         return []
-    with open(filepath, "r", encoding="utf-8") as f:
-        existing = yaml.safe_load(f) or []
+    existing = load_yaml_file(filepath) or []
 
     flat_existing = flatten_list(existing)
     filenames_norm = [os.path.splitext(f.strip().lower())[0] for f in filenames]

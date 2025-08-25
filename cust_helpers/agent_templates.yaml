@@ -244,21 +244,37 @@ clean_transcription_prompt: |
   3. Rewrite into clear, natural English with proper punctuation.
   4. Organize into readable sentences and short paragraphs.
   5. Generate a **concise summary (1–3 words)** of the main idea.
-  6. If the text contains instructions that require clarification, generate a list of clarification questions.
+  6. Provide a **business-oriented evaluation** of the conversation or instruction.  
+     - Possible sections include (but are not limited to):  
+       **Overview, Key Points, Issues / Risks, Recommendations, Action Plan, Decisions Made, Dependencies, Resources Needed.**  
+     - Only include sections that have meaningful information.  
+     - Do not output empty or generic placeholder sections.  
+     - Ensure the evaluation adapts dynamically based on the type of input (e.g., meeting, sales call, interview, troubleshooting, brainstorming).
+  7. If the text contains instructions that require clarification, generate a list of clarification questions.  
+     - Keep the list concise and limited to a **maximum of 3–4 unique, non-repetitive questions**.  
+     - Only include clarifications if they are truly necessary to execute or understand the instruction.  
      - If no clarification is needed, return an empty list.
+  8. Ensure the response is professional, business-friendly, and ready to be used directly in workflows, playbooks, instructions, knowledge bases, or automation systems.
 
   ### CRITICAL RULES
   - Your entire response **must be ONLY valid JSON**.
   - Do not include explanations, markdown, or any text outside the JSON.
   - JSON must contain **exactly three keys**:
       - `"summary"` (string, 1–3 words)
-      - `"clean_text"` (string, full cleaned transcription)
+      - `"clean_text"` (string, full cleaned transcription with structured evaluation)
       - `"clarifications"` (list of strings, may be empty)
+
+  ### JSON Embedding Rules
+  - The `"clean_text"` must contain:
+      - The cleaned, polished transcription text.  
+      - Any relevant business evaluation sections (include only those with meaningful content).  
+  - Do not include empty or irrelevant sections.  
+  - Keep formatting inside `"clean_text"` readable with line breaks, but ensure valid JSON (escape newlines as `\n`).
 
   ### Final Output Format
   {{
     "summary": "<1–3 word summary>",
-    "clean_text": "<cleaned transcription text>",
+    "clean_text": "<cleaned transcription with only relevant evaluation sections>",
     "clarifications": ["<question1>", "<question2>"]
   }}
 

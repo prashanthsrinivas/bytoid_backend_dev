@@ -1,7 +1,11 @@
 from flask import Flask, request, jsonify, Blueprint, Response
-from utils.s3_utils import  read_json_from_s3, list_all_files
+from utils.s3_utils import  read_json_from_s3, list_all_files, upload_any_file
 from create_db import connect_to_rds
 import json
+import os
+from cust_helpers import pathconfig
+from utils.normal import ensure_dir
+
 
 
 
@@ -128,7 +132,7 @@ def get_status_priority(ticket_id):
 
     try:
         cursor.execute(
-            "SELECT status, priority, ticket_name FROM tickets WHERE tickets_id = %s",
+            "SELECT status, priority, ticket_name, conversation_id_fk  FROM tickets WHERE tickets_id = %s",
             (ticket_id,)
         )
         ticket_row = cursor.fetchone()
@@ -136,10 +140,166 @@ def get_status_priority(ticket_id):
             return {
                 "status": ticket_row[0],
                 "priority": ticket_row[1],
-                "ticket_name": ticket_row[2]
+                "ticket_name": ticket_row[2],
+                "ticket_conversation_id":ticket_row[3],
+                "ticket_id":ticket_id,
             }
     finally:
         cursor.close()
         conn.close()
 
     return {"status": None, "priority": None, "ticket_name": None}
+
+
+
+@tickets_bp.route("/change_ticket_name", methods=["POST"])
+def change_ticket_name():
+
+    data = request.get_json()
+
+    new_ticket_name = data.get("ticket_name")
+    ticket_id = data.get("ticket_id")
+    conversation_id = data.get("conversation_id")
+    user_id = data.get("user_id")
+    if not new_ticket_name or not ticket_id :
+        return jsonify({"error": "Missing ticket_name or ticket_id"}), 400
+
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+    # update tickets table
+    try:
+        cursor.execute(
+                "UPDATE tickets SET ticket_name = %s WHERE tickets_id = %s",
+                (new_ticket_name, ticket_id)
+            )
+        conn.commit()
+        print("tickets table successfull updated")
+
+        # update conversation file
+        cursor.execute(
+                "SELECT content_ref,sender_id from messages WHERE conversation_id_fk = %s",
+                (conversation_id,)
+            )
+        message_row = cursor.fetchone()       
+
+        if not message_row:
+            return jsonify({"error": "Conversation not found"}), 404 
+         
+       
+        conv_key= message_row[0] 
+        print(f"conv_key is : {conv_key}")
+        client_id = message_row[1]         
+        conv_data = read_json_from_s3(conv_key)
+        if conv_data :
+            for item in conv_data["input_data"]:
+                if "ticket_name" in item:
+                    item["ticket_name"] = new_ticket_name
+
+        conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+        ensure_dir(conv_folder)
+        conv_filepath = os.path.join(conv_folder, f"{conversation_id}.json")
+            
+        with open(conv_filepath, "w", encoding="utf-8") as f:
+            json.dump(conv_data, f, indent=2)
+
+        upload_any_file(
+                conv_filepath,
+                user_id,
+                type="messages",
+                s3_key_C=conv_key,
+            )
+        
+
+        # update config file 
+        s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+        config_data = read_json_from_s3(s3_config_key)
+               
+        if config_data:
+            for convo in config_data["conversations"]:
+                if convo.get("ticket_id") == ticket_id:
+                    convo["ticket_name"] = new_ticket_name
+
+            config_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+            ensure_dir(config_folder)
+            config_filepath = os.path.join(config_folder, "config.json")
+            
+            with open(config_filepath, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, indent=2)
+
+            upload_any_file(
+                config_filepath,
+                user_id,
+                type="messages",
+                s3_key_C = s3_config_key,
+            )
+        
+    except Exception as e:
+        print(f"❌ Error during ticket name update: {str(e)}")        
+        return jsonify({"error": "Failed to update tickets name"}), 500
+            
+    finally:
+        cursor.close()
+        conn.close()
+
+    return jsonify({"message": "Ticket name updated successfully"}), 200
+
+
+@tickets_bp.route("/change_ticket_priority", methods=["POST"])
+def change_ticket_priority():
+
+    data = request.get_json()
+
+    priority = data.get("priority")
+    ticket_id = data.get("ticket_id")
+
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+                "UPDATE tickets SET priority = %s WHERE tickets_id = %s",
+                (priority, ticket_id)
+            )
+        conn.commit()
+        print("priority successfully updated")
+
+    except Exception as e:
+        print(f"❌ Error during priority update: {str(e)}")        
+        return jsonify({"error": "Failed to update priority"}), 500
+            
+    finally:
+        cursor.close()
+        conn.close()
+
+    return jsonify({"message": "priority updated successfully"}), 200
+
+
+@tickets_bp.route("/change_ticket_status", methods=["POST"])
+def change_ticket_status():
+
+    data = request.get_json()
+
+    status = data.get("status")
+    ticket_id = data.get("ticket_id")
+
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+                "UPDATE tickets SET status = %s WHERE tickets_id = %s",
+                (status, ticket_id)
+            )
+        conn.commit()
+        print("status successfully updated")
+
+    except Exception as e:
+        print(f"❌ Error during status update: {str(e)}")        
+        return jsonify({"error": "Failed to update status"}), 500
+            
+    finally:
+        cursor.close()
+        conn.close()
+
+    return jsonify({"message": "status updated successfully"}), 20

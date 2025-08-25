@@ -239,36 +239,6 @@ def get_training_settings():
         return jsonify({"error": str(e)}), 500
 
 
-@agent_bp.route("/process-data")
-def ProcesstoLancedb():
-    """
-    This function processes documents from a specified folder and inserts them into LanceDB.
-    It initializes a LanceClient with a user ID, processes the documents in the specified folder,
-    and returns the count of inserted documents.
-    Note: The commented-out section is an example of how to process multiple files.
-    """
-    # files = [
-    #     {"Bookstore_Profile.docx": "data/Bookstore_Profile.docx"},
-    #     {"Footwear_Store_Profile.docx": "data/Footwear_Store_Profile.docx"},
-    #     {"Savory_Haven_Bistro.docx": "data/Savory_Haven_Bistro.docx"},
-    #     {"Convenience_Store_Profile.docx": "data/Convenience_Store_Profile.docx"},
-    # ]
-    userid = "2345"
-    folderpath = "data/bytoid ai agent"
-    lance_client = LanceClient(user_id=userid)
-    inserted_count = lance_client.process_document(
-        file_path=folderpath, foldername=folderpath
-    )
-    return inserted_count
-    # for file_dict in files:
-    #     for key, value in file_dict.items():  # Unpack each dictionary correctly
-    #         lance_client = LanceClient(user_id=key)
-    #         inserted_count = lance_client.process_document(
-    #             file_path=value, foldername=key
-    #         )
-    # return "successfully processed files"
-
-
 @agent_bp.route("/process-query-key", methods=["POST"])
 def checkquerywithApiKey():
     try:
@@ -713,9 +683,8 @@ def getUsersDocs():
     if not os.path.exists(yaml_path):
         return jsonify({"error": "No documents found for this user"}), 404
 
-    with open(yaml_path, "r") as f:
-        all_file_data = yaml.safe_load(f) or []
-
+    all_file_data = load_yaml_file(yaml_path) or {}
+    
     return jsonify(all_file_data), 200
 
 
@@ -742,8 +711,7 @@ def delete_file():
         return jsonify({"error": "No documents found for this user"}), 404
 
     # Load main file metadata YAML
-    with open(yaml_path, "r") as f:
-        all_file_data = yaml.safe_load(f) or {}
+    all_file_data = load_yaml_file(yaml_path) or {}
 
     if source not in all_file_data or not isinstance(all_file_data[source], list):
         return jsonify({"error": f"No entries found for source '{source}'"}), 404
@@ -783,8 +751,7 @@ def delete_file():
         )
 
     # Reload for returning updated data
-    with open(yaml_path, "r") as f:
-        all_file_data = yaml.safe_load(f) or {}
+    all_file_data
 
     return (
         jsonify(
@@ -925,7 +892,6 @@ def process_audio():
             "date": now,
             "text": val["clean_text"],
             "summary": val["summary"],
-            "clarifications": len(val["clarifications"]),
         }
 
         # 🔹 Save transcript to JSON
@@ -1154,8 +1120,10 @@ def delete_audio():
 
         # 🔹 Find matching recording
         recording_to_delete = None
+        filename = None
         for rec in config.get("recordings", []):
             if rec.get("audio_location") in audio_location:
+                filename = rec.get("title")
                 recording_to_delete = rec
                 break
 
@@ -1179,6 +1147,12 @@ def delete_audio():
         )
         # delete_agent_document_link(userid)
         os.remove(local_config_path)
+        if filename:
+            success = deletefilebasedData(filename, userid)
+            if not success:
+                logger.warning(
+                    f"Failed to delete question entries for user {userid}, file {filename}"
+                )
 
         return (
             jsonify(

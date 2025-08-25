@@ -13,6 +13,7 @@ from zoho_routes.routes import zoho_bp
 from credits_route.route import credits_bp
 from umail.routes import umail_bp
 from tickets.routes import tickets_bp
+from invited_users.routes import inv_users_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -100,78 +101,18 @@ CORS(
     supports_credentials=True,
     origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
 )
-# Environment variables
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-openai_api_key = os.getenv("OPENAI_API_KEY")
-assistant_id = os.getenv("ASSISTANT_ID")
-PINECONE_ENV = os.getenv("PINECONE_ENV") or "us-east-1"
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME") or "sbdev"
+CORS(
+    inv_users_bp,
+    supports_credentials=True,
+    origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
+)
 
-
-# # Initialize Pinecone client
-# pc = PineconeClient(api_key=PINECONE_API_KEY)
-
-# # Create index if it doesn't exist
-# if PINECONE_INDEX_NAME not in pc.list_indexes().names():
-#     pc.delete_index(PINECONE_INDEX_NAME)
-#     pc.create_index(
-#         name=PINECONE_INDEX_NAME,
-#         dimension=3072,
-#         metric="cosine",
-#         spec=ServerlessSpec(
-#             cloud="aws",
-#             region="ap-east-1"  # Update if needed
-#         )
-#     )
-
-# Connect to index
-# index = pc.Index(PINECONE_INDEX_NAME)
-
-# Prepare embedding model (used later in vectorstore)
-# embedding = OpenAIEmbeddings(
-#     model="text-embedding-3-large",
-#     openai_api_key=openai_api_key,
-#     dimensions=3072,  # 🚨 explicitly reinforce this to match your Pinecone index
-# )
-
-# vector = embedding.embed_query("hello world")
 
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
 
 # Create data directory if not exists
 os.makedirs("data", exist_ok=True)
-
-# Load documents
-# all_documents = []
-
-# txt_loader = DirectoryLoader("data", glob="**/*.txt", loader_cls=TextLoader)
-# all_documents.extend(txt_loader.load())
-
-# pdf_loader = DirectoryLoader("data", glob="**/*.pdf", loader_cls=PyMuPDFLoader)
-# all_documents.extend(pdf_loader.load())
-
-# doc_loader = DirectoryLoader("data", glob="**/*.docx", loader_cls=UnstructuredWordDocumentLoader)
-# all_documents.extend(doc_loader.load())
-
-# # Split documents into chunks
-# text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-# docs = text_splitter.split_documents(all_documents)
-
-# Create embedding function
-# vectordb = PineconeVectorStore.from_documents(
-#     documents=docs,
-#     embedding=embedding,
-#     index_name=PINECONE_INDEX_NAME,
-#     text_key="text"
-# )
-
-
-# Setup retriever and QA chain
-# retriever = vectordb.as_retriever(search_kwargs={"k": 5})
-# llm = ChatOpenAI(temperature=0)
-# qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever, return_source_documents=True)
-
 
 # Register Blueprints
 app.register_blueprint(google_bp)
@@ -188,10 +129,7 @@ app.register_blueprint(zoho_bp)
 app.register_blueprint(credits_bp)
 app.register_blueprint(umail_bp)
 app.register_blueprint(tickets_bp)
-
-
-
-
+app.register_blueprint(inv_users_bp)
 
 
 if __name__ == "__main__":

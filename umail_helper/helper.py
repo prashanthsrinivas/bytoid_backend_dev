@@ -3,7 +3,6 @@ from create_db import connect_to_rds
 from email import message_from_string
 
 
-
 IDENTITY_MAP = {}
 CONTACTS = {}
 
@@ -220,32 +219,38 @@ def ensure_contact_loaded(user_id, identity: str,direction):
     return None
 
 
-def get_users_client_id(participant,cursor):
+def get_users_client_id(participant,user_id,cursor):
 
-    query_clients = """
-    SELECT users_clients_id
-    FROM users_clients
-    WHERE phone_number = %s
-       OR whatsapp_number = %s
-       OR email_id = %s
-       OR facebook_id = %s
-       OR instagram_id = %s
-       OR slack_id = %s
-       OR slack_workspace = %s
+    query = """
+    SELECT uc.users_clients_id, uc.type
+    FROM users_clients uc
+    JOIN communication c ON uc.users_clients_id = c.users_clients_id_fk
+    WHERE c.user_id_fk = %s AND (
+        uc.phone_number = %s OR
+        uc.whatsapp_number = %s OR
+        uc.email_id = %s OR
+        uc.facebook_id = %s OR
+        uc.instagram_id = %s OR
+        uc.slack_id = %s OR
+        uc.slack_workspace = %s
+    )
     LIMIT 1
 """
 
-    params_clients = (participant,) *7
-    cursor.execute(query_clients, params_clients)
+
+    params = (user_id,) + (participant,) * 7
+    cursor.execute(query, params)
     row = cursor.fetchone()
 
     if row:
         users_clients_id = row[0]
+        type = row[1]
         # print("Matched client ID:", users_clients_id)
-        return users_clients_id
+        return users_clients_id, type
     
     else:
         # print(f"cannot find any users_clients with {participant}")
-        return None
+        return None, None
 
     
+

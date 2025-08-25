@@ -57,3 +57,4 @@ client_secrets1.json
 credentials.json
 new_service_secrets.json
 service_secret.json
+data/*

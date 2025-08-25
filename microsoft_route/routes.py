@@ -1,14 +1,7 @@
-from agent_route.doc_clarity import (
-    find_matching_industry,
-    get_industry_names_from_yaml,
-    preProcessDocWithUsecases,
-)
-from agent_route.task_manager import run_background_task
-from cust_helpers import pathconfig
+from utils.base_logger import get_logger
 from db.db_checkers import fetch_userid_from_launch
 from flask import Blueprint, request, jsonify, session, redirect
 from msal import ConfidentialClientApplication
-from dotenv import load_dotenv
 import os
 import requests
 from db.rds_db import connect_to_rds
@@ -17,12 +10,15 @@ import uuid
 from data import MESSAGES  # delete this later
 from bs4 import BeautifulSoup
 import uuid
-import yaml
 from datetime import datetime, timezone
 from agent_route.routes import process_and_update_yaml
+from utils.chatopenzz import check_lancedb
+import asyncio
+from db.db_checkers import check_onboarding_user
+
 
 microsoft_bp = Blueprint("microsoft", __name__)
-
+logger = get_logger(__name__)
 CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET")
 TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID")
@@ -113,7 +109,7 @@ def microsoft_callback():
         # print("db row ",row)
 
         access_token_ = result.get("access_token") or ""
-        # print("stored access_token_: ", access_token_)
+        print("stored access_token_: ", access_token_)
 
         refresh_token_ = result.get("refresh_token")
         expires_in_ = result.get("expires_in")
@@ -149,34 +145,6 @@ def microsoft_callback():
 
         else:
 
-            # stored_refresh_token = row[0]
-            # print("refreh token:",stored_refresh_token)
-
-            # response = requests.post(
-            #     'https://login.microsoftonline.com/TENANT_ID/oauth2/v2.0/token',
-            #     data={
-            #         'grant_type': 'refresh_token',
-            #         'refresh_token': stored_refresh_token,
-            #         'client_id': CLIENT_ID,
-            #         'client_secret': CLIENT_SECRET,
-            #         'redirect_uri': REDIRECT_URI,
-            #         # 'scope': 'User.Read offline_access openid profile email'
-            #     }
-            # )
-
-            # print("Response code:", response.status_code)
-            # print("Response body:", response.text)
-
-            # if response.status_code == 200:
-            #     token_data = response.json()
-            #     print("token_data:",token_data)
-
-            #     ##########
-            #     # new_access_token = token_data.get('access_token')
-            #     # new_refresh_token = token_data.get('refresh_token', stored_refresh_token)
-            #     # expires_in = token_data.get('expires_in')
-            #     #####
-
             cursor.execute(
                 """  
                         UPDATE users 
@@ -204,14 +172,20 @@ def microsoft_callback():
         conn.commit()
         conn.close()
 
+        newuser = check_onboarding_user(user_id)
+
         # else:
         #     return redirect("https://bytoid.ai/login")
+        print(f"going to return to dashboard: {newuser}")
+        # return redirect("https://bytoid.ai/dashboard")
+        return jsonify({"user_id": user_id, "user_onboarded": newuser})
 
-        return redirect("https://bytoid.ai/dashboard")
 
     else:
-        return redirect("https://bytoid.ai/login")
-
+        return jsonify({
+            "error": "Failed to get user info from Microsoft",
+            "details": "Microsoft Graph API request failed"
+        }), 400
     # return redirect('https://bytoid.ai/dashboard')
     # return jsonify(result)
 
@@ -715,6 +689,9 @@ def microsoft_list_trash():
 @microsoft_bp.route("/process-outlook", methods=["POST"])
 def process_outlook():
     try:
+        ok, val = check_lancedb()
+        if not ok:
+            logger.info(f"LanceDB service down: {val}")
         data = request.get_json(force=True, silent=True)
         if not data:
             return jsonify({"error": "Invalid or missing JSON body"}), 400
@@ -783,11 +760,13 @@ def process_outlook():
 
         # Process files
         try:
-            all_file_data = process_and_update_yaml(
-                all_downloaded_paths=all_downloaded_paths,
-                userid=userid,
-                provider="outlook",
-                folderpath=pathdown,
+            all_file_data = asyncio.run(
+                process_and_update_yaml(
+                    all_downloaded_paths=all_downloaded_paths,
+                    userid=userid,
+                    provider="outlook",
+                    folderpath=pathdown,
+                )
             )
         except Exception as e:
             return jsonify({"error": f"Error processing files: {str(e)}"}), 500

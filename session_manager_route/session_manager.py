@@ -1,13 +1,11 @@
-import logging
 import uuid
 import time
 from typing import Dict, List, Optional, Any, Tuple
 
+from utils.base_logger import get_logger
+
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SessionManager:

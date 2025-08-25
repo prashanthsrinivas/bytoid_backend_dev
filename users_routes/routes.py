@@ -1,15 +1,18 @@
-from flask import Blueprint, request, jsonify,session
-from facebook_route.meta import FacebookOAuthHandler
+from flask import Blueprint, request, jsonify, session
 import pymysql
 import os
-from gmail_route.gmail_service import GmailService
 import uuid
 from db.rds_db import connect_to_rds
 import json
 from datetime import datetime
+from utils.base_logger import get_logger
 from werkzeug.utils import secure_filename
 from utils.s3_utils import generate_presigned_url, upload_any_file
-users_bp = Blueprint('users', __name__)
+
+users_bp = Blueprint("users", __name__)
+
+logger = get_logger(__name__)
+
 
 # def get_db_connection():
 #     connection = pymysql.connect(
@@ -24,27 +27,27 @@ def format_address(door, unit, street, zip_code):
         f"Door {door}" if door else None,
         f"Unit {unit}" if unit else None,
         street,
-        f"ZIP {zip_code}" if zip_code else None
+        f"ZIP {zip_code}" if zip_code else None,
     ]
-    return ', '.join([p for p in parts if p])
+    return ", ".join([p for p in parts if p])
 
 
-@users_bp.route('/onboarding', methods=['POST'])
+@users_bp.route("/onboarding", methods=["POST"])
 def submit_onboarding():
     try:
         payload = request.get_json()
         print("onboarding", payload)
 
-        user_id = session.get("user_id") or payload.get('user_id')
+        user_id = session.get("user_id") or payload.get("user_id")
         data = payload.get("data", {})
 
         conn = connect_to_rds()
         cursor = conn.cursor()
-        
-        ProofOfBusinessFile=request.files.get("businessProof_filename","")
-        BusinessImageFile=request.files.get("businessImage_filename","")
-        print("proffbusiness",ProofOfBusinessFile)
-        print("businessimage",BusinessImageFile)
+
+        ProofOfBusinessFile = request.files.get("businessProof_filename", "")
+        BusinessImageFile = request.files.get("businessImage_filename", "")
+        print("proffbusiness", ProofOfBusinessFile)
+        print("businessimage", BusinessImageFile)
         # Prepare sociallinks JSON
         sociallinks = {
             "whatsapp": data.get("whatsappNumber"),
@@ -54,24 +57,27 @@ def submit_onboarding():
             "slack": data.get("slackId"),
             "teams": data.get("teamsId"),
             "shopify": data.get("shopifyId"),
-            "woocommerce": data.get("woocommerceUrl")
+            "woocommerce": data.get("woocommerceUrl"),
         }
 
         # Update users table
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE users
             SET first_name = %s,
                 phone = %s,
                 sociallinks = %s,
                 updated_in = %s
             WHERE user_id = %s
-        """, (
-            data.get("name"),
-            data.get("primaryPhone"),
-            json.dumps(sociallinks),
-            datetime.utcnow(),
-            user_id
-        ))
+        """,
+            (
+                data.get("name"),
+                data.get("primaryPhone"),
+                json.dumps(sociallinks),
+                datetime.utcnow(),
+                user_id,
+            ),
+        )
 
         # Generate business_info_id
         business_info_id = str(uuid.uuid4())
@@ -82,10 +88,15 @@ def submit_onboarding():
 
         # Normalize enums
         cognitive = data.get("cognitype", "").capitalize()
-        reg_status = "Registered" if data.get("registrationStatus") == "registered" else "Non-Registered"
+        reg_status = (
+            "Registered"
+            if data.get("registrationStatus") == "registered"
+            else "Non-Registered"
+        )
 
         # Insert into business_info
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO business_info (
                 business_info_id, user_id_fk, BusinessName, Age, Sex, LineOfBusiness,
                 YearsInBusiness, HasLicense, RegistrationStatus, ProofOfBusinessFile, RegistrationNumber,
@@ -95,50 +106,59 @@ def submit_onboarding():
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,%s)
-        """, (
-            business_info_id,
-            user_id,
-            data.get("businessName"),
-            str(data.get("age")),
-            cognitive,
-            data.get("lineOfBusiness"),
-            str(data.get("yearsInBusiness")),
-            data.get("hasLicense", False),
-            reg_status,
-            str(data.get("businessProof", {})),
-            data.get("registrationNumber", ""),
-            data.get("gstNumber", ""),
-            data.get("country"),
-            data.get("province"),
-            data.get("city"),
-            billing_address,
-            shipping_address,
-            str(data.get("businessImage", {})),
-            data.get("businessEmail",""),
-            json.dumps(data.get("paymentMethods", [])),
-            json.dumps(data.get("paymentDetails", {})),
-            data.get("ownershipType"),
-            data.get("businessTimings"),
-            data.get("websiteUrl"),
-            data.get("secondaryPhone"),
-            data.get("gstNotAvailable", False),
-            data.get("sameAsBilling", False),
-            data.get("businessLocation","")
-        ))
+        """,
+            (
+                business_info_id,
+                user_id,
+                data.get("businessName"),
+                str(data.get("age")),
+                cognitive,
+                data.get("lineOfBusiness"),
+                str(data.get("yearsInBusiness")),
+                data.get("hasLicense", False),
+                reg_status,
+                str(data.get("businessProof", {})),
+                data.get("registrationNumber", ""),
+                data.get("gstNumber", ""),
+                data.get("country"),
+                data.get("province"),
+                data.get("city"),
+                billing_address,
+                shipping_address,
+                str(data.get("businessImage", {})),
+                data.get("businessEmail", ""),
+                json.dumps(data.get("paymentMethods", [])),
+                json.dumps(data.get("paymentDetails", {})),
+                data.get("ownershipType"),
+                data.get("businessTimings"),
+                data.get("websiteUrl"),
+                data.get("secondaryPhone"),
+                data.get("gstNotAvailable", False),
+                data.get("sameAsBilling", False),
+                data.get("businessLocation", ""),
+            ),
+        )
 
         conn.commit()
         cursor.close()
         conn.close()
 
-        return jsonify({"status": "success", "message": "Onboarding data saved successfully."}), 200
+        return (
+            jsonify(
+                {"status": "success", "message": "Onboarding data saved successfully."}
+            ),
+            200,
+        )
 
     except Exception as e:
         print("Error in onboarding:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
-@users_bp.route('/get_onboarding', methods=['GET'])
+
+
+@users_bp.route("/get_onboarding", methods=["GET"])
 def get_onboarding():
     try:
-        user_id = request.args.get('user_id')
+        user_id = request.args.get("user_id")
         if not user_id:
             return jsonify({"status": "error", "message": "user_id is required"}), 400
 
@@ -146,7 +166,10 @@ def get_onboarding():
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         # Fetch user info
-        cursor.execute("SELECT user_id, first_name, email, phone, sociallinks FROM users WHERE user_id = %s", (user_id,))
+        cursor.execute(
+            "SELECT user_id, first_name, email, phone, sociallinks FROM users WHERE user_id = %s",
+            (user_id,),
+        )
         user = cursor.fetchone()
 
         if not user:
@@ -175,7 +198,9 @@ def get_onboarding():
             # ✅ Add signed URL for ProofOfBusinessFile
             proof_file_key = business_info.get("ProofOfBusinessFile")
             if proof_file_key:
-                business_info["ProofOfBusinessFile"] = generate_presigned_url(proof_file_key)
+                business_info["ProofOfBusinessFile"] = generate_presigned_url(
+                    proof_file_key
+                )
 
             # ✅ Add signed URL for BusinessImage
             image_key = business_info.get("BusinessImage")
@@ -185,18 +210,19 @@ def get_onboarding():
         cursor.close()
         conn.close()
 
-        return jsonify({
-            "status": "success",
-            "user": user,
-            "business_info": business_info
-        }), 200
+        return (
+            jsonify(
+                {"status": "success", "user": user, "business_info": business_info}
+            ),
+            200,
+        )
 
     except Exception as e:
         print("Error in get_onboarding:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@users_bp.route('/onboaring_update', methods=['POST'])
+@users_bp.route("/onboaring_update", methods=["POST"])
 def onboarding_update():
     try:
         user_id = request.form.get("user_id") or session.get("user_id")
@@ -207,7 +233,7 @@ def onboarding_update():
             data = {}
         business_proof = request.files.get("businessProof")
         business_Image = request.files.get("businessImage")
-        
+
         if business_proof:
             filename = secure_filename(business_proof.filename)
             temp_path = os.path.join("/tmp", filename)
@@ -217,7 +243,7 @@ def onboarding_update():
                 file_path=temp_path,
                 user_id=user_id,
                 type="user",
-                file_name="businessproof_" + filename
+                file_name="businessproof_" + filename,
             )
             business_proof_paths = val["s3_key"]
 
@@ -230,10 +256,9 @@ def onboarding_update():
                 file_path=temp_path,
                 user_id=user_id,
                 type="user",
-                file_name="businessimage_" + filename
+                file_name="businessimage_" + filename,
             )
             business_Image_paths = val["s3_key"]
-
 
         if not user_id:
             return jsonify({"status": "error", "message": "user_id is required"}), 400
@@ -277,13 +302,19 @@ def onboarding_update():
             user_values.append(datetime.utcnow())
             user_values.append(user_id)
 
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 UPDATE users SET {', '.join(set_user_clauses)}
                 WHERE user_id = %s
-            """, tuple(user_values))
+            """,
+                tuple(user_values),
+            )
 
         # --- BUSINESS_INFO TABLE UPDATE ---
-        cursor.execute("SELECT business_info_id FROM business_info WHERE user_id_fk = %s", (user_id,))
+        cursor.execute(
+            "SELECT business_info_id FROM business_info WHERE user_id_fk = %s",
+            (user_id,),
+        )
         if cursor.fetchone():
             # Only update fields present in data
             business_fields = {
@@ -291,34 +322,66 @@ def onboarding_update():
                 "Age": str(data["age"]) if "age" in data else None,
                 "Sex": data["cognitype"].capitalize() if "cognitype" in data else None,
                 "LineOfBusiness": data.get("lineOfBusiness"),
-                "YearsInBusiness": str(data["yearsInBusiness"]) if "yearsInBusiness" in data else None,
+                "YearsInBusiness": (
+                    str(data["yearsInBusiness"]) if "yearsInBusiness" in data else None
+                ),
                 "HasLicense": data.get("hasLicense"),
-                "RegistrationStatus": "Registered" if data.get("registrationStatus") == "registered" else ("Non-Registered" if "registrationStatus" in data else None),
-                "ProofOfBusinessFile": str(business_proof_paths) if request.files.get("businessProof") else None,
+                "RegistrationStatus": (
+                    "Registered"
+                    if data.get("registrationStatus") == "registered"
+                    else ("Non-Registered" if "registrationStatus" in data else None)
+                ),
+                "ProofOfBusinessFile": (
+                    str(business_proof_paths)
+                    if request.files.get("businessProof")
+                    else None
+                ),
                 "RegistrationNumber": data.get("registrationNumber"),
                 "GSTNumber": data.get("gstNumber"),
                 "Country": data.get("country"),
                 "ProvinceOrState": data.get("province"),
                 "City": data.get("city"),
-                "BusinessImage": str(business_Image_paths) if request.files.get("businessImage") else None,
+                "BusinessImage": (
+                    str(business_Image_paths)
+                    if request.files.get("businessImage")
+                    else None
+                ),
                 "BusinessEmail": data.get("businessEmail"),
-                "PaymentMethods": json.dumps(data.get("paymentMethods")) if "paymentMethods" in data else None,
-                "PaymentDetails": json.dumps(data.get("paymentDetails")) if "paymentDetails" in data else None,
+                "PaymentMethods": (
+                    json.dumps(data.get("paymentMethods"))
+                    if "paymentMethods" in data
+                    else None
+                ),
+                "PaymentDetails": (
+                    json.dumps(data.get("paymentDetails"))
+                    if "paymentDetails" in data
+                    else None
+                ),
                 "OwnershipType": data.get("ownershipType"),
                 "BusinessTimings": data.get("businessTimings"),
                 "WebsiteUrl": data.get("websiteUrl"),
                 "SecondaryPhone": data.get("secondaryPhone"),
                 "GSTNotAvailable": data.get("gstNotAvailable"),
                 "SameAsBilling": data.get("sameAsBilling"),
-                "businessLocation": data.get("businessLocation")
+                "businessLocation": data.get("businessLocation"),
             }
 
             # Conditionally add address fields
-            if any(k in data for k in ["doorNumber", "unitNumber", "streetName", "zipCode"]):
+            if any(
+                k in data for k in ["doorNumber", "unitNumber", "streetName", "zipCode"]
+            ):
                 billing_address = f"{data.get('doorNumber', '')}, {data.get('unitNumber', '')}, {data.get('streetName', '')}, {data.get('zipCode', '')}"
                 business_fields["BillingAddress"] = billing_address
 
-            if any(k in data for k in ["shippingDoorNumber", "shippingUnitNumber", "shippingStreetName", "shippingZipCode"]):
+            if any(
+                k in data
+                for k in [
+                    "shippingDoorNumber",
+                    "shippingUnitNumber",
+                    "shippingStreetName",
+                    "shippingZipCode",
+                ]
+            ):
                 shipping_address = f"{data.get('shippingDoorNumber', '')}, {data.get('shippingUnitNumber', '')}, {data.get('shippingStreetName', '')}, {data.get('shippingZipCode', '')}"
                 business_fields["ShippingAddress"] = shipping_address
 
@@ -333,36 +396,48 @@ def onboarding_update():
 
             if set_business_clauses:
                 business_values.append(user_id)
-                cursor.execute(f"""
+                cursor.execute(
+                    f"""
                     UPDATE business_info SET {', '.join(set_business_clauses)}
                     WHERE user_id_fk = %s
-                """, tuple(business_values))
+                """,
+                    tuple(business_values),
+                )
 
         conn.commit()
         cursor.close()
         conn.close()
 
-        return jsonify({"status": "success", "message": "Onboarding data updated successfully."}), 200
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "message": "Onboarding data updated successfully.",
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         print("Error in onboarding_update:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@users_bp.route('/generate-website-api-key', methods=['POST'])
+
+@users_bp.route("/generate-website-api-key", methods=["POST"])
 def generate_api_key():
     data = request.get_json()
-    print(session.get("user","No user in session"))
-    user_id = data.get("userid") or session.get("user_id") 
+    print(session.get("user", "No user in session"))
+    user_id = data.get("userid") or session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
     new_api_key = uuid.uuid4()
-    #connection = pymysql.connect(
-        #        host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
-       #         user='skilbyt_db',
-      #          password='JesusChristIsLord$1',
-     #           db='ai_support'
+    # connection = pymysql.connect(
+    #        host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
+    #         user='skilbyt_db',
+    #          password='JesusChristIsLord$1',
+    #           db='ai_support'
     #          )
-    connection=connect_to_rds()
+    connection = connect_to_rds()
     try:
         with connection.cursor() as cursor:
             sql = "SELECT 1 FROM launch WHERE user_id_fk = %s LIMIT 1"
@@ -371,7 +446,7 @@ def generate_api_key():
             if not result:
                 sub_agent_id = uuid.uuid4()
                 launch_id = uuid.uuid4()
-                
+
                 subagent_sql = """
                 INSERT INTO subagents (
                 sub_agent_id, launch_id_fk, name, description,voice_type,
@@ -384,21 +459,17 @@ def generate_api_key():
                     INSERT INTO launch (launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name)
                     VALUES (%s, %s, %s, %s, %s)
                 """
-                
-                cursor.execute(insert_sql, (
-                    launch_id,
-                    sub_agent_id,
-                    user_id,
-                    new_api_key,
-                    None
-                ))
+
                 cursor.execute(
-                """
+                    insert_sql, (launch_id, sub_agent_id, user_id, new_api_key, None)
+                )
+                cursor.execute(
+                    """
                 UPDATE subagents
                 SET launch_id_fk = %s
                 WHERE sub_agent_id = %s
                 """,
-                (launch_id, sub_agent_id)
+                    (launch_id, sub_agent_id),
                 )
 
                 connection.commit()
@@ -417,10 +488,7 @@ def generate_api_key():
                         SET api_id = %s
                         WHERE user_id_fk = %s
                     """
-                    cursor.execute(update_sql, (
-                        new_api_key,
-                        user_id
-                    ))
+                    cursor.execute(update_sql, (new_api_key, user_id))
 
                 connection.commit()
                 return jsonify({"apiKey": new_api_key}), 200
@@ -438,26 +506,29 @@ def get_leads_route():
             cursor.execute(sql)
             leads = cursor.fetchall()
         conn.close()
-        
+
         # Transform the data to match the expected format in the frontend
         formatted_leads = []
         for lead in leads:
-            formatted_leads.append({
-                "id": lead[0],
-                "name": lead[1],
-                "company": lead[2] if lead[2] else "",
-                "email": lead[3],
-                "phone": lead[4] if lead[4] else "",
-                "status": lead[5]
-            })
-        
+            formatted_leads.append(
+                {
+                    "id": lead[0],
+                    "name": lead[1],
+                    "company": lead[2] if lead[2] else "",
+                    "email": lead[3],
+                    "phone": lead[4] if lead[4] else "",
+                    "status": lead[5],
+                }
+            )
+
         return jsonify({"leads": formatted_leads})
     except pymysql.Error as err:
-        app.logger.error(f"Database error: {err}")
+        logger.error(f"Database error: {err}")
         return jsonify({"error": f"Database error: {err}"}), 500
     except Exception as e:
-        app.logger.error(f"An unexpected error occurred: {str(e)}")
+        logger.error(f"An unexpected error occurred: {str(e)}")
         return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+
 
 @users_bp.route("/add_lead", methods=["POST"])
 def add_lead_route():
@@ -472,32 +543,40 @@ def add_lead_route():
     status = data.get("status")
 
     if not lead_name or not email or not status:
-        return jsonify({"error": "Missing required fields: lead_name, email, status"}), 400
+        return (
+            jsonify({"error": "Missing required fields: lead_name, email, status"}),
+            400,
+        )
 
     try:
-        #conn = get_db_connection()
-        conn=connect_to_rds()
+        # conn = get_db_connection()
+        conn = connect_to_rds()
         with conn.cursor() as cursor:
             sql = "INSERT INTO leads (lead_name, company, email, phone, status) VALUES (%s, %s, %s, %s, %s)"
             cursor.execute(sql, (lead_name, company, email, phone, status))
             conn.commit()
             lead_id = cursor.lastrowid
         conn.close()
-        
-        return jsonify({
-            "message": "Lead added successfully to DB",
-            "lead": {
-                "id": lead_id,
-                "lead_name": lead_name,
-                "company": company,
-                "email": email,
-                "phone": phone,
-                "status": status
-            }
-        }), 201
+
+        return (
+            jsonify(
+                {
+                    "message": "Lead added successfully to DB",
+                    "lead": {
+                        "id": lead_id,
+                        "lead_name": lead_name,
+                        "company": company,
+                        "email": email,
+                        "phone": phone,
+                        "status": status,
+                    },
+                }
+            ),
+            201,
+        )
     except pymysql.Error as err:
-        app.logger.error(f"Database error: {err}")
+        logger.error(f"Database error: {err}")
         return jsonify({"error": f"Database error: {err}"}), 500
     except Exception as e:
-        app.logger.error(f"An unexpected error occurred: {str(e)}")
+        logger.error(f"An unexpected error occurred: {str(e)}")
         return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500

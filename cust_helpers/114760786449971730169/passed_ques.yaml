@@ -276,3 +276,56 @@
   quote: ●​ Provide ongoing support with simulated phishing campaigns and refresher
     courses.​
   filename: Cybsersecurity Consulting.pdf
+- User: Is the 24/7 monitoring service provided by your SOC team?
+  Rephrased Question: I saw 'Do you offer 24/7 monitoring services?'. In that context,
+    is the monitoring provided by your SOC team?
+  Ai Response: Yes, our SOC (Security Operations Center) provides round-the-clock
+    monitoring for threats.
+  quote: Do you offer 24/7 monitoring services?
+  filename: Cybsersecurity Consulting.pdf
+  doc_value: 0.9890978932380676
+  date_processed: '2025-08-20T15:10:57'
+- User: What is the specific notepad that Shyam needs to bring?
+  rephrased_response: What is the specific notepad that Shyam needs to bring?
+  Ai Response: Shyam can bring any blank notepad; there is no specific requirement.
+  quote: Shyam's Meeting
+  filename: 5b387482-6e7b-44f1-99dd-0c2d0bb826d1.webm
+  date_processed: '2025-08-20T17:54:27'
+  doc_value: 0
+  is_audio: 114760786449971730169/aud_scripts/b72207a7.json
+  rec_id: fb03623c
+- User: Are there any specific documents or materials that Shyam needs to review before
+    the meeting?
+  rephrased_response: Are there any specific documents or materials that Shyam needs
+    to review before the meeting?
+  Ai Response: Yes, Shyam needs to review the policies and procedures documents that
+    I shared via email before the meeting.
+  quote: Shyam's Meeting
+  filename: 5b387482-6e7b-44f1-99dd-0c2d0bb826d1.webm
+  date_processed: '2025-08-20T17:54:53'
+  doc_value: 0
+  is_audio: 114760786449971730169/aud_scripts/b72207a7.json
+  rec_id: fb03623c
+- User: What is the deadline for completing the quality review and HR policies?
+  rephrased_response: What is the deadline for completing the quality review and HR
+    policies?
+  Ai Response: The quality review is a daily activity that needs to be completed by
+    the end of each day. The HR policies should be completed by this August.
+  quote: Swati's Tasks
+  filename: ff28410f-671b-4226-aa07-d7206a0172a0.webm
+  date_processed: '2025-08-21T13:37:29'
+  doc_value: 0
+  is_audio: 114760786449971730169/aud_scripts/b72207a7.json
+  rec_id: abd8c07f
+- User: Are there any specific requirements or templates for the meeting notes?
+  rephrased_response: Are there any specific requirements or templates for the meeting
+    notes?
+  Ai Response: There are no specific requirements or templates for meeting notes.
+    However, we recommend using the Notion tool for taking and organizing meeting
+    notes.
+  quote: Swati's Tasks
+  filename: ff28410f-671b-4226-aa07-d7206a0172a0.webm
+  date_processed: '2025-08-21T13:37:59'
+  doc_value: 0
+  is_audio: 114760786449971730169/aud_scripts/b72207a7.json
+  rec_id: abd8c07f

@@ -22,7 +22,6 @@ from bs4 import BeautifulSoup
 logger = get_logger(__name__)
 
 
-
 def get_usecases_for_smb(smb_name, data):
     for entry in data:
         if entry.get("SMB") == smb_name:
@@ -80,8 +79,7 @@ def deletefilebasedData(filename, userid):
         for ques_file in ["passed_ques.yaml", "failed_ques.yaml"]:
             ques_path = os.path.join(main_folder, ques_file)
             if os.path.exists(ques_path):
-                with open(ques_path, "r") as f:
-                    ques_data = yaml.safe_load(f) or []
+                ques_data = load_yaml_file(ques_path)
 
                 # Flatten in case there are nested lists
                 flat_data = []
@@ -176,8 +174,7 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
 
     # Load existing YAML or initialize structure
     if os.path.exists(yaml_path):
-        with open(yaml_path, "r") as f:
-            existing_data = yaml.safe_load(f) or {}
+        existing_data = load_yaml_file(yaml_path) or {}
     else:
         existing_data = {}
 
@@ -226,9 +223,9 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
         )
         print(f"[DEBUG] Background task queued: {result}")
     yaml_path = os.path.join(f"{pathconfig.basepath}/{userid}", "users_fileData.yaml")
-    with open(yaml_path, "r") as f:
-        all_file_data = yaml.safe_load(f) or {}
+    all_file_data = load_yaml_file(yaml_path) or {}
     return all_file_data
+
 
 def scrape_links(base_url, max_pages=50):
     visited = set()

@@ -1,0 +1,1156 @@
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.document_loaders import DirectoryLoader, PyMuPDFLoader, TextLoader, UnstructuredWordDocumentLoader
+from langchain_openai import ChatOpenAI
+from langchain.chains import RetrievalQA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_pinecone import PineconeVectorStore
+import os
+from flask import Flask, request, jsonify, redirect, session, make_response
+from flask_cors import CORS
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+#from signin import GoogleAuth
+from session_manager import SessionManager
+from google.auth.transport import requests as g_requests
+from google.oauth2 import id_token
+from pinecone import Pinecone as PineconeClient, ServerlessSpec
+import pinecone
+import tempfile
+from oauth2client.client import OAuth2WebServerFlow
+from google_auth_oauthlib.flow import Flow
+from gmail_service import GmailService
+from urllib.parse import parse_qs, urlparse
+from dotenv import load_dotenv
+from meta import FacebookOAuthHandler
+import requests
+import pymysql
+import geoip2.database
+import sqlite3
+import uuid
+
+
+
+# Flask app setup
+app = Flask(__name__)
+app.secret_key ='a_random_key' #set a secret key as an enviornmental variable later
+app.config.update(SESSION_COOKIE_SAMESITE='None',
+                  SESSION_COOKIE_SECURE=True)
+CORS(app, supports_credentials=True, origins=["http://10.0.0.9", "http://10.0.4.188", "https://www.skilbyt.com", "https://www.bytoid.ai", "https://bytoid.ai"])
+
+#Create Objects
+
+google_auth_manager = GoogleAuth()
+session_manager = SessionManager()
+
+# Environment variables
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+openai_api_key = os.getenv("OPENAI_API_KEY")
+assistant_id = os.getenv("ASSISTANT_ID")
+PINECONE_ENV = os.getenv("PINECONE_ENV") or "us-east-1"
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME") or "sbdev"
+
+# Initialize Pinecone client
+pc = PineconeClient(api_key=PINECONE_API_KEY)
+
+# Create index if it doesn't exist
+if PINECONE_INDEX_NAME not in pc.list_indexes().names():
+    pc.delete_index(PINECONE_INDEX_NAME)
+    pc.create_index(
+        name=PINECONE_INDEX_NAME,
+        dimension=3072,
+        metric="cosine",
+        spec=ServerlessSpec(
+            cloud="aws",
+            region="ap-east-1"  # Update if needed
+        )
+    )
+
+# Connect to index
+index = pc.Index(PINECONE_INDEX_NAME)
+
+# Prepare embedding model (used later in vectorstore)
+embedding = OpenAIEmbeddings(
+    model="text-embedding-3-large",
+    openai_api_key=openai_api_key,
+    dimensions=3072  # 🚨 explicitly reinforce this to match your Pinecone index
+)
+
+vector = embedding.embed_query("hello world")
+
+app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
+os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
+
+# Create data directory if not exists
+os.makedirs("data", exist_ok=True)
+
+# Load documents
+all_documents = []
+
+txt_loader = DirectoryLoader("data", glob="**/*.txt", loader_cls=TextLoader)
+all_documents.extend(txt_loader.load())
+
+pdf_loader = DirectoryLoader("data", glob="**/*.pdf", loader_cls=PyMuPDFLoader)
+all_documents.extend(pdf_loader.load())
+
+doc_loader = DirectoryLoader("data", glob="**/*.docx", loader_cls=UnstructuredWordDocumentLoader)
+all_documents.extend(doc_loader.load())
+
+# Split documents into chunks
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+docs = text_splitter.split_documents(all_documents)
+
+# Create embedding function
+vectordb = PineconeVectorStore.from_documents(
+    documents=docs,
+    embedding=embedding,
+    index_name=PINECONE_INDEX_NAME,          # <-- this is your `pc.Index(...)` object
+    text_key="text"       # or whatever field you're using
+)
+
+
+# Setup retriever and QA chain
+retriever = vectordb.as_retriever(search_kwargs={"k": 5})
+llm = ChatOpenAI(temperature=0)
+qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever, return_source_documents=True)
+
+EXEMPT_PATHS = ['generate_session','get_google_client_id', 'google_login','login','oauth2callback']
+@app.before_request
+def validate_cookie_session():
+    if request.endpoint in EXEMPT_PATHS or request.endpoint is None:
+        return
+    session_id = request.cookies.get('session_id')
+    if session_id:
+        if not session_manager.is_session_valid(session_id):
+            # Invalidate expired session
+            session_manager.delete_session(session_id)
+            response = make_response({'error': 'Session expired'}, 440)  # 440 is often used for login timeout
+            response.delete_cookie('session_id')
+            return response
+        else:
+            session_manager.update_session_timestamp(session_id)
+
+@app.route("/sub_agent_ask", methods=["POST"])
+def sub_agent_ask():
+    try:
+        # Initialize PineconeManager
+        pinecone_manager = PineconeManager()
+
+        data = request.get_json()
+
+        if not data or "query" not in data:
+            return jsonify({"error": "A 'query' is required in the JSON body."}), 400
+
+        query = data.get("query")
+
+        if query == ":login":
+            auth_url = login()
+            return jsonify({"answer": auth_url}), 200
+
+        elif query == ":oauth":
+            oauth2callback()
+            return jsonify({"answer": "OAuth process completed."}), 200
+
+        elif query == ":sync_drive":
+            sync_drive()
+            return jsonify({"answer": "Drive sync initiated."}), 200
+
+        # Utilize the query_documents method from PineconeManager
+        result = pinecone_manager.query_documents(query)
+
+        return jsonify({
+            "answer": result["answer"],
+            "sources": result["sources"]
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/session_exists", methods = ["POST"])
+def session_exists():
+    session_id = request.cookies.get('session_id')
+    print(session_id)
+    if not session_id:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    # Check if the session is valid
+    if session_manager.is_session_valid(session_id):
+        return jsonify({'session_exists': True}), 200
+    else:
+        return jsonify({'session_exists': False}), 200
+
+@app.route('/delete_session', methods=['POST'])
+def delete_session():
+    session_id = request.cookies.get('session_id')
+
+    if not session_id:
+        return jsonify({'error': 'Missing session_id cookie'}), 400
+
+    # Attempt to delete the session
+    deleted = session_manager.delete_session(session_id)
+
+    # Optionally clear the cookie from the client as well
+    response = make_response(jsonify({'deleted': deleted}))
+    response.set_cookie('session_id', '', expires=0)
+
+    return response
+
+@app.route("/generate_session", methods=["POST"])
+def generate_session():
+    #try:
+    #    session_id = session_manager.create_session()
+    #    print("successful creation")
+    #    return jsonify(session_id=session_id)
+    #except Exception as e:
+    #    return jsonify({"error": str(e)}), 500a
+    try:
+        session_id = session_manager.create_session()
+        print("successful creation")
+
+        response = make_response(jsonify({"message": "Session created"}))
+        response.set_cookie(
+            "session_id",
+            value=session_id,
+            httponly=True,     # Prevents access via JavaScript
+            secure=True,       # Only send over HTTPS
+            samesite="None",    # Or "Strict"/"None" depending on your setup
+            path="/",
+            max_age = 10800
+        )
+        print(f"{session_id}")
+        return response
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+### Facebook Login & Authorizations
+
+app.secret_key = os.urandom(24)
+
+# Facebook OAuth Callback Route
+@app.route('/auth/facebook/callback')
+def facebook_callback():
+    handler = FacebookOAuthHandler()
+    code = request.args.get('code')
+
+    if not code:
+        print("Facebook code not received")
+        return 'Authorization code not provided', 400
+
+    # Exchange code for access token
+    data = handler.exchange_code_for_token(code)
+
+    if 'access_token' not in data:
+        return jsonify({'error': 'Failed to obtain access token', 'details': data}), 400
+
+    access_token = data['access_token']
+
+    # Retrieve user information
+    user_info = handler.get_user_info(access_token)
+
+    if 'id' not in user_info:
+        return jsonify({'error': 'Failed to retrieve user information', 'details': user_info}), 400
+
+    # Store user info in session
+    session['user'] = {
+        'id': user_info['id'],
+        'name': user_info.get('name'),
+        'email': user_info.get('email'),
+        'pages': user_info.get('accounts', {}).get('data', [])
+    }
+
+    return redirect('/dashboard')
+
+
+# Deauthorize Callback Route
+@app.route('/auth/facebook/deauthorize', methods=['POST'])
+def facebook_deauthorize():
+    data = request.get_json()
+    user_id = data.get('user_id')
+
+    if not user_id:
+        return jsonify({'error': 'User ID not provided'}), 400
+
+    session.pop('user', None)
+
+    return jsonify({'status': 'User deauthorized', 'user_id': user_id}), 200
+
+
+### Facebook login & Authorizations end here
+@app.route("/gmail/forward", methods=["POST"])
+def gmail_forward():
+    try:
+        data = request.get_json()
+        to = data["to"]
+        subject = data["subject"]
+        body = data["body"]
+        user_id = session.get('user_id')
+        gmail_service = GmailService(user_id)
+        sent = gmail_service.send_forward(to=to, subject=subject, body_text=body)
+
+        return jsonify({"messageId": sent["id"]}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/gmail/reply", methods=["POST"])
+def gmail_reply():
+    try:
+        data = request.get_json()
+        to = data["to"]
+        subject = data["subject"]
+        thread_id = data["threadId"]
+        message_id = data["messageId"]
+        body = data["body"]
+        user_id = session.get('user_id')
+        gmail_service = GmailService(user_id)
+        sent_message = gmail_service.send_reply(
+            to=to,
+            subject=subject,
+            thread_id=thread_id,
+            in_reply_to=message_id,
+            body_text=body
+        )
+        return jsonify({"messageId": sent_message["id"]}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/gmail/drafts", methods=["GET"])
+def list_drafts():
+    try:
+        user_id = session.get('user_id')
+        gmail_service = GmailService(user_id)
+        drafts = gmail_service.get_drafts()
+        return jsonify({"drafts": drafts})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/gmail/threads", methods=["GET"])
+def list_threads():
+    try:
+        print("Hi")
+        user_id = session.get('user_id')
+        print(user_id)
+        print(session)
+        gmail_service = GmailService(user_id)
+        print("hello")
+        threads = gmail_service.get_inbox()
+        print("herror")
+        return jsonify({"threads": threads})
+    except Exception as e:
+        #traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/gmail/spam", methods=["GET"])
+def list_spam():
+    try:
+        user_id = session.get('user_id')
+        gmail_service = GmailService(user_id)
+        threads = gmail_service.get_spam()
+        return jsonify({"threads": threads})
+    except Exception as e:
+        #traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/gmail/trash", methods=["GET"])
+def list_trash():
+    try:
+        user_id = session.get('user_id')
+        gmail_service = GmailService(user_id)
+        threads = gmail_service.get_trash()
+        return jsonify({"threads": threads})
+    except Exception as e:
+        #traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/gmail/drafts/<draft_id>", methods=["PUT"])
+def update_draft(draft_id):
+    try:
+        user_id = session.get("user_id")
+        print(draft_id)
+        data = request.json
+        print(data)
+        to = data.get("to", "")
+        subject = data.get("subject", "")
+        body = data.get("body", "")
+        if not to or not body:
+            return jsonify({"error": "Missing required fields: 'to' and 'body'"}), 400
+        
+        gmail_service = GmailService(user_id)
+        updated_draft = gmail_service.update_draft(draft_id, to, subject, body)
+        return jsonify({"draft": updated_draft})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/gmail/create_draft", methods=["POST"])
+def create_draft():
+    data = request.json
+    print(data)
+    to = data.get("to")
+    subject = data.get("subject")
+    body = data.get("body")
+
+    if not to or not subject or not body:
+        return jsonify({"error": "Missing to, subject, or body"}), 400
+
+    try:
+        user_id = session.get("user_id")
+        gmail_service = GmailService(user_id)
+        result = gmail_service.create_draft(to, subject, body)
+        return jsonify({"message": "Draft created", "id": result.get("id")}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/gmail/send_mail", methods=["POST"])
+def send_mail():
+    user_id = session.get("user_id")
+    data = request.json
+    print(data)
+    to = data.get("to")
+    subject = data.get("subject")
+    body = data.get("body")
+    if not to or not subject or not body:
+        return jsonify({"error": "Missing to, subject, or body"}), 400
+
+    try:
+        gmail_service = GmailService(user_id)
+        print("asdfasdfasdf")
+        result = gmail_service.send_email(to, subject, body)
+        print("why")
+        return jsonify({"message": "Email sent", "id": result.get("id")}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/gmail/respond", methods=["POST"])
+def respond_to_email():
+    try:
+        user_id = session.get("user_id")
+        gmail_service = GmailService(user_id)
+        data = request.get_json()
+        to = data.get("to")
+        subject = data.get("subject")
+        message_text = data.get("message")
+        if not all([to, subject, message_text]):
+            return jsonify({"error": "Missing 'to', 'subject', or 'message'"}), 400
+
+        label_id = gmail_service.create_label("AI Messages")
+        result = gmail_service.send_message(to, subject, message_text, label_ids=[label_id])
+        return jsonify({"result": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/generate-website-api-key', methods=['POST'])
+def generate_api_key():
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+    new_api_key = uuid.uuid4()
+    connection = pymysql.connect(
+                host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
+                user='skilbyt_db',
+                password='JesusChristIsLord$1',
+                db='ai_support'
+                )
+
+    try:
+        with connection.cursor() as cursor:
+            sql = "SELECT 1 FROM launch WHERE user_id = %s LIMIT 1"
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            if not result:
+                sub_agent_id = uuid.uuid4()
+                launch_id = uuid.uuid4()
+                
+                subagent_sql = """
+                INSERT INTO subagents (
+                sub_agent_id, launch_id, name, description,
+                documentation_link, model_version, created_at, updated_at
+                ) VALUES (%s, %s, %s, NULL, NULL, NULL, NULL, NULL)
+                """
+                cursor.execute(subagent_sql, (sub_agent_id, None, ""))
+
+                insert_sql = """
+                    INSERT INTO launch (launch_id, sub_agent_id, user_id, api_id, website_name)
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+                
+                cursor.execute(insert_sql, (
+                    launch_id,
+                    sub_agent_id,
+                    user_id,
+                    new_api_key,
+                    None
+                ))
+                cursor.execute(
+                """
+                UPDATE subagents
+                SET launch_id = %s
+                WHERE sub_agent_id = %s
+                """,
+                (launch_id, sub_agent_id)
+                )
+
+                connection.commit()
+                return jsonify({"apiKey": new_api_key}), 200
+
+            else:
+                sql = "SELECT api_id FROM launch WHERE user_id = %s LIMIT 1"
+                cursor.execute(sql, (user_id,))
+                result = cursor.fetchone()
+
+                if result[0]:
+                    print("api key exists")
+                    return jsonify({"apiKey": result[0]}), 200
+                else:
+                    print("api key needs to be saved")
+
+                    update_sql = """
+                        UPDATE launch
+                        SET api_id = %s
+                        WHERE user_id = %s
+                    """
+                    cursor.execute(update_sql, (
+                        new_api_key,
+                        user_id
+                    ))
+
+                connection.commit()
+                return jsonify({"apiKey": new_api_key}), 200
+    except Exception as e:
+        print(f"Error generating API key: {e}")  # Or use logging instead of print
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route('/save-training-settings', methods=['POST'])
+def save_training_settings():
+    try:
+        # Parse the incoming JSON
+        data = request.get_json()
+        assistant_name = data.get("assistant_name")
+        sync_website = data.get("sync_website")
+
+        # Attempt to retrieve user_id from session
+        user_id = session.get("user_id")
+        if not user_id:
+            return jsonify({"error": "User not logged in"}), 401
+
+        # Initialize Gmail service (may throw)
+        gmail_service = GmailService(user_id)
+
+        # Log received data
+        print("Assistant Name:", assistant_name)
+        print("Sync Website:", sync_website)
+
+        connection = pymysql.connect(
+                host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
+                user='skilbyt_db',
+                password='JesusChristIsLord$1',
+                db='ai_support'
+                )
+
+
+        with connection.cursor() as cursor:
+            sql = "SELECT 1 FROM launch WHERE user_id = %s LIMIT 1"
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+
+            if not result:
+                print("user ID does not exists")
+                launch_id = uuid.uuid4()
+                sub_agent_id = uuid.uuid4()
+
+                # rn I don't know how to pull the luanch_id from each account unless user_id is a unique key in launch
+                #launch_id = uuid.uuid(4)
+
+
+                sql = """
+                INSERT INTO subagents (
+                sub_agent_id, launch_id, name, description,
+                documentation_link, model_version, created_at, updated_at
+                ) VALUES (%s, NULL, %s, NULL, NULL, NULL, NULL, NULL)
+                """
+                cursor.execute(sql, (sub_agent_id, assistant_name))
+
+                insert_sql = """
+                    INSERT INTO launch (launch_id, sub_agent_id, user_id, api_id, website_name)
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+
+                cursor.execute(insert_sql, (
+                    launch_id,
+                    sub_agent_id,
+                    user_id,
+                    None,
+                    sync_website
+                ))
+
+                cursor.execute(
+                """
+                UPDATE subagents
+                SET launch_id = %s
+                WHERE sub_agent_id = %s
+                """,
+                (launch_id, sub_agent_id)
+                )
+                
+                connection.commit()
+
+            else:
+                print("user_id ID exists")
+                update_sql = """
+                    UPDATE launch
+                    SET website_name = %s
+                    WHERE user_id = %s
+                """
+                cursor.execute(update_sql, (
+                    sync_website,
+                    user_id
+                ))
+                sql = "SELECT launch_id FROM launch WHERE user_id = %s LIMIT 1"
+                cursor.execute(sql, (user_id,))
+                result = cursor.fetchone()
+                if result is None:
+                    raise ValueError("No launch record found for given user_id")
+
+                sql = """
+                UPDATE subagents
+                SET name = %s
+                WHERE launch_id = %s
+                """
+                cursor.execute(sql, (assistant_name, result[0]))
+                connection.commit()
+
+                
+
+        # TODO: Save settings to database, storage, or Gmail if needed
+
+        return jsonify({"status": "success"})
+
+    except Exception as e:
+        # Log full stack trace to console for debugging
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+
+def format_address(door, unit, street, zip_code):
+    parts = [
+        f"Door {door}" if door else None,
+        f"Unit {unit}" if unit else None,
+        street,
+        f"ZIP {zip_code}" if zip_code else None
+    ]
+    return ', '.join([p for p in parts if p])
+
+
+@app.route('/onboarding', methods=['POST'])
+def submit_onboarding():
+    try:
+        user_id = session.get("user_id")
+        gmail_service = GmailService(user_id)
+
+        payload = request.get_json()
+        print(payload)
+
+        # Extract fields from the request
+
+# Flatten nested dicts
+
+        
+        billing_address = format_address(
+                payload.get('billingDoorNumber'),
+                payload.get('billingUnitNumber'),
+                payload.get('billingStreetName'),
+                payload.get('billingZipCode')
+                )
+
+        shipping_address = format_address(
+            payload.get('shippingDoorNumber'),
+            payload.get('shippingUnitNumber'),
+            payload.get('shippingStreetName'),
+            payload.get('shippingZipCode')
+            )
+        print("trolling")
+        data = {
+            'business_info_id': str(uuid.uuid4()),
+            'user_id': user_id,  # Not present in payload
+            'business_id': None,  # Not present
+            'business_name': payload.get('businessName'),
+            'age': payload.get('age'),
+            'cotype': payload.get('cognitype', '').capitalize(),  # Normalize enum: 'man' -> 'Man'
+            'line_of_business': payload.get('lineOfBusiness'),
+            'years_in_business': payload.get('yearsInBusiness'),
+            'has_license': None,  # Not provided
+            'registration_status': payload.get('registrationStatus', '').capitalize(),  # Normalize
+            'proof_of_business_file': None,  # payload.get('businessProof') is an empty dict
+            'ownership_type': payload.get('ownershipType'),
+            'gst_number': payload.get('gstNumber'),
+            'country': payload.get('country'),
+            'province_or_state': payload.get('province'),
+            'city': payload.get('city'),
+            'billing_address': billing_address,  # Not provided directly
+            'shipping_address': shipping_address,  # Not provided directly
+            'business_timings': payload.get('businessTimings'),
+            'business_image_file': None,  # payload.get('businessImage') is an empty dict
+            'DoorBilling': payload.get('billingDoorNumber'),
+            'UnitBilling': payload.get('billingUnitNumber'),
+            'StreetBilling': payload.get('billingStreetName'),
+            'PinBilling': payload.get('billingZipCode'),
+            'DoorShipping': payload.get('shippingDoorNumber'),
+            'UnitShipping': payload.get('shippingUnitNumber'),
+            'StreetShipping': payload.get('shippingStreetName'),
+            'PinShipping': payload.get('shippingZipCode')
+        }
+        print(data)
+        # DB connection (example)
+        conn = pymysql.connect(
+                host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
+                user='skilbyt_db',
+                password='JesusChristIsLord$1',
+                db='ai_support'
+                )
+
+        # Insert query execution
+        with conn:
+            with conn.cursor() as cursor:
+                sql = "SELECT 1 FROM users WHERE user_id = %s LIMIT 1"
+                cursor.execute(sql, (user_id,))
+                result = cursor.fetchone()
+                if not result:
+
+                    sql = """
+                    INSERT INTO business_info (
+                        business_info_id, user_id, business_id, business_name, age, cotype,
+                        line_of_business, years_in_business, has_license, registration_status,
+                        proof_of_business_file, ownership_type, gst_number, country, province_or_state,
+                        city, billing_address, shipping_address, business_timings, business_image_file,
+                        DoorBilling, UnitBilling, StreetBilling, PinBilling,
+                        DoorShipping, UnitShipping, StreetShipping, PinShipping
+                    ) VALUES (
+                        %(business_info_id)s, %(user_id)s, %(business_id)s, %(business_name)s, %(age)s, %(cotype)s,
+                        %(line_of_business)s, %(years_in_business)s, %(has_license)s, %(registration_status)s,
+                        %(proof_of_business_file)s, %(ownership_type)s, %(gst_number)s, %(country)s, %(province_or_state)s,
+                        %(city)s, %(billing_address)s, %(shipping_address)s, %(business_timings)s, %(business_image_file)s,
+                        %(DoorBilling)s, %(UnitBilling)s, %(StreetBilling)s, %(PinBilling)s,
+                        %(DoorShipping)s, %(UnitShipping)s, %(StreetShipping)s, %(PinShipping)s
+                    )
+                    """
+                else:
+                    sql = """
+                    UPDATE business_info SET
+                        business_info_id       = %(business_info_id)s,
+                        business_id            = %(business_id)s,
+                        business_name          = %(business_name)s,
+                        age                    = %(age)s,
+                        cotype                 = %(cotype)s,
+                        line_of_business       = %(line_of_business)s,
+                        years_in_business      = %(years_in_business)s,
+                        has_license            = %(has_license)s,
+                        registration_status    = %(registration_status)s,
+                        proof_of_business_file = %(proof_of_business_file)s,
+                        ownership_type         = %(ownership_type)s,
+                        gst_number             = %(gst_number)s,
+                        country                = %(country)s,
+                        province_or_state      = %(province_or_state)s,
+                        city                   = %(city)s,
+                        billing_address        = %(billing_address)s,
+                        shipping_address       = %(shipping_address)s,
+                        business_timings       = %(business_timings)s,
+                        business_image_file    = %(business_image_file)s,
+                        DoorBilling            = %(DoorBilling)s,
+                        UnitBilling            = %(UnitBilling)s,
+                        StreetBilling          = %(StreetBilling)s,
+                        PinBilling             = %(PinBilling)s,
+                        DoorShipping           = %(DoorShipping)s,
+                        UnitShipping           = %(UnitShipping)s,
+                        StreetShipping         = %(StreetShipping)s,
+                        PinShipping            = %(PinShipping)s
+                    WHERE user_id = %(user_id)s
+                    """
+                cursor.execute(sql, data)
+                conn.commit()
+
+        return jsonify({'message': 'Business info saved successfully'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/ask", methods=["GET", "POST"])
+def ask():
+    if request.method == "GET":
+        return "This endpoint only accepts POST requests with a 'query' in JSON body.", 200
+    data = request.get_json()
+    query = data.get("query")
+    if not query:
+        return jsonify({"error": "Query is required."}), 400
+    if query == ":login":
+        auth_url = login()
+        return jsonify({
+            "answer": auth_url
+        })
+        #oauth2callback()
+        #sync_drive()
+    elif query == ":oauth":
+        oauth2callback()
+    elif query == ":sync_drive":
+        sync_drive()
+    result = qa_chain(query)
+    sources = [
+        {
+            "content": doc.page_content[:300],
+            "source": doc.metadata.get("source", "unknown")
+        }
+        for doc in result["source_documents"]
+    ]
+    return jsonify({
+        "answer": result["result"],
+        "sources": sources
+    })
+
+
+@app.route("/login")
+def login():
+    ga = GoogleAuth()
+
+    flow = Flow.from_client_secrets_file(
+        'client_secrets.json',
+        scopes = (
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/contacts",
+            "openid"
+        ),
+        redirect_uri="https://www.bytoid.ai/auth/facebook/callback"
+    )
+
+    auth_url, state = flow.authorization_url(
+        access_type='offline',
+        prompt='consent',
+        include_granted_scopes='false'  
+    )
+    print(auth_url)
+    session['state'] = state
+    return jsonify(auth_url = auth_url)
+
+
+@app.route("/oauth2callback")
+def oauth2callback(url, state):
+
+    print("Oauthcallback is called")
+
+    if not state:
+        return "Missing state in URL", 400
+
+    unique_id = str(uuid.uuid4())
+
+    flow = Flow.from_client_secrets_file(
+        'client_secrets.json',
+        scopes = (
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/drive",
+            "openid",
+            "https://www.googleapis.com/auth/contacts"
+        ),
+        redirect_uri="https://www.bytoid.ai/auth/facebook/callback"
+    )
+    print("hi")
+
+    try:
+        flow.fetch_token(authorization_response=url)
+        print("peaches")
+        credentials = flow.credentials
+
+        #actual_creds = credentials.to_json()
+        #json_creds = json.loads(actual_creds)
+
+        # Correct way to access the token
+        access_token = credentials.token
+
+        print("Access Token")
+        print(access_token)
+
+
+        # Save credentials to file (for example purposes only – consider encrypting this!)
+        #with open("credentials.json", "w") as f:
+        #    f.write(credentials.to_json())
+        
+        userinfo_response = requests.get(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            headers={'Authorization': f'Bearer {credentials.token}'}
+        )
+
+        if userinfo_response.status_code == 200:
+            userinfo = userinfo_response.json()
+            email = userinfo.get('email')
+            print(email)
+            given_name = userinfo.get('given_name')
+            print(given_name)
+            family_name = userinfo.get('family_name')
+            print(family_name)
+            user_id = userinfo.get('sub')
+            print(user_id)
+
+
+            #geo_db_path = '/home/ec2-user/skilbyt/exe/GeoLite2-City.mmdb'
+            #location = "Unknown"
+
+            # Retrieve IP address considering proxy headers
+            #ip_address = request.headers.get('X-Forwarded-For') or request.headers.get('X-Real-IP') or request.remote_addr
+
+            # Handle multiple IPs in 'X-Forwarded-For' (take the first one)
+            #if ',' in ip_address:
+            #    ip_address = ip_address.split(',')[0].strip()
+
+            #try:
+            #    # Skip local/private IP addresses
+            #    if ip_address.startswith(('10.', '192.168.', '172.', '127.')):
+            #        print(f"Local/Private IP ({ip_address}) detected, skipping location lookup.")
+            #        return location
+
+                # Open GeoIP database and get location
+            #    with geoip2.database.Reader(geo_db_path) as reader:
+            #        response = reader.city(ip_address)
+            #        location = f"{response.city.name}, {response.country.name}" if response.city.name and response.country.name else "Unknown"
+
+            #except Exception as e:
+            #    print(f"Location error: {e}")
+
+            #print("Post Location")
+            # Get IP address and location
+            #ip_address = request.remote_addr
+            #location = "Unknown"
+            #reader = geoip2.database.Reader('/home/ec2-user/skilbyt/exe/GeoLite2-City.mmdb')
+            #try:
+            #    if ip_address.startswith(('10.', '192.168.', '172.')):
+            #        print('Local IP address detected, skipping location lookup.')
+            #        response = ""
+            #    else:
+            #        response = reader.city(ip_address)
+            #    location = f"{response.city.name}, {response.country.name}"
+            #except Exception as e:
+            #    print("Location error:", e)
+            #    location = "Unknown"
+            #reader.close()
+
+            # Database Insertion
+            import pymysql
+
+            conn = pymysql.connect(
+                host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
+                user='skilbyt_db',
+                password='JesusChristIsLord$1',
+                db='ai_support'
+            )
+            print("database")
+            cursor = conn.cursor()
+
+            # Check if the user_id is present
+            cursor.execute("SELECT 1 FROM users WHERE email = %s", (email,))
+            user_exists = cursor.fetchone()
+            session['user_id'] = user_id
+            print(session['user_id'])
+
+            if not user_exists:
+                print("user didn't exist")
+                
+                cursor.execute('''INSERT INTO users (user_id, user_type, launch_id, first_name, last_name, email, client_id,
+                client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
+                created_in, updated_in, logged_in_at, logged_out_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s)
+                               ''', (user_id, 'admin', "", given_name, family_name, email, credentials.client_id,
+                                     credentials.client_secret, credentials.token, credentials.refresh_token, credentials.expiry,
+                                     "", "", "", 'google', None))
+
+                print("DB Commit Success")
+                conn.commit()
+                conn.close()
+
+                print("User Email:", email)
+                print("Given Name:", given_name)
+                print("Family Name:", family_name)
+                print("Location:", location)
+
+            else:
+
+                print("Update")
+
+                cursor.execute('''
+                    UPDATE users 
+                    SET 
+                        client_id = %s,
+                        client_secret = %s,
+                        token = %s,
+                        refresh_token = %s,
+                        expiry = %s,
+                        updated_in = NOW(),
+                        logged_in_at = NOW(),
+                        logged_out_at = NOW()
+                    WHERE email = %s
+                ''', (
+                    credentials.client_id,
+                    credentials.client_secret,
+                    credentials.token,
+                    credentials.refresh_token,
+                    credentials.expiry,
+                    email
+                ))
+
+
+            return "Success"
+        else:
+            print("Failed to get userinfo:", userinfo_response.text)
+            return "Failed to fetch user info", 500
+
+    except Exception as e:
+        print("Oauth error:", str(e))
+        return "Failure"
+
+
+@app.route("/browser_url", methods=["POST"])
+def receive_browser_url():
+    try:
+        print("hi")
+        data = request.get_json()
+        print(data)
+        browser_url = data.get("url")
+        print(browser_url)
+        state = session.get("state")
+        print(state)
+        oauth2callback(browser_url, state)
+
+        print(f"Received browser URL: {browser_url}")
+          
+        return jsonify({"status": "success", "url": browser_url})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/sync-drive")
+def sync_drive():
+    try:
+        ga = GoogleAuth()
+        ga.LoadClientConfigFile("client_secrets.json")
+        #ga.LocalWebserverAuth()  # Handles the OAuth flow
+        #ga.SaveCredentialsFile("credentials.json")  # Save for future sessions
+        ga.LoadCredentialsFile("credentials.json")
+        #ga.LoadCredentialsFile("client_secrets.json")
+        print(ga.credentials)
+        if ga.credentials is None:
+            print(1)
+            return redirect("https://bytoid.ai/login")
+        elif ga.access_token_expired:
+            ga.Refresh()
+        else:
+            ga.Authorize()
+
+        drive = GoogleDrive(ga)
+
+        folder_id = "1kwF88MzxXbyPQ1QGSQyjx-WReFzYZ_rr"  # Replace with actual folder ID
+        file_list = drive.ListFile({
+            'q': f"'{folder_id}' in parents and trashed=false"
+        }).GetList()
+
+        os.makedirs("data", exist_ok=True)
+        synced_files = []
+
+        for file in file_list:
+            
+            if mime_type == 'application/vnd.google-apps.document':
+            # Export Google Doc as .docx
+                export_name = f"data/{file_name}.docx"
+                file.GetContentFile(export_name, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+                synced_files.append(f"{file_name}.docx")
+
+            elif file['title'].endswith(('.txt', '.pdf', '.docx')):
+                file.GetContentFile(f"data/{file['title']}")
+                synced_files.append(file['title'])
+        
+        # Reindex after sync
+        all_documents = []
+        txt_loader = DirectoryLoader("data", glob="**/*.txt", loader_cls=TextLoader)
+        all_documents.extend(txt_loader.load())
+        pdf_loader = DirectoryLoader("data", glob="**/*.pdf", loader_cls=PyMuPDFLoader)
+        all_documents.extend(pdf_loader.load())
+        doc_loader = DirectoryLoader("data", glob="**/*.docx", loader_cls=UnstructuredWordDocumentLoader)
+        all_documents.extend(doc_loader.load())
+
+        docs = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_documents(all_documents)
+
+        PineconeVectorStore.from_documents(
+            documents=docs,
+            embedding=embedding,
+            index_name=PINECONE_INDEX_NAME,
+            text_key="text"
+        )
+        print("wonderful")
+
+        return jsonify({"status": "success", "files": synced_files})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/get_google_client_id", methods=["POST"])
+def get_google_client_id():
+    try:
+        print("bruh")
+        ga = GoogleAuth()
+        print("kekw")
+        ga.LoadClientConfigFile("client_secrets.json")
+        print("what")
+        client_id = ga.client_config['client_id']
+        print(client_id)
+        if not client_id:
+            return jsonify({"error": "Client ID not found"}), 500
+        return jsonify({"client_id": client_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+@app.route("/google_login", methods=["POST"])
+def google_login():
+    try:
+        data = request.json
+        if not data or 'credential' not in data:
+            return jsonify({"error": "Credential is required"}), 400
+
+        credential = data['credential']
+        print("received token", credential)
+        # Verify the token
+        id_info = id_token.verify_oauth2_token(
+            credential,
+            g_requests.Request()#,
+            #YOUR_GOOGLE_CLIENT_ID  # optional: you can validate if token was issued for your app
+        )
+
+        # You now have user information
+        email = id_info['email']
+        sub = id_info['sub']  # Google's unique user ID
+
+        # Example: allow only certain emails
+        #if not email.endswith('@skilbyt.com'):
+        #    return jsonify({"error": "Unauthorized user"}), 403
+
+        return jsonify({ 
+            "success": True,
+            "email": email}) 
+    except Exception as e:
+        print("Error during token verification:", str(e))
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
+    app.run(host="0.0.0.0", port=3000, debug=True)
