@@ -100,7 +100,7 @@ def get_roles(userid):
 
 @inv_users_bp.route("/admin/roles-update", methods=["POST"])
 def update_role():
-    """Update role by role_id"""
+    """Update role by role_id and propagate changes to invites/shared/invited_users"""
     data = request.get_json()
     userid = data.get("userid")
     role_id = data.get("role_id")
@@ -110,8 +110,10 @@ def update_role():
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # 1. Get roles_creation for owner
             cursor.execute(
-                "SELECT roles_creation FROM users WHERE user_id=%s", (userid,)
+                "SELECT roles_creation, permissions FROM users WHERE user_id=%s",
+                (userid,),
             )
             row = cursor.fetchone()
             roles = (
@@ -119,7 +121,13 @@ def update_role():
                 if row and row["roles_creation"]
                 else []
             )
+            owner_permissions = (
+                json.loads(row["permissions"])
+                if row and row["permissions"]
+                else {"invites": [], "shared": []}
+            )
 
+            # 2. Update role in roles_creation
             updated = False
             for role in roles:
                 if role["id"] == role_id:
@@ -133,10 +141,52 @@ def update_role():
             if not updated:
                 return jsonify({"error": "Role not found"}), 404
 
+            # 3. Update in owner's permissions.invites/shared
+            affected_emails = set()
+            for section in ["invites", "shared"]:
+                for entry in owner_permissions.get(section, []):
+                    if entry["role"]["id"] == role_id:
+                        if name:
+                            entry["role"]["name"] = name
+                        if permissions is not None:
+                            entry["role"]["permissions"] = permissions
+                        affected_emails.add(entry["email"].lower())
+
+            # Save back to owner
             cursor.execute(
-                "UPDATE users SET roles_creation=%s WHERE user_id=%s",
-                (json.dumps(roles), userid),
+                "UPDATE users SET roles_creation=%s, permissions=%s WHERE user_id=%s",
+                (json.dumps(roles), json.dumps(owner_permissions), userid),
             )
+
+            # 4. Update invited_users in all affected emails
+            if affected_emails:
+                cursor.execute(
+                    "SELECT user_id, permissions FROM users WHERE email IN %s",
+                    (tuple(affected_emails),),
+                )
+                invited_rows = cursor.fetchall()
+
+                for invited in invited_rows:
+                    invited_users = (
+                        json.loads(invited["permissions"])
+                        if invited and invited["permissions"]
+                        else []
+                    )
+
+                    changed = False
+                    for entry in invited_users:
+                        if entry["role"]["id"] == role_id:
+                            if name:
+                                entry["role"]["name"] = name
+                            if permissions is not None:
+                                entry["role"]["permissions"] = permissions
+                            changed = True
+
+                    if changed:
+                        cursor.execute(
+                            "UPDATE users SET permissions=%s WHERE user_id=%s",
+                            (json.dumps(invited_users), invited["user_id"]),
+                        )
             conn.commit()
         conn.close()
         return jsonify({"message": "Role updated successfully"}), 200
@@ -146,32 +196,71 @@ def update_role():
 
 @inv_users_bp.route("/admin/roles-delete/<userid>/<role_id>", methods=["DELETE"])
 def delete_role(userid, role_id):
-    """Delete role by role_id"""
+    """Delete role by role_id (only if not associated with invites or shared users)"""
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
-                "SELECT roles_creation FROM users WHERE user_id=%s", (userid,)
+                "SELECT roles_creation, permissions FROM users WHERE user_id=%s",
+                (userid,),
             )
             row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+
             roles = (
                 json.loads(row["roles_creation"])
                 if row and row["roles_creation"]
                 else []
             )
+            permissions = (
+                json.loads(row["permissions"]) if row and row["permissions"] else {}
+            )
 
-            new_roles = [role for role in roles if role["id"] != role_id]
-
-            if len(new_roles) == len(roles):
+            # check if role exists
+            role_exists = any(role["id"] == role_id for role in roles)
+            if not role_exists:
                 return jsonify({"error": "Role not found"}), 404
 
+            # check in invites
+            invites = permissions.get("invites", [])
+            for invite in invites:
+                if invite.get("role", {}).get("id") == role_id:
+                    return (
+                        jsonify(
+                            {
+                                "error": "Role is associated with an invited user",
+                                "email": invite.get("email"),
+                            }
+                        ),
+                        400,
+                    )
+
+            # check in shared
+            shared = permissions.get("shared", [])
+            for shared_user in shared:
+                if shared_user.get("role", {}).get("id") == role_id:
+                    return (
+                        jsonify(
+                            {
+                                "error": "Role is associated with a shared user",
+                                "email": shared_user.get("email"),
+                            }
+                        ),
+                        400,
+                    )
+
+            # delete role
+            new_roles = [role for role in roles if role["id"] != role_id]
             cursor.execute(
                 "UPDATE users SET roles_creation=%s WHERE user_id=%s",
                 (json.dumps(new_roles), userid),
             )
             conn.commit()
+
         conn.close()
         return jsonify({"message": "Role deleted successfully"}), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -354,6 +443,7 @@ def delete_invite():
 @inv_users_bp.route("/admin/resend-invite", methods=["POST"])
 def resend_invite():
     """Resend invite link to an already invited user"""
+    conn = None
     try:
         data = request.get_json()
         user_id = data.get("user_id")
@@ -364,6 +454,7 @@ def resend_invite():
 
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # fetch inviter details
             cursor.execute(
                 "SELECT permissions, email, roles_creation FROM users WHERE user_id=%s",
                 (user_id,),
@@ -382,6 +473,7 @@ def resend_invite():
 
             inviter_email = row.get("email")
 
+            # locate invited user
             invited_user = next(
                 (
                     p
@@ -392,25 +484,34 @@ def resend_invite():
             )
             if not invited_user:
                 return jsonify({"error": "No invite found for this email"}), 404
-            if invited_user["status"].lower() == "completed":
+
+            # Block if already accepted/active
+            if invited_user.get("status", "").lower() in ["completed", "active"]:
                 return jsonify({"error": "User has already accepted the invite"}), 400
+
+            # Reset status + created_at
+            invited_user["status"] = "pending"
+            invited_user["created_at"] = datetime.utcnow().isoformat()
 
             # fetch business info
             cursor.execute(
                 """
-                SELECT BusinessID, BusinessName, Age, Sex, LineOfBusiness, BusinessImage, businessLocation
+                SELECT BusinessID, BusinessName, Age, Sex, LineOfBusiness,
+                       BusinessImage, businessLocation
                 FROM business_info WHERE user_id_fk=%s
                 """,
                 (user_id,),
             )
             business_info = cursor.fetchone() or {}
 
+            # generate fresh invite link
             invite_link = generate_hashed_url(
                 base_url="https://www.bytoid.ai/invite",
                 invited_to=invited_email,
                 invited_by=inviter_email,
             )
 
+            # send invite via Gmail
             gmail_service = GmailService(user_id=user_id)
             gmail_service.send_invite_mail(
                 inviter=inviter_email,
@@ -420,8 +521,7 @@ def resend_invite():
                 business_info=business_info,
             )
 
-            # update "last sent" timestamp
-            invited_user["created_at"] = datetime.utcnow().isoformat()
+            # persist updates back into DB
             cursor.execute(
                 "UPDATE users SET permissions=%s WHERE user_id=%s",
                 (json.dumps(permissions), user_id),
@@ -431,7 +531,7 @@ def resend_invite():
         return (
             jsonify(
                 {
-                    "message": f"Invitation resent to {invited_email}",
+                    "message": f"Invitation resent to {invited_email} (status reset to pending)",
                     "invite_link": invite_link,
                 }
             ),
@@ -447,6 +547,7 @@ def resend_invite():
 
 
 # SHARED USER ROLES APIS
+
 
 @inv_users_bp.route("/admin/validate_invite/token=<token>", methods=["GET"])
 def validate_invite(token):
@@ -468,6 +569,7 @@ def validate_invite(token):
             if not inviter:
                 return jsonify({"error": "Inviting user not found"}), 404
 
+            # Parse permissions safely
             permissions = (
                 json.loads(inviter["permissions"])
                 if inviter["permissions"]
@@ -501,16 +603,24 @@ def validate_invite(token):
                 )
                 conn.commit()
                 conn.close()
-                return jsonify({"status": "expired", "error": "Token has expired"}), 400
+                return (
+                    jsonify(
+                        {"status": "expired", "error": "Invitation token has expired"}
+                    ),
+                    400,
+                )
 
             # 4️⃣ Already used?
             if permission_entry["status"].lower() != "pending":
-                return jsonify(
-                    {"error": f"Invitation already {permission_entry['status']}"}, 400
+                return (
+                    jsonify(
+                        {"error": f"Invitation already {permission_entry['status']}"}
+                    ),
+                    400,
                 )
 
-            # Mark completed
-            permission_entry["status"] = "completed"
+            # Mark as active
+            permission_entry["status"] = "active"
 
             # 5️⃣ Check if invited user already exists
             cursor.execute("SELECT user_id FROM users WHERE email = %s", (invited_to,))
@@ -561,26 +671,98 @@ def validate_invite(token):
         return jsonify({"error": str(e)}), 500
 
 
-# @inv_users_bp.route("/admin/edit_shared_user_role", methods=["POST"])
-# def edit_shared_user_role():
-#     data = request.get_json()
-#     user_id = data.get("user_id")
-#     email = data.get("email")
-#     role = data.get("role_id")
-#     try:
-#         conn = connect_to_rds()
-#         conn.start()
-#         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-#             cursor.execute(
-#                 "SELECT email,roles_creation,permissions FROM users where user_id = %s"(
-#                     user_id,
-#                 ),
-#             )
-#             admin_Das = cursor.fetchone()
-#             if not admin_Das:
-#                 conn.rollback()
-#                 return jsonify({"error": "User not found"}), 404
+@inv_users_bp.route("/admin/edit_shared_user_role", methods=["POST"])
+def edit_shared_user_role():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    email = data.get("email")
+    role_id = data.get("role_id")
 
-#     except Exception as e:
-#         return jsonify({"error": f"base{e}"})
-#     pass
+    try:
+        conn = connect_to_rds()
+        conn.begin()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Step 1: Fetch user_id's roles and permissions
+            cursor.execute(
+                "SELECT roles_creation, permissions FROM users WHERE user_id = %s",
+                (user_id,),
+            )
+            admin_row = cursor.fetchone()
+            if not admin_row:
+                conn.rollback()
+                return jsonify({"error": "Admin user not found"}), 404
+
+            roles_creation = json.loads(admin_row["roles_creation"] or "[]")
+            permissions = json.loads(admin_row["permissions"] or "{}")
+
+            # Step 2: Find the role from roles_creation
+            selected_role = next(
+                (r for r in roles_creation if r["id"] == role_id), None
+            )
+            if not selected_role:
+                conn.rollback()
+                return jsonify({"error": "Role not found"}), 404
+
+            # Step 3: Update the email user’s permissions
+            cursor.execute("SELECT permissions FROM users WHERE email = %s", (email,))
+            email_user = cursor.fetchone()
+            if not email_user:
+                conn.rollback()
+                return jsonify({"error": "Email user not found"}), 404
+
+            email_permissions = json.loads(email_user["permissions"] or "{}")
+
+            # overwrite role in email user
+            email_permissions["role"] = {
+                "id": selected_role["id"],
+                "name": selected_role["name"],
+                "permissions": selected_role.get("permissions", []),
+            }
+
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE email=%s",
+                (json.dumps(email_permissions), email),
+            )
+
+            # Step 4: Update the inviter's (user_id) permissions (shared/invites)
+            # Ensure structure exists
+            if "shared" not in permissions:
+                permissions["shared"] = []
+            if "invites" not in permissions:
+                permissions["invites"] = []
+
+            # Check if already present in shared or invites
+            updated = False
+            for section in ["shared", "invites"]:
+                for p in permissions[section]:
+                    if p.get("email") == email:
+                        p["role"] = email_permissions["role"]
+                        updated = True
+
+            # If not present, add it to shared
+            if not updated:
+                permissions["shared"].append(
+                    {
+                        "email": email,
+                        "role": email_permissions["role"],
+                        "status": "completed",
+                        "created_at": datetime.utcnow().isoformat(),
+                    }
+                )
+
+            # Save back
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                (json.dumps(permissions), user_id),
+            )
+
+            conn.commit()
+
+        return jsonify({"message": "Role updated successfully"}), 200
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()

@@ -11,15 +11,17 @@ import requests
 from db.rds_db import connect_to_rds
 from dotenv import load_dotenv
 import json
-
+import pymysql
 import base64
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as g_request
 from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch
 from session_manager_route.routes import generate_session
+from utils.base_logger import get_logger
 
 load_dotenv()  # Load from .env into environment variables
 google_bp = Blueprint("auth", __name__)
+logger = get_logger(__name__)
 
 
 @google_bp.route("/login")
@@ -106,7 +108,7 @@ def oauth2callback(url, state):
 
         if userinfo_response.status_code == 200:
             userinfo = userinfo_response.json()
-            print("INFO :", userinfo)
+            logger.info("INFO :", userinfo)
             email = userinfo.get("email")
             given_name = userinfo.get("given_name")
             family_name = userinfo.get("family_name")
@@ -114,22 +116,23 @@ def oauth2callback(url, state):
             phonenumber = userinfo.get("phoneNumber", "")
 
             conn = connect_to_rds()
-            cursor = conn.cursor()
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
 
             # Check if the user_id is present
-            cursor.execute("SELECT 1 FROM users WHERE email = %s", (email,))
+            cursor.execute(
+                "SELECT user_id,user_type FROM users WHERE email = %s", (email,)
+            )
             user_exists = cursor.fetchone()
-            print("data", user_exists)
             session["user_id"] = user_id
 
             if not user_exists:
-                print("creating a new user")
+                logger.info("creating a new user")
 
                 cursor.execute(
                     """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
                 client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                created_in, updated_in, logged_in_at, logged_out_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s)
+                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s)
                                """,
                     (
                         user_id,
@@ -149,16 +152,23 @@ def oauth2callback(url, state):
                         "",
                         "google",
                         None,
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                 )
 
             else:
-                print("users update data")
-
-                cursor.execute(
-                    """
+                logger.info("users update data")
+                prev_id = user_exists.get("user_id", "NODATA")
+                logger.info("prev-> %s", prev_id)
+                if user_id != prev_id:
+                    cursor.execute(
+                        """
                     UPDATE users 
                     SET 
+                        user_id = %s,
                         client_id = %s,
                         client_secret = %s,
                         token = %s,
@@ -168,32 +178,63 @@ def oauth2callback(url, state):
                         logged_in_at = NOW(),
                         logged_out_at = NOW()
                     WHERE email = %s
-                """,
-                    (
-                        credentials.client_id,
-                        credentials.client_secret,
-                        credentials.token,
-                        credentials.refresh_token,
-                        credentials.expiry,
-                        email,
-                    ),
-                )
+                    """,
+                        (
+                            user_id,
+                            credentials.client_id,
+                            credentials.client_secret,
+                            credentials.token,
+                            credentials.refresh_token,
+                            credentials.expiry,
+                            email,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE users 
+                        SET 
+                            client_id = %s,
+                            client_secret = %s,
+                            token = %s,
+                            refresh_token = %s,
+                            expiry = %s,
+                            updated_in = NOW(),
+                            logged_in_at = NOW(),
+                            logged_out_at = NOW()
+                        WHERE email = %s
+                    """,
+                        (
+                            credentials.client_id,
+                            credentials.client_secret,
+                            credentials.token,
+                            credentials.refresh_token,
+                            credentials.expiry,
+                            email,
+                        ),
+                    )
             conn.commit()
             conn.close()
             generate_session()
-            newuser = check_onboarding_user(user_id)
-            print(newuser, "new user")
-            if newuser:
+        # invited user special case
+        if user_exists:
+            prev_type = user_exists.get("user_type", "NO TYPE")
+            logger.info("prev UserType -> %s", prev_type)
+            if prev_type == "user":
+                logger.info("Invited User Logged in")
                 return user_id, True
 
-            return user_id, False
-        else:
-            print("Failed to get userinfo:", userinfo_response.text)
-            return "Failed to fetch user info", 500
+        # onboarding check
+        newuser = check_onboarding_user(user_id)
+        logger.info("new user %s", newuser)
+        if newuser:
+            return user_id, True
+
+        return user_id, False
 
     except Exception as e:
-        print("Oauth error:", str(e))
-        return "Failure"
+        logger.error("OAuth error: %s", str(e))
+        return "Failure", 500
 
 
 @google_bp.route("/browser_url", methods=["POST"])

@@ -69,6 +69,7 @@ def create_invited_user(email, connection, permission, launch_id_fk):
 
             # generate unique user_id
             user_id = str(uuid.uuid4())
+            print("Launch id ", launch_id_fk)  # Not inserting now
 
             cursor.execute(
                 """
@@ -86,7 +87,7 @@ def create_invited_user(email, connection, permission, launch_id_fk):
                 (
                     user_id,
                     "user",  # user_type
-                    launch_id_fk,  # launch_id_fk
+                    None,  # launch_id_fk
                     None,  # first_name
                     None,  # last_name
                     email,

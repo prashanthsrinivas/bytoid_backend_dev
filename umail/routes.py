@@ -14,20 +14,19 @@ from zoho_routes.routes import send_zoho_email
 from agent_route.task_manager import run_fetch_gmail_in_background
 from umail_helper.asyn_functions import getall_continuous
 from umail_lance.umail_lance_agent import UmailLanceClient
- 
 
 
 umail_bp = Blueprint("umail", __name__)
 
 
-
 @umail_bp.route("/get_all_messages/<user_id>", methods=["GET"])
 def getall_route(user_id):
-    
+
     # Run the continuous async function
-    
+
     result = run_fetch_gmail_in_background(getall_continuous, user_id)
     return jsonify(result), 202  # 202 Accepted
+
 
 def get_latest_convo_info(config):
     """
@@ -38,7 +37,7 @@ def get_latest_convo_info(config):
         return None
 
     config_data = config.get("conversations", [])
-    client_id=config.get("userclients_id", [])
+    client_id = config.get("userclients_id", [])
 
     if not config_data:
         print("[DEBUG] input_data is empty")
@@ -56,11 +55,11 @@ def get_latest_convo_info(config):
         try:
             msg_ts = datetime.fromisoformat(ts_str)
 
-            if conv_id not in conversations or msg_ts > conversations[conv_id]["parsed_timestamp"]:
-                conversations[conv_id] = {
-                    "message": msg,
-                    "parsed_timestamp": msg_ts
-                }
+            if (
+                conv_id not in conversations
+                or msg_ts > conversations[conv_id]["parsed_timestamp"]
+            ):
+                conversations[conv_id] = {"message": msg, "parsed_timestamp": msg_ts}
         except Exception as e:
             print(f"[WARN] Failed to parse parsed_timestamp '{ts_str}': {e}")
             continue
@@ -71,11 +70,10 @@ def get_latest_convo_info(config):
     latest_conv = max(conversations.values(), key=lambda x: x["parsed_timestamp"])
     latest_msg = latest_conv["message"]
 
-
     return {
         "updated_date": latest_conv["parsed_timestamp"].isoformat(),
         "conv_id": latest_msg.get("conv_id"),
-        "client_id": client_id,  
+        "client_id": client_id,
     }
 
 
@@ -87,22 +85,17 @@ def extract_unique_client_folders(file_list, base_prefix):
     for obj in file_list:
         key = obj.get("Key", "")
         if key.startswith(base_prefix):
-            parts = key[len(base_prefix):].split("/")
+            parts = key[len(base_prefix) :].split("/")
             if parts and parts[0]:
                 client_ids.add(parts[0])
     return list(client_ids)
 
-# @umail_bp.route("/conversations/<user_id>", methods=["GET"])
+
+@umail_bp.route("/conversations/<user_id>", methods=["GET"])
 def get_latest_conversations(user_id):
     """
     Get the latest conversation from each client's config file and load full conversation data
     """
-    client_prefix = f"{user_id}/messages/"
-
-    raw_file_list = list_all_files(client_prefix)
-    client_ids = extract_unique_client_folders(raw_file_list, client_prefix)
-
-    conversations = []
     disp_messages = []
 
     connection = connect_to_rds()
@@ -111,132 +104,70 @@ def get_latest_conversations(user_id):
         return jsonify({"error": "Database connection failed"}), 500
     cursor = connection.cursor()
 
-    
-    for client_id in client_ids:
-        config_path = f"{client_prefix}{client_id}/config.json"
-        
-        try:
-            config = read_json_from_s3(config_path)
-            recent_msg = get_latest_convo_info(config)
-            
-            if recent_msg:
-                conversations.append(recent_msg)
-                
-                conv_id = recent_msg['conv_id']
+    client = UmailLanceClient(user_id)
+    convo_messages = client.latest_messages_from_lance(user_id)
+    client.print_content(user_id)
 
-                try:
+    for folder, data in convo_messages.items():
+        latest_timestamp = data["ts"]
+        conv_id = data["conv_id"]
+        latest_msg_in_conv = data["latest_message"]
 
-                    client = UmailLanceClient(user_id)
-                    # ✅ NEW: Fetch conversation data from LanceDB instead of S3
-                    lance_response = client.get_all_records(user_id, client_id, conv_id)
-                    
-                    if lance_response and "data" in lance_response:
-                        # Extract the conversation data from LanceDB response
-                        lance_records = lance_response["data"]
-                        
-                        # Find the record matching our conv_id and client_id
-                        matching_record = None
-                        for record in lance_records:
-                            if (record.get("id") == conv_id and 
-                                record.get("folder_name") == client_id):
-                                matching_record = record
-                                break
-                        
-                        if matching_record:
-                            # Parse the flattened text back to get message data
-                            # Note: You might need to implement a reverse parser or store JSON differently
-                            convo_messages = parse_flattened_text_to_messages(matching_record["text"])
-                        else:
-                            print(f"  [WARN] No matching record found for conv_id: {conv_id}, client_id: {client_id}")
-                            continue
-                    else:
-                        print(f"  [WARN] No data returned from LanceDB for conv_id: {conv_id}")
-                        continue
-               
-                    if convo_messages:
-                        print("received messages from lance db")
-                        latest_msg_in_conv = None
-                        latest_timestamp = None
-                        
-                        for msg in convo_messages:
-                            timestamp_str = msg.get("timestamp")
-                            if not timestamp_str:
-                                continue
-                            try:
-                                if timestamp_str.endswith('Z'):
-                                    msg_ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                                else:
-                                    msg_ts = datetime.fromisoformat(timestamp_str)
-                                
-                                if latest_timestamp is None or msg_ts > latest_timestamp:
-                                    latest_timestamp = msg_ts
-                                    latest_msg_in_conv = msg
-                            except Exception as e:
-                                print(f"[WARN] Failed to parse message timestamp: {e}")
-                                continue
-                        
-                        if latest_msg_in_conv:
-                            now = datetime.now(timezone.utc)
-                            time_diff = now - latest_timestamp
-                            
-                            if time_diff.days > 0:
-                                relative_time = f"{time_diff.days} days ago"
-                            elif time_diff.seconds > 3600:
-                                relative_time = f"{time_diff.seconds // 3600} hours ago"
-                            elif time_diff.seconds > 60:
-                                relative_time = f"{time_diff.seconds // 60} minutes ago"
-                            else:
-                                relative_time = "Just now"
-                            
-                            user_email = latest_msg_in_conv.get("user_id", "Unknown")
-                            from_email = latest_msg_in_conv.get("from", "")
-                            to_email = latest_msg_in_conv.get("to", "")
-                            
-                            contact_email = from_email if from_email != user_email else to_email
-                                                       
-                            cursor.execute(
-                                """
+        if not latest_timestamp:
+            continue
+
+        now = datetime.now(timezone.utc)
+        time_diff = now - latest_timestamp
+
+        if time_diff.days > 0:
+            relative_time = f"{time_diff.days} days ago"
+        elif time_diff.seconds > 3600:
+            relative_time = f"{time_diff.seconds // 3600} hours ago"
+        elif time_diff.seconds > 60:
+            relative_time = f"{time_diff.seconds // 60} minutes ago"
+        else:
+            relative_time = "Just now"
+
+        user_email = latest_msg_in_conv.get("user_id", "Unknown")
+        from_email = latest_msg_in_conv.get("from", "")
+        to_email = latest_msg_in_conv.get("to", "")
+
+        contact_email = from_email if from_email != user_email else to_email
+
+        cursor.execute(
+            """
                                 SELECT uc.first_name
                                 FROM users_clients uc
                                 JOIN messages m ON uc.users_clients_id = m.sender_id
                                 WHERE m.conversation_id_fk = %s
                                 LIMIT 1
                                 """,
-                                (conv_id,)
-                            )
+            (conv_id,),
+        )
 
-                            client_name_row = cursor.fetchone()
-                            if client_name_row:
-                                client_name = client_name_row[0]
-                            
-                            has_unread = any(m.get("status") == "received" for m in convo_messages)
-                            
-                            disp_message = {
-                                "contact_id": contact_email,
-                                "name": client_name,
-                                "lastMessage": latest_msg_in_conv.get("body", "")[:100],
-                                "timestamp": relative_time,
-                                "isoTimestamp": latest_msg_in_conv.get("timestamp"),
-                                # "unread": has_unread,
-                                "channel": latest_msg_in_conv.get("source"),
-                                "subject": latest_msg_in_conv.get("subject"),
-                                "conv_id": conv_id,
-                                "ticket_id": latest_msg_in_conv.get("ticket_id"),
-                                "ticket_name": latest_msg_in_conv.get("ticket_name"),
-                                "full_conversation": convo_messages
-                            }
-                            print(f"names are: {client_name}")
-                            disp_messages.append(disp_message)
-                    
-                except Exception as e:
-                    print(f"  [WARN] Failed to read conversation {conv_id}: {e}")
-            else:
-                pass                
-        except Exception as e:
-            print(f"  [WARN] Skipping config for client {client_id}: {e}")
-            continue
+        client_name_row = cursor.fetchone()
+        if client_name_row:
+            client_name = client_name_row[0] if client_name_row else "Unknown"
+
+        disp_message = {
+            "contact_id": contact_email,
+            "name": client_name,
+            "lastMessage": latest_msg_in_conv.get("body", "")[:100],
+            "timestamp": relative_time,
+            "isoTimestamp": latest_msg_in_conv.get("timestamp"),
+            "channel": latest_msg_in_conv.get("source"),
+            "subject": latest_msg_in_conv.get("subject"),
+            "conv_id": conv_id,
+            "ticket_id": latest_msg_in_conv.get("ticket_id"),
+            "ticket_name": latest_msg_in_conv.get("ticket_name"),
+            "full_conversation": convo_messages,
+        }
+        # print(f"names are: {client_name}")
+        disp_messages.append(disp_message)
+
     connection.close()
-    disp_messages.sort(key=lambda x: x['isoTimestamp'], reverse=True)    
+    disp_messages.sort(key=lambda x: x["isoTimestamp"], reverse=True)
+    # print(f" disp messages are: {disp_messages}")
     return disp_messages
 
 
@@ -279,7 +210,6 @@ def get_conv_order(config):
     return sorted_ids
 
 
-
 @umail_bp.route("/conversations/<conversation_id>/<user_id>", methods=["GET"])
 def get_selected_conv(conversation_id, user_id):
 
@@ -293,7 +223,7 @@ def get_selected_conv(conversation_id, user_id):
         try:
             cursor.execute(
                 "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
-                (conversation_id,)
+                (conversation_id,),
             )
             client_id_row = cursor.fetchone()
             if client_id_row is None:
@@ -303,11 +233,91 @@ def get_selected_conv(conversation_id, user_id):
         except Exception as e:
             print(f"❌ Error executing sender_id query: {e}")
 
+        client = UmailLanceClient(user_id)
+        recent_msg = client.get_selected_conv_from_lance(user_id,client_id)
+        
+
+        messages = []
+        for folder, data in recent_msg.items(): 
+
+            convo_messages = data["message"]
+            conv_id = data["conv_id"]
+
+            # print(f"convo_messages : {convo_messages}")
+            # print(f"conv_id : {conv_id}")
+
+            try:
+                    
+                    channel = (
+                        convo_messages[0].get("source") if convo_messages else "unknown"
+                    )
+
+                    messages.append(
+                        {
+                            "id": conv_id,
+                            "channel": channel,
+                            "messages": convo_messages,
+                        }
+                    )
+
+            except Exception as e:
+                    print(f"❌ Failed to read or parse ")
+                    continue
+
+        return (
+            jsonify(
+                {
+                    # "identities": config.get("identities", []),
+                    "status": "existing",
+                    "conversationId": client_id,  # conversation_id is client_id
+                    "messages": messages,  # this is ConversationThread[]
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print(f"❌ Unexpected error in get_selected_conv(): {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@umail_bp.route("/start-conversation", methods=["POST"])
+def start_conversation():
+
+    data = request.get_json() or {}
+    user_id = data.get("user_id")
+    client_id = data.get("contact_id")
+
+    if not user_id or not client_id:
+        return jsonify({"error": "Missing user_id or contact_id"}), 400
+
+    try:
+        connection = connect_to_rds()
+        if connection is None:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = connection.cursor()
+
         config_path = f"{user_id}/messages/{client_id}/config.json"
+        config = None
         try:
             config = read_json_from_s3(config_path)
         except Exception as e:
-            return jsonify({"error": "Failed to load config"}), 500
+            print(
+                f"[WARN] → Config not found for {client_id}, returning minimal response"
+            )
+
+        if config is None:
+            print("config is none")
+            return (
+                jsonify(
+                    {
+                        "identities": [],
+                        "status": "new",
+                        "conversationId": client_id,  # conversatoin_id is client_id in this function
+                        "messages": [],
+                    }
+                ),
+                200,
+            )
 
         try:
             recent_msg = get_conv_order(config)
@@ -320,102 +330,34 @@ def get_selected_conv(conversation_id, user_id):
                 convo_path = f"{user_id}/messages/{client_id}/{conv}.json"
                 convo_data = read_json_from_s3(convo_path)
                 convo_messages = convo_data.get("input_data", [])
+                channel = (
+                    convo_messages[0].get("source") if convo_messages else "unknown"
+                )
 
-                channel = convo_messages[0].get("source") if convo_messages else "unknown"
-                
-                messages.append({
-                    "id": conv,
-                    "channel": channel,
-                    "messages": convo_messages,
-                })
+                messages.append(
+                    {"id": conv, "channel": channel, "messages": convo_messages}
+                )
 
             except Exception as e:
                 print(f"❌ Failed to read or parse {convo_path}: {e}")
                 continue
 
-        return jsonify({
-                "identities": config.get("identities", []),
-                "status": "existing",
-                "conversationId": client_id, # conversation_id is client_id
-                "messages": messages  # this is ConversationThread[]
-            }), 200
+        # return jsonify(messages)
+        return (
+            jsonify(
+                {
+                    "identities": config.get("identities", []),
+                    "status": "existing",
+                    "conversationId": client_id,
+                    "messages": messages,  # this is ConversationThread[]
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         print(f"❌ Unexpected error in get_selected_conv(): {e}")
         return jsonify({"error": "Internal server error"}), 500
-
-
-    
-@umail_bp.route("/start-conversation", methods=["POST"])
-def start_conversation():
-        
-        data = request.get_json() or {}
-        user_id = data.get("user_id")
-        client_id = data.get("contact_id")
-       
-
-        if not user_id or not client_id:
-            return jsonify({"error": "Missing user_id or contact_id"}), 400
-
-        try:
-            connection = connect_to_rds()
-            if connection is None:
-                return jsonify({"error": "Database connection failed"}), 500
-            cursor = connection.cursor()
-
-            config_path = f"{user_id}/messages/{client_id}/config.json"
-            config = None
-            try:
-                config = read_json_from_s3(config_path)
-            except Exception as e:
-                print(f"[WARN] → Config not found for {client_id}, returning minimal response")
-            
-            if config is None:
-                print("config is none")
-                return jsonify({
-                    "identities": [],
-                    "status": "new",
-                    "conversationId": client_id,  # conversatoin_id is client_id in this function
-                    "messages": []
-                }), 200
-
-            try:
-                recent_msg = get_conv_order(config)
-            except Exception as e:
-                return jsonify({"error": "Invalid config format"}), 500
-
-            messages = []
-            for conv in recent_msg:
-                try:
-                    convo_path = f"{user_id}/messages/{client_id}/{conv}.json"
-                    convo_data = read_json_from_s3(convo_path)
-                    convo_messages = convo_data.get("input_data", [])
-                    channel = convo_messages[0].get("source") if convo_messages else "unknown"
-
-                    messages.append({
-                        "id": conv,
-                        "channel": channel,
-                        "messages": convo_messages
-                    })
-
-                except Exception as e:
-                    print(f"❌ Failed to read or parse {convo_path}: {e}")
-                    continue
-
-            # return jsonify(messages)
-            return jsonify({
-                "identities": config.get("identities", []),
-                "status": "existing",
-                "conversationId": client_id,
-                "messages": messages  # this is ConversationThread[]
-            }), 200
-
-
-
-        except Exception as e:
-            print(f"❌ Unexpected error in get_selected_conv(): {e}")
-            return jsonify({"error": "Internal server error"}), 500
-
 
 
 def match_email_to_channel(email, channel):
@@ -429,12 +371,12 @@ def match_email_to_channel(email, channel):
 @umail_bp.route("/send-reply", methods=["POST"])
 def send_messages():
     print("🚀 [DEBUG] Starting send_messages() function")
-    
+
     try:
         # Parse request data
         data = request.json
         print(f"📥 [DEBUG] Request data: {data}")
-        
+
         user_id = data.get("user_id")
         channel = data.get("channel")
         text = data.get("text")
@@ -442,15 +384,19 @@ def send_messages():
         contact_id = data.get("contact_id")
         status = data.get("status")
         conv_id = data.get("conversation_id")
-        
+
         if status == "existing":
-        # Validate required fields
+            # Validate required fields
             if not all([user_id, channel, text, status]):
                 missing_fields = []
-                if not user_id: missing_fields.append("user_id")
-                if not channel: missing_fields.append("channel")
-                if not text: missing_fields.append("text")
-                if not status: missing_fields.append("status")
+                if not user_id:
+                    missing_fields.append("user_id")
+                if not channel:
+                    missing_fields.append("channel")
+                if not text:
+                    missing_fields.append("text")
+                if not status:
+                    missing_fields.append("status")
                 print(f"❌ [DEBUG] Missing required fields: {missing_fields}")
                 return jsonify({"error": "Missing required payload fields"}), 400
 
@@ -480,11 +426,11 @@ def send_messages():
                 print(f"🔍 [DEBUG] Querying for sender_id with conversation_id: {c_id}")
                 cursor.execute(
                     "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
-                    (c_id,)
+                    (c_id,),
                 )
                 client_id_row = cursor.fetchone()
                 print(f"🔍 [DEBUG] Query result: {client_id_row}")
-                
+
                 if client_id_row is None:
                     print("❌ [DEBUG] Conversation not found in messages table")
                     return jsonify({"error": "Conversation not found"}), 404
@@ -495,42 +441,54 @@ def send_messages():
                 print(f"❌ [DEBUG] Failed to retrieve client_id: {e}")
                 return jsonify({"error": "Failed to retrieve client_id"}), 500
 
-            try:       
+            try:
                 s3_config_key = f"{user_id}/messages/{client_id}/config.json"
                 print(f"🔍 [DEBUG] Reading config from S3 key: {s3_config_key}")
                 config_data = read_json_from_s3(s3_config_key)
-                print(f"🔍 [DEBUG] Config data retrieved: {len(config_data.get('conversations', []))} conversations found")
+                print(
+                    f"🔍 [DEBUG] Config data retrieved: {len(config_data.get('conversations', []))} conversations found"
+                )
 
-                # Checking if it is a reply and getting reply info 
+                # Checking if it is a reply and getting reply info
                 conv_list = config_data.get("conversations", [])
-                print(f"🔍 [DEBUG] Searching for conversation in {len(conv_list)} conversations")
-                
+                print(
+                    f"🔍 [DEBUG] Searching for conversation in {len(conv_list)} conversations"
+                )
+
                 for i, conv in enumerate(conv_list):
-                    print(f"🔍 [DEBUG] Checking conversation {i}: conv_id={conv.get('conv_id')}")
-                    if conv.get("conv_id") == c_id:     
-                        thread_id = conv.get("thread_id") or "" 
+                    print(
+                        f"🔍 [DEBUG] Checking conversation {i}: conv_id={conv.get('conv_id')}"
+                    )
+                    if conv.get("conv_id") == c_id:
+                        thread_id = conv.get("thread_id") or ""
                         ticket_id = conv.get("ticket_id") or ""
                         ticket_name = conv.get("ticket_name") or ""
-                        subject = conv.get("subject") 
-                        conversation_id = c_id 
+                        subject = conv.get("subject")
+                        conversation_id = c_id
                         is_reply = True
-                        print(f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}")
+                        print(
+                            f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}"
+                        )
                         print(f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}")
                         break
-                
+
                 if not is_reply:
                     print("⚠️ [DEBUG] No matching conversation found in config")
 
             except FileNotFoundError:
-                print(f"⚠️ [DEBUG] Config file not found at {s3_config_key} — treating as user-initiated")
+                print(
+                    f"⚠️ [DEBUG] Config file not found at {s3_config_key} — treating as user-initiated"
+                )
             except Exception as e:
                 print(f"❌ [DEBUG] Error checking config file for reply status: {e}")
-                
+
         else:
             print("🆕 [DEBUG] Processing new conversation")
             conversation_id = str(uuid.uuid4())
             client_id = contact_id
-            print(f"🆕 [DEBUG] Generated new conversation_id: {conversation_id}, client_id: {client_id}")
+            print(
+                f"🆕 [DEBUG] Generated new conversation_id: {conversation_id}, client_id: {client_id}"
+            )
 
         # File path setup
         conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
@@ -567,7 +525,9 @@ def send_messages():
 
         # Get business email
         print("🏢 [DEBUG] Retrieving business email...")
-        cursor.execute("SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,))
+        cursor.execute(
+            "SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,)
+        )
         b_email = cursor.fetchone()
         if not b_email:
             print("❌ [DEBUG] No email found from business_info table")
@@ -589,11 +549,16 @@ def send_messages():
                 print(f"⚠️ [DEBUG] No email matched to channel {channel}")
 
         except Exception as e:
-            print(f"🔥 [DEBUG] Exception occurred while selecting email by channel: {str(e)}")
+            print(
+                f"🔥 [DEBUG] Exception occurred while selecting email by channel: {str(e)}"
+            )
 
         # Get client email
         print(f"👤 [DEBUG] Retrieving client email for client_id: {client_id}")
-        cursor.execute("SELECT email_id FROM users_clients WHERE users_clients_id = %s", (client_id,))
+        cursor.execute(
+            "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
+            (client_id,),
+        )
         c_email = cursor.fetchone()
         client_email = None
         if c_email:
@@ -605,14 +570,16 @@ def send_messages():
         # Subject generation for new conversations
         if not is_reply:
             print("📝 [DEBUG] Generating subject for new conversation...")
-            
+
             # Create initial message structure
             now_utc = datetime.now(timezone.utc)
             formatted_time = now_utc.isoformat(timespec="seconds")
             msg_id = str(uuid.uuid4())
-            
-            print(f"📝 [DEBUG] Created message ID: {msg_id}, timestamp: {formatted_time}")
-            
+
+            print(
+                f"📝 [DEBUG] Created message ID: {msg_id}, timestamp: {formatted_time}"
+            )
+
             initial_message = {
                 "id": msg_id,
                 "from": "user",
@@ -622,17 +589,19 @@ def send_messages():
                 "channel": channel,
                 "direction": "outbound",
             }
-            
+
             # Save temporary file for subject generation
-            print(f"💾 [DEBUG] Saving temporary file for subject generation: {conv_filepath}")
+            print(
+                f"💾 [DEBUG] Saving temporary file for subject generation: {conv_filepath}"
+            )
             with open(conv_filepath, "w", encoding="utf-8") as f:
                 json.dump({"new_messages": [initial_message]}, f, indent=2)
-            
+
             # Generate subject using AI
             print("🤖 [DEBUG] Calling generate_subject()...")
             subjects = generate_subject(user_id, conv_filepath, channel)
             print(f"🤖 [DEBUG] Generated subjects: {subjects}")
-            
+
             # Get subject from AI response
             subject = None
             for group in subjects:
@@ -640,7 +609,7 @@ def send_messages():
                     subject = group.get("summary")
                     print(f"✅ [DEBUG] Found subject: {subject}")
                     break
-                    
+
             if not subject:
                 subject = f"Message from {client_email}"  # Fallback subject
                 print(f"⚠️ [DEBUG] Using fallback subject: {subject}")
@@ -667,24 +636,22 @@ def send_messages():
             "thread_id": thread_id,
             "conversation_id": conversation_id,
             "ticket_id": ticket_id,
-            "ticket_name": ticket_name
+            "ticket_name": ticket_name,
         }
         print(f"📧 [DEBUG] Final message object created: {message}")
 
-         # CRITICAL: Check if this message already exists in input_data
+        # CRITICAL: Check if this message already exists in input_data
         cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (msg_id,))
         m_id = cursor.fetchone()
         if m_id:
             response_data = {
-            "status": "duplicate message", 
-            "id":  msg_id, 
-            "channel": channel,
-            "conversationId": conversation_id,
-            "is_reply": is_reply
-            }        
+                "status": "duplicate message",
+                "id": msg_id,
+                "channel": channel,
+                "conversationId": conversation_id,
+                "is_reply": is_reply,
+            }
             return jsonify(response_data), 200
-       
-
 
         # Send the message via appropriate channel
         sent_message_id, sent_thread_id = None, None
@@ -695,10 +662,9 @@ def send_messages():
             print("📧 [DEBUG] Processing Gmail send...")
             if thread_id:
                 print(f"📧 [DEBUG] Sending Gmail reply with thread_id: {thread_id}")
-                
+
                 latest_msg = max(
-                    input_data,
-                    key=lambda msg: datetime.fromisoformat(msg["timestamp"])
+                    input_data, key=lambda msg: datetime.fromisoformat(msg["timestamp"])
                 )
                 latest_id = latest_msg["id"]
                 print(f"📧 [DEBUG] Latest message ID: {latest_id}")
@@ -710,7 +676,7 @@ def send_messages():
                 else:
                     reply_subject = latest_subject
                 print(f"📧 [DEBUG] Reply subject: {reply_subject}")
-                
+
                 try:
                     print(f"📧 [DEBUG] Calling gmail_reply()...")
                     sent_message_id = gmail_reply(
@@ -719,11 +685,13 @@ def send_messages():
                         subject=reply_subject,
                         thread_id=thread_id,
                         body_text=text,
-                        in_reply_to=latest_id
+                        in_reply_to=latest_id,
                     )
                     message["id"] = sent_message_id
-                    print(f"✅ [DEBUG] Gmail reply sent successfully, message_id: {sent_message_id}")
-                  
+                    print(
+                        f"✅ [DEBUG] Gmail reply sent successfully, message_id: {sent_message_id}"
+                    )
+
                 except Exception as e:
                     print(f"❌ [DEBUG] Gmail reply failed: {e}")
                     return jsonify({"error": "Gmail send failed"}), 500
@@ -740,8 +708,10 @@ def send_messages():
                     )
                     message["id"] = sent_message_id
                     message["thread_id"] = sent_thread_id
-                    print(f"✅ [DEBUG] Gmail message sent, message_id: {sent_message_id}, thread_id: {sent_thread_id}")
-                      
+                    print(
+                        f"✅ [DEBUG] Gmail message sent, message_id: {sent_message_id}, thread_id: {sent_thread_id}"
+                    )
+
                 except Exception as e:
                     print(f"❌ [DEBUG] Gmail send failed: {e}")
                     return jsonify({"error": "Gmail send failed"}), 500
@@ -757,14 +727,23 @@ def send_messages():
                     body_text=text,
                     from_user_email=selected_email,
                 )
-                print(f"📧 [DEBUG] Zoho response - status: {status_code}, payload: {response_payload}")
+                print(
+                    f"📧 [DEBUG] Zoho response - status: {status_code}, payload: {response_payload}"
+                )
 
                 if status_code in [200, 201]:
                     message_id = response_payload.get("message_id")
-                    print(f"✅ [DEBUG] Zoho message sent successfully, message_id: {message_id}")
+                    print(
+                        f"✅ [DEBUG] Zoho message sent successfully, message_id: {message_id}"
+                    )
                 else:
-                    print(f"❌ [DEBUG] Zoho send failed: {response_payload.get('error')}")
-                    return jsonify({"error": response_payload.get('error')}), status_code
+                    print(
+                        f"❌ [DEBUG] Zoho send failed: {response_payload.get('error')}"
+                    )
+                    return (
+                        jsonify({"error": response_payload.get("error")}),
+                        status_code,
+                    )
 
             except Exception as e:
                 print(f"❌ [DEBUG] Zoho send failed: {e}")
@@ -778,7 +757,9 @@ def send_messages():
         print("💾 [DEBUG] Starting database updates...")
         updated_date = datetime.now(timezone.utc).isoformat()
         created_date = updated_date
-        print(f"💾 [DEBUG] Timestamps - created: {created_date}, updated: {updated_date}")
+        print(
+            f"💾 [DEBUG] Timestamps - created: {created_date}, updated: {updated_date}"
+        )
 
         try:
             if not is_reply:
@@ -788,20 +769,20 @@ def send_messages():
                     INSERT INTO threads (conversation_id, started_at, status, last_message_at)
                     VALUES (%s, %s, %s, %s)
                     """,
-                    (conversation_id, created_date, "Open", updated_date)
+                    (conversation_id, created_date, "Open", updated_date),
                 )
                 print("✅ [DEBUG] New thread inserted")
             else:
                 print("💾 [DEBUG] Updating existing ticket and thread...")
                 cursor.execute(
                     "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
-                    (updated_date, "In-Progress", conversation_id)
+                    (updated_date, "In-Progress", conversation_id),
                 )
                 print("✅ [DEBUG] Ticket updated")
 
                 cursor.execute(
                     "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
-                    (updated_date, conversation_id)
+                    (updated_date, conversation_id),
                 )
                 print("✅ [DEBUG] Thread updated")
 
@@ -831,8 +812,8 @@ def send_messages():
                     "outbound",
                     subject,
                     created_date,
-                    updated_date
-                )
+                    updated_date,
+                ),
             )
             print("✅ [DEBUG] Message record inserted")
 
@@ -870,53 +851,56 @@ def send_messages():
 
         # Update Config File
         print("⚙️ [DEBUG] Updating config file...")
-        config_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+        config_folder = os.path.join(
+            pathconfig.basepath, "messages", user_id, client_id
+        )
         ensure_dir(config_folder)
         config_filepath = os.path.join(config_folder, "config.json")
 
         s3_config_key = f"{user_id}/messages/{client_id}/config.json"
 
-
         if status == "new":
             dummy_config = {
-                        "userclients_id": client_id,
-                        "conversations": [
-                            {
-                                        "conv_id": "",
-                                        "ticket_id": "",
-                                        "ticket_name": "",
-                                        "subject": "",
-                                        "channel": "",
-                                        "updated_date": "",
-                                        "parsed_timestamp" : "",
-                                        "thread_id": ""
-                            }
-                        ],
+                "userclients_id": client_id,
+                "conversations": [
+                    {
+                        "conv_id": "",
+                        "ticket_id": "",
+                        "ticket_name": "",
+                        "subject": "",
+                        "channel": "",
+                        "updated_date": "",
+                        "parsed_timestamp": "",
+                        "thread_id": "",
                     }
+                ],
+            }
 
             with open(config_filepath, "w", encoding="utf-8") as f:
-                        json.dump(dummy_config, f, indent=2)
-                   
+                json.dump(dummy_config, f, indent=2)
+
             s3_data = read_json_from_s3(s3_config_key)
             if s3_data is None:
-                        
-                        upload_any_file(
-                                    config_filepath,
-                                    user_id,
-                                    type="messages",
-                                    s3_key_C=s3_config_key,
-                                )        
+
+                upload_any_file(
+                    config_filepath,
+                    user_id,
+                    type="messages",
+                    s3_key_C=s3_config_key,
+                )
 
         try:
             config_data = read_json_from_s3(s3_config_key)
-            print(f"⚙️ [DEBUG] Existing config loaded with {len(config_data.get('conversations', []))} conversations")
+            print(
+                f"⚙️ [DEBUG] Existing config loaded with {len(config_data.get('conversations', []))} conversations"
+            )
         except Exception as e:
             print(f"⚙️ [DEBUG] No config file found — creating new: {e}")
             config_data = {"userclients_id": client_id, "conversations": []}
 
         # Parse timestamp
         try:
-            if updated_date.endswith('Z'):
+            if updated_date.endswith("Z"):
                 parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
             else:
                 parsed_ts = datetime.fromisoformat(updated_date)
@@ -933,7 +917,7 @@ def send_messages():
             "subject": subject,
             "channel": channel,
             "updated_date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "parsed_timestamp": parsed_ts.isoformat()
+            "parsed_timestamp": parsed_ts.isoformat(),
         }
 
         if channel == "gmail":
@@ -969,11 +953,11 @@ def send_messages():
 
         # Final Response
         response_data = {
-            "status": "sent", 
-            "id": sent_message_id or msg_id, 
+            "status": "sent",
+            "id": sent_message_id or msg_id,
             "channel": channel,
             "conversationId": conversation_id,
-            "is_reply": is_reply
+            "is_reply": is_reply,
         }
         print(f"🎉 [DEBUG] Function completed successfully - Response: {response_data}")
         return jsonify(response_data), 200
@@ -981,13 +965,11 @@ def send_messages():
     except Exception as e:
         print(f"❌ [DEBUG] Unexpected error in send_messages(): {e}")
         import traceback
+
         print(f"❌ [DEBUG] Full traceback: {traceback.format_exc()}")
         return jsonify({"error": "Internal server error"}), 500
 
     finally:
-        if 'connection' in locals():
+        if "connection" in locals():
             connection.close()
             print("🔗 [DEBUG] Database connection closed")
-
-    
-

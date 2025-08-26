@@ -175,6 +175,13 @@ def save_training_settings():
                     update_subagent_sql, (assistant_name, voice_type, launch_id)
                 )
 
+                Update_user_sql = """
+                    UPDATE users
+                    SET launch_id_fk = %s
+                    WHERE user_id = %s
+                """
+                cursor.execute(Update_user_sql, (launch_id, user_id))
+
             connection.commit()
             return jsonify({"status": "success"})
 
@@ -685,7 +692,7 @@ def getUsersDocs():
         return jsonify({"error": "No documents found for this user"}), 404
 
     all_file_data = load_yaml_file(yaml_path) or {}
-    
+
     return jsonify(all_file_data), 200
 
 
@@ -986,9 +993,7 @@ def get_audio_config():
         for rec in config.get("recordings", []):
             # Convert S3 paths to public URLs
             rec["audio_location"] = attach_CLDFRNT_url(rec["audio_location"])
-            rec["transcript_location"] = attach_CLDFRNT_url(
-                rec["transcript_location"]
-            )
+            rec["transcript_location"] = attach_CLDFRNT_url(rec["transcript_location"])
         return jsonify(config), 200
     except FileNotFoundError:
         return jsonify({"error": "No audio config found for this user"}), 404
