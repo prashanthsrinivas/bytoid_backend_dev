@@ -9,6 +9,10 @@ from typing import Any, List
 from pydantic import BaseModel
 from datetime import datetime# from werkzeug.exceptions import HTTPException
 import numpy as np
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.schema import Document
+
+
 
 
 
@@ -86,19 +90,23 @@ class UmailLanceClient:
             # Get results from API response
         
         response_data = response.json() 
+        print(f"response_data : {response_data}")
         # print(f"response_data : {response_data}")
         latest_per_folder = {}
 
         for row in response_data:
+            print(f"row : {row}")
             folder = row.get("folder_name")
             text_data = row.get("text")
             conv_id = row.get("id")
+            print(f"text_data : {text_data}")
 
             if not text_data:
                 continue
 
             try:
                 messages = json.loads(text_data)  # Convert JSON string back to list of dicts
+                print(f"messages : {messages}")
             except Exception as e:
                 print(f"[WARN] Failed to parse JSON for id {row.get('id')}: {e}")
                 continue
@@ -209,7 +217,7 @@ class UmailLanceClient:
             "client_id": client_id,
             "conv_id": conv_id,
             "flattened_texts": flattened_texts,
-            "orginal_data" : data
+            "original_data" : data
             }
             results.append(result)       # results now contain all the conversion files appended to it
         print("process_json_files complete")
@@ -220,35 +228,108 @@ class UmailLanceClient:
     def embed_json_files(self, folder_path):
         data = self.process_json_files(folder_path)
 
-        vector_batch = []
+        vector_batch = []  
+        all_text_lengths = []
+        
+        for file in data:
+            page_content = file.get("flattened_texts", "").strip()
+            if page_content:
+                all_text_lengths.append(len(page_content))
+        
+        # Calculate dynamic chunk size based on content
+        if all_text_lengths:
+            avg_length = sum(all_text_lengths) // len(all_text_lengths)
+            # Heuristic: Clamp between reasonable limits for embeddings
+            # Considering token limits, aim for smaller chunks
+            dynamic_chunk_size = max(2000, min(8000, avg_length))
+        else:
+            dynamic_chunk_size = 4000
+        
+        # Initialize the splitter
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=dynamic_chunk_size,
+            chunk_overlap=int(dynamic_chunk_size * 0.2),  # 20% overlap
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""]  # Try these separators in order
+        )
+        
+        logger.info(f"[📄] Using dynamic chunk size: {dynamic_chunk_size} with overlap: {int(dynamic_chunk_size * 0.2)}")
 
         for file in data:
             user_id = file.get("user_id")
             client_id = file.get("client_id")
             conv_id = file.get("conv_id")
-            page_content = file.get("flattened_texts")
-            clean_text = page_content.strip()
-            orginal_data = file.get("orginal_data")
+            page_content = file.get("flattened_texts", "").strip()
+            original_data = file.get("original_data")  
             
-
-            if not clean_text:
+            if not page_content:
                 continue
-
+            
             try:
-                vector = self.embeddings.embed_query(clean_text)
-                vector_data = UmailData(
-                    id= conv_id,
-                    user_id=user_id,
-                    text=json.dumps(orginal_data, ensure_ascii=False), 
-                    embedding=vector,
-                    folder_name=client_id,
+                # Create Document object for the splitter
+                document = Document(
+                    page_content=page_content,
+                    metadata={
+                        "user_id": user_id,
+                        "client_id": client_id,
+                        "conv_id": conv_id,
+                        "original_data": original_data
+                    }
                 )
-                vector_batch.append(vector_data)
+                
+                # Split the document into chunks
+                chunks = splitter.split_documents([document])
+                
+                logger.info(f"[📝] Split document {conv_id} into {len(chunks)} chunks")
+                
+                # Process each chunk
+                for i, chunk in enumerate(chunks):
+                    chunk_text = chunk.page_content.strip()
+                    if not chunk_text:
+                        continue
+                    
+                    # Generate embedding for the chunk
+                    vector = self.embeddings.embed_query(chunk_text)
+                    
+                    # Create unique ID for each chunk
+                    chunk_id = f"{conv_id}_chunk_{i}" if len(chunks) > 1 else conv_id
+                    print(f"creating vector for {chunk_id}")
+                    vector_data = UmailData(
+                        id=chunk_id,
+                        user_id=user_id,
+                        text=json.dumps(original_data, ensure_ascii=False),
+                        embedding=vector,
+                        folder_name=client_id,
+                    )
+                    vector_batch.append(vector_data)
+            # for file in data:
+            #     user_id = file.get("user_id")
+            #     client_id = file.get("client_id")
+            #     conv_id = file.get("conv_id")
+            #     page_content = file.get("flattened_texts")
+            #     clean_text = page_content.strip()
+            #     orginal_data = file.get("orginal_data")
+                
+
+            #     if not clean_text:
+            #         continue
+
+            #     try:
+            #         vector = self.embeddings.embed_query(clean_text)
+            #         vector_data = UmailData(
+            #             id= conv_id,
+            #             user_id=user_id,
+            #             text=json.dumps(orginal_data, ensure_ascii=False), 
+            #             embedding=vector,
+            #             folder_name=client_id,
+            #         )
+            #         vector_batch.append(vector_data)
             except Exception as e:
                 print(f"[!] Embedding failed: {e}")
                 logger.error(f"[!] Embedding failed: {e}")
 
         if vector_batch:
+            print("embedding complte. sending to lance db for insertion")
             self.send_json_batch_to_lancedb(vector_batch)
             return {"vectors_made": len(vector_batch), "docs_processed": len(data)}
         else:

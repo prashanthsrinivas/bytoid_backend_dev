@@ -32,7 +32,6 @@ def get_existing_messages(user_id):
 
 # @umail_bp.route("/analyze_and_collect_messages/<user_id>", methods=["GET"])
 def analyze_and_collect_messages_for_batch(user_id, grouped_messages,batch_count):
-    
     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
     ensure_dir(user_folder)
 
@@ -98,6 +97,7 @@ def analyze_and_collect_messages_for_batch(user_id, grouped_messages,batch_count
             try:
                 with open(output_path, "r", encoding="utf-8") as f:
                     new_msg_data = json.load(f)
+                   
             except Exception as e:
                 print(f"⚠️ Couldn't read existing messages: {e}")
 
@@ -800,7 +800,7 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                     )
 
                                 grouped_messages[client_id][channel] = messages
-                                update_or_create_conversation_file(grouped_messages, user_id, client_id, channel,cursor,batch_count)
+                                update_or_create_conversation_file(msg,client_id,cursor,batch_count)
 
                                 cursor.execute(
                                         "UPDATE messages SET update_at = %s WHERE conversation_id = %s",
@@ -833,19 +833,26 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                             mesag_id = msg.get("id")
                             msg_body = msg.get("body")
 
+                            cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (mesag_id,))
+                            existing_msg = cursor.fetchone()
+                            if existing_msg:
+                                continue
+                            
                             found_existing_conversation = False
                             if config_data:
-
+                                print(f"config_data : {config_data}")
                                 matching_conv = next(
                                     (conv for conv in config_data.get("conversations", [])
                                     if conv.get("thread_id") == thread_id ),
                                     None
                                 )
+
+
                                 
                                 if matching_conv:
                                     # print(f"✅ Found matching conversation for thread_id: {thread_id}")
                                     conversation_id = matching_conv.get("conv_id")   
-                                    # print(f"found matching thread-id:{thread_id}; conv_id :{conversation_id}")
+                                    print(f"found matching thread-id:{thread_id}; conv_id :{conversation_id}")
                                     if conversation_id:
                                         found_existing_conversation = True 
                                         msg["conversation_id"] = conversation_id
@@ -939,7 +946,7 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                                                 print(f"⚠️ Message {msg_id} already exists in messages table")
                                                                                                                                                                                                                                                                    
                                             grouped_messages[client_id][channel] = messages
-                                            update_or_create_conversation_file(grouped_messages, user_id, client_id, channel,cursor,batch_count)
+                                            update_or_create_conversation_file(msg,client_id,cursor,batch_count)
 
                                             parsed_ts = dt_utc
                                             # print(f"🔄 Updating config data for conversation {conversation_id}")
@@ -1044,7 +1051,8 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                             )
 
                             grouped_messages[client_id][channel] = messages
-                            update_or_create_conversation_file(grouped_messages,user_id,client_id,channel,cursor,batch_count)
+                            # update_or_create_conversation_file(grouped_messages,user_id,client_id,channel,cursor,batch_count)
+                            update_or_create_conversation_file(msg,client_id,cursor,batch_count)
 
                             # print(f"🔍 Final check: Does message {msg_id} exist in messages table?")
                             cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (msg_id,))
@@ -1121,7 +1129,7 @@ def append_subject_to_messages(grouped_messages,channel, subjects, user_id,exist
                             )
 
                             grouped_messages[client_id][channel] = messages
-                            update_or_create_conversation_file(grouped_messages,user_id,client_id,channel,cursor,batch_count)
+                            update_or_create_conversation_file(msg,client_id,cursor,batch_count)
 
                             # print(f"🔍 Checking if outbound message {msg_id} exists in messages table")
                             cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (msg_id,))
@@ -1203,10 +1211,12 @@ def update_config_file(user_id, client_id, config_data):
         type="messages",
         s3_key_C=s3_config_key,
     )
+    print("config data updated !!")
 
-
-def update_or_create_conversation_file(grouped_messages, user_id, client_id, channel,cursor,batch_count):
+def update_or_create_conversation_file(msg,client_id,cursor,batch_count):
     # print("entered in update_or_create_conversation_file")
+    user_id = msg.get("user_id")
+    channel = msg.get("source")
     prefix = f"{user_id}/messages/{client_id}"
     config_key = f"{prefix}/config.json"
     config_data = read_json_from_s3(config_key)
@@ -1217,32 +1227,21 @@ def update_or_create_conversation_file(grouped_messages, user_id, client_id, cha
         conv["conv_id"] for conv in config_data.get("conversations", [])
         if conv.get("channel") == channel and conv.get("conv_id")
     }
-    channel_messages = grouped_messages.get(client_id, {}).get(channel, [])
-    if not channel_messages:
-        # print(f"[INFO] No messages found for client={client_id}, channel={channel}")
-        return
 
-    # Group messages by conversation_id
-    conversation_groups = {}
-    for msg in channel_messages:
-        
-        message_id = msg.get("id")
-        cursor.execute(
+    message_id = msg.get("id")
+    cursor.execute(
                 "SELECT 1 FROM messages WHERE message_id = %s", (message_id,)
             )
-        m_id = cursor.fetchone()
-        if m_id:
-                continue
-
+    m_id = cursor.fetchone()
+    if not m_id:
+             
         conv_id = msg.get("conversation_id")
-        if conv_id:
-            conversation_groups.setdefault(conv_id, []).append(msg)
-
-    for conv_id, messages in conversation_groups.items():
+        print(f"conv id : {conv_id}")
+    
         file_key = f"{prefix}/{conv_id}.json"
         conv_folder = os.path.join(
-                            pathconfig.basepath, "messages", user_id, client_id
-                        )
+                                pathconfig.basepath, "messages", user_id, client_id
+                            )
         ensure_dir(conv_folder)
         conv_file_name = f"{conv_id}.json"
         conv_filepath = os.path.join(conv_folder, conv_file_name)
@@ -1250,53 +1249,147 @@ def update_or_create_conversation_file(grouped_messages, user_id, client_id, cha
 
 
         if conv_id in existing_conversations:
-            raw_data = read_json_from_s3(file_key)
-            input_data = raw_data.get("input_data", [])
-            messages = normalize_datetimes(messages)   # check this later
-            input_data.extend(messages)
+                raw_data = read_json_from_s3(file_key)
+                input_data = raw_data.get("input_data", [])
+                msg = normalize_datetimes(msg)   # check this later
+                input_data.extend(msg)
 
-            with open(conv_filepath, "w", encoding="utf-8") as f:
-                json.dump({"input_data": input_data}, f, indent=2)
+                with open(conv_filepath, "w", encoding="utf-8") as f:
+                    json.dump({"input_data": input_data}, f, indent=2)
 
 
-            upload_any_file(
-                                    conv_filepath,
-                                    user_id,
-                                    type="messages",
-                                    s3_key_C=s3_config_key,
-                                ) 
+                upload_any_file(
+                                        conv_filepath,
+                                        user_id,
+                                        type="messages",
+                                        s3_key_C=s3_config_key,
+                                    ) 
         else:
-            # print(f"coud not found conv id :{conv_id} in existing")
 
-            with open(conv_filepath, "w", encoding="utf-8") as f:
-                json.dump({"input_data": messages}, f, indent=2)
+                with open(conv_filepath, "w", encoding="utf-8") as f:
+                    json.dump({"input_data": msg}, f, indent=2)
 
-            upload_any_file(
-                                    conv_filepath,
-                                    user_id,
-                                    type="messages",
-                                    s3_key_C=s3_config_key,
-                                )   
-            
+                upload_any_file(
+                                        conv_filepath,
+                                        user_id,
+                                        type="messages",
+                                        s3_key_C=s3_config_key,
+                                    )   
+                
         lance_folder =   os.path.join(
-                            pathconfig.basepath, "messages", user_id,f"lance_folder:{batch_count}" 
-                        )
+                                pathconfig.basepath, "messages", user_id,f"lance_folder:{batch_count}" 
+                            )
         ensure_dir(lance_folder) 
         lance_conv_file_name = f"{user_id}:{client_id}:{conv_id}.json"
         full_file_path = os.path.join(lance_folder, lance_conv_file_name)
         if os.path.exists(full_file_path):
-            with open(full_file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                data.extend(messages)
+                with open(full_file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    data.extend(msg)
 
-            with open(full_file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            # print("appended the messages to lance_file")
+                with open(full_file_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                # print("appended the messages to lance_file")
 
         else:
-            with open(full_file_path, "w", encoding="utf-8") as f:
-                json.dump(messages, f, indent=2)
-                # print("created and added the messages to lance_file")
+                with open(full_file_path, "w", encoding="utf-8") as f:
+                    json.dump(msg, f, indent=2)
+                    # print("created and added the messages to lance_file")
+
+
+
+# def update_or_create_conversation_file(grouped_messages, user_id, client_id, channel,cursor,batch_count):
+#     # print("entered in update_or_create_conversation_file")
+#     prefix = f"{user_id}/messages/{client_id}"
+#     config_key = f"{prefix}/config.json"
+#     config_data = read_json_from_s3(config_key)
+
+#     # Pull existing conversation IDs for the specified 
+#     # print(f"getting config dta for : {client_id}")
+#     existing_conversations = {
+#         conv["conv_id"] for conv in config_data.get("conversations", [])
+#         if conv.get("channel") == channel and conv.get("conv_id")
+#     }
+#     channel_messages = grouped_messages.get(client_id, {}).get(channel, [])
+#     if not channel_messages:
+#         # print(f"[INFO] No messages found for client={client_id}, channel={channel}")
+#         return
+
+#     # Group messages by conversation_id
+#     conversation_groups = {}
+#     for msg in channel_messages:
+        
+#         message_id = msg.get("id")
+#         cursor.execute(
+#                 "SELECT 1 FROM messages WHERE message_id = %s", (message_id,)
+#             )
+#         m_id = cursor.fetchone()
+#         if m_id:
+#                 continue
+
+#         conv_id = msg.get("conversation_id")
+#         if conv_id:
+#             conversation_groups.setdefault(conv_id, []).append(msg)
+
+#     for conv_id, messages in conversation_groups.items():
+#         file_key = f"{prefix}/{conv_id}.json"
+#         conv_folder = os.path.join(
+#                             pathconfig.basepath, "messages", user_id, client_id
+#                         )
+#         ensure_dir(conv_folder)
+#         conv_file_name = f"{conv_id}.json"
+#         conv_filepath = os.path.join(conv_folder, conv_file_name)
+#         s3_config_key = f"{user_id}/messages/{client_id}/{conv_id}.json"
+
+
+#         if conv_id in existing_conversations:
+#             raw_data = read_json_from_s3(file_key)
+#             input_data = raw_data.get("input_data", [])
+#             messages = normalize_datetimes(messages)   # check this later
+#             input_data.extend(messages)
+
+#             with open(conv_filepath, "w", encoding="utf-8") as f:
+#                 json.dump({"input_data": input_data}, f, indent=2)
+
+
+#             upload_any_file(
+#                                     conv_filepath,
+#                                     user_id,
+#                                     type="messages",
+#                                     s3_key_C=s3_config_key,
+#                                 ) 
+#         else:
+#             # print(f"coud not found conv id :{conv_id} in existing")
+
+#             with open(conv_filepath, "w", encoding="utf-8") as f:
+#                 json.dump({"input_data": messages}, f, indent=2)
+
+#             upload_any_file(
+#                                     conv_filepath,
+#                                     user_id,
+#                                     type="messages",
+#                                     s3_key_C=s3_config_key,
+#                                 )   
+            
+#         lance_folder =   os.path.join(
+#                             pathconfig.basepath, "messages", user_id,f"lance_folder:{batch_count}" 
+#                         )
+#         ensure_dir(lance_folder) 
+#         lance_conv_file_name = f"{user_id}:{client_id}:{conv_id}.json"
+#         full_file_path = os.path.join(lance_folder, lance_conv_file_name)
+#         if os.path.exists(full_file_path):
+#             with open(full_file_path, "r", encoding="utf-8") as f:
+#                 data = json.load(f)
+#                 data.extend(messages)
+
+#             with open(full_file_path, "w", encoding="utf-8") as f:
+#                 json.dump(data, f, indent=2)
+#             # print("appended the messages to lance_file")
+
+#         else:
+#             with open(full_file_path, "w", encoding="utf-8") as f:
+#                 json.dump(messages, f, indent=2)
+#                 # print("created and added the messages to lance_file")
 
 
 def normalize_datetimes(obj):

@@ -290,7 +290,7 @@ def send_invite_user():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch user details
             cursor.execute(
-                "SELECT email, roles_creation, permissions FROM users WHERE user_id=%s FOR UPDATE",
+                "SELECT email, roles_creation, permissions, social FROM users WHERE user_id=%s FOR UPDATE",
                 (userid,),
             )
             row = cursor.fetchone()
@@ -299,6 +299,7 @@ def send_invite_user():
                 return jsonify({"error": "User not found"}), 404
 
             user_email = row["email"]
+            user_source = row["social"]
 
             # load roles
             roles = json.loads(row["roles_creation"]) if row["roles_creation"] else []
@@ -359,16 +360,16 @@ def send_invite_user():
             invited_to=email,
             invited_by=user_email,
         )
-
-        # send email *after* updating DB, but still inside try
-        gmail_service = GmailService(user_id=userid)
-        gmail_service.send_invite_mail(
-            inviter=user_email,
-            invitee=email,
-            role=role,
-            invite_link=base_invitation_link,
-            business_info=business_info,
-        )
+        if user_source == "google":
+            # send email *after* updating DB, but still inside try
+            gmail_service = GmailService(user_id=userid)
+            gmail_service.send_invite_mail(
+                inviter=user_email,
+                invitee=email,
+                role=role,
+                invite_link=base_invitation_link,
+                business_info=business_info,
+            )
 
         # if everything succeeds -> commit
         conn.commit()
@@ -759,6 +760,136 @@ def edit_shared_user_role():
             conn.commit()
 
         return jsonify({"message": "Role updated successfully"}), 200
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+
+@inv_users_bp.route("/admin/revoke_shared_user_role", methods=["POST"])
+def revoke_shared_user_role():
+    data = request.get_json()
+    user_id = data.get("user_id")  # admin
+    email = data.get("email")  # invited user
+
+    try:
+        conn = connect_to_rds()
+        conn.begin()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Step 1: Fetch admin permissions
+            cursor.execute(
+                "SELECT permissions FROM users WHERE user_id = %s", (user_id,)
+            )
+            admin_row = cursor.fetchone()
+            if not admin_row:
+                conn.rollback()
+                return jsonify({"error": "Admin user not found"}), 404
+
+            permissions = json.loads(admin_row["permissions"] or "{}")
+
+            # Step 2: Fetch invited user permissions
+            cursor.execute("SELECT permissions FROM users WHERE email = %s", (email,))
+            invited_row = cursor.fetchone()
+            if not invited_row:
+                conn.rollback()
+                return jsonify({"error": "Invited user not found"}), 404
+
+            invited_permissions = json.loads(invited_row["permissions"] or "{}")
+
+            # Step 3: Update invited user → set role.status = revoked
+            if "role" in invited_permissions:
+                invited_permissions["role"]["status"] = "revoked"
+            else:
+                invited_permissions["role"] = {"status": "revoked"}
+
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE email=%s",
+                (json.dumps(invited_permissions), email),
+            )
+
+            # Step 4: Update admin → set status revoked in shared/invites
+            for section in ["shared", "invites"]:
+                if section in permissions:
+                    for p in permissions[section]:
+                        if p.get("email") == email:
+                            p["status"] = "revoked"
+
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                (json.dumps(permissions), user_id),
+            )
+
+            conn.commit()
+
+        return jsonify({"message": "Role revoked successfully"}), 200
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+
+@inv_users_bp.route("/admin/activate_shared_user_role", methods=["POST"])
+def activate_shared_user_role():
+    data = request.get_json()
+    user_id = data.get("user_id")  # admin
+    email = data.get("email")  # invited user
+
+    try:
+        conn = connect_to_rds()
+        conn.begin()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Step 1: Fetch admin permissions
+            cursor.execute(
+                "SELECT permissions FROM users WHERE user_id = %s", (user_id,)
+            )
+            admin_row = cursor.fetchone()
+            if not admin_row:
+                conn.rollback()
+                return jsonify({"error": "Admin user not found"}), 404
+
+            permissions = json.loads(admin_row["permissions"] or "{}")
+
+            # Step 2: Fetch invited user permissions
+            cursor.execute("SELECT permissions FROM users WHERE email = %s", (email,))
+            invited_row = cursor.fetchone()
+            if not invited_row:
+                conn.rollback()
+                return jsonify({"error": "Invited user not found"}), 404
+
+            invited_permissions = json.loads(invited_row["permissions"] or "{}")
+
+            # Step 3: Update invited user → set role.status = active
+            if "role" in invited_permissions:
+                invited_permissions["role"]["status"] = "active"
+            else:
+                invited_permissions["role"] = {"status": "active"}
+
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE email=%s",
+                (json.dumps(invited_permissions), email),
+            )
+
+            # Step 4: Update admin → set status active in shared/invites
+            for section in ["shared", "invites"]:
+                if section in permissions:
+                    for p in permissions[section]:
+                        if p.get("email") == email:
+                            p["status"] = "active"
+
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                (json.dumps(permissions), user_id),
+            )
+
+            conn.commit()
+
+        return jsonify({"message": "Role activated successfully"}), 200
 
     except Exception as e:
         conn.rollback()

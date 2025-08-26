@@ -580,3 +580,39 @@ def add_lead_route():
     except Exception as e:
         logger.error(f"An unexpected error occurred: {str(e)}")
         return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+
+
+@users_bp.route("/get_user_permissions/<userid>", methods=["GET"])
+def get_user_permissions(userid):
+    """Get all roles and invited users for a user"""
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT user_type, permissions FROM users WHERE user_id=%s",
+                (userid,),
+            )
+            row = cursor.fetchone()
+
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "User not found"}), 404
+
+        if row["user_type"] != "user":
+            return jsonify({"permissions": "ALL"}), 200
+
+        # Non-admin → parse JSON
+        permissions = {}
+        if row.get("permissions"):
+            try:
+                permissions = json.loads(row["permissions"])
+            except Exception:
+                permissions = {}
+
+        role_permissions = permissions.get("role", {})
+
+        return jsonify({"permissions": role_permissions}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

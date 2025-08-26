@@ -15,7 +15,7 @@ from agent_route.routes import process_and_update_yaml
 from utils.chatopenzz import check_lancedb
 import asyncio
 from db.db_checkers import check_onboarding_user
-
+import pymysql
 
 microsoft_bp = Blueprint("microsoft", __name__)
 logger = get_logger(__name__)
@@ -100,13 +100,12 @@ def microsoft_callback():
         print("email from microsoft", email)
 
         conn = connect_to_rds()
-        cursor = conn.cursor()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         # cursor.execute("SELECT refresh_token FROM users WHERE email = %s", (email,))
-        cursor.execute("SELECT 1 FROM users WHERE email = %s", (email,))
-
+        cursor.execute("SELECT user_id,user_type FROM users WHERE email = %s", (email,))
         row = cursor.fetchone()
-        # print("db row ",row)
+        print("db row ", row)
 
         access_token_ = result.get("access_token") or ""
         print("stored access_token_: ", access_token_)
@@ -118,10 +117,10 @@ def microsoft_callback():
             print("nmew user")
 
             cursor.execute(
-                """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email, client_id,
+                """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
                 client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                created_in, updated_in, logged_in_at, logged_out_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s)
                                """,
                 (
                     user_id,
@@ -140,52 +139,100 @@ def microsoft_callback():
                     "",
                     "microsoft",
                     None,
+                    None,
+                    None,
+                    None,
+                    None,
                 ),
             )
 
         else:
-
-            cursor.execute(
-                """  
-                        UPDATE users 
-                        SET 
-                            client_id = %s,
-                            client_secret = %s,
-                            token = %s,
-                            refresh_token = %s,
-                            expiry = %s,
-                            updated_in = NOW(),
-                            logged_in_at = NOW(),
-                            logged_out_at = NOW()
-                        WHERE email = %s
-                    """,
-                (
-                    CLIENT_ID,
-                    CLIENT_SECRET,
-                    access_token_,
-                    refresh_token_,
-                    expires_in_,
-                    email,
-                ),
-            )
+            logger.info("users update data")
+            prev_id = row.get("user_id", "NODATA")
+            logger.info("Microsoft prev-> %s", prev_id)
+            if user_id != prev_id:
+                cursor.execute(
+                    """  
+                            UPDATE users 
+                            SET 
+                                user_id = %s,
+                                client_id = %s,
+                                client_secret = %s,
+                                token = %s,
+                                refresh_token = %s,
+                                expiry = %s,
+                                updated_in = NOW(),
+                                logged_in_at = NOW(),
+                                logged_out_at = NOW()
+                            WHERE email = %s
+                        """,
+                    (
+                        user_id,
+                        CLIENT_ID,
+                        CLIENT_SECRET,
+                        access_token_,
+                        refresh_token_,
+                        expires_in_,
+                        email,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """  
+                            UPDATE users 
+                            SET 
+                                client_id = %s,
+                                client_secret = %s,
+                                token = %s,
+                                refresh_token = %s,
+                                expiry = %s,
+                                updated_in = NOW(),
+                                logged_in_at = NOW(),
+                                logged_out_at = NOW()
+                            WHERE email = %s
+                        """,
+                    (
+                        CLIENT_ID,
+                        CLIENT_SECRET,
+                        access_token_,
+                        refresh_token_,
+                        expires_in_,
+                        email,
+                    ),
+                )
 
         conn.commit()
         conn.close()
 
-        newuser = check_onboarding_user(user_id)
+        if row:
+            prev_type = row.get("user_type", "NO TYPE")
+            logger.info("Microsoft prev UserType -> %s", prev_type)
+            if prev_type == "user":
+                logger.info("Invited User Logged in")
+                return redirect(
+                    f"https://bytoid.ai/auth/microsoft/callback?userid={user_id}&user_onboarded={True}"
+                )
 
+        newuser = check_onboarding_user(user_id)
         # else:
         #     return redirect("https://bytoid.ai/login")
         print(f"going to return to dashboard: {newuser}")
-        # return redirect("https://bytoid.ai/dashboard")
-        return jsonify({"user_id": user_id, "user_onboarded": newuser})
+        return redirect(
+            f"https://bytoid.ai/auth/microsoft/callback?userid={user_id}&user_onboarded={newuser}"
+        )
 
+        # return jsonify({"user_id": user_id, "user_onboarded": newuser})
 
     else:
-        return jsonify({
-            "error": "Failed to get user info from Microsoft",
-            "details": "Microsoft Graph API request failed"
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "Failed to get user info from Microsoft",
+                    "details": "Microsoft Graph API request failed",
+                }
+            ),
+            400,
+        )
     # return redirect('https://bytoid.ai/dashboard')
     # return jsonify(result)
 
