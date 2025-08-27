@@ -609,8 +609,10 @@ def get_user_permissions(userid):
                 permissions = json.loads(row["permissions"])
             except Exception:
                 permissions = {}
+        print(permissions)
 
         role_permissions = permissions.get("role", {})
+        role_permissions["status"] = permissions.get("status")
 
         return jsonify({"permissions": role_permissions}), 200
 

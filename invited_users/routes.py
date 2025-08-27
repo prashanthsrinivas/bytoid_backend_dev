@@ -42,9 +42,14 @@ def add_role_admin():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch current roles
             cursor.execute(
-                "SELECT roles_creation FROM users WHERE user_id=%s", (userid,)
+                "SELECT roles_creation,user_type FROM users WHERE user_id=%s",
+                (userid,),
             )
             row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+            if row["user_type"] == "user":
+                return jsonify({"error": "unAuthrotized access"}), 404
             roles = (
                 json.loads(row["roles_creation"])
                 if row and row["roles_creation"]
@@ -79,7 +84,7 @@ def get_roles(userid):
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
-                "SELECT roles_creation, permissions FROM users WHERE user_id=%s",
+                "SELECT roles_creation,user_type, permissions FROM users WHERE user_id=%s",
                 (userid,),
             )
             row = cursor.fetchone()
@@ -88,6 +93,8 @@ def get_roles(userid):
 
         if not row:
             return jsonify({"error": "User not found"}), 404
+        if row["user_type"] == "user":
+            return jsonify({"error": "unAuthrotized access"}), 404
 
         roles = json.loads(row["roles_creation"]) if row.get("roles_creation") else []
         permissions = json.loads(row["permissions"]) if row.get("permissions") else []
@@ -112,10 +119,14 @@ def update_role():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # 1. Get roles_creation for owner
             cursor.execute(
-                "SELECT roles_creation, permissions FROM users WHERE user_id=%s",
+                "SELECT roles_creation,user_type, permissions FROM users WHERE user_id=%s",
                 (userid,),
             )
             row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+            if row["user_type"] == "user":
+                return jsonify({"error": "unAuthrotized access"}), 404
             roles = (
                 json.loads(row["roles_creation"])
                 if row and row["roles_creation"]
@@ -201,12 +212,15 @@ def delete_role(userid, role_id):
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
-                "SELECT roles_creation, permissions FROM users WHERE user_id=%s",
+                "SELECT roles_creation, permissions,user_type FROM users WHERE user_id=%s",
                 (userid,),
             )
             row = cursor.fetchone()
             if not row:
                 return jsonify({"error": "User not found"}), 404
+
+            if row["user_type"] == "user":
+                return jsonify({"error": "unAuthrotized access"}), 404
 
             roles = (
                 json.loads(row["roles_creation"])
@@ -290,13 +304,16 @@ def send_invite_user():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch user details
             cursor.execute(
-                "SELECT email, roles_creation, permissions, social FROM users WHERE user_id=%s FOR UPDATE",
+                "SELECT email, roles_creation, permissions, social,user_type FROM users WHERE user_id=%s FOR UPDATE",
                 (userid,),
             )
             row = cursor.fetchone()
             if not row:
                 conn.rollback()
                 return jsonify({"error": "User not found"}), 404
+
+            if row["user_type"] == "user":
+                return jsonify({"error": "unAuthrotized access"}), 404
 
             user_email = row["email"]
             user_source = row["social"]
@@ -397,12 +414,16 @@ def delete_invite():
 
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT permissions FROM users WHERE user_id=%s", (userid,))
+            cursor.execute(
+                "SELECT permissions,user_type FROM users WHERE user_id=%s", (userid,)
+            )
             row = cursor.fetchone()
 
             if not row:
                 conn.close()
                 return jsonify({"error": "User not found"}), 404
+            if row["user_type"] == "user":
+                return jsonify({"error": "unAuthrotized access"}), 404
 
             permissions = (
                 json.loads(row["permissions"])
@@ -457,12 +478,14 @@ def resend_invite():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch inviter details
             cursor.execute(
-                "SELECT permissions, email, roles_creation FROM users WHERE user_id=%s",
+                "SELECT permissions, email, roles_creation,user_type FROM users WHERE user_id=%s",
                 (user_id,),
             )
             row = cursor.fetchone()
             if not row:
                 return jsonify({"error": "User not found"}), 404
+            if row["user_type"] == "user":
+                return jsonify({"error": "unAuthrotized access"}), 404
 
             permissions = (
                 json.loads(row["permissions"])
@@ -685,13 +708,16 @@ def edit_shared_user_role():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # Step 1: Fetch user_id's roles and permissions
             cursor.execute(
-                "SELECT roles_creation, permissions FROM users WHERE user_id = %s",
+                "SELECT roles_creation, permissions,user_type FROM users WHERE user_id = %s",
                 (user_id,),
             )
             admin_row = cursor.fetchone()
             if not admin_row:
                 conn.rollback()
                 return jsonify({"error": "Admin user not found"}), 404
+
+            if admin_row["user_type"] == "user":
+                jsonify({"error": "unAuthrotized access"}), 404
 
             roles_creation = json.loads(admin_row["roles_creation"] or "[]")
             permissions = json.loads(admin_row["permissions"] or "{}")
@@ -781,12 +807,14 @@ def revoke_shared_user_role():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # Step 1: Fetch admin permissions
             cursor.execute(
-                "SELECT permissions FROM users WHERE user_id = %s", (user_id,)
+                "SELECT permissions,user_type FROM users WHERE user_id = %s", (user_id,)
             )
             admin_row = cursor.fetchone()
             if not admin_row:
                 conn.rollback()
                 return jsonify({"error": "Admin user not found"}), 404
+            if admin_row["user_type"] == "user":
+                jsonify({"error": "unAuthrotized access"}), 404
 
             permissions = json.loads(admin_row["permissions"] or "{}")
 
@@ -800,10 +828,10 @@ def revoke_shared_user_role():
             invited_permissions = json.loads(invited_row["permissions"] or "{}")
 
             # Step 3: Update invited user → set role.status = revoked
-            if "role" in invited_permissions:
-                invited_permissions["role"]["status"] = "revoked"
+            if "status" in invited_permissions:
+                invited_permissions["status"] = "revoked"
             else:
-                invited_permissions["role"] = {"status": "revoked"}
+                invited_permissions = {"status": "revoked"}
 
             cursor.execute(
                 "UPDATE users SET permissions=%s WHERE email=%s",
@@ -846,12 +874,14 @@ def activate_shared_user_role():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # Step 1: Fetch admin permissions
             cursor.execute(
-                "SELECT permissions FROM users WHERE user_id = %s", (user_id,)
+                "SELECT permissions,user_type FROM users WHERE user_id = %s", (user_id,)
             )
             admin_row = cursor.fetchone()
             if not admin_row:
                 conn.rollback()
                 return jsonify({"error": "Admin user not found"}), 404
+            if admin_row["user_type"] == "user":
+                jsonify({"error": "unAuthrotized access"}), 404
 
             permissions = json.loads(admin_row["permissions"] or "{}")
 
@@ -865,10 +895,10 @@ def activate_shared_user_role():
             invited_permissions = json.loads(invited_row["permissions"] or "{}")
 
             # Step 3: Update invited user → set role.status = active
-            if "role" in invited_permissions:
-                invited_permissions["role"]["status"] = "active"
+            if "status" in invited_permissions:
+                invited_permissions["status"] = "active"
             else:
-                invited_permissions["role"] = {"status": "active"}
+                invited_permissions = {"status": "active"}
 
             cursor.execute(
                 "UPDATE users SET permissions=%s WHERE email=%s",

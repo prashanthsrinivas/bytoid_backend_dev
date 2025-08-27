@@ -636,6 +636,7 @@ def check_user():
                 print("google based account")
                 get_token(userid)
                 return {"message": "user found"}, 200
+            return {"message": "user found"}, 200
 
     except Exception as e:
         return jsonify({"error": f"Failed to check user: {e}"}), 500
