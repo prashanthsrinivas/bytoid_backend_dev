@@ -14,6 +14,7 @@ from credits_route.route import credits_bp
 from umail.routes import umail_bp
 from tickets.routes import tickets_bp
 from invited_users.routes import inv_users_bp
+from agents_hub_route.routes import agent_hub_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -107,6 +108,11 @@ CORS(
     origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
 )
 
+CORS(
+    agent_hub_bp,
+    supports_credentials=True,
+    origins=["http://172.31.12.212", "https://www.bytoid.ai", "https://bytoid.ai"],
+)
 
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
@@ -130,6 +136,7 @@ app.register_blueprint(credits_bp)
 app.register_blueprint(umail_bp)
 app.register_blueprint(tickets_bp)
 app.register_blueprint(inv_users_bp)
+app.register_blueprint(agent_hub_bp)
 
 
 if __name__ == "__main__":

@@ -169,6 +169,8 @@ def oauth2callback(url, state):
                     UPDATE users 
                     SET 
                         user_id = %s,
+                        first_name = %s,
+                        last_name = %s,
                         client_id = %s,
                         client_secret = %s,
                         token = %s,
@@ -181,6 +183,8 @@ def oauth2callback(url, state):
                     """,
                         (
                             user_id,
+                            given_name,
+                            family_name,
                             credentials.client_id,
                             credentials.client_secret,
                             credentials.token,
@@ -194,6 +198,8 @@ def oauth2callback(url, state):
                         """
                         UPDATE users 
                         SET 
+                            first_name = %s,
+                            last_name = %s,
                             client_id = %s,
                             client_secret = %s,
                             token = %s,
@@ -205,6 +211,8 @@ def oauth2callback(url, state):
                         WHERE email = %s
                     """,
                         (
+                            given_name,
+                            family_name,
                             credentials.client_id,
                             credentials.client_secret,
                             credentials.token,

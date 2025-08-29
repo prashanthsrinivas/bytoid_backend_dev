@@ -3,6 +3,7 @@ import json
 from .rds_db import connect_to_rds
 from datetime import datetime
 import uuid
+import pymysql
 
 
 def fetch_userid_from_launch(apikey, connection=None):
@@ -56,7 +57,10 @@ def fetch_apikey_from_launch(userid, connection=None):
 def check_userid_valid(userid, connection=None):
     """
     Checks if user_id exists in the 'users' table.
-    Returns True if it exists, False otherwise.
+    Rules:
+    - If user does not exist → return False
+    - If user_type != 'user' → return True
+    - If user_type == 'user' → check permissions['status'] == 'active'
     """
     own_connection = False
     try:
@@ -64,13 +68,36 @@ def check_userid_valid(userid, connection=None):
             connection = connect_to_rds()
             own_connection = True
 
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT 1 FROM users WHERE user_id = %s", (userid,))
-            return cursor.fetchone() is not None
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT user_type, permissions FROM users WHERE user_id = %s",
+                (userid,),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return False  # user not found
+
+            user_type = row.get("user_type")
+            permissions = row.get("permissions")
+
+            if user_type != "user":
+                return True  # owner/admin/other valid roles
+
+            # user_type == "user" → need to check permissions.status
+            try:
+                permissions_data = json.loads(permissions) if permissions else {}
+            except Exception:
+                permissions_data = {}
+
+            status = permissions_data.get("status")
+            print(f"user access {userid}", status)
+            return status == "active"
 
     except Exception as e:
         print(f"Error checking user ID validity: {e}")
         return False
+
     finally:
         if own_connection and connection:
             connection.close()
@@ -506,6 +533,3 @@ def get_user_agent_id(apikey):
         return None
     finally:
         connection.close()
-
-
-

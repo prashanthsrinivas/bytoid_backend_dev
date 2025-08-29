@@ -56,6 +56,7 @@ from db.db_checkers import (
     get_user_agent_id,
     update_agent_document_link,
 )
+import pymysql
 
 # from app import qa_chain
 
@@ -66,16 +67,12 @@ logger = get_logger(__name__)
 @agent_bp.route("/save-training-settings", methods=["POST"])
 def save_training_settings():
     """
-    It makes the following changes to the database:
-    - If the user does not have a launch, it creates a new launch and subagent
-    - If the user has a launch, it updates the existing launch and subagent
-    - It validates the input data for required fields and formats
-    - creates api key for the user if it does not exist
-    - It returns a success message or an error message based on the operation outcome
+    Create or update launch + subagent for a user.
+    Returns: api_key, assistant_name, sync_website, voice_type
     """
     try:
-        # Parse incoming JSON
         data = request.get_json()
+        print("dasdsa", data)
         assistant_name = data.get("assistant_name")
         voice_type = data.get("voice_type", "").capitalize()
         sync_website = (
@@ -93,101 +90,162 @@ def save_training_settings():
         if not assistant_name:
             return jsonify({"error": "Assistant name is required"}), 400
         if not sync_website:
-            return jsonify({"error": "website is required"}), 400
+            return jsonify({"error": "Website is required"}), 400
         if not check_userid_valid(user_id):
-            return jsonify({"error": "Invalid User ID"}), 404
+            return jsonify({"error": "Invalid access"}), 404
 
         connection = connect_to_rds()
-
+        base_updated = False
         with connection.cursor() as cursor:
-            # Check if launch exists for user
-            sql = "SELECT 1 FROM launch WHERE user_id_fk = %s LIMIT 1"
-            cursor.execute(sql, (user_id,))
-            exists = cursor.fetchone()
+            # Check if launch exists
+            cursor.execute(
+                "SELECT launch_id, api_id FROM launch WHERE user_id_fk = %s LIMIT 1",
+                (user_id,),
+            )
+            launch = cursor.fetchone()
 
-            if not exists:
-                print("creating new launch and subagent")
+            if not launch:
+                print("Creating new launch and subagent")
 
                 launch_id = str(uuid.uuid4())
                 sub_agent_id = str(uuid.uuid4())
-                new_api_key = str(uuid.uuid4())
+                api_key = str(uuid.uuid4())
 
-                # Insert new subagent
-                insert_subagent_sql = """
+                # Insert subagent
+                cursor.execute(
+                    """
                     INSERT INTO subagents (
                         sub_agent_id, launch_id_fk, name, description, voice_type,
                         documentation_link, model_version, created_at, updated_at
-                    ) VALUES (%s, NULL, %s, 'Registered', %s, NULL, NULL, NULL, NULL)
-                """
-                cursor.execute(
-                    insert_subagent_sql, (sub_agent_id, assistant_name, voice_type)
+                    ) VALUES (%s, NULL, %s, 'Registered', %s, NULL, NULL, NOW(), NOW())
+                """,
+                    (sub_agent_id, assistant_name, voice_type),
                 )
 
-                # Insert new launch
-                insert_launch_sql = """
+                # Insert launch
+                cursor.execute(
+                    """
                     INSERT INTO launch (
                         launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name
                     ) VALUES (%s, %s, %s, %s, %s)
-                """
-                cursor.execute(
-                    insert_launch_sql,
-                    (launch_id, sub_agent_id, user_id, new_api_key, sync_website),
+                """,
+                    (launch_id, sub_agent_id, user_id, api_key, sync_website),
                 )
 
-                # Link subagent to launch
-                link_sql = """
+                # Link subagent
+                cursor.execute(
+                    """
                     UPDATE subagents
                     SET launch_id_fk = %s
                     WHERE sub_agent_id = %s
-                """
-                cursor.execute(link_sql, (launch_id, sub_agent_id))
+                """,
+                    (launch_id, sub_agent_id),
+                )
 
             else:
-                print("updating existing launch and subagent")
+                print("Updating existing launch and subagent")
 
-                # Update website name
-                update_launch_sql = """
+                launch_id, api_key = launch
+
+                # Update launch
+                cursor.execute(
+                    """
                     UPDATE launch
                     SET website_name = %s
-                    WHERE user_id_fk = %s
-                """
-                cursor.execute(update_launch_sql, (sync_website, user_id))
-
-                # Get launch_id
-                get_launch_sql = (
-                    "SELECT launch_id FROM launch WHERE user_id_fk = %s LIMIT 1"
+                    WHERE launch_id = %s
+                """,
+                    (sync_website, launch_id),
                 )
-                cursor.execute(get_launch_sql, (user_id,))
-                result = cursor.fetchone()
-                if result is None:
-                    raise ValueError("No launch record found for given user_id")
 
-                launch_id = result[0]
-
-                # Update subagent settings
-                update_subagent_sql = """
+                # Update subagent
+                cursor.execute(
+                    """
                     UPDATE subagents
                     SET name = %s,
-                        voice_type = %s
+                        voice_type = %s,
+                        updated_at = NOW()
                     WHERE launch_id_fk = %s
-                """
-                cursor.execute(
-                    update_subagent_sql, (assistant_name, voice_type, launch_id)
+                """,
+                    (assistant_name, voice_type, launch_id),
                 )
-
-                Update_user_sql = """
-                    UPDATE users
-                    SET launch_id_fk = %s
-                    WHERE user_id = %s
-                """
-                cursor.execute(Update_user_sql, (launch_id, user_id))
+                base_updated = True
 
             connection.commit()
-            return jsonify({"status": "success"})
+            # 🔹 Extra step: update invited_by's agents_hub if current user is "user"
+        if base_updated:
+            with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT permissions, user_type FROM users WHERE user_id = %s",
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                if row and row["user_type"] == "user":
+                    # permissions of this invited user
+                    invited_user_permissions = json.loads(row["permissions"])
+                    invited_by_email = invited_user_permissions.get("invited_by")
+
+                    if invited_by_email:
+                        # get the invited_by owner
+                        cursor.execute(
+                            "SELECT permissions FROM users WHERE email = %s",
+                            (invited_by_email,),
+                        )
+                        owner_row = cursor.fetchone()
+                        if owner_row and owner_row["permissions"]:
+                            owner_permissions = json.loads(owner_row["permissions"])
+
+                            agents_hub = owner_permissions.get("agents_hub", [])
+                            updated = False
+                            for agent in agents_hub:
+                                if agent.get("launch_id") == launch_id:
+                                    agent["name"] = assistant_name
+                                    agent["website_name"] = sync_website
+                                    agent["voice_type"] = voice_type
+                                    updated = True
+                                    break
+
+                            if updated:
+                                cursor.execute(
+                                    "UPDATE users SET permissions = %s WHERE email = %s",
+                                    (json.dumps(owner_permissions), invited_by_email),
+                                )
+                                connection.commit()
+                else:
+                    if row and row["permissions"]:
+                        owner_permissions = json.loads(row["permissions"])
+
+                        agents_hub = owner_permissions.get("agents_hub", [])
+                        updated = False
+                        for agent in agents_hub:
+                            if agent.get("launch_id") == launch_id:
+                                agent["name"] = assistant_name
+                                agent["website_name"] = sync_website
+                                agent["voice_type"] = voice_type
+                                updated = True
+                                break
+
+                        if updated:
+                            cursor.execute(
+                                "UPDATE users SET permissions = %s WHERE user_id = %s",
+                                (json.dumps(owner_permissions), user_id),
+                            )
+                            connection.commit()
+
+        # Return consistent response
+        return jsonify(
+            {
+                "api_key": api_key,
+                "assistant_name": assistant_name,
+                "sync_website": sync_website,
+                "voice_type": voice_type,
+            }
+        )
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        connection.close()
 
 
 @agent_bp.route("/get-training-settings", methods=["POST"])
@@ -203,7 +261,7 @@ def get_training_settings():
         if not user_id:
             return jsonify({"error": "User not logged in"}), 401
         if not check_userid_valid(user_id):
-            return jsonify({"error": "Invalid User ID"}), 404
+            return jsonify({"error": "Invalid Access"}), 404
 
         connection = connect_to_rds()
 
@@ -282,6 +340,8 @@ def checkquerywithApiKey():
                     jsonify({"error": "API key does not match the provided website"}),
                     401,
                 )
+            if not check_userid_valid(userid):
+                return jsonify({"error": "Invalid access"}), 404
 
         response_data = []
         # Check for exact match in passed_ques.yaml
@@ -374,6 +434,8 @@ def download_files():
     userid = fetch_userid_from_launch(apikey)
     if not userid:
         return jsonify({"error": "User ID not found for the provided API key"}), 401
+    if not check_userid_valid(userid):
+        return jsonify({"error": "Invalid access"}), 404
     access_token = get_token(userid, value=True)
 
     user_service = None
@@ -418,7 +480,7 @@ def makeuserDocClarifications(userid=None, industry=None):
     fetched_userid = data.get("userid") or userid
     print("fetched_userid", fetched_userid)
     if not check_userid_valid(fetched_userid):
-        return jsonify({"error": "Invalid User ID"}), 404
+        return jsonify({"error": "Invalid access"}), 404
     if fetched_userid:
         task_run = task_status.get(fetched_userid, {}).get("status", "not started")
         if task_run == "running":
@@ -509,7 +571,7 @@ def updateClarifications(userid=None, industry=None):
     if not fetched_userid:
         return jsonify({"error": "User ID is required"}), 400
     if not check_userid_valid(fetched_userid):
-        return jsonify({"error": "Invalid User ID"}), 404
+        return jsonify({"error": "Invalid access"}), 404
 
     fetched_queries = data.get("queries")
     if not fetched_queries or not isinstance(fetched_queries, list):
@@ -686,7 +748,7 @@ def getUsersDocs():
     if not userid:
         return jsonify({"error": "User ID is required"}), 400
     if not check_userid_valid(userid):
-        return jsonify({"error": "Invalid User ID"}), 404
+        return jsonify({"error": "Invalid access"}), 404
     yaml_path = f"{pathconfig.basepath}/{userid}/users_fileData.yaml"
     if not os.path.exists(yaml_path):
         return jsonify({"error": "No documents found for this user"}), 404
@@ -712,7 +774,7 @@ def delete_file():
     if not userid or not filename or not source:
         return jsonify({"error": "User ID, filename, and source are required"}), 400
     if not check_userid_valid(userid):
-        return jsonify({"error": "Invalid User ID"}), 404
+        return jsonify({"error": "Invalid access"}), 404
 
     yaml_path = f"{pathconfig.basepath}/{userid}/users_fileData.yaml"
     if not os.path.exists(yaml_path):
@@ -789,7 +851,7 @@ def get_ai_suggestion():
         if not userid:
             return jsonify({"error": "User ID is required"}), 400
         if not check_userid_valid(userid):
-            return jsonify({"error": "Invalid User ID"}), 404
+            return jsonify({"error": "Invalid access"}), 404
 
         # Load prompt template
         prompts = load_yaml_file(path=pathconfig.agent_template)
@@ -838,6 +900,8 @@ def process_audio():
     userid, agentid = get_user_agent_id(api_key)
     if not userid:
         return jsonify({"error": "User ID is required"}), 400
+    if not check_userid_valid(userid):
+        return jsonify({"error": "Invalid access"}), 404
 
     if "audio_file" not in request.files:
         return jsonify({"error": "Audio file is required"}), 400
@@ -983,7 +1047,7 @@ def get_audio_config():
     if not userid:
         return jsonify({"error": "User ID is required"}), 400
     if not check_userid_valid(userid):
-        return jsonify({"error": "Invalid User ID"}), 404
+        return jsonify({"error": "Invalid access"}), 404
 
     config_filename = fetch_document_link(agentid)
     if not config_filename:
@@ -1013,7 +1077,7 @@ def update_transcript():
         return jsonify({"error": "User ID is required"}), 400
 
     if not check_userid_valid(userid):
-        return jsonify({"error": "Invalid User ID"}), 404
+        return jsonify({"error": "Invalid access"}), 404
 
     filename = data.get("filename")  # title or file reference
     transcript_data = data.get("transcript_data")
@@ -1110,7 +1174,7 @@ def delete_audio():
         return jsonify({"error": "User ID is required"}), 400
 
     if not check_userid_valid(userid):
-        return jsonify({"error": "Invalid User ID"}), 404
+        return jsonify({"error": "Invalid access"}), 404
 
     audio_location = data.get("audio_location")
     if not audio_location:

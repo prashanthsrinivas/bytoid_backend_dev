@@ -609,12 +609,55 @@ def get_user_permissions(userid):
                 permissions = json.loads(row["permissions"])
             except Exception:
                 permissions = {}
-        print(permissions)
 
         role_permissions = permissions.get("role", {})
         role_permissions["status"] = permissions.get("status")
 
         return jsonify({"permissions": role_permissions}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@users_bp.route("/get_account_info/<userid>", methods=["GET"])
+def get_account_info(userid):
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT 
+                    u.user_id,
+                    u.first_name, 
+                    u.last_name, 
+                    u.email, 
+                    l.api_id 
+                FROM users u
+                LEFT JOIN launch l 
+                    ON l.user_id_fk = u.user_id  
+                WHERE u.user_id = %s
+                """,
+                (userid,),
+            )
+            row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "User not found"}), 404
+
+        # Handle None gracefully
+        return (
+            jsonify(
+                {
+                    "user_id": row.get("user_id"),
+                    "first_name": row.get("first_name") or "",
+                    "last_name": row.get("last_name") or "",
+                    "email": row.get("email") or None,
+                    "api_key": row.get("api_id") or None,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

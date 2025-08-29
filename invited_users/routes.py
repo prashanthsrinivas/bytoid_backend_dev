@@ -18,8 +18,6 @@ inv_users_bp = Blueprint("invited_users", __name__)
 logger = get_logger(__name__)
 
 
-import pymysql, json
-
 # BASE ROLES APIS FOR AMIN
 
 
@@ -178,30 +176,34 @@ def update_role():
                 invited_rows = cursor.fetchall()
 
                 for invited in invited_rows:
-                    invited_users = (
+                    invited_permissions = (
                         json.loads(invited["permissions"])
                         if invited and invited["permissions"]
-                        else []
+                        else {}
                     )
 
                     changed = False
-                    for entry in invited_users:
-                        if entry["role"]["id"] == role_id:
-                            if name:
-                                entry["role"]["name"] = name
-                            if permissions is not None:
-                                entry["role"]["permissions"] = permissions
-                            changed = True
+                    if (
+                        "role" in invited_permissions
+                        and invited_permissions["role"]["id"] == role_id
+                    ):
+                        if name:
+                            invited_permissions["role"]["name"] = name
+                        if permissions is not None:
+                            invited_permissions["role"]["permissions"] = permissions
+                        changed = True
 
                     if changed:
                         cursor.execute(
                             "UPDATE users SET permissions=%s WHERE user_id=%s",
-                            (json.dumps(invited_users), invited["user_id"]),
+                            (json.dumps(invited_permissions), invited["user_id"]),
                         )
+
             conn.commit()
         conn.close()
         return jsonify({"message": "Role updated successfully"}), 200
     except Exception as e:
+        print(e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -717,7 +719,7 @@ def edit_shared_user_role():
                 return jsonify({"error": "Admin user not found"}), 404
 
             if admin_row["user_type"] == "user":
-                jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "unAuthrotized access"}), 404
 
             roles_creation = json.loads(admin_row["roles_creation"] or "[]")
             permissions = json.loads(admin_row["permissions"] or "{}")
@@ -814,7 +816,7 @@ def revoke_shared_user_role():
                 conn.rollback()
                 return jsonify({"error": "Admin user not found"}), 404
             if admin_row["user_type"] == "user":
-                jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "unAuthrotized access"}), 404
 
             permissions = json.loads(admin_row["permissions"] or "{}")
 
@@ -881,7 +883,7 @@ def activate_shared_user_role():
                 conn.rollback()
                 return jsonify({"error": "Admin user not found"}), 404
             if admin_row["user_type"] == "user":
-                jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "unAuthrotized access"}), 404
 
             permissions = json.loads(admin_row["permissions"] or "{}")
 
