@@ -43,7 +43,9 @@ from utils.s3_utils import (
     attach_CLDFRNT_url,
     delete_file_from_s3,
     generate_presigned_url,
+    load_yaml_from_s3,
     read_json_from_s3,
+    save_yaml_to_s3,
     upload_any_file,
 )
 from .task_manager import run_background_task, task_status
@@ -345,8 +347,8 @@ def checkquerywithApiKey():
 
         response_data = []
         # Check for exact match in passed_ques.yaml
-        passed_yaml_path = f"{pathconfig.basepath}/{userid}/passed_ques.yaml"
-        valid_ones = load_yaml_file(passed_yaml_path)
+        passed_yaml_path = f"{userid}/yaml/passed_ques.yaml"
+        valid_ones = load_yaml_from_s3(passed_yaml_path)
         if valid_ones and isinstance(valid_ones[0], list):
             valid_ones = [item for sublist in valid_ones for item in sublist]
 
@@ -498,23 +500,16 @@ def makeuserDocClarifications(userid=None, industry=None):
     if not fetched_userid:
         return jsonify({"error": "User ID is required"}), 400
 
-    failed_path = f"{pathconfig.basepath}/{fetched_userid}/failed_ques.yaml"
-    failed_entries = load_yaml_file(failed_path)
+    failed_path = f"{fetched_userid}/yaml/failed_ques.yaml"
+    failed_entries = load_yaml_from_s3(failed_path)
 
     if not failed_entries:
         logger.info("⚠ failed_ques.yaml not found or empty, regenerating QAs...")
 
         # Load file metadata to get all Present files
-        user_files_path = os.path.join(
-            f"{pathconfig.basepath}/{fetched_userid}", "users_fileData.yaml"
-        )
-        if not os.path.exists(user_files_path):
-            return (
-                jsonify({"error": "Please upload a document to have clarifications"}),
-                404,
-            )
+        user_files_path = f"{fetched_userid}/yaml/users_fileData.yaml"
 
-        file_data = load_yaml_file(user_files_path) or []
+        file_data = load_yaml_from_s3(user_files_path) or []
 
         present_files = []
         for key, entries in file_data.items():
@@ -577,11 +572,11 @@ def updateClarifications(userid=None, industry=None):
     if not fetched_queries or not isinstance(fetched_queries, list):
         return jsonify({"error": "Queries must be a non-empty list"}), 400
 
-    passed_path = f"{pathconfig.basepath}/{fetched_userid}/passed_ques.yaml"
-    failed_path = f"{pathconfig.basepath}/{fetched_userid}/failed_ques.yaml"
+    passed_path = f"{fetched_userid}/yaml/passed_ques.yaml"
+    failed_path = f"{fetched_userid}/yaml/failed_ques.yaml"
 
-    passed_entries = load_yaml_file(passed_path) or []
-    failed_entries = load_yaml_file(failed_path) or []
+    passed_entries = load_yaml_from_s3(passed_path) or []
+    failed_entries = load_yaml_from_s3(failed_path) or []
     if failed_entries and isinstance(failed_entries[0], list):
         failed_entries = [item for sublist in failed_entries for item in sublist]
     if passed_entries and isinstance(passed_entries[0], list):
@@ -686,11 +681,16 @@ def updateClarifications(userid=None, industry=None):
                 )
 
     # ✅ Save YAML files
-    with open(passed_path, "w", encoding="utf-8") as pf:
-        yaml.dump(passed_entries, pf, allow_unicode=True, sort_keys=False)
+    # with open(passed_path, "w", encoding="utf-8") as pf:
+    #     yaml.dump(passed_entries, pf, allow_unicode=True, sort_keys=False)
 
-    with open(failed_path, "w", encoding="utf-8") as ff:
-        yaml.dump(failed_entries, ff, allow_unicode=True, sort_keys=False)
+    # with open(failed_path, "w", encoding="utf-8") as ff:
+    #     yaml.dump(failed_entries, ff, allow_unicode=True, sort_keys=False)
+    if passed_entries:
+        save_yaml_to_s3(passed_entries, userid, "passed_ques.yaml")
+    if failed_entries:
+        save_yaml_to_s3(failed_entries, userid, "failed_ques.yaml")
+
     if len(failed_entries) > 0:
         clarifications = []
 
@@ -749,11 +749,11 @@ def getUsersDocs():
         return jsonify({"error": "User ID is required"}), 400
     if not check_userid_valid(userid):
         return jsonify({"error": "Invalid access"}), 404
-    yaml_path = f"{pathconfig.basepath}/{userid}/users_fileData.yaml"
-    if not os.path.exists(yaml_path):
-        return jsonify({"error": "No documents found for this user"}), 404
+    yaml_path = f"{userid}/yaml/users_fileData.yaml"
+    # if not os.path.exists(yaml_path):
+    #     return jsonify({"error": "No documents found for this user"}), 404
 
-    all_file_data = load_yaml_file(yaml_path) or {}
+    all_file_data = load_yaml_from_s3(yaml_path) or {}
 
     return jsonify(all_file_data), 200
 
@@ -776,12 +776,12 @@ def delete_file():
     if not check_userid_valid(userid):
         return jsonify({"error": "Invalid access"}), 404
 
-    yaml_path = f"{pathconfig.basepath}/{userid}/users_fileData.yaml"
-    if not os.path.exists(yaml_path):
-        return jsonify({"error": "No documents found for this user"}), 404
+    yaml_path = f"{userid}/yaml/users_fileData.yaml"
+    # if not os.path.exists(yaml_path):
+    #     return jsonify({"error": "No documents found for this user"}), 404
 
     # Load main file metadata YAML
-    all_file_data = load_yaml_file(yaml_path) or {}
+    all_file_data = load_yaml_from_s3(yaml_path) or {}
 
     if source not in all_file_data or not isinstance(all_file_data[source], list):
         return jsonify({"error": f"No entries found for source '{source}'"}), 404
@@ -810,8 +810,9 @@ def delete_file():
         return jsonify({"error": "Filename not found in specified source"}), 404
 
     # Step 3: Save updated YAML
-    with open(yaml_path, "w") as f:
-        yaml.safe_dump(all_file_data, f, sort_keys=False)
+    # with open(yaml_path, "w") as f:
+    #     yaml.safe_dump(all_file_data, f, sort_keys=False)
+    save_yaml_to_s3(all_file_data,userid,"users_fileData.yaml")
 
     # Step 4: Delete related passed/failed Q&A entries
     success = deletefilebasedData(filename, userid)
@@ -820,8 +821,8 @@ def delete_file():
             f"Failed to delete question entries for user {userid}, file {filename}"
         )
 
-    # Reload for returning updated data
-    all_file_data
+    # # Reload for returning updated data
+    # all_file_data
 
     return (
         jsonify(

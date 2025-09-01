@@ -54,7 +54,9 @@ def get_files_in_folder(service_instance, folder_id):
         )
         return results.get("files", [])
     except HttpError as error:
-        logger.info(f"An error occurred while listing files in folder {folder_id}: {error}")
+        logger.info(
+            f"An error occurred while listing files in folder {folder_id}: {error}"
+        )
         return []
 
 
@@ -65,7 +67,9 @@ def share_file_with_email(file_id, user_service):
         "emailAddress": SERVICE_ACCOUNT_EMAIL,
     }
 
-    logger.info(f"📤 Sharing file {file_id} with {SERVICE_ACCOUNT_EMAIL} is being called")
+    logger.info(
+        f"📤 Sharing file {file_id} with {SERVICE_ACCOUNT_EMAIL} is being called"
+    )
 
     try:
         # --- Get file metadata before attempting to share ---
@@ -86,7 +90,7 @@ def share_file_with_email(file_id, user_service):
             fields="id",
             sendNotificationEmail=False,
         )
-        logger.info("📬 Prepared request object:", request)
+        logger.info("📬 Prepared request object: %s", request)
 
         result = request.execute()
         permission_id = result.get("id")
@@ -158,7 +162,9 @@ def download_file(f, userid, base_dir=None):
 
             with open(save_path, "wb") as f_out:
                 f_out.write(fh.getvalue())
-            logger.info(f"✅ Successfully downloaded (exported) '{name}' to: {save_path}")
+            logger.info(
+                f"✅ Successfully downloaded (exported) '{name}' to: {save_path}"
+            )
             return save_path
         except HttpError as error:
             logger.info(f"❌ Error exporting '{name}' ({file_id}): {error}")
@@ -229,7 +235,9 @@ def GetEmailandDriveService(access_token):
 
         # Test the service by fetching user info
         about_info = user_service.about().get(fields="user").execute()
-        logger.info("✅ Drive service is working for:", about_info["user"]["emailAddress"])
+        logger.info(
+            "✅ Drive service is working for: %s", about_info["user"]["emailAddress"]
+        )
 
         return user_service
 
@@ -244,7 +252,9 @@ def Mediatorservice(data, userid, user_service):
     failed_downloads = []
     ensure_dir(f"data/{userid}/google")
 
-    logger.info(f"\nReceived request to download {len(files_to_download)} files/folders.")
+    logger.info(
+        f"\nReceived request to download {len(files_to_download)} files/folders."
+    )
     perm = None
 
     for f_metadata in files_to_download:

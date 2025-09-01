@@ -18,7 +18,12 @@ from utils.chatopenzz import (
 )
 from datetime import datetime
 
-from utils.s3_utils import read_json_from_s3, upload_any_file
+from utils.s3_utils import (
+    load_yaml_from_s3,
+    read_json_from_s3,
+    save_yaml_to_s3,
+    upload_any_file,
+)
 
 logger = get_logger(__name__)
 from dotenv import load_dotenv
@@ -312,7 +317,6 @@ def append_to_failed_no_duplicates(failed_data, new_entries, passed_data):
 
 
 def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
-    """Generate Q&A for given files, handling new vs updated file logic."""
     if not filenames or not isinstance(filenames, list):
         logger.warning("⚠ No filenames passed for QA processing.")
         return None
@@ -330,21 +334,18 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
 
     logger.info(f"📂 Processing QAs for files: {filenames}")
 
-    main_folder = f"{pathconfig.basepath}/{userid}"
-    os.makedirs(main_folder, exist_ok=True)
+    # File paths in S3
+    passes_key = f"{userid}/yaml/passed_ques.yaml"
+    failed_key = f"{userid}/yaml/failed_ques.yaml"
 
-    passes_files = os.path.join(main_folder, "passed_ques.yaml")
-    failed_ques = os.path.join(main_folder, "failed_ques.yaml")
-
-    passed_data = flatten_list(load_yaml_file(passes_files) or [])
-    failed_data = flatten_list(load_yaml_file(failed_ques) or [])
+    passed_data = flatten_list(load_yaml_from_s3(passes_key) or [])
+    failed_data = flatten_list(load_yaml_from_s3(failed_key) or [])
 
     # Determine if all files are new
     all_new = all(is_new_file(fn, passed_data, failed_data) for fn in filenames)
 
     if not all_new:
-        # Updated file(s) → remove old entries for those files from failed data only
-        failed_data = remove_entries_for_files(failed_ques, filenames)
+        failed_data = remove_entries_for_files(failed_data, filenames)
 
     # Step 1: Fetch docs & generate questions
     usecases_with_docs = fetch_usecases_with_docs(usecases, userid, filenames=filenames)
@@ -405,10 +406,8 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
             else:
                 clarification_responses.append(entry_obj)
 
-    # Step 4: Append valid_responses to passed_data with AI diff logic
+    # Step 4–6: Update passed/failed
     npassed_data = append_passed_with_ai_diff(passed_data, valid_responses)
-
-    # Step 5: Remove answered questions from failed_data
     answered_keys = {(v.get("User"), v.get("filename")) for v in valid_responses}
     failed_data = [
         e
@@ -416,7 +415,6 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
         if (e.get("User"), e.get("filename")) not in answered_keys
     ]
 
-    # Step 6: Append clarifications to failed_data (skip those already in passed)
     passed_keys = {(p.get("User"), p.get("filename")) for p in npassed_data}
     clarification_responses = [
         c
@@ -426,26 +424,27 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
     failed_data = append_to_failed_no_duplicates(
         failed_data, clarification_responses, npassed_data
     )
-    # Save results
-    if npassed_data:
-        save_yaml_file(npassed_data, filepath=passes_files)
-    if failed_data:
-        save_yaml_file(failed_data, filepath=failed_ques)
 
-    logger.info(f"✅ Saved updated QAs to {passes_files} and {failed_ques}")
+    # Save back to S3
+    if npassed_data:
+        save_yaml_to_s3(npassed_data, userid, "passed_ques.yaml")
+    if failed_data:
+        save_yaml_to_s3(failed_data, userid, "failed_ques.yaml")
+
+    logger.info(f"✅ Saved updated QAs to S3")
 
     return {
         "processed_files": filenames,
-        "passed_path": passes_files,
-        "failed_path": failed_ques,
+        "passed_path": passes_key,
+        "failed_path": failed_key,
     }
 
 
 def clarific_transcriptions(userid, val, filename, config_filename, transcript_path):
     clarification_responses = []
-    main_folder = f"{pathconfig.basepath}/{userid}"
-    os.makedirs(main_folder, exist_ok=True)
-    failed_ques = os.path.join(main_folder, "failed_ques.yaml")
+    failed_key = f"{userid}/yaml/failed_ques.yaml"
+
+    failed_ques = flatten_list(load_yaml_from_s3(failed_key) or [])
 
     # Load existing data if any
     quote_summary = val["summary"] if "summary" in val else filename

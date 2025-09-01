@@ -244,8 +244,6 @@ class LanceClient:
     def send_batch_to_lancedb(self, vector_batch: List[VectorData]):
         payload = [vec.dict() for vec in vector_batch]
 
-        logger = logger.info("google_route.lance_agent")
-
         try:
             response = requests.post(f"{self.lancedb_url}/insert_batch", json=payload)
             if response.status_code == 200:
@@ -285,9 +283,9 @@ class LanceClient:
         # For RunnableSequence, 'invoke' returns a message object, so we extract content.
         # print("context from the lancedb", context)
         response = self.relevance_chain.invoke({"query": query, "context": context})
-        print(
-            "response from extraction", response
-        )  # This will print the AIMessage object
+        # print(
+        #     "response from extraction", response
+        # )  # This will print the AIMessage object
         # You need to access .content from the AIMessage object
         return response.content.strip()
 

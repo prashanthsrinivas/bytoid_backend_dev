@@ -19,6 +19,8 @@ import requests
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
+from utils.s3_utils import S3_BUCKET, load_yaml_from_s3, s3bucket, save_yaml_to_s3
+
 logger = get_logger(__name__)
 
 
@@ -72,49 +74,55 @@ def log_removal(before_list, after_list):
 
 
 def deletefilebasedData(filename, userid):
+    """
+    Delete all Q&A entries for a given file from the user's YAML files in S3.
+    Works on both passed_ques.yaml and failed_ques.yaml.
+    """
     try:
-        main_folder = f"{pathconfig.basepath}/{userid}"
-        os.makedirs(main_folder, exist_ok=True)
+        s3 = s3bucket()
+        target_name = filename.strip().lower()
 
         for ques_file in ["passed_ques.yaml", "failed_ques.yaml"]:
-            ques_path = os.path.join(main_folder, ques_file)
-            if os.path.exists(ques_path):
-                ques_data = load_yaml_file(ques_path)
+            s3_key = f"{userid}/yaml/{ques_file}"
+            ques_data = load_yaml_from_s3(s3_key) or []
 
-                # Flatten in case there are nested lists
-                flat_data = []
-                for item in ques_data:
-                    if isinstance(item, list):
-                        flat_data.extend(item)
-                    else:
-                        flat_data.append(item)
-
-                target_name = filename.strip().lower()
-
-                filtered_data = []
-                for q in flat_data:
-                    if isinstance(q, dict):
-                        file_value = (q.get("filename") or "").strip().lower()
-                        if (
-                            os.path.splitext(file_value)[0]
-                            != os.path.splitext(target_name)[0]
-                        ):
-                            filtered_data.append(q)
-                    else:
-                        # Keep unexpected data untouched
-                        filtered_data.append(q)
-
-                if filtered_data:
-                    with open(ques_path, "w") as f:
-                        yaml.safe_dump(filtered_data, f, sort_keys=False)
+            # Flatten in case there are nested lists
+            flat_data = []
+            for item in ques_data:
+                if isinstance(item, list):
+                    flat_data.extend(item)
                 else:
-                    os.remove(ques_path)
+                    flat_data.append(item)
+
+            # Filter out entries for the given filename
+            filtered_data = []
+            for q in flat_data:
+                if isinstance(q, dict):
+                    file_value = (q.get("filename") or "").strip().lower()
+                    if (
+                        os.path.splitext(file_value)[0]
+                        != os.path.splitext(target_name)[0]
+                    ):
+                        filtered_data.append(q)
+                else:
+                    filtered_data.append(q)  # keep unexpected data untouched
+
+            if filtered_data:
+                # Save filtered list back to S3
+                save_yaml_to_s3(filtered_data, userid, ques_file)
+            else:
+                # If empty → delete object from S3
+                try:
+                    s3.delete_object(Bucket=S3_BUCKET, Key=s3_key)
+                    logger.info(f"🗑 Deleted empty file {s3_key} from S3")
+                except Exception as e:
+                    logger.warning(f"⚠ Could not delete {s3_key} from S3: {e}")
 
         return True
 
     except Exception as e:
         logger.error(
-            f"Error deleting question entries for user {userid}, file {filename}: {e}",
+            f"❌ Error deleting question entries for user {userid}, file {filename}: {e}",
             exc_info=True,
         )
         return False
@@ -146,10 +154,10 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     for path in all_downloaded_paths:
         filename = os.path.basename(path)
         lance_client = LanceClient(user_id=userid)
-        result = await lance_client.process_document(file_path=path, filename=filename)
+        result = lance_client.process_document(file_path=path, filename=filename)
 
         if result.get("vectors_made", 0) > 0:
-            current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             processed_filenames.append(
                 {
                     "filename": filename,
@@ -169,12 +177,11 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
         shutil.rmtree(folderpath)
 
     # Ensure user directory exists
-    ensure_dir(f"{pathconfig.basepath}/{userid}")
-    yaml_path = os.path.join(f"{pathconfig.basepath}/{userid}", "users_fileData.yaml")
+    yaml_path = f"{userid}/yaml/users_fileData.yaml"
 
     # Load existing YAML or initialize structure
     if os.path.exists(yaml_path):
-        existing_data = load_yaml_file(yaml_path) or {}
+        existing_data = load_yaml_from_s3(yaml_path) or {}
     else:
         existing_data = {}
 
@@ -204,9 +211,9 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
             provider_files.append(item)
 
     # Write back to YAML
-    with open(yaml_path, "w") as f:
-        yaml.safe_dump(existing_data, f, sort_keys=False)
-
+    # with open(yaml_path, "w") as f:
+    #     yaml.safe_dump(existing_data, f, sort_keys=False)
+    save_yaml_to_s3(existing_data, userid, "users_fileData.yaml")
     logger.info(
         f"[✅] Updated YAML for provider '{provider}' with {len(processed_filenames)} files."
     )
@@ -222,8 +229,7 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
             func=preProcessDocWithUsecases,
         )
         print(f"[DEBUG] Background task queued: {result}")
-    yaml_path = os.path.join(f"{pathconfig.basepath}/{userid}", "users_fileData.yaml")
-    all_file_data = load_yaml_file(yaml_path) or {}
+    all_file_data = load_yaml_from_s3(yaml_path) or {}
     return all_file_data
 
 

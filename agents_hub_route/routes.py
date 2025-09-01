@@ -503,12 +503,25 @@ def get_all_mini_agents(userid):
                 if "agents_hub" not in owner_permissions:
                     owner_permissions["agents_hub"] = []
 
-                for agent in owner_permissions.get("agents_hub", []):
+                for agent in owner_permissions["agents_hub"]:
+                    cursor.execute(
+                        "SELECT first_name, last_name FROM users WHERE user_id = %s",
+                        (agent.get("user_id"),),
+                    )
+                    user_row = cursor.fetchone()
+
+                    # Build full name (fallbacks to "" if missing)
+                    full_name = ""
+                    if user_row:
+                        first_name = user_row.get("first_name") or ""
+                        last_name = user_row.get("last_name") or ""
+                        full_name = f"{first_name} {last_name}".strip()
 
                     agents_hub_data.append(
                         {
                             "email": agent.get("email"),
                             "name": agent.get("name"),
+                            "username": full_name,
                             "id": agent.get("launch_id"),
                             "userid": agent.get("user_id"),
                         }
