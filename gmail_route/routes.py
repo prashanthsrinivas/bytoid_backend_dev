@@ -1,3 +1,4 @@
+import asyncio
 from flask import Blueprint, request, jsonify, session
 from .gmail_service import GmailService
 import uuid
@@ -23,9 +24,8 @@ import re
 gmail_bp = Blueprint("gmail", __name__)
 
 
-
-
 # @gmail_bp.route("/gmail/fetch")
+
 
 async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
     """
@@ -38,18 +38,16 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
 
         # Fetch one batch of messages
         threads, next_page_token = await gmail_service.get_threads_async(
-            'INBOX', 
-            max_results=batch_size,
-            start_page_token=page_token
+            "INBOX", max_results=batch_size, start_page_token=page_token
         )
-        
+
         if not threads:
             print("📭 No threads found in this batch")
             return {"status": "success", "new_messages": 0, "next_page_token": None}
 
         count_new = 0
         grouped_messages = defaultdict(list)
-        
+
         # Database connection
         connection = connect_to_rds()
         if connection is None:
@@ -61,7 +59,7 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
         timestamp = datetime.now(timezone.utc)
         date_str = timestamp.strftime("%Y-%m-%d")
         filename = f"{date_str}.json"
-        
+
         user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
         ensure_dir(user_folder)
         filepath = os.path.join(user_folder, filename)
@@ -69,37 +67,39 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
         # Load existing data
         existing_ids_local = set()
         input_data_local = {}
-        
+
         if os.path.exists(filepath):
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    existing_data_local = json.load(f)
-                    input_data_local = existing_data_local.get("input_data", {})
-                    
-                # Extract existing message IDs
-                for client_data in input_data_local.values():
-                    if isinstance(client_data, dict):
-                        for client_channels in client_data.values():
-                            if isinstance(client_channels, dict):
-                                for channel_msgs in client_channels.values():
-                                    if isinstance(channel_msgs, list):
-                                        for msg in channel_msgs:
-                                            if isinstance(msg, dict):
-                                                msg_id = msg.get("id")
-                                                if msg_id:
-                                                    existing_ids_local.add(msg_id)
-            except Exception as e:
-                print(f"⚠️ Error loading existing data: {e}")
+            with open(filepath, "r", encoding="utf-8") as f:
+                existing_data_local = json.load(f)
+                input_data_local = existing_data_local.get("input_data", {})
+            if len(input_data_local) > 0:
+                try:
+                    # Extract existing message IDs
+                    for client_data in input_data_local.values():
+                        if isinstance(client_data, dict):
+                            for client_channels in client_data.values():
+                                if isinstance(client_channels, dict):
+                                    for channel_msgs in client_channels.values():
+                                        if isinstance(channel_msgs, list):
+                                            for msg in channel_msgs:
+                                                if isinstance(msg, dict):
+                                                    msg_id = msg.get("id")
+                                                    if msg_id:
+                                                        existing_ids_local.add(msg_id)
+                except Exception as e:
+                    print(f"⚠️ Error loading existing data: {e}")
 
         # Process messages (your existing logic)
         email_to_client_id = {}
         configs_created = set()
-        
+
         for msg in threads:
             message_id = msg["messageId"]
 
             # Skip if already exists in database
-            cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (message_id,))
+            cursor.execute(
+                "SELECT 1 FROM messages WHERE message_id = %s", (message_id,)
+            )
             if cursor.fetchone():
                 continue
 
@@ -114,7 +114,11 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
             direction = "inbound" if msg["from"] != user_email else "outbound"
             subject = msg["subject"]
             body_content = msg.get("body", "")
-            plain_text = BeautifulSoup(body_content, "html.parser").get_text(separator="\n").strip()
+            plain_text = (
+                BeautifulSoup(body_content, "html.parser")
+                .get_text(separator="\n")
+                .strip()
+            )
             extracted_body = extract_reply_content(plain_text)
 
             from_name, from_email = parseaddr(msg["from"])
@@ -133,7 +137,9 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
             else:
                 client_id, type = get_users_client_id(participant, user_id, cursor)
                 if not client_id:
-                    client_id = add_lead_contact(user_id, cursor, participant, participant_name)
+                    client_id = add_lead_contact(
+                        user_id, cursor, participant, participant_name
+                    )
                     type = "Lead"
                 email_to_client_id[participant] = (client_id, type)
 
@@ -153,23 +159,35 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
                 "type": type,
             }
 
-            grouped_messages.setdefault(client_id, {}).setdefault("gmail", []).append(message)
+            grouped_messages.setdefault(client_id, {}).setdefault("gmail", []).append(
+                message
+            )
             count_new += 1
 
             if client_id not in configs_created:
 
                 # Create config files if needed (your existing logic)
-                config_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+                config_folder = os.path.join(
+                    pathconfig.basepath, "messages", user_id, client_id
+                )
                 ensure_dir(config_folder)
                 config_filepath = os.path.join(config_folder, "config.json")
 
                 if not os.path.exists(config_filepath):
                     dummy_config = {
                         "userclients_id": client_id,
-                        "conversations": [{
-                            "conv_id": "", "ticket_id": "", "ticket_name": "", "subject": "",
-                            "channel": "", "updated_date": "", "parsed_timestamp": "", "thread_id": ""
-                        }],
+                        "conversations": [
+                            {
+                                "conv_id": "",
+                                "ticket_id": "",
+                                "ticket_name": "",
+                                "subject": "",
+                                "channel": "",
+                                "updated_date": "",
+                                "parsed_timestamp": "",
+                                "thread_id": "",
+                            }
+                        ],
                     }
                     with open(config_filepath, "w", encoding="utf-8") as f:
                         json.dump(dummy_config, f, indent=2)
@@ -188,7 +206,6 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
 
                 configs_created.add(client_id)
 
-        print(f"configs_created : {configs_created}")
         # Merge with existing data and save
         existing_data = {}
         if os.path.exists(filepath):
@@ -196,248 +213,289 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
                 existing_data = json.load(f)
 
         merged_messages = existing_data.get("input_data", {})
-        
+
         for client_id, channels in grouped_messages.items():
             for channel, messages in channels.items():
-                merged_messages.setdefault(client_id, {}).setdefault("gmail", []).extend(messages)
+                merged_messages.setdefault(client_id, {}).setdefault(
+                    "gmail", []
+                ).extend(messages)
 
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump({"filename": filename, "input_data": merged_messages}, f, indent=2)
+            json.dump(
+                {"filename": filename, "input_data": merged_messages}, f, indent=2
+            )
 
         cursor.close()
         connection.close()
 
         print(f"✅ Batch complete: {count_new} new messages processed")
         return {
-            "status": "success", 
+            "status": "success",
             "new_messages": count_new,
             "next_page_token": next_page_token,
-            "grouped_messages": dict(grouped_messages)  # Return current batch data
+            "grouped_messages": dict(grouped_messages),  # Return current batch data
         }
 
     except Exception as e:
         print(f"[ERROR] → fetch_gmail_messages_batch failed: {e}")
-        return {"error": str(e), "status": "failed", "next_page_token": None, "grouped_messages": {}}
+        return {
+            "error": str(e),
+            "status": "failed",
+            "next_page_token": None,
+            "grouped_messages": {},
+        }
 
 
+def safe_json_load(filepath):
+    if not os.path.exists(filepath):
+        return {}
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return {}
+            return json.loads(content)
+    except json.JSONDecodeError:
+        print(f"⚠️ Corrupted JSON at {filepath}, resetting.")
+        return {}
 
 
+async def v2fetch_gmail_messages_batch(user_id, threads, my_email, batch_count, cursor):
+    """
+    Fetch a single batch of Gmail messages
+    """
+    try:
+        print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
+        gmail_service = GmailService(user_id)
+        # user_email = gmail_service.user_email
 
+        # Fetch one batch of messages
+        results = await gmail_service.process_threads_batch(
+            threads, my_email, batch_count
+        )
+        print(
+            f"GOT the data from results {batch_count} in v2 fetch gmail", len(results)
+        )
+        all_messages = []
+        for idx, thread in enumerate(threads):
+            thread_id = thread["id"]
+            res = results.get(thread_id)
 
+            if not res:
+                print(f"⚠️ No response for thread {thread_id}")
+                continue
 
+            thread_data, err = res  # ✅ unpack tuple
 
+            if err:
+                print(f"⚠️ Thread {thread_id} error: {err}")
+                continue
 
+            if thread_data:
+                all_messages.extend(thread_data)
 
-    # actual code:
-    # async def fetch_gmail_messages(user_id):
-    # try:
-    #     # user_id = request.args.get("user_id") or session.get("user_id")
-    #     print(f"User ID from session: {user_id}")
-    #     gmail_service = GmailService(user_id)
-    #     user_email = gmail_service.user_email
+        if not all_messages:
+            print("📭 No messages found in this batch")
+            return {"status": "success", "new_messages": 0, "next_page_token": None}
 
-    #     # Fetch the latest threads (e.g., 50)
-    #     # threads = await gmail_service.get_inbox()
-    #     threads = await gmail_service.get_threads_async('INBOX', max_results=250)
+        count_new = 0
+        grouped_messages = defaultdict(list)
+        # cursor = connection.cursor()
 
+        # File setup
+        timestamp = datetime.now(timezone.utc)
+        date_str = timestamp.strftime("%Y-%m-%d")
+        filename = f"{date_str}.json"
 
-    #     count_new = 0
+        user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+        ensure_dir(user_folder)
+        filepath = os.path.join(user_folder, filename)
 
-    #     grouped_messages = defaultdict(list)
-    #     connection = connect_to_rds()
-    #     if connection is None:
-    #         return None
+        # Load existing data
+        existing_ids_local = set()
+        input_data_local = {}
 
-    #     cursor = connection.cursor()
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    existing_data_local = json.load(f)
+                    input_data_local = existing_data_local.get("input_data", {})
 
-    #     timestamp = datetime.now(timezone.utc)
-    #     date_str = timestamp.strftime("%Y-%m-%d")
-    #     filename = f"{date_str}.json"
-    #     s3_key = f"{user_id}/messages/{filename}"
+                # Extract existing message IDs
+                for client_data in input_data_local.values():
+                    if isinstance(client_data, dict):
+                        for client_channels in client_data.values():
+                            if isinstance(client_channels, dict):
+                                for channel_msgs in client_channels.values():
+                                    if isinstance(channel_msgs, list):
+                                        for msg in channel_msgs:
+                                            if isinstance(msg, dict):
+                                                msg_id = msg.get("id")
+                                                if msg_id:
+                                                    existing_ids_local.add(msg_id)
+            except Exception as e:
+                print(f"⚠️ Error loading existing data: {e}")
 
-    #     # collecting messags from local file
-    #     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-    #     ensure_dir(user_folder)
-    #     filepath = os.path.join(user_folder, filename)
+        # Process messages (your existing logic)
+        email_to_client_id = {}
+        configs_created = set()
 
-    #     input_data_local = {}
-    #     try:
-    #         existing_data_local = {}
-    #         if os.path.exists(filepath):
-    #             with open(filepath, "r", encoding="utf-8") as f:
-    #                 existing_data_local = json.load(f)
-    #                 input_data_local_raw = existing_data_local.get("input_data", {})
-    #                 if isinstance(input_data_local_raw, dict):
-    #                     input_data_local = input_data_local_raw
-    #                 else:
-    #                     print(
-    #                         f"⚠️ Unexpected input_data_local format: {type(input_data_local_raw)}"
-    #                     )
-    #                     input_data_local = {}
-    #     except Exception as e:
-    #         input_data_local = {}
+        for msg in all_messages:
+            message_id = msg["messageId"]
 
-    #     existing_ids_local = set()
+            # Skip if already exists in database
+            cursor.execute(
+                "SELECT 1 FROM messages WHERE message_id = %s", (message_id,)
+            )
+            if cursor.fetchone():
+                continue
 
-    #     if isinstance(input_data_local, dict):
-    #         for client_data in input_data_local.values():
-    #             if isinstance(client_data, dict):
-    #                 for client_channels in client_data.values():
-    #                     if isinstance(client_channels, dict):
-    #                         for channel_msgs in client_channels.values():
-    #                             if isinstance(channel_msgs, list):
-    #                                 for msg in channel_msgs:
-    #                                     if isinstance(msg, dict):
-    #                                         msg_id = msg.get("id")
-    #                                         if msg_id:
-    #                                             existing_ids_local.add(msg_id)
+            # Skip if already exists locally
+            if message_id in existing_ids_local:
+                continue
 
-    #     # Flatten all existing message IDs for deduplication
+            # Your existing message processing logic...
+            thread_id = msg["thread_id"]
+            dt = parsedate_to_datetime(msg["date"])
+            timestamp_iso = dt.isoformat()
+            direction = "inbound" if msg["from"] != my_email else "outbound"
+            subject = msg["subject"]
+            body_content = msg.get("body", "")
+            plain_text = (
+                BeautifulSoup(body_content, "html.parser")
+                .get_text(separator="\n")
+                .strip()
+            )
+            extracted_body = extract_reply_content(plain_text)
 
-    #     count_new = 0
-    #     email_to_client_id = {}
-    #     for msg in threads:
-    #         message_id = msg["messageId"]
+            from_name, from_email = parseaddr(msg["from"])
+            to_name, to_email = parseaddr(msg.get("to", ""))
 
-    #         cursor.execute(
-    #             "SELECT 1 FROM messages WHERE message_id = %s", (message_id,)
-    #         )
-    #         m_id = cursor.fetchone()
-    #         if m_id:
-    #             continue
+            if direction == "inbound":
+                participant = from_email
+                participant_name = from_name
+            else:
+                participant = to_email
+                participant_name = to_name
 
-    #         if message_id in existing_ids_local:
-    #             continue
+            # Get or create client
+            if participant in email_to_client_id:
+                client_id, client_type = email_to_client_id[participant]
+            else:
+                result = get_users_client_id(participant, user_id, cursor)
 
-    #         thread_id = msg["thread_id"]
-    #         dt = parsedate_to_datetime(msg["date"])
-    #         timestamp_iso = dt.isoformat()
-    #         direction = (
-    #             "inbound" if msg["from"] != gmail_service.user_email else "outbound"
-    #         )
-    #         subject = msg["subject"]
-    #         body_content = msg.get("body", "")
-    #         plain_text = (
-    #             BeautifulSoup(body_content, "html.parser")
-    #             .get_text(separator="\n")
-    #             .strip()
-    #         )
-    #         extracted_body = extract_reply_content(plain_text)
+                if isinstance(result, tuple) and len(result) == 2:
+                    client_id, client_type = result
+                else:
+                    # assume function returned only client_id
+                    client_id = result if result else None
+                    client_type = None
 
-    #         from_name, from_email = parseaddr(msg["from"])
-    #         to_name, to_email = parseaddr(msg.get("to", ""))
+                if not client_id:
+                    client_id = add_lead_contact(
+                        user_id, cursor, participant, participant_name
+                    )
+                    client_type = "Lead"
 
-    #         if direction == "inbound":
-    #             participant = from_email
-    #             participant_name = from_name
-    #         else:
-    #             participant = to_email
-    #             participant_name = to_name
+                email_to_client_id[participant] = (client_id, client_type)
 
-    #         if participant in email_to_client_id:
-    #             client_id, type = email_to_client_id[participant]
-    #             print(f"Using cached client_id {client_id} for {participant}")
+            # Create message object
+            message = {
+                "id": message_id,
+                "from": from_email,
+                "to": my_email,
+                "body": extracted_body,
+                "subject": subject,
+                "timestamp": timestamp_iso,
+                "source": "gmail",
+                "direction": direction,
+                "user_id": user_id,
+                "thread_id": thread_id,
+                "conversation_id": from_email if direction == "inbound" else my_email,
+                "type": client_type,
+            }
 
-    #         else:
-    #             # Check database for existing client
-    #             client_id, type = get_users_client_id(participant, user_id, cursor)
+            grouped_messages.setdefault(client_id, {}).setdefault("gmail", []).append(
+                message
+            )
+            count_new += 1
 
-    #             if not client_id:
-    #                 # Create new client
-    #                 client_id = add_lead_contact(
-    #                     user_id, cursor, participant, participant_name
-    #                 )
-    #                 type = "Lead"
+            if client_id not in configs_created:
 
-    #             # Cache the client_id for this email
-    #             email_to_client_id[participant] = (client_id, type)
+                # Create config files if needed (your existing logic)
+                config_folder = os.path.join(
+                    pathconfig.basepath, "messages", user_id, client_id
+                )
+                ensure_dir(config_folder)
+                config_filepath = os.path.join(config_folder, "config.json")
+                #  {
+                #                 "conv_id": "",
+                #                 "ticket_id": "",
+                #                 "ticket_name": "",
+                #                 "subject": "",
+                #                 "channel": "",
+                #                 "updated_date": "",
+                #                 "parsed_timestamp": "",
+                #                 "thread_id": "",
+                #             }
 
-    #         message = {
-    #             "id": message_id,
-    #             "from": from_email,
-    #             "to": user_email,
-    #             "body": extracted_body,
-    #             "subject": subject,
-    #             "timestamp": timestamp_iso,
-    #             "source": "gmail",
-    #             "direction": direction,
-    #             "user_id": user_id,
-    #             "thread_id": thread_id,
-    #             "conversation_id": (
-    #                 from_email if direction == "inbound" else user_email
-    #             ),
-    #             "type": type,
-    #         }
+                if not os.path.exists(config_filepath):
+                    dummy_config = {
+                        "userclients_id": client_id,
+                        "conversations": [],
+                    }
+                    with open(config_filepath, "w", encoding="utf-8") as f:
+                        json.dump(dummy_config, f, indent=2)
 
-    #         grouped_messages.setdefault(client_id, {}).setdefault("gmail", []).append(
-    #             message
-    #         )
+                    s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                    s3_data = read_json_from_s3(s3_config_key)
+                    if s3_data is None:
 
-    #         count_new += 1
+                        upload_any_file(
+                            config_filepath,
+                            user_id,
+                            type="messages",
+                            s3_key_C=s3_config_key,
+                        )
+                        print(f"uploaded config for client_id: {client_id}")
 
-    #         config_folder = os.path.join(
-    #             pathconfig.basepath, "messages", user_id, client_id
-    #         )
-    #         ensure_dir(config_folder)
+                configs_created.add(client_id)
 
-    #         config_filepath = os.path.join(config_folder, "config.json")
+        # Merge with existing data and save
+        existing_data = safe_json_load(filepath)
 
-    #         if not os.path.exists(config_filepath):
-    #             dummy_config = {
-    #                 "userclients_id": client_id,
-    #                 "conversations": [
-    #                     {
-    #                         "conv_id": "",
-    #                         "ticket_id": "",
-    #                         "ticket_name": "",
-    #                         "subject": "",
-    #                         "channel": "",
-    #                         "updated_date": "",
-    #                         "parsed_timestamp": "",
-    #                         "thread_id": "",
-    #                     }
-    #                 ],
-    #             }
+        merged_messages = existing_data.get("input_data", {})
 
-    #             with open(config_filepath, "w", encoding="utf-8") as f:
-    #                 json.dump(dummy_config, f, indent=2)
+        for client_id, channels in grouped_messages.items():
+            for channel, messages in channels.items():
+                merged_messages.setdefault(client_id, {}).setdefault(
+                    "gmail", []
+                ).extend(messages)
 
-    #             s3_config_key = f"{user_id}/messages/{client_id}/config.json"
-    #             s3_data = read_json_from_s3(s3_config_key)
-    #             if s3_data is None:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(
+                {"filename": filename, "input_data": merged_messages}, f, indent=2
+            )
 
-    #                 upload_any_file(
-    #                     config_filepath,
-    #                     user_id,
-    #                     type="messages",
-    #                     s3_key_C=s3_config_key,
-    #                 )
+        # cursor.close()
+        # connection.close()
 
-    #     existing_data = {}
-    #     if os.path.exists(filepath):
-    #         with open(filepath, "r", encoding="utf-8") as f:
-    #             existing_data = json.load(f)
+        print(f"✅ Batch complete: {count_new} new messages processed")
+        return {
+            "status": "success",
+            "new_messages": count_new,
+            "next_page_token": None,
+            "grouped_messages": dict(grouped_messages),  # Return current batch data
+        }
 
-    #     merged_messages = existing_data.get("input_data", {})
-
-    #     # Add current Gmail messages to merged structure
-    #     for client_id, channels in grouped_messages.items():
-    #         for channel, messages in channels.items():
-    #             merged_messages.setdefault(client_id, {}).setdefault(
-    #                 "gmail", []
-    #             ).extend(messages)
-
-    #     with open(filepath, "w", encoding="utf-8") as f:
-    #         json.dump(
-    #             {"filename": filename, "input_data": merged_messages}, f, indent=2
-    #         )
-
-    #     # return jsonify({"status": "ok", "new_messages": count_new})
-    #     return {"status": "success", "new_messages": count_new}
-
-    # except Exception as e:
-    #     print(f"[ERROR] → fetch_mail failed: {e}")
-    #     return {"error": str(e), "status": "failed"}
+    except Exception as e:
+        print(f"[ERROR] → v2fetch_gmail_messages_batch failed: {e}")
+        return {
+            "error": str(e),
+            "status": "failed",
+            "next_page_token": None,
+            "grouped_messages": {},
+        }
 
 
 # @gmail_bp.route("/gmail/sync_gmail_contacts/<user_id>")
@@ -675,7 +733,7 @@ def send_mail(user_id, to, subject, body_text):
         message_id = sent["id"]
         thread_id = sent.get("thread_id")
 
-        return message_id, thread_id
+        return {"status": "success", "message_id": message_id, "thread_id": thread_id}
 
     except Exception as e:
         print(f"[ERROR] → send_mail failed: {e}")
@@ -850,3 +908,156 @@ def respond_to_email():
         return jsonify({"result": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@gmail_bp.route("/gmail/inbox_info/<userid>", methods=["GET"])
+def get_inbox_info(userid):
+    try:
+        max_emails = 1000
+        base_days = int(request.args.get("days", 30))  # default 30 days
+        gmail_service = GmailService(userid)
+
+        total_messages = 0
+        final_days_used = base_days
+
+        while True:
+            inbox_count = gmail_service.get_inbox_stats(base_days)  # returns int
+            total_messages = inbox_count
+            final_days_used = base_days
+
+            if total_messages >= max_emails:
+                # if total_messages > (max_emails + 30):
+                #     base_days -= 2
+                # else:
+                #     break
+                break
+            else:
+                base_days += 10  # widen search window
+
+        return (
+            jsonify(
+                {
+                    "result": {
+                        "total_messages": total_messages,
+                        "days_covered": final_days_used,
+                    }
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+from flask import request, jsonify
+from datetime import datetime, timezone
+from dateutil.relativedelta import relativedelta
+
+
+@gmail_bp.route("/gmail/datewise/<userid>", methods=["GET"])
+def get_datewise_info(userid):
+    try:
+        # Get end_date from query params or default to today (UTC)
+        Enddate_str = request.args.get(
+            "end_date", datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        )
+        Enddate = datetime.fromisoformat(Enddate_str)
+
+        # Get start_date from query params or default to 6 months before end_date
+        startDate_str = request.args.get(
+            "start_date", (Enddate - relativedelta(months=12)).strftime("%Y-%m-%d")
+        )
+
+        gmail_service = GmailService(userid)
+
+        inbox_count = gmail_service.get_inbox_date_wise_stats_dynamic(
+            start_date=startDate_str, end_date=Enddate_str
+        )
+        print("dasd", inbox_count)
+
+        return jsonify({"result": inbox_count}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@gmail_bp.route("/deletedb/<user_id>", methods=["GET"])
+def delete_user_ticket_data(user_id):
+    try:
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            # 1. Get ticket IDs assigned to the user
+            cursor.execute(
+                """
+                SELECT ticket_id_fk FROM assigned WHERE user_id_fk = %s
+                """,
+                (user_id,),
+            )
+            ticket_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+            if not ticket_ids:
+                return {"status": "success", "message": "No tickets found for user"}
+
+            # 2. Get conversation IDs from those tickets
+            format_strings = ",".join(["%s"] * len(ticket_ids))
+            cursor.execute(
+                f"""
+                SELECT conversation_id_fk FROM tickets
+                WHERE tickets_id IN ({format_strings})
+                """,
+                tuple(ticket_ids),
+            )
+            conversation_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+            # 3. Delete messages first (based on conversation IDs)
+            if conversation_ids:
+                format_strings = ",".join(["%s"] * len(conversation_ids))
+                cursor.execute(
+                    f"""
+                    DELETE FROM messages
+                    WHERE conversation_id_fk IN ({format_strings})
+                    """,
+                    tuple(conversation_ids),
+                )
+
+            # 4. Delete from assigned (before tickets)
+            format_strings = ",".join(["%s"] * len(ticket_ids))
+            cursor.execute(
+                f"""
+                DELETE FROM assigned
+                WHERE ticket_id_fk IN ({format_strings})
+                """,
+                tuple(ticket_ids),
+            )
+
+            # 5. Delete tickets (now it's safe)
+            format_strings = ",".join(["%s"] * len(ticket_ids))
+            cursor.execute(
+                f"""
+                DELETE FROM tickets
+                WHERE tickets_id IN ({format_strings})
+                """,
+                tuple(ticket_ids),
+            )
+
+            # 6. Delete threads (based on conversation IDs)
+            if conversation_ids:
+                format_strings = ",".join(["%s"] * len(conversation_ids))
+                cursor.execute(
+                    f"""
+                    DELETE FROM threads
+                    WHERE conversation_id IN ({format_strings})
+                    """,
+                    tuple(conversation_ids),
+                )
+
+            connection.commit()
+            return {
+                "status": "success",
+                "message": "User-related ticket data deleted successfully",
+            }
+
+    except Exception as e:
+        connection.rollback()
+        return {"status": "failed", "error": str(e)}

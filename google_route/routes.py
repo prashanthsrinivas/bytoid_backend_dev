@@ -16,8 +16,8 @@ import base64
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as g_request
 from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch
-from session_manager_route.routes import generate_session
 from utils.base_logger import get_logger
+from session_manager_route.routes import session_login
 
 load_dotenv()  # Load from .env into environment variables
 google_bp = Blueprint("auth", __name__)
@@ -117,6 +117,8 @@ def oauth2callback(url, state):
 
             conn = connect_to_rds()
             cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+            resp = session_login(user_id)
 
             # Check if the user_id is present
             cursor.execute(
@@ -223,7 +225,7 @@ def oauth2callback(url, state):
                     )
             conn.commit()
             conn.close()
-            generate_session()
+            # generate_session()
         # invited user special case
         if user_exists:
             prev_type = user_exists.get("user_type", "NO TYPE")

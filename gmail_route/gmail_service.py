@@ -10,10 +10,33 @@ from googleapiclient.errors import HttpError
 import traceback
 import time
 import asyncio
-
+from datetime import datetime, timedelta, timezone
 from typing import Optional
-
+from googleapiclient.http import BatchHttpRequest
 from utils.s3_utils import attach_CLDFRNT_url
+import random
+from typing import List, Dict
+
+
+def to_epoch_days(date_str: str) -> int:
+    """
+    Convert 'YYYY-MM-DD' to Unix timestamp (epoch seconds).
+    """
+    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def get_cutoff_ts(days_back: int) -> int:
+    """
+    Returns a Unix day timestamp (epoch seconds at 00:00 UTC)
+    for N days ago.
+    """
+    days_back = int(days_back)
+    cutoff_date = datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(
+        days=days_back
+    )
+    cutoff_day = cutoff_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(cutoff_day.timestamp())
 
 
 class GmailService:
@@ -55,6 +78,7 @@ class GmailService:
 
         self.creds = creds_data
         self.service = build("gmail", "v1", credentials=self.creds)
+        self.service_running = False
 
         profile = self.service.users().getProfile(userId="me").execute()
         self.user_email = profile["emailAddress"]
@@ -135,7 +159,7 @@ class GmailService:
         return header_dict
 
     async def get_threads_async(
-        self, email_type, max_results=None, batch_delay=0.5, start_page_token=None
+        self, email_type, max_results=100, batch_delay=0.5, start_page_token=None
     ):
         """
         Async version of get_threads with continuous batch support
@@ -143,7 +167,7 @@ class GmailService:
         try:
             all_threads = []
             next_page_token = start_page_token  # Start from specific page if provided
-            page_size = 100  # Gmail API max is 100 per request
+            page_size = max_results  # Gmail API max is 100 per request
             total_fetched = 0
 
             # Get my email address once
@@ -164,8 +188,8 @@ class GmailService:
                     # Prepare the request parameters
                     request_params = {
                         "userId": "me",
+                        "q": "in:inbox category:primary",
                         "maxResults": page_size,
-                        "labelIds": [email_type],
                     }
 
                     # Add page token if we have one
@@ -273,18 +297,44 @@ class GmailService:
                 thread_detail = (
                     self.service.users()
                     .threads()
-                    .get(userId="me", id=thread_id)
+                    .get(userId="me", id=thread_id, format="full")
                     .execute()
                 )
                 messages = thread_detail.get("messages", [])
+                # for i in messages:
+                #     print("id",i.get("id"))
+                #     print("labelIds",i.get("labelIds"))
+                #     print("snippet",i.get("snippet"))
+                #     print("--------------------------------------")
 
+                # break
                 if not messages:
+                    print(f"⚠️ Thread {thread_id} has no messages")
                     return []
+
+                # DEBUG: Print message IDs and basic info
+                for i, msg in enumerate(messages):
+                    msg_id = msg.get("id", "unknown")
+                    headers = msg.get("payload", {}).get("headers", [])
+                    subject = next(
+                        (h["value"] for h in headers if h["name"].lower() == "subject"),
+                        "No Subject",
+                    )
+                    from_addr = next(
+                        (h["value"] for h in headers if h["name"].lower() == "from"),
+                        "Unknown",
+                    )
 
                 thread_data = []
 
-                for message in messages:
+                for message_index, message in enumerate(messages):
                     try:
+                        labelids = message.get("labelIds", [])
+
+                        # 🚫 Skip promotional emails
+                        if "CATEGORY_PROMOTIONS" in labelids:
+                            continue
+
                         headers = message.get("payload", {}).get("headers", [])
                         parsed = self.parse_headers(headers)
 
@@ -309,6 +359,10 @@ class GmailService:
 
                         is_sent_by_me = my_email.lower() in from_header.lower()
 
+                        snippet_text = message.get(
+                            "snippet", thread_detail.get("snippet", "")
+                        )
+
                         message_data = {
                             "thread_id": thread_id,
                             "messageId": message_id,
@@ -317,12 +371,12 @@ class GmailService:
                             "email": email,
                             "subject": parsed.get("subject", "No Subject"),
                             "snippet": thread_detail.get("snippet", ""),
-                            "body": message.get("snippet", ""),
+                            "body": snippet_text,
                             "date": parsed.get("date", ""),
-                            "isRead": "UNREAD" not in message.get("labelIds", []),
-                            "isStarred": "STARRED" in message.get("labelIds", []),
-                            "labels": message.get("labelIds", []),
-                            "attachments": [],  # You can enhance this to parse actual attachments
+                            "isRead": "UNREAD" not in labelids,
+                            "isStarred": "STARRED" in labelids,
+                            "labels": labelids,
+                            "attachments": [],  # Enhance later to parse actual attachments
                             "isSentByMe": is_sent_by_me,
                         }
 
@@ -370,6 +424,472 @@ class GmailService:
                     return []
 
         return []  # This should never be reached, but just in case
+
+    def build_batch_request(self, thread_ids, results):
+        print("batch build started")
+
+        def callback(request_id, response, exception):
+            if exception is not None:
+                results[request_id] = {"error": str(exception)}
+            else:
+                results[request_id] = response
+
+        batch = BatchHttpRequest(
+            callback=callback, batch_uri="https://gmail.googleapis.com/batch/gmail/v1"
+        )
+
+        for t in thread_ids:
+            batch.add(
+                self.service.users()
+                .threads()
+                .get(userId="me", id=t["id"], format="full"),
+                request_id=t["id"],
+            )
+        return batch
+
+    async def fetch_threads_batch(self, thread_ids, max_retries=5):
+        loop = asyncio.get_running_loop()
+        results = {}
+
+        # Wait if another batch is already running
+        while getattr(self, "service_running", False):
+            await asyncio.sleep(1)  # wait 500ms and check again
+
+        self.service_running = True
+        try:
+            for attempt in range(max_retries):
+                batch = self.build_batch_request(thread_ids, results)
+                try:
+                    await loop.run_in_executor(None, batch.execute)
+                    return results  # ✅ success
+                except HttpError as e:
+                    if e.resp.status == 429:
+                        wait = (2**attempt) + random.random()
+                        print(f"⚠️ Rate limited. Retrying in {wait:.2f}s...")
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
+            return results  # after retries
+        finally:
+            self.service_running = False
+
+    async def process_threads_batch(self, thread_ids, my_email, batch_count):
+        responses = await self.fetch_threads_batch(thread_ids)
+        print(f"len of the responses batch {batch_count} --->", len(responses))
+        final_results = {}
+
+        for thread_id, resp in responses.items():
+            if "error" in resp:
+                print(f"⚠️ Error fetching thread {thread_id}: {resp['error']}")
+                final_results[thread_id] = ([], resp["error"])
+                continue
+
+            messages = resp.get("messages", [])
+            if not messages:
+                print(f"⚠️ Thread {thread_id} has no messages")
+                final_results[thread_id] = ([], None)
+                continue
+
+            thread_data = []
+            for message in messages:
+                try:
+                    labelids = message.get("labelIds", [])
+
+                    # 🚫 Skip promotional emails
+                    if "CATEGORY_PROMOTIONS" in labelids:
+                        continue
+
+                    headers = message.get("payload", {}).get("headers", [])
+                    parsed = self.parse_headers(headers)
+
+                    message_id = next(
+                        (
+                            h["value"]
+                            for h in headers
+                            if h["name"].lower() == "message-id"
+                        ),
+                        None,
+                    )
+
+                    from_header = parsed.get("from", "")
+                    email = (
+                        from_header.split()[-1].strip("<>")
+                        if from_header
+                        else "unknown@example.com"
+                    )
+
+                    is_sent_by_me = my_email.lower() in from_header.lower()
+
+                    snippet_text = message.get("snippet", resp.get("snippet", ""))
+
+                    message_data = {
+                        "thread_id": thread_id,
+                        "messageId": message_id,
+                        "from": parsed.get("from", "Unknown Sender"),
+                        "to": parsed.get("to", ""),
+                        "email": email,
+                        "subject": parsed.get("subject", "No Subject"),
+                        "snippet": resp.get("snippet", ""),
+                        "body": snippet_text,
+                        "date": parsed.get("date", ""),
+                        "isRead": "UNREAD" not in labelids,
+                        "isStarred": "STARRED" in labelids,
+                        "labels": labelids,
+                        "attachments": [],
+                        "isSentByMe": is_sent_by_me,
+                    }
+
+                    thread_data.append(message_data)
+
+                except Exception as e:
+                    print(f"⚠️ Error processing message in thread {thread_id}: {e}")
+                    continue
+
+            final_results[thread_id] = (thread_data, None)
+        print("returning results from batch", len(final_results))
+        return final_results
+
+    def _extract_message_body(self, payload):
+        """
+        Enhanced body extraction to handle various message formats
+        """
+        body = ""
+
+        try:
+            # Handle different payload structures
+            if "parts" in payload:
+                # Multi-part message
+                for part in payload["parts"]:
+                    body += self._extract_message_body(part) + "\n"
+            elif "body" in payload and "data" in payload["body"]:
+                # Single-part message with body data
+                import base64
+
+                body_data = payload["body"]["data"]
+                # Gmail uses URL-safe base64
+                body_data = body_data.replace("-", "+").replace("_", "/")
+                # Add padding if needed
+                missing_padding = len(body_data) % 4
+                if missing_padding:
+                    body_data += "=" * (4 - missing_padding)
+
+                try:
+                    decoded_body = base64.b64decode(body_data).decode(
+                        "utf-8", errors="ignore"
+                    )
+                    body += decoded_body
+                except Exception as decode_error:
+                    print(f"⚠️ Error decoding message body: {decode_error}")
+                    body += "[Error decoding message body]"
+
+        except Exception as e:
+            print(f"⚠️ Error extracting message body: {e}")
+            body = "[Error extracting message body]"
+
+        return body.strip()
+
+    def get_real_message_count(self, days_back=180):
+        count = 0
+        page_token = None
+        cutoff_ts = get_cutoff_ts(days_back)
+        q = f"in:inbox category:primary after:{cutoff_ts}"
+
+        while True:
+            response = (
+                self.service.users()
+                .messages()
+                .list(
+                    userId="me",
+                    q=q,
+                    pageToken=page_token,
+                    maxResults=500,
+                )
+                .execute()
+            )
+            # print("-->", response)
+            count += len(response.get("messages", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return count
+
+    def get_real_thread_count(self, days_back=180):
+        count = 0
+        page_token = None
+        cutoff_ts = get_cutoff_ts(days_back)
+        q = f"in:inbox category:primary after:{cutoff_ts}"
+
+        while True:
+            response = (
+                self.service.users()
+                .threads()
+                .list(
+                    userId="me",
+                    q=q,
+                    pageToken=page_token,
+                    maxResults=500,
+                )
+                .execute()
+            )
+            # print("-->", response)
+            count += len(response.get("threads", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return count
+
+    def get_real_date_basedmessage_count(self, start_date: str, end_date: str):
+        count = 0
+        page_token = None
+        after_ts = to_epoch_days(start_date)  # e.g. 2025-02-01
+        before_ts = to_epoch_days(end_date)  # e.g. 2025-08-01
+
+        q = f"in:inbox category:primary after:{after_ts} before:{before_ts}"
+        # messages = []
+        while True:
+            response = (
+                self.service.users()
+                .messages()
+                .list(
+                    userId="me",
+                    q=q,
+                    pageToken=page_token,
+                    maxResults=500,
+                )
+                .execute()
+            )
+            msgs = response.get("messages", [])
+            count += len(msgs)
+            # messages.extend(msgs)
+
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        # return {"count": count, "messages": messages}
+        return count
+
+    async def get_real_date_thread_count_dynamic(
+        self, start_date: str, end_date: str, min_days=7
+    ) -> dict:
+        """
+        Fetch threads dynamically: if large ranges fail, split into smaller chunks.
+        Returns dict: {"count": total_count, "threads": all_threads_list}
+        """
+
+        async def fetch_chunk(s_date: str, e_date: str) -> dict:
+            """Fetch a single chunk, raises exception if fails."""
+            # Wait if another batch/service is running
+            while getattr(self, "service_running", False):
+                await asyncio.sleep(0.5)
+
+            self.service_running = True
+            try:
+                after_ts = to_epoch_days(s_date)
+                before_ts = to_epoch_days(e_date)
+                q = f"in:inbox category:primary after:{after_ts} before:{before_ts}"
+
+                count = 0
+                threads = []
+                page_token = None
+
+                while True:
+                    try:
+                        response = (
+                            self.service.users()
+                            .threads()
+                            .list(
+                                userId="me", q=q, maxResults=500, pageToken=page_token
+                            )
+                            .execute()
+                        )
+                        thd = response.get("threads", [])
+                        count += len(thd)
+                        threads.extend(thd)
+                        page_token = response.get("nextPageToken")
+                        if not page_token:
+                            break
+                    except Exception as e:
+                        # Handle rate limiting (429) with exponential backoff
+                        if hasattr(e, "resp") and e.resp.status == 429:
+                            await asyncio.sleep(1 + random.random())
+                            continue
+                        else:
+                            raise
+
+                return {"count": count, "threads": threads}
+
+            finally:
+                self.service_running = False
+
+        all_threads = []
+        total_count = 0
+        stack = [(start_date, end_date)]
+
+        while stack:
+            s_date, e_date = stack.pop(0)
+            try:
+                result = await fetch_chunk(s_date, e_date)
+                total_count += result["count"]
+                all_threads.extend(result["threads"])
+            except Exception as e:
+                print(f"⚠️ Chunk {s_date} → {e_date} failed: {e}")
+                # Split if more than min_days
+                s_dt = datetime.fromisoformat(s_date)
+                e_dt = datetime.fromisoformat(e_date)
+                delta_days = (e_dt - s_dt).days
+                if delta_days > min_days:
+                    mid_dt = s_dt + timedelta(days=delta_days // 2)
+                    stack.insert(0, (mid_dt.strftime("%Y-%m-%d"), e_date))
+                    stack.insert(0, (s_date, mid_dt.strftime("%Y-%m-%d")))
+                else:
+                    print(f"❌ Skipping unresponsive chunk {s_date} → {e_date}")
+
+        return {"count": total_count, "threads": all_threads}
+
+    async def get_inbox_date_wise_stats_dynamic(
+        self, start_date: str, end_date: str, min_days=7
+    ):
+        """
+        Fetch Gmail threads dynamically for a large date range with rate-limit handling.
+        """
+        print("fetching date wise data", start_date, end_date)
+        try:
+            allthreads = await self.get_real_date_thread_count_dynamic(
+                start_date, end_date, min_days
+            )
+            return {
+                "email": self.user_email,
+                "threadsTotal": allthreads,
+                "start_date": start_date,
+                "end_date": end_date,
+            }
+        except Exception as e:
+            print(f"❌ Error fetching inbox stats: {e}")
+            return None
+
+    def get_inbox_stats(self, days_back=180):
+        try:
+            allmsgs = self.get_real_message_count(days_back=days_back)
+            # allthreads = self.get_real_thread_count(days_back=days_back)
+            # return {
+            #     "email": self.user_email,
+            #     "final_msg": allmsgs,
+            #     "threadsTotal": allthreads,
+            #     "days_back": days_back,
+            # }
+            return allmsgs
+        except Exception as e:
+            print(f"❌ Error fetching inbox stats: {e}")
+            return None
+
+    def get_non_promotional_messages(self, max_results=20):
+        """Return non-promotional inbox messages with subject, from, snippet"""
+        results = (
+            self.service.users()
+            .messages()
+            .list(
+                userId="me",
+                q="in:inbox category:primary",  # ✅ only personal/primary
+                maxResults=max_results,
+            )
+            .execute()
+        )
+
+        messages = results.get("messages", [])
+        output = []
+
+        for msg in messages:
+            msg_detail = (
+                self.service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=msg["id"],
+                    format="metadata",
+                    metadataHeaders=["Subject", "From", "Date"],
+                )
+                .execute()
+            )
+
+            headers = msg_detail.get("payload", {}).get("headers", [])
+            subject = next(
+                (h["value"] for h in headers if h["name"] == "Subject"), None
+            )
+            sender = next((h["value"] for h in headers if h["name"] == "From"), None)
+            date = next((h["value"] for h in headers if h["name"] == "Date"), None)
+            labels = msg_detail.get("labelIds", [])
+
+            output.append(
+                {
+                    "id": msg["id"],
+                    "threadId": msg["threadId"],
+                    "labels": labels,
+                    "subject": subject,
+                    "from": sender,
+                    "date": date,
+                    "snippet": msg_detail.get("snippet"),
+                }
+            )
+
+        return output
+
+    def get_non_promotional_threads(self, max_results=20):
+        """Return only primary inbox threads with subject, from, snippet"""
+        results = (
+            self.service.users()
+            .threads()
+            .list(
+                userId="me",
+                q="in:inbox category:primary",  # ✅ only primary
+                maxResults=max_results,
+            )
+            .execute()
+        )
+
+        threads = results.get("threads", [])
+        output = []
+
+        for thread in threads:
+            thread_detail = (
+                self.service.users()
+                .threads()
+                .get(
+                    userId="me",
+                    id=thread["id"],
+                    format="metadata",
+                    metadataHeaders=["Subject", "From", "Date"],
+                )
+                .execute()
+            )
+
+            # Get the first message in the thread (usually contains subject/from)
+            messages = thread_detail.get("messages", [])
+            if not messages:
+                continue
+
+            first_msg = messages[0]
+            headers = first_msg.get("payload", {}).get("headers", [])
+            subject = next(
+                (h["value"] for h in headers if h["name"] == "Subject"), None
+            )
+            sender = next((h["value"] for h in headers if h["name"] == "From"), None)
+            date = next((h["value"] for h in headers if h["name"] == "Date"), None)
+            labels = first_msg.get("labelIds", [])
+
+            output.append(
+                {
+                    "threadId": thread["id"],
+                    "historyId": thread_detail.get("historyId"),
+                    "labels": labels,
+                    "subject": subject,
+                    "from": sender,
+                    "date": date,
+                    "snippet": thread_detail.get("snippet"),
+                    "messageCount": len(messages),
+                }
+            )
+
+        return output
 
     # noraml function
 
@@ -659,7 +1179,7 @@ class GmailService:
                 )
                 extra_text += f"\nLocation: {business_info['businessLocation']}"
             if "BusinessImage" in business_info:
-                link_base=attach_CLDFRNT_url(business_info['BusinessImage'])
+                link_base = attach_CLDFRNT_url(business_info["BusinessImage"])
                 extra_html += f"<p><img src='{link_base}' alt='Business Logo' style='max-height:80px; margin-top:8px;'></p>"
 
         # fallback invite link
