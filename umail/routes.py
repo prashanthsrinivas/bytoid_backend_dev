@@ -106,7 +106,7 @@ def get_latest_conversations(user_id, next_cursor):
     cursor = connection.cursor()
 
     client = UmailLanceClient(user_id)
-
+                                                                                                                            
     convo_messages, next_cursor = client.latest_messages_from_lance(
         user_id, next_cursor
     )
