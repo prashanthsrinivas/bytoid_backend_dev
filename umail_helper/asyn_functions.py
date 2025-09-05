@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+import json
 from create_db import connect_to_rds
+from db.db_checkers import get_existing_umail_json, update_umail_json
 from db.rds_db import get_cursor
 from gmail_route.gmail_service import GmailService
 from gmail_route.routes import fetch_gmail_messages_batch, v2fetch_gmail_messages_batch
@@ -7,11 +9,23 @@ from umail_helper.mails_process import (
     analyze_and_collect_messages_for_batch,
     vtooanalyze_and_collect_messages_for_batch,
 )
+import shutil
 import asyncio
 import os
 import time
 from cust_helpers import pathconfig
 from umail_lance.umail_lance_agent import UmailLanceClient
+from datetime import datetime, timezone
+from dateutil.relativedelta import relativedelta
+from utils.base_logger import get_logger
+
+from glide import (
+    GlideClusterClient,
+    GlideClusterClientConfiguration,
+    NodeAddress,
+)
+
+logger = get_logger(__name__)
 
 
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +34,17 @@ from utils.base_logger import get_logger
 
 # Create global executor
 executor = ThreadPoolExecutor(max_workers=8)  # CPU heavy embedding jobs
+
+
+logger = get_logger(__name__)
+
+TTL_90_DAYS = 90 * 24 * 60 * 60
+
+addresses = [
+    NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
+]
+
+config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
 
 
 async def getall_continuous(user_id):
@@ -108,12 +133,6 @@ async def getall_continuous(user_id):
     return f"OK - Processed {total_processed} emails in {batch_count} batches"
 
 
-from datetime import datetime, timezone
-from dateutil.relativedelta import relativedelta
-
-logger = get_logger(__name__)
-
-
 async def get_datewise_info_base(userid, endDate=None, startDate=None, months=3):
     try:
         # Get end_date from query params or default to today (UTC)
@@ -145,16 +164,17 @@ async def v2all_continuous(user_id, startdate=None, enddate=None):
     Run Gmail fetch + processing in parallel batches.
     Each batch also runs 4 heavy processes in parallel.
     """
-    start_time = time.perf_counter()
-    startdate = "2024-01-01"
-    enddate = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    existing_json = get_existing_umail_json(user_id)
+    today = datetime.now(timezone.utc).date()
 
-    if enddate and startdate:
-        total_messages = await get_datewise_info_base(
-            userid=user_id, endDate=enddate, startDate=startdate
-        )
-    else:
+    if existing_json and existing_json.get("history"):
         total_messages = await get_datewise_info_base(userid=user_id, months=3)
+        newly_creation = False
+    else:
+        # First time → 3 months back
+        total_messages = await get_datewise_info_base(userid=user_id, months=3)
+        newly_creation = True
+    start_time = time.perf_counter()
     # Database connection
     connection = connect_to_rds()
     if connection is None:
@@ -167,7 +187,7 @@ async def v2all_continuous(user_id, startdate=None, enddate=None):
 
     print(
         f"🚀 Starting continuous batch processing for user {user_id}, "
-        f" total threads: {threads_max}"
+        f" total threads: {threads_max}  with creation {newly_creation}"
     )
 
     semaphore = asyncio.Semaphore(5)
@@ -205,23 +225,23 @@ async def v2all_continuous(user_id, startdate=None, enddate=None):
             )
 
             # Pass only data, not cursor
-            task = loop.run_in_executor(
-                executor,
+            task = asyncio.to_thread(
                 v2process_batch_with_embedding,
                 user_id,
                 current_batch_messages,
                 batch_count,
                 lance_folder,
-                max_batchval,
                 None,
             )
             embedding_futures.append(task)  # collect it
             return gmail_result
 
     # Split into chunks
-    batch_size = 1000
-    batches = [threads[i : i + batch_size] for i in range(0, len(threads), batch_size)]
-    max_batchval = len(batches)
+    max_batchval = len(threads)
+    batch_size = min(1000, max(100, len(threads) // 2 or 1))
+
+    batches = [threads[i : i + batch_size] for i in range(0, max_batchval, batch_size)]
+    client = await GlideClusterClient.create(config)
 
     async def process_batch(batch_index, batch):
         batch_start_time = time.perf_counter()
@@ -244,6 +264,14 @@ async def v2all_continuous(user_id, startdate=None, enddate=None):
         *[process_batch(i, batch) for i, batch in enumerate(batches)],
         return_exceptions=True,
     )
+    # Flatten results
+    all_results = [
+        item for batch_results in all_batch_results for item in batch_results if item
+    ]
+    if newly_creation:
+        await client.set(
+            f"{user_id}", json.dumps(all_results, default=str), TTL_90_DAYS
+        )
 
     # Now wait for embeddings to finish
     if embedding_futures:
@@ -254,11 +282,25 @@ async def v2all_continuous(user_id, startdate=None, enddate=None):
         f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
         f"\n {complete_results}",
     )
+    # if max_batchval == batch_count:
+    print("FINISHED ALL PROCESS")
+    folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
+    today = datetime.now(timezone.utc)
+    new_entry = {
+        "date_start": startdate,  # from v2all_continuous
+        "date_end": enddate,  # from v2all_continuous
+        "processed_threads": threads_max,
+        "timestamp": today.isoformat(),
+        "newly_creation": newly_creation,
+    }
+    update_umail_json(user_id, new_entry)
 
-    # Flatten results
-    all_results = [
-        item for batch_results in all_batch_results for item in batch_results if item
-    ]
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)  # ✅ removes all files + subfolders
+        print(f"🗑️ Deleted folder and contents: {folder_path}")
+    else:
+        print(f"⚠️ Folder not found: {folder_path}")
+
     connection.close()
 
     return {
@@ -275,30 +317,30 @@ def v2process_batch_with_embedding(
     current_batch_messages,
     batch_count,
     lance_folder,
-    max_batchval,
     cursor=None,
 ):
-    start_time = time.perf_counter()
-    print("||||||||||| Start time Lance |||||||||", start_time)
-    if cursor is None:
-        connection = connect_to_rds()
-        with get_cursor(connection) as cursor:
-            messages = vtooanalyze_and_collect_messages_for_batch(
+    async def _inner(cursor):
+        start_time = time.perf_counter()
+        print("||||||||||| Start time Lance |||||||||", start_time)
+        if cursor is None:
+            connection = connect_to_rds()
+            with get_cursor(connection) as cursor:
+                messages = await vtooanalyze_and_collect_messages_for_batch(
+                    user_id, current_batch_messages, batch_count, cursor
+                )
+            connection.close()
+        else:
+            messages = await vtooanalyze_and_collect_messages_for_batch(
                 user_id, current_batch_messages, batch_count, cursor
             )
-        connection.close()
-    else:
-        messages = vtooanalyze_and_collect_messages_for_batch(
-            user_id, current_batch_messages, batch_count, cursor
-        )
 
-    print(f"🧩 batch {batch_count} messages analyzed: {len(messages)}")
-    client = UmailLanceClient(user_id)
-    client.embed_json_files(lance_folder)
-    total_runtime = time.perf_counter() - start_time
-    print("************ Total Time Lance *******", total_runtime)
-    if max_batchval == batch_count:
-        print("FINISHED ALL PROCESS")
+        print(f"🧩 batch {batch_count} messages analyzed: {len(messages)}")
+        client = UmailLanceClient(user_id)
+        client.embed_json_files(lance_folder)
+        total_runtime = time.perf_counter() - start_time
+        print("************ Total Time Lance *******", total_runtime)
+
+    asyncio.run(_inner(cursor))
 
 
 def process_batch_with_embedding(

@@ -19,6 +19,7 @@ import os
 from dotenv import load_dotenv
 from flask_cors import CORS
 import tempfile
+# from session_middleware import register_session_check
 
 load_dotenv()
 app = Flask(__name__)
@@ -26,6 +27,8 @@ app.secret_key = os.getenv(
     "SECRETKEY"
 )  # set a secret key as an enviornmental variable later
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
+
+# register_session_check(app)
 
 CORS(
     app,
@@ -139,6 +142,12 @@ app.register_blueprint(inv_users_bp)
 app.register_blueprint(agent_hub_bp)
 
 
+import argparse
+
 if __name__ == "__main__":
-    os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
-    app.run(host="0.0.0.0", port=3000, debug=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=3000)
+    args = parser.parse_args()
+
+    app.run(host=args.host, port=args.port, debug=True)

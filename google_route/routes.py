@@ -118,7 +118,6 @@ def oauth2callback(url, state):
             conn = connect_to_rds()
             cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-            resp = session_login(user_id)
 
             # Check if the user_id is present
             cursor.execute(
@@ -225,6 +224,7 @@ def oauth2callback(url, state):
                     )
             conn.commit()
             conn.close()
+
             # generate_session()
         # invited user special case
         if user_exists:
@@ -238,7 +238,7 @@ def oauth2callback(url, state):
         newuser = check_onboarding_user(user_id)
         logger.info("new user %s", newuser)
         if newuser:
-            return user_id, True
+                return user_id, True
 
         return user_id, False
 
@@ -256,6 +256,7 @@ def receive_browser_url():
 
         # This function should return the user ID (e.g., Google account ID)
         user_id, newuser = oauth2callback(browser_url, state)
+        session_id, access_token, refresh_token = session_login(user_id)
         print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
 
@@ -275,13 +276,13 @@ def receive_browser_url():
 
         # Set secure session cookie (HttpOnly, Secure)
         response.set_cookie(
-            key="session_user_id",
-            value=str(user_id),
-            httponly=True,
-            secure=True,
-            samesite="None",
-            path="/",
-            max_age=7 * 24 * 60 * 60,
+        "session_id", session_id, httponly=True, secure=True, samesite="None",max_age=60*60*24*7,
+        )
+        response.set_cookie(
+            "access_token", access_token, httponly=True, secure=True, samesite="None",max_age=60*60*24*7,
+        )
+        response.set_cookie(
+            "refresh_token", refresh_token, httponly=True, secure=True, samesite="None",max_age=60*60*24*7,
         )
 
         return response

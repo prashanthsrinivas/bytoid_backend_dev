@@ -12,7 +12,13 @@ import json
 from cust_helpers import pathconfig
 import os
 from utils.normal import ensure_dir
-from utils.s3_utils import upload_any_file, read_json_from_s3
+from utils.s3_utils import (
+    delete_file_from_s3,
+    delete_folder_from_s3,
+    list_all_files,
+    upload_any_file,
+    read_json_from_s3,
+)
 from create_db import connect_to_rds
 from umail_helper.helper import get_users_client_id, extract_reply_content
 from collections import defaultdict
@@ -40,7 +46,7 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
         threads, next_page_token = await gmail_service.get_threads_async(
             "INBOX", max_results=batch_size, start_page_token=page_token
         )
-
+        print("threads fetched are", len(threads))
         if not threads:
             print("📭 No threads found in this batch")
             return {"status": "success", "new_messages": 0, "next_page_token": None}
@@ -958,28 +964,108 @@ from dateutil.relativedelta import relativedelta
 @gmail_bp.route("/gmail/datewise/<userid>", methods=["GET"])
 def get_datewise_info(userid):
     try:
-        # Get end_date from query params or default to today (UTC)
         Enddate_str = request.args.get(
             "end_date", datetime.now(timezone.utc).strftime("%Y-%m-%d")
         )
         Enddate = datetime.fromisoformat(Enddate_str)
 
-        # Get start_date from query params or default to 6 months before end_date
         startDate_str = request.args.get(
-            "start_date", (Enddate - relativedelta(months=12)).strftime("%Y-%m-%d")
+            "start_date", (Enddate - relativedelta(months=3)).strftime("%Y-%m-%d")
         )
 
         gmail_service = GmailService(userid)
 
-        inbox_count = gmail_service.get_inbox_date_wise_stats_dynamic(
-            start_date=startDate_str, end_date=Enddate_str
+        inbox_count = asyncio.run(
+            gmail_service.get_inbox_date_wise_stats_dynamic(
+                start_date=startDate_str, end_date=Enddate_str
+            )
         )
-        print("dasd", inbox_count)
 
         return jsonify({"result": inbox_count}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# @gmail_bp.route("/deletedb/<user_id>", methods=["GET"])
+# def delete_user_ticket_data(user_id):
+#     try:
+#         connection = connect_to_rds()
+#         with connection.cursor() as cursor:
+#             # 1. Get ticket IDs assigned to the user
+#             cursor.execute(
+#                 """
+#                 SELECT ticket_id_fk FROM assigned WHERE user_id_fk = %s
+#                 """,
+#                 (user_id,),
+#             )
+#             ticket_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+#             if not ticket_ids:
+#                 return {"status": "success", "message": "No tickets found for user"}
+
+#             # 2. Get conversation IDs from those tickets
+#             format_strings = ",".join(["%s"] * len(ticket_ids))
+#             cursor.execute(
+#                 f"""
+#                 SELECT conversation_id_fk FROM tickets
+#                 WHERE tickets_id IN ({format_strings})
+#                 """,
+#                 tuple(ticket_ids),
+#             )
+#             conversation_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+#             # 3. Delete messages first (based on conversation IDs)
+#             if conversation_ids:
+#                 format_strings = ",".join(["%s"] * len(conversation_ids))
+#                 cursor.execute(
+#                     f"""
+#                     DELETE FROM messages
+#                     WHERE conversation_id_fk IN ({format_strings})
+#                     """,
+#                     tuple(conversation_ids),
+#                 )
+
+#             # 4. Delete from assigned (before tickets)
+#             format_strings = ",".join(["%s"] * len(ticket_ids))
+#             cursor.execute(
+#                 f"""
+#                 DELETE FROM assigned
+#                 WHERE ticket_id_fk IN ({format_strings})
+#                 """,
+#                 tuple(ticket_ids),
+#             )
+
+#             # 5. Delete tickets (now it's safe)
+#             format_strings = ",".join(["%s"] * len(ticket_ids))
+#             cursor.execute(
+#                 f"""
+#                 DELETE FROM tickets
+#                 WHERE tickets_id IN ({format_strings})
+#                 """,
+#                 tuple(ticket_ids),
+#             )
+
+#             # 6. Delete threads (based on conversation IDs)
+#             if conversation_ids:
+#                 format_strings = ",".join(["%s"] * len(conversation_ids))
+#                 cursor.execute(
+#                     f"""
+#                     DELETE FROM threads
+#                     WHERE conversation_id IN ({format_strings})
+#                     """,
+#                     tuple(conversation_ids),
+#                 )
+
+#             connection.commit()
+#             return {
+#                 "status": "success",
+#                 "message": "User-related ticket data deleted successfully",
+#             }
+
+#     except Exception as e:
+#         connection.rollback()
+#         return {"status": "failed", "error": str(e)}
 
 
 @gmail_bp.route("/deletedb/<user_id>", methods=["GET"])
@@ -997,7 +1083,35 @@ def delete_user_ticket_data(user_id):
             ticket_ids = [row[0] for row in cursor.fetchall() if row[0]]
 
             if not ticket_ids:
-                return {"status": "success", "message": "No tickets found for user"}
+                # Still check for communication + users_clients
+                cursor.execute(
+                    "SELECT communication_id FROM communication WHERE user_id_fk = %s",
+                    (user_id,),
+                )
+                comm_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+                if comm_ids:
+                    format_strings = ",".join(["%s"] * len(comm_ids))
+                    cursor.execute(
+                        f"""
+                        DELETE FROM users_clients
+                        WHERE communication_id_fk IN ({format_strings})
+                        """,
+                        tuple(comm_ids),
+                    )
+                    cursor.execute(
+                        f"""
+                        DELETE FROM communication
+                        WHERE communication_id IN ({format_strings})
+                        """,
+                        tuple(comm_ids),
+                    )
+                    connection.commit()
+
+                return {
+                    "status": "success",
+                    "message": "No tickets found, cleaned communication/users_clients",
+                }
 
             # 2. Get conversation IDs from those tickets
             format_strings = ",".join(["%s"] * len(ticket_ids))
@@ -1010,7 +1124,7 @@ def delete_user_ticket_data(user_id):
             )
             conversation_ids = [row[0] for row in cursor.fetchall() if row[0]]
 
-            # 3. Delete messages first (based on conversation IDs)
+            # 3. Delete messages (based on conversation IDs)
             if conversation_ids:
                 format_strings = ",".join(["%s"] * len(conversation_ids))
                 cursor.execute(
@@ -1021,7 +1135,7 @@ def delete_user_ticket_data(user_id):
                     tuple(conversation_ids),
                 )
 
-            # 4. Delete from assigned (before tickets)
+            # 4. Delete from assigned
             format_strings = ",".join(["%s"] * len(ticket_ids))
             cursor.execute(
                 f"""
@@ -1031,7 +1145,7 @@ def delete_user_ticket_data(user_id):
                 tuple(ticket_ids),
             )
 
-            # 5. Delete tickets (now it's safe)
+            # 5. Delete tickets
             format_strings = ",".join(["%s"] * len(ticket_ids))
             cursor.execute(
                 f"""
@@ -1052,10 +1166,42 @@ def delete_user_ticket_data(user_id):
                     tuple(conversation_ids),
                 )
 
-            connection.commit()
+            # 7. Delete communication & users_clients (based on user_id)
+            cursor.execute(
+                "SELECT communication_id FROM communication WHERE user_id_fk = %s",
+                (user_id,),
+            )
+            comm_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+            if comm_ids:
+                format_strings = ",".join(["%s"] * len(comm_ids))
+                cursor.execute(
+                    f"""
+                    DELETE FROM users_clients
+                    WHERE communication_id_fk IN ({format_strings})
+                    """,
+                    tuple(comm_ids),
+                )
+                cursor.execute(
+                    f"""
+                    DELETE FROM communication
+                    WHERE communication_id IN ({format_strings})
+                    """,
+                    tuple(comm_ids),
+                )
+                cursor.execute(
+                    """
+                    UPDATE users SET umail_json = NULL WHERE user_id = %s
+                    """,
+                    (user_id,),  # <-- add comma to make it a tuple
+                )
+                connection.commit()
+            folder_path = f"{user_id}/messages"
+            delete_folder_from_s3(folder_path)
+
             return {
                 "status": "success",
-                "message": "User-related ticket data deleted successfully",
+                "message": "User-related ticket, communication, and users_clients data deleted successfully",
             }
 
     except Exception as e:

@@ -3,6 +3,9 @@ from dotenv import load_dotenv
 import boto3
 import json
 from botocore.exceptions import ClientError
+import yaml
+import io
+
 
 load_dotenv()
 S3_BUCKET = os.getenv("S3_BUCKET")
@@ -66,6 +69,19 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
         return {"status": "error", "message": str(e)}
 
 
+def save_yaml_to_s3(data, user_id, filename):
+    """Save YAML to S3 under {user_id}/yaml/{filename}."""
+    s3 = s3bucket()
+    s3_key = f"{user_id}/yaml/{filename}"
+    try:
+        yaml_bytes = yaml.safe_dump(data, sort_keys=False).encode("utf-8")
+        s3.upload_fileobj(io.BytesIO(yaml_bytes), S3_BUCKET, s3_key)
+        return {"status": "success", "s3_key": s3_key}
+    except Exception as e:
+        print(f"❌ Error writing YAML to S3: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 # upload_any_file(file_path="cust_helpers/test/Daily_Email_Lead_Follow-up_2025-07-21_10-33-54.json",user_id="1234")
 def read_json_from_s3(filepath):
     s3 = s3bucket()  # Full path in bucket
@@ -75,10 +91,24 @@ def read_json_from_s3(filepath):
         response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)
         content = response["Body"].read().decode("utf-8")
         data = json.loads(content)
-        # print("✅ JSON content loaded successfully")
+        # print("✅ JSON content loaded successfully", filepath)
         return data
     except Exception as e:
         print(f"❌ Error reading JSON file: {e}")
+        return None
+
+
+def load_yaml_from_s3(filepath):
+    s3 = s3bucket()  # Full path in bucket
+
+    try:
+        response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)
+        content = response["Body"].read().decode("utf-8")
+        data = yaml.safe_load(content)
+        print("✅ YAML content loaded successfully", filepath)
+        return data
+    except Exception as e:
+        print(f"❌ Error reading YAML file: {e}")
         return None
 
 
@@ -93,6 +123,22 @@ def delete_file_from_s3(filepath):
     except Exception as e:
         print(f"❌ Error deleting file: {e}")
         return False
+
+
+def delete_folder_from_s3(folder_prefix: str) -> None:
+    """Delete all files under a given folder prefix (S3 is flat, so we delete by prefix)."""
+    s3 = s3bucket()
+    print(f"🗑️ Deleting all files under folder: {folder_prefix}")
+
+    response = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=folder_prefix)
+
+    if "Contents" not in response:
+        print("⚠️ No files found in this folder.")
+        return
+
+    for obj in response["Contents"]:
+        key = obj["Key"]
+        delete_file_from_s3(key)
 
 
 def generate_presigned_url(s3_key, expiration=3600):

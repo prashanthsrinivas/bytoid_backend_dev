@@ -4,10 +4,11 @@ from flask import request, jsonify, session, Blueprint
 from db.rds_db import connect_to_rds
 import uuid
 from datetime import datetime, timezone
-
+from session_middleware import session_check
 
 
 contacts_bp = Blueprint("contacts", __name__)
+
 
 @contacts_bp.route("/contacts/save", methods=["POST"])
 def save_contact():
@@ -51,7 +52,6 @@ def save_contact():
                 ),
                 400,
             )
-
 
         dt_utc = datetime.now(timezone.utc)
         created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
@@ -103,7 +103,7 @@ def save_contact():
                 users_clients_id = str(uuid.uuid4())
 
                 insert_communication_sql = """
-                    INSERT INTO communication (
+                         (
                         communication_id,
                         user_id_fk,
                         users_clients_id_fk
@@ -149,8 +149,7 @@ def save_contact():
                         slack_workspace,
                         "Customer",
                         created_date,
-                        updated_date
-
+                        updated_date,
                     ),
                 )
 
@@ -174,7 +173,7 @@ def save_contact():
                     "instagram_id": instagram_id,
                     "slack_id": slack_id,
                     "slack_workspace": slack_workspace,
-                    "updated_in": updated_date
+                    "updated_in": updated_date,
                 }
                 set_clauses = []
                 values = []
@@ -205,17 +204,17 @@ def save_contact():
         return jsonify({"error": str(e)}), 500
 
 
-def add_synced_contact(user_id,cursor, participant, first_name, last_name):
-                
-                print("creating new user client and communication table")
-                communication_id = str(uuid.uuid4())
-                users_clients_id = str(uuid.uuid4())
+def add_synced_contact(user_id, cursor, participant, first_name, last_name):
 
-                dt_utc = datetime.now(timezone.utc)
-                created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
-                updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
-                
-                insert_communication_sql = """
+    print("creating new user client and communication table")
+    communication_id = str(uuid.uuid4())
+    users_clients_id = str(uuid.uuid4())
+
+    dt_utc = datetime.now(timezone.utc)
+    created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
+    updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+
+    insert_communication_sql = """
                     INSERT INTO communication (
                         communication_id,
                         user_id_fk,
@@ -223,9 +222,9 @@ def add_synced_contact(user_id,cursor, participant, first_name, last_name):
                     )
                     VALUES (%s, %s, NULL)
                 """
-                cursor.execute(insert_communication_sql, (communication_id, user_id))
+    cursor.execute(insert_communication_sql, (communication_id, user_id))
 
-                insert_sql = """
+    insert_sql = """
                     INSERT INTO users_clients (
                         users_clients_id,
                         communication_id_fk,
@@ -246,32 +245,30 @@ def add_synced_contact(user_id,cursor, participant, first_name, last_name):
                     )
                     VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s)
                 """
-                cursor.execute(
-                    insert_sql,
-                    (
-                        users_clients_id,
-                        communication_id,
-                        first_name,
-                        last_name,
-                        participant,                   
-                        "Customer",
-                        created_date,
-                        updated_date
+    cursor.execute(
+        insert_sql,
+        (
+            users_clients_id,
+            communication_id,
+            first_name,
+            last_name,
+            participant,
+            "Customer",
+            created_date,
+            updated_date,
+        ),
+    )
 
-                    ),
-                )
-
-                link_sql = """
+    link_sql = """
                     UPDATE communication
                     SET users_clients_id_fk = %s
                     WHERE communication_id = %s
                 """
-                cursor.execute(link_sql, (users_clients_id, communication_id))
+    cursor.execute(link_sql, (users_clients_id, communication_id))
 
-                cursor.connection.commit()
-            
-                return users_clients_id
+    cursor.connection.commit()
 
+    return users_clients_id
 
 
 @contacts_bp.route("/contacts/list", methods=["GET"])
@@ -279,13 +276,12 @@ def get_contacts_by_user(userid=None):
     """
     Fetch all contacts (name, gmail) linked to a user_id through communication.
     """
-
     try:
         user_id = request.args.get("user_id") or session.get("user_id") or userid
         connection = connect_to_rds()
         with connection.cursor() as cursor:
             query = """
-                SELECT uc.users_clients_id, uc.first_name, uc.last_name, uc.email_id
+                SELECT uc.users_clients_id, uc.first_name, uc.last_name, uc.email_id, uc.type
                 FROM users_clients uc
                 JOIN communication c
                   ON uc.communication_id_fk = c.communication_id
@@ -300,13 +296,19 @@ def get_contacts_by_user(userid=None):
                 first_name,
                 last_name,
                 email,
+                type,
             ) in rows:
                 full_name = (
                     f"{(first_name or '').strip()} {(last_name or '').strip()}".strip()
                 )
                 if full_name or email:
                     contacts.append(
-                        {"id": users_clients_id, "name": full_name, "email": email}
+                        {
+                            "id": users_clients_id,
+                            "name": full_name,
+                            "email": email,
+                            "type": type,
+                        }
                     )
         return jsonify(contacts)
 

@@ -793,6 +793,69 @@ def update_users():
         connection.close()
 
 
+def session_table():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        create_table_query = """
+        CREATE TABLE session (
+            session_id VARCHAR(36) PRIMARY KEY,
+            user_id_fk VARCHAR(36),
+            expiry DATETIME,
+            FOREIGN KEY (user_id_fk) REFERENCES users(user_id)
+        );
+        """
+        cursor.execute(create_table_query)
+        connection.commit()
+        print("✅ Created 'session' table successfully! ")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_users_msg_json():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        # 🔎 Check if column already exists
+        check_column_query = """
+        SELECT COUNT(*)
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'users'
+          AND COLUMN_NAME = 'umail_json';
+        """
+        cursor.execute(check_column_query)
+        (col_exists,) = cursor.fetchone()
+
+        if col_exists == 0:
+            alter_table_query = """
+            ALTER TABLE users
+            ADD COLUMN umail_json JSON;
+            """
+            cursor.execute(alter_table_query)
+            connection.commit()
+            print("✅ Added 'umail_json' column to 'users' table.")
+        else:
+            print("ℹ️ Column 'umail_json' already exists in 'users' table.")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # create_tables()
@@ -817,3 +880,5 @@ if __name__ == "__main__":
     # updateticketsla()
     # update_users_clients()
     # update_users()
+    # session_table()
+    # update_users_msg_json()

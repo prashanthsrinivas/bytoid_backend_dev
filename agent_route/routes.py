@@ -1,5 +1,13 @@
 import json
 import os
+from flask import Blueprint, request, jsonify
+import requests
+import json
+import os
+from datetime import datetime
+import urllib.parse
+from urllib.parse import urljoin
+import time
 from agent_route.Drive_downloader import (
     GetEmailandDriveService,
     Main_service,
@@ -812,7 +820,7 @@ def delete_file():
     # Step 3: Save updated YAML
     # with open(yaml_path, "w") as f:
     #     yaml.safe_dump(all_file_data, f, sort_keys=False)
-    save_yaml_to_s3(all_file_data,userid,"users_fileData.yaml")
+    save_yaml_to_s3(all_file_data, userid, "users_fileData.yaml")
 
     # Step 4: Delete related passed/failed Q&A entries
     success = deletefilebasedData(filename, userid)
@@ -1240,17 +1248,199 @@ def delete_audio():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+agent_bp = Blueprint("agent", __name__)
+
+# --- helper functions (paste BEFORE your route) ---
+
+
+def check_robots_txt(base_url, session):
+    try:
+        robots_url = urljoin(base_url, '/robots.txt')
+        response = session.get(robots_url, timeout=5)
+        if response.status_code == 200:
+            paths = []
+            for line in response.text.split('\n'):
+                line = line.strip()
+                if line.startswith(('Disallow:', 'Allow:')):
+                    path = line.split(':', 1)[1].strip().lstrip('/')
+                    if path and path != '*' and not path.startswith('#'):
+                        paths.append(path.split('?')[0])  # Remove query params
+            return list(set(paths))
+    except:
+        pass
+    return []
+
+def check_endpoint(base_url, endpoint, session):
+    try:
+        url = urljoin(base_url, endpoint)
+        response = session.get(url, timeout=5, allow_redirects=False)
+        if response.status_code == 200: 
+            return {
+                'endpoint': endpoint,
+                'url': url,
+                'status': response.status_code,
+                'size': len(response.content),
+                'accessible': True,
+                'protected': False,
+                'redirect': False
+            }
+    except:
+        pass
+    return None
+
+def discover_api_endpoints(content, base_url):
+    import re
+    endpoints = set()
+    patterns = [
+        r'["\']([^"\']*(?:/api/|/rest/|/graphql|/webhook)[^"\']*)["\']',
+        r'url\s*:\s*["\']([^"\']+)["\']',
+        r'fetch\s*\(\s*["\']([^"\']+)["\']',
+        r'axios\.[a-z]+\s*\(\s*["\']([^"\']+)["\']'
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, content, re.IGNORECASE)
+        for match in matches:
+            if match.startswith('/') and not match.startswith('//'):
+                endpoints.add(match.lstrip('/'))
+            elif match.startswith(base_url):
+                path = match.replace(base_url, '').lstrip('/')
+                if path:
+                    endpoints.add(path)
+    return list(endpoints)
+
 
 @agent_bp.route("/scrape", methods=["POST"])
 def scrape():
     data = request.get_json()
     url = data.get("url")
+    enable_directory_scan = data.get("directory_scan", True)  # New option
+    max_endpoints = data.get("max_endpoints", 50)  
+    
     if not url:
         return jsonify({"error": "URL required"}), 400
 
-    links = scrape_links(url, max_pages=100)  # adjust limit
-    return jsonify({"url": url, "links": links, "count": len(links)})
+    try:
+        # Create session with enhanced headers
+        session = requests.Session()
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive'
+        }
+        session.headers.update(headers)
 
+        # Get main page
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = session.get(url, timeout=30, allow_redirects=True)
+                response.raise_for_status()
+                break  # ✅ success, exit loop
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # wait before retry
+                    continue  # try again
+                else:
+                    raise
+        
+        # Extract regular links (your existing functionality)
+        links = scrape_links(url, max_pages=100)
+        
+        # NEW: Directory enumeration (Gobuster-style)
+        discovered_endpoints = []
+        api_endpoints = []
+        
+        if enable_directory_scan:
+            # Check robots.txt for additional paths
+            endpoints_to_check = set()
+            # robots.txt paths
+            endpoints_to_check.update(check_robots_txt(url, session))
+
+            # crawled links (only same domain paths)
+            for link in links:
+                parsed = urllib.parse.urlparse(link)
+                if parsed.netloc == urllib.parse.urlparse(url).netloc:
+                    if parsed.path and parsed.path != '/':
+                        endpoints_to_check.add(parsed.path.lstrip('/'))
+
+            # regex-discovered API endpoints from HTML/JS
+            endpoints_to_check.update(discover_api_endpoints(response.text, url))
+
+            # limit
+            endpoints_to_check = list(endpoints_to_check)[:max_endpoints]
+            
+            # Check each endpoint
+            for endpoint in endpoints_to_check:
+                result = check_endpoint(url, endpoint, session)
+                if result:
+                    discovered_endpoints.append(result)
+                
+                # Small delay to be respectful
+                time.sleep(0.1)
+            
+            # NEW: Find API endpoints in page content
+            api_endpoints = discover_api_endpoints(response.text, url)
+
+        # Enhanced data structure
+        scrape_data = {
+            "url": url,
+            "timestamp": datetime.now().isoformat(),
+            "status_code": response.status_code,
+            
+            # Original functionality
+            "scraped_links": {
+                "links": links,
+                "count": len(links)
+            },
+            
+            # NEW: Gobuster-style discoveries
+            "directory_scan": {
+                "enabled": enable_directory_scan,
+                "discovered_endpoints": discovered_endpoints,
+                "endpoint_count": len(discovered_endpoints),
+                "accessible_count": len([e for e in discovered_endpoints if e['accessible']]),
+                "protected_count": len([e for e in discovered_endpoints if e['protected']])
+            },
+            
+            # NEW: API endpoint discovery
+            "api_discovery": {
+                "endpoints_found": api_endpoints,
+                "count": len(api_endpoints)
+            },
+            
+            # Summary
+            "summary": {
+                "total_links": len(links),
+                "total_endpoints": len(discovered_endpoints),
+                "total_apis": len(api_endpoints),
+                "scan_comprehensive": enable_directory_scan
+            }
+        }
+
+        # Save to file (enhanced filename)
+        base_dir = os.path.join("data", "scrape_results")
+        ensure_dir(base_dir)
+        
+        scan_type = "comprehensive" if enable_directory_scan else "basic"
+        filename = f"scrape_{scan_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filepath = os.path.join(base_dir, filename)
+
+        with open(filepath, "w") as f:
+            json.dump(scrape_data, f, indent=4)
+
+        return jsonify({
+            **scrape_data,
+            "file_saved": filename,
+            "status": "success"
+        }), 200
+
+    except requests.exceptions.HTTPError as e:
+        error_message = f"HTTP Error {e.response.status_code}: Access denied or not found"
+        return jsonify({"error": error_message}), e.response.status_code
+    except Exception as e:
+        return jsonify({"error": f"Scraping failed: {str(e)}"}), 500
 
 @agent_bp.route("/check-dbfunc", methods=["POST"])
 def check_lancedb():

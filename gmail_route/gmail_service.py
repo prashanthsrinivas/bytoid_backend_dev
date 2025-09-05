@@ -15,7 +15,7 @@ from typing import Optional
 from googleapiclient.http import BatchHttpRequest
 from utils.s3_utils import attach_CLDFRNT_url
 import random
-from typing import List, Dict
+from typing import Optional, Tuple, List
 
 
 def to_epoch_days(date_str: str) -> int:
@@ -266,7 +266,7 @@ class GmailService:
                     print(f"➡️ Moving to next page (token: {next_page_token[:20]}...)")
 
                 except Exception as e:
-                    print(f"❌ Error fetching thread batch: {str(e)}")
+                    # print(f"❌ Error fetching thread batch: {str(e)}")
                     break
 
             print(f"✅ Completed! Total threads fetched: {len(all_threads)}")
@@ -426,7 +426,7 @@ class GmailService:
         return []  # This should never be reached, but just in case
 
     def build_batch_request(self, thread_ids, results):
-        print("batch build started")
+        print("batch build started", len(thread_ids))
 
         def callback(request_id, response, exception):
             if exception is not None:
@@ -439,114 +439,213 @@ class GmailService:
         )
 
         for t in thread_ids:
+            # normalize whether t is dict or str
+            thread_id = t["id"] if isinstance(t, dict) else t
             batch.add(
                 self.service.users()
                 .threads()
-                .get(userId="me", id=t["id"], format="full"),
-                request_id=t["id"],
+                .get(userId="me", id=thread_id, format="full"),
+                request_id=thread_id,
             )
+        print("returning from batch", len(thread_ids))
         return batch
 
-    async def fetch_threads_batch(self, thread_ids, max_retries=5):
+    async def fetch_threads_batch(self, thread_ids, batch_count, max_retries=5):
+        BATCH_LIMIT = 100
         loop = asyncio.get_running_loop()
         results = {}
 
-        # Wait if another batch is already running
         while getattr(self, "service_running", False):
-            await asyncio.sleep(1)  # wait 500ms and check again
+            await asyncio.sleep(1)
 
         self.service_running = True
         try:
-            for attempt in range(max_retries):
-                batch = self.build_batch_request(thread_ids, results)
-                try:
-                    await loop.run_in_executor(None, batch.execute)
-                    return results  # ✅ success
-                except HttpError as e:
-                    if e.resp.status == 429:
-                        wait = (2**attempt) + random.random()
-                        print(f"⚠️ Rate limited. Retrying in {wait:.2f}s...")
-                        await asyncio.sleep(wait)
-                    else:
-                        raise
-            return results  # after retries
+            # Split into chunks of 100
+            chunks = [
+                thread_ids[i : i + BATCH_LIMIT]
+                for i in range(0, len(thread_ids), BATCH_LIMIT)
+            ]
+            # print(
+            #     f"🔹 Split {len(thread_ids)} threads into {len(chunks)} batches of {BATCH_LIMIT}"
+            # )
+
+            for chunk_idx, chunk in enumerate(chunks, start=1):
+                print(
+                    f"➡️ Processing chunk {chunk_idx}/{len(chunks)} (size={len(chunk)})"
+                )
+
+                threads_to_fetch = list(chunk)
+
+                for attempt in range(max_retries):
+                    if not threads_to_fetch:
+                        break  # All fetched
+
+                    current_results = {}
+                    batch = self.build_batch_request(threads_to_fetch, current_results)
+
+                    try:
+                        await loop.run_in_executor(None, batch.execute)
+
+                        # Merge results
+                        results.update(current_results)
+
+                        # Collect failed ones only
+                        failed_threads = [
+                            t
+                            for t in threads_to_fetch
+                            if "error" in current_results.get(t["id"], {})
+                        ]
+
+                        if not failed_threads:
+                            print(f"✅ Chunk {chunk_idx} successful")
+                            break
+                        else:
+                            threads_to_fetch = failed_threads
+                            # print(
+                            #     f"⚠️ {len(failed_threads)} failed in chunk {chunk_idx}, retrying..."
+                            # )
+
+                            wait = (2**attempt) + random.random()
+                            # print(f"🔄 Retry in {wait:.2f}s...")
+                            await asyncio.sleep(wait)
+
+                    except HttpError as e:
+                        if e.resp.status == 429:
+                            wait = (2**attempt) + random.random()
+                            # print(
+                            #     f"⚠️ Rate limited on chunk {chunk_idx}, retry in {wait:.2f}s..."
+                            # )
+                            await asyncio.sleep(wait)
+                        else:
+                            raise
+
+                # After retries, report any failures left for this chunk
+                failed_after_retries = [
+                    t for t in chunk if "error" in results.get(t["id"], {})
+                ]
+                if failed_after_retries:
+                    print(
+                        f"❌ Chunk {chunk_idx} had {len(failed_after_retries)} threads that failed permanently"
+                    )
+
+            # Cooldown after all chunks complete
+            cooldown = random.randint(5, 10)
+            print(f"🕒 All {len(chunks)} chunks processed. Cooling down {cooldown}s...")
+            await asyncio.sleep(cooldown)
+
+            print("retuening results from fetch_threads_batch", len(results))
+            return results
+
         finally:
             self.service_running = False
+            print(f"current batch fetched {batch_count}")
 
-    async def process_threads_batch(self, thread_ids, my_email, batch_count):
-        responses = await self.fetch_threads_batch(thread_ids)
-        print(f"len of the responses batch {batch_count} --->", len(responses))
+    async def process_threads_batch(
+        self, thread_ids, my_email, batch_count, global_retries=3
+    ):
+        """
+        Process Gmail threads with retries.
+        Retries only failed thread_ids and merges results.
+        """
         final_results = {}
+        remaining = list(thread_ids)
 
-        for thread_id, resp in responses.items():
-            if "error" in resp:
-                print(f"⚠️ Error fetching thread {thread_id}: {resp['error']}")
-                final_results[thread_id] = ([], resp["error"])
-                continue
+        for attempt in range(global_retries):
+            if not remaining:
+                break  # ✅ all done
 
-            messages = resp.get("messages", [])
-            if not messages:
-                print(f"⚠️ Thread {thread_id} has no messages")
-                final_results[thread_id] = ([], None)
-                continue
+            print(
+                f"🔄 Global attempt {attempt+1}/{global_retries} with {len(remaining)} threads",
+                # f"the data pushing to{remaining[0]} {type(remaining[0])}",
+            )
 
-            thread_data = []
-            for message in messages:
-                try:
-                    labelids = message.get("labelIds", [])
+            responses = await self.fetch_threads_batch(remaining, batch_count)
+            # print(f"len of the responses batch {batch_count} --->", len(responses))
 
-                    # 🚫 Skip promotional emails
-                    if "CATEGORY_PROMOTIONS" in labelids:
-                        continue
+            next_remaining = []
 
-                    headers = message.get("payload", {}).get("headers", [])
-                    parsed = self.parse_headers(headers)
-
-                    message_id = next(
+            for thread_id, resp in responses.items():
+                if "error" in resp:
+                    # print(f"⚠️ Error fetching thread {thread_id}: {resp['error']}")
+                    final_results[thread_id] = ([], resp["error"])
+                    failed_data = next(
                         (
-                            h["value"]
-                            for h in headers
-                            if h["name"].lower() == "message-id"
+                            t
+                            for t in remaining
+                            if (t["id"] if isinstance(t, dict) else t) == thread_id
                         ),
-                        None,
+                        thread_id,  # fallback: just the string
                     )
-
-                    from_header = parsed.get("from", "")
-                    email = (
-                        from_header.split()[-1].strip("<>")
-                        if from_header
-                        else "unknown@example.com"
-                    )
-
-                    is_sent_by_me = my_email.lower() in from_header.lower()
-
-                    snippet_text = message.get("snippet", resp.get("snippet", ""))
-
-                    message_data = {
-                        "thread_id": thread_id,
-                        "messageId": message_id,
-                        "from": parsed.get("from", "Unknown Sender"),
-                        "to": parsed.get("to", ""),
-                        "email": email,
-                        "subject": parsed.get("subject", "No Subject"),
-                        "snippet": resp.get("snippet", ""),
-                        "body": snippet_text,
-                        "date": parsed.get("date", ""),
-                        "isRead": "UNREAD" not in labelids,
-                        "isStarred": "STARRED" in labelids,
-                        "labels": labelids,
-                        "attachments": [],
-                        "isSentByMe": is_sent_by_me,
-                    }
-
-                    thread_data.append(message_data)
-
-                except Exception as e:
-                    print(f"⚠️ Error processing message in thread {thread_id}: {e}")
+                    next_remaining.append(failed_data)  # retry this one
                     continue
 
-            final_results[thread_id] = (thread_data, None)
-        print("returning results from batch", len(final_results))
+                messages = resp.get("messages", [])
+                if not messages:
+                    print(f"⚠️ Thread {thread_id} has no messages")
+                    final_results[thread_id] = ([], None)
+                    continue
+
+                thread_data = []
+                for msg in messages:
+                    try:
+                        labelids = msg.get("labelIds", [])
+                        # if "CATEGORY_PROMOTIONS" in labelids:
+                        #     continue
+
+                        headers = {
+                            h["name"].lower(): h["value"]
+                            for h in msg.get("payload", {}).get("headers", [])
+                        }
+
+                        message_id = headers.get("message-id")
+                        from_header = headers.get("from", "")
+                        email = (
+                            from_header.split()[-1].strip("<>")
+                            if from_header
+                            else "unknown@example.com"
+                        )
+
+                        thread_data.append(
+                            {
+                                "thread_id": thread_id,
+                                "messageId": message_id,
+                                "from": headers.get("from", "Unknown Sender"),
+                                "to": headers.get("to", ""),
+                                "email": email,
+                                "subject": headers.get("subject", "No Subject"),
+                                "snippet": resp.get("snippet", ""),
+                                "body": msg.get("snippet", resp.get("snippet", "")),
+                                "date": headers.get("date", ""),
+                                "isRead": "UNREAD" not in labelids,
+                                "isStarred": "STARRED" in labelids,
+                                "labels": list(labelids),
+                                "attachments": [],
+                                "isSentByMe": my_email.lower() in from_header.lower(),
+                            }
+                        )
+
+                    except Exception as e:
+                        print(f"⚠️ Error processing message in thread {thread_id}: {e}")
+                        continue
+
+                final_results[thread_id] = (thread_data, None)
+
+            remaining = next_remaining
+
+            if remaining:
+                wait = 10  # fixed wait, can also do exponential backoff if you want
+                # print(
+                #     f"⚠️ {len(remaining)} threads still failed. Retrying in {wait}s..."
+                # )
+                await asyncio.sleep(wait)
+
+        # After all retries, log permanent failures
+        if remaining:
+            print("❌ Permanent failures after all retries:")
+            # for tid in remaining:
+            #     print(f"   - Thread {tid}: {final_results[tid][1]}")
+
+        print("✅ Returning results from batch", len(final_results))
         return final_results
 
     def _extract_message_body(self, payload):
@@ -639,33 +738,40 @@ class GmailService:
         return count
 
     def get_real_date_basedmessage_count(self, start_date: str, end_date: str):
-        count = 0
-        page_token = None
-        after_ts = to_epoch_days(start_date)  # e.g. 2025-02-01
-        before_ts = to_epoch_days(end_date)  # e.g. 2025-08-01
+        def fetch_count(query: str = None):
+            count = 0
+            page_token = None
+            while True:
+                params = {
+                    "userId": "me",
+                    "maxResults": 500,
+                    "pageToken": page_token,
+                }
+                if query:
+                    params["q"] = query
 
-        q = f"in:inbox category:primary after:{after_ts} before:{before_ts}"
-        # messages = []
-        while True:
-            response = (
-                self.service.users()
-                .messages()
-                .list(
-                    userId="me",
-                    q=q,
-                    pageToken=page_token,
-                    maxResults=500,
-                )
-                .execute()
-            )
-            msgs = response.get("messages", [])
-            count += len(msgs)
-            # messages.extend(msgs)
+                response = self.service.users().messages().list(**params).execute()
+                msgs = response.get("messages", [])
+                count += len(msgs)
 
-            page_token = response.get("nextPageToken")
-            if not page_token:
-                break
-        # return {"count": count, "messages": messages}
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+            return count
+
+        # ✅ build initial query
+        after_ts = to_epoch_days(start_date)
+        before_ts = to_epoch_days(end_date) + 86400  # include end_date
+        query = f"in:inbox category:primary after:{after_ts} before:{before_ts}"
+        query2 = f"in:inbox after:{after_ts} before:{before_ts}"
+
+        # ✅ first attempt with query
+        count = fetch_count(query)
+
+        # ✅ if nothing found, retry without query (broad fetch)
+        if count == 0:
+            count = fetch_count(query2)
+
         return count
 
     async def get_real_date_thread_count_dynamic(
@@ -677,46 +783,64 @@ class GmailService:
         """
 
         async def fetch_chunk(s_date: str, e_date: str) -> dict:
-            """Fetch a single chunk, raises exception if fails."""
-            # Wait if another batch/service is running
+            """Fetch a single chunk of Gmail threads, with fallback query if strict search returns nothing."""
             while getattr(self, "service_running", False):
                 await asyncio.sleep(0.5)
 
             self.service_running = True
             try:
-                after_ts = to_epoch_days(s_date)
-                before_ts = to_epoch_days(e_date)
-                q = f"in:inbox category:primary after:{after_ts} before:{before_ts}"
+                s_dt = datetime.fromisoformat(s_date)
+                e_dt = datetime.fromisoformat(e_date)
 
-                count = 0
-                threads = []
-                page_token = None
+                after_ts = int(s_dt.replace(tzinfo=timezone.utc).timestamp())
+                before_ts = int(
+                    (e_dt + timedelta(days=1)).replace(tzinfo=timezone.utc).timestamp()
+                )
 
-                while True:
-                    try:
-                        response = (
-                            self.service.users()
-                            .threads()
-                            .list(
-                                userId="me", q=q, maxResults=500, pageToken=page_token
+                queries = [
+                    f"in:inbox category:primary after:{after_ts} before:{before_ts}",
+                    f"in:inbox after:{after_ts} before:{before_ts}",
+                ]
+
+                async def run_query(q: Optional[str]) -> Tuple[int, List]:
+                    count = 0
+                    threads = []
+                    page_token = None
+
+                    while True:
+                        try:
+                            params = {
+                                "userId": "me",
+                                "maxResults": 500,
+                                "pageToken": page_token,
+                            }
+                            if q:
+                                params["q"] = q
+
+                            response = (
+                                self.service.users().threads().list(**params).execute()
                             )
-                            .execute()
-                        )
-                        thd = response.get("threads", [])
-                        count += len(thd)
-                        threads.extend(thd)
-                        page_token = response.get("nextPageToken")
-                        if not page_token:
-                            break
-                    except Exception as e:
-                        # Handle rate limiting (429) with exponential backoff
-                        if hasattr(e, "resp") and e.resp.status == 429:
-                            await asyncio.sleep(1 + random.random())
-                            continue
-                        else:
-                            raise
+                            thd = response.get("threads", [])
+                            count += len(thd)
+                            threads.extend(thd)
 
-                return {"count": count, "threads": threads}
+                            page_token = response.get("nextPageToken")
+                            if not page_token:
+                                break
+                        except Exception as e:
+                            if hasattr(e, "resp") and e.resp.status == 429:
+                                await asyncio.sleep(1 + random.random())
+                                continue
+                            else:
+                                raise
+                    return count, threads
+
+                for q in queries:
+                    count, threads = await run_query(q)
+                    if count > 0:
+                        return {"count": count, "threads": threads}
+
+                return {"count": 0, "threads": []}
 
             finally:
                 self.service_running = False
@@ -757,6 +881,7 @@ class GmailService:
             allthreads = await self.get_real_date_thread_count_dynamic(
                 start_date, end_date, min_days
             )
+            # msg_threads = self.get_real_date_basedmessage_count(start_date, end_date)
             return {
                 "email": self.user_email,
                 "threadsTotal": allthreads,

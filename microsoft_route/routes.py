@@ -97,7 +97,7 @@ def microsoft_callback():
         given_name = userinfo.get("givenName")
         family_name = userinfo.get("surname")
         user_id = userinfo.get("id")
-        print("email from microsoft", email)
+        # print("all from microsoft", userinfo)
 
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -153,21 +153,25 @@ def microsoft_callback():
             if user_id != prev_id:
                 cursor.execute(
                     """  
-                            UPDATE users 
-                            SET 
-                                user_id = %s,
-                                client_id = %s,
-                                client_secret = %s,
-                                token = %s,
-                                refresh_token = %s,
-                                expiry = %s,
-                                updated_in = NOW(),
-                                logged_in_at = NOW(),
-                                logged_out_at = NOW()
-                            WHERE email = %s
-                        """,
+                    UPDATE users 
+                    SET 
+                        user_id = %s,
+                        first_name = %s,
+                        last_name = %s,
+                        client_id = %s,
+                        client_secret = %s,
+                        token = %s,
+                        refresh_token = %s,
+                        expiry = %s,
+                        updated_in = NOW(),
+                        logged_in_at = NOW(),
+                        logged_out_at = NOW()
+                    WHERE email = %s
+                    """,
                     (
                         user_id,
+                        given_name,
+                        family_name,
                         CLIENT_ID,
                         CLIENT_SECRET,
                         access_token_,
@@ -179,19 +183,23 @@ def microsoft_callback():
             else:
                 cursor.execute(
                     """  
-                            UPDATE users 
-                            SET 
-                                client_id = %s,
-                                client_secret = %s,
-                                token = %s,
-                                refresh_token = %s,
-                                expiry = %s,
-                                updated_in = NOW(),
-                                logged_in_at = NOW(),
-                                logged_out_at = NOW()
-                            WHERE email = %s
-                        """,
+                    UPDATE users 
+                    SET 
+                        first_name = %s,
+                        last_name = %s,
+                        client_id = %s,
+                        client_secret = %s,
+                        token = %s,
+                        refresh_token = %s,
+                        expiry = %s,
+                        updated_in = NOW(),
+                        logged_in_at = NOW(),
+                        logged_out_at = NOW()
+                    WHERE email = %s
+                    """,
                     (
+                        given_name,
+                        family_name,
                         CLIENT_ID,
                         CLIENT_SECRET,
                         access_token_,
@@ -201,6 +209,7 @@ def microsoft_callback():
                     ),
                 )
 
+        print("at last", given_name, family_name)
         conn.commit()
         conn.close()
 

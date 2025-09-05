@@ -31,6 +31,7 @@ def get_user_tickets(user_id):
                 conv_id = parts[-1].replace(".json", "")
                 conv_key_map[conv_id] = key
 
+
         # fetch the details from table
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -102,11 +103,17 @@ def get_user_tickets(user_id):
 
 def get_conversation_details(key):
     try:
+        print(f"key : {key}")
         data = read_json_from_s3(key)
 
         input_data = data.get("input_data", [])
         if input_data:
-            conversation = input_data[0]
+            if isinstance(input_data, list):
+                conversation = input_data[0] if input_data else {}
+            else:
+                # Handle case where input_data is a single dictionary
+                conversation = input_data
+    
             return {
                 "body": conversation.get("body", ""),
                 "subject": conversation.get("subject", ""),
@@ -122,21 +129,43 @@ def get_conversation_details(key):
         print(f"[ERROR] Failed to read conversation file {key}: {e}")
         return {}
 
-@tickets_bp.route("/get_status_priority/<ticket_id>", methods=["GET"])
-def get_status_priority(ticket_id):
+@tickets_bp.route("/get_status_priority/<ticket_id>/<user_id>", methods=["GET"])
+def get_status_priority(ticket_id, user_id):
     if not ticket_id:
         return {"status": None, "priority": None, "ticket_name": None}
 
     conn = connect_to_rds()
     cursor = conn.cursor()
 
+
+
     try:
+        print(f"ticket_id : {ticket_id}, user_id : {user_id}")
         cursor.execute(
-            "SELECT status, priority, ticket_name, conversation_id_fk  FROM tickets WHERE tickets_id = %s",
-            (ticket_id,)
+            "SELECT t.status, t.priority, t.ticket_name, t.conversation_id_fk, t.tickets_id "
+            "FROM tickets t "
+            "JOIN communication c ON t.communication_id_fk = c.communication_id "
+            "WHERE t.tickets_id LIKE %s AND c.user_id_fk = %s",
+            (f'{ticket_id}#%', user_id)
         )
+
+        # cursor.execute(
+        #     "SELECT t.status, t.priority, t.ticket_name, t.conversation_id_fk "
+        #     "FROM tickets t "
+        #     "WHERE t.tickets_id = %s ",
+        #     (ticket_id,)
+        # )
+
+        # cursor.execute(
+        #     "SELECT t.status, t.priority, t.ticket_name, t.conversation_id_fk "
+        #     "FROM tickets t "
+        #     "WHERE t.tickets_id LIKE %s ",
+        #     (f'{ticket_id}#%')
+        # )
+
         ticket_row = cursor.fetchone()
         if ticket_row:
+            print(f"{ticket_row[0]}, {ticket_row[1]}, {ticket_row[2]} {ticket_row[4]}")
             return {
                 "status": ticket_row[0],
                 "priority": ticket_row[1],

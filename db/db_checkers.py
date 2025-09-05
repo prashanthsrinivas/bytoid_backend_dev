@@ -1,6 +1,6 @@
 import json
 
-from .rds_db import connect_to_rds
+from .rds_db import connect_to_rds, get_cursor
 from datetime import datetime
 import uuid
 import pymysql
@@ -533,3 +533,38 @@ def get_user_agent_id(apikey):
         return None
     finally:
         connection.close()
+
+
+import json
+from datetime import datetime, timezone
+
+
+def get_existing_umail_json(user_id):
+    connection = connect_to_rds()
+    if connection is None:
+        return None
+    with get_cursor(connection) as cursor:
+        cursor.execute("SELECT umail_json FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+    connection.close()
+    if row and row[0]:
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
+    return None
+
+
+def update_umail_json(user_id, new_entry):
+    connection = connect_to_rds()
+    if connection is None:
+        return
+    with get_cursor(connection) as cursor:
+        existing = get_existing_umail_json(user_id) or {"history": []}
+        existing["history"].append(new_entry)
+        cursor.execute(
+            "UPDATE users SET umail_json = %s WHERE user_id = %s",
+            (json.dumps(existing), user_id),
+        )
+        connection.commit()
+    connection.close()

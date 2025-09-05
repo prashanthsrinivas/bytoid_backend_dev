@@ -180,7 +180,7 @@ def session_exists():
     else:
         return jsonify({'session_exists': False}), 200
 
-@app.route('/delete_session', methods=['POST'])
+# @app.route('/delete_session', methods=['POST'])
 def delete_session():
     session_id = request.cookies.get('session_id')
 

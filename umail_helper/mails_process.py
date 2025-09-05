@@ -1,3 +1,4 @@
+import asyncio
 from cust_helpers import pathconfig
 from utils.normal import ensure_dir, load_yaml_file
 from datetime import datetime, timezone
@@ -133,100 +134,191 @@ def analyze_and_collect_messages_for_batch(user_id, grouped_messages, batch_coun
             return new_messages
 
 
-def vtooanalyze_and_collect_messages_for_batch(
+async def vtooanalyze_and_collect_messages_for_batch(
     user_id, grouped_messages, batch_count, cursor
 ):
+    print("vtoo analyze")
     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
     ensure_dir(user_folder)
 
     new_messages = []
 
-    for client_id, channel_data in grouped_messages.items():
-
-        # cursor = connection.cursor()
+    async def process_channel(client_id, channel, channel_msgs):
+        # fetch client email
         cursor.execute(
             "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
             (client_id,),
         )
-        client_row = cursor.fetchone()
-        if not client_row:
-            print("❌ Error: User not found in users_clients table")
-            continue
+        row = cursor.fetchone()
+        if not row:
+            print("❌ Error: User not found")
+            return []
+        client_email = row[0]
 
-        client_email = client_row[0]
-
-        config_folder = os.path.join(
-            pathconfig.basepath, "messages", user_id, client_id
-        )
+        config_folder = os.path.join(user_folder, client_id)
         ensure_dir(config_folder)
 
-        # config_filepath = os.path.join(config_folder, "config.json")
-        # try:
-        #     with open(config_filepath, "r", encoding="utf-8") as f:
-        #         config_data = json.load(f)
-        # except FileNotFoundError:
-        #     config_data = {}
-        #     print("⚠️ Config file not found")
+        msg_ids = [m["id"] for m in channel_msgs if "id" in m]
+        if not msg_ids:
+            return []
 
-        for channel, channel_msgs in channel_data.items():
-            channel_msgs.sort(key=lambda x: x.get("timestamp", ""))  # optional
+        # ✅ Check existing IDs in DB
+        placeholders = ",".join(["%s"] * len(msg_ids))
+        sql = f"SELECT message_id FROM messages WHERE message_id IN ({placeholders})"
+        cursor.execute(sql, tuple(msg_ids))
+        existing_ids = {row[0] for row in cursor.fetchall()}
 
-            output_filename = f"{channel}_new_messages.json"
-            output_path = os.path.join(config_folder, output_filename)
-
+        # Load previous new_messages.json
+        output_path = os.path.join(config_folder, f"{channel}_new_messages.json")
+        try:
+            with open(output_path, "r", encoding="utf-8") as f:
+                new_msg_data = json.load(f)
+        except Exception:
             new_msg_data = {}
-            try:
-                with open(output_path, "r", encoding="utf-8") as f:
-                    new_msg_data = json.load(f)
 
-            except Exception as e:
-                print(f"⚠️ Couldn't read existing messages: {e}")
+        merged_messages = new_msg_data.get("new_messages", [])
+        existing_new_msg = {msg.get("msg_id"): msg for msg in merged_messages}
 
-            existing_new_msg = {
-                msg.get("msg_id"): msg for msg in new_msg_data.get("new_messages", [])
+        new_msgs_local = []
+        for m in channel_msgs:
+            msg_id = m["id"]
+            if msg_id in existing_ids or m.get("type") == "Lead":
+                continue
+            new_msg = {
+                "msg_id": msg_id,
+                "body": m.get("body"),
+                "from": "client" if m.get("from") == client_email else "user",
+                "to": "client" if m.get("to") == client_email else "user",
+                "date": m.get("timestamp"),
+                "channel": channel,
             }
-            merged_messages = new_msg_data.get("new_messages", [])
+            merged_messages.append(new_msg)
+            new_msgs_local.append(new_msg)
 
-            for m in channel_msgs:
-                msg_id = m.get("id")
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE message_id = %s", (msg_id,)
-                )
-                m_id = cursor.fetchone()
-                if m_id:
-                    continue
+        # Write updated file
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump({"new_messages": merged_messages}, f, indent=2)
 
-                type = m.get("type")
-                if type == "Lead":
-                    continue
+        # Heavier async tasks
+        subjects = await asyncio.to_thread(
+            generate_subject, user_id, output_path, channel
+        )
+        channel_grouped = {client_id: {channel: channel_msgs}}
 
-                new_msg = {
-                    "msg_id": msg_id,
-                    "body": m.get("body"),
-                    "from": "client" if m.get("from") == client_email else "user",
-                    "to": "client" if m.get("to") == client_email else "user",
-                    "date": m.get("timestamp"),
-                    "channel": channel,
-                }
-                merged_messages.append(new_msg)
+        lance_ticket_id = await asyncio.to_thread(
+            append_subject_to_messages,
+            channel_grouped,
+            channel,
+            subjects,
+            user_id,
+            existing_new_msg,
+            batch_count,
+        )
+        UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
 
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump({"new_messages": merged_messages}, f, indent=2)
+        return new_msgs_local
 
-            subjects = generate_subject(user_id, output_path, channel)
+    # build async tasks for all client_id + channels
+    tasks = []
+    for client_id, channel_data in grouped_messages.items():
+        for channel, channel_msgs in channel_data.items():
+            tasks.append(process_channel(client_id, channel, channel_msgs))
 
-            lance_ticket_id = append_subject_to_messages(
-                grouped_messages,
-                channel,
-                subjects,
-                user_id,
-                existing_new_msg,
-                batch_count,
-            )
-            print(f"final lance_ticket_id : {lance_ticket_id}")
-            client = UmailLanceClient(user_id)
-            client.update_ticket_number(user_id, lance_ticket_id)
-            return new_messages
+    # run all tasks concurrently
+    results = await asyncio.gather(*tasks)
+
+    # flatten results
+    for res in results:
+        new_messages.extend(res)
+
+    return new_messages
+
+
+# def vtooanalyze_and_collect_messages_for_batch(
+#     user_id, grouped_messages, batch_count, cursor
+# ):
+#     print("vtoo analyze")
+#     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+#     ensure_dir(user_folder)
+
+#     new_messages = []
+
+#     for client_id, channel_data in grouped_messages.items():
+#         # fetch client email once
+#         cursor.execute(
+#             "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
+#             (client_id,),
+#         )
+#         row = cursor.fetchone()
+#         if not row:
+#             print("❌ Error: User not found")
+#             continue
+#         client_email = row[0]
+
+#         config_folder = os.path.join(user_folder, client_id)
+#         ensure_dir(config_folder)
+#         for channel, channel_msgs in channel_data.items():
+#             # 1) batch check existing message IDs
+#             msg_ids = [m["id"] for m in channel_msgs if "id" in m]
+#             if not msg_ids:
+#                 continue
+
+#             # ✅ Use IN (...) instead of ANY (MySQL safe)
+#             placeholders = ",".join(["%s"] * len(msg_ids))
+#             sql = (
+#                 f"SELECT message_id FROM messages WHERE message_id IN ({placeholders})"
+#             )
+#             cursor.execute(sql, tuple(msg_ids))
+#             existing_ids = {row[0] for row in cursor.fetchall()}
+
+#             # 2) load previous new_messages.json once
+#             output_path = os.path.join(config_folder, f"{channel}_new_messages.json")
+#             try:
+#                 with open(output_path, "r", encoding="utf-8") as f:
+#                     new_msg_data = json.load(f)
+#             except Exception:
+#                 new_msg_data = {}
+
+#             merged_messages = new_msg_data.get("new_messages", [])
+#             existing_new_msg = {msg.get("msg_id"): msg for msg in merged_messages}
+
+#             # 3) filter and build only new ones
+#             for m in channel_msgs:
+#                 msg_id = m["id"]
+#                 if msg_id in existing_ids or m.get("type") == "Lead":
+#                     continue
+#                 new_msg = {
+#                     "msg_id": msg_id,
+#                     "body": m.get("body"),
+#                     "from": "client" if m.get("from") == client_email else "user",
+#                     "to": "client" if m.get("to") == client_email else "user",
+#                     "date": m.get("timestamp"),
+#                     "channel": channel,
+#                 }
+#                 merged_messages.append(new_msg)
+#                 new_messages.append(new_msg)
+
+#             # 4) write once
+#             with open(output_path, "w", encoding="utf-8") as f:
+#                 json.dump({"new_messages": merged_messages}, f, indent=2)
+
+#             # 5) run heavier parts last
+#             subjects = generate_subject(user_id, output_path, channel)
+#             print("subjects generated", len(subjects))
+#             channel_grouped = {client_id: {channel: channel_msgs}}
+
+#             lance_ticket_id = append_subject_to_messages(
+#                 channel_grouped,
+#                 channel,
+#                 subjects,
+#                 user_id,
+#                 existing_new_msg,
+#                 batch_count,
+#             )
+#             print(f"✅ final lance_ticket_id : {lance_ticket_id}")
+#             UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
+
+#     return new_messages
 
 
 # @umail_bp.route("/subject_summarisations/<user_id>", methods=["POST"])
@@ -286,13 +378,12 @@ def append_subject_to_messages(
 ):
     print(f"****inside append_subject_to_messages for batch number : {batch_count}")
 
-    # Build a lookup of message_id → subject
+    # Build a lookup of message_id → subject (unchanged)
     subject_map = {}
-    for group in subjects:
-        subject = group["summary"]
-        for mid in group["message_ids"]:
+    for group in subjects or []:
+        subject = group.get("summary")
+        for mid in group.get("message_ids", []):
             subject_map[str(mid)] = subject
-
     print(f"📝 Built subject_map for {len(subject_map)} messages")
 
     connection = connect_to_rds()
@@ -301,106 +392,118 @@ def append_subject_to_messages(
         return None
 
     cursor = connection.cursor()
-    # print("✅ Database connection established")
 
     dt_utc = datetime.now(timezone.utc)
-    created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
-    updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+    created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+    updated_date = dt_utc.isoformat()
 
     processed_message_ids = set()
 
-    lance_ticket_id = 0
-    client = UmailLanceClient(user_id)
-    lance_ticket_id_ = client.call_ticket_number(user_id)
-    print(f"lance_ticket_id_ : {lance_ticket_id_}")
-    lance_ticket_id = lance_ticket_id_ + 1
+    # Pre-fetch next ticket number once
+    client_ticket = UmailLanceClient(user_id)
+    lance_ticket_id_base = client_ticket.call_ticket_number(user_id) or 0
+    print(f"lance_ticket_id_ : {lance_ticket_id_base}")
+    lance_ticket_id = lance_ticket_id_base + 1
+
+    # Small helper caches (per client)
+    communication_id_cache = {}
 
     # Iterate through grouped_messages structure
     for client_id, channels in grouped_messages.items():
-        # print(f"\n🏢 Processing client_id: {client_id}")
         s3_config_key = f"{user_id}/messages/{client_id}/config.json"
-
         try:
-            config_data = read_json_from_s3(s3_config_key)
-            if config_data is None:
-                config_data = {}
-                print(f"⚠️ No S3 config data found for {s3_config_key}")
-
+            config_data = read_json_from_s3(s3_config_key) or {}
         except FileNotFoundError:
             config_data = {}
-            # print(f"📁 No config file found for {client_id}")
 
+        # Make list/set once
         existing_thread_ids = [
             conv.get("thread_id")
             for conv in config_data.get("conversations", [])
-            if "thread_id" in conv and conv.get("thread_id")
+            if conv.get("thread_id")
         ]
 
-        # print(f"🧵 Found {len(existing_thread_ids)} existing thread_ids for client {client_id}")
+        # Build Zoho subject lookup once per client (only if needed)
+        config_subject_lookup = {}
+        if channel == "zoho" and config_data:
+            for conv in config_data.get("conversations", []):
+                if conv.get("channel", "").lower() != "zoho":
+                    continue
+                conf_subj = conv.get("subject", "")
+                if conf_subj:
+                    config_subject_lookup[conf_subj] = {
+                        "conv_id": conv.get("conv_id", ""),
+                        "ticket_id": conv.get("ticket_id", ""),
+                        "ticket_name": conv.get("ticket_name", ""),
+                    }
+
+        # Cache communication_id per (user_id, client_id)
+        if client_id not in communication_id_cache:
+            cursor.execute(
+                "SELECT communication_id FROM communication WHERE user_id_fk = %s and users_clients_id_fk = %s",
+                (user_id, client_id),
+            )
+            row = cursor.fetchone()
+            communication_id_cache[client_id] = row[0] if row else None
 
         messages = grouped_messages.get(client_id, {}).get(channel, [])
-        # print(f"📨 Processing {len(messages)} messages for client {client_id} in channel {channel}")
+        if not messages:
+            continue
 
-        if channel == "zoho":
-            # Build subject lookup per client
-            config_subject_lookup = {}
-            if config_data:
-                for conv in config_data.get("conversations", []):
-                    if conv.get("channel", "").lower() != "zoho":
-                        continue
-                    conf_subj = conv.get("subject", "")
-                    conf_ticket_name = conv.get("ticket_name", "")
-                    conf_conv_id = conv.get("conv_id", "")
-                    conf_ticket_id = conv.get("ticket_id", "")
-                    if conf_subj:
-                        config_subject_lookup[conf_subj] = {
-                            "conv_id": conf_conv_id,
-                            "ticket_id": conf_ticket_id,
-                            "ticket_name": conf_ticket_name,
-                        }
-            # print(f"📧 Built zoho subject lookup with {len(config_subject_lookup)} entries")
+        # ----------- BIG WIN: Batch existence check for messages -----------
+        all_ids = [m.get("id") for m in messages if m.get("id")]
+        existing_ids = set()
+        if all_ids:
+            # Postgres style: ANY(%s); for MySQL use IN (%s) with executemany builder
+            try:
+                cursor.execute(
+                    "SELECT message_id FROM messages WHERE message_id = ANY(%s)",
+                    (all_ids,),
+                )
+                existing_ids = {r[0] for r in cursor.fetchall()}
+            except Exception:
+                # Fallback for MySQL (build an IN clause safely)
+                # Note: we keep behavior, but this branch only runs if ANY is unsupported
+                chunk = 1000
+                for i in range(0, len(all_ids), chunk):
+                    subset = all_ids[i : i + chunk]
+                    placeholders = ", ".join(["%s"] * len(subset))
+                    cursor.execute(
+                        f"SELECT message_id FROM messages WHERE message_id IN ({placeholders})",
+                        subset,
+                    )
+                    existing_ids.update(r[0] for r in cursor.fetchall())
+        # --------------------------------------------------------------------
+
+        found_existing_conversation = False  # variable used later
 
         for msg in messages:
             msg_id = msg.get("id")
-            # print(f"\n📧 Examining message: {msg_id}")
-            # print(f"   Direction: {msg.get('direction')}")
-            # print(f"   Subject: {msg.get('subject', 'No subject')}")
-            # print(f"   Thread ID: {msg.get('thread_id', 'No thread_id')}")
+            if not msg_id:
+                continue
 
             if msg_id in processed_message_ids:
-                # print(f"⏭️ Skipping already processed message in this batch: {msg_id}")
                 continue
 
-            # Check database
-            # print(f"🔍 Checking database for message_id: {msg_id}")
-            cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (msg_id,))
-            db_result = cursor.fetchone()
-            if db_result:
-                # print(f"⚠️ Message {msg_id} already exists in database, skipping")
+            # Use the batched set instead of per-message SELECT
+            if msg_id in existing_ids:
                 continue
-            # else:
-            #     print(f"✅ Message {msg_id} NOT found in database, proceeding with processing")
 
             processed_message_ids.add(msg_id)
-            # print(f"📝 Added {msg_id} to processed_message_ids set (now contains {len(processed_message_ids)} messages)")
 
             subject = msg.get("subject", "")
             is_reply = (
                 subject.lower().startswith("re:")
-                or "wrote:" in msg.get("summary", "").lower()
+                or "wrote:" in (msg.get("summary") or "").lower()
             )
-            # print(f"🔄 Processing message: {msg_id}, is_reply: {is_reply}")
 
-            # 1. for zoho reply from client
+            # 1) ZOHO reply path
             if channel == "zoho" and is_reply:
-                # print(f"🎯 CASE 1: Zoho reply from client for {msg_id}")
-
                 normalized_subject = re.sub(
                     r"^re:\s*", "", subject, flags=re.IGNORECASE
                 )
                 config_thread = config_subject_lookup.get(normalized_subject)
                 if config_thread:
-                    # print(f"✅ Found matching config thread for normalized subject: {normalized_subject}")
                     c_id = config_thread["conv_id"]
                     t_id = config_thread["ticket_id"]
                     t_name = config_thread["ticket_name"]
@@ -408,12 +511,10 @@ def append_subject_to_messages(
                     msg["ticket_id"] = t_id
                     msg["ticket_name"] = t_name
 
-                    # print(f"🎫 Updating tickets and threads for conv_id: {c_id}")
                     cursor.execute(
                         "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
                         (updated_date, "In-Progress", c_id),
                     )
-
                     cursor.execute(
                         "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
                         (updated_date, c_id),
@@ -424,13 +525,13 @@ def append_subject_to_messages(
                         msg, client_id, cursor, batch_count
                     )
 
+                    # NOTE: original code updated messages.update_at by conversation_id (comment said incorrect)
                     cursor.execute(
                         "UPDATE messages SET update_at = %s WHERE conversation_id = %s",
                         (updated_date, c_id),
-                    )  # this is incorrect. refer code block for gmail
+                    )
 
-                    parsed_ts = dt_utc
-
+                    # update config_data in memory
                     for i, conv in enumerate(config_data.get("conversations", [])):
                         if conv.get("conv_id") == c_id:
                             config_data["conversations"][i][
@@ -438,36 +539,31 @@ def append_subject_to_messages(
                             ] = updated_date
                             config_data["conversations"][i][
                                 "parsed_timestamp"
-                            ] = parsed_ts.isoformat()
+                            ] = dt_utc.isoformat()
                             break
 
                     update_config_file(user_id, client_id, config_data)
                     connection.commit()
-                    # print(f"✅ CASE 1 COMPLETE: Committed zoho reply processing for {msg_id}")
-
                     continue
                 else:
                     print(
-                        f"⚠️ No matching config thread found for normalized subject: {normalized_subject}"
+                        f"⚠️ No matching config thread for normalized subject: {normalized_subject}"
                     )
 
+            # 2) Gmail reply (has thread_id)
             thread_id = msg.get("thread_id")
             direction = msg.get("direction")
 
-            # 2. for gmail reply from client
             if thread_id:
-                # print(f"🎯 CASE 2: Gmail message with thread_id {thread_id} for {msg_id}")
-                mesag_id = msg.get("id")
+                mesag_id = msg_id  # keep original name usage
                 msg_body = msg.get("body")
 
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE message_id = %s", (mesag_id,)
-                )
-                existing_msg = cursor.fetchone()
-                if existing_msg:
+                # We already batched existing message ids; this keeps behavior
+                if mesag_id in existing_ids:
                     continue
 
                 found_existing_conversation = False
+                matching_conv = None
                 if config_data:
                     matching_conv = next(
                         (
@@ -477,231 +573,161 @@ def append_subject_to_messages(
                         ),
                         None,
                     )
+                if matching_conv:
+                    conversation_id = matching_conv.get("conv_id")
+                    print(
+                        f"found matching thread-id:{thread_id}; conv_id :{conversation_id}"
+                    )
+                    if conversation_id:
+                        found_existing_conversation = True
+                        msg["conversation_id"] = conversation_id
 
-                    if matching_conv:
-                        # print(f"✅ Found matching conversation for thread_id: {thread_id}")
-                        conversation_id = matching_conv.get("conv_id")
-                        print(
-                            f"found matching thread-id:{thread_id}; conv_id :{conversation_id}"
+                        # find or create ticket
+                        cursor.execute(
+                            "SELECT tickets_id, ticket_name FROM tickets WHERE conversation_id_fk = %s",
+                            (conversation_id,),
                         )
-                        if conversation_id:
-                            found_existing_conversation = True
-                            msg["conversation_id"] = conversation_id
+                        ticket_row = cursor.fetchone()
+                        if not ticket_row:
+                            ticket_uuid = str(uuid.uuid4())
+                            ticket_id = f"TKT-{lance_ticket_id}#{ticket_uuid}"
+                            ticket_name = matching_conv.get("subject")
 
-                            ticket_id = ticket_name = None
-
-                            # print(f"🎫 Looking for existing ticket for conversation: {conversation_id}")
+                            communication_id = communication_id_cache.get(client_id)
                             cursor.execute(
-                                "SELECT tickets_id, ticket_name FROM tickets WHERE conversation_id_fk = %s",
-                                (conversation_id,),
+                                "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority,created_in,updated_in,communication_id_fk) VALUES (%s, %s, %s,%s,%s,%s,%s,%s)",
+                                (
+                                    ticket_id,
+                                    ticket_name,
+                                    conversation_id,
+                                    "Open",
+                                    "Medium",
+                                    created_date,
+                                    updated_date,
+                                    communication_id,
+                                ),
                             )
-                            ticket_row = cursor.fetchone()
+                            lance_ticket_id += 1
 
-                            if not ticket_row:
-                                # print(f"🆕 No existing ticket found, creating new ticket for conversation: {conversation_id}")
+                            assigned_id = str(uuid.uuid4())
+                            cursor.execute(
+                                """
+                                INSERT INTO assigned (assigned_id, user_id_fk, users_clients_id_fk, ticket_id_fk)
+                                VALUES (%s, %s, %s, %s)
+                                """,
+                                (assigned_id, user_id, client_id, ticket_id),
+                            )
+                        else:
+                            ticket_id, ticket_name = ticket_row[0], ticket_row[1]
 
-                                ticket_uuid = str(uuid.uuid4())
-                                ticket_id = f"TKT-{lance_ticket_id}#{ticket_uuid}"
-                                # ticket_name = subject_map.get(str(msg_id))
-                                ticket_name = matching_conv.get("subject")
+                        if ticket_id:
+                            msg["ticket_id"] = ticket_id
+                            msg["ticket_name"] = ticket_name
 
-                                cursor.execute(
-                                    "SELECT communication_id FROM communication WHERE user_id_fk = %s and users_clients_id_fk = %s",
-                                    (user_id, client_id),
-                                )
-                                communication_id_row = cursor.fetchone()
-                                communication_id = communication_id_row[0]
+                            cursor.execute(
+                                "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
+                                (updated_date, "In-Progress", conversation_id),
+                            )
+                            cursor.execute(
+                                "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
+                                (updated_date, conversation_id),
+                            )
 
-                                cursor.execute(
-                                    "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority,created_in,updated_in,communication_id_fk) VALUES (%s, %s, %s,%s,%s,%s,%s,%s)",
-                                    (
-                                        ticket_id,
-                                        ticket_name,
-                                        conversation_id,
-                                        "Open",
-                                        "Medium",
-                                        created_date,
-                                        updated_date,
-                                        communication_id,
-                                    ),
-                                )
-                                lance_ticket_id += 1
-                                # insert into assigned table
-                                assigned_id = str(uuid.uuid4())
+                            # final insert if message doesn't exist (we already checked via set; keep the guard)
+                            if msg_id not in existing_ids:
+                                cont_ref = f"{user_id}/messages/{client_id}/{conversation_id}.json"
                                 cursor.execute(
                                     """
-                                                INSERT INTO assigned (assigned_id, user_id_fk, users_clients_id_fk, ticket_id_fk)
-                                                VALUES (%s, %s, %s, %s)
-                                                """,
-                                    (assigned_id, user_id, client_id, ticket_id),
-                                )
-                                # print(f"✅ Created new ticket {ticket_id} and assigned it")
-
-                            else:
-                                # print(f"✅ Found existing ticket for conversation: {conversation_id}")
-                                ticket_id = ticket_row[0]
-                                ticket_name = ticket_row[1]
-                                # print(f"ticket_id: {ticket_id}")
-                                # print(f"ticket_name : {ticket_name}")
-
-                            if ticket_id:
-                                msg["ticket_id"] = ticket_id
-                                msg["ticket_name"] = ticket_name
-
-                                # print(f"🔄 Updating ticket and thread status for {ticket_id}")
-                                cursor.execute(
-                                    "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
-                                    (updated_date, "In-Progress", conversation_id),
-                                )
-
-                                cursor.execute(
-                                    "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
-                                    (updated_date, conversation_id),
-                                )
-
-                                # print(f"🔍 Checking if message {msg_id} already exists in messages table")
-                                cursor.execute(
-                                    "SELECT 1 FROM messages WHERE message_id = %s",
-                                    (msg_id,),
-                                )
-                                existing_msg = cursor.fetchone()
-                                if not existing_msg:
-                                    # print(f"✅ Message {msg_id} not found in messages table, inserting now")
-                                    cont_ref = f"{user_id}/messages/{client_id}/{conversation_id}.json"
-                                    cursor.execute(
-                                        """
-                                                    INSERT INTO messages (
-                                                        message_id,
-                                                        conversation_id_fk,
-                                                        sender_id,
-                                                        content_ref,
-                                                        message_type,
-                                                        is_summary,
-                                                        created_at,
-                                                        update_at
-                                                    )
-                                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                                    """,
-                                        (
-                                            msg_id,
-                                            conversation_id,
-                                            client_id,
-                                            cont_ref,
-                                            "inbound",
-                                            subject,
-                                            created_date,
-                                            updated_date,
-                                        ),
+                                    INSERT INTO messages (
+                                        message_id,
+                                        conversation_id_fk,
+                                        sender_id,
+                                        content_ref,
+                                        message_type,
+                                        is_summary,
+                                        created_at,
+                                        update_at
                                     )
-                                    # print(f"✅ Successfully inserted message {msg_id} into messages table")
-                                else:
-                                    print(
-                                        f"⚠️ Message {msg_id} already exists in messages table"
-                                    )
-
-                                # grouped_messages[client_id][channel] = messages
-                                update_or_create_conversation_file(
-                                    msg, client_id, cursor, batch_count
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    """,
+                                    (
+                                        msg_id,
+                                        conversation_id,
+                                        client_id,
+                                        cont_ref,
+                                        "inbound",
+                                        subject,
+                                        created_date,
+                                        updated_date,
+                                    ),
                                 )
+                                existing_ids.add(msg_id)  # keep local set in sync
 
-                                parsed_ts = dt_utc
-                                # print(f"🔄 Updating config data for conversation {conversation_id}")
-                                for i, conv in enumerate(
-                                    config_data.get("conversations", [])
-                                ):
-                                    if conv.get("conv_id") == conversation_id:
-                                        config_data["conversations"][i][
-                                            "updated_date"
-                                        ] = updated_date
-                                        config_data["conversations"][i][
-                                            "parsed_timestamp"
-                                        ] = parsed_ts.isoformat()
-                                        config_data["conversations"][i][
-                                            "ticket_id"
-                                        ] = ticket_id
-                                        config_data["conversations"][i][
-                                            "ticket_name"
-                                        ] = ticket_name
-                                        break
+                            update_or_create_conversation_file(
+                                msg, client_id, cursor, batch_count
+                            )
 
-                                update_config_file(user_id, client_id, config_data)
+                            # update config memory
+                            for i, conv in enumerate(
+                                config_data.get("conversations", [])
+                            ):
+                                if conv.get("conv_id") == conversation_id:
+                                    conv["updated_date"] = updated_date
+                                    conv["parsed_timestamp"] = dt_utc.isoformat()
+                                    conv["ticket_id"] = ticket_id
+                                    conv["ticket_name"] = ticket_name
+                                    break
 
-                                connection.commit()
-                                # print(f"✅ CASE 2 COMPLETE: Committed existing conversation processing for {msg_id}")
-                                continue
-                            else:
-                                print(
-                                    f"⚠️ No ticket found for conversation: {conversation_id}"
-                                )
-                    # else:
-                    #     print(f"⚠️ No matching conversation found for thread_id: {thread_id}")
+                            update_config_file(user_id, client_id, config_data)
+                            connection.commit()
+                            continue
 
                 if found_existing_conversation:
-                    # print(f"⏭️ Found existing conversation, skipping to next message")
                     continue
 
-            # Thread does not exist — create new thread and optionally ticket
-            # print(f"🆕 CASE 3/4: Creating new conversation for message {msg_id}")
+            # 3/4) No existing thread → create new thread (inbound/outbound paths)
             new_conversation_id = str(uuid.uuid4())
             msg["conversation_id"] = new_conversation_id
 
-            # print(f"🧵 Inserting new thread with conversation_id: {new_conversation_id}")
             cursor.execute(
                 """
-                                INSERT INTO threads (conversation_id, started_at, status, last_message_at)
-                                VALUES (%s, %s, %s, %s)
-                                """,
+                INSERT INTO threads (conversation_id, started_at, status, last_message_at)
+                VALUES (%s, %s, %s, %s)
+                """,
                 (new_conversation_id, created_date, "Open", updated_date),
             )
 
-            # 3. new for inbound msg
             if direction == "inbound":
-                # print(f"🎯 CASE 3: New inbound message {msg_id}")
-                # print(f"inside # 3 for msg id: {msg_id}")
-
                 ticket_uuid = str(uuid.uuid4())
                 new_ticket_id = f"TKT-{lance_ticket_id}#{ticket_uuid}"
-                subject = msg.get("subject")
+                subj = msg.get("subject")
                 msg["ticket_id"] = new_ticket_id
                 msg["conversation_id"] = new_conversation_id
 
-                type = msg.get("type")
-                if type == "Customer":
+                if msg.get("type") == "Customer":
                     ticket_name = subject_map.get(str(msg_id))
-                    msg["ticket_name"] = ticket_name
-                    # print(f"📝 Customer type: Using AI-generated ticket_name: {ticket_name}")
                 else:
-                    ticket_name = subject or ""
-                    msg["ticket_name"] = ticket_name
-                    # print(f"📝 Non-customer type: Using subject as ticket_name: {ticket_name}")
+                    ticket_name = subj or ""
+                msg["ticket_name"] = ticket_name
 
                 timestamp = msg.get("timestamp")
-
                 try:
-                    # Parse the message timestamp (which is offset-aware)
-                    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    dt = datetime.fromisoformat(
+                        (timestamp or "").replace("Z", "+00:00")
+                    )
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=timezone.utc)
                     dt_utc_msg = dt.astimezone(timezone.utc)
                     created_in = dt_utc_msg.strftime("%Y-%m-%d %H:%M:%S")
-                    # print(f"📅 Parsed timestamp: {created_in}")
-                except Exception as e:
-                    # print(f"⚠️ Error parsing timestamp {timestamp}: {e}")
+                except Exception:
                     created_in = created_date
 
-                # print(f"🔍 Checking if ticket {new_ticket_id} already exists")
                 cursor.execute(
-                    "SELECT 1 FROM tickets WHERE tickets_id = %s", (new_ticket_id,)
+                    "SELECT 1 FROM tickets WHERE tickets_id = %s",
+                    (new_ticket_id,),
                 )
                 if not cursor.fetchone():
-
-                    cursor.execute(
-                        "SELECT communication_id FROM communication WHERE user_id_fk = %s and users_clients_id_fk = %s",
-                        (user_id, client_id),
-                    )
-                    communication_id_row = cursor.fetchone()
-                    communication_id = communication_id_row[0]
-
+                    communication_id = communication_id_cache.get(client_id)
                     cursor.execute(
                         "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority,created_in,updated_in,communication_id_fk) VALUES (%s, %s, %s,%s,%s,%s,%s,%s)",
                         (
@@ -716,140 +742,113 @@ def append_subject_to_messages(
                         ),
                     )
                     lance_ticket_id += 1
-                    assigned_id = str(uuid.uuid4())  # Generate UUID for assigned_id
+
+                    assigned_id = str(uuid.uuid4())
                     cursor.execute(
                         """
-                                    INSERT INTO assigned (assigned_id, user_id_fk, users_clients_id_fk, ticket_id_fk)
-                                    VALUES (%s, %s, %s, %s)
-                                    """,
+                        INSERT INTO assigned (assigned_id, user_id_fk, users_clients_id_fk, ticket_id_fk)
+                        VALUES (%s, %s, %s, %s)
+                        """,
                         (assigned_id, user_id, client_id, new_ticket_id),
                     )
-                    # print(f"✅ Created and assigned new ticket {new_ticket_id}")
-                else:
-                    print(f"⚠️ Ticket {new_ticket_id} already exists")
 
-                # print(f"🔄 Updating thread {new_conversation_id} with ticket_id {new_ticket_id}")
                 cursor.execute(
                     """
-                                UPDATE threads
-                                SET ticket_id_fk = %s
-                                WHERE conversation_id = %s
-                                """,
+                    UPDATE threads
+                    SET ticket_id_fk = %s
+                    WHERE conversation_id = %s
+                    """,
                     (new_ticket_id, new_conversation_id),
                 )
 
                 grouped_messages[client_id][channel] = messages
-                # update_or_create_conversation_file(grouped_messages,user_id,client_id,channel,cursor,batch_count)
                 update_or_create_conversation_file(msg, client_id, cursor, batch_count)
 
-                # print(f"🔍 Final check: Does message {msg_id} exist in messages table?")
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE message_id = %s", (msg_id,)
-                )
-                existing = cursor.fetchone()
-
-                if not existing:
-                    # print(f"✅ Message {msg_id} not in messages table, inserting now")
+                if msg_id not in existing_ids:
                     cont_ref = (
                         f"{user_id}/messages/{client_id}/{new_conversation_id}.json"
                     )
                     cursor.execute(
                         """
-                                    INSERT INTO messages (
-                                        message_id,
-                                        conversation_id_fk,
-                                        sender_id,
-                                        content_ref,
-                                        message_type,
-                                        is_summary,
-                                        created_at,
-                                        update_at
-                                    )
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                    """,
+                        INSERT INTO messages (
+                            message_id,
+                            conversation_id_fk,
+                            sender_id,
+                            content_ref,
+                            message_type,
+                            is_summary,
+                            created_at,
+                            update_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
                         (
                             msg_id,
                             new_conversation_id,
                             client_id,
                             cont_ref,
                             "inbound",
-                            subject,
+                            subj,
                             created_in,
                             updated_date,
                         ),
                     )
-                    # print(f"✅ Successfully inserted message {msg_id} into messages table")
-                else:
-                    print(
-                        f"⚠️ Message {msg_id} already exists in messages table - THIS SHOULD NOT HAPPEN!"
-                    )
-
-                parsed_ts = dt_utc
+                    existing_ids.add(msg_id)
 
                 updated_entry = {
                     "conv_id": new_conversation_id,
                     "ticket_id": new_ticket_id,
                     "ticket_name": ticket_name,
-                    "subject": subject,
+                    "subject": subj,
                     "channel": channel,
                     "updated_date": updated_date,
-                    "parsed_timestamp": parsed_ts.isoformat(),
+                    "parsed_timestamp": dt_utc.isoformat(),
                 }
                 if channel == "gmail" and thread_id:
                     updated_entry["thread_id"] = thread_id
 
                 config_data.setdefault("userclients_id", client_id)
                 config_data.setdefault("conversations", []).append(updated_entry)
-
                 update_config_file(user_id, client_id, config_data)
 
                 connection.commit()
-                # print(f"✅ CASE 3 COMPLETE: Committed new inbound message processing for {msg_id}")
 
-            # 4. for new outbound msg
             else:
-                # print(f"🎯 CASE 4: New outbound message {msg_id}")
+                # outbound
                 msg["ticket_id"] = None
                 msg["ticket_name"] = None
                 msg["conversation_id"] = new_conversation_id
 
                 cursor.execute(
                     """
-                                UPDATE threads
-                                SET ticket_id_fk = %s
-                                WHERE conversation_id = %s
-                                """,
+                    UPDATE threads
+                    SET ticket_id_fk = %s
+                    WHERE conversation_id = %s
+                    """,
                     (None, new_conversation_id),
                 )
 
                 grouped_messages[client_id][channel] = messages
                 update_or_create_conversation_file(msg, client_id, cursor, batch_count)
 
-                # print(f"🔍 Checking if outbound message {msg_id} exists in messages table")
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE message_id = %s", (msg_id,)
-                )
-                if not cursor.fetchone():
-                    # print(f"✅ Outbound message {msg_id} not found, inserting now")
-
+                if msg_id not in existing_ids:
                     cont_ref = (
                         f"{user_id}/messages/{client_id}/{new_conversation_id}.json"
                     )
-
                     cursor.execute(
                         """
-                                    INSERT INTO messages (
-                                        message_id,
-                                        conversation_id_fk,
-                                        sender_id,
-                                        content_ref,
-                                        message_type,
-                                        is_summary,
-                                        created_at,
-                                        update_at
-                                    )
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                    """,
+                        INSERT INTO messages (
+                            message_id,
+                            conversation_id_fk,
+                            sender_id,
+                            content_ref,
+                            message_type,
+                            is_summary,
+                            created_at,
+                            update_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
                         (
                             msg_id,
                             new_conversation_id,
@@ -861,11 +860,7 @@ def append_subject_to_messages(
                             updated_date,
                         ),
                     )
-                    # print(f"✅ Successfully inserted outbound message {msg_id}")
-                else:
-                    print(
-                        f"⚠️ Outbound message {msg_id} already exists in messages table"
-                    )
+                    existing_ids.add(msg_id)
 
                 updated_entry = {
                     "conv_id": new_conversation_id,
@@ -880,7 +875,6 @@ def append_subject_to_messages(
 
                 config_data.setdefault("userclients_id", client_id)
                 config_data.setdefault("conversations", []).append(updated_entry)
-
                 update_config_file(user_id, client_id, config_data)
 
                 connection.commit()
@@ -917,6 +911,7 @@ def update_config_file(user_id, client_id, config_data):
 def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
     # print("entered in update_or_create_conversation_file")
     user_id = msg.get("user_id")
+    # print("email appended", msg)
     channel = msg.get("source")
     prefix = f"{user_id}/messages/{client_id}"
     config_key = f"{prefix}/config.json"

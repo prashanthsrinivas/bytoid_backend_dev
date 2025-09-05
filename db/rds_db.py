@@ -55,6 +55,23 @@ def start_rds_instance():
         )
 
 
+from contextlib import contextmanager
+
+
+# Context manager for safe cursor usage
+@contextmanager
+def get_cursor(connection):
+    cursor = connection.cursor()
+    try:
+        yield cursor
+        connection.commit()  # ensure commit after use
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
 # start_rds_instance()
 # connect_to_rds()
 # get_secret()
