@@ -82,7 +82,7 @@ def oauth2callback(url, state):
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri="https://www.bytoid.ai/auth/facebook/callback",
+        redirect_uri="https://dev.bytoid.ai/auth/facebook/callback",
     )
 
     try:
