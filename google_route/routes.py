@@ -46,7 +46,7 @@ def login():
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri="https://www.bytoid.ai/auth/facebook/callback",
+        redirect_uri="https://dev.bytoid.ai/auth/facebook/callback",
     )
     # google_bp.logger.info(f"{flow}")
 
@@ -82,7 +82,7 @@ def oauth2callback(url, state):
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri="https://www.bytoid.ai/auth/facebook/callback",
+        redirect_uri="https://dev.bytoid.ai/auth/facebook/callback",
     )
 
     try:
@@ -117,7 +117,6 @@ def oauth2callback(url, state):
 
             conn = connect_to_rds()
             cursor = conn.cursor(pymysql.cursors.DictCursor)
-
 
             # Check if the user_id is present
             cursor.execute(
@@ -238,7 +237,7 @@ def oauth2callback(url, state):
         newuser = check_onboarding_user(user_id)
         logger.info("new user %s", newuser)
         if newuser:
-                return user_id, True
+            return user_id, True
 
         return user_id, False
 
@@ -276,13 +275,28 @@ def receive_browser_url():
 
         # Set secure session cookie (HttpOnly, Secure)
         response.set_cookie(
-        "session_id", session_id, httponly=True, secure=True, samesite="None",max_age=60*60*24*7,
+            "session_id",
+            session_id,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=60 * 60 * 24 * 7,
         )
         response.set_cookie(
-            "access_token", access_token, httponly=True, secure=True, samesite="None",max_age=60*60*24*7,
+            "access_token",
+            access_token,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=60 * 60 * 24 * 7,
         )
         response.set_cookie(
-            "refresh_token", refresh_token, httponly=True, secure=True, samesite="None",max_age=60*60*24*7,
+            "refresh_token",
+            refresh_token,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=60 * 60 * 24 * 7,
         )
 
         return response

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from botocore.exceptions import ClientError
 
 load_dotenv()
+rds_host = "bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
 
 
 def get_secret():
@@ -27,7 +28,7 @@ def connect_to_rds():
     creds = get_secret()
     try:
         connection = pymysql.connect(
-            host="bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com",
+            host=rds_host,
             user=creds["username"],
             password=creds["password"],
             db="bytoid_support_agent",
@@ -60,16 +61,20 @@ from contextlib import contextmanager
 
 # Context manager for safe cursor usage
 @contextmanager
-def get_cursor(connection):
-    cursor = connection.cursor()
+def get_cursor(conn, close_after=False):
+    if conn is None:
+        raise ConnectionError("No RDS connection available.")
+    cursor = conn.cursor()
     try:
         yield cursor
-        connection.commit()  # ensure commit after use
-    except Exception as e:
-        connection.rollback()
-        raise e
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cursor.close()
+        if close_after:
+            conn.close()
 
 
 # start_rds_instance()

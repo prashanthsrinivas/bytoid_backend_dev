@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 from create_db import connect_to_rds
 from db.db_checkers import get_existing_umail_json, update_umail_json
@@ -133,22 +133,47 @@ async def getall_continuous(user_id):
     return f"OK - Processed {total_processed} emails in {batch_count} batches"
 
 
-async def get_datewise_info_base(userid, endDate=None, startDate=None, months=3):
-    try:
-        # Get end_date from query params or default to today (UTC)
-        enddate_str = endDate or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        enddate = datetime.fromisoformat(enddate_str)
+def to_datetime_safe(val, default=None):
+    if not val:
+        return default
+    if isinstance(val, datetime):
+        return val.astimezone(timezone.utc)
+    if isinstance(val, date):  # <-- handles datetime.date
+        return datetime.combine(val, datetime.min.time(), tzinfo=timezone.utc)
+    if isinstance(val, str):
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(val, fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+        try:
+            return datetime.fromisoformat(val).astimezone(timezone.utc)
+        except Exception:
+            return default
+    return default
 
-        # Get start_date from query params or default to N months before end_date
-        startdate_str = startDate or (enddate - relativedelta(months=months)).strftime(
-            "%Y-%m-%d"
+
+async def get_datewise_info_base(
+    userid, connection, endDate=None, startDate=None, months=3
+):
+
+    try:
+        today = datetime.now(timezone.utc)
+
+        enddate = to_datetime_safe(endDate, default=today)
+        startdate = to_datetime_safe(
+            startDate, default=enddate - relativedelta(months=months)
         )
 
-        gmail_service = GmailService(userid)
+        enddate_str = enddate.strftime("%Y-%m-%d")
+        startdate_str = startdate.strftime("%Y-%m-%d")
+
+        gmail_service = GmailService(userid, connection)
         inbox_count = await gmail_service.get_inbox_date_wise_stats_dynamic(
             start_date=startdate_str, end_date=enddate_str
         )
 
+        # protect against missing keys
         return inbox_count
 
     except Exception as e:
@@ -159,31 +184,111 @@ async def get_datewise_info_base(userid, endDate=None, startDate=None, months=3)
         return {"status": "failed", "error": str(e)}
 
 
-async def v2all_continuous(user_id, startdate=None, enddate=None):
+def get_relevant_processed_date(existing_json):
+    """
+    - If today's date exists in history -> return today's date.
+    - Else return the most recent earlier processed date.
+    - Returns a date (YYYY-MM-DD) or None.
+    """
+    if not existing_json or "history" not in existing_json:
+        return None
+
+    today = datetime.now(timezone.utc).date()
+    dates = []
+
+    for h in existing_json["history"]:
+        ts = h.get("timestamp")
+        if not ts:
+            continue
+        try:
+            ts_date = datetime.fromisoformat(ts).date()
+            dates.append(ts_date)
+        except Exception:
+            continue
+
+    if not dates:
+        return None
+
+    # If today exists in history → return today
+    if today in dates:
+        return today
+
+    # Otherwise return the latest date before today
+    past_dates = [d for d in dates if d < today]
+    return max(past_dates) if past_dates else None
+
+
+def has_new_threads(existing_json, total_messages):
+    """
+    Check if today's threads have increased.
+    - Look at history entries with today's date (from timestamp).
+    - If no entry for today → return True (new run needed).
+    - If today's entry exists → compare processed_threads with current total.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()  # "YYYY-MM-DD"
+
+    history = existing_json.get("history", []) if existing_json else []
+    today_record = None
+
+    for h in reversed(history):  # check from latest backward
+        ts = h.get("timestamp")
+        if not ts:
+            continue
+        try:
+            ts_date = datetime.fromisoformat(ts).date().isoformat()
+            if ts_date == today:
+                today_record = h
+                break
+        except Exception:
+            continue
+
+    threads_max = total_messages["threadsTotal"]["count"]
+
+    if not today_record:
+        # no entry for today → treat as new threads exist
+        return True
+
+    last_processed = today_record.get("processed_threads", 0)
+    print(threads_max, last_processed)
+    return threads_max != last_processed
+
+
+async def v2all_continuous(user_id):
     """
     Run Gmail fetch + processing in parallel batches.
     Each batch also runs 4 heavy processes in parallel.
     """
-    existing_json = get_existing_umail_json(user_id)
-    today = datetime.now(timezone.utc).date()
-
-    if existing_json and existing_json.get("history"):
-        total_messages = await get_datewise_info_base(userid=user_id, months=3)
-        newly_creation = False
-    else:
-        # First time → 3 months back
-        total_messages = await get_datewise_info_base(userid=user_id, months=3)
-        newly_creation = True
-    start_time = time.perf_counter()
     # Database connection
     connection = connect_to_rds()
     if connection is None:
         return {"error": "Database connection failed", "status": "failed"}
+    existing_json = get_existing_umail_json(user_id, connection)
+    today = datetime.now(timezone.utc).date()
+
+    if existing_json and existing_json.get("history"):
+        relevant_date = get_relevant_processed_date(existing_json)
+        print("last fetched date", relevant_date)
+        total_messages = await get_datewise_info_base(
+            userid=user_id, connection=connection, startDate=relevant_date
+        )
+        if not has_new_threads(existing_json, total_messages):
+            print(f"⏭️ No new threads for {user_id}, skipping processing.")
+            return {"status": "no_new_threads", "user": user_id}
+        newly_creation = False
+    else:
+        # First time → 3 months back
+        total_messages = await get_datewise_info_base(
+            userid=user_id, connection=connection, months=3
+        )
+        newly_creation = True
+    start_time = time.perf_counter()
 
     # max_emails = total_messages["final_msg"]
     threads_max = total_messages["threadsTotal"]["count"]
     threads = total_messages["threadsTotal"]["threads"]
     my_email = total_messages["email"]
+    startdate = total_messages["start_date"]
+    enddate = total_messages["end_date"]
 
     print(
         f"🚀 Starting continuous batch processing for user {user_id}, "

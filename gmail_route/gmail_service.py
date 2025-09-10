@@ -3,7 +3,7 @@ from google.oauth2.credentials import Credentials
 from email.message import EmailMessage
 import base64
 from email.mime.text import MIMEText
-from db.rds_db import connect_to_rds
+from db.rds_db import connect_to_rds, get_cursor
 from data import MESSAGES  # delete this later, this is just for testing
 from datetime import datetime, timezone
 from googleapiclient.errors import HttpError
@@ -40,19 +40,29 @@ def get_cutoff_ts(days_back: int) -> int:
 
 
 class GmailService:
-    def __init__(self, user_id):
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-        SELECT client_id, client_secret, token, refresh_token, expiry
-        FROM users
-        WHERE user_id = %s
-                       """,
-            (str(user_id),),
-        )
-        row = cursor.fetchone()
-        creds_data = Credentials(
+    def __init__(self, user_id, connection=None):
+        # Use provided connection or get a new one
+        self.conn = connection or connect_to_rds()
+
+        if not self.conn:
+            raise ConnectionError("❌ Failed to connect to RDS (too many connections?)")
+
+        with get_cursor(self.conn) as cursor:
+            cursor.execute(
+                """
+                SELECT client_id, client_secret, token, refresh_token, expiry
+                FROM users
+                WHERE user_id = %s
+                """,
+                (str(user_id),),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                raise ValueError(f"No Gmail credentials found for user {user_id}")
+
+        # Build credentials object
+        self.creds = Credentials(
             token=row[2],
             refresh_token=row[3],
             token_uri="https://oauth2.googleapis.com/token",
@@ -68,18 +78,19 @@ class GmailService:
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
                 "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/calendar",
-                # "https://www.googleapis.com/auth/docs",
                 "openid",
-                # "https://www.googleapis.com/auth/contacts.readonly",
                 "https://www.googleapis.com/auth/contacts",
             ],
-            expiry=row[4],  # Must be datetime, not string
+            expiry=row[4],
         )
+        if connection is None:
+            self.conn.close()
 
-        self.creds = creds_data
+        # Build Gmail API service
         self.service = build("gmail", "v1", credentials=self.creds)
         self.service_running = False
 
+        # Fetch user profile (email)
         profile = self.service.users().getProfile(userId="me").execute()
         self.user_email = profile["emailAddress"]
 

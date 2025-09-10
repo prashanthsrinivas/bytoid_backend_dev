@@ -214,6 +214,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
             existing_new_msg,
             batch_count,
         )
+        print(f"lance_ticket_id after append_subject_to_messages is : {lance_ticket_id}")
         UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
 
         return new_msgs_local

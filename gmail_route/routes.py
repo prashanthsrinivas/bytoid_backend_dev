@@ -1207,3 +1207,6 @@ def delete_user_ticket_data(user_id):
     except Exception as e:
         connection.rollback()
         return {"status": "failed", "error": str(e)}
+    finally:
+        if connection:
+            connection.close()

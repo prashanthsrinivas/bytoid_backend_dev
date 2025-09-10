@@ -70,11 +70,11 @@ import pymysql
 
 # from app import qa_chain
 
-agent_bp = Blueprint("agent", __name__)
+agent_bps = Blueprint("agents", __name__)
 logger = get_logger(__name__)
 
 
-@agent_bp.route("/save-training-settings", methods=["POST"])
+@agent_bps.route("/save-training-settings", methods=["POST"])
 def save_training_settings():
     """
     Create or update launch + subagent for a user.
@@ -258,7 +258,7 @@ def save_training_settings():
         connection.close()
 
 
-@agent_bp.route("/get-training-settings", methods=["POST"])
+@agent_bps.route("/get-training-settings", methods=["GET"])
 def get_training_settings():
     """
     It takes the user_id from the session or request,
@@ -267,7 +267,7 @@ def get_training_settings():
     If the user is not logged in or no launch record is found, it returns an error message.
     """
     try:
-        user_id = str(session.get("user_id") or request.json.get("user_id"))
+        user_id = str(session.get("user_id") or request.args.get("user_id"))
         if not user_id:
             return jsonify({"error": "User not logged in"}), 401
         if not check_userid_valid(user_id):
@@ -313,9 +313,12 @@ def get_training_settings():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        if connection:
+            connection.close()
 
 
-@agent_bp.route("/process-query-key", methods=["POST"])
+@agent_bps.route("/process-query-key", methods=["POST"])
 def checkquerywithApiKey():
     try:
         print("Query made by:", session.get("user", {}))
@@ -345,7 +348,7 @@ def checkquerywithApiKey():
                 return jsonify({"error": "Invalid API key"}), 401
 
             userid, userwebsite = user_row
-            if website != userwebsite and website != "bytoid.ai":
+            if website != userwebsite and website != "dev.bytoid.ai":
                 return (
                     jsonify({"error": "API key does not match the provided website"}),
                     401,
@@ -401,7 +404,7 @@ def checkquerywithApiKey():
         return jsonify({"error": str(e)}), 400
 
 
-@agent_bp.route("/process-drive", methods=["POST"])
+@agent_bps.route("/process-drive", methods=["POST"])
 def download_files():
     """
     Takes the picker metadata from the frontend and makes a sharable with the service account
@@ -474,10 +477,10 @@ def download_files():
         else:
             return {"message": "cant access drive"}, 400
     else:
-        redirect("https://bytoid.ai/login")
+        redirect("https://dev.bytoid.ai/login")
 
 
-@agent_bp.route("/clarifications", methods=["POST"])
+@agent_bps.route("/clarifications", methods=["POST"])
 def makeuserDocClarifications(userid=None, industry=None):
     """ "
     It takes the user_id and industry from the request or defaults to the provided parameters,
@@ -567,7 +570,7 @@ def makeuserDocClarifications(userid=None, industry=None):
     return jsonify(clarifications)
 
 
-@agent_bp.route("/clarification_update", methods=["POST"])
+@agent_bps.route("/clarification_update", methods=["POST"])
 def updateClarifications(userid=None, industry=None):
     data = request.json
     fetched_userid = data.get("userid") or userid
@@ -746,7 +749,7 @@ def updateClarifications(userid=None, industry=None):
     )
 
 
-@agent_bp.route("/get-usersDocs", methods=["Get"])
+@agent_bps.route("/get-usersDocs", methods=["Get"])
 def getUsersDocs():
     """
     It retrieves the user's documents from the YAML file and returns them as a JSON response.
@@ -766,7 +769,7 @@ def getUsersDocs():
     return jsonify(all_file_data), 200
 
 
-@agent_bp.route("/delete_file", methods=["DELETE"])
+@agent_bps.route("/delete_file", methods=["DELETE"])
 def delete_file():
     """
     Deletes vector data from LanceDB via LanceClient and updates the YAML metadata:
@@ -843,7 +846,7 @@ def delete_file():
     )
 
 
-@agent_bp.route("/get-ai-suggestion", methods=["POST"])
+@agent_bps.route("/get-ai-suggestion", methods=["POST"])
 def get_ai_suggestion():
     try:
         data = request.json
@@ -885,7 +888,7 @@ def get_ai_suggestion():
         return jsonify({"error": "Internal server error"}), 500
 
 
-@agent_bp.route("/create-ticket", methods=["POST"])
+@agent_bps.route("/create-ticket", methods=["POST"])
 def create_sub_ticket():
     try:
         data = request.json
@@ -901,8 +904,9 @@ def create_sub_ticket():
         return jsonify({"error": f"Internal server error {e}"}), 500
 
 
-@agent_bp.route("/process_audio", methods=["POST"])
+@agent_bps.route("/process_audio", methods=["POST"])
 def process_audio():
+    print("request data", request.form, request.files)
     api_key = request.form.get("api_key")
     if not api_key:
         return jsonify({"error": "API key is required"}), 400
@@ -1012,7 +1016,6 @@ def process_audio():
         config_local_path = os.path.join("/tmp", trans_filename)
         with open(config_local_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-
         new_configpath = upload_any_file(
             config_local_path, user_id=userid, file_name=trans_filename, type="audio"
         )
@@ -1047,7 +1050,7 @@ def process_audio():
                     print(f"Failed to delete temp file {f}: {cleanup_err}")
 
 
-@agent_bp.route("/get-audio-config", methods=["GET"])
+@agent_bps.route("/get-audio-config", methods=["GET"])
 def get_audio_config():
     api_key = request.args.get("api_key")
     if not api_key:
@@ -1074,7 +1077,7 @@ def get_audio_config():
         return jsonify({"error": str(e)}), 500
 
 
-@agent_bp.route("/update-transcript", methods=["POST"])
+@agent_bps.route("/update-transcript", methods=["POST"])
 def update_transcript():
     data = request.json or {}
 
@@ -1171,7 +1174,7 @@ def update_transcript():
         return jsonify({"error": str(e)}), 500
 
 
-@agent_bp.route("/delete-audio", methods=["DELETE"])
+@agent_bps.route("/delete-audio", methods=["DELETE"])
 def delete_audio():
     data = request.json
     api_key = data.get("api_key")
@@ -1248,74 +1251,136 @@ def delete_audio():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-agent_bp = Blueprint("agent", __name__)
 
-# --- helper functions (paste BEFORE your route) ---
-
-
+# --- helper functions
 def check_robots_txt(base_url, session):
     try:
-        robots_url = urljoin(base_url, '/robots.txt')
+        robots_url = urljoin(base_url, "/robots.txt")
         response = session.get(robots_url, timeout=5)
         if response.status_code == 200:
             paths = []
-            for line in response.text.split('\n'):
+            for line in response.text.split("\n"):
                 line = line.strip()
-                if line.startswith(('Disallow:', 'Allow:')):
-                    path = line.split(':', 1)[1].strip().lstrip('/')
-                    if path and path != '*' and not path.startswith('#'):
-                        paths.append(path.split('?')[0])  # Remove query params
+                if line.startswith(("Disallow:", "Allow:")):
+                    path = line.split(":", 1)[1].strip().lstrip("/")
+                    if path and path != "*" and not path.startswith("#"):
+                        paths.append(path.split("?")[0])  # Remove query params
             return list(set(paths))
     except:
         pass
     return []
 
+
 def check_endpoint(base_url, endpoint, session):
     try:
         url = urljoin(base_url, endpoint)
         response = session.get(url, timeout=5, allow_redirects=False)
-        if response.status_code == 200: 
+        if response.status_code == 200:
             return {
-                'endpoint': endpoint,
-                'url': url,
-                'status': response.status_code,
-                'size': len(response.content),
-                'accessible': True,
-                'protected': False,
-                'redirect': False
+                "endpoint": endpoint,
+                "url": url,
+                "status": response.status_code,
+                "size": len(response.content),
+                "accessible": True,
+                "protected": False,
+                "redirect": False,
             }
     except:
         pass
     return None
 
+
 def discover_api_endpoints(content, base_url):
     import re
+
     endpoints = set()
     patterns = [
         r'["\']([^"\']*(?:/api/|/rest/|/graphql|/webhook)[^"\']*)["\']',
         r'url\s*:\s*["\']([^"\']+)["\']',
         r'fetch\s*\(\s*["\']([^"\']+)["\']',
-        r'axios\.[a-z]+\s*\(\s*["\']([^"\']+)["\']'
+        r'axios\.[a-z]+\s*\(\s*["\']([^"\']+)["\']',
     ]
     for pattern in patterns:
         matches = re.findall(pattern, content, re.IGNORECASE)
         for match in matches:
-            if match.startswith('/') and not match.startswith('//'):
-                endpoints.add(match.lstrip('/'))
+            if match.startswith("/") and not match.startswith("//"):
+                endpoints.add(match.lstrip("/"))
             elif match.startswith(base_url):
-                path = match.replace(base_url, '').lstrip('/')
+                path = match.replace(base_url, "").lstrip("/")
                 if path:
                     endpoints.add(path)
     return list(endpoints)
 
 
-@agent_bp.route("/scrape", methods=["POST"])
+# --- LanceDB setup ---
+# DB_PATH = "./company_knowledge"  # folder where embeddings are stored
+# db = lancedb.connect(DB_PATH)
+
+
+# def search_lancedb(query: str, top_k: int = 3):
+#     try:
+#         table = db.open_table("scraped_content")
+#         results = table.search(query).limit(top_k).to_list()
+#         return results
+#     except Exception as e:
+#         print("⚠️ LanceDB search error:", e)
+#         return []
+
+
+# --- Main endpoint ---
+# @agent_bps.route("/get-ai-suggestion", methods=["POST"])
+# def get_ai_suggestion():
+#     try:
+#         data = request.json
+#         if not data or "usecase" not in data:
+#             return jsonify({"error": "usecase Query is required"}), 400
+
+#         query_text = data["usecase"].strip()
+#         if not query_text:
+#             return jsonify({"error": "Query cannot be empty"}), 400
+
+#         userid = data.get("userid")
+#         if not userid:
+#             return jsonify({"error": "User ID is required"}), 400
+#         if not check_userid_valid(userid):
+#             return jsonify({"error": "Invalid access"}), 404
+
+#         # --- Load business context ---
+#         prompts = load_yaml_file(path=pathconfig.agent_template)
+#         fetched_industry = get_line_of_business(userid)
+#         QA_assist_prompt_template = prompts.get("business_owner_QA_assist")
+
+#         if not QA_assist_prompt_template:
+#             return jsonify({"error": "Prompt template not found"}), 500
+
+#         # --- Retrieve company knowledge from LanceDB ---
+#         retrieved_docs = search_lancedb(query_text, top_k=3)
+#         context_text = "\n".join([doc.get("text", "") for doc in retrieved_docs])
+
+#         # --- Final prompt ---
+#         full_prompt = QA_assist_prompt_template.format(
+#             question=query_text,
+#             business_type=fetched_industry,
+#         )
+#         full_prompt += f"\n\nHere is additional context from the company's website:\n{context_text}"
+
+#         # --- Get AI response ---
+#         ai_suggestion = get_fireworks_response(full_prompt, role="user")
+
+#         return jsonify({"suggestion": ai_suggestion}), 200
+
+#     except Exception as e:
+#         print("❌ Error during AI suggestion processing:", e)
+#         return jsonify({"error": "Internal server error"}), 500
+
+
+@agent_bps.route("/scrape", methods=["POST"])
 def scrape():
     data = request.get_json()
     url = data.get("url")
     enable_directory_scan = data.get("directory_scan", True)  # New option
-    max_endpoints = data.get("max_endpoints", 50)  
-    
+    max_endpoints = data.get("max_endpoints", 50)
+
     if not url:
         return jsonify({"error": "URL required"}), 400
 
@@ -1323,11 +1388,11 @@ def scrape():
         # Create session with enhanced headers
         session = requests.Session()
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive'
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
         }
         session.headers.update(headers)
 
@@ -1344,14 +1409,14 @@ def scrape():
                     continue  # try again
                 else:
                     raise
-        
+
         # Extract regular links (your existing functionality)
         links = scrape_links(url, max_pages=100)
-        
+
         # NEW: Directory enumeration (Gobuster-style)
         discovered_endpoints = []
         api_endpoints = []
-        
+
         if enable_directory_scan:
             # Check robots.txt for additional paths
             endpoints_to_check = set()
@@ -1362,24 +1427,24 @@ def scrape():
             for link in links:
                 parsed = urllib.parse.urlparse(link)
                 if parsed.netloc == urllib.parse.urlparse(url).netloc:
-                    if parsed.path and parsed.path != '/':
-                        endpoints_to_check.add(parsed.path.lstrip('/'))
+                    if parsed.path and parsed.path != "/":
+                        endpoints_to_check.add(parsed.path.lstrip("/"))
 
             # regex-discovered API endpoints from HTML/JS
             endpoints_to_check.update(discover_api_endpoints(response.text, url))
 
             # limit
             endpoints_to_check = list(endpoints_to_check)[:max_endpoints]
-            
+
             # Check each endpoint
             for endpoint in endpoints_to_check:
                 result = check_endpoint(url, endpoint, session)
                 if result:
                     discovered_endpoints.append(result)
-                
+
                 # Small delay to be respectful
                 time.sleep(0.1)
-            
+
             # NEW: Find API endpoints in page content
             api_endpoints = discover_api_endpoints(response.text, url)
 
@@ -1388,41 +1453,38 @@ def scrape():
             "url": url,
             "timestamp": datetime.now().isoformat(),
             "status_code": response.status_code,
-            
             # Original functionality
-            "scraped_links": {
-                "links": links,
-                "count": len(links)
-            },
-            
+            "scraped_links": {"links": links, "count": len(links)},
             # NEW: Gobuster-style discoveries
             "directory_scan": {
                 "enabled": enable_directory_scan,
                 "discovered_endpoints": discovered_endpoints,
                 "endpoint_count": len(discovered_endpoints),
-                "accessible_count": len([e for e in discovered_endpoints if e['accessible']]),
-                "protected_count": len([e for e in discovered_endpoints if e['protected']])
+                "accessible_count": len(
+                    [e for e in discovered_endpoints if e["accessible"]]
+                ),
+                "protected_count": len(
+                    [e for e in discovered_endpoints if e["protected"]]
+                ),
             },
-            
             # NEW: API endpoint discovery
             "api_discovery": {
                 "endpoints_found": api_endpoints,
-                "count": len(api_endpoints)
+                "count": len(api_endpoints),
             },
-            
             # Summary
             "summary": {
                 "total_links": len(links),
                 "total_endpoints": len(discovered_endpoints),
                 "total_apis": len(api_endpoints),
-                "scan_comprehensive": enable_directory_scan
-            }
+                "scan_comprehensive": enable_directory_scan,
+            },
         }
 
         # Save to file (enhanced filename)
         base_dir = os.path.join("data", "scrape_results")
         ensure_dir(base_dir)
-        
+
         scan_type = "comprehensive" if enable_directory_scan else "basic"
         filename = f"scrape_{scan_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         filepath = os.path.join(base_dir, filename)
@@ -1430,19 +1492,21 @@ def scrape():
         with open(filepath, "w") as f:
             json.dump(scrape_data, f, indent=4)
 
-        return jsonify({
-            **scrape_data,
-            "file_saved": filename,
-            "status": "success"
-        }), 200
+        return (
+            jsonify({**scrape_data, "file_saved": filename, "status": "success"}),
+            200,
+        )
 
     except requests.exceptions.HTTPError as e:
-        error_message = f"HTTP Error {e.response.status_code}: Access denied or not found"
+        error_message = (
+            f"HTTP Error {e.response.status_code}: Access denied or not found"
+        )
         return jsonify({"error": error_message}), e.response.status_code
     except Exception as e:
         return jsonify({"error": f"Scraping failed: {str(e)}"}), 500
 
-@agent_bp.route("/check-dbfunc", methods=["POST"])
+
+@agent_bps.route("/check-dbfunc", methods=["POST"])
 def check_lancedb():
     """
     Checks if the LanceDB service is running and returns its status.

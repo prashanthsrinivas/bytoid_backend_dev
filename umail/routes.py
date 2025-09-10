@@ -378,18 +378,21 @@ def get_latest_conversations(user_id, next_cursor):
 
         cached = get_from_cache_sync(user_id)
         print("⚡ Using cached Gmail data")
-        cached_json = json.loads(cached) or {}
-        if isinstance(cached_json, list):
-            cached_json = cached_json[0] if cached_json else {}
-        convo_messages = cached_json.get("grouped_messages", {})
-        next_cursor = cached_json.get("next_page_token")
-        source = "mid"
-        return handle_cache_data(
-            groupedmessages=convo_messages,
-            disp_messages=display_messages,
-            next_cursor=next_cursor,
-            source=source,
-        )
+        if cached:
+            cached_json = json.loads(cached) or {}
+            if isinstance(cached_json, list):
+                cached_json = cached_json[0] if cached_json else {}
+            convo_messages = cached_json.get("grouped_messages", {})
+            next_cursor = cached_json.get("next_page_token")
+            source = "mid"
+            return handle_cache_data(
+                groupedmessages=convo_messages,
+                disp_messages=display_messages,
+                next_cursor=next_cursor,
+                source=source,
+            )
+        else:
+            return getall_route(user_id)
 
     else:
         # ✅ Step 3: Lance fallback
@@ -591,12 +594,55 @@ def get_selected_conv(conversation_id, user_id):
             client = UmailLanceClient(user_id)
             recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
 
-            if recent_msg and conversation_id in recent_msg:
-                messages_data = recent_msg[conversation_id]
-                source = "full"
-                return _format_selected_conversation(
-                    conversation_id, client_id, messages_data, source
+            all_messages = []
+            for conv_id, messages_list in recent_msg.items():
+                try:
+                    # 🔥 Deduplicate messages
+                    unique_messages = {}
+                    for msg in messages_list:
+                        msg_id = (
+                            msg.get("id")
+                            or f"{msg.get('timestamp')}-{msg.get('sender')}"
+                        )
+                        if msg_id not in unique_messages:
+                            unique_messages[msg_id] = msg
+
+                    messages = list(unique_messages.values())
+                    channel = messages[0].get("source") if messages else "unknown"
+
+                    all_messages.append(
+                        {
+                            "id": conv_id,
+                            "channel": channel,
+                            "messages": messages,
+                        }
+                    )
+
+                except Exception as e:
+                    print(f"❌ Failed to read or parse {e}")
+                    continue
+
+                sorted_conversations = sorted(
+                    all_messages,
+                    key=lambda conv: (
+                        max(msg.get("timestamp") for msg in conv.get("messages", []))
+                        if conv.get("messages")
+                        else ""
+                    ),
+                    reverse=False,
                 )
+
+            return (
+                jsonify(
+                    {
+                        "identities": [],
+                        "status": "existing",
+                        "conversationId": client_id,  # conversation_id is client_id
+                        "messages": sorted_conversations,  # this is ConversationThread[]
+                    }
+                ),
+                200,
+            )
 
         return jsonify({"error": "Conversation not found"}), 404
 

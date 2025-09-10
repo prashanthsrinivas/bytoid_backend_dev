@@ -4,7 +4,8 @@ from flask import request, jsonify, session, Blueprint
 from db.rds_db import connect_to_rds
 import uuid
 from datetime import datetime, timezone
-from session_middleware import session_check
+
+# from session_middleware import session_check
 
 
 contacts_bp = Blueprint("contacts", __name__)
@@ -202,6 +203,8 @@ def save_contact():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        connection.close()
 
 
 def add_synced_contact(user_id, cursor, participant, first_name, last_name):

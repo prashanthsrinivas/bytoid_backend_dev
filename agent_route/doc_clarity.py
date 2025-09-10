@@ -450,7 +450,7 @@ def clarific_transcriptions(userid, val, filename, config_filename, transcript_p
     quote_summary = val["summary"] if "summary" in val else filename
     # Load existing clarifications (safe fallback)
     try:
-        failed_data = flatten_list(load_yaml_file(failed_ques) or [])
+        failed_data = flatten_list(failed_ques) or []
     except Exception:
         failed_data = []
 
@@ -476,7 +476,7 @@ def clarific_transcriptions(userid, val, filename, config_filename, transcript_p
     updated_data = failed_data + clarification_responses
 
     # Save back into YAML
-    save_yaml_file(updated_data, filepath=failed_ques)
+    save_yaml_to_s3(data=updated_data, user_id=userid, filename="failed_ques.yaml")
 
     return clarification_responses
 

@@ -183,7 +183,7 @@ class UmailLanceClient:
     def get_selected_conv_from_lance(
         self, user_id, client_id
     ):  # used for getting recent messages
-        print("calling /filter_umail_table")
+        print("calling /filter_umail_table", user_id, client_id)
         response = requests.post(
             f"{self.lancedb_url}/filter_umail_table",
             params={"user_id": user_id, "folder_name": client_id},
@@ -644,8 +644,7 @@ class UmailLanceClient:
             params={"user_id": user_id, "ticket_number": lance_ticket_id},
         )
         if response.status_code == 200:
-            print("tikcet number successfully updated in table")
-            print(f"last ticket number was {lance_ticket_id}")
+            print("tikcet number successfully updated in table : {lance_ticket_id}")
         else:
             print(f"HTTP Error: {response.status_code}")
             print(f"Response text: {response.text}")

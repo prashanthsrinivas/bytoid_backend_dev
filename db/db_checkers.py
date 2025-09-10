@@ -436,6 +436,7 @@ def fetch_contacts_by_user(userid):
                 contacts.append(
                     {"id": users_clients_id, "name": full_name, "email": email}
                 )
+    connection.close()
     return contacts
 
 
@@ -535,18 +536,17 @@ def get_user_agent_id(apikey):
         connection.close()
 
 
-import json
-from datetime import datetime, timezone
-
-
-def get_existing_umail_json(user_id):
-    connection = connect_to_rds()
+def get_existing_umail_json(user_id, connection=None):
+    """Fetch existing umail_json for a user."""
+    own_conn = False
     if connection is None:
-        return None
-    with get_cursor(connection) as cursor:
+        connection = connect_to_rds()
+        own_conn = True
+
+    with get_cursor(connection, close_after=own_conn) as cursor:
         cursor.execute("SELECT umail_json FROM users WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
-    connection.close()
+
     if row and row[0]:
         try:
             return json.loads(row[0])
@@ -555,16 +555,18 @@ def get_existing_umail_json(user_id):
     return None
 
 
-def update_umail_json(user_id, new_entry):
-    connection = connect_to_rds()
+def update_umail_json(user_id, new_entry, connection=None):
+    """Update umail_json with a new entry."""
+    own_conn = False
     if connection is None:
-        return
-    with get_cursor(connection) as cursor:
-        existing = get_existing_umail_json(user_id) or {"history": []}
-        existing["history"].append(new_entry)
+        connection = connect_to_rds()
+        own_conn = True
+
+    existing = get_existing_umail_json(user_id, connection) or {"history": []}
+    existing["history"].append(new_entry)
+
+    with get_cursor(connection, close_after=own_conn) as cursor:
         cursor.execute(
             "UPDATE users SET umail_json = %s WHERE user_id = %s",
             (json.dumps(existing), user_id),
         )
-        connection.commit()
-    connection.close()
