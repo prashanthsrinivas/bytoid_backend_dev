@@ -369,6 +369,8 @@ def get_latest_conversations(user_id, next_cursor):
     print("data added", existing_json)
     if not existing_json:
         # ✅ Step 2: Cache
+        getall_route(user_id=user_id)
+
         def get_from_cache_sync(user_id):
             async def _inner():
                 client = await GlideClusterClient.create(config_glide)
@@ -447,81 +449,6 @@ def get_conv_order(config):
     sorted_ids = [conv_id for conv_id, _ in sorted_convos]
 
     return sorted_ids
-
-
-# @umail_bp.route("/selected_conversation/<conversation_id>/<user_id>", methods=["GET"])
-# def get_selected_conv(conversation_id, user_id):
-#     # conversation_id is the client_id
-#     try:
-#         print("inside get_selected_conv ")
-#         connection = connect_to_rds()
-#         if connection is None:
-#             return jsonify({"error": "Database connection failed"}), 500
-#         cursor = connection.cursor()
-
-#         try:
-#             cursor.execute(
-#                 "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
-#                 (conversation_id,),
-#             )
-#             client_id_row = cursor.fetchone()
-#             if client_id_row is None:
-#                 print(f"⚠️ No sender_id found for conversation_id {conversation_id}")
-#                 return jsonify({"error": "Conversation not found"}), 404
-#             client_id = client_id_row[0]
-#         except Exception as e:
-#             print(f"❌ Error executing sender_id query: {e}")
-
-#         client = UmailLanceClient(user_id)
-#         recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
-
-#         all_messages = []
-#         for conv_id, messages_list in recent_msg.items():
-#             try:
-#                 messages = []
-#                 for message in messages_list:
-
-#                     messages.append(message)
-
-#                     channel = messages[0].get("source") if messages else "unknown"
-
-#                 all_messages.append(
-#                     {
-#                         "id": conv_id,
-#                         "channel": channel,
-#                         "messages": messages,
-#                     }
-#                 )
-
-#             except Exception as e:
-#                 print(f"❌ Failed to read or parse {e}")
-#                 continue
-
-#             sorted_conversations = sorted(
-#                 all_messages,
-#                 key=lambda conv: (
-#                     max(msg.get("timestamp") for msg in conv.get("messages", []))
-#                     if conv.get("messages")
-#                     else ""
-#                 ),
-#                 reverse=True,
-#             )
-
-#         return (
-#             jsonify(
-#                 {
-#                     "identities": [],
-#                     "status": "existing",
-#                     "conversationId": client_id,  # conversation_id is client_id
-#                     "messages": sorted_conversations,  # this is ConversationThread[]
-#                 }
-#             ),
-#             200,
-#         )
-
-#     except Exception as e:
-#         print(f"❌ Unexpected error in get_selected_conv(): {e}")
-#         return jsonify({"error": "Internal server error"}), 500
 
 
 @umail_bp.route("/selected_conversation/<conversation_id>/<user_id>", methods=["GET"])

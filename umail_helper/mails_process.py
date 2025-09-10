@@ -143,7 +143,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
 
     new_messages = []
 
-    async def process_channel(client_id, channel, channel_msgs):
+    async def process_channel(client_id, channel, channel_msgs, lance_ticket_id_base):
         # fetch client email
         cursor.execute(
             "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
@@ -213,25 +213,47 @@ async def vtooanalyze_and_collect_messages_for_batch(
             user_id,
             existing_new_msg,
             batch_count,
+            lance_ticket_id_base,
         )
-        print(f"lance_ticket_id after append_subject_to_messages is : {lance_ticket_id}")
-        UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
+        print(
+            f"lance_ticket_id after append_subject_to_messages is : {lance_ticket_id}"
+        )
+        # UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
 
         return new_msgs_local
 
     # build async tasks for all client_id + channels
+    # tasks = []
+    # # Pre-fetch next ticket number once
+    # client_ticket = UmailLanceClient(user_id)
+    # lance_ticket_id_base = client_ticket.call_ticket_number(user_id) or 0
+    # for client_id, channel_data in grouped_messages.items():
+    #     for channel, channel_msgs in channel_data.items():
+    #         tasks.append(process_channel(client_id, channel, channel_msgs,lance_ticket_id_base))
+
+    client_ticket = UmailLanceClient(user_id)
+    latest = client_ticket.call_ticket_number(user_id) or 0
+
     tasks = []
+    offset = 0
     for client_id, channel_data in grouped_messages.items():
         for channel, channel_msgs in channel_data.items():
-            tasks.append(process_channel(client_id, channel, channel_msgs))
-
+            lance_base_for_task = latest + offset
+            offset += len(channel_msgs)  # or 1, depending on your increment rule
+            tasks.append(
+                process_channel(client_id, channel, channel_msgs, lance_base_for_task)
+            )
+    # after all tasks complete, update to latest+offset
     # run all tasks concurrently
     results = await asyncio.gather(*tasks)
+    final_ticket = latest + offset
+    client_ticket.update_ticket_number(user_id, final_ticket)
 
     # flatten results
     for res in results:
         new_messages.extend(res)
 
+    # UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
     return new_messages
 
 
@@ -375,7 +397,13 @@ def generate_subject(user_id, output_path, channel):
 
 
 def append_subject_to_messages(
-    grouped_messages, channel, subjects, user_id, existing_new_msg, batch_count
+    grouped_messages,
+    channel,
+    subjects,
+    user_id,
+    existing_new_msg,
+    batch_count,
+    lance_ticket_id_base,
 ):
     print(f"****inside append_subject_to_messages for batch number : {batch_count}")
 
@@ -401,8 +429,8 @@ def append_subject_to_messages(
     processed_message_ids = set()
 
     # Pre-fetch next ticket number once
-    client_ticket = UmailLanceClient(user_id)
-    lance_ticket_id_base = client_ticket.call_ticket_number(user_id) or 0
+    # client_ticket = UmailLanceClient(user_id)
+    # lance_ticket_id_base = client_ticket.call_ticket_number(user_id) or 0
     print(f"lance_ticket_id_ : {lance_ticket_id_base}")
     lance_ticket_id = lance_ticket_id_base + 1
 
