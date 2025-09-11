@@ -1,0 +1,18 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Ensuring zip is installed"
+      - command -v zip || (yum install -y zip || apt-get update && apt-get install -y zip)
+  build:
+    commands:
+      - echo "Packaging everything into output.zip"
+      - zip -r output.zip . -x "output.zip"
+  post_build:
+    commands:
+      - echo "Build completed on $(date)"
+
+artifacts:
+  files:
+    - output.zip
