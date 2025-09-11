@@ -1067,6 +1067,8 @@ def get_datewise_info(userid):
 #         connection.rollback()
 #         return {"status": "failed", "error": str(e)}
 
+from threading import Thread
+
 
 @gmail_bp.route("/deletedb/<user_id>", methods=["GET"])
 def delete_user_ticket_data(user_id):
@@ -1197,7 +1199,7 @@ def delete_user_ticket_data(user_id):
                 )
                 connection.commit()
             folder_path = f"{user_id}/messages"
-            delete_folder_from_s3(folder_path)
+            Thread(target=delete_folder_from_s3, args=(folder_path,)).start()
 
             return {
                 "status": "success",
