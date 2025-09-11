@@ -135,7 +135,7 @@ def analyze_and_collect_messages_for_batch(user_id, grouped_messages, batch_coun
 
 
 async def vtooanalyze_and_collect_messages_for_batch(
-    user_id, grouped_messages, batch_count, cursor
+    user_id, grouped_messages, batch_count, cursor, ticket_allocator
 ):
     print("vtoo analyze")
     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
@@ -143,7 +143,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
 
     new_messages = []
 
-    async def process_channel(client_id, channel, channel_msgs, lance_ticket_id_base):
+    async def process_channel(client_id, channel, channel_msgs, ticket_allocator):
         # fetch client email
         cursor.execute(
             "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
@@ -213,7 +213,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
             user_id,
             existing_new_msg,
             batch_count,
-            lance_ticket_id_base,
+            ticket_allocator,
         )
         print(
             f"lance_ticket_id after append_subject_to_messages is : {lance_ticket_id}"
@@ -223,31 +223,33 @@ async def vtooanalyze_and_collect_messages_for_batch(
         return new_msgs_local
 
     # build async tasks for all client_id + channels
-    # tasks = []
-    # # Pre-fetch next ticket number once
+    tasks = []
+    # Pre-fetch next ticket number once
     # client_ticket = UmailLanceClient(user_id)
     # lance_ticket_id_base = client_ticket.call_ticket_number(user_id) or 0
-    # for client_id, channel_data in grouped_messages.items():
-    #     for channel, channel_msgs in channel_data.items():
-    #         tasks.append(process_channel(client_id, channel, channel_msgs,lance_ticket_id_base))
-
-    client_ticket = UmailLanceClient(user_id)
-    latest = client_ticket.call_ticket_number(user_id) or 0
-
-    tasks = []
-    offset = 0
     for client_id, channel_data in grouped_messages.items():
         for channel, channel_msgs in channel_data.items():
-            lance_base_for_task = latest + offset
-            offset += len(channel_msgs)  # or 1, depending on your increment rule
             tasks.append(
-                process_channel(client_id, channel, channel_msgs, lance_base_for_task)
+                process_channel(client_id, channel, channel_msgs, ticket_allocator)
             )
+
+    # client_ticket = UmailLanceClient(user_id)
+    # latest = client_ticket.call_ticket_number(user_id) or 0
+
+    # tasks = []
+    # offset = 0
+    # for client_id, channel_data in grouped_messages.items():
+    #     for channel, channel_msgs in channel_data.items():
+    #         lance_base_for_task = latest + offset
+    #         offset += len(channel_msgs)  # or 1, depending on your increment rule
+    #         tasks.append(
+    #             process_channel(client_id, channel, channel_msgs, lance_base_for_task)
+    #         )
     # after all tasks complete, update to latest+offset
     # run all tasks concurrently
     results = await asyncio.gather(*tasks)
-    final_ticket = latest + offset
-    client_ticket.update_ticket_number(user_id, final_ticket)
+    # final_ticket = latest + offset
+    # client_ticket.update_ticket_number(user_id, final_ticket)
 
     # flatten results
     for res in results:
@@ -255,93 +257,6 @@ async def vtooanalyze_and_collect_messages_for_batch(
 
     # UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
     return new_messages
-
-
-# def vtooanalyze_and_collect_messages_for_batch(
-#     user_id, grouped_messages, batch_count, cursor
-# ):
-#     print("vtoo analyze")
-#     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-#     ensure_dir(user_folder)
-
-#     new_messages = []
-
-#     for client_id, channel_data in grouped_messages.items():
-#         # fetch client email once
-#         cursor.execute(
-#             "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
-#             (client_id,),
-#         )
-#         row = cursor.fetchone()
-#         if not row:
-#             print("❌ Error: User not found")
-#             continue
-#         client_email = row[0]
-
-#         config_folder = os.path.join(user_folder, client_id)
-#         ensure_dir(config_folder)
-#         for channel, channel_msgs in channel_data.items():
-#             # 1) batch check existing message IDs
-#             msg_ids = [m["id"] for m in channel_msgs if "id" in m]
-#             if not msg_ids:
-#                 continue
-
-#             # ✅ Use IN (...) instead of ANY (MySQL safe)
-#             placeholders = ",".join(["%s"] * len(msg_ids))
-#             sql = (
-#                 f"SELECT message_id FROM messages WHERE message_id IN ({placeholders})"
-#             )
-#             cursor.execute(sql, tuple(msg_ids))
-#             existing_ids = {row[0] for row in cursor.fetchall()}
-
-#             # 2) load previous new_messages.json once
-#             output_path = os.path.join(config_folder, f"{channel}_new_messages.json")
-#             try:
-#                 with open(output_path, "r", encoding="utf-8") as f:
-#                     new_msg_data = json.load(f)
-#             except Exception:
-#                 new_msg_data = {}
-
-#             merged_messages = new_msg_data.get("new_messages", [])
-#             existing_new_msg = {msg.get("msg_id"): msg for msg in merged_messages}
-
-#             # 3) filter and build only new ones
-#             for m in channel_msgs:
-#                 msg_id = m["id"]
-#                 if msg_id in existing_ids or m.get("type") == "Lead":
-#                     continue
-#                 new_msg = {
-#                     "msg_id": msg_id,
-#                     "body": m.get("body"),
-#                     "from": "client" if m.get("from") == client_email else "user",
-#                     "to": "client" if m.get("to") == client_email else "user",
-#                     "date": m.get("timestamp"),
-#                     "channel": channel,
-#                 }
-#                 merged_messages.append(new_msg)
-#                 new_messages.append(new_msg)
-
-#             # 4) write once
-#             with open(output_path, "w", encoding="utf-8") as f:
-#                 json.dump({"new_messages": merged_messages}, f, indent=2)
-
-#             # 5) run heavier parts last
-#             subjects = generate_subject(user_id, output_path, channel)
-#             print("subjects generated", len(subjects))
-#             channel_grouped = {client_id: {channel: channel_msgs}}
-
-#             lance_ticket_id = append_subject_to_messages(
-#                 channel_grouped,
-#                 channel,
-#                 subjects,
-#                 user_id,
-#                 existing_new_msg,
-#                 batch_count,
-#             )
-#             print(f"✅ final lance_ticket_id : {lance_ticket_id}")
-#             UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
-
-#     return new_messages
 
 
 # @umail_bp.route("/subject_summarisations/<user_id>", methods=["POST"])
@@ -403,7 +318,7 @@ def append_subject_to_messages(
     user_id,
     existing_new_msg,
     batch_count,
-    lance_ticket_id_base,
+    ticket_allocator,
 ):
     print(f"****inside append_subject_to_messages for batch number : {batch_count}")
 
@@ -431,8 +346,8 @@ def append_subject_to_messages(
     # Pre-fetch next ticket number once
     # client_ticket = UmailLanceClient(user_id)
     # lance_ticket_id_base = client_ticket.call_ticket_number(user_id) or 0
-    print(f"lance_ticket_id_ : {lance_ticket_id_base}")
-    lance_ticket_id = lance_ticket_id_base + 1
+    async def _get_ticket():
+        return await ticket_allocator.next_ticket()
 
     # Small helper caches (per client)
     communication_id_cache = {}
@@ -507,6 +422,8 @@ def append_subject_to_messages(
         found_existing_conversation = False  # variable used later
 
         for msg in messages:
+            lance_ticket_id = asyncio.run(_get_ticket())
+            print(f"internally lance_ticket_id_ : {lance_ticket_id}")
             msg_id = msg.get("id")
             if not msg_id:
                 continue
@@ -621,6 +538,7 @@ def append_subject_to_messages(
                             ticket_uuid = str(uuid.uuid4())
                             ticket_id = f"TKT-{lance_ticket_id}#{ticket_uuid}"
                             ticket_name = matching_conv.get("subject")
+                            # print(f"NO TKT - matched config TKT {lance_ticket_id} thread {thread_id} clientid {client_id} conv {conversation_id}")
 
                             communication_id = communication_id_cache.get(client_id)
                             cursor.execute(
@@ -636,7 +554,7 @@ def append_subject_to_messages(
                                     communication_id,
                                 ),
                             )
-                            lance_ticket_id += 1
+                            # lance_ticket_id += 1
 
                             assigned_id = str(uuid.uuid4())
                             cursor.execute(
@@ -647,11 +565,13 @@ def append_subject_to_messages(
                                 (assigned_id, user_id, client_id, ticket_id),
                             )
                         else:
+                            # print(f"matched config TKT {lance_ticket_id} thread {thread_id} clientid {client_id} conv {conversation_id}")
                             ticket_id, ticket_name = ticket_row[0], ticket_row[1]
 
                         if ticket_id:
                             msg["ticket_id"] = ticket_id
                             msg["ticket_name"] = ticket_name
+                            # print(f"matched config TKT {lance_ticket_id} thread {thread_id} clientid {client_id} conv {conversation_id}")
 
                             cursor.execute(
                                 "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
@@ -729,6 +649,7 @@ def append_subject_to_messages(
             if direction == "inbound":
                 ticket_uuid = str(uuid.uuid4())
                 new_ticket_id = f"TKT-{lance_ticket_id}#{ticket_uuid}"
+                # print(f"new inbound TKT {lance_ticket_id} thread {thread_id} clientid {client_id} conv {new_conversation_id}")
                 subj = msg.get("subject")
                 msg["ticket_id"] = new_ticket_id
                 msg["conversation_id"] = new_conversation_id
@@ -770,7 +691,7 @@ def append_subject_to_messages(
                             communication_id,
                         ),
                     )
-                    lance_ticket_id += 1
+                    # lance_ticket_id += 1
 
                     assigned_id = str(uuid.uuid4())
                     cursor.execute(
@@ -847,6 +768,7 @@ def append_subject_to_messages(
                 msg["ticket_id"] = None
                 msg["ticket_name"] = None
                 msg["conversation_id"] = new_conversation_id
+                # print("OUTBOUND placed")
 
                 cursor.execute(
                     """

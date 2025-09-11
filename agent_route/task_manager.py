@@ -47,31 +47,33 @@ def run_background_task(userid, industry, func, **kwargs):
     return {"message": "Task started.", "task_id": task_id}
 
 
-def run_fetch_gmail_in_background(
-    fetch_function, user_id,) -> threading.Thread:
+def run_fetch_gmail_in_background(fetch_function, user_id) -> dict:
+    # ✅ Do not start a new thread if one is already alive
+    existing_thread = task_threads.get(user_id)
+    if existing_thread and existing_thread.is_alive():
+        return {"message": "Background fetch already running.", "user_id": user_id}
 
     def background_task():
         try:
             print(f"Starting background Gmail fetch for user: {user_id}")
-            # result = fetch_function(user_id)
             asyncio.run(fetch_function(user_id))
-
         except Exception as e:
             error_msg = f"Background Gmail fetch failed for user {user_id}: {str(e)}"
             print(f"[ERROR] {error_msg}")
             logging.error(error_msg)
+        finally:
+            # Once done, remove from dict
+            task_threads.pop(user_id, None)
 
-    # Create and start the background thread
     thread = threading.Thread(
         target=background_task,
         name=f"gmail_fetch_{user_id}",
-        daemon=True,  # Thread will not prevent program from exiting
+        daemon=True,
     )
-
     thread.start()
     task_threads[user_id] = thread
-    # return thread
     return {"message": "Fetch started.", "user_id": user_id}
+
 
 
 # Example usage:

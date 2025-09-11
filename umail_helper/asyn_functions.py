@@ -14,6 +14,7 @@ import asyncio
 import os
 import time
 from cust_helpers import pathconfig
+from umail_helper.ticketalloc import TicketAllocator
 from umail_lance.umail_lance_agent import UmailLanceClient
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
@@ -297,10 +298,11 @@ async def v2all_continuous(user_id):
 
     semaphore = asyncio.Semaphore(5)
     complete_results = 0
-    loop = asyncio.get_running_loop()
     embedding_futures = []  # keep track globally inside v2all_continuous
 
-    async def process_with_semaphore(threads, batch_count, max_batchval):
+    async def process_with_semaphore(
+        threads, batch_count, max_batchval, ticket_allocator
+    ):
         nonlocal complete_results  # allow updating outer var
         async with semaphore:
             with get_cursor(connection) as cursor:
@@ -336,6 +338,7 @@ async def v2all_continuous(user_id):
                 current_batch_messages,
                 batch_count,
                 lance_folder,
+                ticket_allocator,
                 None,
             )
             embedding_futures.append(task)  # collect it
@@ -347,6 +350,10 @@ async def v2all_continuous(user_id):
 
     batches = [threads[i : i + batch_size] for i in range(0, max_batchval, batch_size)]
     client = await GlideClusterClient.create(config)
+    client_ticket = UmailLanceClient(user_id)
+
+    # ticket_allocator = await TicketAllocator.create(addresses, client_ticket, user_id)
+    ticket_allocator = await TicketAllocator.create(client_ticket, user_id)
 
     async def process_batch(batch_index, batch):
         batch_start_time = time.perf_counter()
@@ -355,7 +362,11 @@ async def v2all_continuous(user_id):
         )
 
         # tasks = [process_with_semaphore(thread, batch_index + 1) for thread in batch]
-        tasks = [process_with_semaphore(batch, batch_index + 1, max_batchval)]
+        tasks = [
+            process_with_semaphore(
+                batch, batch_index + 1, max_batchval, ticket_allocator
+            )
+        ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -399,6 +410,7 @@ async def v2all_continuous(user_id):
         "newly_creation": newly_creation,
     }
     update_umail_json(user_id, new_entry)
+    await ticket_allocator.finalize()
 
     if os.path.exists(folder_path):
         shutil.rmtree(folder_path)  # ✅ removes all files + subfolders
@@ -422,6 +434,7 @@ def v2process_batch_with_embedding(
     current_batch_messages,
     batch_count,
     lance_folder,
+    ticket_allocator,
     cursor=None,
 ):
     async def _inner(cursor):
@@ -431,17 +444,21 @@ def v2process_batch_with_embedding(
             connection = connect_to_rds()
             with get_cursor(connection) as cursor:
                 messages = await vtooanalyze_and_collect_messages_for_batch(
-                    user_id, current_batch_messages, batch_count, cursor
+                    user_id,
+                    current_batch_messages,
+                    batch_count,
+                    cursor,
+                    ticket_allocator,
                 )
             connection.close()
         else:
             messages = await vtooanalyze_and_collect_messages_for_batch(
-                user_id, current_batch_messages, batch_count, cursor
+                user_id, current_batch_messages, batch_count, cursor, ticket_allocator
             )
 
         print(f"🧩 batch {batch_count} messages analyzed: {len(messages)}")
         client = UmailLanceClient(user_id)
-        client.embed_json_files(lance_folder)
+        await asyncio.to_thread(client.embed_json_files, lance_folder)
         total_runtime = time.perf_counter() - start_time
         print("************ Total Time Lance *******", total_runtime)
 
