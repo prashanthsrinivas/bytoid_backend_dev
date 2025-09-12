@@ -464,6 +464,14 @@ def get_selected_conv(conversation_id, user_id):
         print(
             f"inside get_selected_conv for conversation_id={conversation_id}, user_id={user_id}"
         )
+        invalid_values = {None, "", "none", "null", "undefined"}
+        if (
+            conversation_id is None
+            or str(conversation_id).strip().lower() in invalid_values
+            or user_id is None
+            or str(user_id).strip().lower() in invalid_values
+        ):
+            return jsonify({"error": "conversation_id and user_id are required"}), 400
 
         client_id = None
 
@@ -566,6 +574,7 @@ def get_selected_conv(conversation_id, user_id):
                         "status": "existing",
                         "conversationId": client_id,  # conversation_id is client_id
                         "messages": sorted_conversations,  # this is ConversationThread[]
+                        "source": "full",
                     }
                 ),
                 200,

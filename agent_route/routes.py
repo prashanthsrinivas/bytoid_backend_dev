@@ -458,6 +458,7 @@ def download_files():
             all_downloaded_paths, is_downloaded = Mediatorservice(
                 data, userid, user_service
             )
+            print(all_downloaded_paths)
             if is_downloaded and len(all_downloaded_paths) > 0:
                 folderpath = os.path.commonpath(all_downloaded_paths)
                 all_file_data = asyncio.run(
@@ -504,10 +505,6 @@ def makeuserDocClarifications(userid=None, industry=None):
                 400,
             )
 
-    fetched_industry = get_line_of_business(fetched_userid)
-    if not fetched_industry:
-        return jsonify({"error": "No line of business present"}), 401
-
     if not fetched_userid:
         return jsonify({"error": "User ID is required"}), 400
 
@@ -516,6 +513,9 @@ def makeuserDocClarifications(userid=None, industry=None):
 
     if not failed_entries:
         logger.info("⚠ failed_ques.yaml not found or empty, regenerating QAs...")
+        fetched_industry = get_line_of_business(fetched_userid)
+        if not fetched_industry:
+            return jsonify({"error": "No line of business present"}), 401
 
         # Load file metadata to get all Present files
         user_files_path = f"{fetched_userid}/yaml/users_fileData.yaml"
@@ -1372,6 +1372,9 @@ def discover_api_endpoints(content, base_url):
 #     except Exception as e:
 #         print("❌ Error during AI suggestion processing:", e)
 #         return jsonify({"error": "Internal server error"}), 500
+
+
+3
 
 
 @agent_bps.route("/scrape", methods=["POST"])

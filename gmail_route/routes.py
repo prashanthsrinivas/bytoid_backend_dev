@@ -1,5 +1,6 @@
 import asyncio
 from flask import Blueprint, request, jsonify, session
+from umail_lance.umail_lance_agent import UmailLanceClient
 from .gmail_service import GmailService
 import uuid
 from data import MESSAGES  # delete this later
@@ -1200,6 +1201,8 @@ def delete_user_ticket_data(user_id):
                 connection.commit()
             folder_path = f"{user_id}/messages"
             Thread(target=delete_folder_from_s3, args=(folder_path,)).start()
+            client_ticket = UmailLanceClient(user_id)
+            client_ticket.update_ticket_number(user_id=user_id,lance_ticket_id=0)
 
             return {
                 "status": "success",

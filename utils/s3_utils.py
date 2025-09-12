@@ -100,6 +100,7 @@ def read_json_from_s3(filepath):
 
 def load_yaml_from_s3(filepath):
     s3 = s3bucket()  # Full path in bucket
+    print("path loaded s3", filepath)
 
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)

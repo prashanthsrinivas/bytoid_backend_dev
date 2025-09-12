@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import re
 import shutil
@@ -18,7 +19,7 @@ from flask import jsonify
 import requests
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-
+import pymysql
 from utils.s3_utils import S3_BUCKET, load_yaml_from_s3, s3bucket, save_yaml_to_s3
 
 logger = get_logger(__name__)
@@ -142,14 +143,39 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     processed_filenames = []
     connection = connect_to_rds()
     industry = None
-    with connection.cursor() as cursor:
+    selected_id = None
+    with connection.cursor(pymysql.cursors.DictCursor) as cursor:
         cursor.execute(
-            "SELECT LineOfBusiness FROM business_info WHERE user_id_fk = %s ", (userid,)
+            "select permissions,user_type from users where user_id = %s", (userid,)
+        )
+        base_user = cursor.fetchone()
+        if not base_user:
+            return jsonify({"error": "User not found"}), 404
+        base_user_type = base_user["user_type"]
+        if base_user_type == "user":
+            base_permission = base_user["permissions"]
+            if isinstance(base_permission, str):
+                base_permission = json.loads(base_permission)
+            print("base data permissions", base_permission)
+            if base_permission and "invited_by" in base_permission:
+                email = base_permission["invited_by"]
+                cursor.execute("select user_id from users where email = %s", (email,))
+                row = cursor.fetchone()
+                if row:
+                    selected_id = row["user_id"]
+                    print("attached id", selected_id)
+        else:
+            selected_id = userid
+            print("admin selected", selected_id)
+        print("fetched", selected_id)
+        cursor.execute(
+            "SELECT LineOfBusiness FROM business_info WHERE user_id_fk = %s ",
+            (selected_id,),
         )
         user_row = cursor.fetchone()
         if not user_row:
             return jsonify({"error": "No line of business present"}), 401
-        industry = user_row[0]
+        industry = user_row["LineOfBusiness"]
     connection.close()
     for path in all_downloaded_paths:
         filename = os.path.basename(path)

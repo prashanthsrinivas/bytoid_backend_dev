@@ -12,10 +12,14 @@ import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 import time
+from sentence_transformers import SentenceTransformer
+import base64
+
 
 
 logger = logging.getLogger(__name__)
 
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 class UmailData(BaseModel):
     id: str
@@ -649,3 +653,34 @@ class UmailLanceClient:
             print(f"HTTP Error: {response.status_code}")
             print(f"Response text: {response.text}")
         return
+
+
+    def search_email_from_lance(self, folder_names, user_id,text_input ):
+
+        try:
+
+            print("inside  search_email_from_lance")         
+            embedding_str = self.embeddings.embed_query(text_input)
+
+            payload = {
+                    "user_id": user_id,
+                    "folder_names": folder_names,
+                    "embedding_str": embedding_str    
+                }
+
+            response = requests.post(
+                f"{self.lancedb_url}/find_email_from_query",
+                json=payload,
+            )
+            
+            if response.status_code == 200:
+                print("successfully fetched the results")
+                return response.json().get("results", [])
+            else:
+                print(f"HTTP Error: {response.status_code}")
+                print(f"Response text: {response.text}")
+                return []
+            
+        except Exception as e:
+            print(f"Error in search_email_from_lance: {e}")
+            return []
