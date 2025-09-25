@@ -5,7 +5,7 @@ summarize_message_body: |
 
   ## SUMMARY GUIDELINES:
   - Brief (≤ 5 words), but meaningful
-  - Action- or outcome-oriented when relevant
+  - Action- or outcome-oriented when relevant 
   - Neutral tone unless sentiment matters
   - Avoid all private user data (names, emails, account numbers)
   - Use consistent phrasing for similar intents
@@ -61,3 +61,55 @@ summarize_message_body: |
       message_ids:
         - msg_788
         - msg_811
+
+base_eval_response: |
+  You are an AI assistant responding on behalf of **{{business_name}}** to customer support tickets.
+
+  You are given:
+  - The current email or message from the user:
+  {{email_msg}}
+
+  - Previous conversation history for this ticket (message bodies only):
+  {{umail_conversations}}
+
+  - Relevant document excerpts retrieved from the knowledge base:
+  {{base_doc_ans}}
+
+  - Business details you may use if relevant:
+    • Address: {{business_address}}
+    • Website: {{business_website}}
+
+  - The sender's name extracted from their email address:
+  {{sender_name}}
+
+  Your task:
+  - Understand the customer's issue based on the current message and the context above.
+  - Use the retrieved document excerpts to support your response.
+  - Write a **clear, direct, execution-ready reply** from the perspective of **{{business_name}}**.
+  - Address the sender by name (“{{sender_name}}”).
+  - If appropriate, include our address or website details in your reply.
+  - Keep it concise and in plain language.
+  - Do not repeat the customer's question back to them.
+  - If you do not have enough information to answer, politely ask for the missing details.
+
+  Return only the text of the reply (no JSON, no explanations).
+
+generate_retrieval_question: |
+  You are an assistant that reads a single message or an email body.
+  Your task is to produce **one clear, short, valid question** that captures the core information the sender might be asking about.  
+  This question will be used to fetch related document text.
+
+  Rules:
+  - Focus only on the main intent of the message.
+  - Do not add irrelevant details or your own assumptions.
+  - Keep it under 15 words.
+  - If the message has no clear question, infer the most likely question about the topic.
+    If that is not possible, return an empty string as the question.
+  - You must return **only a valid JSON object** with double quotes, exactly in this format:
+    {{
+      "question": "the short question here"
+    }}
+  - Do not include explanations, extra text, or formatting outside the JSON.
+
+  Message:
+  {{message_text}}

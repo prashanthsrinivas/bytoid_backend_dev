@@ -579,11 +579,12 @@ def add_lead_contact(user_id,cursor, participant, participant_name):
                         slack_workspace,
                         type,
                         created_in,
-                        updated_in
+                        updated_in,
+                        snooze
 
 
                     )
-                    VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s)
+                    VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s,%s)
                 """
                 cursor.execute(
                     insert_sql,
@@ -591,11 +592,12 @@ def add_lead_contact(user_id,cursor, participant, participant_name):
                         users_clients_id,
                         communication_id,
                         participant_name,
-                        "( Lead )",
+                        "",
                         participant,                   
                         "Lead",
                         created_date,
-                        updated_date
+                        updated_date,
+                        False,
 
                     ),
                 )

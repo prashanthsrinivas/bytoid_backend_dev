@@ -469,6 +469,10 @@ def get_all_mini_agents(userid):
                 # Normalize permissions structure
                 if "agents_hub" not in owner_permissions:
                     owner_permissions["agents_hub"] = []
+                shared = owner_permissions["shared"] or []
+                status_map = {
+                    entry.get("email"): entry.get("status") for entry in shared
+                }
                 for agent in owner_permissions.get("agents_hub", []):
                     shared_users = agent.get("shared_hub_users", [])
                     # check if base_row["email"] exists in any dict's "email" field
@@ -479,6 +483,9 @@ def get_all_mini_agents(userid):
                                 "name": agent.get("name"),
                                 "id": agent.get("launch_id"),
                                 "userid": agent.get("user_id"),
+                                "status": status_map.get(
+                                    base_row["email"], "revoked"
+                                ),  # default revoked
                             }
                         )
                     if base_row["email"] in agent["email"]:
@@ -488,6 +495,9 @@ def get_all_mini_agents(userid):
                                 "name": agent.get("name"),
                                 "id": agent.get("launch_id"),
                                 "userid": agent.get("user_id"),
+                                "status": status_map.get(
+                                    base_row["email"], "revoked"
+                                ),  # default revoked
                             }
                         )
 
@@ -502,6 +512,10 @@ def get_all_mini_agents(userid):
                 # Normalize permissions structure
                 if "agents_hub" not in owner_permissions:
                     owner_permissions["agents_hub"] = []
+                shared = owner_permissions["shared"] or []
+                status_map = {
+                    entry.get("email"): entry.get("status") for entry in shared
+                }
 
                 for agent in owner_permissions["agents_hub"]:
                     cursor.execute(
@@ -524,6 +538,9 @@ def get_all_mini_agents(userid):
                             "username": full_name,
                             "id": agent.get("launch_id"),
                             "userid": agent.get("user_id"),
+                            "status": status_map.get(
+                                base_row["email"], "revoked"
+                            ),  # default revoked
                         }
                     )
 

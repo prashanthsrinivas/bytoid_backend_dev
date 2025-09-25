@@ -580,6 +580,9 @@ def add_lead_route():
     except Exception as e:
         logger.error(f"An unexpected error occurred: {str(e)}")
         return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @users_bp.route("/get_user_permissions/<userid>", methods=["GET"])

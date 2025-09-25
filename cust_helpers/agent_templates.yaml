@@ -299,48 +299,125 @@ clean_transcription_prompt: |
   "{input_text}"
 
 scrape_summary_prompt_template: |
-  You are an AI assistant tasked with analyzing website scraping results and producing a clear, useful summary.
+  You are an expert website analyst. Your task is to analyze the provided website content that has been scraped from multiple levels (up to 3 depths) and generate a comprehensive structured analysis.
 
-  Your Task:
-  Based on the scraped data provided, do the following:
-  - Summarize the **overall purpose of the website** (what it offers or represents).
-  - Highlight the **types of pages discovered** (e.g., product pages, blog posts, contact forms, FAQs).
-  - Identify **potential customer questions or gaps** in clarity (if something looks incomplete, missing, or confusing).
-  - Keep the summary **concise but informative**, maximum 5 sentences.
+  ## ANALYSIS GUIDELINES:
+  - Your analysis must be based ONLY on the multi-level content provided.
+  - The content includes the main page and up to 2 additional levels of subpages.
+  - For the structured data, you must:
+    - Identify the website's main purpose and core business model.
+    - List key products, services, or content categories found across all pages.
+    - Describe the target audience and user personas.
+    - Extract the company's mission, values, or unique selling proposition.
+    - Document the site structure and navigation patterns observed.
+    - Identify key subpages and their purposes.
+  
+  - For the display summary, you must:
+    - Write a comprehensive paragraph (4–6 sentences) that synthesizes information from all scraped levels.
+    - Include insights about the website's depth and content organization.
+    - Highlight any unique features or standout content found in subpages.
+  
+  - For site structure analysis:
+    - Map out the key sections and their relationships.
+    - Note any specialized pages or unique functionalities.
+    - Identify content patterns across different levels.
 
-  Inputs:
-  - Website: {url}
-  - Status Code: {status_code}
-  - Total Links Found: {total_links}
-  - Links Sample: {links_sample}
+  ## INPUT:
+  - url: {url}
+  - website_content: {website_content}
+  - scraping_metadata: Includes information about pages scraped, depth reached, and navigation structure
 
-  Output:
-  Respond in strict JSON, no markdown or extra text:
-  {{
-    "website": "{url}",
-    "status_code": {status_code},
-    "summary": "one-paragraph plain English summary",
-    "potential_questions": [
-      "first possible customer question",
-      "second possible customer question",
-      "third possible customer question"
+  ## OUTPUT FORMAT:
+  Provide your output as a single YAML object.
+  yaml
+  website_analysis:
+    summary: "A comprehensive paragraph combining insights from all scraped levels, highlighting the website's purpose, key offerings, and organizational structure."
+    main_purpose: "Detailed description of the website's primary function and business model."
+    key_offerings:
+      - "Primary product/service with brief description"
+      - "Secondary offering with context"
+      - "Additional services or content categories"
+    target_audience: "Detailed description of primary and secondary user groups."
+    company_mission: "The organization's stated mission, values, or philosophy."
+    site_structure:
+      main_sections:
+        - "Homepage focus and key elements"
+        - "Primary navigation categories"
+        - "Special features or unique pages"
+      subpage_insights:
+        - "Notable subpage content or functionality"
+        - "Content patterns observed across levels"
+        - "User journey or conversion paths identified"
+    content_depth: "Assessment of content richness and information architecture."
+    unique_features:
+      - "Standout functionalities or content"
+      - "Competitive advantages identified"
+    pages_analyzed: "Brief summary of the scope of content analyzed (e.g., '15 pages across 3 levels covering main site, product pages, and support sections')"
+
+extract_scraping_clarifications_prompt: |
+  Analyze the following multi-level scraped website content and extract questions that need clarification. 
+  The content has been gathered from up to 3 levels of the website structure.
+
+  Focus on identifying:
+  - Incomplete product/service information across all pages
+  - Ambiguous business processes or policies
+  - Missing technical specifications or requirements
+  - Unclear pricing, terms, or conditions
+  - Contradictory information between different pages
+  - Gaps in user guidance or support information
+
+  Multi-Level Scraped Content:
+  {{scraped_content}}
+
+  Analyze the content comprehensively and return a JSON response:
+  `json
+  {
+    "content_assessment": {
+      "completeness_score": 85,
+      "clarity_issues_found": 3,
+      "contradictions_detected": 0
+    },
+    "clarifications": [
+      "What are the specific technical requirements for the enterprise plan mentioned on the pricing page?",
+      "The support page mentions 24/7 availability but the contact page shows business hours only - which is correct?",
+      "What is the exact process for the custom integration service referenced in multiple sections?"
+    ],
+    "information_gaps": [
+      "No clear information about data security measures",
+      "Shipping policies mentioned but not detailed",
+      "User onboarding process not explained"
     ]
-  }}
+  }
 
-  ⚠️ Important:
-  - Do **not** include ```json or any markdown formatting
-  - Do **not** add comments or explanations
-  - Do **not** add trailing commas
-  - Ensure it's valid JSON that can be parsed by `json.loads`
 
-  Example:
-  {{
-    "website": "https://goodfair.com/",
-    "status_code": 200,
-    "summary": "Goodfair is an e-commerce store focusing on sustainable fashion by selling thrifted clothing in bundles. It emphasizes affordable, eco-friendly shopping.",
-    "potential_questions": [
-      "Do you ship internationally or only within the US?",
-      "Are all products second-hand or do you also sell new items?",
-      "What is your return policy for thrift bundles?"
-    ]
-  }}
+scraping_response_validator_batch: |
+  You are an AI evaluator assessing responses generated from multi-level website scraping data (up to 3 depth levels).
+
+  For each question-answer pair, evaluate against these criteria:
+  1. **Relevance**: Does the AI response directly address the user's question using the scraped content?
+  2. **Completeness**: Does it provide comprehensive information drawing from multiple page levels when available?
+  3. **Accuracy**: Is the information consistent with what was found across different pages?
+  4. **Actionability**: Does it give users specific, usable information?
+
+  Evaluation Framework:
+  - "related": Direct relevance to the question (true/false)
+  - "has_usecase_details": Contains specific, actionable information (true/false)  
+  - "uses_multilevel_data": Leverages information from multiple scraped pages (true/false)
+  - "consistency_check": Information is consistent across scraped levels (true/false)
+  - "explanation": Detailed reasoning for the evaluation
+
+  Questions and Answers from Multi-Level Scraping:
+  {qa_list}
+
+  Respond with a JSON array in this exact format:
+  `json
+  [
+    {
+      "related": true,
+      "has_usecase_details": true,
+      "uses_multilevel_data": true,
+      "consistency_check": true,
+      "explanation": "The response effectively combines information from the main page and product detail pages to provide comprehensive pricing details with specific feature breakdowns.",
+      "improvement_suggestions": "Could include the contact information found on the support subpage for follow-up questions."
+    }
+  ]

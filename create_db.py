@@ -2,6 +2,9 @@ import pymysql
 import boto3
 import json
 
+rd_host = "bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
+rd_name = "bytoid_support_agent"
+
 
 def get_secret():
     secret_name = "rds!db-9db402d8-3595-4048-bf23-979d5e5985e4"
@@ -22,10 +25,10 @@ def connect_to_rds():
     creds = get_secret()
     try:
         connection = pymysql.connect(
-            host="bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com",
+            host=rd_host,
             user=creds["username"],
             password=creds["password"],
-            db="bytoid_support_agent",
+            db=rd_name,
             port=3306,
             connect_timeout=10,
         )
@@ -171,7 +174,7 @@ def create_tables():
                 BusinessID TEXT,
                 BusinessName TEXT,
                 Age TEXT,
-                Sex ENUM('Male','Female'),
+                Sex ENUM('Male','Female'),  
                 LineOfBusiness TEXT,
                 YearsInBusiness TEXT,
                 HasLicense BOOLEAN,sele
@@ -649,7 +652,7 @@ def create_plans():
             created_in DATETIME,
             updated_in DATETIME,
             logged_in_at DATETIME,
-            logged_out_at DATETIME
+            logged_out_at DATETIMEticket
         );
         """
         cursor.execute(create_table_query)
@@ -856,8 +859,203 @@ def update_users_msg_json():
         connection.close()
 
 
+def updateUsersClients():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed.")
+        return
+
+    cursor = connection.cursor()
+    try:
+        alter_uc = """
+            ALTER TABLE users_clients
+            ADD COLUMN snooze BOOLEAN;
+        """
+        cursor.execute(alter_uc)
+
+        connection.commit()
+        print("✅ Columns added successfully!")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def addAssigneColumn():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed.")
+        return
+
+    cursor = connection.cursor()
+    try:
+        alter_table_sql = """
+            ALTER TABLE tickets
+            ADD COLUMN assignee VARCHAR(36);
+        """
+        cursor.execute(alter_table_sql)
+        connection.commit()
+        print("✅ Column 'assignee' added successfully!")
+    except Exception as e:
+        print("⚠️ Error while adding column:", e)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_users_auto_reply():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed.")
+        return
+
+    cursor = connection.cursor()
+    try:
+        alter_stmt = """
+            ALTER TABLE users
+            ADD COLUMN autopilot JSON;
+        """
+        cursor.execute(alter_stmt)
+        connection.commit()
+        print("✅ Columns added successfully!")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def expand_communication_columns():
+    """
+    Update all varchar(36) columns in the `communication` table to varchar(128)
+    to avoid truncation issues.
+    """
+    try:
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            # 1. Drop foreign key constraint
+            cursor.execute(
+                "ALTER TABLE users_clients DROP FOREIGN KEY fk_communication;"
+            )
+            print("✅ Dropped foreign key fk_communication")
+
+            # 2. Alter parent table
+            cursor.execute(
+                "ALTER TABLE communication MODIFY COLUMN communication_id VARCHAR(128) NOT NULL;"
+            )
+            cursor.execute(
+                "ALTER TABLE communication MODIFY COLUMN user_id_fk VARCHAR(128) NULL;"
+            )
+            cursor.execute(
+                "ALTER TABLE communication MODIFY COLUMN users_clients_id_fk VARCHAR(128) NULL;"
+            )
+            print("✅ Updated communication table columns to VARCHAR(128)")
+
+            # 3. Alter child table
+            cursor.execute(
+                "ALTER TABLE users_clients MODIFY COLUMN communication_id_fk VARCHAR(128) NULL;"
+            )
+            print("✅ Updated users_clients.communication_id_fk to VARCHAR(128)")
+
+            # 4. Recreate foreign key
+            cursor.execute(
+                """
+                ALTER TABLE users_clients
+                ADD CONSTRAINT fk_communication
+                FOREIGN KEY (communication_id_fk)
+                REFERENCES communication(communication_id)
+                ON DELETE CASCADE
+                ON UPDATE CASCADE;
+            """
+            )
+            print("✅ Recreated foreign key fk_communication")
+
+            connection.commit()
+            print("✅ All changes committed successfully!")
+
+    except Exception as e:
+        if connection:
+            connection.rollback()
+        print(f"❌ Error updating columns with FK: {e}")
+        raise
+    finally:
+        connection.close()
+
+
+def expand_users_clients_columns_v2():
+    """
+    Safely update users_clients columns:
+    - PK users_clients_id to VARCHAR(128)
+    - communication_id_fk already VARCHAR(128)
+    - other varchar(36) columns to VARCHAR(64)
+    """
+    try:
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            # 1. Drop foreign key in assigned table
+            cursor.execute("ALTER TABLE assigned DROP FOREIGN KEY assigned_ibfk_3;")
+            print("✅ Dropped foreign key assigned_ibfk_3")
+
+            # 2. Alter users_clients primary key
+            cursor.execute(
+                "ALTER TABLE users_clients MODIFY COLUMN users_clients_id VARCHAR(128) NOT NULL;"
+            )
+            print("✅ Updated users_clients_id to VARCHAR(128)")
+
+            # 3. Update other varchar(36) columns to VARCHAR(64)
+            columns_to_update = [
+                "first_name",
+                "last_name",
+                "phone_number",
+                "whatsapp_number",
+                "email_id",
+                "facebook_id",
+                "slack_workspace",
+            ]
+            for col in columns_to_update:
+                cursor.execute(
+                    f"ALTER TABLE users_clients MODIFY COLUMN {col} VARCHAR(64) NULL;"
+                )
+                print(f"✅ Updated {col} to VARCHAR(64)")
+
+            # 4. Update communication_id_fk if needed (already 128)
+            cursor.execute(
+                "ALTER TABLE users_clients MODIFY COLUMN communication_id_fk VARCHAR(128) NULL;"
+            )
+
+            # 5. Recreate the foreign key
+            cursor.execute(
+                """
+                ALTER TABLE assigned
+                ADD CONSTRAINT assigned_ibfk_3
+                FOREIGN KEY (users_clients_id_fk)
+                REFERENCES users_clients(users_clients_id)
+                ON DELETE CASCADE
+                ON UPDATE CASCADE;
+            """
+            )
+            print("✅ Recreated foreign key assigned_ibfk_3")
+
+            connection.commit()
+            print("✅ users_clients columns updated with FK handled successfully!")
+
+    except Exception as e:
+        if connection:
+            connection.rollback()
+        print(f"❌ Error updating users_clients with FK: {e}")
+        raise
+    finally:
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
+    print("HHSS")
     # create_tables()
     # alter_tokens()
     # alter_subagents()
@@ -869,7 +1067,6 @@ if __name__ == "__main__":
     # updatethreadstoticket()
     # createticketstable()
     # createTableAssigned()
-    print("creating table file")
     # rename_columns_in_tickets()
     # updateticket()
     # create_new_threads()
@@ -877,8 +1074,13 @@ if __name__ == "__main__":
     # create_plans()
     # create_subscribe()
     # alter_tables_users_subscribe()
-    # updateticketsla()
+    # updateticketsla()_
     # update_users_clients()
     # update_users()
     # session_table()
     # update_users_msg_json()
+    # updateUsersClients()
+    # addAssigneColumn()
+    # update_users_auto_reply()
+    # expand_communication_columns()
+    # expand_users_clients_columns_v2()

@@ -16,12 +16,16 @@ from umail.routes import umail_bp
 from tickets.routes import tickets_bp
 from invited_users.routes import inv_users_bp
 from agents_hub_route.routes import agent_hub_bp
+from search_email.routes import search_bp
+from suggest_assist.route import assist_suggest_bp
+from unified_mailbox.routes import unified_bp
+from ai_assistant_chat.routes import ai_assistant_chat_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
 import tempfile
 
-from session_middleware import register_session_check
+# from session_middleware import register_session_check
 
 load_dotenv()
 app = Flask(__name__)
@@ -36,7 +40,7 @@ BASE_ORGINS = [
     "https://bytoid.ai",
     "https://dev.bytoid.ai",
 ]
-register_session_check(app)
+# register_session_check(app)
 
 CORS(
     app,
@@ -119,6 +123,26 @@ CORS(
     supports_credentials=True,
     origins=BASE_ORGINS,
 )
+CORS(
+    search_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    assist_suggest_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    unified_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    ai_assistant_chat_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
 
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
@@ -143,6 +167,10 @@ app.register_blueprint(umail_bp)
 app.register_blueprint(tickets_bp)
 app.register_blueprint(inv_users_bp)
 app.register_blueprint(agent_hub_bp)
+app.register_blueprint(search_bp)
+app.register_blueprint(assist_suggest_bp)
+app.register_blueprint(unified_bp)
+app.register_blueprint(ai_assistant_chat_bp)
 
 
 import argparse

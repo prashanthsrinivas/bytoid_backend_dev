@@ -1,35 +1,69 @@
 import asyncio
+import time
 from db.db_checkers import get_existing_umail_json
-from flask import Flask, request, jsonify, Blueprint, Response, session
+from flask import request, jsonify, Blueprint
 from datetime import datetime, timezone
-from zoho_routes.routes import fetch_zoho_emails
+from utils.base_logger import get_logger
 from cust_helpers import pathconfig
-from utils.normal import ensure_dir, load_yaml_file
+from utils.normal import ensure_dir
 import json
 from create_db import connect_to_rds
 import os
-from utils.s3_utils import upload_any_file, read_json_from_s3, list_all_files
+from utils.s3_utils import upload_any_file, read_json_from_s3
 import uuid
 from gmail_route.routes import gmail_reply, send_mail
-import re
 from zoho_routes.routes import send_zoho_email
 from agent_route.task_manager import run_fetch_gmail_in_background
-from umail_helper.asyn_functions import getall_continuous, v2all_continuous
+from umail_helper.asyn_functions import v2all_continuous
 from umail_lance.umail_lance_agent import UmailLanceClient
 from umail_helper.mails_process import update_config_file, generate_subject
-
+from utils.redis_config import redis_config_glide
+from utils.celery_base import acquire_user_lock, umail_sync
 
 umail_bp = Blueprint("umail", __name__)
+logger = get_logger(__name__)
+
+
+# @umail_bp.route("/get_all_messages/<user_id>", methods=["GET"])
+# def getall_route(user_id):
+#     # enqueue Celery task
+#     result = run_fetch_gmail_in_background(v2all_continuous, user_id)
+#     return jsonify(result), 202
 
 
 @umail_bp.route("/get_all_messages/<user_id>", methods=["GET"])
 def getall_route(user_id):
+    # Try to acquire lock first
+    if not acquire_user_lock(user_id):
+        # Lock exists → task is running or within TTL
+        logger.info("get_all_messages Task already running currently for  %s", user_id)
+        return (
+            jsonify(
+                {
+                    "message": "Task already running or recently triggered",
+                    "user_id": user_id,
+                }
+            ),
+            202,  # Too Many Requests
+        )
 
-    # Run the continuous async function
-
-    result = run_fetch_gmail_in_background(v2all_continuous, user_id)
-    # result = run_fetch_gmail_in_background(v2, user_id)
-    return jsonify(result), 202  # 202 Accepted
+    # Lock acquired → enqueue Celery task
+    async_result = umail_sync.delay(user_id)
+    logger.info(
+        "get_all_messages Task Started currently for  %s with task_id %s",
+        user_id,
+        async_result.id,
+    )
+    return (
+        jsonify(
+            {
+                "message": "Fetch queued",
+                "user_id": user_id,
+                "task_id": async_result.id,
+            }
+        ),
+        202,
+    )
 
 
 def get_latest_convo_info(config):
@@ -176,13 +210,13 @@ def extract_unique_client_folders(file_list, base_prefix):
 #     # print(f" disp messages are: {disp_messages}")
 #     return {"disp_messages": disp_messages, "next_cursor": next_cursor}
 
-from glide import GlideClusterClient, GlideClusterClientConfiguration, NodeAddress
+from glide import GlideClusterClient
 
-addresses = [
-    NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
-]
+# addresses = [
+#     NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
+# ]
 
-config_glide = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
+# config_glide = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
 
 
 def normalize_timestamp(ts):
@@ -348,6 +382,29 @@ def handle_lance_data(convo_messages, disp_messages, next_cursor, source):
     return {"disp_messages": disp_messages, "next_cursor": next_cursor}
 
 
+def parse_cursor_to_datetime(cursor):
+    """Return timezone-aware datetime from cursor (ISO string or epoch-ms)."""
+    if cursor is None:
+        return None
+
+    # epoch in ms or s?
+    if isinstance(cursor, (int, float)):
+        # assume ms if > 10^11
+        ts = cursor / 1000 if cursor > 1e11 else cursor
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+    if isinstance(cursor, str) and cursor.isdigit():
+        ts = int(cursor)
+        ts = ts / 1000 if ts > 1e11 else ts
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+    # otherwise ISO string
+    try:
+        return datetime.fromisoformat(cursor)
+    except ValueError:
+        return datetime.fromisoformat(cursor.replace("Z", "+00:00"))
+
+
 @umail_bp.route("/conversations/<user_id>/<next_cursor>", methods=["GET"])
 def get_latest_conversations(user_id, next_cursor):
     """
@@ -373,7 +430,7 @@ def get_latest_conversations(user_id, next_cursor):
 
         def get_from_cache_sync(user_id):
             async def _inner():
-                client = await GlideClusterClient.create(config_glide)
+                client = await GlideClusterClient.create(redis_config_glide)
                 return await client.get(f"{user_id}")
 
             return asyncio.run(_inner())
@@ -399,15 +456,27 @@ def get_latest_conversations(user_id, next_cursor):
     else:
         # ✅ Step 3: Lance fallback
         client = UmailLanceClient(user_id)
-        convo_messages, next_cursor = client.latest_messages_from_lance(
+        convo_messages, bnext_cursor = client.latest_messages_from_lance(
             user_id, next_cursor
         )
-        # print(convo_messages)
+        getall_route(user_id)
+        if not convo_messages:
+            if next_cursor:
+                cursor_dt = parse_cursor_to_datetime(next_cursor)
+                if cursor_dt and cursor_dt.date() == datetime.now(timezone.utc).date():
+                    logger.info(
+                        "Backfall process created if lance table deleted. started"
+                    )
+                    return getall_route(user_id)
+            logger.info("No messages from lance")
+
+        # If nothing matched, return a clean response
         source = "full"
+        print(f"return data lenght from get_latest: {len(display_messages)}")
         return handle_lance_data(
             convo_messages=convo_messages,
             disp_messages=display_messages,
-            next_cursor=next_cursor,
+            next_cursor=bnext_cursor,
             source=source,
         )
 
@@ -460,6 +529,7 @@ def get_selected_conv(conversation_id, user_id):
     2. Cache
     3. Lance fallback
     """
+    snooze_flag = False
     try:
         print(
             f"inside get_selected_conv for conversation_id={conversation_id}, user_id={user_id}"
@@ -484,27 +554,38 @@ def get_selected_conv(conversation_id, user_id):
             # ✅ Step 3: Cache
             def get_from_cache_sync(user_id):
                 async def _inner():
-                    client = await GlideClusterClient.create(config_glide)
+                    client = await GlideClusterClient.create(redis_config_glide)
                     return await client.get(f"{user_id}")
 
                 return asyncio.run(_inner())
 
             cached = get_from_cache_sync(user_id)
             if cached:
-                print("⚡ Using cached Gmail data for selected conversation")
-                cached_json = json.loads(cached) or {}
-                if isinstance(cached_json, list):
-                    cached_json = cached_json[0] if cached_json else {}
+                try:
+                    cached_json = json.loads(cached)
+                    if isinstance(cached_json, list):  # handle list case
+                        cached_json = cached_json[0] if cached_json else {}
 
-                grouped = cached_json.get("grouped_messages", {})
-                if conversation_id in grouped:
-                    messages_data = grouped[conversation_id]
-                    source = "mid"
-                    return _format_selected_conversation(
-                        conversation_id, client_id, messages_data, source
-                    )
+                    grouped = cached_json.get("grouped_messages", {})
+                    if (
+                        isinstance(grouped, dict)
+                        and conversation_id in grouped
+                        and grouped[conversation_id]  # non-empty
+                    ):
+                        messages_data = grouped[conversation_id]
+                        source = "mid"
+                        return _format_selected_conversation(
+                            conversation_id, client_id, messages_data, source
+                        )
+                    else:
+                        print("⚠️ Cache miss or invalid data, falling back to Lance")
+                except Exception as e:
+                    print(f"⚠️ Cache parse error: {e}, falling back to Lance")
+            else:
+                print("⚠️ No cache found, falling back to Lance")
+
         else:
-            print("fetching from lance")
+            logger.info("fetching from lance %s", conversation_id)
             # ✅ Step 1: Try to get client_id from DB
             try:
                 connection = connect_to_rds()
@@ -516,15 +597,33 @@ def get_selected_conv(conversation_id, user_id):
                     (conversation_id,),
                 )
                 client_id_row = cursor.fetchone()
-                if client_id_row:
-                    client_id = client_id_row[0]
-                else:
-                    print(f"⚠️ No sender_id found for conversation_id {conversation_id}")
+                if not client_id_row:
+                    # wait a bit and try again
+                    logger.info("Retrying the client fetch from db")
+                    time.sleep(5)
+                    cursor.execute(
+                        "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
+                        (conversation_id,),
+                    )
+                    client_id_row = cursor.fetchone()
+
+                if not client_id_row:
+                    logger.info("still cant get ID")
+                    return (
+                        jsonify(
+                            {
+                                "message": f"⚠️ No sender_id found for conversation_id {conversation_id}"
+                            }
+                        ),
+                        404,
+                    )
+                client_id = client_id_row[0]
             except Exception as e:
-                print(f"❌ Error executing sender_id query: {e}")
-            finally:
-                if connection:
-                    connection.close()
+                return (
+                    jsonify({"message": f"❌ Error executing sender_id query: {e}"}),
+                    500,
+                )
+                # print(f"❌ Error executing sender_id query: {e}")
 
             client = UmailLanceClient(user_id)
             recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
@@ -544,15 +643,45 @@ def get_selected_conv(conversation_id, user_id):
 
                     messages = list(unique_messages.values())
                     channel = messages[0].get("source") if messages else "unknown"
+                    ticket_id = messages[0].get("ticket_id")
+
+                    cursor.execute(
+                        "SELECT assignee FROM tickets WHERE tickets_id = %s",
+                        (ticket_id,),
+                    )
+                    t_row = cursor.fetchone()
+                    assigned_id = ""
+                    if t_row:
+                        assigned_id = t_row[0]
+                    assignee_full_name = ""
+                    if assigned_id:
+
+                        cursor.execute(
+                            "SELECT first_name, last_name, email FROM users WHERE user_id = %s",
+                            (assigned_id,),
+                        )
+                        names = cursor.fetchone()
+                        if names:
+                            first_name, last_name, assignee_email = (
+                                names[0],
+                                names[1],
+                                names[2],
+                            )
+                            if not first_name or first_name == "None":
+                                first_name = assignee_email.split("@")[0]
+                            if not last_name or last_name == "None":
+                                last_name = ""
+
+                            assignee_full_name = (first_name + " " + last_name).strip()
 
                     all_messages.append(
                         {
                             "id": conv_id,
                             "channel": channel,
                             "messages": messages,
+                            "assigned_name": assignee_full_name,
                         }
                     )
-
                 except Exception as e:
                     print(f"❌ Failed to read or parse {e}")
                     continue
@@ -567,6 +696,19 @@ def get_selected_conv(conversation_id, user_id):
                     reverse=False,
                 )
 
+            # check whether the client is snoozed or not
+
+            cursor.execute(
+                "SELECT snooze FROM users_clients WHERE users_clients_id = %s",
+                (client_id,),
+            )
+            snooze_row = cursor.fetchone()
+            if snooze_row:
+                snooze_flag = bool(snooze_row[0])  # Convert 0/1 to False/True
+                print(f"snooze_flag : {snooze_flag}")
+            else:
+                print(f"[DEBUG] No snooze row found for client_id: {client_id}")
+
             return (
                 jsonify(
                     {
@@ -575,15 +717,20 @@ def get_selected_conv(conversation_id, user_id):
                         "conversationId": client_id,  # conversation_id is client_id
                         "messages": sorted_conversations,  # this is ConversationThread[]
                         "source": "full",
+                        "snoozed": snooze_flag,
                     }
                 ),
                 200,
             )
 
+        cursor.close()
+        connection.close()
         return jsonify({"error": "Conversation not found"}), 404
 
     except Exception as e:
         print(f"❌ Unexpected error in get_selected_conv(): {e}")
+        cursor.close()
+        connection.close()
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -889,16 +1036,16 @@ def send_messages():
             print("⚠️ [DEBUG] No user email found")
 
         # Get business email
-        print("🏢 [DEBUG] Retrieving business email...")
-        cursor.execute(
-            "SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,)
-        )
-        b_email = cursor.fetchone()
-        if not b_email:
-            print("❌ [DEBUG] No email found from business_info table")
-            return jsonify({"error": "No business email found"}), 500
-        business_email = b_email[0]
-        print(f"🏢 [DEBUG] Business email: {business_email}")
+        # print("🏢 [DEBUG] Retrieving business email...")
+        # cursor.execute(
+        #     "SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,)
+        # )
+        # b_email = cursor.fetchone()
+        # if not b_email:
+        #     print("❌ [DEBUG] No email found from business_info table")
+        #     return jsonify({"error": "No business email found"}), 500
+        # business_email = b_email[0]
+        # print(f"🏢 [DEBUG] Business email: {business_email}")
 
         # Select appropriate email based on channel
         try:
@@ -907,9 +1054,9 @@ def send_messages():
             if match_email_to_channel(user_email, channel):
                 selected_email = user_email
                 print(f"✅ [DEBUG] Selected user email: {selected_email}")
-            elif match_email_to_channel(business_email, channel):
-                selected_email = business_email
-                print(f"✅ [DEBUG] Selected business email: {selected_email}")
+            # elif match_email_to_channel(business_email, channel):
+            #     selected_email = business_email
+            #     print(f"✅ [DEBUG] Selected business email: {selected_email}")
             else:
                 print(f"⚠️ [DEBUG] No email matched to channel {channel}")
 
@@ -1154,10 +1301,10 @@ def send_messages():
                 print("💾 [DEBUG] Inserting new thread...")
                 cursor.execute(
                     """
-                    INSERT INTO threads (conversation_id, started_at, status, last_message_at)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO threads (conversation_id, started_at, status, last_message_at,external_user_id )
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (conversation_id, created_date, "Open", updated_date),
+                    (conversation_id, created_date, "Open", updated_date, user_id),
                 )
                 print("✅ [DEBUG] New thread inserted")
             else:

@@ -13,13 +13,15 @@ contacts_bp = Blueprint("contacts", __name__)
 
 @contacts_bp.route("/contacts/save", methods=["POST"])
 def save_contact():
+
+    connection = None
     try:
         data = request.get_json() or {}
 
         user_id = data.get("user_id")
         print(f"user is is:{user_id}")
         first_name = data.get("firstName")
-        last_name = data.get("lastName")
+        last_name = data.get("lastName") or None
         phone_number = data.get("phone") or None
         whatsapp_number = data.get("whatsappNumber") or None
         email_id = data.get("email") or None
@@ -27,13 +29,16 @@ def save_contact():
         instagram_id = data.get("instagramId") or None
         slack_id = data.get("slackId") or None
         slack_workspace = data.get("slackWorkspace") or None
+        type =data.get("type")
 
         if not user_id:
             return jsonify({"error": "User not logged in"}), 400
         if not first_name:
             return jsonify({"error": "First name is required"}), 400
-        if not last_name:
-            return jsonify({"error": "Last name is required"}), 400
+        if not type:
+            return jsonify({"error": "Type is required"}), 400
+        
+        
         if not any(
             [
                 phone_number,
@@ -72,7 +77,8 @@ def save_contact():
                     (%s IS NOT NULL AND uc.facebook_id = %s) OR
                     (%s IS NOT NULL AND uc.instagram_id = %s) OR
                     (%s IS NOT NULL AND uc.slack_id = %s) OR
-                    (%s IS NOT NULL AND uc.slack_workspace = %s)
+                    (%s IS NOT NULL AND uc.slack_workspace = %s) 
+                
                 )
                 LIMIT 1;
             """
@@ -94,6 +100,7 @@ def save_contact():
                     slack_id,
                     slack_workspace,
                     slack_workspace,
+                  
                 ),
             )
             exists = cursor.fetchone()
@@ -104,7 +111,7 @@ def save_contact():
                 users_clients_id = str(uuid.uuid4())
 
                 insert_communication_sql = """
-                         (
+                        INSERT INTO communication (
                         communication_id,
                         user_id_fk,
                         users_clients_id_fk
@@ -128,11 +135,11 @@ def save_contact():
                         slack_workspace,
                         type,
                         created_in,
-                        updated_in
-
-
+                        updated_in,
+                        snooze
+                        
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,%s,%s,%s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,%s,%s,%s,%s)
                 """
                 cursor.execute(
                     insert_sql,
@@ -148,9 +155,10 @@ def save_contact():
                         instagram_id,
                         slack_id,
                         slack_workspace,
-                        "Customer",
+                        type,
                         created_date,
                         updated_date,
+                        False,
                     ),
                 )
 
@@ -175,6 +183,7 @@ def save_contact():
                     "slack_id": slack_id,
                     "slack_workspace": slack_workspace,
                     "updated_in": updated_date,
+                    "type":type,
                 }
                 set_clauses = []
                 values = []
@@ -191,6 +200,19 @@ def save_contact():
                     values.append(users_clients_id)
                     cursor.execute(update_query, tuple(values))
 
+                 # clear company, subject, status, source if the lead is changed to a customer
+                if type == "Customer":
+                    clear_query = """
+                        UPDATE users_clients
+                        SET company = %s,
+                            subject = %s,
+                            status = %s,
+                            source = %s
+                        WHERE users_clients_id = %s
+                    """
+                    clear_values = ("", "", "", "", users_clients_id)
+                    cursor.execute(clear_query, clear_values)
+
             connection.commit()
             return jsonify(
                 {
@@ -204,8 +226,8 @@ def save_contact():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     finally:
-        connection.close()
-
+        if connection:
+            connection.close()
 
 def add_synced_contact(user_id, cursor, participant, first_name, last_name):
 
@@ -242,11 +264,12 @@ def add_synced_contact(user_id, cursor, participant, first_name, last_name):
                         slack_workspace,
                         type,
                         created_in,
-                        updated_in
+                        updated_in,
+                        snooze
 
 
                     )
-                    VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s)
+                    VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s,%s)
                 """
     cursor.execute(
         insert_sql,
@@ -259,6 +282,7 @@ def add_synced_contact(user_id, cursor, participant, first_name, last_name):
             "Customer",
             created_date,
             updated_date,
+            False,
         ),
     )
 

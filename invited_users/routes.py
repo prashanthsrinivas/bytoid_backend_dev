@@ -6,17 +6,20 @@ import uuid
 from db.rds_db import connect_to_rds
 import json
 from datetime import datetime
+from gmail_route.routes import delete_all_user_data
 from invited_users.uszr_helper import (
     create_invited_user,
     dehashed_url,
     generate_hashed_url,
 )
 from utils.base_logger import get_logger
+from dotenv import load_dotenv
+import os
 
 inv_users_bp = Blueprint("invited_users", __name__)
 
 logger = get_logger(__name__)
-
+load_dotenv()
 
 # BASE ROLES APIS FOR AMIN
 
@@ -306,6 +309,13 @@ def send_invite_user():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch user details
             cursor.execute(
+                "SELECT user_type FROM users WHERE email=%s",
+                (email,),
+            )
+            base_check = cursor.fetchone()
+            if base_check:
+                return jsonify({"error": "user already exists"}), 404
+            cursor.execute(
                 "SELECT email, roles_creation, permissions, social,user_type FROM users WHERE user_id=%s FOR UPDATE",
                 (userid,),
             )
@@ -375,7 +385,7 @@ def send_invite_user():
 
         # generate invite link
         base_invitation_link = generate_hashed_url(
-            base_url="https://www.bytoid.ai/invite",
+            base_url=f"{os.getenv('BASE_FRNT_URL')}/invite",
             invited_to=email,
             invited_by=user_email,
         )
@@ -479,6 +489,13 @@ def resend_invite():
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch inviter details
+            cursor.execute(
+                "SELECT user_type FROM users WHERE email=%s",
+                (invited_email,),
+            )
+            base_check = cursor.fetchone()
+            if base_check:
+                return jsonify({"error": "user already exists"}), 404
             cursor.execute(
                 "SELECT permissions, email, roles_creation,user_type FROM users WHERE user_id=%s",
                 (user_id,),
@@ -855,6 +872,102 @@ def revoke_shared_user_role():
             conn.commit()
 
         return jsonify({"message": "Role revoked successfully"}), 200
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+
+@inv_users_bp.route("/admin/delete_shared_user_role", methods=["POST"])
+def delete_shared_user_role():
+    data = request.get_json()
+    user_id = data.get("user_id")  # admin
+    email = data.get("email")  # invited user
+
+    try:
+        conn = connect_to_rds()
+        conn.begin()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Step 1: Fetch admin permissions
+            cursor.execute(
+                "SELECT permissions,user_type FROM users WHERE user_id = %s", (user_id,)
+            )
+            admin_row = cursor.fetchone()
+            if not admin_row:
+                conn.rollback()
+                return jsonify({"error": "Admin user not found"}), 404
+            if admin_row["user_type"] == "user":
+                return jsonify({"error": "Unauthorized access"}), 403
+
+            permissions = json.loads(admin_row["permissions"] or "{}")
+
+            # Step 2: Fetch invited user to get their user_id
+            cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+            invited_row = cursor.fetchone()
+            if not invited_row:
+                conn.rollback()
+                return jsonify({"error": "Invited user not found"}), 404
+
+            invited_user_id = invited_row["user_id"]
+
+            # Step 3: Remove from admin shared/invites arrays
+            for section in ["shared", "invites"]:
+                if section in permissions:
+                    permissions[section] = [
+                        p for p in permissions[section] if p.get("email") != email
+                    ]
+
+            # Step 4: Remove from agents_hub shared_hub_users
+            # if "agents_hub" in permissions:
+            #     for agent in permissions["agents_hub"]:
+            #         if "shared_hub_users" in agent:
+            #             agent["shared_hub_users"] = [
+            #                 u
+            #                 for u in agent["shared_hub_users"]
+            #                 if u.get("email") != email
+            #             ]
+            if "agents_hub" in permissions:
+                new_agents = []
+                for agent in permissions["agents_hub"]:
+                    # Check if agent's own email is the target
+                    if agent.get("email") == email:
+                        continue  # skip this agent entirely
+
+                    # Filter out the target email from shared_hub_users
+                    if "shared_hub_users" in agent:
+                        agent["shared_hub_users"] = [
+                            u
+                            for u in agent["shared_hub_users"]
+                            if u.get("email") != email
+                        ]
+
+                    new_agents.append(agent)
+
+                permissions["agents_hub"] = new_agents
+
+            # Step 5: Save admin permissions
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                (json.dumps(permissions), user_id),
+            )
+
+            conn.commit()  # commit admin permissions changes before deletion
+
+        # Step 6: Delete invited user completely
+        # (run your existing function outside the transaction)
+        deletion_result = delete_all_user_data(invited_user_id)
+        if deletion_result.get("status") != "success":
+            return (
+                jsonify(
+                    {"error": "Invited user cleanup failed", "details": deletion_result}
+                ),
+                500,
+            )
+
+        return jsonify({"message": "Shared user removed and deleted successfully"}), 200
 
     except Exception as e:
         conn.rollback()

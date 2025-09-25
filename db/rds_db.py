@@ -4,6 +4,9 @@ import json
 import os
 from dotenv import load_dotenv
 from botocore.exceptions import ClientError
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
+from dbutils.pooled_db import PooledDB
 
 load_dotenv()
 rds_host = "bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
@@ -24,19 +27,44 @@ def get_secret():
         return json.loads(base64.b64decode(response["SecretBinary"]))
 
 
+creds = get_secret()
+# engine = create_engine(
+#     f"mysql+pymysql://{creds['username']}:{creds['password']}@{rds_host}:3306/bytoid_support_agent",
+#     poolclass=QueuePool,
+#     pool_size=100,  # number of persistent connections
+#     max_overflow=5,  # extra connections allowed temporarily
+#     pool_recycle=3600,  # recycle connections after 1h
+#     pool_pre_ping=True,  # check before using a connection
+# )
+
+pool = PooledDB(
+    creator=pymysql,
+    maxconnections=120,
+    mincached=10,
+    blocking=True,
+    host=rds_host,
+    user=creds["username"],
+    password=creds["password"],
+    database="bytoid_support_agent",
+    port=3306,
+    charset="utf8mb4",
+)
+
+
 def connect_to_rds():
-    creds = get_secret()
+    # creds = get_secret()
     try:
-        connection = pymysql.connect(
-            host=rds_host,
-            user=creds["username"],
-            password=creds["password"],
-            db="bytoid_support_agent",
-            port=3306,
-            connect_timeout=10,
-        )
-        # print("\u2705 Connection successful!")
-        return connection
+        # connection = pymysql.connect(
+        #     host=rds_host,
+        #     user=creds["username"],
+        #     password=creds["password"],
+        #     db="bytoid_support_agent",
+        #     port=3306,
+        #     connect_timeout=10,
+        # )
+        # # print("\u2705 Connection successful!")
+        # return connection
+        return pool.connection()
     except pymysql.MySQLError as e:
         print("\u274c Error connecting to RDS:", e)
         return None
@@ -60,8 +88,10 @@ from contextlib import contextmanager
 
 
 # Context manager for safe cursor usage
+
+
 @contextmanager
-def get_cursor(conn, close_after=False):
+def get_cursor(conn):
     if conn is None:
         raise ConnectionError("No RDS connection available.")
     cursor = conn.cursor()
@@ -73,8 +103,6 @@ def get_cursor(conn, close_after=False):
         raise
     finally:
         cursor.close()
-        if close_after:
-            conn.close()
 
 
 # start_rds_instance()

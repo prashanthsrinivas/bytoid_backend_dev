@@ -1,4 +1,5 @@
 import asyncio
+from db.rds_db import get_cursor
 from flask import Blueprint, request, jsonify, session
 from umail_helper.ticketalloc import TicketAllocator
 
@@ -279,19 +280,25 @@ def safe_json_load(filepath):
         return {}
 
 
-async def v2fetch_gmail_messages_batch(user_id, threads, my_email, batch_count, cursor):
+async def v2fetch_gmail_messages_batch(
+    user_id, threads, my_email, batch_count, connection
+):
     """
     Fetch a single batch of Gmail messages
     """
     try:
-        print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
-        gmail_service = GmailService(user_id)
-        # user_email = gmail_service.user_email
+        if connection is None:
+            connection = connect_to_rds()
+        # Use cursor context for all DB operations
+        with connection as cursor:
+            print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
+            gmail_service = GmailService(user_id, connection)
+            # user_email = gmail_service.user_email
 
-        # Fetch one batch of messages
-        results = await gmail_service.process_threads_batch(
-            threads, my_email, batch_count
-        )
+            # Fetch one batch of messages
+            results = await gmail_service.process_threads_batch(
+                threads, my_email, batch_count
+            )
         print(
             f"GOT the data from results {batch_count} in v2 fetch gmail", len(results)
         )
@@ -368,6 +375,7 @@ async def v2fetch_gmail_messages_batch(user_id, threads, my_email, batch_count, 
         )
 
         if cursor.fetchone():
+            print("GOT CURSOR RESULTS Line 382 v2 fetch")
             first_time_user = False
 
         for msg in all_messages:
@@ -378,6 +386,7 @@ async def v2fetch_gmail_messages_batch(user_id, threads, my_email, batch_count, 
                 "SELECT 1 FROM messages WHERE message_id = %s", (message_id,)
             )
             if cursor.fetchone():
+                print("GOT CURSOR RESULTS Line 389 v2 fetch")
                 continue
 
             # Skip if already exists locally
@@ -851,9 +860,6 @@ def add_lead_contact(user_id, cursor, participant, participant_name):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-    finally:
-        if cursor:
-            cursor.close()
 
 
 def add_customer_contact(user_id, cursor, participant, participant_name):
@@ -929,9 +935,6 @@ def add_customer_contact(user_id, cursor, participant, participant_name):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-    finally:
-        if cursor:
-            cursor.close()
 
 
 @gmail_bp.route("/gmail/drafts", methods=["GET"])

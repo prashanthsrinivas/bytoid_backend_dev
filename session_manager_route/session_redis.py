@@ -1,33 +1,26 @@
-import requests
-import os
 from dotenv import load_dotenv
 import uuid
 import hashlib
 import secrets
 from datetime import datetime, timezone, timedelta
-import redis
-import json
 import os
 from glide import (
     GlideClusterClient,
-    GlideClusterClientConfiguration,
-    NodeAddress,
     ClusterScanCursor,
 )
-from flask import make_response, jsonify
 from utils.base_logger import get_logger
-
+from utils.redis_config import redis_config_glide
 
 load_dotenv()
 
 logger = get_logger(__name__)
 
 
-addresses = [
-    NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
-]
+# addresses = [
+#     NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
+# ]
 
-config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
+# config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
 
 
 def hash_sha256(text: str) -> str:
@@ -54,9 +47,9 @@ async def session_login_redis(user_id, request_data):  # during login
     # Expiry times
     session_expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
     access_expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
-    refresh_expiry = datetime.now(timezone.utc) + timedelta(hours=2)
+    refresh_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
 
-    client = await GlideClusterClient.create(config)
+    client = await GlideClusterClient.create(redis_config_glide)
 
     await client.hset(
         f"session:{session_id}",
@@ -84,9 +77,7 @@ async def session_login_redis(user_id, request_data):  # during login
 
 async def get_session(session_hash, request):
 
-    logger.info("inside get_session")
-
-    client = await GlideClusterClient.create(config)
+    client = await GlideClusterClient.create(redis_config_glide)
 
     session_keys = []
     try:
@@ -121,7 +112,6 @@ async def get_session(session_hash, request):
 
             if verify_sha256(session_uuid, session_hash):
                 session_data = await client.hgetall(key_str)
-                logger.info(f"Found matching session key: {key_str}")
 
                 # hgetall might return bytes, decode if needed
                 if session_data:
@@ -135,68 +125,86 @@ async def get_session(session_hash, request):
                     await client.close()
                     return session_data, key_str
 
-    logger.info("returning none")
     await client.close()
     return None, None
 
 
 async def update_session_tokens(
-    client, session_hash, new_access_token, new_access_expiry, key_str
+    client, session_hash, new_access_token, new_access_expiry, key_str, previous_token
 ):
     """Update session with new access token"""
-    session_data = await client.hgetall(key_str)
-    if session_data:
-        await client.hset(
-                        key_str,
-                        {
-                            "access_token": new_access_token,
-                            "access_expiry": new_access_expiry.isoformat(),
-                        },
-                    )
-        logger.info(f"Updated tokens for session: {key_str}")
-        return True
-     
-    logger.error(f"Could not find session to update: {session_hash}")
-    return False
+    try:
 
-   
+        session_data = await client.hgetall(key_str)
+        if session_data:
+            await client.hset(
+                key_str,
+                {
+                    "access_token": new_access_token,
+                    "access_expiry": new_access_expiry.isoformat(),
+                    "previous_access_token": previous_token,
+                    "previous_token_expiry": (
+                        datetime.now(timezone.utc) + timedelta(minutes=2)
+                    ).isoformat(),  # Grace period
+                },
+            )
+            return True
+
+    except Exception as e:
+        logger.error(f"Could not find session to update: {session_hash}")
+        raise
 
 
 async def validate_and_refresh_tokens(session_hash, session, access_token, key_str):
 
-    client = await GlideClusterClient.create(config)
+    client = await GlideClusterClient.create(redis_config_glide)
+
+    previous_token_expiry_str = session.get("previous_token_expiry")
+    if previous_token_expiry_str:
+        previous_token_expiry = datetime.fromisoformat(previous_token_expiry_str)
+        if datetime.now(timezone.utc) > previous_token_expiry:
+            await client.hdel(key_str, ["previous_access_token"])
+            await client.hdel(key_str, ["previous_token_expiry"])
 
     access_expiry = datetime.fromisoformat(session["access_expiry"])
     refresh_expiry = datetime.fromisoformat(session["refresh_expiry"])
-
     current_time = datetime.now(timezone.utc)
 
     # Check if provided access token matches stored one
-    if access_token != session.get("access_token"):
-        logger.info("Access token mismatch")
-        return False, None
+    stored_access_token = session.get("access_token")
+    if access_token != stored_access_token:
+        # Check if it matches the previous token (grace period for race conditions)
+        previous_token = session.get("previous_access_token")
+        if previous_token and access_token == previous_token:
+            logger.info("Using previous access token (grace period)")
+            # Continue with validation using the previous token
+        else:
+            logger.info(
+                f"Access token mismatch. Provided: {access_token[:20]}..., Stored: {stored_access_token[:20] if stored_access_token else 'None'}..."
+            )
+            return False, None
 
     if current_time <= access_expiry:
         # Access token is still valid
-        logger.info("Access token is valid")
         return True, None
-
-    logger.info("Access token expired, checking refresh token")
 
     if current_time > refresh_expiry:
         # Refresh token also expired
-        logger.info("Refresh token expired, deleting session")
-        await delete_all_session_cookies(session_hash, key_str)
+        await delete_all_session_cookies(key_str)
         return False, None
 
     # Refresh token is valid, generate new access token
-    logger.info("Refresh token valid, generating new access token")
 
     new_access_token = secrets.token_urlsafe(32)
     new_access_expiry = current_time + timedelta(minutes=15)
 
     await update_session_tokens(
-        client, session_hash, new_access_token, new_access_expiry, key_str
+        client,
+        session_hash,
+        new_access_token,
+        new_access_expiry,
+        key_str,
+        stored_access_token,
     )
 
     new_tokens = {
@@ -205,20 +213,19 @@ async def validate_and_refresh_tokens(session_hash, session, access_token, key_s
     }
 
     await client.close()
-    return True,new_tokens
+    return True, new_tokens
 
 
 async def delete_all_session_cookies(key_str):
     """Delete session from Redis"""
-    client = await GlideClusterClient.create(config)
-    
-    session_data = await client.hgetall(key_str)
-    if session_data:
-                await client.delete([key_str])
-                logger.info(f"Deleted session: {key_str}")
-                await client.close()
-                return True
-    
-    logger.warning(f"Could not find session to delete: {key_str}")
+    client = await GlideClusterClient.create(redis_config_glide)
+    try:
+        session_data = await client.hgetall(key_str)
+        if session_data:
+            await client.delete([key_str])
+
+    except:
+        logger.warning(f"Could not find session to delete: {key_str}")
+
     await client.close()
-    return False
+    return True

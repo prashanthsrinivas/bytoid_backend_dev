@@ -31,107 +31,107 @@ def get_existing_messages(user_id):
 
 
 # @umail_bp.route("/analyze_and_collect_messages/<user_id>", methods=["GET"])
-def analyze_and_collect_messages_for_batch(user_id, grouped_messages, batch_count):
-    user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
-    ensure_dir(user_folder)
+# def analyze_and_collect_messages_for_batch(user_id, grouped_messages, batch_count):
+#     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+#     ensure_dir(user_folder)
 
-    timestamp = datetime.now(timezone.utc)
-    date_str = timestamp.strftime("%Y-%m-%d")
-    filename = f"{date_str}.json"
-    user_filepath = os.path.join(user_folder, filename)
+#     timestamp = datetime.now(timezone.utc)
+#     date_str = timestamp.strftime("%Y-%m-%d")
+#     filename = f"{date_str}.json"
+#     user_filepath = os.path.join(user_folder, filename)
 
-    new_messages = []
+#     new_messages = []
 
-    for client_id, channel_data in grouped_messages.items():
-        connection = connect_to_rds()
-        if connection is None:
-            print("❌ Failed to connect to RDS")
-            return None
+#     for client_id, channel_data in grouped_messages.items():
+#         connection = connect_to_rds()
+#         if connection is None:
+#             print("❌ Failed to connect to RDS")
+#             return None
 
-        cursor = connection.cursor()
-        cursor.execute(
-            "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
-            (client_id,),
-        )
-        client_row = cursor.fetchone()
-        if not client_row:
-            print("❌ Error: User not found in users_clients table")
-            continue
+#         cursor = connection.cursor()
+#         cursor.execute(
+#             "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
+#             (client_id,),
+#         )
+#         client_row = cursor.fetchone()
+#         if not client_row:
+#             print("❌ Error: User not found in users_clients table")
+#             continue
 
-        client_email = client_row[0]
+#         client_email = client_row[0]
 
-        config_folder = os.path.join(
-            pathconfig.basepath, "messages", user_id, client_id
-        )
-        ensure_dir(config_folder)
+#         config_folder = os.path.join(
+#             pathconfig.basepath, "messages", user_id, client_id
+#         )
+#         ensure_dir(config_folder)
 
-        config_filepath = os.path.join(config_folder, "config.json")
-        try:
-            with open(config_filepath, "r", encoding="utf-8") as f:
-                config_data = json.load(f)
-        except FileNotFoundError:
-            config_data = {}
-            print("⚠️ Config file not found")
+#         config_filepath = os.path.join(config_folder, "config.json")
+#         try:
+#             with open(config_filepath, "r", encoding="utf-8") as f:
+#                 config_data = json.load(f)
+#         except FileNotFoundError:
+#             config_data = {}
+#             print("⚠️ Config file not found")
 
-        for channel, channel_msgs in channel_data.items():
-            channel_msgs.sort(key=lambda x: x.get("timestamp", ""))  # optional
+#         for channel, channel_msgs in channel_data.items():
+#             channel_msgs.sort(key=lambda x: x.get("timestamp", ""))  # optional
 
-            output_filename = f"{channel}_new_messages.json"
-            output_path = os.path.join(config_folder, output_filename)
+#             output_filename = f"{channel}_new_messages.json"
+#             output_path = os.path.join(config_folder, output_filename)
 
-            new_msg_data = {}
-            try:
-                with open(output_path, "r", encoding="utf-8") as f:
-                    new_msg_data = json.load(f)
+#             new_msg_data = {}
+#             try:
+#                 with open(output_path, "r", encoding="utf-8") as f:
+#                     new_msg_data = json.load(f)
 
-            except Exception as e:
-                print(f"⚠️ Couldn't read existing messages: {e}")
+#             except Exception as e:
+#                 print(f"⚠️ Couldn't read existing messages: {e}")
 
-            existing_new_msg = {
-                msg.get("msg_id"): msg for msg in new_msg_data.get("new_messages", [])
-            }
-            merged_messages = new_msg_data.get("new_messages", [])
+#             existing_new_msg = {
+#                 msg.get("msg_id"): msg for msg in new_msg_data.get("new_messages", [])
+#             }
+#             merged_messages = new_msg_data.get("new_messages", [])
 
-            for m in channel_msgs:
-                msg_id = m.get("id")
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE message_id = %s", (msg_id,)
-                )
-                m_id = cursor.fetchone()
-                if m_id:
-                    continue
+#             for m in channel_msgs:
+#                 msg_id = m.get("id")
+#                 cursor.execute(
+#                     "SELECT 1 FROM messages WHERE message_id = %s", (msg_id,)
+#                 )
+#                 m_id = cursor.fetchone()
+#                 if m_id:
+#                     continue
 
-                type = m.get("type")
-                if type == "Lead":
-                    continue
+#                 type = m.get("type")
+#                 if type == "Lead":
+#                     continue
 
-                new_msg = {
-                    "msg_id": msg_id,
-                    "body": m.get("body"),
-                    "from": "client" if m.get("from") == client_email else "user",
-                    "to": "client" if m.get("to") == client_email else "user",
-                    "date": m.get("timestamp"),
-                    "channel": channel,
-                }
-                merged_messages.append(new_msg)
+#                 new_msg = {
+#                     "msg_id": msg_id,
+#                     "body": m.get("body"),
+#                     "from": "client" if m.get("from") == client_email else "user",
+#                     "to": "client" if m.get("to") == client_email else "user",
+#                     "date": m.get("timestamp"),
+#                     "channel": channel,
+#                 }
+#                 merged_messages.append(new_msg)
 
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump({"new_messages": merged_messages}, f, indent=2)
+#             with open(output_path, "w", encoding="utf-8") as f:
+#                 json.dump({"new_messages": merged_messages}, f, indent=2)
 
-            subjects = generate_subject(user_id, output_path, channel)
+#             subjects = generate_subject(user_id, output_path, channel)
 
-            lance_ticket_id = append_subject_to_messages(
-                grouped_messages,
-                channel,
-                subjects,
-                user_id,
-                existing_new_msg,
-                batch_count,
-            )
-            print(f"final lance_ticket_id : {lance_ticket_id}")
-            client = UmailLanceClient(user_id)
-            client.update_ticket_number(user_id, lance_ticket_id)
-            return new_messages
+#             lance_ticket_id = append_subject_to_messages(
+#                 grouped_messages,
+#                 channel,
+#                 subjects,
+#                 user_id,
+#                 existing_new_msg,
+#                 batch_count,
+#             )
+#             print(f"final lance_ticket_id : {lance_ticket_id}")
+#             client = UmailLanceClient(user_id)
+#             client.update_ticket_number(user_id, lance_ticket_id)
+#             return new_messages
 
 
 async def vtooanalyze_and_collect_messages_for_batch(
@@ -338,7 +338,6 @@ def append_subject_to_messages(
     cursor = connection.cursor()
 
     dt_utc = datetime.now(timezone.utc)
-    created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")
     updated_date = dt_utc.isoformat()
 
     processed_message_ids = set()
@@ -442,6 +441,9 @@ def append_subject_to_messages(
                 subject.lower().startswith("re:")
                 or "wrote:" in (msg.get("summary") or "").lower()
             )
+
+            created_date = datetime.fromisoformat(msg.get("timestamp").replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+
 
             # 1) ZOHO reply path
             if channel == "zoho" and is_reply:
@@ -640,10 +642,10 @@ def append_subject_to_messages(
 
             cursor.execute(
                 """
-                INSERT INTO threads (conversation_id, started_at, status, last_message_at)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO threads (conversation_id, started_at, status, last_message_at,external_user_id)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (new_conversation_id, created_date, "Open", updated_date),
+                (new_conversation_id, created_date, "Open", updated_date, user_id),
             )
 
             if direction == "inbound":

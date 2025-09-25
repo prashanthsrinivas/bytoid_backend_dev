@@ -543,7 +543,7 @@ def get_existing_umail_json(user_id, connection=None):
         connection = connect_to_rds()
         own_conn = True
 
-    with get_cursor(connection, close_after=own_conn) as cursor:
+    with get_cursor(connection) as cursor:
         cursor.execute("SELECT umail_json FROM users WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
 
@@ -560,13 +560,47 @@ def update_umail_json(user_id, new_entry, connection=None):
     own_conn = False
     if connection is None:
         connection = connect_to_rds()
+        # make sure autocommit is on
+        connection.autocommit(True)
         own_conn = True
 
-    existing = get_existing_umail_json(user_id, connection) or {"history": []}
-    existing["history"].append(new_entry)
+    try:
+        existing = get_existing_umail_json(user_id, connection) or {}
+        if "history" not in existing or not isinstance(existing["history"], list):
+            existing["history"] = []
+        existing["history"].append(new_entry)
 
-    with get_cursor(connection, close_after=own_conn) as cursor:
-        cursor.execute(
-            "UPDATE users SET umail_json = %s WHERE user_id = %s",
-            (json.dumps(existing), user_id),
-        )
+        with get_cursor(connection) as cursor:
+            cursor.execute(
+                "UPDATE users SET umail_json = %s WHERE user_id = %s",
+                (json.dumps(existing), user_id),
+            )
+        # commit explicitly if autocommit=False
+        if not connection.get_autocommit():
+            connection.commit()
+
+    finally:
+        if own_conn:
+            connection.close()
+
+
+def get_userid(email, connection=None):
+    """Get the user_id for a given email."""
+    own_conn = False
+    if connection is None:
+        connection = connect_to_rds()
+        own_conn = True
+
+    try:
+        with get_cursor(connection) as cursor:
+            cursor.execute(
+                "SELECT user_id FROM users WHERE email = %s",
+                (email,),
+            )
+            result = cursor.fetchone()
+            if result:
+                return result[0]  # user_id
+            return None
+    finally:
+        if own_conn:
+            connection.close()

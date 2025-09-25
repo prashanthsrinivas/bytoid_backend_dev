@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify, session, redirect, make_response
+from gmail_route.gmail_service import GmailService
 from pydrive.auth import GoogleAuth
 from google_auth_oauthlib.flow import Flow
 from pydrive.drive import GoogleDrive
@@ -46,7 +47,7 @@ def login():
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri="https://dev.bytoid.ai/auth/facebook/callback",
+        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/facebook/callback",
     )
     # google_bp.logger.info(f"{flow}")
 
@@ -82,7 +83,7 @@ def oauth2callback(url, state):
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri="https://dev.bytoid.ai/auth/facebook/callback",
+        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/facebook/callback",
     )
 
     try:
@@ -176,6 +177,7 @@ def oauth2callback(url, state):
                         token = %s,
                         refresh_token = %s,
                         expiry = %s,
+                        social=%s,
                         updated_in = NOW(),
                         logged_in_at = NOW(),
                         logged_out_at = NOW()
@@ -190,6 +192,7 @@ def oauth2callback(url, state):
                             credentials.token,
                             credentials.refresh_token,
                             credentials.expiry,
+                            "google",
                             email,
                         ),
                     )
@@ -205,6 +208,7 @@ def oauth2callback(url, state):
                             token = %s,
                             refresh_token = %s,
                             expiry = %s,
+                            social=%s,
                             updated_in = NOW(),
                             logged_in_at = NOW(),
                             logged_out_at = NOW()
@@ -218,6 +222,7 @@ def oauth2callback(url, state):
                             credentials.token,
                             credentials.refresh_token,
                             credentials.expiry,
+                            "google",
                             email,
                         ),
                     )
@@ -258,6 +263,8 @@ def receive_browser_url():
         session_id, access_token, refresh_token = session_login(user_id)
         print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
+        service = GmailService(user_id=user_id)
+        service.create_watch_req()
 
         # Prepare response
         response = make_response(

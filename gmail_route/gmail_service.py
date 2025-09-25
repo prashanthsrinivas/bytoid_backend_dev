@@ -13,9 +13,12 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from googleapiclient.http import BatchHttpRequest
+from utils.base_logger import get_logger
 from utils.s3_utils import attach_CLDFRNT_url
 import random
 from typing import Optional, Tuple, List
+
+logger = get_logger(__name__)
 
 
 def to_epoch_days(date_str: str) -> int:
@@ -168,6 +171,51 @@ class GmailService:
         for h in headers:
             header_dict[h["name"].lower()] = h["value"]
         return header_dict
+
+    def create_watch_req(self):
+        logger.info("making watch log for user %s", self.user_email)
+        watch_request = {
+            "labelIds": ["INBOX"],  # optional
+            "topicName": "projects/bytoid-engineering/topics/gmailSync",  # your Pub/Sub topic
+        }
+
+        response = self.service.users().watch(userId="me", body=watch_request).execute()
+        if response:
+            logger.info("watch log created for the user successfully %s",self.user_email)
+        else:
+            logger.info("watch log creation failed %s",self.user_email)
+        return response
+
+    def check_hisdata(self, stored_history_id):
+        response = (
+            self.service.users()
+            .history()
+            .list(
+                userId="me",
+                startHistoryId=stored_history_id,  # no historyTypes to get everything
+            )
+            .execute()
+        )
+
+        added_messages = []
+        deleted_messages = []
+        other_messages = []
+
+        if "history" in response:
+            for record in response["history"]:
+                for added in record.get("messagesAdded", []):
+                    added_messages.append(added["message"])
+                for deleted in record.get("messagesDeleted", []):
+                    deleted_messages.append(deleted["message"])
+                for msg in record.get("messages", []):
+                    other_messages.append(msg)  # catch-all
+
+        return {
+            "response": response,
+            "messages_added": added_messages,
+            "messages_deleted": deleted_messages,
+            "other_messages": other_messages,
+        }
 
     async def get_threads_async(
         self, email_type, max_results=100, batch_delay=0.5, start_page_token=None
@@ -703,7 +751,7 @@ class GmailService:
         page_token = None
         cutoff_ts = get_cutoff_ts(days_back)
         q = f"in:inbox category:primary after:{cutoff_ts}"
-
+        mess = []
         while True:
             response = (
                 self.service.users()
@@ -718,10 +766,11 @@ class GmailService:
             )
             # print("-->", response)
             count += len(response.get("messages", []))
+            mess.extend(response.get("messages", []))
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
-        return count
+        return mess
 
     def get_real_thread_count(self, days_back=180):
         count = 0
@@ -904,16 +953,49 @@ class GmailService:
             return None
 
     def get_inbox_stats(self, days_back=180):
+        """
+        Fetch actual Gmail messages grouped by thread/conversation.
+        Each element returned = one thread with all its messages.
+        """
         try:
-            allmsgs = self.get_real_message_count(days_back=days_back)
-            # allthreads = self.get_real_thread_count(days_back=days_back)
-            # return {
-            #     "email": self.user_email,
-            #     "final_msg": allmsgs,
-            #     "threadsTotal": allthreads,
-            #     "days_back": days_back,
-            # }
-            return allmsgs
+            cutoff_ts = get_cutoff_ts(days_back)
+            q = f"in:inbox category:primary after:{cutoff_ts}"
+
+            all_threads = []
+            page_token = None
+
+            # 1. List all thread IDs that match the query
+            while True:
+                response = (
+                    self.service.users()
+                    .threads()
+                    .list(
+                        userId="me",
+                        q=q,
+                        pageToken=page_token,
+                        maxResults=500,
+                    )
+                    .execute()
+                )
+
+                all_threads.extend(response.get("threads", []))
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+
+            # 2. Fetch full thread content (with all messages) for each thread
+            full_threads = []
+            for thread in all_threads:
+                thread_id = thread["id"]
+                full_thread = (
+                    self.service.users()
+                    .threads()
+                    .get(userId="me", id=thread_id, format="full")
+                    .execute()
+                )
+                full_threads.append(full_thread)
+
+            return full_threads  # Each full_thread contains all its messages
         except Exception as e:
             print(f"❌ Error fetching inbox stats: {e}")
             return None

@@ -76,12 +76,13 @@ def log_removal(before_list, after_list):
 
 def deletefilebasedData(filename, userid):
     """
-    Delete all Q&A entries for a given file from the user's YAML files in S3.
+    Delete all Q&A entries for a given file/URL from the user's YAML files in S3.
     Works on both passed_ques.yaml and failed_ques.yaml.
+    Handles both regular files and scraped website URLs.
     """
     try:
         s3 = s3bucket()
-        target_name = filename.strip().lower()
+        target_name = filename.strip()
 
         for ques_file in ["passed_ques.yaml", "failed_ques.yaml"]:
             s3_key = f"{userid}/yaml/{ques_file}"
@@ -95,15 +96,27 @@ def deletefilebasedData(filename, userid):
                 else:
                     flat_data.append(item)
 
-            # Filter out entries for the given filename
+            # Filter out entries for the given filename/URL
             filtered_data = []
             for q in flat_data:
                 if isinstance(q, dict):
-                    file_value = (q.get("filename") or "").strip().lower()
-                    if (
-                        os.path.splitext(file_value)[0]
-                        != os.path.splitext(target_name)[0]
-                    ):
+                    file_value = (q.get("filename") or "").strip()
+                    
+                    # Handle different types of entries
+                    should_keep = True
+                    
+                    if q.get("is_scraping"):
+                        # For scraped websites, do exact URL match
+                        if file_value == target_name:
+                            should_keep = False
+                    else:
+                        # For regular files, compare without extensions
+                        file_base = os.path.splitext(file_value)[0].lower()
+                        target_base = os.path.splitext(target_name)[0].lower()
+                        if file_base == target_base:
+                            should_keep = False
+                    
+                    if should_keep:
                         filtered_data.append(q)
                 else:
                     filtered_data.append(q)  # keep unexpected data untouched
@@ -115,19 +128,34 @@ def deletefilebasedData(filename, userid):
                 # If empty → delete object from S3
                 try:
                     s3.delete_object(Bucket=S3_BUCKET, Key=s3_key)
-                    logger.info(f"🗑 Deleted empty file {s3_key} from S3")
+                    logger.info(f"Deleted empty file {s3_key} from S3")
                 except Exception as e:
-                    logger.warning(f"⚠ Could not delete {s3_key} from S3: {e}")
+                    logger.warning(f"Could not delete {s3_key} from S3: {e}")
 
         return True
 
     except Exception as e:
         logger.error(
-            f"❌ Error deleting question entries for user {userid}, file {filename}: {e}",
+            f"Error deleting question entries for user {userid}, file {filename}: {e}",
             exc_info=True,
         )
         return False
 
+def normalize_url_for_comparison(url):
+    """Normalize URL for consistent comparison"""
+    if not url:
+        return ""
+    
+    # Remove trailing slashes and convert to lowercase
+    normalized = url.rstrip('/').lower()
+    
+    # Remove common protocol variations
+    if normalized.startswith('https://'):
+        normalized = normalized[8:]
+    elif normalized.startswith('http://'):
+        normalized = normalized[7:]
+    
+    return normalized
 
 async def process_and_update_yaml(all_downloaded_paths, userid, provider, folderpath):
     """

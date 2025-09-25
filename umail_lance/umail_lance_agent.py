@@ -12,14 +12,17 @@ import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 import time
-from sentence_transformers import SentenceTransformer
+
+# from sentence_transformers import SentenceTransformer
 import base64
 
-
-
+load_dotenv()
 logger = logging.getLogger(__name__)
+# model = SentenceTransformer('all-MiniLM-L6-v2')
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+lancedb_url = os.getenv("LANCE_DB_IP")
+openai_api_key = os.getenv("OPENAI_API_KEY")
+
 
 class UmailData(BaseModel):
     id: str
@@ -32,13 +35,12 @@ class UmailData(BaseModel):
 
 class UmailLanceClient:
     def __init__(self, user_id: str):
-        load_dotenv()
-        self.lancedb_url = os.getenv("LANCE_DB_IP")
+        self.lancedb_url = lancedb_url
         self.user_id = user_id
         self.dimension = 3072
         self.embeddings = OpenAIEmbeddings(
             model="text-embedding-3-large",
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            openai_api_key=openai_api_key,
             dimensions=self.dimension,
         )
 
@@ -181,7 +183,7 @@ class UmailLanceClient:
                 }
 
         # Drop helper ts field
-        print("return data lenght", len(latest_per_folder))
+        print("return data lenght from lance", len(latest_per_folder))
         return latest_per_folder, next_cursor
 
     def get_selected_conv_from_lance(
@@ -423,7 +425,7 @@ class UmailLanceClient:
                         folder_name=client_id,
                         timestamp=timestamp,
                     )
-                    print(f"{id} : {user_id} : {client_id} : {timestamp}")
+                    print(f"{conv_id} : {user_id} : {client_id} : {timestamp}")
                     vector_batch.append(vector_data)
             except Exception as e:
                 print(f"[!] Embedding failed: {e}")
@@ -654,25 +656,23 @@ class UmailLanceClient:
             print(f"Response text: {response.text}")
         return
 
-
-    def search_email_from_lance(self, folder_names, user_id,text_input ):
-
+    def search_email_from_lance(
+        self, folder_names, user_id, text_input, semantic_condition=None
+    ):
         try:
-
-            print("inside  search_email_from_lance")         
-            embedding_str = self.embeddings.embed_query(text_input)
-
+            print("inside  search_email_from_lance")
+            embeddings = self.embeddings.embed_query(text_input)
             payload = {
-                    "user_id": user_id,
-                    "folder_names": folder_names,
-                    "embedding_str": embedding_str    
-                }
-
+                "user_id": user_id,
+                "folder_names": folder_names,
+                "embeddings": embeddings,
+                "semantic_condition": semantic_condition,
+            }
             response = requests.post(
                 f"{self.lancedb_url}/find_email_from_query",
                 json=payload,
             )
-            
+
             if response.status_code == 200:
                 print("successfully fetched the results")
                 return response.json().get("results", [])
@@ -680,7 +680,7 @@ class UmailLanceClient:
                 print(f"HTTP Error: {response.status_code}")
                 print(f"Response text: {response.text}")
                 return []
-            
+
         except Exception as e:
             print(f"Error in search_email_from_lance: {e}")
             return []

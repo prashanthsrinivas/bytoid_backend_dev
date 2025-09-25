@@ -4,9 +4,8 @@ from create_db import connect_to_rds
 from db.db_checkers import get_existing_umail_json, update_umail_json
 from db.rds_db import get_cursor
 from gmail_route.gmail_service import GmailService
-from gmail_route.routes import fetch_gmail_messages_batch, v2fetch_gmail_messages_batch
+from gmail_route.routes import v2fetch_gmail_messages_batch
 from umail_helper.mails_process import (
-    analyze_and_collect_messages_for_batch,
     vtooanalyze_and_collect_messages_for_batch,
 )
 import shutil
@@ -19,11 +18,9 @@ from umail_lance.umail_lance_agent import UmailLanceClient
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 from utils.base_logger import get_logger
-
+from utils.redis_config import redis_config_glide
 from glide import (
     GlideClusterClient,
-    GlideClusterClientConfiguration,
-    NodeAddress,
 )
 
 logger = get_logger(__name__)
@@ -41,97 +38,97 @@ logger = get_logger(__name__)
 
 TTL_90_DAYS = 90 * 24 * 60 * 60
 
-addresses = [
-    NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
-]
+# addresses = [
+#     NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
+# ]
 
-config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
+# config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
 
 
-async def getall_continuous(user_id):
-    """
-    Continuously fetch and process batches of 100 - 200 emails (async + threading for CPU tasks)
-    """
-    start_time = time.perf_counter()
-    timestamp = datetime.now(timezone.utc)
-    date_str = timestamp.strftime("%Y-%m-%d")
-    file_loc = f"cust_helpers/messages/{user_id}/{date_str}"
+# async def getall_continuous(user_id):
+#     """
+#     Continuously fetch and process batches of 100 - 200 emails (async + threading for CPU tasks)
+#     """
+#     start_time = time.perf_counter()
+#     timestamp = datetime.now(timezone.utc)
+#     date_str = timestamp.strftime("%Y-%m-%d")
+#     file_loc = f"cust_helpers/messages/{user_id}/{date_str}"
 
-    total_processed = 0
-    batch_count = 0
-    next_page_token = None
-    batch_size = 200
-    serv = GmailService(user_id)
-    total_messages = serv.get_inbox_stats()
+#     total_processed = 0
+#     batch_count = 0
+#     next_page_token = None
+#     batch_size = 200
+#     serv = GmailService(user_id)
+#     total_messages = serv.get_inbox_stats()
 
-    print(
-        f"🚀 Starting continuous batch processing for user {user_id}, "
-        f"total primary inbox messages: {total_messages}"
-    )
+#     print(
+#         f"🚀 Starting continuous batch processing for user {user_id}, "
+#         f"total primary inbox messages: {total_messages}"
+#     )
 
-    loop = asyncio.get_event_loop()
+#     loop = asyncio.get_event_loop()
 
-    while True:
-        batch_count += 1
-        print(f"\n📦 Processing batch {batch_count} (batch size: {batch_size})")
+#     while True:
+#         batch_count += 1
+#         print(f"\n📦 Processing batch {batch_count} (batch size: {batch_size})")
 
-        # Fetch Gmail batch (async I/O)
-        gmail_result = await fetch_gmail_messages_batch(
-            user_id, page_token=next_page_token, batch_size=batch_size
-        )
+#         # Fetch Gmail batch (async I/O)
+#         gmail_result = await fetch_gmail_messages_batch(
+#             user_id, page_token=next_page_token, batch_size=batch_size
+#         )
 
-        if gmail_result.get("status") != "success":
-            print(f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}")
-            break
+#         if gmail_result.get("status") != "success":
+#             print(f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}")
+#             break
 
-        new_messages = gmail_result.get("new_messages", 0)
-        next_page_token = gmail_result.get("next_page_token")
-        current_batch_messages = gmail_result.get("grouped_messages", {})
+#         new_messages = gmail_result.get("new_messages", 0)
+#         next_page_token = gmail_result.get("next_page_token")
+#         current_batch_messages = gmail_result.get("grouped_messages", {})
 
-        if new_messages == 0:
-            print(f"📭 No new messages in batch {batch_count}")
-            if not next_page_token:
-                print("🏁 No more emails to fetch")
-                break
-        else:
-            print(f"📬 Batch {batch_count}: {new_messages} new messages")
-            total_processed += new_messages
+#         if new_messages == 0:
+#             print(f"📭 No new messages in batch {batch_count}")
+#             if not next_page_token:
+#                 print("🏁 No more emails to fetch")
+#                 break
+#         else:
+#             print(f"📬 Batch {batch_count}: {new_messages} new messages")
+#             total_processed += new_messages
 
-            print(f"🔍 Analyzing + embedding batch {batch_count}...")
+#             print(f"🔍 Analyzing + embedding batch {batch_count}...")
 
-            lance_folder = os.path.join(
-                pathconfig.basepath, "messages", user_id, f"lance_folder:{batch_count}"
-            )
+#             lance_folder = os.path.join(
+#                 pathconfig.basepath, "messages", user_id, f"lance_folder:{batch_count}"
+#             )
 
-            # Run heavy work in threads
-            await loop.run_in_executor(
-                executor,
-                process_batch_with_embedding,
-                user_id,
-                current_batch_messages,
-                batch_count,
-                lance_folder,
-            )
+#             # Run heavy work in threads
+#             await loop.run_in_executor(
+#                 executor,
+#                 process_batch_with_embedding,
+#                 user_id,
+#                 current_batch_messages,
+#                 batch_count,
+#                 lance_folder,
+#             )
 
-            print(f"✅ Batch {batch_count} processing complete")
+#             print(f"✅ Batch {batch_count} processing complete")
 
-        if not next_page_token:
-            print("🏁 Reached end of available emails")
-            break
+#         if not next_page_token:
+#             print("🏁 Reached end of available emails")
+#             break
 
-        print(
-            f"📊 Progress: {total_processed}/{total_messages} emails processed "
-            f"across {batch_count} batches"
-        )
+#         print(
+#             f"📊 Progress: {total_processed}/{total_messages} emails processed "
+#             f"across {batch_count} batches"
+#         )
 
-        await asyncio.sleep(1)
+#         await asyncio.sleep(1)
 
-    end_time = time.perf_counter()
-    print(
-        f"✅ All batches complete! Total: {total_processed}/{total_messages} emails "
-        f"in {batch_count} batches | Took {end_time - start_time:.2f}s"
-    )
-    return f"OK - Processed {total_processed} emails in {batch_count} batches"
+#     end_time = time.perf_counter()
+#     print(
+#         f"✅ All batches complete! Total: {total_processed}/{total_messages} emails "
+#         f"in {batch_count} batches | Took {end_time - start_time:.2f}s"
+#     )
+#     return f"OK - Processed {total_processed} emails in {batch_count} batches"
 
 
 def to_datetime_safe(val, default=None):
@@ -257,176 +254,201 @@ def has_new_threads(existing_json, total_messages):
 async def v2all_continuous(user_id):
     """
     Run Gmail fetch + processing in parallel batches.
-    Each batch also runs 4 heavy processes in parallel.
+    Each batch also runs heavy embedding processes in parallel.
     """
-    # Database connection
     connection = connect_to_rds()
     if connection is None:
         return {"error": "Database connection failed", "status": "failed"}
-    existing_json = get_existing_umail_json(user_id, connection)
-    today = datetime.now(timezone.utc).date()
 
-    if existing_json and existing_json.get("history"):
-        relevant_date = get_relevant_processed_date(existing_json)
-        print("last fetched date", relevant_date)
-        total_messages = await get_datewise_info_base(
-            userid=user_id, connection=connection, startDate=relevant_date
-        )
-        if not has_new_threads(existing_json, total_messages):
-            print(f"⏭️ No new threads for {user_id}, skipping processing.")
-            return {"status": "no_new_threads", "user": user_id}
-        newly_creation = False
-    else:
-        # First time → 3 months back
-        total_messages = await get_datewise_info_base(
-            userid=user_id, connection=connection, months=3
-        )
-        newly_creation = True
+    # default flags
+    any_new_messages = False
+    all_results = []
+    complete_results = 0
+    embedding_futures = []
     start_time = time.perf_counter()
 
-    # max_emails = total_messages["final_msg"]
-    threads_max = total_messages["threadsTotal"]["count"]
-    threads = total_messages["threadsTotal"]["threads"]
-    my_email = total_messages["email"]
-    startdate = total_messages["start_date"]
-    enddate = total_messages["end_date"]
+    try:
+        existing_json = get_existing_umail_json(user_id, connection)
+        today = datetime.now(timezone.utc).date()
 
-    print(
-        f"🚀 Starting continuous batch processing for user {user_id}, "
-        f" total threads: {threads_max}  with creation {newly_creation}"
-    )
-
-    semaphore = asyncio.Semaphore(5)
-    complete_results = 0
-    embedding_futures = []  # keep track globally inside v2all_continuous
-
-    async def process_with_semaphore(
-        threads, batch_count, max_batchval, ticket_allocator
-    ):
-        nonlocal complete_results  # allow updating outer var
-        async with semaphore:
-            with get_cursor(connection) as cursor:
-                gmail_result = await v2fetch_gmail_messages_batch(
-                    user_id, threads, my_email, batch_count, cursor
-                )
-
-            if gmail_result.get("status") != "success":
-                print(
-                    f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}"
-                )
-                return None
-            complete_results += len(gmail_result)
-
-            new_messages = gmail_result.get("new_messages", 0)
-            current_batch_messages = gmail_result.get("grouped_messages", {})
-
-            if new_messages == 0:
-                print(f"📭 No new messages in batch {batch_count}")
-                return None
-
-            print(f"📬 Batch {batch_count}: {new_messages} new messages")
-
-            # Run 4 heavy processes in parallel threads
-            lance_folder = os.path.join(
-                pathconfig.basepath, "messages", user_id, f"lance_folder:{batch_count}"
+        if existing_json and existing_json.get("history"):
+            relevant_date = get_relevant_processed_date(existing_json)
+            print("last fetched date", relevant_date)
+            total_messages = await get_datewise_info_base(
+                userid=user_id, connection=connection, startDate=relevant_date
             )
-
-            # Pass only data, not cursor
-            task = asyncio.to_thread(
-                v2process_batch_with_embedding,
-                user_id,
-                current_batch_messages,
-                batch_count,
-                lance_folder,
-                ticket_allocator,
-                None,
+            newly_creation = False
+        else:
+            total_messages = await get_datewise_info_base(
+                userid=user_id, connection=connection, months=3
             )
-            embedding_futures.append(task)  # collect it
-            return gmail_result
+            newly_creation = True
 
-    # Split into chunks
-    max_batchval = len(threads)
-    batch_size = min(1000, max(100, len(threads) // 2 or 1))
+        threads_max = total_messages["threadsTotal"]["count"]
+        threads = total_messages["threadsTotal"]["threads"]
+        my_email = total_messages["email"]
+        startdate = total_messages["start_date"]
+        enddate = total_messages["end_date"]
 
-    batches = [threads[i : i + batch_size] for i in range(0, max_batchval, batch_size)]
-    client = await GlideClusterClient.create(config)
-    client_ticket = UmailLanceClient(user_id)
-
-    # ticket_allocator = await TicketAllocator.create(addresses, client_ticket, user_id)
-    ticket_allocator = await TicketAllocator.create(client_ticket, user_id)
-
-    async def process_batch(batch_index, batch):
-        batch_start_time = time.perf_counter()
         print(
-            f"\n⚡ Starting batch {batch_index+1}/{max_batchval} with {len(batch)} threads..."
+            f"🚀 Starting continuous batch processing for user {user_id}, "
+            f"total threads: {threads_max} with creation={newly_creation}"
         )
 
-        # tasks = [process_with_semaphore(thread, batch_index + 1) for thread in batch]
-        tasks = [
-            process_with_semaphore(
-                batch, batch_index + 1, max_batchval, ticket_allocator
-            )
+        semaphore = asyncio.Semaphore(5)
+
+        async def process_with_semaphore(
+            threads, batch_count, max_batchval, ticket_allocator
+        ):
+            nonlocal complete_results, any_new_messages
+            async with semaphore:
+                try:
+                    gmail_result = await v2fetch_gmail_messages_batch(
+                        user_id, threads, my_email, batch_count, connection
+                    )
+                except Exception as e:
+                    print(f"❌ Error fetching Gmail batch {batch_count}: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                    return None
+
+                if gmail_result.get("status") != "success":
+                    print(
+                        f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}"
+                    )
+                    return None
+
+                complete_results += len(gmail_result)
+
+                new_messages = gmail_result.get("new_messages", 0)
+                if new_messages > 0:
+                    any_new_messages = True  # mark that we did get something
+                    print(f"📬 Batch {batch_count}: {new_messages} new messages")
+                else:
+                    print(f"📭 Batch {batch_count}: no new messages")
+
+                current_batch_messages = gmail_result.get("grouped_messages", {})
+
+                if new_messages == 0:
+                    return None
+
+                lance_folder = os.path.join(
+                    pathconfig.basepath,
+                    "messages",
+                    user_id,
+                    f"lance_folder:{batch_count}",
+                )
+                # heavy process offloaded to thread
+                task = asyncio.to_thread(
+                    v2process_batch_with_embedding,
+                    user_id,
+                    current_batch_messages,
+                    batch_count,
+                    lance_folder,
+                    ticket_allocator,
+                    None,
+                )
+                embedding_futures.append(task)
+                return gmail_result
+
+        max_batchval = len(threads)
+        batch_size = min(1000, max(100, len(threads) // 2 or 1))
+        batches = [
+            threads[i : i + batch_size] for i in range(0, max_batchval, batch_size)
         ]
+        client = await GlideClusterClient.create(redis_config_glide)
+        ticket_allocator = await TicketAllocator.create(user_id)
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        async def process_batch(batch_index, batch):
+            batch_start_time = time.perf_counter()
+            print(
+                f"\n⚡ Starting batch {batch_index+1}/{max_batchval} with {len(batch)} threads..."
+            )
+            tasks = [
+                process_with_semaphore(
+                    batch, batch_index + 1, max_batchval, ticket_allocator
+                )
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            batch_runtime = time.perf_counter() - batch_start_time
+            print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
+            return results
 
-        batch_runtime = time.perf_counter() - batch_start_time
-        print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
+        all_batch_results = await asyncio.gather(
+            *[process_batch(i, batch) for i, batch in enumerate(batches)],
+            return_exceptions=True,
+        )
+        all_results = [
+            item
+            for batch_results in all_batch_results
+            for item in batch_results
+            if item
+        ]
+        print("all_results", all_results)
 
-        return results
+        if newly_creation:
+            print("NEW CREATION attaching to valkey", len(all_results))
+            await client.set(
+                f"{user_id}", json.dumps(all_results, default=str), TTL_90_DAYS
+            )
 
-    # 🔑 Run ALL batches in parallel
-    all_batch_results = await asyncio.gather(
-        *[process_batch(i, batch) for i, batch in enumerate(batches)],
-        return_exceptions=True,
-    )
-    # Flatten results
-    all_results = [
-        item for batch_results in all_batch_results for item in batch_results if item
-    ]
-    if newly_creation:
-        await client.set(
-            f"{user_id}", json.dumps(all_results, default=str), TTL_90_DAYS
+        # wait for embeddings to finish
+        if embedding_futures:
+            await asyncio.gather(*embedding_futures)
+
+        total_runtime = time.perf_counter() - start_time
+        print(
+            f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
+            f"\n total gmail results counted: {complete_results}",
         )
 
-    # Now wait for embeddings to finish
-    if embedding_futures:
-        await asyncio.gather(*embedding_futures)
+        # ✅ Only update umail_json + finalize if any batch had new messages
+        if any_new_messages:
+            folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
+            today_ts = datetime.now(timezone.utc)
+            new_entry = {
+                "date_start": startdate,
+                "date_end": enddate,
+                "processed_threads": threads_max,
+                "timestamp": today_ts.isoformat(),
+                "newly_creation": newly_creation,
+            }
+            update_umail_json(
+                user_id=user_id, new_entry=new_entry, connection=connection
+            )
+            await ticket_allocator.finalize()
 
-    total_runtime = time.perf_counter() - start_time
-    print(
-        f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
-        f"\n {complete_results}",
-    )
-    # if max_batchval == batch_count:
-    print("FINISHED ALL PROCESS")
-    folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
-    today = datetime.now(timezone.utc)
-    new_entry = {
-        "date_start": startdate,  # from v2all_continuous
-        "date_end": enddate,  # from v2all_continuous
-        "processed_threads": threads_max,
-        "timestamp": today.isoformat(),
-        "newly_creation": newly_creation,
-    }
-    update_umail_json(user_id, new_entry)
-    await ticket_allocator.finalize()
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
+                print(f"🗑️ Deleted folder and contents: {folder_path}")
+            else:
+                print(f"⚠️ Folder not found: {folder_path}")
+        else:
+            print(
+                "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
+            )
 
-    if os.path.exists(folder_path):
-        shutil.rmtree(folder_path)  # ✅ removes all files + subfolders
-        print(f"🗑️ Deleted folder and contents: {folder_path}")
-    else:
-        print(f"⚠️ Folder not found: {folder_path}")
+        return {
+            "user": user_id,
+            "total_threads": threads_max,
+            "batches": len(batches),
+            "runtime_seconds": total_runtime,
+            "results": all_results,
+        }
 
-    connection.close()
+    except Exception as e:
+        print(f"[ERROR] v2all_continuous failed: {e}")
+        import traceback
 
-    return {
-        "user": user_id,
-        "total_threads": threads_max,
-        "batches": len(batches),
-        "runtime_seconds": total_runtime,
-        "results": all_results,
-    }
+        traceback.print_exc()
+        return {"error": str(e), "status": "failed"}
+
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
 
 
 def v2process_batch_with_embedding(
@@ -440,9 +462,22 @@ def v2process_batch_with_embedding(
     async def _inner(cursor):
         start_time = time.perf_counter()
         print("||||||||||| Start time Lance |||||||||", start_time)
-        if cursor is None:
-            connection = connect_to_rds()
-            with get_cursor(connection) as cursor:
+
+        connection = None
+        try:
+            if cursor is None:
+                # open our own connection
+                connection = connect_to_rds()
+                with get_cursor(connection) as cur:
+                    messages = await vtooanalyze_and_collect_messages_for_batch(
+                        user_id,
+                        current_batch_messages,
+                        batch_count,
+                        cur,
+                        ticket_allocator,
+                    )
+            else:
+                # using passed-in cursor
                 messages = await vtooanalyze_and_collect_messages_for_batch(
                     user_id,
                     current_batch_messages,
@@ -450,33 +485,46 @@ def v2process_batch_with_embedding(
                     cursor,
                     ticket_allocator,
                 )
-            connection.close()
-        else:
-            messages = await vtooanalyze_and_collect_messages_for_batch(
-                user_id, current_batch_messages, batch_count, cursor, ticket_allocator
-            )
 
-        print(f"🧩 batch {batch_count} messages analyzed: {len(messages)}")
-        client = UmailLanceClient(user_id)
-        await asyncio.to_thread(client.embed_json_files, lance_folder)
-        total_runtime = time.perf_counter() - start_time
-        print("************ Total Time Lance *******", total_runtime)
+            print(f"🧩 batch {batch_count} messages analyzed: {len(messages)}")
 
+            client = UmailLanceClient(user_id)
+            # run CPU-bound embedding in a thread so we don’t block
+            await asyncio.to_thread(client.embed_json_files, lance_folder)
+
+            total_runtime = time.perf_counter() - start_time
+            print("************ Total Time Lance *******", total_runtime)
+
+        except Exception as e:
+            # log/handle the error
+            print(f"[ERROR] v2process_batch_with_embedding failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+    # run the async inner
     asyncio.run(_inner(cursor))
 
 
-def process_batch_with_embedding(
-    user_id, current_batch_messages, batch_count, lance_folder
-):
-    """
-    Run CPU-heavy tasks (analysis + embedding) inside a worker thread
-    """
-    messages = analyze_and_collect_messages_for_batch(
-        user_id, current_batch_messages, batch_count
-    )
-    print("batch messages", len(messages))
-    client = UmailLanceClient(user_id)
-    client.embed_json_files(lance_folder)
+# def process_batch_with_embedding(
+#     user_id, current_batch_messages, batch_count, lance_folder
+# ):
+#     """
+#     Run CPU-heavy tasks (analysis + embedding) inside a worker thread
+#     """
+#     messages = analyze_and_collect_messages_for_batch(
+#         user_id, current_batch_messages, batch_count
+#     )
+#     print("batch messages", len(messages))
+#     client = UmailLanceClient(user_id)
+#     client.embed_json_files(lance_folder)
 
 
 # # actual function:

@@ -1,52 +1,40 @@
-# import asyncio
-# from glide import GlideClusterClient, GlideClusterClientConfiguration
+import asyncio
+import pymysql
+from db.rds_db import connect_to_rds
 
-# TTL_90_DAYS = 90 * 24 * 60 * 60  # 90 days in seconds
+TTL_90_DAYS = 90 * 24 * 60 * 60  # 90 days in seconds
 
 
 # class TicketAllocator:
 #     """
-#     Async-safe, multi-process ticket allocator.
-#     - Seeds from UmailLanceClient (DB) once.
-#     - Uses Redis INCR for cross-process uniqueness.
+#     Async-safe ticket allocator without Redis.
+#     Uses a local in-memory counter, seeded from the DB once.
 #     """
 
-#     def __init__(self, redis_client, client_ticket, user_id: str):
-#         self.redis = redis_client
+#     def __init__(self, client_ticket, user_id: str, latest_ticket: int = 0):
 #         self.client_ticket = client_ticket
 #         self.user_id = user_id
 #         self._lock = asyncio.Lock()
-#         self._redis_key = f"ticket:{user_id}"
+#         self._ticket_counter = latest_ticket  # in-memory counter
 
 #     @classmethod
-#     async def create(cls, addresses, client_ticket, user_id: str):
+#     async def create(cls, client_ticket, user_id: str):
 #         """
-#         Create an allocator, seeding Redis with DB's ticket number if missing.
+#         Initialize the allocator, seed counter from DB.
 #         """
-#         config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
-#         redis_client = await GlideClusterClient.create(config)
+#         # Get the base ticket number from DB (synchronous call)
+#         latest = await asyncio.to_thread(client_ticket.call_ticket_number, user_id) or 0
+#         print(f"Latest ticket from DB: {latest}")
 
-#         # 1️⃣ get the base ticket number from DB
-#         latest = client_ticket.call_ticket_number(user_id) or 0
-#         print("latest", latest)
-
-#         # 2️⃣ seed Redis if key does not yet exist
-#         key = f"ticket:{user_id}"
-#         exists = await redis_client.get(key)
-#         if exists is None:
-#             # Set to 'latest' (DB’s number). The first INCR will give latest+1.
-#             await redis_client.set(f"ticket:{user_id}", str(latest), TTL_90_DAYS)
-
-#         return cls(redis_client, client_ticket, user_id)
+#         return cls(client_ticket, user_id, latest_ticket=latest)
 
 #     async def next_ticket(self) -> int:
 #         """
-#         Atomically get the next ticket number across all processes.
+#         Atomically get the next ticket number.
 #         """
 #         async with self._lock:
-#             ticket_num = await self.redis.incr(self._redis_key)  # INCR is atomic
-#             print("val", ticket_num)
-#             await self.redis.expire(self._redis_key, TTL_90_DAYS)
+#             self._ticket_counter += 1
+#             ticket_num = self._ticket_counter
 #             return ticket_num
 
 #     async def finalize(self):
@@ -54,19 +42,17 @@
 #         Persist the last ticket number back to DB.
 #         """
 #         async with self._lock:
-#             current = await self.redis.get(self._redis_key)
-#             if current is not None:
-#                 current = int(current)
-#                 await asyncio.to_thread(
-#                     self.client_ticket.update_ticket_number,
-#                     self.user_id,
-#                     int(current),
-#                 )
+#             await asyncio.to_thread(
+#                 self.client_ticket.update_ticket_number,
+#                 self.user_id,
+#                 self._ticket_counter,
+#             )
+#             print(f"Final ticket number saved to DB: {self._ticket_counter}")
 
 
 import asyncio
-
-TTL_90_DAYS = 90 * 24 * 60 * 60  # 90 days in seconds
+import json
+import pymysql
 
 
 class TicketAllocator:
@@ -75,22 +61,77 @@ class TicketAllocator:
     Uses a local in-memory counter, seeded from the DB once.
     """
 
-    def __init__(self, client_ticket, user_id: str, latest_ticket: int = 0):
-        self.client_ticket = client_ticket
+    def __init__(self, user_id: str, latest_ticket: int = 0):
         self.user_id = user_id
         self._lock = asyncio.Lock()
         self._ticket_counter = latest_ticket  # in-memory counter
 
     @classmethod
-    async def create(cls, client_ticket, user_id: str):
+    async def create(cls, user_id: str):
         """
         Initialize the allocator, seed counter from DB.
         """
-        # Get the base ticket number from DB (synchronous call)
-        latest = await asyncio.to_thread(client_ticket.call_ticket_number, user_id) or 0
-        print(f"Latest ticket from DB: {latest}")
+        latest = 0
+        connection = connect_to_rds()
+        try:
+            with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT umail_json FROM users WHERE user_id = %s", (user_id,)
+                )
+                row = cursor.fetchone()
+                if row and row["umail_json"]:
+                    # umail_json might be already JSON or string depending on DB
+                    if isinstance(row["umail_json"], str):
+                        umail_json = json.loads(row["umail_json"])
+                    else:
+                        umail_json = row["umail_json"]
 
-        return cls(client_ticket, user_id, latest_ticket=latest)
+                    latest = umail_json.get("base_ticket", 0)
+                else:
+                    umail_json = {"base_ticket": 0}
+
+                # If no base_ticket yet, ensure it’s in DB
+                if "base_ticket" not in umail_json:
+                    umail_json["base_ticket"] = 0
+                    cursor.execute(
+                        "UPDATE users SET umail_json=%s WHERE user_id=%s",
+                        (json.dumps(umail_json), user_id),
+                    )
+                    connection.commit()
+
+        finally:
+            connection.close()
+
+        print(f"Latest ticket from DB: {latest}")
+        return cls(user_id, latest_ticket=latest)
+
+    def update_ticket(self, value):
+        connection = connect_to_rds()
+        try:
+            with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT umail_json FROM users WHERE user_id=%s",
+                    (self.user_id,),
+                )
+                row = cursor.fetchone()
+                if row and row["umail_json"]:
+                    umail_json = (
+                        json.loads(row["umail_json"])
+                        if isinstance(row["umail_json"], str)
+                        else row["umail_json"]
+                    )
+                else:
+                    umail_json = {}
+
+                umail_json["base_ticket"] = value
+
+                cursor.execute(
+                    "UPDATE users SET umail_json=%s WHERE user_id=%s",
+                    (json.dumps(umail_json), self.user_id),
+                )
+                connection.commit()
+        finally:
+            connection.close()
 
     async def next_ticket(self) -> int:
         """
@@ -98,17 +139,41 @@ class TicketAllocator:
         """
         async with self._lock:
             self._ticket_counter += 1
-            ticket_num = self._ticket_counter
-            return ticket_num
+            return self._ticket_counter
 
     async def finalize(self):
         """
-        Persist the last ticket number back to DB.
+        Persist the last ticket number back to DB as base_ticket.
         """
         async with self._lock:
-            await asyncio.to_thread(
-                self.client_ticket.update_ticket_number,
-                self.user_id,
-                self._ticket_counter,
-            )
+            # update umail_json.base_ticket to current counter
+            def _update():
+                connection = connect_to_rds()
+                try:
+                    with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+                        cursor.execute(
+                            "SELECT umail_json FROM users WHERE user_id=%s",
+                            (self.user_id,),
+                        )
+                        row = cursor.fetchone()
+                        if row and row["umail_json"]:
+                            umail_json = (
+                                json.loads(row["umail_json"])
+                                if isinstance(row["umail_json"], str)
+                                else row["umail_json"]
+                            )
+                        else:
+                            umail_json = {}
+
+                        umail_json["base_ticket"] = self._ticket_counter
+
+                        cursor.execute(
+                            "UPDATE users SET umail_json=%s WHERE user_id=%s",
+                            (json.dumps(umail_json), self.user_id),
+                        )
+                        connection.commit()
+                finally:
+                    connection.close()
+
+            await asyncio.to_thread(_update)
             print(f"Final ticket number saved to DB: {self._ticket_counter}")

@@ -46,7 +46,8 @@ def get_user_tickets(user_id):
                 t.updated_in,
                 t.conversation_id_fk,
                 t.priority,
-                t.ticket_name
+                t.ticket_name,
+                t.assignee
             FROM tickets t
             INNER JOIN assigned a ON t.tickets_id = a.ticket_id_fk
             INNER JOIN users_clients uc ON a.users_clients_id_fk = uc.users_clients_id
@@ -59,12 +60,29 @@ def get_user_tickets(user_id):
         for row in rows:
             # ticket_id, priority, status, created_in, updated_in, conversation_id = row
 
-            first_name, ticket_id, status, SLA, created_in, updated_in,conversation_id,priority,ticket_name = row
+            first_name, ticket_id, status, SLA, created_in, updated_in,conversation_id,priority,ticket_name, assignee_id = row
 
             key = conv_key_map.get(conversation_id)
             if key:
                         # Get conversation details from JSON file
                     conversation_data = get_conversation_details(key)
+
+                    print(f"assignee_id : {assignee_id}")
+                    cursor.execute("SELECT first_name, last_name, email FROM users WHERE user_id = %s", (assignee_id,))
+                    names = cursor.fetchone()  
+
+                    assignee_full_name = ""       
+                    if names:  
+                        
+                        first_name, last_name, assignee_email = names[0], names[1], names[2]
+                        if not first_name or first_name == "None":
+                            first_name = assignee_email.split('@')[0]
+                        if not last_name or last_name == "None":
+                            last_name = ""
+
+                        assignee_full_name = (first_name + " " + last_name).strip()
+                                    
+
                         
                         # Build ticket response
                     ticket_info = {
@@ -80,6 +98,7 @@ def get_user_tickets(user_id):
                             "channel": conversation_data.get("source", ""),
                             "subject": ticket_name,
                             "from": conversation_data.get("from", ""),
+                            "assigned_name": assignee_full_name,
                         }
                         
                     tickets.append(ticket_info)
