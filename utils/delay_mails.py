@@ -2,7 +2,7 @@ import os, json, threading, time
 from datetime import datetime, timezone
 from db.rds_db import connect_to_rds
 from db.db_checkers import get_userid
-from utils.celery_base import umail_sync
+from utils.celery_base import web_umail_sync
 
 # Single status file for all users
 SYNC_STATUS_FILE = "data/internal_user_sync.json"
@@ -126,7 +126,7 @@ class DelayTrigger:
             print(
                 f"[INFO] Triggering umail_sync for user {user_id} ({user_info.get('email')})"
             )
-            umail_sync.delay(user_id)
+            web_umail_sync.delay(user_id)
 
             # Mark complete
             with user_lock:

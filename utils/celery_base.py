@@ -71,6 +71,20 @@ def umail_sync(self, user_id):
         release_user_lock(user_id)
 
 
+@new_celery.task(bind=True, name="webhook.umailSync")
+def web_umail_sync(self, user_id):
+
+    try:
+        result = asyncio.run(v2all_continuous(user_id))
+        return {"status": "completed", "user_id": user_id, "result": result}
+    except Exception as exc:
+        countdown = backoff(self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+    finally:
+        # always release lock at end so new task can start
+        release_user_lock(user_id)
+
+
 @new_celery.task(bind=True, name="umail_helper.delayed_trigger")
 def delayed_trigger(self, user_email, history_id):
     import time
