@@ -1,12 +1,12 @@
 import asyncio
 from flask import Blueprint, request, jsonify, session
-from umail_lance.umail_lance_agent import UmailLanceClient
+from umail_helper.ticketalloc import TicketAllocator
+
+# from utils.delay_mails import DelayTrigger
 from .gmail_service import GmailService
 import uuid
-from data import MESSAGES  # delete this later
 from bs4 import BeautifulSoup
 from email.utils import parsedate_to_datetime, parseaddr
-from email.message import EmailMessage
 import base64
 from datetime import datetime, timezone
 import json
@@ -14,19 +14,16 @@ from cust_helpers import pathconfig
 import os
 from utils.normal import ensure_dir
 from utils.s3_utils import (
-    delete_file_from_s3,
     delete_folder_from_s3,
-    list_all_files,
     upload_any_file,
     read_json_from_s3,
 )
 from create_db import connect_to_rds
 from umail_helper.helper import get_users_client_id, extract_reply_content
 from collections import defaultdict
-from google.auth.exceptions import RefreshError
 import traceback
 import re
-
+import pymysql
 
 gmail_bp = Blueprint("gmail", __name__)
 
@@ -100,6 +97,15 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
         email_to_client_id = {}
         configs_created = set()
 
+        first_time_user = True
+        cursor.execute(
+            "SELECT 1 FROM messages m JOIN threads th  ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
+            (user_id,),
+        )
+
+        if cursor.fetchone():
+            first_time_user = False
+
         for msg in threads:
             message_id = msg["messageId"]
 
@@ -144,10 +150,16 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
             else:
                 client_id, type = get_users_client_id(participant, user_id, cursor)
                 if not client_id:
-                    client_id = add_lead_contact(
-                        user_id, cursor, participant, participant_name
-                    )
-                    type = "Lead"
+                    if not first_time_user:
+                        client_id = add_lead_contact(
+                            user_id, cursor, participant, participant_name
+                        )
+                        type = "Lead"
+                    if first_time_user:
+                        client_id = add_customer_contact(
+                            user_id, cursor, participant, participant_name
+                        )
+                        type = "Customer"
                 email_to_client_id[participant] = (client_id, type)
 
             # Create message object
@@ -345,7 +357,18 @@ async def v2fetch_gmail_messages_batch(user_id, threads, my_email, batch_count, 
 
         # Process messages (your existing logic)
         email_to_client_id = {}
+        client_id = ""
+        client_type = ""
         configs_created = set()
+
+        first_time_user = True
+        cursor.execute(
+            "SELECT 1 FROM messages m JOIN threads th  ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
+            (user_id,),
+        )
+
+        if cursor.fetchone():
+            first_time_user = False
 
         for msg in all_messages:
             message_id = msg["messageId"]
@@ -399,10 +422,18 @@ async def v2fetch_gmail_messages_batch(user_id, threads, my_email, batch_count, 
                     client_type = None
 
                 if not client_id:
-                    client_id = add_lead_contact(
-                        user_id, cursor, participant, participant_name
-                    )
-                    client_type = "Lead"
+                    if not first_time_user:
+                        print(f"first_time_user : {first_time_user}")
+                        client_id = add_lead_contact(
+                            user_id, cursor, participant, participant_name
+                        )
+                        client_type = "Lead"
+                    if first_time_user:
+                        print(f"first_time_user : {first_time_user}")
+                        client_id = add_customer_contact(
+                            user_id, cursor, participant, participant_name
+                        )
+                        client_type = "Customer"
 
                 email_to_client_id[participant] = (client_id, client_type)
 
@@ -749,69 +780,158 @@ def send_mail(user_id, to, subject, body_text):
 
 def add_lead_contact(user_id, cursor, participant, participant_name):
 
-    print("creating new user client and communication table")
-    communication_id = str(uuid.uuid4())
-    users_clients_id = str(uuid.uuid4())
+    try:
 
-    dt_utc = datetime.now(timezone.utc)
-    created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
-    updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+        print("creating new lead")
+        communication_id = str(uuid.uuid4())
+        users_clients_id = str(uuid.uuid4())
 
-    insert_communication_sql = """
-                    INSERT INTO communication (
-                        communication_id,
-                        user_id_fk,
-                        users_clients_id_fk
-                    )
-                    VALUES (%s, %s, NULL)
-                """
-    cursor.execute(insert_communication_sql, (communication_id, user_id))
+        dt_utc = datetime.now(timezone.utc)
+        created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
+        updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
 
-    insert_sql = """
-                    INSERT INTO users_clients (
-                        users_clients_id,
-                        communication_id_fk,
-                        first_name,
-                        last_name,
-                        phone_number,
-                        whatsapp_number,
-                        email_id,
-                        facebook_id,
-                        instagram_id,
-                        slack_id,
-                        slack_workspace,
-                        type,
-                        created_in,
-                        updated_in
+        insert_communication_sql = """
+                        INSERT INTO communication (
+                            communication_id,
+                            user_id_fk,
+                            users_clients_id_fk
+                        )
+                        VALUES (%s, %s, NULL)
+                    """
+        cursor.execute(insert_communication_sql, (communication_id, user_id))
+
+        insert_sql = """
+                        INSERT INTO users_clients (
+                            users_clients_id,
+                            communication_id_fk, 
+                            first_name,
+                            last_name,
+                            phone_number,
+                            whatsapp_number,
+                            email_id,
+                            facebook_id,
+                            instagram_id,
+                            slack_id,
+                            slack_workspace,
+                            type,
+                            created_in,
+                            updated_in,
+                            snooze
 
 
-                    )
-                    VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s)
-                """
-    cursor.execute(
-        insert_sql,
-        (
-            users_clients_id,
-            communication_id,
-            participant_name,
-            "( Lead )",
-            participant,
-            "Lead",
-            created_date,
-            updated_date,
-        ),
-    )
+                        )
+                        VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s,%s)
+                    """
+        cursor.execute(
+            insert_sql,
+            (
+                users_clients_id,
+                communication_id,
+                participant_name,
+                "",
+                participant,
+                "Lead",
+                created_date,
+                updated_date,
+                False,
+            ),
+        )
 
-    link_sql = """
-                    UPDATE communication
-                    SET users_clients_id_fk = %s
-                    WHERE communication_id = %s
-                """
-    cursor.execute(link_sql, (users_clients_id, communication_id))
+        link_sql = """
+                        UPDATE communication
+                        SET users_clients_id_fk = %s
+                        WHERE communication_id = %s
+                    """
+        cursor.execute(link_sql, (users_clients_id, communication_id))
 
-    cursor.connection.commit()
+        cursor.connection.commit()
 
-    return users_clients_id
+        return users_clients_id
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+
+
+def add_customer_contact(user_id, cursor, participant, participant_name):
+
+    try:
+
+        print("creating customer")
+        communication_id = str(uuid.uuid4())
+        users_clients_id = str(uuid.uuid4())
+
+        dt_utc = datetime.now(timezone.utc)
+        created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
+        updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+
+        insert_communication_sql = """
+                        INSERT INTO communication (
+                            communication_id,
+                            user_id_fk,
+                            users_clients_id_fk
+                        )
+                        VALUES (%s, %s, NULL)
+                    """
+        cursor.execute(insert_communication_sql, (communication_id, user_id))
+
+        insert_sql = """
+                        INSERT INTO users_clients (
+                            users_clients_id,
+                            communication_id_fk, 
+                            first_name,
+                            last_name,
+                            phone_number,
+                            whatsapp_number,
+                            email_id,
+                            facebook_id,
+                            instagram_id,
+                            slack_id,
+                            slack_workspace,
+                            type,
+                            created_in,
+                            updated_in,
+                            snooze
+
+
+                        )
+                        VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s,%s)
+                    """
+        cursor.execute(
+            insert_sql,
+            (
+                users_clients_id,
+                communication_id,
+                participant_name,
+                "",
+                participant,
+                "Customer",
+                created_date,
+                updated_date,
+                False,
+            ),
+        )
+
+        link_sql = """
+                        UPDATE communication
+                        SET users_clients_id_fk = %s
+                        WHERE communication_id = %s
+                    """
+        cursor.execute(link_sql, (users_clients_id, communication_id))
+
+        cursor.connection.commit()
+
+        return users_clients_id
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
 
 
 @gmail_bp.route("/gmail/drafts", methods=["GET"])
@@ -921,25 +1041,27 @@ def respond_to_email():
 def get_inbox_info(userid):
     try:
         max_emails = 1000
-        base_days = int(request.args.get("days", 30))  # default 30 days
+        base_days = int(request.args.get("days", 1))  # default 30 days
         gmail_service = GmailService(userid)
 
         total_messages = 0
         final_days_used = base_days
 
-        while True:
-            inbox_count = gmail_service.get_inbox_stats(base_days)  # returns int
-            total_messages = inbox_count
-            final_days_used = base_days
+        print(base_days)
 
-            if total_messages >= max_emails:
-                # if total_messages > (max_emails + 30):
-                #     base_days -= 2
-                # else:
-                #     break
-                break
-            else:
-                base_days += 10  # widen search window
+        total_messages = gmail_service.get_inbox_stats(base_days)  # returns int
+        # while True:
+        #     total_messages = inbox_count
+        #     final_days_used = base_days
+
+        #     if total_messages >= max_emails:
+        #         # if total_messages > (max_emails + 30):
+        #         #     base_days -= 2
+        #         # else:
+        #         #     break
+        #         break
+        #     else:
+        #         base_days += 10  # widen search window
 
         return (
             jsonify(
@@ -987,86 +1109,6 @@ def get_datewise_info(userid):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-# @gmail_bp.route("/deletedb/<user_id>", methods=["GET"])
-# def delete_user_ticket_data(user_id):
-#     try:
-#         connection = connect_to_rds()
-#         with connection.cursor() as cursor:
-#             # 1. Get ticket IDs assigned to the user
-#             cursor.execute(
-#                 """
-#                 SELECT ticket_id_fk FROM assigned WHERE user_id_fk = %s
-#                 """,
-#                 (user_id,),
-#             )
-#             ticket_ids = [row[0] for row in cursor.fetchall() if row[0]]
-
-#             if not ticket_ids:
-#                 return {"status": "success", "message": "No tickets found for user"}
-
-#             # 2. Get conversation IDs from those tickets
-#             format_strings = ",".join(["%s"] * len(ticket_ids))
-#             cursor.execute(
-#                 f"""
-#                 SELECT conversation_id_fk FROM tickets
-#                 WHERE tickets_id IN ({format_strings})
-#                 """,
-#                 tuple(ticket_ids),
-#             )
-#             conversation_ids = [row[0] for row in cursor.fetchall() if row[0]]
-
-#             # 3. Delete messages first (based on conversation IDs)
-#             if conversation_ids:
-#                 format_strings = ",".join(["%s"] * len(conversation_ids))
-#                 cursor.execute(
-#                     f"""
-#                     DELETE FROM messages
-#                     WHERE conversation_id_fk IN ({format_strings})
-#                     """,
-#                     tuple(conversation_ids),
-#                 )
-
-#             # 4. Delete from assigned (before tickets)
-#             format_strings = ",".join(["%s"] * len(ticket_ids))
-#             cursor.execute(
-#                 f"""
-#                 DELETE FROM assigned
-#                 WHERE ticket_id_fk IN ({format_strings})
-#                 """,
-#                 tuple(ticket_ids),
-#             )
-
-#             # 5. Delete tickets (now it's safe)
-#             format_strings = ",".join(["%s"] * len(ticket_ids))
-#             cursor.execute(
-#                 f"""
-#                 DELETE FROM tickets
-#                 WHERE tickets_id IN ({format_strings})
-#                 """,
-#                 tuple(ticket_ids),
-#             )
-
-#             # 6. Delete threads (based on conversation IDs)
-#             if conversation_ids:
-#                 format_strings = ",".join(["%s"] * len(conversation_ids))
-#                 cursor.execute(
-#                     f"""
-#                     DELETE FROM threads
-#                     WHERE conversation_id IN ({format_strings})
-#                     """,
-#                     tuple(conversation_ids),
-#                 )
-
-#             connection.commit()
-#             return {
-#                 "status": "success",
-#                 "message": "User-related ticket data deleted successfully",
-#             }
-
-#     except Exception as e:
-#         connection.rollback()
-#         return {"status": "failed", "error": str(e)}
 
 from threading import Thread
 
@@ -1192,17 +1234,18 @@ def delete_user_ticket_data(user_id):
                     """,
                     tuple(comm_ids),
                 )
-                cursor.execute(
-                    """
-                    UPDATE users SET umail_json = NULL WHERE user_id = %s
-                    """,
-                    (user_id,),  # <-- add comma to make it a tuple
-                )
-                connection.commit()
+            print("DELETING users")
+            cursor.execute(
+                """
+                UPDATE users SET umail_json = NULL WHERE user_id = %s
+                """,
+                (user_id,),  # <-- add comma to make it a tuple
+            )
+            connection.commit()
             folder_path = f"{user_id}/messages"
             Thread(target=delete_folder_from_s3, args=(folder_path,)).start()
-            client_ticket = UmailLanceClient(user_id)
-            client_ticket.update_ticket_number(user_id=user_id,lance_ticket_id=0)
+            client_ticket = TicketAllocator(user_id)
+            client_ticket.update_ticket(value=0)
 
             return {
                 "status": "success",
@@ -1215,3 +1258,203 @@ def delete_user_ticket_data(user_id):
     finally:
         if connection:
             connection.close()
+
+
+def delete_all_user_data(user_id):
+    """
+    Delete all data related to a user across all tables.
+    - If the user is invited (not admin/owner), clean up owner permissions.
+    - If the user is an owner/admin who invited others, remove their references from invited users.
+    """
+    connection = None
+    try:
+        connection = connect_to_rds()
+
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Check the user type first
+            cursor.execute(
+                "SELECT permissions, user_type, email FROM users WHERE user_id = %s",
+                (user_id,),
+            )
+            user_row = cursor.fetchone()
+            if not user_row:
+                return {"status": "failed", "error": "User not found"}
+
+            user_type = user_row["user_type"]
+            user_email = user_row["email"]
+            user_permissions = (
+                json.loads(user_row["permissions"])
+                if user_row.get("permissions")
+                else {}
+            )
+
+        with connection.cursor() as cursor:
+            # 1. Delete tickets/messages/threads/communication/users_clients
+            ticket_cleanup = delete_user_ticket_data(user_id)
+
+            # 2. Delete from session
+            cursor.execute("DELETE FROM session WHERE user_id_fk = %s", (user_id,))
+            print("DONE 1")
+
+            # 3. Delete business_info
+            cursor.execute(
+                "DELETE FROM business_info WHERE user_id_fk = %s", (user_id,)
+            )
+            print("DONE 2")
+
+            # 4. Delete launch entries (get launch_id for subagents cleanup)
+            cursor.execute(
+                "SELECT launch_id FROM launch WHERE user_id_fk = %s", (user_id,)
+            )
+            launch_ids = [row[0] for row in cursor.fetchall() if row[0]]
+            print("DONE 3")
+
+            # 5. Delete subagents and linked playbooks/instructions/integrations/connect
+            if launch_ids:
+                fmt = ",".join(["%s"] * len(launch_ids))
+                cursor.execute(
+                    f"SELECT sub_agent_id FROM subagents WHERE launch_id_fk IN ({fmt})",
+                    tuple(launch_ids),
+                )
+                subagent_ids = [row[0] for row in cursor.fetchall() if row[0]]
+                print("DONE 4")
+                if subagent_ids:
+                    fmt = ",".join(["%s"] * len(subagent_ids))
+                    cursor.execute(
+                        f"DELETE FROM playbook WHERE sub_agent_id IN ({fmt})",
+                        tuple(subagent_ids),
+                    )
+                    print("DONE 5")
+                    cursor.execute(
+                        f"DELETE FROM instructions WHERE sub_agent_id_fk IN ({fmt})",
+                        tuple(subagent_ids),
+                    )
+                    print("DONE 6")
+                    cursor.execute(
+                        f"DELETE FROM integrations WHERE sub_agent_id_fk IN ({fmt})",
+                        tuple(subagent_ids),
+                    )
+                    print("DONE 7")
+                    cursor.execute(
+                        f"DELETE FROM connect WHERE sub_agent_id_fk IN ({fmt})",
+                        tuple(subagent_ids),
+                    )
+                    print("DONE 8")
+                    cursor.execute(
+                        f"DELETE FROM subagents WHERE sub_agent_id IN ({fmt})",
+                        tuple(subagent_ids),
+                    )
+                    print("DONE 9")
+
+            # 6. Delete launch rows
+            if launch_ids:
+                fmt = ",".join(["%s"] * len(launch_ids))
+                cursor.execute(
+                    f"DELETE FROM launch WHERE launch_id IN ({fmt})", tuple(launch_ids)
+                )
+                print("DONE 10")
+
+            # === Handle invited-user/owner relationships ===
+            with connection.cursor(pymysql.cursors.DictCursor) as cursor2:
+                if user_type == "user":
+                    # invited user: remove from owner's permissions
+                    invited_by_email = user_permissions.get("invited_by")
+                    if invited_by_email:
+                        cursor2.execute(
+                            "SELECT user_id, permissions FROM users WHERE email = %s",
+                            (invited_by_email,),
+                        )
+                        owner_row = cursor2.fetchone()
+                        if owner_row:
+                            owner_perms = (
+                                json.loads(owner_row["permissions"])
+                                if owner_row["permissions"]
+                                else {}
+                            )
+
+                            # Remove from shared
+                            owner_perms["shared"] = [
+                                s
+                                for s in owner_perms.get("shared", [])
+                                if s.get("email") != user_email
+                            ]
+                            # Remove from invites if present
+                            owner_perms["invites"] = [
+                                i
+                                for i in owner_perms.get("invites", [])
+                                if i.get("email") != user_email
+                            ]
+
+                            # Update owner's permissions JSON
+                            cursor2.execute(
+                                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                                (json.dumps(owner_perms), owner_row["user_id"]),
+                            )
+                            print("Owner permissions updated for invited user removal")
+
+            # 7. Delete the user itself
+            cursor.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+            print("DONE 12")
+
+            connection.commit()
+
+        # 8. Delete any S3 folders
+        Thread(target=delete_folder_from_s3, args=(f"{user_id}/",)).start()
+
+        return {
+            "status": "success",
+            "message": f"All data for user {user_id} deleted successfully",
+            "ticket_cleanup": ticket_cleanup,
+        }
+
+    except Exception as e:
+        if connection:
+            connection.rollback()
+        return {"status": "failed", "error": str(e)}
+
+    finally:
+        if connection:
+            connection.close()
+
+
+@gmail_bp.route("/delete_user/<user_id>", methods=["DELETE"])
+def delete_user(user_id):
+    result = delete_all_user_data(user_id)
+    return jsonify(result)
+
+
+@gmail_bp.route("/gmail/start_watch/<userid>", methods=["GET"])
+def start_gmail_watch(userid):
+    serv = GmailService(user_id=userid)
+    res = serv.create_watch_req()
+    return jsonify(res)
+
+
+@gmail_bp.route("/start_gmail_watches", methods=["GET"])
+def start_gmail_watches():
+    conn = connect_to_rds()
+    try:
+        with conn.cursor() as cursor:
+            # join your social table if needed
+            cursor.execute(
+                """
+               select user_id,social from users
+            """
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+    results = []
+    for row in rows:
+        user_id = row[0]
+        service = GmailService(user_id)
+        res = service.create_watch_req(user_id)
+        results.append({"user_id": user_id, "result": res})
+
+
+#     return jsonify(results)
+@gmail_bp.route("/gmail/history_check/<userid>/<hisid>", methods=["GET"])
+def histcheckmail(userid, hisid):
+    serv = GmailService(user_id=userid)
+    res = serv.check_hisdata(hisid)
+    return jsonify(res)
