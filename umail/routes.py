@@ -520,6 +520,83 @@ def get_conv_order(config):
     return sorted_ids
 
 
+def get_sorted_lance_emails(connection, user_id, client_id):
+    client = UmailLanceClient(user_id)
+    recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
+
+    all_messages = []
+    sorted_conversations = []
+
+    # open a cursor once and reuse
+    with connection.cursor() as cursor:
+        for conv_id, messages_list in recent_msg.items():
+            try:
+                # 🔥 Deduplicate messages
+                unique_messages = {}
+                for msg in messages_list:
+                    msg_id = (
+                        msg.get("id") or f"{msg.get('timestamp')}-{msg.get('sender')}"
+                    )
+                    if msg_id not in unique_messages:
+                        unique_messages[msg_id] = msg
+
+                messages = list(unique_messages.values())
+                channel = messages[0].get("source") if messages else "unknown"
+                ticket_id = messages[0].get("ticket_id")
+
+                assigned_id = ""
+                assignee_full_name = ""
+
+                if ticket_id:
+                    cursor.execute(
+                        "SELECT assignee FROM tickets WHERE tickets_id = %s",
+                        (ticket_id,),
+                    )
+                    t_row = cursor.fetchone()
+                    if t_row:
+                        assigned_id = t_row[0]
+
+                if assigned_id:
+                    cursor.execute(
+                        "SELECT first_name, last_name, email FROM users WHERE user_id = %s",
+                        (assigned_id,),
+                    )
+                    names = cursor.fetchone()
+                    if names:
+                        first_name, last_name, assignee_email = names
+                        if not first_name or first_name == "None":
+                            first_name = assignee_email.split("@")[0]
+                        if not last_name or last_name == "None":
+                            last_name = ""
+                        assignee_full_name = (first_name + " " + last_name).strip()
+
+                all_messages.append(
+                    {
+                        "id": conv_id,
+                        "channel": channel,
+                        "messages": messages,
+                        "assigned_name": assignee_full_name,
+                    }
+                )
+            except Exception as e:
+                print(f"❌ Failed to read or parse {e}")
+                continue
+
+    if all_messages:
+        sorted_conversations = sorted(
+            all_messages,
+            key=lambda conv: (
+                max(msg.get("timestamp") for msg in conv.get("messages", []))
+                if conv.get("messages")
+                else ""
+            ),
+            reverse=False,
+        )
+
+    return sorted_conversations
+
+
+
 @umail_bp.route("/selected_conversation/<conversation_id>/<user_id>", methods=["GET"])
 def get_selected_conv(conversation_id, user_id):
     """
@@ -587,6 +664,7 @@ def get_selected_conv(conversation_id, user_id):
         else:
             logger.info("fetching from lance %s", conversation_id)
             # ✅ Step 1: Try to get client_id from DB
+            sorted_conversations = []
             try:
                 connection = connect_to_rds()
                 if connection is None:
@@ -625,79 +703,10 @@ def get_selected_conv(conversation_id, user_id):
                 )
                 # print(f"❌ Error executing sender_id query: {e}")
 
-            client = UmailLanceClient(user_id)
-            recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
-
-            all_messages = []
-            for conv_id, messages_list in recent_msg.items():
-                try:
-                    # 🔥 Deduplicate messages
-                    unique_messages = {}
-                    for msg in messages_list:
-                        msg_id = (
-                            msg.get("id")
-                            or f"{msg.get('timestamp')}-{msg.get('sender')}"
-                        )
-                        if msg_id not in unique_messages:
-                            unique_messages[msg_id] = msg
-
-                    messages = list(unique_messages.values())
-                    channel = messages[0].get("source") if messages else "unknown"
-                    ticket_id = messages[0].get("ticket_id")
-
-                    cursor.execute(
-                        "SELECT assignee FROM tickets WHERE tickets_id = %s",
-                        (ticket_id,),
-                    )
-                    t_row = cursor.fetchone()
-                    assigned_id = ""
-                    if t_row:
-                        assigned_id = t_row[0]
-                    assignee_full_name = ""
-                    if assigned_id:
-
-                        cursor.execute(
-                            "SELECT first_name, last_name, email FROM users WHERE user_id = %s",
-                            (assigned_id,),
-                        )
-                        names = cursor.fetchone()
-                        if names:
-                            first_name, last_name, assignee_email = (
-                                names[0],
-                                names[1],
-                                names[2],
-                            )
-                            if not first_name or first_name == "None":
-                                first_name = assignee_email.split("@")[0]
-                            if not last_name or last_name == "None":
-                                last_name = ""
-
-                            assignee_full_name = (first_name + " " + last_name).strip()
-
-                    all_messages.append(
-                        {
-                            "id": conv_id,
-                            "channel": channel,
-                            "messages": messages,
-                            "assigned_name": assignee_full_name,
-                        }
-                    )
-                except Exception as e:
-                    print(f"❌ Failed to read or parse {e}")
-                    continue
-
-                sorted_conversations = sorted(
-                    all_messages,
-                    key=lambda conv: (
-                        max(msg.get("timestamp") for msg in conv.get("messages", []))
-                        if conv.get("messages")
-                        else ""
-                    ),
-                    reverse=False,
-                )
-
             # check whether the client is snoozed or not
-
+            sorted_conversations = get_sorted_lance_emails(
+                connection=connection, user_id=user_id, client_id=client_id
+            )
             cursor.execute(
                 "SELECT snooze FROM users_clients WHERE users_clients_id = %s",
                 (client_id,),
@@ -883,6 +892,7 @@ def match_email_to_channel(email, channel):
     return channel.lower() in domain
 
 
+
 @umail_bp.route("/send-reply", methods=["POST"])
 def send_messages():
     print("🚀 [DEBUG] Starting send_messages() function")
@@ -901,7 +911,6 @@ def send_messages():
 
         status = None
         client_id = None
-
         connection = connect_to_rds()
         if connection is None:
             print("❌ [DEBUG] Database connection failed")
@@ -909,7 +918,6 @@ def send_messages():
         print("✅ [DEBUG] Database connection successful")
 
         cursor = connection.cursor()
-
         c_id = ticket_conversation_id if ticket_conversation_id else conv_id
         print(f"🔍 [DEBUG] Querying for sender_id with conversation_id: {c_id}")
         cursor.execute(

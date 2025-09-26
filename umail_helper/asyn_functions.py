@@ -385,7 +385,7 @@ async def v2all_continuous(user_id):
             for item in batch_results
             if item
         ]
-        print("all_results", all_results)
+        # print("all_results", all_results)
 
         if newly_creation:
             print("NEW CREATION attaching to valkey", len(all_results))

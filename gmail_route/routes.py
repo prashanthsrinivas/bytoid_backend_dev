@@ -288,7 +288,8 @@ async def v2fetch_gmail_messages_batch(
     """
     try:
         if connection is None:
-            connection = connect_to_rds()
+            new_connection = connect_to_rds()
+            connection = new_connection
         # Use cursor context for all DB operations
         with connection as cursor:
             print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
@@ -543,6 +544,9 @@ async def v2fetch_gmail_messages_batch(
             "next_page_token": None,
             "grouped_messages": {},
         }
+    finally:
+        if connection is None and new_connection:
+            new_connection.close()
 
 
 # @gmail_bp.route("/gmail/sync_gmail_contacts/<user_id>")
@@ -716,9 +720,13 @@ def sync_gmail_contacts(user_id):
         return jsonify(error_response), 500
 
 
-def gmail_reply(user_id, to, subject, thread_id, body_text, in_reply_to):
-
-    gmail_service = GmailService(user_id)
+def gmail_reply(
+    user_id, to, subject, thread_id, body_text, in_reply_to, connection=None
+):
+    if connection:
+        gmail_service = GmailService(user_id, connection)
+    else:
+        gmail_service = GmailService(user_id)
     user_email = gmail_service.user_email
 
     # Defensive checks
@@ -734,13 +742,11 @@ def gmail_reply(user_id, to, subject, thread_id, body_text, in_reply_to):
     print(f"in_reply_to : {in_reply_to}")
     print(f"subjec : {subject}")
     sent = gmail_service.send_reply(
-        conversation_id=None,  # optional now, can be excluded
         to=to,
         subject=subject,
         thread_id=thread_id,
         in_reply_to=in_reply_to,
         body_text=body_text,
-        user_id=user_id,
     )
 
     message_api_id = sent["id"]
