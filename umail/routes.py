@@ -24,11 +24,11 @@ umail_bp = Blueprint("umail", __name__)
 logger = get_logger(__name__)
 
 
-# @umail_bp.route("/get_all_messages/<user_id>", methods=["GET"])
-# def getall_route(user_id):
-#     # enqueue Celery task
-#     result = run_fetch_gmail_in_background(v2all_continuous, user_id)
-#     return jsonify(result), 202
+@umail_bp.route("/get_all_messages2/<user_id>", methods=["GET"])
+def getall_route2(user_id):
+    # enqueue Celery task
+    result = run_fetch_gmail_in_background(v2all_continuous, user_id)
+    return jsonify(result), 202
 
 
 @umail_bp.route("/get_all_messages/<user_id>", methods=["GET"])

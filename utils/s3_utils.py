@@ -108,6 +108,14 @@ def load_yaml_from_s3(filepath):
         data = yaml.safe_load(content)
         print("✅ YAML content loaded successfully", filepath)
         return data
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchKey':
+            print(f"📝 YAML file does not exist yet: {filepath} (this is normal for new files)")
+            return None
+        else:
+            print(f"❌ S3 ClientError reading YAML file: {e}")
+            return None
     except Exception as e:
         print(f"❌ Error reading YAML file: {e}")
         return None

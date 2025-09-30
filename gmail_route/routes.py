@@ -291,40 +291,40 @@ async def v2fetch_gmail_messages_batch(
             new_connection = connect_to_rds()
             connection = new_connection
         # Use cursor context for all DB operations
-        with connection as cursor:
-            print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
-            gmail_service = GmailService(user_id, connection)
-            # user_email = gmail_service.user_email
+        cursor = connection.cursor()
+        print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
+        gmail_service = GmailService(user_id, connection)
+        # user_email = gmail_service.user_email
 
-            # Fetch one batch of messages
-            results = await gmail_service.process_threads_batch(
-                threads, my_email, batch_count
-            )
-        print(
-            f"GOT the data from results {batch_count} in v2 fetch gmail", len(results)
+        # Fetch one batch of messages
+        results = await gmail_service.process_threads_batch(
+            threads, my_email, batch_count
         )
-        all_messages = []
-        for idx, thread in enumerate(threads):
-            thread_id = thread["id"]
-            res = results.get(thread_id)
+        # print(
+        #     f"GOT the data from results {batch_count} in v2 fetch gmail", len(results)
+        # )
+        # all_messages = []
+        # for idx, thread in enumerate(threads):
+        #     thread_id = thread["id"]
+        #     res = results.get(thread_id)
 
-            if not res:
-                print(f"⚠️ No response for thread {thread_id}")
-                continue
+        #     if not res:
+        #         print(f"⚠️ No response for thread {thread_id}")
+        #         continue
 
-            thread_data, err = res  # ✅ unpack tuple
+        #     thread_data, err = res  # ✅ unpack tuple
 
-            if err:
-                print(f"⚠️ Thread {thread_id} error: {err}")
-                continue
+        #     if err:
+        #         print(f"⚠️ Thread {thread_id} error: {err}")
+        #         continue
 
-            if thread_data:
-                all_messages.extend(thread_data)
+        #     if thread_data:
+        #         all_messages.append(thread_data)
+        print("ALL mesages complete")
 
-        if not all_messages:
+        if not results:
             print("📭 No messages found in this batch")
             return {"status": "success", "new_messages": 0, "next_page_token": None}
-
         count_new = 0
         grouped_messages = defaultdict(list)
         # cursor = connection.cursor()
@@ -343,10 +343,12 @@ async def v2fetch_gmail_messages_batch(
         input_data_local = {}
 
         if os.path.exists(filepath):
+            print("filepath exists")
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     existing_data_local = json.load(f)
                     input_data_local = existing_data_local.get("input_data", {})
+                    print("file loaded")
 
                 # Extract existing message IDs
                 for client_data in input_data_local.values():
@@ -359,7 +361,8 @@ async def v2fetch_gmail_messages_batch(
                                             if isinstance(msg, dict):
                                                 msg_id = msg.get("id")
                                                 if msg_id:
-                                                    existing_ids_local.add(msg_id)
+                                                    idms = f"{user_id}_{msg_id}"
+                                                    existing_ids_local.add(idms)
             except Exception as e:
                 print(f"⚠️ Error loading existing data: {e}")
 
@@ -370,144 +373,185 @@ async def v2fetch_gmail_messages_batch(
         configs_created = set()
 
         first_time_user = True
+        # print("starting checks for messages in db")
         cursor.execute(
-            "SELECT 1 FROM messages m JOIN threads th  ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
+            "SELECT m.message_id,th.conversation_id FROM messages m JOIN threads th  ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
             (user_id,),
         )
+        print("got a result")
+        rows = cursor.fetchall()
+        if rows:
+            # cursor.execute(
+            #     """
+            # SELECT COUNT(*)
+            # FROM messages m
+            # JOIN threads th ON m.conversation_id_fk = th.conversation_id
+            # WHERE th.external_user_id = %s
+            # """,
+            #     (user_id,),
+            # )
+            # print("Count of rows:", cursor.fetchone())
 
-        if cursor.fetchone():
-            print("GOT CURSOR RESULTS Line 382 v2 fetch")
+            # print("GOT CURSOR RESULTS Line 382 v2 fetch", rows)
             first_time_user = False
+        else:
+            print("ERROR dont got any result")
+        # print("goting into for loop of all messages")
+        for idx, thread in enumerate(threads):
+            thread_id = thread["id"]
+            res = results.get(thread_id)
 
-        for msg in all_messages:
-            message_id = msg["messageId"]
-
-            # Skip if already exists in database
-            cursor.execute(
-                "SELECT 1 FROM messages WHERE message_id = %s", (message_id,)
-            )
-            if cursor.fetchone():
-                print("GOT CURSOR RESULTS Line 389 v2 fetch")
+            if not res:
+                print(f"⚠️ No response for thread {thread_id}")
                 continue
 
-            # Skip if already exists locally
-            if message_id in existing_ids_local:
+            thread_data, err = res  # ✅ unpack tuple
+
+            if err:
+                print(f"⚠️ Thread {thread_id} error: {err}")
                 continue
 
-            # Your existing message processing logic...
-            thread_id = msg["thread_id"]
-            dt = parsedate_to_datetime(msg["date"])
-            timestamp_iso = dt.isoformat()
-            direction = "inbound" if msg["from"] != my_email else "outbound"
-            subject = msg["subject"]
-            body_content = msg.get("body", "")
-            plain_text = (
-                BeautifulSoup(body_content, "html.parser")
-                .get_text(separator="\n")
-                .strip()
-            )
-            extracted_body = extract_reply_content(plain_text)
+            if not thread_data:
+                continue
 
-            from_name, from_email = parseaddr(msg["from"])
-            to_name, to_email = parseaddr(msg.get("to", ""))
+            # directly iterate messages here
+            for msg in thread_data:
+                message_id = msg["messageId"]
+                row_id = f"{user_id}_{message_id}"
+                # print("messageID   --->", row_id)
+                # Skip if already exists in database
+                sql = """
+                SELECT m.conversation_id_fk,
+                    m.sender_id,
+                    t.external_user_id
+                FROM messages m
+                JOIN threads t
+                ON m.conversation_id_fk = t.conversation_id     -- join condition
+                WHERE m.message_id = %s
+                """
+                cursor.execute(sql, (row_id,))
+                row = cursor.fetchone()
 
-            if direction == "inbound":
-                participant = from_email
-                participant_name = from_name
-            else:
-                participant = to_email
-                participant_name = to_name
+                if row:
+                    external_user_id = row[2]
+                    # print("GOT CURSOR RESULTS Line 389 v2 fetch", row)
 
-            # Get or create client
-            if participant in email_to_client_id:
-                client_id, client_type = email_to_client_id[participant]
-            else:
-                result = get_users_client_id(participant, user_id, cursor)
+                    if external_user_id == user_id:
+                        print("message added already")
+                        # skip/continue whatever you need
 
-                if isinstance(result, tuple) and len(result) == 2:
-                    client_id, client_type = result
-                else:
-                    # assume function returned only client_id
-                    client_id = result if result else None
-                    client_type = None
+                # Skip if already exists locally
+                if message_id in existing_ids_local:
+                    print("skipping message in v2fetch gmail", message_id)
+                    continue
 
-                if not client_id:
-                    if not first_time_user:
-                        print(f"first_time_user : {first_time_user}")
-                        client_id = add_lead_contact(
-                            user_id, cursor, participant, participant_name
-                        )
-                        client_type = "Lead"
-                    if first_time_user:
-                        print(f"first_time_user : {first_time_user}")
-                        client_id = add_customer_contact(
-                            user_id, cursor, participant, participant_name
-                        )
-                        client_type = "Customer"
-
-                email_to_client_id[participant] = (client_id, client_type)
-
-            # Create message object
-            message = {
-                "id": message_id,
-                "from": from_email,
-                "to": my_email,
-                "body": extracted_body,
-                "subject": subject,
-                "timestamp": timestamp_iso,
-                "source": "gmail",
-                "direction": direction,
-                "user_id": user_id,
-                "thread_id": thread_id,
-                "conversation_id": from_email if direction == "inbound" else my_email,
-                "type": client_type,
-            }
-
-            grouped_messages.setdefault(client_id, {}).setdefault("gmail", []).append(
-                message
-            )
-            count_new += 1
-
-            if client_id not in configs_created:
-
-                # Create config files if needed (your existing logic)
-                config_folder = os.path.join(
-                    pathconfig.basepath, "messages", user_id, client_id
+                # Your existing message processing logic...
+                thread_id = msg["thread_id"]
+                dt = parsedate_to_datetime(msg["date"])
+                timestamp_iso = dt.isoformat()
+                direction = msg["direction"]
+                subject = msg["subject"]
+                body_content = msg.get("body", "")
+                raw_body_html = msg.get("body_html")
+                plain_text = (
+                    BeautifulSoup(body_content, "html.parser")
+                    .get_text(separator="\n")
+                    .strip()
                 )
-                ensure_dir(config_folder)
-                config_filepath = os.path.join(config_folder, "config.json")
-                #  {
-                #                 "conv_id": "",
-                #                 "ticket_id": "",
-                #                 "ticket_name": "",
-                #                 "subject": "",
-                #                 "channel": "",
-                #                 "updated_date": "",
-                #                 "parsed_timestamp": "",
-                #                 "thread_id": "",
-                #             }
+                extracted_body = extract_reply_content(plain_text)
 
-                if not os.path.exists(config_filepath):
-                    dummy_config = {
-                        "userclients_id": client_id,
-                        "conversations": [],
-                    }
-                    with open(config_filepath, "w", encoding="utf-8") as f:
-                        json.dump(dummy_config, f, indent=2)
+                from_name, from_email = parseaddr(msg["from"])
+                to_name, to_email = parseaddr(msg.get("to", ""))
 
-                    s3_config_key = f"{user_id}/messages/{client_id}/config.json"
-                    s3_data = read_json_from_s3(s3_config_key)
-                    if s3_data is None:
+                if direction == "inbound":
+                    participant = from_email
+                    participant_name = from_name
+                else:
+                    participant = to_email
+                    participant_name = to_name
 
-                        upload_any_file(
-                            config_filepath,
-                            user_id,
-                            type="messages",
-                            s3_key_C=s3_config_key,
-                        )
-                        print(f"uploaded config for client_id: {client_id}")
+                # Get or create client
+                if participant in email_to_client_id:
+                    client_id, client_type = email_to_client_id[participant]
+                else:
+                    result = get_users_client_id(participant, user_id, cursor)
 
-                configs_created.add(client_id)
+                    if isinstance(result, tuple) and len(result) == 2:
+                        client_id, client_type = result
+                    else:
+                        # assume function returned only client_id
+                        client_id = result if result else None
+                        client_type = None
+
+                    if not client_id:
+                        if not first_time_user:
+                            # print(f"first_time_user : {first_time_user}")
+                            client_id = add_lead_contact(
+                                user_id, cursor, participant, participant_name
+                            )
+                            client_type = "Lead"
+                        if first_time_user:
+                            # print(f"first_time_user : {first_time_user}")
+                            client_id = add_customer_contact(
+                                user_id, cursor, participant, participant_name
+                            )
+                            client_type = "Customer"
+
+                    email_to_client_id[participant] = (client_id, client_type)
+
+                # Create message object
+                message = {
+                    "id": row_id,
+                    "from": from_email,
+                    "to": my_email,
+                    "body": extracted_body,
+                    "raw": raw_body_html,
+                    "subject": subject,
+                    "timestamp": timestamp_iso,
+                    "source": "gmail",
+                    "direction": direction,
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "conversation_id": (
+                        from_email if direction == "inbound" else my_email
+                    ),
+                    "type": client_type,
+                }
+
+                grouped_messages.setdefault(client_id, {}).setdefault(
+                    "gmail", []
+                ).append(message)
+                count_new += 1
+
+                if client_id not in configs_created:
+
+                    # Create config files if needed (your existing logic)
+                    config_folder = os.path.join(
+                        pathconfig.basepath, "messages", user_id, client_id
+                    )
+                    ensure_dir(config_folder)
+                    config_filepath = os.path.join(config_folder, "config.json")
+                    if not os.path.exists(config_filepath):
+                        dummy_config = {
+                            "userclients_id": client_id,
+                            "conversations": [],
+                        }
+                        with open(config_filepath, "w", encoding="utf-8") as f:
+                            json.dump(dummy_config, f, indent=2)
+
+                        s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                        s3_data = read_json_from_s3(s3_config_key)
+                        if s3_data is None:
+
+                            upload_any_file(
+                                config_filepath,
+                                user_id,
+                                type="messages",
+                                s3_key_C=s3_config_key,
+                            )
+                            # print(f"uploaded config for client_id: {client_id}")
+
+                    configs_created.add(client_id)
 
         # Merge with existing data and save
         existing_data = safe_json_load(filepath)
@@ -1129,94 +1173,50 @@ def delete_user_ticket_data(user_id):
         with connection.cursor() as cursor:
             # 1. Get ticket IDs assigned to the user
             cursor.execute(
-                """
-                SELECT ticket_id_fk FROM assigned WHERE user_id_fk = %s
-                """,
+                "SELECT ticket_id_fk FROM assigned WHERE user_id_fk = %s",
                 (user_id,),
             )
             ticket_ids = [row[0] for row in cursor.fetchall() if row[0]]
 
-            if not ticket_ids:
-                # Still check for communication + users_clients
-                cursor.execute(
-                    "SELECT communication_id FROM communication WHERE user_id_fk = %s",
-                    (user_id,),
-                )
-                comm_ids = [row[0] for row in cursor.fetchall() if row[0]]
-
-                if comm_ids:
-                    format_strings = ",".join(["%s"] * len(comm_ids))
-                    cursor.execute(
-                        f"""
-                        DELETE FROM users_clients
-                        WHERE communication_id_fk IN ({format_strings})
-                        """,
-                        tuple(comm_ids),
-                    )
-                    cursor.execute(
-                        f"""
-                        DELETE FROM communication
-                        WHERE communication_id IN ({format_strings})
-                        """,
-                        tuple(comm_ids),
-                    )
-                    connection.commit()
-
-                return {
-                    "status": "success",
-                    "message": "No tickets found, cleaned communication/users_clients",
-                }
-
             # 2. Get conversation IDs from those tickets
-            format_strings = ",".join(["%s"] * len(ticket_ids))
-            cursor.execute(
-                f"""
-                SELECT conversation_id_fk FROM tickets
-                WHERE tickets_id IN ({format_strings})
-                """,
-                tuple(ticket_ids),
-            )
-            conversation_ids = [row[0] for row in cursor.fetchall() if row[0]]
+            conversation_ids = []
+            if ticket_ids:
+                format_strings = ",".join(["%s"] * len(ticket_ids))
+                cursor.execute(
+                    f"SELECT conversation_id_fk FROM tickets WHERE tickets_id IN ({format_strings})",
+                    tuple(ticket_ids),
+                )
+                conversation_ids = [row[0] for row in cursor.fetchall() if row[0]]
 
-            # 3. Delete messages (based on conversation IDs)
+            # 3. Delete messages based on ticket conversation IDs
             if conversation_ids:
                 format_strings = ",".join(["%s"] * len(conversation_ids))
                 cursor.execute(
-                    f"""
-                    DELETE FROM messages
-                    WHERE conversation_id_fk IN ({format_strings})
-                    """,
+                    f"DELETE FROM messages WHERE conversation_id_fk IN ({format_strings})",
                     tuple(conversation_ids),
                 )
 
-            # 4. Delete from assigned
-            format_strings = ",".join(["%s"] * len(ticket_ids))
-            cursor.execute(
-                f"""
-                DELETE FROM assigned
-                WHERE ticket_id_fk IN ({format_strings})
-                """,
-                tuple(ticket_ids),
-            )
+            # 4. Delete assigned
+            if ticket_ids:
+                format_strings = ",".join(["%s"] * len(ticket_ids))
+                cursor.execute(
+                    f"DELETE FROM assigned WHERE ticket_id_fk IN ({format_strings})",
+                    tuple(ticket_ids),
+                )
 
             # 5. Delete tickets
-            format_strings = ",".join(["%s"] * len(ticket_ids))
-            cursor.execute(
-                f"""
-                DELETE FROM tickets
-                WHERE tickets_id IN ({format_strings})
-                """,
-                tuple(ticket_ids),
-            )
+            if ticket_ids:
+                format_strings = ",".join(["%s"] * len(ticket_ids))
+                cursor.execute(
+                    f"DELETE FROM tickets WHERE tickets_id IN ({format_strings})",
+                    tuple(ticket_ids),
+                )
 
             # 6. Delete threads (based on conversation IDs)
             if conversation_ids:
                 format_strings = ",".join(["%s"] * len(conversation_ids))
                 cursor.execute(
-                    f"""
-                    DELETE FROM threads
-                    WHERE conversation_id IN ({format_strings})
-                    """,
+                    f"DELETE FROM threads WHERE conversation_id IN ({format_strings})",
                     tuple(conversation_ids),
                 )
 
@@ -1230,39 +1230,55 @@ def delete_user_ticket_data(user_id):
             if comm_ids:
                 format_strings = ",".join(["%s"] * len(comm_ids))
                 cursor.execute(
-                    f"""
-                    DELETE FROM users_clients
-                    WHERE communication_id_fk IN ({format_strings})
-                    """,
+                    f"DELETE FROM users_clients WHERE communication_id_fk IN ({format_strings})",
                     tuple(comm_ids),
                 )
                 cursor.execute(
-                    f"""
-                    DELETE FROM communication
-                    WHERE communication_id IN ({format_strings})
-                    """,
+                    f"DELETE FROM communication WHERE communication_id IN ({format_strings})",
                     tuple(comm_ids),
                 )
-            print("DELETING users")
-            cursor.execute(
-                """
-                UPDATE users SET umail_json = NULL WHERE user_id = %s
-                """,
-                (user_id,),  # <-- add comma to make it a tuple
-            )
-            connection.commit()
-            folder_path = f"{user_id}/messages"
-            Thread(target=delete_folder_from_s3, args=(folder_path,)).start()
-            client_ticket = TicketAllocator(user_id)
-            client_ticket.update_ticket(value=0)
 
-            return {
-                "status": "success",
-                "message": "User-related ticket, communication, and users_clients data deleted successfully",
-            }
+            # 8. Cleanup orphaned threads/messages (not tied to tickets)
+            cursor.execute(
+                "SELECT conversation_id FROM threads WHERE external_user_id = %s",
+                (user_id,),
+            )
+            orphan_convs = [row[0] for row in cursor.fetchall()]
+            if orphan_convs:
+                format_strings = ",".join(["%s"] * len(orphan_convs))
+                cursor.execute(
+                    f"DELETE FROM messages WHERE conversation_id_fk IN ({format_strings})",
+                    tuple(orphan_convs),
+                )
+                cursor.execute(
+                    f"DELETE FROM threads WHERE conversation_id IN ({format_strings})",
+                    tuple(orphan_convs),
+                )
+
+            # 9. Null umail_json on users
+            cursor.execute(
+                "UPDATE users SET umail_json = NULL WHERE user_id = %s",
+                (user_id,),
+            )
+
+            # 10. Commit all changes once
+            connection.commit()
+
+        # Outside the cursor context: delete S3 folder + update ticket allocator
+        folder_path = f"{user_id}/messages"
+        Thread(target=delete_folder_from_s3, args=(folder_path,)).start()
+        client_ticket = TicketAllocator(user_id)
+        client_ticket.update_ticket(value=0)
+
+        # single return at the end
+        return {
+            "status": "success",
+            "message": "User-related ticket, communication, users_clients and orphaned threads/messages data deleted successfully",
+        }
 
     except Exception as e:
-        connection.rollback()
+        if connection:
+            connection.rollback()
         return {"status": "failed", "error": str(e)}
     finally:
         if connection:

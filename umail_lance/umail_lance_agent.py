@@ -152,25 +152,44 @@ class UmailLanceClient:
 
         for row in response_data:
             folder = row.get("folder_name")
+            # print("****************")
+            # print(f"folder : {folder}")
             text_data = row.get("text")
+            # print(f"text_data : {text_data}")
+            # print("****************")
             conv_id = row.get("id")
             if not text_data:
                 continue
 
             try:
-                messages = json.loads(
+                messages_parsed = json.loads(
                     text_data
                 )  # Convert JSON string back to list of dicts
             except Exception as e:
                 print(f"[WARN] Failed to parse JSON for id {row.get('id')}: {e}")
                 continue
 
+            # If it's a list, pick the last message (or you can pick first or max timestamp)
+            if isinstance(messages_parsed, list):
+                latest_message = messages_parsed[-1]  # last message
+            elif isinstance(messages_parsed, dict):
+                latest_message = messages_parsed  # single message
+            else:
+                continue  # unknown format, skip
+
             try:
                 ts = datetime.fromisoformat(
-                    messages["timestamp"].replace("Z", "+00:00")
+                    latest_message["timestamp"].replace("Z", "+00:00")
                 )
             except Exception:
                 continue
+
+            # try:
+            #     ts = datetime.fromisoformat(
+            #         messages["timestamp"].replace("Z", "+00:00")
+            #     )
+            # except Exception:
+            #     continue
 
             # keep the latest per folder
             if (folder not in latest_per_folder) or (
@@ -179,7 +198,7 @@ class UmailLanceClient:
                 latest_per_folder[folder] = {
                     "ts": ts,
                     "conv_id": conv_id,
-                    "latest_message": messages,
+                    "latest_message": latest_message,
                 }
 
         # Drop helper ts field
@@ -303,20 +322,41 @@ class UmailLanceClient:
             user_id = parts[0]
             client_id = parts[1]
             conv_id = os.path.splitext(parts[2])[0]  # remove ".json"
-
-            flattened_texts = self.flatten_json(data)
-            timestamp_msg = data.get("timestamp")
-            result = {  # result is a single conversation file
-                "user_id": user_id,
-                "client_id": client_id,
-                "conv_id": conv_id,
-                "flattened_texts": flattened_texts,
-                "original_data": data,
-                "timestamp": timestamp_msg,
-            }
-            results.append(
-                result
-            )  # results now contain all the conversion files appended to it
+            # print("umail data", data)
+            if isinstance(data, list):
+                # data is already a list of dicts
+                new_Des = []
+                for das in data:
+                    if not isinstance(das, dict):
+                        continue  # skip if somehow not a dict
+                    flattened_texts = self.flatten_json(das)
+                    timestamp_msg = das.get("timestamp")
+                    result = {
+                        "user_id": user_id,
+                        "client_id": client_id,
+                        "conv_id": conv_id,
+                        "flattened_texts": flattened_texts,
+                        "original_data": das,
+                        "timestamp": timestamp_msg,
+                    }
+                    new_Des.append(result)
+                results.extend(new_Des)
+            else:
+                # data is a single dict
+                flattened_texts = self.flatten_json(data)
+                timestamp_msg = (
+                    data.get("timestamp") if isinstance(data, dict) else None
+                )
+                result = {
+                    "user_id": user_id,
+                    "client_id": client_id,
+                    "conv_id": conv_id,
+                    "flattened_texts": flattened_texts,
+                    "original_data": data,
+                    "timestamp": timestamp_msg,
+                }
+                results.append(result)
+            # results now contain all the conversion files appended to it
         return results
 
         #  for reply sending
@@ -339,7 +379,7 @@ class UmailLanceClient:
             "original_data": lance_data,
             "timestamp": timestamp,
         }
-        print("process_json_files complete with timestamp : {timestamp}")
+        print(f"process_json_files complete with timestamp : {timestamp}")
         return result
 
     # first fucntion
@@ -446,6 +486,7 @@ class UmailLanceClient:
         )
 
         all_text_lengths = []
+        vector_batch = []
 
         page_content = file.get("flattened_texts", "").strip()
         if page_content:
@@ -520,6 +561,8 @@ class UmailLanceClient:
                     folder_name=client_id,
                     timestamp=timestamp,
                 )
+                print(f"{conv_id} : {user_id} : {client_id} : {timestamp}")
+                vector_batch.append(vector_data)
 
         except Exception as e:
             print(f"[!] Embedding failed: {e}")
@@ -527,21 +570,17 @@ class UmailLanceClient:
 
         if vector_data:
             print("embedding complte. sending to lance db for insertion")
-            self.send_json_batch_to_lancedb_for_reply(vector_data)
+            self.send_json_batch_to_lancedb_for_reply(vector_batch)
+            print(f"embedding successful - embeded and uploaded to lancedb!!!")
             return {"embedding successful for {orginal_data}"}
         else:
             return {"vectors_made": 0}
 
-    def send_json_batch_to_lancedb_for_reply(self, vector_data):
+    def send_json_batch_to_lancedb_for_reply(self, vector_batch):
         """
         Send vector data to LanceDB for insertion
         """
-        # Convert UmailData object to dict if needed
-        if hasattr(vector_data, "dict") and callable(getattr(vector_data, "dict")):
-            payload = vector_data.dict()
-        else:
-            payload = vector_data
-
+        payload = [vec.dict() for vec in vector_batch]
         try:
             print("sending to insert_umail_vectors_for_reply")
 
@@ -671,6 +710,35 @@ class UmailLanceClient:
             response = requests.post(
                 f"{self.lancedb_url}/find_email_from_query",
                 json=payload,
+            )
+
+            if response.status_code == 200:
+                print("successfully fetched the results")
+                return response.json().get("results", [])
+            else:
+                print(f"HTTP Error: {response.status_code}")
+                print(f"Response text: {response.text}")
+                return []
+
+        except Exception as e:
+            print(f"Error in search_email_from_lance: {e}")
+            return []
+
+    # ------------FETCHING CONV FILE FOR AI ASSISSTANT--------#
+
+    def get_conv_from_lance(self, id, user_id, folder_name):
+        try:
+            print("inside  get_conv_from_lance")
+
+            payload = {
+                "id": id,
+                "user_id": user_id,
+                "folder_name": folder_name,
+            }
+            print("payload", payload)
+            response = requests.post(
+                f"{self.lancedb_url}/fetch_conv_file",
+                params=payload,
             )
 
             if response.status_code == 200:

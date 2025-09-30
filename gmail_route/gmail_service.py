@@ -17,6 +17,8 @@ from utils.base_logger import get_logger
 from utils.s3_utils import attach_CLDFRNT_url
 import random
 from typing import Optional, Tuple, List
+import re
+from bs4 import BeautifulSoup
 
 logger = get_logger(__name__)
 
@@ -181,9 +183,11 @@ class GmailService:
 
         response = self.service.users().watch(userId="me", body=watch_request).execute()
         if response:
-            logger.info("watch log created for the user successfully %s",self.user_email)
+            logger.info(
+                "watch log created for the user successfully %s", self.user_email
+            )
         else:
-            logger.info("watch log creation failed %s",self.user_email)
+            logger.info("watch log creation failed %s", self.user_email)
         return response
 
     def check_hisdata(self, stored_history_id):
@@ -599,6 +603,78 @@ class GmailService:
             self.service_running = False
             print(f"current batch fetched {batch_count}")
 
+    @staticmethod
+    def get_message_body(msg):
+        payload = msg.get("payload", {})
+        body = None  # use None to detect first valid part
+        attachments = []
+
+        def parse_part(part):
+            nonlocal body, attachments
+            mime_type = part.get("mimeType", "")
+            part_body = part.get("body", {})
+            data = part_body.get("data")
+
+            # Prefer HTML over plain
+            if body is None and mime_type == "text/plain" and data:
+                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
+                    "utf-8", errors="ignore"
+                )
+                body = decoded
+
+            elif mime_type == "text/html" and data:
+                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
+                    "utf-8", errors="ignore"
+                )
+                soup = BeautifulSoup(decoded, "html.parser")
+                body = soup.get_text(separator="\n")  # override text/plain with HTML
+                for a in soup.find_all("a", href=True):
+                    attachments.append(
+                        {"type": "link", "url": a["href"], "text": a.get_text()}
+                    )
+
+            # Calendar invites
+            elif mime_type in ["text/calendar", "application/ics"] and data:
+                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
+                    "utf-8", errors="ignore"
+                )
+                attachments.append({"type": "calendar", "content": decoded})
+
+            # Regular attachments
+            if part.get("filename"):
+                attachments.append(
+                    {
+                        "filename": part["filename"],
+                        "mimeType": mime_type,
+                        "attachmentId": part_body.get("attachmentId"),
+                    }
+                )
+
+            # Recurse nested parts
+            for sub_part in part.get("parts", []):
+                parse_part(sub_part)
+
+        # Start parsing
+        if "parts" in payload:
+            for part in payload["parts"]:
+                parse_part(part)
+        else:
+            parse_part(payload)
+
+        if body is None:
+            body = ""  # fallback empty string
+
+        # Remove quoted replies
+        split_patterns = [
+            r"\nOn .* wrote:",
+            r"\n>.*",
+            r"\nFrom: .*",
+        ]
+        for pattern in split_patterns:
+            body = re.split(pattern, body, maxsplit=1)[0]
+
+        return body.strip(), attachments
+
     async def process_threads_batch(
         self, thread_ids, my_email, batch_count, global_retries=3
     ):
@@ -657,28 +733,41 @@ class GmailService:
                         }
 
                         message_id = headers.get("message-id")
-                        from_header = headers.get("from", "")
-                        email = (
+                        from_header = headers.get("from", "Unknown Sender")
+                        to_header = headers.get("to", "")
+
+                        from_email = (
                             from_header.split()[-1].strip("<>")
                             if from_header
                             else "unknown@example.com"
                         )
+                        to_email = (
+                            to_header.split()[-1].strip("<>") if to_header else ""
+                        )
+
+                        direction = (
+                            "inbound"
+                            if self.user_email.lower() == to_email.lower()
+                            else "outbound"
+                        )
+                        body, attachments = self.get_message_body(msg)
 
                         thread_data.append(
                             {
                                 "thread_id": thread_id,
                                 "messageId": message_id,
-                                "from": headers.get("from", "Unknown Sender"),
-                                "to": headers.get("to", ""),
-                                "email": email,
+                                "from": from_header,
+                                "to": to_header,
+                                "email": from_email,  # sender’s email
                                 "subject": headers.get("subject", "No Subject"),
                                 "snippet": resp.get("snippet", ""),
-                                "body": msg.get("snippet", resp.get("snippet", "")),
+                                "body": body,
+                                "direction": direction,
                                 "date": headers.get("date", ""),
                                 "isRead": "UNREAD" not in labelids,
                                 "isStarred": "STARRED" in labelids,
                                 "labels": list(labelids),
-                                "attachments": [],
+                                "attachments": attachments,
                                 "isSentByMe": my_email.lower() in from_header.lower(),
                             }
                         )
@@ -822,15 +911,15 @@ class GmailService:
         # ✅ build initial query
         after_ts = to_epoch_days(start_date)
         before_ts = to_epoch_days(end_date) + 86400  # include end_date
-        query = f"in:inbox category:primary after:{after_ts} before:{before_ts}"
-        query2 = f"in:inbox after:{after_ts} before:{before_ts}"
+        # query = f"in:inbox category:primary after:{after_ts} before:{before_ts}"
+        query = f"in:inbox after:{after_ts} before:{before_ts}"
 
         # ✅ first attempt with query
         count = fetch_count(query)
 
         # ✅ if nothing found, retry without query (broad fetch)
-        if count == 0:
-            count = fetch_count(query2)
+        # if count == 0:
+        #     count = fetch_count(query2)
 
         return count
 
@@ -1109,81 +1198,61 @@ class GmailService:
 
         return output
 
-    # noraml function
+    def get_gmail_changes(self, start_history_id):
+        """
+        Fetch Gmail changes since a given historyId and return as dict.
 
-    # def get_threads(self, email_type, max_results=20):
-    # try:
-    #     response = (
-    #         self.service.users()
-    #         .threads()
-    #         .list(userId="me", maxResults=max_results)
-    #         .execute()
-    #     )
+        Args:
+            service: Gmail API service object
+            start_history_id: last processed historyId
 
-    # except Exception as e:
-    #     print("A general error occurred:", str(e))
-    # response = (
-    #     self.service.users()
-    #     .threads()
-    #     .list(userId="me", maxResults=max_results, labelIds=[email_type])
-    #     .execute()
-    # )
-    # threads = response.get("threads", [])
-    # thread_data = []
+        Returns:
+            dict with messages added, deleted, and label changes
+        """
+        changes = {
+            "messages_added": [],
+            "messages_deleted": [],
+            "labels_added": [],
+            "labels_removed": [],
+        }
 
-    # my_email = (
-    #     self.service.users().getProfile(userId="me").execute().get("emailAddress")
-    # )
+        try:
+            history_response = (
+                self.service.users()
+                .history()
+                .list(
+                    userId="me",
+                    startHistoryId=start_history_id,
+                    historyTypes=[
+                        "messageAdded",
+                        "messageDeleted",
+                        "labelAdded",
+                        "labelRemoved",
+                    ],
+                )
+                .execute()
+            )
 
-    # for thread in threads:
-    #     thread_id = thread["id"]
-    #     thread_detail = (
-    #         self.service.users().threads().get(userId="me", id=thread_id).execute()
-    #     )
-    #     messages = thread_detail.get("messages", [])
+            for record in history_response.get("history", []):
+                if "messagesAdded" in record:
+                    changes["messages_added"].extend(
+                        [m["message"]["id"] for m in record["messagesAdded"]]
+                    )
+                if "messagesDeleted" in record:
+                    changes["messages_deleted"].extend(
+                        [m["message"]["id"] for m in record["messagesDeleted"]]
+                    )
+                if "labelsAdded" in record:
+                    changes["labels_added"].extend(record["labelsAdded"])
+                if "labelsRemoved" in record:
+                    changes["labels_removed"].extend(record["labelsRemoved"])
 
-    #     if not messages:
-    #         continue
+        except Exception as e:
+            # HistoryId expired or other error
+            print("Error fetching history:", e)
+            return None
 
-    #     for message in messages:
-
-    #         headers = message.get("payload", {}).get("headers", [])
-    #         parsed = self.parse_headers(headers)
-    #         message_id = next(
-    #             (h["value"] for h in headers if h["name"].lower() == "message-id"),
-    #             None,
-    #         )
-
-    #         from_header = parsed.get("from", "")
-    #         to_header = parsed.get("to", "")
-
-    #         email = (
-    #             from_header.split()[-1].strip("<>")
-    #             if from_header
-    #             else "unknown@example.com"
-    #         )
-
-    #         is_sent_by_me = my_email.lower() in from_header.lower()
-
-    #         thread_data.append(
-    #             {
-    #                 "thread_id": thread_id,
-    #                 "messageId": message_id,
-    #                 "from": parsed.get("from", "Unknown Sender"),
-    #                 "to": parsed.get("to", ""),
-    #                 "email": email,
-    #                 "subject": parsed.get("subject", "No Subject"),
-    #                 "snippet": thread_detail.get("snippet", ""),
-    #                 "body": message.get("snippet", ""),
-    #                 "date": parsed.get("date", ""),
-    #                 "isRead": "UNREAD" not in message.get("labelIds", []),
-    #                 "isStarred": "STARRED" in message.get("labelIds", []),
-    #                 "labels": message.get("labelIds", []),
-    #                 "attachments": [],  # You can enhance this to parse actual attachments
-    #             }
-    #         )
-
-    # return thread_data
+        return changes
 
     def get_inbox(self):
         return self.get_threads("INBOX")
@@ -1462,9 +1531,7 @@ class GmailService:
         sent = self.service.users().messages().send(userId="me", body=msg).execute()
         return sent
 
-    def send_reply(
-        self, conversation_id, to, subject, thread_id, in_reply_to, body_text, user_id
-    ):
+    def send_reply(self, to, subject, thread_id, in_reply_to, body_text):
         if not to:
             raise ValueError("Recipient email 'to' is required")
         if not subject:
