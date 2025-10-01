@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from cust_helpers import pathconfig
@@ -7,7 +7,9 @@ from db.db_checkers import get_users_clients_id
 from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify
 from gmail_route.gmail_service import GmailService
+from gmail_route.routes import v2fetch_gmail_messages_batch
 from umail.routes import get_sorted_lance_emails
+from umail_helper.asyn_functions import get_datewise_info_base
 from utils.base_logger import get_logger
 from utils.normal import can_reply_to_email, load_yaml_file
 from .suggest_helper import getselectedconv, send_pilot_messages, suggest_helper_base
@@ -73,6 +75,7 @@ def receive_gmail_notification():
     else:
         log_data = {}
 
+    # gm=GmailService()
     # Build the new entry
     user_email = decoded_data.get("emailAddress", "unknown")
     new_entry = {
@@ -107,11 +110,35 @@ def receive_gmail_notification():
         return "Invalid Pub/Sub message data", 400
 
 
+smae_autopilotjson = {"emails": "ALL"}
+# for all new messages we will reply to all
+sameple_autopilotjson = {
+    "email1": {"status": "active", "updated_at": "date"},  # revoked,
+    "email2": {"status": "active", "updated_at": "date"},  # revoked,
+}
+# 3 new messages i have 2 auto pilot present  we reply to specific one
+"""
+user can make  auto pilot to 
+    1. ALL
+    2. selected emails
+
+for documents needed for ai suggest 
+    1.if all -> handle base users document
+    2.selected emails will have dcumented userid attached
+    3. with all and also have selected emails
+
+
+"""
+
+
 @assist_suggest_bp.route("/ai_autopilot", methods=["POST"])
 def triggerassist():
     data = request.get_json(force=True)
     userid = data.get("user_id")
-    from_email = data.get("email")
+    from_email = data.get("email")  # can be 'ALL' or a single email
+    selected_agents = data.get(
+        "selected_agent"
+    )  # list of agent IDs for selected emails
     email_msg = data.get("msg_body")
     conv_id = data.get("conversation_id")
 
@@ -129,7 +156,6 @@ def triggerassist():
             if not user_row:
                 return jsonify({"error": "user not found"}), 404
 
-            # current autopilot JSON from DB (could be string or dict)
             autopilot_data = user_row["autopilot"] or {}
             if isinstance(autopilot_data, str):
                 try:
@@ -137,23 +163,27 @@ def triggerassist():
                 except json.JSONDecodeError:
                     autopilot_data = {}
 
-            # update / add entry for from_email
-            if from_email not in autopilot_data:
-                # New record: add it as active
-                autopilot_data[from_email] = {
+            now = datetime.datetime.utcnow().isoformat()
+
+            if from_email == "ALL":
+                # Apply autopilot to all emails
+                autopilot_data["ALL"] = {
                     "status": "active",
-                    "updated_at": datetime.datetime.utcnow().isoformat(),
+                    "updated_at": now,
+                    "agent_doc": userid,
+                    "selected_agent": None,
                 }
             else:
-                # Existing record: update only if status is not active
-                current_status = autopilot_data[from_email].get("status")
-                if current_status != "active":
-                    autopilot_data[from_email] = {
+                # Handle single or multiple emails
+                emails = [from_email] if isinstance(from_email, str) else from_email
+                for email in emails:
+                    autopilot_data[email] = {
                         "status": "active",
-                        "updated_at": datetime.datetime.utcnow().isoformat(),
+                        "updated_at": now,
+                        "agent_doc": None,
+                        "selected_agent": selected_agents,
                     }
-                else:
-                    return jsonify({"message": "autopilot already activated"}), 200
+
             # persist back to DB
             cursor.execute(
                 "UPDATE users SET autopilot = %s WHERE user_id = %s",
@@ -163,20 +193,98 @@ def triggerassist():
     finally:
         connection.close()
 
-    # Call your AI helper
-    # ai_reply = suggest_helper_base(userid=userid, email_msg=email_msg, conv_id=conv_id)
-
-    return jsonify({"message": "autopilot activated"}), 200
+    return jsonify({"message": "autopilot activated", "autopilot": autopilot_data}), 200
 
 
 @assist_suggest_bp.route("/ai_autopilot-revoke", methods=["POST"])
 def revoke_autopilot():
     data = request.get_json(force=True)
     userid = data.get("user_id")
-    target_email = data.get("email")  # the email to revoke
+    target_email = data.get("email")  # can be 'ALL' or single/multiple emails
 
     if not all([userid, target_email]):
         return jsonify({"error": "Missing required fields"}), 400
+
+    connection = connect_to_rds()
+    try:
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT autopilot FROM users WHERE user_id = %s LIMIT 1",
+                (userid,),
+            )
+            user_row = cursor.fetchone()
+            if not user_row:
+                return jsonify({"error": "user not found"}), 404
+
+            autopilot_data = user_row["autopilot"] or {}
+            if isinstance(autopilot_data, str):
+                try:
+                    autopilot_data = json.loads(autopilot_data)
+                except json.JSONDecodeError:
+                    autopilot_data = {}
+
+            now = datetime.datetime.utcnow().isoformat()
+
+            emails = [target_email] if isinstance(target_email, str) else target_email
+            revoked_any = False
+            for email in emails:
+                if email in autopilot_data:
+                    autopilot_data[email]["status"] = "revoked"
+                    autopilot_data[email]["updated_at"] = now
+                    revoked_any = True
+
+            if not revoked_any:
+                return jsonify({"error": "email(s) not found in autopilot"}), 404
+
+            cursor.execute(
+                "UPDATE users SET autopilot = %s WHERE user_id = %s",
+                (json.dumps(autopilot_data), userid),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    return jsonify({"message": "Autopilot revoked", "autopilot": autopilot_data}), 200
+
+
+@assist_suggest_bp.route("/ai_autopilot/<int:userid>", methods=["GET"])
+def get_autopilot(userid):
+    connection = connect_to_rds()
+    try:
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT autopilot FROM users WHERE user_id = %s LIMIT 1",
+                (userid,),
+            )
+            user_row = cursor.fetchone()
+            if not user_row:
+                return jsonify({"error": "user not found"}), 404
+
+            autopilot_data = user_row["autopilot"] or {}
+            if isinstance(autopilot_data, str):
+                try:
+                    autopilot_data = json.loads(autopilot_data)
+                except json.JSONDecodeError:
+                    autopilot_data = {}
+
+    finally:
+        connection.close()
+
+    return jsonify({"user_id": userid, "autopilot": autopilot_data}), 200
+
+
+@assist_suggest_bp.route("/ai_autopilot-update-agent", methods=["POST"])
+def update_selected_agent():
+    data = request.get_json(force=True)
+    userid = data.get("user_id")
+    target_email = data.get("email")  # single email or list of emails
+    selected_agents = data.get("selected_agent")  # list of agent IDs to update
+
+    if not all([userid, target_email, selected_agents]):
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Ensure target_email is a list for uniform processing
+    emails = [target_email] if isinstance(target_email, str) else target_email
 
     connection = connect_to_rds()
     try:
@@ -197,16 +305,18 @@ def revoke_autopilot():
                 except json.JSONDecodeError:
                     autopilot_data = {}
 
-            # revoke the email if exists
-            if target_email in autopilot_data:
-                autopilot_data[target_email]["status"] = "revoked"
-                autopilot_data[target_email][
-                    "updated_at"
-                ] = datetime.datetime.utcnow().isoformat()
-            else:
-                return jsonify({"error": "email not found in autopilot"}), 404
+            now = datetime.datetime.utcnow().isoformat()
+            updated_any = False
+            for email in emails:
+                if email in autopilot_data:
+                    autopilot_data[email]["selected_agent"] = selected_agents
+                    autopilot_data[email]["updated_at"] = now
+                    updated_any = True
 
-            # update DB
+            if not updated_any:
+                return jsonify({"error": "email(s) not found in autopilot"}), 404
+
+            # persist changes
             cursor.execute(
                 "UPDATE users SET autopilot = %s WHERE user_id = %s",
                 (json.dumps(autopilot_data), userid),
@@ -218,7 +328,7 @@ def revoke_autopilot():
     return (
         jsonify(
             {
-                "message": f"Email {target_email} revoked successfully",
+                "message": "selected_agent updated successfully",
                 "autopilot": autopilot_data,
             }
         ),
@@ -238,27 +348,6 @@ def trigger_all_jobs():
         return jsonify({"job_a_task_id": t_a.id, "add_task_id": res.id}), 202
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-smae_autopilotjson = {"emails": "ALL"}
-# for all new messages we will reply to all
-sameple_autopilotjson = {
-    "email1": {"status": "active", "updated_at": "date"},  # revoked,
-    "email2": {"status": "active", "updated_at": "date"},  # revoked,
-}
-# 3 new messages i have 2 auto pilot present  we reply to specific one
-"""
-user can make  auto pilot to 
-    1. ALL
-    2. selected emails
-
-for documents needed for ai suggest 
-    1.if all -> handle base users document
-    2.selected emails will have dcumented userid attached
-    3. with all and also have selected emails
-
-
-"""
 
 
 @assist_suggest_bp.route("/checkuserid", methods=["POST"])
@@ -370,3 +459,83 @@ def make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
     finally:
         if n_connection is None and connection:
             connection.close()
+
+
+# import asyncio
+
+
+# @assist_suggest_bp.route("/test_gmail_mess/<userid>/<hist>", methods=["GET"])
+# def messcheckgmail(userid, hist):
+#     # Connect to DB
+#     connection = connect_to_rds()
+#     if connection is None:
+#         return jsonify({"error": "Database connection failed", "status": "failed"})
+
+#     # Inner async function to run async tasks
+#     async def main():
+#         # Fetch total messages info
+#         end_date = datetime.now(timezone.utc).date()
+#         today = end_date - timedelta(days=3)
+
+#         total_messages = await get_datewise_info_base(
+#             userid=userid, connection=connection, months=6
+#         )
+#         threads_info = total_messages.get("threadsTotal", {})
+#         threads_max = threads_info.get("count", 0)
+#         threads = threads_info.get("threads", [])
+#         my_email = total_messages.get("email")
+
+#         if not threads:
+#             return {"res": [], "val": None, "status": "no threads found"}
+
+#         # Gmail service instance
+#         gmail_service = GmailService(userid, connection)
+
+#         # Get Gmail changes (synchronous)
+#         # val = gmail_service.get_gmail_changes(hist)
+
+#         # Fetch all messages in threads (async)
+#         # threads = [
+#         #     {
+#         #         "historyId": "13510",
+#         #         "id": "19855fad53ec843d",
+#         #         "snippet": "this is the re reply to the test message On Tue, Jul 29, 2025 at 5:10 PM Service Account &lt;service@bytoid.ca&gt; wrote: yes reply to that test message On Tue, Jul 29, 2025 at 5:09 PM Bytoid Test",
+#         #     },
+#         #     {"historyId": "13810", "id": "198659fcb35d870b", "snippet": "idk"},
+#         # ]
+#         # my_email = "service@bytoid.ca"
+#         results = await v2fetch_gmail_messages_batch(
+#             userid, threads, my_email, len(threads), connection
+#         )
+#         # results = await gmail_service.process_threads_batch(
+#         #     threads, my_email, threads_max
+#         # )
+#         # all_messages = []
+#         # for thread_id, res in results.items():
+#         #     thread_data, err = res
+
+#         #     if not res:
+#         #         print(f"⚠️ No response for thread {thread_id}")
+#         #         continue
+
+#         #     thread_data, err = res  # ✅ unpack tuple
+
+#         #     if err:
+#         #         print(f"⚠️ Thread {thread_id} error: {err}")
+#         #         continue
+
+#         #     if thread_data:
+#         #         all_messages.extend(thread_data)
+
+#         return {
+#             "res": results,
+#             "status": "success",
+#             "rescount": len(results),
+#             # "changed": all_messages,
+#             # "chan_count": len(all_messages),
+#         }
+
+#     # Run the async main function in a synchronous route
+#     response_data = asyncio.run(main())
+#     connection.close()
+#     return jsonify(response_data)

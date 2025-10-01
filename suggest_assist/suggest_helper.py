@@ -381,9 +381,10 @@ def send_pilot_messages(
                     message_type,
                     is_summary,
                     created_at,
-                    update_at
+                    update_at,
+                    sender_type
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     msg_id,
@@ -394,6 +395,8 @@ def send_pilot_messages(
                     subject,
                     created_date,
                     updated_date,
+                    channel,
+
                 ),
             )
             print("✅ [DEBUG] Message record inserted")

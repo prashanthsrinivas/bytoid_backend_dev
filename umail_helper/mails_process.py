@@ -271,7 +271,9 @@ def generate_subject(user_id, output_path, channel):
         all_messages = data.get("new_messages", [])
         if channel:
             filtered_messages = [
-                msg for msg in all_messages if msg.get("channel") == channel
+                msg.get("body", "")
+                for msg in all_messages
+                if channel is None or msg.get("channel") == channel
             ]
         else:
             filtered_messages = all_messages
@@ -568,7 +570,7 @@ def append_subject_to_messages(
                                         "Open",  # or rely on DB default
                                         "Medium",  # or rely on DB default
                                         created_date,
-                                        updated_date,
+                                        created_date,
                                         communication_id,
                                     ),
                                 )
@@ -734,7 +736,7 @@ def append_subject_to_messages(
                                 "Open",
                                 "Medium",
                                 created_in,
-                                updated_date,
+                                created_in,
                                 communication_id,
                             ),
                         )

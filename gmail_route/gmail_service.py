@@ -606,7 +606,8 @@ class GmailService:
     @staticmethod
     def get_message_body(msg):
         """
-        Extracts message body, links, attachments, and calendar events from a Gmail message.
+        Extracts a clean, Gmail/Outlook-like message body with proper formatting.
+        Inline links are integrated as text. Lists, bullets, and indentation are preserved.
         Returns: (body_text, attachments_list)
         """
         payload = msg.get("payload", {})
@@ -624,20 +625,42 @@ class GmailService:
                 decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
                     "utf-8", errors="ignore"
                 )
-                body += decoded
+                body += decoded + "\n"
 
+            # HTML PARTS
             elif mime_type == "text/html" and data:
                 decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
                     "utf-8", errors="ignore"
                 )
                 soup = BeautifulSoup(decoded, "html.parser")
+
+                # Preserve lists
+                for ul in soup.find_all("ul"):
+                    for li in ul.find_all("li"):
+                        li.insert_before("- ")  # bullet
+                    ul.unwrap()
+
+                for ol in soup.find_all("ol"):
+                    for idx, li in enumerate(ol.find_all("li"), start=1):
+                        li.insert_before(f"{idx}. ")  # numbered
+                    ol.unwrap()
+
+                # Preserve preformatted text
+                for pre in soup.find_all("pre"):
+                    pre.insert_before("\n")
+                    pre.insert_after("\n")
+
+                # Replace block-level tags with newlines
+                for tag in soup.find_all(["br", "p", "div"]):
+                    tag.insert_before("\n")
+
+                # Replace links with their text only
+                for a in soup.find_all("a"):
+                    a.replace_with(a.get_text())
+
                 # Extract visible text
-                body += soup.get_text(separator="\n")
-                # Extract links
-                for a in soup.find_all("a", href=True):
-                    attachments.append(
-                        {"type": "link", "url": a["href"], "text": a.get_text()}
-                    )
+                text = soup.get_text(separator="\n")
+                body += text + "\n"
 
             # CALENDAR INVITES
             elif mime_type in ["text/calendar", "application/ics"] and data:
@@ -646,7 +669,7 @@ class GmailService:
                 )
                 attachments.append({"type": "calendar", "content": decoded})
 
-            # ATTACHMENTS
+            # FILE ATTACHMENTS
             if part.get("filename"):
                 attachment_id = part_body.get("attachmentId")
                 attachments.append(
@@ -668,16 +691,34 @@ class GmailService:
         else:
             parse_part(payload)
 
-        # Remove quoted previous messages
-        split_patterns = [
+        # Remove quoted replies/forwards
+        reply_patterns = [
             r"\nOn .* wrote:",
             r"\n>.*",
             r"\nFrom: .*",
+            r"\nSent: .*",
+            r"\nTo: .*",
+            r"\nSubject: .*",
         ]
-        for pattern in split_patterns:
+        for pattern in reply_patterns:
             body = re.split(pattern, body, maxsplit=1)[0]
 
-        return body.strip(), attachments
+        # Remove common signature delimiters
+        signature_patterns = [
+            r"\n--\s*\n.*",  # lines after --
+            r"\n__\s*\n.*",  # lines after __
+            r"\nThanks[,\n].*",  # lines starting with Thanks, Regards etc.
+            r"\nBest[,\n].*",
+        ]
+        for pattern in signature_patterns:
+            body = re.sub(pattern, "", body, flags=re.IGNORECASE | re.DOTALL)
+
+        # Normalize whitespace: multiple newlines → max 2 newlines, collapse spaces
+        body = re.sub(r"\n\s*\n+", "\n\n", body)  # keep paragraph breaks
+        body = re.sub(r"[ \t]+", " ", body)  # collapse spaces
+        body = body.strip()
+
+        return body, attachments
 
     async def process_threads_batch(
         self, thread_ids, my_email, batch_count, global_retries=3
