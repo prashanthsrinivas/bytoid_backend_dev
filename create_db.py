@@ -987,67 +987,272 @@ def expand_communication_columns():
         connection.close()
 
 
-def expand_users_clients_columns_v2():
+def expand_threads_columns_v2():
     """
-    Safely update users_clients columns:
-    - PK users_clients_id to VARCHAR(128)
-    - communication_id_fk already VARCHAR(128)
-    - other varchar(36) columns to VARCHAR(64)
+    Safely expand threads and tickets columns to avoid truncation errors:
+    - threads.conversation_id → VARCHAR(128)
+    - tickets.conversation_id_fk → VARCHAR(128)
+    - Other varchar(36) columns → VARCHAR(64)
+    Handles existing foreign key constraints with integrations and tickets.
     """
     try:
         connection = connect_to_rds()
         with connection.cursor() as cursor:
-            # 1. Drop foreign key in assigned table
-            cursor.execute("ALTER TABLE assigned DROP FOREIGN KEY assigned_ibfk_3;")
-            print("✅ Dropped foreign key assigned_ibfk_3")
+            # 1️⃣ Drop foreign keys temporarily
+            try:
+                cursor.execute("ALTER TABLE threads DROP FOREIGN KEY fk_integration")
+            except Exception:
+                pass
 
-            # 2. Alter users_clients primary key
-            cursor.execute(
-                "ALTER TABLE users_clients MODIFY COLUMN users_clients_id VARCHAR(128) NOT NULL;"
-            )
-            print("✅ Updated users_clients_id to VARCHAR(128)")
+            try:
+                cursor.execute("ALTER TABLE threads DROP FOREIGN KEY fk_ticket")
+            except Exception:
+                pass
 
-            # 3. Update other varchar(36) columns to VARCHAR(64)
-            columns_to_update = [
-                "first_name",
-                "last_name",
-                "phone_number",
-                "whatsapp_number",
-                "email_id",
-                "facebook_id",
-                "slack_workspace",
-            ]
-            for col in columns_to_update:
+            try:
                 cursor.execute(
-                    f"ALTER TABLE users_clients MODIFY COLUMN {col} VARCHAR(64) NULL;"
-                )
-                print(f"✅ Updated {col} to VARCHAR(64)")
+                    "ALTER TABLE tickets DROP FOREIGN KEY tickets_ibfk_1"
+                )  # FK to threads
+            except Exception:
+                pass
 
-            # 4. Update communication_id_fk if needed (already 128)
-            cursor.execute(
-                "ALTER TABLE users_clients MODIFY COLUMN communication_id_fk VARCHAR(128) NULL;"
-            )
-
-            # 5. Recreate the foreign key
+            # 2️⃣ Clean up ticket_id_fk values that don't exist in tickets
             cursor.execute(
                 """
-                ALTER TABLE assigned
-                ADD CONSTRAINT assigned_ibfk_3
-                FOREIGN KEY (users_clients_id_fk)
-                REFERENCES users_clients(users_clients_id)
-                ON DELETE CASCADE
-                ON UPDATE CASCADE;
+                UPDATE threads t
+                LEFT JOIN tickets tk ON t.ticket_id_fk = tk.tickets_id
+                SET t.ticket_id_fk = NULL
+                WHERE tk.tickets_id IS NULL;
             """
             )
-            print("✅ Recreated foreign key assigned_ibfk_3")
+
+            # 3️⃣ Alter column sizes
+            # cursor.execute(
+            #     """
+            #     ALTER TABLE threads
+            #     MODIFY conversation_id VARCHAR(128) NOT NULL,
+            #     MODIFY integration_id_fk VARCHAR(128),
+            #     MODIFY external_user_id VARCHAR(128),
+            #     MODIFY status VARCHAR(64),
+            #     MODIFY ticket_id_fk VARCHAR(128)
+            # """
+            # )
+
+            # cursor.execute(
+            #     """
+            #     ALTER TABLE tickets
+            #     MODIFY tickets_id VARCHAR(128)
+            #     MODIFY conversation_id_fk VARCHAR(128)
+            # """
+            # )
+            cursor.execute(
+                """
+                ALTER TABLE tickets
+                MODIFY tickets_id VARCHAR(128)
+            """
+            )
+
+            # 4️⃣ Recreate foreign keys
+            cursor.execute(
+                """
+                ALTER TABLE threads
+                ADD CONSTRAINT fk_integration
+                FOREIGN KEY (integration_id_fk)
+                REFERENCES integrations(integration_id)
+                ON DELETE SET NULL
+            """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE threads
+                ADD CONSTRAINT fk_ticket
+                FOREIGN KEY (ticket_id_fk)
+                REFERENCES tickets(tickets_id)
+                ON DELETE SET NULL
+            """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE tickets
+                ADD CONSTRAINT tickets_ibfk_1
+                FOREIGN KEY (conversation_id_fk)
+                REFERENCES threads(conversation_id)
+                ON DELETE SET NULL
+            """
+            )
 
             connection.commit()
-            print("✅ users_clients columns updated with FK handled successfully!")
+            print("✅ threads and tickets columns updated successfully!")
 
     except Exception as e:
         if connection:
             connection.rollback()
-        print(f"❌ Error updating users_clients with FK: {e}")
+        print(f"❌ Error updating threads/tickets tables: {e}")
+        raise
+    finally:
+        connection.close()
+
+
+def expand_assigned_columns():
+    """
+    Safely expand assigned table columns to avoid truncation errors:
+    - assigned_id → VARCHAR(128)
+    - user_id_fk, ticket_id_fk → VARCHAR(128)
+    - users_clients_id_fk → VARCHAR(64)
+    Handles existing foreign key constraints.
+    """
+    try:
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            # 1️⃣ Find actual FK names dynamically
+            cursor.execute(
+                """
+                SELECT CONSTRAINT_NAME, COLUMN_NAME 
+                FROM information_schema.KEY_COLUMN_USAGE 
+                WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='assigned'
+                  AND REFERENCED_TABLE_NAME IS NOT NULL;
+            """
+            )
+            fks = cursor.fetchall()
+            for fk in fks:
+                try:
+                    cursor.execute(f"ALTER TABLE assigned DROP FOREIGN KEY {fk[0]}")
+                except Exception:
+                    pass  # ignore if already dropped
+
+            # 2️⃣ Alter column sizes
+            cursor.execute(
+                """
+                ALTER TABLE assigned
+                MODIFY assigned_id VARCHAR(128) NOT NULL,
+                MODIFY user_id_fk VARCHAR(128),
+                MODIFY users_clients_id_fk VARCHAR(128),
+                MODIFY ticket_id_fk VARCHAR(128)
+            """
+            )
+
+            # 3️⃣ Recreate foreign keys
+            cursor.execute(
+                """
+                ALTER TABLE assigned
+                ADD CONSTRAINT assigned_user_fk
+                FOREIGN KEY (user_id_fk)
+                REFERENCES users(user_id)
+                ON DELETE SET NULL
+            """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE assigned
+                ADD CONSTRAINT assigned_clients_fk
+                FOREIGN KEY (users_clients_id_fk)
+                REFERENCES users_clients(users_clients_id)
+                ON DELETE SET NULL
+            """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE assigned
+                ADD CONSTRAINT assigned_ticket_fk
+                FOREIGN KEY (ticket_id_fk)
+                REFERENCES tickets(tickets_id)
+                ON DELETE SET NULL
+            """
+            )
+
+            connection.commit()
+            print("✅ assigned table columns updated successfully!")
+
+    except Exception as e:
+        if connection:
+            connection.rollback()
+        print(f"❌ Error updating assigned table: {e}")
+        raise
+    finally:
+        connection.close()
+
+
+def modify_messages():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed.")
+        return
+
+    cursor = connection.cursor()
+    try:
+        alter_table_sql = """
+            ALTER TABLE messages 
+            MODIFY sender_type ENUM(
+                'gmail','website','zoho','outlook','whatsapp','sms','phone','instagram_dm','facebook_messenger'
+            ) 
+            DEFAULT NULL;
+        """
+        cursor.execute(alter_table_sql)
+        connection.commit()
+        print("✅ messages table altered successfully!")
+    except Exception as e:
+        print("⚠️ Error while adding column:", e)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def expand_messages_columns():
+    """
+    Safely expand messages table columns to avoid truncation errors.
+    Handles foreign key constraints.
+    """
+    try:
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            # 1️⃣ Drop foreign keys temporarily
+            try:
+                cursor.execute(
+                    "ALTER TABLE messages DROP FOREIGN KEY fk_messages_conversation"
+                )
+            except Exception:
+                pass  # might not exist
+
+            # 2️⃣ Clean up orphaned conversation_id_fk
+            cursor.execute(
+                """
+                UPDATE messages m
+                LEFT JOIN threads t ON m.conversation_id_fk = t.conversation_id
+                SET m.conversation_id_fk = NULL
+                WHERE t.conversation_id IS NULL;
+            """
+            )
+
+            # 3️⃣ Alter columns
+            cursor.execute(
+                """
+                ALTER TABLE messages
+                MODIFY message_id VARCHAR(256) NOT NULL,
+                MODIFY conversation_id_fk VARCHAR(128),
+                MODIFY sender_id VARCHAR(128),
+                MODIFY content_ref VARCHAR(128),
+                MODIFY is_summary VARCHAR(128)
+            """
+            )
+
+            # 4️⃣ Recreate foreign key
+            cursor.execute(
+                """
+                ALTER TABLE messages
+                ADD CONSTRAINT fk_messages_conversation
+                FOREIGN KEY (conversation_id_fk)
+                REFERENCES threads(conversation_id)
+                ON DELETE SET NULL
+            """
+            )
+
+            connection.commit()
+            print("✅ messages table columns updated successfully!")
+
+    except Exception as e:
+        if connection:
+            connection.rollback()
+        print(f"❌ Error updating messages table: {e}")
         raise
     finally:
         connection.close()
@@ -1083,4 +1288,7 @@ if __name__ == "__main__":
     # addAssigneColumn()
     # update_users_auto_reply()
     # expand_communication_columns()
-    # expand_users_clients_columns_v2()
+    # expand_threads_columns_v2()
+    # expand_assigned_columns()
+    # modify_messages()
+    # expand_messages_columns()

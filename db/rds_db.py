@@ -1,11 +1,8 @@
 import pymysql
 import boto3
 import json
-import os
+import os, time
 from dotenv import load_dotenv
-from botocore.exceptions import ClientError
-from sqlalchemy import create_engine
-from sqlalchemy.pool import QueuePool
 from dbutils.pooled_db import PooledDB
 
 load_dotenv()
@@ -103,6 +100,20 @@ def get_cursor(conn):
         raise
     finally:
         cursor.close()
+
+
+def safe_execute(cursor, query, params=None, retries=3, delay=0.2):
+    for attempt in range(retries):
+        try:
+            cursor.execute(query, params)
+            return
+        except pymysql.err.OperationalError as e:
+            if e.args[0] == 1213:  # Deadlock
+                print(f"⚠️ Deadlock detected, retrying... attempt {attempt+1}")
+                time.sleep(delay * (attempt + 1))  # small backoff
+                continue
+            raise
+    raise RuntimeError("Deadlock retry limit reached")
 
 
 # start_rds_instance()

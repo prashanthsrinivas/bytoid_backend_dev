@@ -605,8 +605,12 @@ class GmailService:
 
     @staticmethod
     def get_message_body(msg):
+        """
+        Extracts message body, links, attachments, and calendar events from a Gmail message.
+        Returns: (body_text, attachments_list)
+        """
         payload = msg.get("payload", {})
-        body = None  # use None to detect first valid part
+        body = ""
         attachments = []
 
         def parse_part(part):
@@ -615,42 +619,45 @@ class GmailService:
             part_body = part.get("body", {})
             data = part_body.get("data")
 
-            # Prefer HTML over plain
-            if body is None and mime_type == "text/plain" and data:
+            # TEXT PARTS
+            if mime_type == "text/plain" and data:
                 decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
                     "utf-8", errors="ignore"
                 )
-                body = decoded
+                body += decoded
 
             elif mime_type == "text/html" and data:
                 decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
                     "utf-8", errors="ignore"
                 )
                 soup = BeautifulSoup(decoded, "html.parser")
-                body = soup.get_text(separator="\n")  # override text/plain with HTML
+                # Extract visible text
+                body += soup.get_text(separator="\n")
+                # Extract links
                 for a in soup.find_all("a", href=True):
                     attachments.append(
                         {"type": "link", "url": a["href"], "text": a.get_text()}
                     )
 
-            # Calendar invites
+            # CALENDAR INVITES
             elif mime_type in ["text/calendar", "application/ics"] and data:
                 decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
                     "utf-8", errors="ignore"
                 )
                 attachments.append({"type": "calendar", "content": decoded})
 
-            # Regular attachments
+            # ATTACHMENTS
             if part.get("filename"):
+                attachment_id = part_body.get("attachmentId")
                 attachments.append(
                     {
                         "filename": part["filename"],
                         "mimeType": mime_type,
-                        "attachmentId": part_body.get("attachmentId"),
+                        "attachmentId": attachment_id,
                     }
                 )
 
-            # Recurse nested parts
+            # RECURSE nested parts
             for sub_part in part.get("parts", []):
                 parse_part(sub_part)
 
@@ -661,10 +668,7 @@ class GmailService:
         else:
             parse_part(payload)
 
-        if body is None:
-            body = ""  # fallback empty string
-
-        # Remove quoted replies
+        # Remove quoted previous messages
         split_patterns = [
             r"\nOn .* wrote:",
             r"\n>.*",

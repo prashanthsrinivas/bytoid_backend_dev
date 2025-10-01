@@ -1,5 +1,6 @@
 import asyncio
 from cust_helpers import pathconfig
+from db.rds_db import safe_execute
 from utils.normal import ensure_dir, load_yaml_file
 from datetime import datetime, timezone
 import os
@@ -317,7 +318,7 @@ def append_subject_to_messages(
     batch_count,
     ticket_allocator,
 ):
-    # print(f"****inside append_subject_to_messages for batch number : {batch_count}")
+    print(f"****inside append_subject_to_messages for batch number : {batch_count}")
 
     # Build a lookup of message_id → subject (unchanged)
     subject_map = {}
@@ -500,14 +501,15 @@ def append_subject_to_messages(
             thread_id = msg.get("thread_id")
             direction = msg.get("direction")
             msg_body = msg.get("body")
+            new_conversation_id = f"{user_id}_{thread_id}"
             cursor.execute(
                 "SELECT 1 from threads where conversation_id = %s",
-                (thread_id,),
+                (new_conversation_id,),
             )
             row = cursor.fetchone()
             if row:
                 if thread_id:
-                    # print("THREAD BASE CASE", msg_id)
+                    print("THREAD BASE CASE", msg_id)
                     # # mesag_id = msg_id  # keep original name usage
                     # print("MSG BODY", msg_body)
 
@@ -551,14 +553,20 @@ def append_subject_to_messages(
                                 # )
 
                                 communication_id = communication_id_cache.get(client_id)
-                                cursor.execute(
-                                    "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority,created_in,updated_in,communication_id_fk) VALUES (%s, %s, %s,%s,%s,%s,%s,%s)",
+                                print("thread case insert to tickets")
+                                safe_execute(
+                                    cursor,
+                                    """
+                                    INSERT INTO tickets 
+                                    (tickets_id,ticket_name, conversation_id_fk, status, priority, created_in, updated_in, communication_id_fk)
+                                    VALUES (%s,%s, %s, %s, %s, %s, %s, %s)
+                                    """,
                                     (
                                         ticket_id,
                                         ticket_name,
                                         conversation_id,
-                                        "Open",
-                                        "Medium",
+                                        "Open",  # or rely on DB default
+                                        "Medium",  # or rely on DB default
                                         created_date,
                                         updated_date,
                                         communication_id,
@@ -567,7 +575,9 @@ def append_subject_to_messages(
                                 # lance_ticket_id += 1
 
                                 assigned_id = str(uuid.uuid4())
-                                cursor.execute(
+                                print("thread case insert to assigned")
+                                safe_execute(
+                                    cursor,
                                     """
                                     INSERT INTO assigned (assigned_id, user_id_fk, users_clients_id_fk, ticket_id_fk)
                                     VALUES (%s, %s, %s, %s)
@@ -588,11 +598,14 @@ def append_subject_to_messages(
                                 #     f"matched config TKT {lance_ticket_id} thread {thread_id} clientid {client_id} conv {conversation_id}"
                                 # )
 
-                                cursor.execute(
+                                safe_execute(
+                                    cursor,
                                     "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
                                     (updated_date, "In-Progress", conversation_id),
                                 )
-                                cursor.execute(
+
+                                safe_execute(
+                                    cursor,
                                     "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
                                     (updated_date, conversation_id),
                                 )
@@ -600,7 +613,8 @@ def append_subject_to_messages(
                                 # final insert if message doesn't exist (we already checked via set; keep the guard)
                                 if msg_id not in existing_ids:
                                     cont_ref = f"{user_id}/messages/{client_id}/{conversation_id}.json"
-                                    cursor.execute(
+                                    safe_execute(
+                                        cursor,
                                         """
                                         INSERT INTO messages (
                                             message_id,
@@ -610,9 +624,10 @@ def append_subject_to_messages(
                                             message_type,
                                             is_summary,
                                             created_at,
-                                            update_at
+                                            update_at,
+                                            sender_type
                                         )
-                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                         """,
                                         (
                                             msg_id,
@@ -623,6 +638,7 @@ def append_subject_to_messages(
                                             subject,
                                             created_date,
                                             updated_date,
+                                            channel,
                                         ),
                                     )
                                     existing_ids.add(msg_id)  # keep local set in sync
@@ -657,10 +673,11 @@ def append_subject_to_messages(
                 #     continue
             else:
                 # 3/4) No existing thread → create new thread (inbound/outbound paths)
-                new_conversation_id = thread_id
+
                 msg["conversation_id"] = new_conversation_id
 
-                cursor.execute(
+                safe_execute(
+                    cursor,
                     """
                     INSERT INTO threads (conversation_id, started_at, status, last_message_at,external_user_id)
                     VALUES (%s, %s, %s, %s, %s)
@@ -669,7 +686,7 @@ def append_subject_to_messages(
                 )
 
                 if direction == "inbound":
-                    # print("INBOUND msg", msg_id)
+                    print("INBOUND msg", msg_id)
                     # print("MSG BODY", msg_body)
                     ticket_uuid = str(uuid.uuid4())
                     new_ticket_id = f"TKT-{lance_ticket_id}#{ticket_uuid}"
@@ -702,8 +719,14 @@ def append_subject_to_messages(
                     )
                     if not cursor.fetchone():
                         communication_id = communication_id_cache.get(client_id)
-                        cursor.execute(
-                            "INSERT INTO tickets (tickets_id, ticket_name, conversation_id_fk,status,priority,created_in,updated_in,communication_id_fk) VALUES (%s, %s, %s,%s,%s,%s,%s,%s)",
+                        safe_execute(
+                            cursor,
+                            """
+                            INSERT INTO tickets (
+                                tickets_id, ticket_name, conversation_id_fk, status, priority,
+                                created_in, updated_in, communication_id_fk
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
                             (
                                 new_ticket_id,
                                 ticket_name,
@@ -715,10 +738,12 @@ def append_subject_to_messages(
                                 communication_id,
                             ),
                         )
+
                         # lance_ticket_id += 1
 
                         assigned_id = str(uuid.uuid4())
-                        cursor.execute(
+                        safe_execute(
+                            cursor,
                             """
                             INSERT INTO assigned (assigned_id, user_id_fk, users_clients_id_fk, ticket_id_fk)
                             VALUES (%s, %s, %s, %s)
@@ -727,7 +752,8 @@ def append_subject_to_messages(
                         )
                         # print("NEW TKT CREATED 718")
 
-                    cursor.execute(
+                    safe_execute(
+                        cursor,
                         """
                         UPDATE threads
                         SET ticket_id_fk = %s
@@ -745,7 +771,9 @@ def append_subject_to_messages(
                         cont_ref = (
                             f"{user_id}/messages/{client_id}/{new_conversation_id}.json"
                         )
-                        cursor.execute(
+
+                        safe_execute(
+                            cursor,
                             """
                             INSERT INTO messages (
                                 message_id,
@@ -755,9 +783,10 @@ def append_subject_to_messages(
                                 message_type,
                                 is_summary,
                                 created_at,
-                                update_at
+                                update_at,
+                                sender_type
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 msg_id,
@@ -768,6 +797,7 @@ def append_subject_to_messages(
                                 subj,
                                 created_in,
                                 updated_date,
+                                channel,
                             ),
                         )
                         existing_ids.add(msg_id)
@@ -792,7 +822,7 @@ def append_subject_to_messages(
                     connection.commit()
 
                 else:
-                    # print("OUTBOUND MSG", msg_id)
+                    print("OUTBOUND MSG", msg_id)
                     # print("MSG BODY", msg_body)
                     # outbound
                     msg["ticket_id"] = None
@@ -800,7 +830,8 @@ def append_subject_to_messages(
                     msg["conversation_id"] = new_conversation_id
                     # print("OUTBOUND placed")
 
-                    cursor.execute(
+                    safe_execute(
+                        cursor,
                         """
                         UPDATE threads
                         SET ticket_id_fk = %s
@@ -818,7 +849,8 @@ def append_subject_to_messages(
                         cont_ref = (
                             f"{user_id}/messages/{client_id}/{new_conversation_id}.json"
                         )
-                        cursor.execute(
+                        safe_execute(
+                            cursor,
                             """
                             INSERT INTO messages (
                                 message_id,
@@ -828,9 +860,10 @@ def append_subject_to_messages(
                                 message_type,
                                 is_summary,
                                 created_at,
-                                update_at
+                                update_at,
+                                sender_type
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 msg_id,
@@ -841,6 +874,7 @@ def append_subject_to_messages(
                                 subject,
                                 created_date,
                                 updated_date,
+                                channel,
                             ),
                         )
                         existing_ids.add(msg_id)

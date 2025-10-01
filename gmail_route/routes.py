@@ -1,5 +1,5 @@
 import asyncio
-from db.rds_db import get_cursor
+from db.rds_db import get_cursor, safe_execute
 from flask import Blueprint, request, jsonify, session
 from umail_helper.ticketalloc import TicketAllocator
 
@@ -452,7 +452,6 @@ async def v2fetch_gmail_messages_batch(
                 direction = msg["direction"]
                 subject = msg["subject"]
                 body_content = msg.get("body", "")
-                raw_body_html = msg.get("body_html")
                 plain_text = (
                     BeautifulSoup(body_content, "html.parser")
                     .get_text(separator="\n")
@@ -505,7 +504,6 @@ async def v2fetch_gmail_messages_batch(
                     "from": from_email,
                     "to": my_email,
                     "body": extracted_body,
-                    "raw": raw_body_html,
                     "subject": subject,
                     "timestamp": timestamp_iso,
                     "source": "gmail",
@@ -516,6 +514,7 @@ async def v2fetch_gmail_messages_batch(
                         from_email if direction == "inbound" else my_email
                     ),
                     "type": client_type,
+                    "attachments": msg["attachments"],
                 }
 
                 grouped_messages.setdefault(client_id, {}).setdefault(
@@ -838,51 +837,38 @@ def send_mail(user_id, to, subject, body_text):
 
 
 def add_lead_contact(user_id, cursor, participant, participant_name):
-
+    """
+    Create a new Lead contact safely with deadlock retry.
+    """
     try:
-
-        print("creating new lead")
+        print("Creating new lead")
         communication_id = str(uuid.uuid4())
         users_clients_id = str(uuid.uuid4())
 
         dt_utc = datetime.now(timezone.utc)
-        created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
-        updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+        created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+        updated_date = dt_utc.isoformat()
 
-        insert_communication_sql = """
-                        INSERT INTO communication (
-                            communication_id,
-                            user_id_fk,
-                            users_clients_id_fk
-                        )
-                        VALUES (%s, %s, NULL)
-                    """
-        cursor.execute(insert_communication_sql, (communication_id, user_id))
+        # Step 1: Insert into communication
+        safe_execute(
+            cursor,
+            """
+            INSERT INTO communication (communication_id, user_id_fk, users_clients_id_fk)
+            VALUES (%s, %s, NULL)
+            """,
+            (communication_id, user_id),
+        )
 
-        insert_sql = """
-                        INSERT INTO users_clients (
-                            users_clients_id,
-                            communication_id_fk, 
-                            first_name,
-                            last_name,
-                            phone_number,
-                            whatsapp_number,
-                            email_id,
-                            facebook_id,
-                            instagram_id,
-                            slack_id,
-                            slack_workspace,
-                            type,
-                            created_in,
-                            updated_in,
-                            snooze
-
-
-                        )
-                        VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s,%s)
-                    """
-        cursor.execute(
-            insert_sql,
+        # Step 2: Insert into users_clients
+        safe_execute(
+            cursor,
+            """
+            INSERT INTO users_clients (
+                users_clients_id, communication_id_fk, first_name, last_name,
+                phone_number, whatsapp_number, email_id, facebook_id, instagram_id,
+                slack_id, slack_workspace, type, created_in, updated_in, snooze
+            ) VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL, %s, %s, %s, %s)
+            """,
             (
                 users_clients_id,
                 communication_id,
@@ -896,68 +882,60 @@ def add_lead_contact(user_id, cursor, participant, participant_name):
             ),
         )
 
-        link_sql = """
-                        UPDATE communication
-                        SET users_clients_id_fk = %s
-                        WHERE communication_id = %s
-                    """
-        cursor.execute(link_sql, (users_clients_id, communication_id))
+        # Step 3: Link communication → user client
+        safe_execute(
+            cursor,
+            """
+            UPDATE communication
+            SET users_clients_id_fk = %s
+            WHERE communication_id = %s
+            """,
+            (users_clients_id, communication_id),
+        )
 
+        # Commit quickly to release locks
         cursor.connection.commit()
-
         return users_clients_id
 
     except Exception as e:
+        cursor.connection.rollback()
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
 def add_customer_contact(user_id, cursor, participant, participant_name):
-
+    """
+    Create a new Customer contact safely with deadlock retry.
+    """
     try:
-
-        print("creating customer")
+        print("Creating new customer")
         communication_id = str(uuid.uuid4())
         users_clients_id = str(uuid.uuid4())
 
         dt_utc = datetime.now(timezone.utc)
-        created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
-        updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+        created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")
+        updated_date = dt_utc.isoformat()
 
-        insert_communication_sql = """
-                        INSERT INTO communication (
-                            communication_id,
-                            user_id_fk,
-                            users_clients_id_fk
-                        )
-                        VALUES (%s, %s, NULL)
-                    """
-        cursor.execute(insert_communication_sql, (communication_id, user_id))
+        # Step 1: Insert into communication
+        safe_execute(
+            cursor,
+            """
+            INSERT INTO communication (communication_id, user_id_fk, users_clients_id_fk)
+            VALUES (%s, %s, NULL)
+            """,
+            (communication_id, user_id),
+        )
 
-        insert_sql = """
-                        INSERT INTO users_clients (
-                            users_clients_id,
-                            communication_id_fk, 
-                            first_name,
-                            last_name,
-                            phone_number,
-                            whatsapp_number,
-                            email_id,
-                            facebook_id,
-                            instagram_id,
-                            slack_id,
-                            slack_workspace,
-                            type,
-                            created_in,
-                            updated_in,
-                            snooze
-
-
-                        )
-                        VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s,%s)
-                    """
-        cursor.execute(
-            insert_sql,
+        # Step 2: Insert into users_clients
+        safe_execute(
+            cursor,
+            """
+            INSERT INTO users_clients (
+                users_clients_id, communication_id_fk, first_name, last_name,
+                phone_number, whatsapp_number, email_id, facebook_id, instagram_id,
+                slack_id, slack_workspace, type, created_in, updated_in, snooze
+            ) VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL, %s, %s, %s, %s)
+            """,
             (
                 users_clients_id,
                 communication_id,
@@ -971,18 +949,23 @@ def add_customer_contact(user_id, cursor, participant, participant_name):
             ),
         )
 
-        link_sql = """
-                        UPDATE communication
-                        SET users_clients_id_fk = %s
-                        WHERE communication_id = %s
-                    """
-        cursor.execute(link_sql, (users_clients_id, communication_id))
+        # Step 3: Link communication → user client
+        safe_execute(
+            cursor,
+            """
+            UPDATE communication
+            SET users_clients_id_fk = %s
+            WHERE communication_id = %s
+            """,
+            (users_clients_id, communication_id),
+        )
 
+        # Commit quickly to release locks
         cursor.connection.commit()
-
         return users_clients_id
 
     except Exception as e:
+        cursor.connection.rollback()
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 

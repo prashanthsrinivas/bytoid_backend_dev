@@ -604,3 +604,34 @@ def get_userid(email, connection=None):
     finally:
         if own_conn:
             connection.close()
+
+
+def get_users_clients_id(email, user_id, connection=None):
+    """
+    Get users_clients_id for a given email and user_id_fk.
+    """
+    own_conn = False
+    if connection is None:
+        connection = connect_to_rds()
+        own_conn = True
+
+    try:
+        with get_cursor(connection) as cursor:
+            cursor.execute(
+                """
+                SELECT uc.users_clients_id
+                FROM users_clients uc
+                JOIN communication c
+                  ON uc.users_clients_id = c.users_clients_id_fk
+                WHERE c.user_id_fk = %s
+                  AND uc.email_id = %s
+                """,
+                (user_id, email),
+            )
+            result = cursor.fetchone()
+            if result:
+                return result[0]  # users_clients_id
+            return None
+    finally:
+        if own_conn:
+            connection.close()
