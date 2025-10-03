@@ -368,13 +368,13 @@ def make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
         if n_connection is None:
             connection = connect_to_rds()
 
-        val = get_users_clients_id(email=from_email, user_id=userid)
-        if not val:
+        clientid = get_users_clients_id(email=from_email, user_id=userid)
+        if not clientid:
             return jsonify({"error": "No email communication found"}), 404
 
         # This is already sorted by your code (earliest → latest)
         sorted_conversations = get_sorted_lance_emails(
-            connection=connection, user_id=userid, client_id=val
+            connection=connection, user_id=userid, client_id=clientid
         )
 
         if not sorted_conversations:
@@ -418,7 +418,7 @@ def make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
                 text=ai_reply,
                 conversation_id=latest_msg["conversation_id"],
                 b_connection=connection,
-                client_id=val,
+                client_id=clientid,
                 user_email=latest_msg["to"],
                 client_email=latest_msg["from"],
                 subject=latest_msg["subject"],
@@ -461,81 +461,81 @@ def make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
             connection.close()
 
 
-# import asyncio
+import asyncio
 
 
-# @assist_suggest_bp.route("/test_gmail_mess/<userid>/<hist>", methods=["GET"])
-# def messcheckgmail(userid, hist):
-#     # Connect to DB
-#     connection = connect_to_rds()
-#     if connection is None:
-#         return jsonify({"error": "Database connection failed", "status": "failed"})
+@assist_suggest_bp.route("/test_gmail_mess/<userid>/<hist>", methods=["GET"])
+def messcheckgmail(userid, hist):
+    # Connect to DB
+    connection = connect_to_rds()
+    if connection is None:
+        return jsonify({"error": "Database connection failed", "status": "failed"})
 
-#     # Inner async function to run async tasks
-#     async def main():
-#         # Fetch total messages info
-#         end_date = datetime.now(timezone.utc).date()
-#         today = end_date - timedelta(days=3)
+    # Inner async function to run async tasks
+    async def main():
+        # Fetch total messages info
+        end_date = datetime.now(timezone.utc).date()
+        today = end_date - timedelta(days=3)
 
-#         total_messages = await get_datewise_info_base(
-#             userid=userid, connection=connection, months=6
-#         )
-#         threads_info = total_messages.get("threadsTotal", {})
-#         threads_max = threads_info.get("count", 0)
-#         threads = threads_info.get("threads", [])
-#         my_email = total_messages.get("email")
+        total_messages = await get_datewise_info_base(
+            userid=userid, connection=connection, months=6
+        )
+        threads_info = total_messages.get("threadsTotal", {})
+        threads_max = threads_info.get("count", 0)
+        threads = threads_info.get("threads", [])
+        my_email = total_messages.get("email")
 
-#         if not threads:
-#             return {"res": [], "val": None, "status": "no threads found"}
+        if not threads:
+            return {"res": [], "val": None, "status": "no threads found"}
 
-#         # Gmail service instance
-#         gmail_service = GmailService(userid, connection)
+        # Gmail service instance
+        gmail_service = GmailService(userid, connection)
 
-#         # Get Gmail changes (synchronous)
-#         # val = gmail_service.get_gmail_changes(hist)
+        # Get Gmail changes (synchronous)
+        # val = gmail_service.get_gmail_changes(hist)
 
-#         # Fetch all messages in threads (async)
-#         # threads = [
-#         #     {
-#         #         "historyId": "13510",
-#         #         "id": "19855fad53ec843d",
-#         #         "snippet": "this is the re reply to the test message On Tue, Jul 29, 2025 at 5:10 PM Service Account &lt;service@bytoid.ca&gt; wrote: yes reply to that test message On Tue, Jul 29, 2025 at 5:09 PM Bytoid Test",
-#         #     },
-#         #     {"historyId": "13810", "id": "198659fcb35d870b", "snippet": "idk"},
-#         # ]
-#         # my_email = "service@bytoid.ca"
-#         results = await v2fetch_gmail_messages_batch(
-#             userid, threads, my_email, len(threads), connection
-#         )
-#         # results = await gmail_service.process_threads_batch(
-#         #     threads, my_email, threads_max
-#         # )
-#         # all_messages = []
-#         # for thread_id, res in results.items():
-#         #     thread_data, err = res
+        # Fetch all messages in threads (async)
+        # threads = [
+        #     {
+        #         "historyId": "13510",
+        #         "id": "19855fad53ec843d",
+        #         "snippet": "this is the re reply to the test message On Tue, Jul 29, 2025 at 5:10 PM Service Account &lt;service@bytoid.ca&gt; wrote: yes reply to that test message On Tue, Jul 29, 2025 at 5:09 PM Bytoid Test",
+        #     },
+        #     {"historyId": "13810", "id": "198659fcb35d870b", "snippet": "idk"},
+        # ]
+        # my_email = "service@bytoid.ca"
+        # results = await v2fetch_gmail_messages_batch(
+        #     userid, threads, my_email, len(threads), connection
+        # )
+        results = await gmail_service.process_threads_batch(
+            threads, my_email, threads_max
+        )
+        # all_messages = []
+        # for thread_id, res in results.items():
+        #     thread_data, err = res
 
-#         #     if not res:
-#         #         print(f"⚠️ No response for thread {thread_id}")
-#         #         continue
+        #     if not res:
+        #         print(f"⚠️ No response for thread {thread_id}")
+        #         continue
 
-#         #     thread_data, err = res  # ✅ unpack tuple
+        #     thread_data, err = res  # ✅ unpack tuple
 
-#         #     if err:
-#         #         print(f"⚠️ Thread {thread_id} error: {err}")
-#         #         continue
+        #     if err:
+        #         print(f"⚠️ Thread {thread_id} error: {err}")
+        #         continue
 
-#         #     if thread_data:
-#         #         all_messages.extend(thread_data)
+        #     if thread_data:
+        #         all_messages.extend(thread_data)
 
-#         return {
-#             "res": results,
-#             "status": "success",
-#             "rescount": len(results),
-#             # "changed": all_messages,
-#             # "chan_count": len(all_messages),
-#         }
+        return {
+            "res": results,
+            "status": "success",
+            "rescount": len(results),
+            # "changed": all_messages,
+            # "chan_count": len(all_messages),
+        }
 
-#     # Run the async main function in a synchronous route
-#     response_data = asyncio.run(main())
-#     connection.close()
-#     return jsonify(response_data)
+    # Run the async main function in a synchronous route
+    response_data = asyncio.run(main())
+    connection.close()
+    return jsonify(response_data)

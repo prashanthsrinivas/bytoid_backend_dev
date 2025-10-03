@@ -353,6 +353,7 @@ def append_subject_to_messages(
 
     # Iterate through grouped_messages structure
     for client_id, channels in grouped_messages.items():
+        # print("IN the loop of append_subject")
         s3_config_key = f"{user_id}/messages/{client_id}/config.json"
         try:
             config_data = read_json_from_s3(s3_config_key) or {}
@@ -391,6 +392,7 @@ def append_subject_to_messages(
 
         messages = grouped_messages.get(client_id, {}).get(channel, [])
         if not messages:
+            print("messages not found for client", client_id)
             continue
 
         # ----------- BIG WIN: Batch existence check for messages -----------
@@ -422,16 +424,18 @@ def append_subject_to_messages(
 
         for msg in messages:
             lance_ticket_id = asyncio.run(_get_ticket())
-            # print(f"internally lance_ticket_id_ : {lance_ticket_id}")
+            print(f"internally lance_ticket_id_ : {lance_ticket_id}")
             msg_id = msg.get("id")
             if not msg_id:
                 continue
 
             if msg_id in processed_message_ids:
+                print("skipping bcz of processed_message", msg_id)
                 continue
 
             # Use the batched set instead of per-message SELECT
             if msg_id in existing_ids:
+                print("skipping because it is present in existing ids", msg_id)
                 continue
 
             processed_message_ids.add(msg_id)
@@ -504,12 +508,14 @@ def append_subject_to_messages(
             direction = msg.get("direction")
             msg_body = msg.get("body")
             new_conversation_id = f"{user_id}_{thread_id}"
+            print("conversation id", new_conversation_id)
             cursor.execute(
                 "SELECT 1 from threads where conversation_id = %s",
                 (new_conversation_id,),
             )
             row = cursor.fetchone()
             if row:
+                print("found an existing conversation", new_conversation_id)
                 if thread_id:
                     print("THREAD BASE CASE", msg_id)
                     # # mesag_id = msg_id  # keep original name usage
@@ -555,7 +561,7 @@ def append_subject_to_messages(
                                 # )
 
                                 communication_id = communication_id_cache.get(client_id)
-                                print("thread case insert to tickets")
+                                # print("thread case insert to tickets")
                                 safe_execute(
                                     cursor,
                                     """
@@ -577,7 +583,7 @@ def append_subject_to_messages(
                                 # lance_ticket_id += 1
 
                                 assigned_id = str(uuid.uuid4())
-                                print("thread case insert to assigned")
+                                # print("thread case insert to assigned")
                                 safe_execute(
                                     cursor,
                                     """
@@ -675,7 +681,7 @@ def append_subject_to_messages(
                 #     continue
             else:
                 # 3/4) No existing thread → create new thread (inbound/outbound paths)
-
+                print("new conversation creating", direction)
                 msg["conversation_id"] = new_conversation_id
 
                 safe_execute(

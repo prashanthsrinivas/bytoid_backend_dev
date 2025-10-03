@@ -14,11 +14,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from googleapiclient.http import BatchHttpRequest
 from utils.base_logger import get_logger
-from utils.s3_utils import attach_CLDFRNT_url
+from utils.s3_utils import attach_CLDFRNT_url, upload_any_file
 import random
 from typing import Optional, Tuple, List
 import re
 from bs4 import BeautifulSoup
+import email
 
 logger = get_logger(__name__)
 
@@ -48,6 +49,7 @@ class GmailService:
     def __init__(self, user_id, connection=None):
         # Use provided connection or get a new one
         self.conn = connection or connect_to_rds()
+        self.user_id = user_id
 
         if not self.conn:
             raise ConnectionError("❌ Failed to connect to RDS (too many connections?)")
@@ -604,14 +606,19 @@ class GmailService:
             print(f"current batch fetched {batch_count}")
 
     @staticmethod
-    def get_message_body(msg):
+    def get_message_body(msg, service=None, user_id=None, s3_config_key_prefix=None):
         """
-        Extracts a clean, Gmail/Outlook-like message body with proper formatting.
-        Inline links are integrated as text. Lists, bullets, and indentation are preserved.
+        Extracts a clean Gmail/Outlook-like message body and attachments with clickable S3 links.
+        Features:
+        - Prefers HTML over plain text
+        - Recursively parses all parts
+        - Removes quoted replies, signatures, duplicate lines
+        - Retries via Gmail 'raw' if body is empty
+        - Automatically uploads attachments to S3 and provides frontend-accessible links
         Returns: (body_text, attachments_list)
         """
         payload = msg.get("payload", {})
-        body = ""
+        body = None  # Only assign when actual content found
         attachments = []
 
         def parse_part(part):
@@ -620,15 +627,8 @@ class GmailService:
             part_body = part.get("body", {})
             data = part_body.get("data")
 
-            # TEXT PARTS
-            if mime_type == "text/plain" and data:
-                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
-                    "utf-8", errors="ignore"
-                )
-                body += decoded + "\n"
-
-            # HTML PARTS
-            elif mime_type == "text/html" and data:
+            # HTML PARTS (preferred)
+            if mime_type == "text/html" and data and body is None:
                 decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
                     "utf-8", errors="ignore"
                 )
@@ -637,52 +637,109 @@ class GmailService:
                 # Preserve lists
                 for ul in soup.find_all("ul"):
                     for li in ul.find_all("li"):
-                        li.insert_before("- ")  # bullet
+                        li.insert_before("- ")
                     ul.unwrap()
-
                 for ol in soup.find_all("ol"):
                     for idx, li in enumerate(ol.find_all("li"), start=1):
-                        li.insert_before(f"{idx}. ")  # numbered
+                        li.insert_before(f"{idx}. ")
                     ol.unwrap()
 
-                # Preserve preformatted text
+                # Preformatted text
                 for pre in soup.find_all("pre"):
                     pre.insert_before("\n")
                     pre.insert_after("\n")
 
-                # Replace block-level tags with newlines
+                # Block-level newlines
                 for tag in soup.find_all(["br", "p", "div"]):
                     tag.insert_before("\n")
 
-                # Replace links with their text only
+                # Links as text
                 for a in soup.find_all("a"):
                     a.replace_with(a.get_text())
 
-                # Extract visible text
                 text = soup.get_text(separator="\n")
-                body += text + "\n"
+                body = text.strip()
 
-            # CALENDAR INVITES
+            # Plain text fallback
+            elif mime_type == "text/plain" and data and body is None:
+                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
+                    "utf-8", errors="ignore"
+                )
+                body = decoded.strip()
+
+            # Calendar invites
             elif mime_type in ["text/calendar", "application/ics"] and data:
                 decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
                     "utf-8", errors="ignore"
                 )
                 attachments.append({"type": "calendar", "content": decoded})
 
-            # FILE ATTACHMENTS
-            if part.get("filename"):
-                attachment_id = part_body.get("attachmentId")
-                attachments.append(
-                    {
-                        "filename": part["filename"],
-                        "mimeType": mime_type,
-                        "attachmentId": attachment_id,
-                    }
-                )
+            # File attachments → S3
+            # Track already uploaded filenames to avoid duplicates
+            uploaded_filenames = set()
 
-            # RECURSE nested parts
+            if part.get("filename") and user_id and s3_config_key_prefix:
+                filename = part["filename"]
+                mime_type = part.get("mimeType", "")
+
+                # Skip calendar files if not needed
+                if filename.lower().endswith(".ics") or mime_type in [
+                    "text/calendar",
+                    "application/ics",
+                ]:
+                    return
+
+                # Skip duplicates
+                if filename in uploaded_filenames:
+                    return
+                uploaded_filenames.add(filename)
+
+                attachment_id = part_body.get("attachmentId")
+                try:
+                    attachment_data = (
+                        service.users()
+                        .messages()
+                        .attachments()
+                        .get(userId="me", messageId=msg["id"], id=attachment_id)
+                        .execute()
+                    )
+                    file_bytes = base64.urlsafe_b64decode(
+                        attachment_data["data"].encode("UTF-8")
+                    )
+
+                    # Construct S3 key
+                    filename_safe = filename.replace("/", "_")
+                    s3_key_C = (
+                        f"{s3_config_key_prefix}/{msg['threadId']}/{filename_safe}"
+                    )
+
+                    # Save locally temporarily
+                    tmp_path = f"/tmp/{filename_safe}"
+                    with open(tmp_path, "wb") as f:
+                        f.write(file_bytes)
+
+                    # Upload to S3
+                    upload_any_file(
+                        tmp_path, user_id, type="messages", s3_key_C=s3_key_C
+                    )
+
+                    # Get clickable URL
+                    url = attach_CLDFRNT_url(s3_key_C)
+
+                    attachments.append(
+                        {"filename": filename, "mimeType": mime_type, "url": url}
+                    )
+                except Exception as e:
+                    print(f"⚠️ Failed to process attachment {filename}: {e}")
+
+            # Recurse nested parts
             for sub_part in part.get("parts", []):
                 parse_part(sub_part)
+
+            # Nested messages
+            if mime_type == "message/rfc822":
+                for npart in part.get("parts", []):
+                    parse_part(npart)
 
         # Start parsing
         if "parts" in payload:
@@ -690,6 +747,8 @@ class GmailService:
                 parse_part(part)
         else:
             parse_part(payload)
+
+        body = body or ""
 
         # Remove quoted replies/forwards
         reply_patterns = [
@@ -703,20 +762,58 @@ class GmailService:
         for pattern in reply_patterns:
             body = re.split(pattern, body, maxsplit=1)[0]
 
-        # Remove common signature delimiters
+        # Remove common signatures
         signature_patterns = [
-            r"\n--\s*\n.*",  # lines after --
-            r"\n__\s*\n.*",  # lines after __
-            r"\nThanks[,\n].*",  # lines starting with Thanks, Regards etc.
+            r"\n--\s*\n.*",
+            r"\n__\s*\n.*",
+            r"\nThanks[,\n].*",
             r"\nBest[,\n].*",
         ]
         for pattern in signature_patterns:
             body = re.sub(pattern, "", body, flags=re.IGNORECASE | re.DOTALL)
 
-        # Normalize whitespace: multiple newlines → max 2 newlines, collapse spaces
-        body = re.sub(r"\n\s*\n+", "\n\n", body)  # keep paragraph breaks
-        body = re.sub(r"[ \t]+", " ", body)  # collapse spaces
+        # Normalize whitespace
+        body = re.sub(r"\n\s*\n+", "\n\n", body)
+        body = re.sub(r"[ \t]+", " ", body)
         body = body.strip()
+
+        # Remove consecutive duplicate lines
+        lines = body.splitlines()
+        clean_lines = []
+        prev_line = None
+        for line in lines:
+            if line.strip() != prev_line:
+                clean_lines.append(line.strip())
+                prev_line = line.strip()
+        body = "\n".join(clean_lines)
+
+        # Retry using raw format if body is empty
+        if not body and service is not None:
+            try:
+                raw_msg = (
+                    service.users()
+                    .messages()
+                    .get(userId="me", id=msg["id"], format="raw")
+                    .execute()
+                )
+                msg_bytes = base64.urlsafe_b64decode(raw_msg["raw"])
+                mime_msg = email.message_from_bytes(msg_bytes)
+                fallback_body = ""
+                if mime_msg.is_multipart():
+                    for part in mime_msg.walk():
+                        if part.get_content_type() in ["text/plain", "text/html"]:
+                            part_payload = part.get_payload(decode=True)
+                            if part_payload:
+                                fallback_body += (
+                                    part_payload.decode("utf-8", errors="ignore") + "\n"
+                                )
+                else:
+                    fallback_body = mime_msg.get_payload(decode=True).decode(
+                        "utf-8", errors="ignore"
+                    )
+                body = fallback_body.strip()
+            except Exception as e:
+                print(f"⚠️ Retry failed for message {msg.get('id')}: {e}")
 
         return body, attachments
 
@@ -795,7 +892,12 @@ class GmailService:
                             if self.user_email.lower() == to_email.lower()
                             else "outbound"
                         )
-                        body, attachments = self.get_message_body(msg)
+                        body, attachments = self.get_message_body(
+                            msg,
+                            service=self.service,
+                            user_id=self.user_id,
+                            s3_config_key_prefix=f"{self.user_id}/messages/files",
+                        )
 
                         thread_data.append(
                             {
@@ -992,8 +1094,8 @@ class GmailService:
                 )
 
                 queries = [
-                    f"in:inbox category:primary after:{after_ts} before:{before_ts}",
-                    f"in:inbox after:{after_ts} before:{before_ts}",
+                    f"(in:inbox OR in:sent) category:primary after:{after_ts} before:{before_ts}",
+                    f"(in:inbox OR in:sent) after:{after_ts} before:{before_ts}",
                 ]
 
                 async def run_query(q: Optional[str]) -> Tuple[int, List]:

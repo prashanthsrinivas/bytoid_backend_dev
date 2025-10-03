@@ -339,6 +339,7 @@ async def v2all_continuous(user_id):
                     user_id,
                     f"lance_folder:{batch_count}",
                 )
+                os.makedirs(lance_folder, exist_ok=True)
                 # heavy process offloaded to thread
                 task = asyncio.to_thread(
                     v2process_batch_with_embedding,
@@ -428,6 +429,18 @@ async def v2all_continuous(user_id):
             print(
                 "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
             )
+        if not newly_creation and any_new_messages:
+            emails = []
+            for result in all_results:
+                grouped = result.get("grouped_messages", {})
+                for conv_id, channels in grouped.items():
+                    for channel, msgs in channels.items():
+                        if msgs:  # make sure list not empty
+                            first_from = msgs[0].get("from")
+                            if first_from:
+                                emails.append(first_from)
+
+            print("Extracted from emails:", emails)
 
         return {
             "user": user_id,
