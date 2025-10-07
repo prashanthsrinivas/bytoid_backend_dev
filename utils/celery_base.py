@@ -4,6 +4,7 @@ from celery import Celery
 from celery.utils.log import get_task_logger
 import asyncio
 from umail_helper.asyn_functions import v2all_continuous
+# from umail_helper.auto_rep import autoReplyhelper
 
 logger = get_task_logger(__name__)
 load_dotenv()
@@ -118,6 +119,26 @@ def delayed_trigger(self, user_email, history_id):
     finally:
         # Always release lock at the end so new task can start
         lock_client.delete(lock_key)
+
+
+# @new_celery.task(bind=True, name="webhook.testautoreply")
+# def testassistfeat(self, user_id, all_results, my_email):
+
+#     lock_key = f"umail_autopilot:{my_email}"
+#     acquired = lock_client.set(lock_key, "1", nx=True, ex=60)
+#     if not acquired:
+#         return {"status": "skipped", "user_email": my_email}
+
+#     try:
+#         result = asyncio.run(
+#             autoReplyhelper(all_results=all_results, my_email=my_email, user_id=user_id)
+#         )
+#         return {"status": "completed", "user_id": user_id, "result": result}
+#     except Exception as exc:
+#         countdown = backoff(self.request.retries)
+#         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+#     finally:
+#         release_user_lock(user_id)
 
 
 @new_celery.task

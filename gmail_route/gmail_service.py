@@ -678,59 +678,59 @@ class GmailService:
             # Track already uploaded filenames to avoid duplicates
             uploaded_filenames = set()
 
-            if part.get("filename") and user_id and s3_config_key_prefix:
-                filename = part["filename"]
-                mime_type = part.get("mimeType", "")
+            # if part.get("filename") and user_id and s3_config_key_prefix:
+            #     filename = part["filename"]
+            #     mime_type = part.get("mimeType", "")
 
-                # Skip calendar files if not needed
-                if filename.lower().endswith(".ics") or mime_type in [
-                    "text/calendar",
-                    "application/ics",
-                ]:
-                    return
+            #     # Skip calendar files if not needed
+            #     if filename.lower().endswith(".ics") or mime_type in [
+            #         "text/calendar",
+            #         "application/ics",
+            #     ]:
+            #         return
 
-                # Skip duplicates
-                if filename in uploaded_filenames:
-                    return
-                uploaded_filenames.add(filename)
+            #     # Skip duplicates
+            #     if filename in uploaded_filenames:
+            #         return
+            #     uploaded_filenames.add(filename)
 
-                attachment_id = part_body.get("attachmentId")
-                try:
-                    attachment_data = (
-                        service.users()
-                        .messages()
-                        .attachments()
-                        .get(userId="me", messageId=msg["id"], id=attachment_id)
-                        .execute()
-                    )
-                    file_bytes = base64.urlsafe_b64decode(
-                        attachment_data["data"].encode("UTF-8")
-                    )
+            #     attachment_id = part_body.get("attachmentId")
+            #     try:
+            #         attachment_data = (
+            #             service.users()
+            #             .messages()
+            #             .attachments()
+            #             .get(userId="me", messageId=msg["id"], id=attachment_id)
+            #             .execute()
+            #         )
+            #         file_bytes = base64.urlsafe_b64decode(
+            #             attachment_data["data"].encode("UTF-8")
+            #         )
 
-                    # Construct S3 key
-                    filename_safe = filename.replace("/", "_")
-                    s3_key_C = (
-                        f"{s3_config_key_prefix}/{msg['threadId']}/{filename_safe}"
-                    )
+            #         # Construct S3 key
+            #         filename_safe = filename.replace("/", "_")
+            #         s3_key_C = (
+            #             f"{s3_config_key_prefix}/{msg['threadId']}/{filename_safe}"
+            #         )
 
-                    # Save locally temporarily
-                    tmp_path = f"/tmp/{filename_safe}"
-                    with open(tmp_path, "wb") as f:
-                        f.write(file_bytes)
+            #         # Save locally temporarily
+            #         tmp_path = f"/tmp/{filename_safe}"
+            #         with open(tmp_path, "wb") as f:
+            #             f.write(file_bytes)
 
-                    # Upload to S3
-                    upload_any_file(
-                        tmp_path, user_id, type="messages", s3_key_C=s3_key_C
-                    )
+            #         # Upload to S3
+            #         upload_any_file(
+            #             tmp_path, user_id, type="messages", s3_key_C=s3_key_C
+            #         )
 
-                    # Get clickable URL
-                    url = attach_CLDFRNT_url(s3_key_C)
+            #         # Get clickable URL
+            #         url = attach_CLDFRNT_url(s3_key_C)
 
-                    attachments.append(
-                        {"filename": filename, "mimeType": mime_type, "url": url}
-                    )
-                except Exception as e:
-                    print(f"⚠️ Failed to process attachment {filename}: {e}")
+            #         attachments.append(
+            #             {"filename": filename, "mimeType": mime_type, "url": url}
+            #         )
+            #     except Exception as e:
+            #         print(f"⚠️ Failed to process attachment {filename}: {e}")
 
             # Recurse nested parts
             for sub_part in part.get("parts", []):

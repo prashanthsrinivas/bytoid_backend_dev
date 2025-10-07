@@ -1,7 +1,7 @@
 import json
 
 from .rds_db import connect_to_rds, get_cursor
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import uuid
 import pymysql
 
@@ -538,29 +538,43 @@ def get_user_agent_id(apikey):
 
 def get_existing_umail_json(user_id, connection=None):
     """Fetch existing umail_json for a user."""
+    try:
+        own_conn = False
+        if connection is None:
+            connection = connect_to_rds()
+            own_conn = True
+
+        with get_cursor(connection) as cursor:
+            cursor.execute(
+                "SELECT umail_json FROM users WHERE user_id = %s", (user_id,)
+            )
+            row = cursor.fetchone()
+
+        if row and row[0]:
+            try:
+                return json.loads(row[0])
+            except Exception:
+                return None
+        return None
+    finally:
+        if own_conn:
+            connection.close()
+
+
+def update_umail_json(user_id, new_count, connection=None, keep_days=10):
+    """
+    Update umail_json for a user:
+      - Keep max `keep_days` days of history.
+      - Merge counts into today's entry instead of creating duplicates.
+      - `processed_threads` = today's total.
+      - `timestamp` = last update time.
+
+    Args:
+        new_count (int): number of new threads processed.
+    """
     own_conn = False
     if connection is None:
         connection = connect_to_rds()
-        own_conn = True
-
-    with get_cursor(connection) as cursor:
-        cursor.execute("SELECT umail_json FROM users WHERE user_id = %s", (user_id,))
-        row = cursor.fetchone()
-
-    if row and row[0]:
-        try:
-            return json.loads(row[0])
-        except Exception:
-            return None
-    return None
-
-
-def update_umail_json(user_id, new_entry, connection=None):
-    """Update umail_json with a new entry."""
-    own_conn = False
-    if connection is None:
-        connection = connect_to_rds()
-        # make sure autocommit is on
         connection.autocommit(True)
         own_conn = True
 
@@ -568,14 +582,60 @@ def update_umail_json(user_id, new_entry, connection=None):
         existing = get_existing_umail_json(user_id, connection) or {}
         if "history" not in existing or not isinstance(existing["history"], list):
             existing["history"] = []
-        existing["history"].append(new_entry)
 
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        # remove entries older than keep_days
+        cutoff_date = today - timedelta(days=keep_days)
+        filtered_history = []
+        for h in existing["history"]:
+            ts = h.get("timestamp")
+            if not ts:
+                continue
+            try:
+                ts_date = datetime.fromisoformat(ts).date()
+                if ts_date >= cutoff_date:
+                    filtered_history.append(h)
+            except Exception:
+                continue
+
+        # merge into today's entry if exists
+        today_entry = None
+        for h in filtered_history:
+            ts = h.get("timestamp")
+            if ts and datetime.fromisoformat(ts).date() == today:
+                today_entry = h
+                break
+
+        if today_entry:
+            today_entry["processed_threads"] += new_count
+            today_entry["timestamp"] = now.isoformat()
+            today_entry["date_end"] = today.isoformat()
+        else:
+            today_entry = {
+                "date_start": today.isoformat(),
+                "date_end": today.isoformat(),
+                "timestamp": now.isoformat(),
+                "newly_creation": False,
+                "processed_threads": new_count,
+            }
+            filtered_history.append(today_entry)
+
+        # sort history by date
+        filtered_history.sort(key=lambda h: h.get("timestamp", ""))
+
+        # update the JSON
+        existing["history"] = filtered_history
+        existing["processed_threads"] = today_entry["processed_threads"]
+        existing["timestamp"] = now.isoformat()
+
+        # save back
         with get_cursor(connection) as cursor:
             cursor.execute(
                 "UPDATE users SET umail_json = %s WHERE user_id = %s",
                 (json.dumps(existing), user_id),
             )
-        # commit explicitly if autocommit=False
         if not connection.get_autocommit():
             connection.commit()
 
@@ -632,6 +692,29 @@ def get_users_clients_id(email, user_id, connection=None):
             if result:
                 return result[0]  # users_clients_id
             return None
+    finally:
+        if own_conn:
+            connection.close()
+
+
+def get_existing_autopilot_json(user_id, connection=None):
+    """Fetch existing autopilot for a user."""
+    try:
+        own_conn = False
+        if connection is None:
+            connection = connect_to_rds()
+            own_conn = True
+
+        with get_cursor(connection) as cursor:
+            cursor.execute("SELECT autopilot FROM users WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+
+        if row and row[0]:
+            try:
+                return json.loads(row[0])
+            except Exception:
+                return None
+        return None
     finally:
         if own_conn:
             connection.close()

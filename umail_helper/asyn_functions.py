@@ -1,10 +1,15 @@
 from datetime import date, datetime, timezone
 import json
 from create_db import connect_to_rds
-from db.db_checkers import get_existing_umail_json, update_umail_json
+from db.db_checkers import (
+    get_existing_autopilot_json,
+    get_existing_umail_json,
+    update_umail_json,
+)
 from db.rds_db import get_cursor
 from gmail_route.gmail_service import GmailService
 from gmail_route.routes import v2fetch_gmail_messages_batch
+from umail_helper.auto_rep import autoReplyhelper
 from umail_helper.mails_process import (
     vtooanalyze_and_collect_messages_for_batch,
 )
@@ -37,98 +42,6 @@ executor = ThreadPoolExecutor(max_workers=8)  # CPU heavy embedding jobs
 logger = get_logger(__name__)
 
 TTL_90_DAYS = 90 * 24 * 60 * 60
-
-# addresses = [
-#     NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
-# ]
-
-# config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
-
-
-# async def getall_continuous(user_id):
-#     """
-#     Continuously fetch and process batches of 100 - 200 emails (async + threading for CPU tasks)
-#     """
-#     start_time = time.perf_counter()
-#     timestamp = datetime.now(timezone.utc)
-#     date_str = timestamp.strftime("%Y-%m-%d")
-#     file_loc = f"cust_helpers/messages/{user_id}/{date_str}"
-
-#     total_processed = 0
-#     batch_count = 0
-#     next_page_token = None
-#     batch_size = 200
-#     serv = GmailService(user_id)
-#     total_messages = serv.get_inbox_stats()
-
-#     print(
-#         f"🚀 Starting continuous batch processing for user {user_id}, "
-#         f"total primary inbox messages: {total_messages}"
-#     )
-
-#     loop = asyncio.get_event_loop()
-
-#     while True:
-#         batch_count += 1
-#         print(f"\n📦 Processing batch {batch_count} (batch size: {batch_size})")
-
-#         # Fetch Gmail batch (async I/O)
-#         gmail_result = await fetch_gmail_messages_batch(
-#             user_id, page_token=next_page_token, batch_size=batch_size
-#         )
-
-#         if gmail_result.get("status") != "success":
-#             print(f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}")
-#             break
-
-#         new_messages = gmail_result.get("new_messages", 0)
-#         next_page_token = gmail_result.get("next_page_token")
-#         current_batch_messages = gmail_result.get("grouped_messages", {})
-
-#         if new_messages == 0:
-#             print(f"📭 No new messages in batch {batch_count}")
-#             if not next_page_token:
-#                 print("🏁 No more emails to fetch")
-#                 break
-#         else:
-#             print(f"📬 Batch {batch_count}: {new_messages} new messages")
-#             total_processed += new_messages
-
-#             print(f"🔍 Analyzing + embedding batch {batch_count}...")
-
-#             lance_folder = os.path.join(
-#                 pathconfig.basepath, "messages", user_id, f"lance_folder:{batch_count}"
-#             )
-
-#             # Run heavy work in threads
-#             await loop.run_in_executor(
-#                 executor,
-#                 process_batch_with_embedding,
-#                 user_id,
-#                 current_batch_messages,
-#                 batch_count,
-#                 lance_folder,
-#             )
-
-#             print(f"✅ Batch {batch_count} processing complete")
-
-#         if not next_page_token:
-#             print("🏁 Reached end of available emails")
-#             break
-
-#         print(
-#             f"📊 Progress: {total_processed}/{total_messages} emails processed "
-#             f"across {batch_count} batches"
-#         )
-
-#         await asyncio.sleep(1)
-
-#     end_time = time.perf_counter()
-#     print(
-#         f"✅ All batches complete! Total: {total_processed}/{total_messages} emails "
-#         f"in {batch_count} batches | Took {end_time - start_time:.2f}s"
-#     )
-#     return f"OK - Processed {total_processed} emails in {batch_count} batches"
 
 
 def to_datetime_safe(val, default=None):
@@ -273,7 +186,7 @@ async def v2all_continuous(user_id):
 
         if existing_json and existing_json.get("history"):
             relevant_date = get_relevant_processed_date(existing_json)
-            print("last fetched date", relevant_date)
+            logger.info("last fetched date %s", relevant_date)
             total_messages = await get_datewise_info_base(
                 userid=user_id, connection=connection, startDate=relevant_date
             )
@@ -290,10 +203,8 @@ async def v2all_continuous(user_id):
         startdate = total_messages["start_date"]
         enddate = total_messages["end_date"]
 
-        print(
-            f"🚀 Starting continuous batch processing for user {user_id}, "
-            f"total threads: {threads_max} with creation={newly_creation}"
-        )
+        logger.info("🚀 Starting continuous batch processing for user %s, ", user_id)
+        logger.info("total threads: %s with creation=%s", threads_max, newly_creation)
 
         semaphore = asyncio.Semaphore(5)
 
@@ -329,28 +240,27 @@ async def v2all_continuous(user_id):
                     print(f"📭 Batch {batch_count}: no new messages")
 
                 current_batch_messages = gmail_result.get("grouped_messages", {})
-
-                if new_messages == 0:
+                if new_messages > 0 and current_batch_messages:
+                    lance_folder = os.path.join(
+                        pathconfig.basepath,
+                        "messages",
+                        user_id,
+                        f"lance_folder:{batch_count}",
+                    )
+                    os.makedirs(lance_folder, exist_ok=True)
+                    task = asyncio.to_thread(
+                        v2process_batch_with_embedding,
+                        user_id,
+                        current_batch_messages,
+                        batch_count,
+                        lance_folder,
+                        ticket_allocator,
+                        None,
+                    )
+                    embedding_futures.append(task)
+                else:
+                    print(f"📭 Batch {batch_count}: no new messages to process")
                     return None
-
-                lance_folder = os.path.join(
-                    pathconfig.basepath,
-                    "messages",
-                    user_id,
-                    f"lance_folder:{batch_count}",
-                )
-                os.makedirs(lance_folder, exist_ok=True)
-                # heavy process offloaded to thread
-                task = asyncio.to_thread(
-                    v2process_batch_with_embedding,
-                    user_id,
-                    current_batch_messages,
-                    batch_count,
-                    lance_folder,
-                    ticket_allocator,
-                    None,
-                )
-                embedding_futures.append(task)
                 return gmail_result
 
         max_batchval = len(threads)
@@ -408,15 +318,15 @@ async def v2all_continuous(user_id):
         if any_new_messages:
             folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
             today_ts = datetime.now(timezone.utc)
-            new_entry = {
-                "date_start": startdate,
-                "date_end": enddate,
-                "processed_threads": threads_max,
-                "timestamp": today_ts.isoformat(),
-                "newly_creation": newly_creation,
-            }
+            # new_entry = {
+            #     "date_start": startdate,
+            #     "date_end": enddate,
+            #     "processed_threads": threads_max,
+            #     "timestamp": today_ts.isoformat(),
+            #     "newly_creation": newly_creation,
+            # }
             update_umail_json(
-                user_id=user_id, new_entry=new_entry, connection=connection
+                user_id=user_id, new_count=threads_max, connection=connection
             )
             await ticket_allocator.finalize()
 
@@ -430,17 +340,17 @@ async def v2all_continuous(user_id):
                 "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
             )
         if not newly_creation and any_new_messages:
-            emails = []
-            for result in all_results:
-                grouped = result.get("grouped_messages", {})
-                for conv_id, channels in grouped.items():
-                    for channel, msgs in channels.items():
-                        if msgs:  # make sure list not empty
-                            first_from = msgs[0].get("from")
-                            if first_from:
-                                emails.append(first_from)
-
-            print("Extracted from emails:", emails)
+            print("Triggering this api")
+            pilotvalues = get_existing_autopilot_json(
+                user_id=user_id, connection=connection
+            )
+            if pilotvalues is not None:
+                autoReplyhelper(
+                    all_results=all_results,
+                    user_id=user_id,
+                    my_email=my_email,
+                    pilotvalues=pilotvalues,
+                )
 
         return {
             "user": user_id,

@@ -205,7 +205,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
         )
         channel_grouped = {client_id: {channel: channel_msgs}}
 
-        lance_ticket_id = await asyncio.to_thread(
+        await asyncio.to_thread(
             append_subject_to_messages,
             channel_grouped,
             channel,
@@ -214,9 +214,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
             batch_count,
             ticket_allocator,
         )
-        print(
-            f"lance_ticket_id after append_subject_to_messages is : {lance_ticket_id}"
-        )
+
         # UmailLanceClient(user_id).update_ticket_number(user_id, lance_ticket_id)
 
         return new_msgs_local
@@ -423,8 +421,7 @@ def append_subject_to_messages(
         found_existing_conversation = False  # variable used later
 
         for msg in messages:
-            lance_ticket_id = asyncio.run(_get_ticket())
-            print(f"internally lance_ticket_id_ : {lance_ticket_id}")
+
             msg_id = msg.get("id")
             if not msg_id:
                 continue
@@ -449,6 +446,8 @@ def append_subject_to_messages(
             created_date = datetime.fromisoformat(
                 msg.get("timestamp").replace("Z", "+00:00")
             ).strftime("%Y-%m-%d %H:%M:%S")
+            lance_ticket_id = asyncio.run(_get_ticket())
+            print(f"internally lance_ticket_id_ : {lance_ticket_id}")
 
             # # 1) ZOHO reply path
             # if channel == "zoho" and is_reply:
@@ -911,7 +910,7 @@ def append_subject_to_messages(
     print(
         f"🏁 EXITING append_subject_to_messages - processed {len(processed_message_ids)} unique messages"
     )
-    return lance_ticket_id
+    return "ok"
 
 
 def update_config_file(user_id, client_id, config_data):

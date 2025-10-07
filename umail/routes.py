@@ -529,58 +529,61 @@ def get_sorted_lance_emails(connection, user_id, client_id):
 
     # open a cursor once and reuse
     with connection.cursor() as cursor:
-        for conv_id, messages_list in recent_msg.items():
-            try:
-                # 🔥 Deduplicate messages
-                unique_messages = {}
-                for msg in messages_list:
-                    msg_id = (
-                        msg.get("id") or f"{msg.get('timestamp')}-{msg.get('sender')}"
+        if recent_msg:
+            for conv_id, messages_list in recent_msg.items():
+                try:
+                    # 🔥 Deduplicate messages
+                    unique_messages = {}
+                    for msg in messages_list:
+                        msg_id = (
+                            msg.get("id") or f"{msg.get('timestamp')}-{msg.get('sender')}"
+                        )
+                        if msg_id not in unique_messages:
+                            unique_messages[msg_id] = msg
+
+                    messages = list(unique_messages.values())
+                    channel = messages[0].get("source") if messages else "unknown"
+                    ticket_id = messages[0].get("ticket_id")
+
+                    assigned_id = ""
+                    assignee_full_name = ""
+
+                    if ticket_id:
+                        cursor.execute(
+                            "SELECT assignee FROM tickets WHERE tickets_id = %s",
+                            (ticket_id,),
+                        )
+                        t_row = cursor.fetchone()
+                        if t_row:
+                            assigned_id = t_row[0]
+
+                    if assigned_id:
+                        cursor.execute(
+                            "SELECT first_name, last_name, email FROM users WHERE user_id = %s",
+                            (assigned_id,),
+                        )
+                        names = cursor.fetchone()
+                        if names:
+                            first_name, last_name, assignee_email = names
+                            if not first_name or first_name == "None":
+                                first_name = assignee_email.split("@")[0]
+                            if not last_name or last_name == "None":
+                                last_name = ""
+                            assignee_full_name = (first_name + " " + last_name).strip()
+
+                    all_messages.append(
+                        {
+                            "id": conv_id,
+                            "channel": channel,
+                            "messages": messages,
+                            "assigned_name": assignee_full_name,
+                        }
                     )
-                    if msg_id not in unique_messages:
-                        unique_messages[msg_id] = msg
-
-                messages = list(unique_messages.values())
-                channel = messages[0].get("source") if messages else "unknown"
-                ticket_id = messages[0].get("ticket_id")
-
-                assigned_id = ""
-                assignee_full_name = ""
-
-                if ticket_id:
-                    cursor.execute(
-                        "SELECT assignee FROM tickets WHERE tickets_id = %s",
-                        (ticket_id,),
-                    )
-                    t_row = cursor.fetchone()
-                    if t_row:
-                        assigned_id = t_row[0]
-
-                if assigned_id:
-                    cursor.execute(
-                        "SELECT first_name, last_name, email FROM users WHERE user_id = %s",
-                        (assigned_id,),
-                    )
-                    names = cursor.fetchone()
-                    if names:
-                        first_name, last_name, assignee_email = names
-                        if not first_name or first_name == "None":
-                            first_name = assignee_email.split("@")[0]
-                        if not last_name or last_name == "None":
-                            last_name = ""
-                        assignee_full_name = (first_name + " " + last_name).strip()
-
-                all_messages.append(
-                    {
-                        "id": conv_id,
-                        "channel": channel,
-                        "messages": messages,
-                        "assigned_name": assignee_full_name,
-                    }
-                )
-            except Exception as e:
-                print(f"❌ Failed to read or parse {e}")
-                continue
+                except Exception as e:
+                    print(f"❌ Failed to read or parse {e}")
+                    continue
+        else:
+            return {}
 
     if all_messages:
         sorted_conversations = sorted(
@@ -594,7 +597,6 @@ def get_sorted_lance_emails(connection, user_id, client_id):
         )
 
     return sorted_conversations
-
 
 
 @umail_bp.route("/selected_conversation/<conversation_id>/<user_id>", methods=["GET"])
@@ -890,7 +892,6 @@ def match_email_to_channel(email, channel):
         return False
     domain = email.lower().split("@")[1]
     return channel.lower() in domain
-
 
 
 @umail_bp.route("/send-reply", methods=["POST"])
@@ -1378,7 +1379,7 @@ def send_messages():
             input_data.append(message)
             conversation_data = {"input_data": input_data}
             print(f"📄 [DEBUG] Total messages in conversation: {len(input_data)}")
-            print(f"conversation_data : {conversation_data}")
+            # print(f"conversation_data : {conversation_data}")
             print(f"💾 [DEBUG] Writing to local file: {conv_filepath}")
             with open(conv_filepath, "w", encoding="utf-8") as f:
                 json.dump(conversation_data, f, indent=2)
