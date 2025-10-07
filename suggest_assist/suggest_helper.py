@@ -3,17 +3,98 @@ import os
 import uuid
 from agent_route.lance_agent import LanceClient, QueryInput
 from cust_helpers import pathconfig
-from flask import Blueprint, request, jsonify, session
+from db.db_checkers import get_users_clients_id
+from flask import jsonify
 from db.rds_db import connect_to_rds
 from gmail_route.routes import gmail_reply
 from umail_helper.mails_process import update_config_file
 from umail_lance.umail_lance_agent import UmailLanceClient
+from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response
-from utils.normal import ensure_dir, load_yaml_file
+from utils.normal import can_reply_to_email, ensure_dir, load_yaml_file
 import pymysql, json
 
 from utils.s3_utils import read_json_from_s3, upload_any_file
 from zoho_routes.routes import send_zoho_email
+
+logger = get_logger(__name__)
+
+
+def umail_get_sorted_lance_emails(connection, user_id, client_id):
+    client = UmailLanceClient(user_id)
+    recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
+
+    all_messages = []
+    sorted_conversations = []
+
+    # open a cursor once and reuse
+    with connection.cursor() as cursor:
+        print("connection", connection)
+        for conv_id, messages_list in recent_msg.items():
+            try:
+                # 🔥 Deduplicate messages
+                unique_messages = {}
+                for msg in messages_list:
+                    msg_id = (
+                        msg.get("id") or f"{msg.get('timestamp')}-{msg.get('sender')}"
+                    )
+                    if msg_id not in unique_messages:
+                        unique_messages[msg_id] = msg
+
+                messages = list(unique_messages.values())
+                channel = messages[0].get("source") if messages else "unknown"
+                ticket_id = messages[0].get("ticket_id")
+
+                assigned_id = ""
+                assignee_full_name = ""
+
+                if ticket_id:
+                    cursor.execute(
+                        "SELECT assignee FROM tickets WHERE tickets_id = %s",
+                        (ticket_id,),
+                    )
+                    t_row = cursor.fetchone()
+                    if t_row:
+                        assigned_id = t_row[0]
+
+                if assigned_id:
+                    cursor.execute(
+                        "SELECT first_name, last_name, email FROM users WHERE user_id = %s",
+                        (assigned_id,),
+                    )
+                    names = cursor.fetchone()
+                    if names:
+                        first_name, last_name, assignee_email = names
+                        if not first_name or first_name == "None":
+                            first_name = assignee_email.split("@")[0]
+                        if not last_name or last_name == "None":
+                            last_name = ""
+                        assignee_full_name = (first_name + " " + last_name).strip()
+
+                all_messages.append(
+                    {
+                        "id": conv_id,
+                        "channel": channel,
+                        "messages": messages,
+                        "assigned_name": assignee_full_name,
+                    }
+                )
+            except Exception as e:
+                print(f"❌ Failed to read or parse {e}")
+                continue
+
+    if all_messages:
+        sorted_conversations = sorted(
+            all_messages,
+            key=lambda conv: (
+                max(msg.get("timestamp") for msg in conv.get("messages", []))
+                if conv.get("messages")
+                else ""
+            ),
+            reverse=False,
+        )
+
+    return sorted_conversations
 
 
 def getselectedconv(conv_id, userid):
@@ -396,7 +477,6 @@ def send_pilot_messages(
                     created_date,
                     updated_date,
                     channel,
-
                 ),
             )
             print("✅ [DEBUG] Message record inserted")
@@ -532,4 +612,85 @@ def send_pilot_messages(
         return {"error": "Internal server error"}
     finally:
         if b_connection is None and connection:
+            connection.close()
+
+
+def helper_make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
+    connection = None  # always defined
+    try:
+        from_email = baseemail
+        userid = baseuserid
+
+        if n_connection is None and connection is None:
+            connection = connect_to_rds()
+            print("make connection creation", connection)
+        else:
+            print("conn", connection)
+            connection = n_connection
+
+        clientid = get_users_clients_id(email=from_email, user_id=userid)
+        if not clientid:
+            print("No client id")
+            return None
+
+        print("max connection", connection)
+
+        # sorted conversations
+        sorted_conversations = umail_get_sorted_lance_emails(
+            connection=connection, user_id=userid, client_id=clientid
+        )
+        if not sorted_conversations:
+            print("No sorted conversations")
+            return None
+
+        # collect all messages
+        all_messages = []
+        for conv in sorted_conversations:
+            all_messages.extend(conv.get("messages", []))
+        if not all_messages:
+            return None
+
+        latest_msg = all_messages[-1]
+        client_email = latest_msg.get("from")
+
+        if not can_reply_to_email(client_email):
+            return False
+
+        if latest_msg.get("direction") == "inbound":
+            ai_reply = suggest_helper_base(
+                userid=userid,
+                email_msg=latest_msg["body"],
+                umail_conversations=all_messages,
+                umail_bodies=[msg.get("body") for msg in all_messages],
+            )
+            send_val = send_pilot_messages(
+                user_id=userid,
+                channel="gmail",
+                text=ai_reply,
+                conversation_id=latest_msg["conversation_id"],
+                b_connection=connection,
+                client_id=clientid,
+                user_email=latest_msg["to"],
+                client_email=latest_msg["from"],
+                subject=latest_msg["subject"],
+                thread_id=latest_msg["thread_id"],
+                ticket_id=latest_msg["ticket_id"],
+                ticket_name=latest_msg["ticket_name"],
+                is_reply=True,
+            )
+            if send_val:
+                print("sent val ok")
+                return send_val
+            else:
+                print("sent val fail")
+                return False
+        else:
+            print("sent val outbound")
+            return False
+
+    except Exception as e:
+        logger.info("ERROR %s", e)
+        return None
+    finally:
+        if n_connection is None and connection is not None:
             connection.close()
