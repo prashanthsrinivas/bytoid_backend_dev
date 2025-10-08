@@ -536,7 +536,8 @@ def get_sorted_lance_emails(connection, user_id, client_id):
                     unique_messages = {}
                     for msg in messages_list:
                         msg_id = (
-                            msg.get("id") or f"{msg.get('timestamp')}-{msg.get('sender')}"
+                            msg.get("id")
+                            or f"{msg.get('timestamp')}-{msg.get('sender')}"
                         )
                         if msg_id not in unique_messages:
                             unique_messages[msg_id] = msg

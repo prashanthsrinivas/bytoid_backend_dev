@@ -300,8 +300,37 @@ async def v2all_continuous(user_id):
 
         if newly_creation:
             print("NEW CREATION attaching to valkey", len(all_results))
+            # Merge all grouped_messages and collect next_page_token if any
+            merged_grouped = {}
+            next_page_token = None
+            total_new_messages = 0
+
+            for batch_result in all_results:
+                if not isinstance(batch_result, dict):
+                    continue
+                grouped = batch_result.get("grouped_messages", {})
+                if isinstance(grouped, dict):
+                    merged_grouped.update(grouped)
+                total_new_messages += batch_result.get("new_messages", 0)
+                if batch_result.get("next_page_token"):
+                    next_page_token = batch_result["next_page_token"]
+
+            # Prepare cache payload
+            cache_payload = {
+                "status": "success",
+                "total_new_messages": total_new_messages,
+                "next_page_token": next_page_token,
+                "grouped_messages": merged_grouped,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+            # await client.set(
+            #     f"{user_id}", json.dumps(all_results, default=str), TTL_90_DAYS
+            # )
             await client.set(
-                f"{user_id}", json.dumps(all_results, default=str), TTL_90_DAYS
+                f"{user_id}",
+                json.dumps(cache_payload, default=str),
+                TTL_90_DAYS,
             )
 
         # wait for embeddings to finish

@@ -369,7 +369,7 @@ class UmailLanceClient:
         and returns a combined list of all flattened strings.
         """
         flattened_texts = self.flatten_json(lance_data)
-        print(f"lance_data : {lance_data}")
+        # print(f"lance_data : {lance_data}")
         timestamp = lance_data[-1].get("timestamp")
         result = {
             "user_id": user_id,
@@ -485,6 +485,12 @@ class UmailLanceClient:
             lance_data, user_id, client_id, conversation_id
         )
 
+        print(f"🔍 embed_json_file_for_reply called:")
+        print(f"   user_id: {user_id}")
+        print(f"   client_id: {client_id}")
+        print(f"   conversation_id: {conversation_id}")
+        print(f"   input_data type: {type(lance_data)}")
+
         all_text_lengths = []
         vector_batch = []
 
@@ -538,31 +544,31 @@ class UmailLanceClient:
 
             # Split the document into chunks
             chunks = splitter.split_documents([document])
+            logger.info(f"lenght of chunks: {len(chunks)}")
 
             logger.info(f"[📝] Split document {conv_id} into {len(chunks)} chunks")
 
             # Process each chunk
             for i, chunk in enumerate(chunks):
-                chunk_text = chunk.page_content.strip()
-                if not chunk_text:
-                    continue
+                try:
+                    chunk_text = chunk.page_content.strip()
+                    if not chunk_text:
+                        continue
 
-                # Generate embedding for the chunk
-                vector = self.embeddings.embed_query(chunk_text)
+                    vector = self.embeddings.embed_query(chunk_text)
 
-                # Create unique ID for each chunk
-                # chunk_id = f"{conv_id}_chunk_{i}" if len(chunks) > 1 else conv_id
-                # print(f"creating vector for {chunk_id}")
-                vector_data = UmailData(
-                    id=conv_id,  # sometimes multple files can have same id because of splitting into chunks
-                    user_id=user_id,
-                    text=json.dumps(original_data, ensure_ascii=False),
-                    embedding=vector,
-                    folder_name=client_id,
-                    timestamp=timestamp,
-                )
-                print(f"{conv_id} : {user_id} : {client_id} : {timestamp}")
-                vector_batch.append(vector_data)
+                    vector_data = UmailData(
+                        id=conv_id,
+                        user_id=user_id,
+                        text=json.dumps(original_data, ensure_ascii=False),
+                        embedding=vector,
+                        folder_name=client_id,
+                        timestamp=timestamp,
+                    )
+                    vector_batch.append(vector_data)
+                except Exception as e:
+                    print(f"[!] Failed to process chunk {i}: {e}")
+                    logger.error(f"[!] Failed to process chunk {i}: {e}")
 
         except Exception as e:
             print(f"[!] Embedding failed: {e}")
@@ -571,7 +577,7 @@ class UmailLanceClient:
         if vector_data:
             print("embedding complte. sending to lance db for insertion")
             self.send_json_batch_to_lancedb_for_reply(vector_batch)
-            print(f"embedding successful - embeded and uploaded to lancedb!!!")
+            logger.info(f"embedding successful - embeded and uploaded to lancedb!!!")
             return {"embedding successful for {orginal_data}"}
         else:
             return {"vectors_made": 0}
@@ -623,7 +629,7 @@ class UmailLanceClient:
         payload = [vec.dict() for vec in vector_batch]
 
         try:
-            print("sending to insert_umail_vectors ")
+            logger.info("sending to insert_umail_vectors ")
             response = requests.post(
                 f"{self.lancedb_url}/insert_umail_vectors", json=payload
             )

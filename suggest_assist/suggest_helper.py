@@ -257,7 +257,10 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
         # print("base docs ans", base_doc_ans)
 
         ai_reply = get_fireworks_response(filled_prompt, "system")
-        return ai_reply
+        if not ai_reply or ai_reply.strip() == "":
+            ai_reply = None
+        else:
+            return ai_reply
     except Exception as e:
         return {"error": f"suggest ai {e}"}
     finally:
@@ -380,7 +383,7 @@ def send_pilot_messages(
                     in_reply_to=latest_id,
                     connection=connection,
                 )
-                message["id"] = sent_message_id
+                message["id"] = f"{user_id}_{sent_message_id}"
                 print(
                     f"✅ [DEBUG] Gmail reply sent successfully, message_id: {sent_message_id}"
                 )
@@ -663,26 +666,30 @@ def helper_make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
                 umail_conversations=all_messages,
                 umail_bodies=[msg.get("body") for msg in all_messages],
             )
-            send_val = send_pilot_messages(
-                user_id=userid,
-                channel="gmail",
-                text=ai_reply,
-                conversation_id=latest_msg["conversation_id"],
-                b_connection=connection,
-                client_id=clientid,
-                user_email=latest_msg["to"],
-                client_email=latest_msg["from"],
-                subject=latest_msg["subject"],
-                thread_id=latest_msg["thread_id"],
-                ticket_id=latest_msg["ticket_id"],
-                ticket_name=latest_msg["ticket_name"],
-                is_reply=True,
-            )
-            if send_val:
-                print("sent val ok")
-                return send_val
+            if ai_reply:
+                send_val = send_pilot_messages(
+                    user_id=userid,
+                    channel="gmail",
+                    text=ai_reply,
+                    conversation_id=latest_msg["conversation_id"],
+                    b_connection=connection,
+                    client_id=clientid,
+                    user_email=latest_msg["to"],
+                    client_email=latest_msg["from"],
+                    subject=latest_msg["subject"],
+                    thread_id=latest_msg["thread_id"],
+                    ticket_id=latest_msg["ticket_id"],
+                    ticket_name=latest_msg["ticket_name"],
+                    is_reply=True,
+                )
+                if send_val:
+                    print("sent val ok")
+                    return send_val
+                else:
+                    print("sent val fail")
+                    return False
             else:
-                print("sent val fail")
+                print("cant generate suggest")
                 return False
         else:
             print("sent val outbound")

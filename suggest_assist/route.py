@@ -17,7 +17,6 @@ from .suggest_helper import (
 )
 from utils.celery_base import delayed_trigger, lock_client
 import pymysql
-from utils.celery_base import umail_sync, addbase
 
 assist_suggest_bp = Blueprint("assistsuggest", __name__)
 logger = get_logger(__name__)
@@ -39,7 +38,10 @@ def triggersuggest():
             umail_conversations=umail_conversations,
             umail_bodies=umail_bodies,
         )
-        return jsonify({"message": ai_reply.strip()}), 200
+        if ai_reply:
+            return jsonify({"message": ai_reply.strip()}), 200
+        else:
+            return jsonify({"error": "cant create ai suggest for the message"}), 400
     except Exception as e:
         logger.error("error: %s", e)
         return jsonify({"error": "cant make ai suggest"}), 500
@@ -122,6 +124,8 @@ def receive_gmail_notification():
     return "OK", 200
 
 
+# 3 new messages i have 2 auto pilot present  we reply to specific one
+"""
 smae_autopilotjson = {"method": "ALL"}
 # for all new messages we will reply to all
 sameple_autopilotjson = {
@@ -131,8 +135,6 @@ sameple_autopilotjson = {
         "email2": {"status": "active", "updated_at": "date"},  # revoked,
     },
 }
-# 3 new messages i have 2 auto pilot present  we reply to specific one
-"""
 user can make  auto pilot to 
     1. ALL
     2. selected emails
@@ -234,6 +236,45 @@ def triggerassist():
         connection.close()
 
     msg = "autopilot already active" if already_active else "autopilot activated"
+    return jsonify({"message": msg, "autopilot": autopilot_data}), 200
+
+
+@assist_suggest_bp.route("/ai_autopilot-mode", methods=["POST"])
+def changepilotmode():
+    data = request.get_json(force=True)
+    userid = data.get("user_id")
+    changed_mode = data.get("mode")
+
+    if not userid or not changed_mode:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    connection = connect_to_rds()
+    try:
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            autopilot_data, err, code = _fetch_autopilot(userid, cursor)
+            if err:
+                return jsonify(err), code
+
+            current_mode = autopilot_data.get("mode")
+            if current_mode == changed_mode:
+                return (
+                    jsonify(
+                        {"message": f"Autopilot mode already set to '{changed_mode}'"}
+                    ),
+                    200,
+                )
+
+            # ✅ Update mode
+            autopilot_data["mode"] = changed_mode
+
+            # Save updated autopilot config
+            _persist_autopilot(userid, autopilot_data, cursor)
+            connection.commit()
+
+    finally:
+        connection.close()
+
+    msg = f"Autopilot mode changed from '{current_mode}' to '{changed_mode}'"
     return jsonify({"message": msg, "autopilot": autopilot_data}), 200
 
 
@@ -458,32 +499,38 @@ def make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
                 umail_conversations=all_messages,
                 umail_bodies=[msg.get("body") for msg in all_messages],
             )
-            send_val = send_pilot_messages(
-                user_id=userid,
-                channel="gmail",
-                text=ai_reply,
-                conversation_id=latest_msg["conversation_id"],
-                b_connection=connection,
-                client_id=clientid,
-                user_email=latest_msg["to"],
-                client_email=latest_msg["from"],
-                subject=latest_msg["subject"],
-                thread_id=latest_msg["thread_id"],
-                ticket_id=latest_msg["ticket_id"],
-                ticket_name=latest_msg["ticket_name"],
-                is_reply=True,
-            )
-            if baseuserid or baseemail:
-                return True
-            return (
-                jsonify(
-                    {
-                        "status": "sent",
-                        "info": send_val,
-                    }
-                ),
-                200,
-            )
+            if ai_reply:
+                send_val = send_pilot_messages(
+                    user_id=userid,
+                    channel="gmail",
+                    text=ai_reply,
+                    conversation_id=latest_msg["conversation_id"],
+                    b_connection=connection,
+                    client_id=clientid,
+                    user_email=latest_msg["to"],
+                    client_email=latest_msg["from"],
+                    subject=latest_msg["subject"],
+                    thread_id=latest_msg["thread_id"],
+                    ticket_id=latest_msg["ticket_id"],
+                    ticket_name=latest_msg["ticket_name"],
+                    is_reply=True,
+                )
+                if baseuserid or baseemail:
+                    return True
+                return (
+                    jsonify(
+                        {
+                            "status": "sent",
+                            "info": send_val,
+                        }
+                    ),
+                    200,
+                )
+            else:
+                return (
+                    jsonify({"error": "cant generate ai suggest"}),
+                    400,
+                )
         else:
             # last message from you → already replied
             if baseuserid or baseemail:
@@ -530,12 +577,13 @@ def messcheckgmail(userid, hist):
         threads_max = threads_info.get("count", 0)
         threads = threads_info.get("threads", [])
         my_email = total_messages.get("email")
+        print("my email", my_email)
 
         if not threads:
             return {"res": [], "val": None, "status": "no threads found"}
 
         # Gmail service instance
-        gmail_service = GmailService(userid, connection)
+        # gmail_service = GmailService(userid, connection)
 
         # Get Gmail changes (synchronous)
         # val = gmail_service.get_gmail_changes(hist)
@@ -553,9 +601,9 @@ def messcheckgmail(userid, hist):
         # results = await v2fetch_gmail_messages_batch(
         #     userid, threads, my_email, len(threads), connection
         # )
-        results = await gmail_service.process_threads_batch(
-            threads, my_email, threads_max
-        )
+        # results = await gmail_service.process_threads_batch(
+        #     threads, my_email, threads_max
+        # )
         # all_messages = []
         # for thread_id, res in results.items():
         #     thread_data, err = res
@@ -574,9 +622,9 @@ def messcheckgmail(userid, hist):
         #         all_messages.extend(thread_data)
 
         return {
-            "res": results,
+            "res": threads,
             "status": "success",
-            "rescount": len(results),
+            "rescount": threads_max,
             # "changed": all_messages,
             # "chan_count": len(all_messages),
         }
