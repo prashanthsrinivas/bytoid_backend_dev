@@ -418,7 +418,7 @@ async def v2fetch_gmail_messages_batch(
             for msg in thread_data:
                 message_id = msg["messageId"]
                 row_id = f"{user_id}_{message_id}"
-                # print("messageID   --->", row_id)
+                # print({"message_id": row_id, "timestamp": msg["date"]})
                 # Skip if already exists in database
                 sql = """
                 SELECT m.conversation_id_fk,
@@ -502,7 +502,7 @@ async def v2fetch_gmail_messages_batch(
                 message = {
                     "id": row_id,
                     "from": from_email,
-                    "to": my_email,
+                    "to": to_email,
                     "body": extracted_body,
                     "subject": subject,
                     "timestamp": timestamp_iso,
@@ -796,7 +796,7 @@ def gmail_reply(
 
     message_id = get_message_id(gmail_service.service, user_id, message_api_id)
 
-    return message_id
+    return f"{user_id}_{message_id}"
 
 
 def get_message_id(service, user_id, gmail_id):
@@ -825,8 +825,8 @@ def send_mail(user_id, to, subject, body_text):
 
         if not sent or "id" not in sent:
             raise ValueError("No message ID returned from Gmail API")
-
-        message_id = sent["id"]
+        sendid = sent["id"]
+        message_id = f"{user_id}_{sendid}"
         thread_id = sent.get("thread_id")
 
         return {"status": "success", "message_id": message_id, "thread_id": thread_id}

@@ -257,7 +257,7 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
         # print("base docs ans", base_doc_ans)
 
         ai_reply = get_fireworks_response(filled_prompt, "system")
-        if not ai_reply or ai_reply.strip() == "":
+        if not ai_reply or ai_reply.strip().lower() in ["none", "null", ""]:
             ai_reply = None
         else:
             return ai_reply
@@ -291,25 +291,25 @@ def send_pilot_messages(
         connection = b_connection
         cursor = connection.cursor()
         conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
-        print(f"📁 [DEBUG] Conversation folder: {conv_folder}")
+        # print(f"📁 [DEBUG] Conversation folder: {conv_folder}")
         ensure_dir(conv_folder)
         file_name = f"{conversation_id}.json"
         conv_filepath = os.path.join(conv_folder, file_name)
         s3_conv_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
-        print(f"📁 [DEBUG] Conversation file path: {conv_filepath}")
-        print(f"📁 [DEBUG] S3 conversation key: {s3_conv_key}")
+        # print(f"📁 [DEBUG] Conversation file path: {conv_filepath}")
+        # print(f"📁 [DEBUG] S3 conversation key: {s3_conv_key}")
 
         # Load existing conversation data
         try:
-            print(f"📖 [DEBUG] Attempting to read existing conversation from S3...")
+            # print(f"📖 [DEBUG] Attempting to read existing conversation from S3...")
             raw_data = read_json_from_s3(s3_conv_key)
             input_data = raw_data.get("input_data", [])
-            print(f"📖 [DEBUG] Loaded {len(input_data)} existing messages")
+            # print(f"📖 [DEBUG] Loaded {len(input_data)} existing messages")
         except Exception as e:
             print(f"📖 [DEBUG] No existing conversation found, starting fresh: {e}")
             input_data = []
 
-        print(f"📖 [DEBUG] input_data length: {len(input_data)}")
+        # print(f"📖 [DEBUG] input_data length: {len(input_data)}")
         # Create final message object
         now_utc = datetime.now(timezone.utc)
         formatted_time = now_utc.isoformat(timespec="seconds")
@@ -337,7 +337,7 @@ def send_pilot_messages(
         # Send the message via appropriate channel
         sent_message_id, sent_thread_id = None, None
 
-        print(f"🚀 [DEBUG] Sending message via channel: {channel}")
+        # print(f"🚀 [DEBUG] Sending message via channel: {channel}")
 
         if channel == "gmail":
             print("📧 [DEBUG] Processing Gmail send...")
@@ -383,7 +383,8 @@ def send_pilot_messages(
                     in_reply_to=latest_id,
                     connection=connection,
                 )
-                message["id"] = f"{user_id}_{sent_message_id}"
+                msg_id = sent_message_id
+                message["id"] = sent_message_id
                 print(
                     f"✅ [DEBUG] Gmail reply sent successfully, message_id: {sent_message_id}"
                 )
@@ -430,29 +431,29 @@ def send_pilot_messages(
             return jsonify({"error": "Unsupported channel"}), 400
 
         # Database updates
-        print("💾 [DEBUG] Starting database updates...")
+        # print("💾 [DEBUG] Starting database updates...")
         updated_date = datetime.now(timezone.utc).isoformat()
         created_date = updated_date
-        print(
-            f"💾 [DEBUG] Timestamps - created: {created_date}, updated: {updated_date}"
-        )
+        # print(
+        #     f"💾 [DEBUG] Timestamps - created: {created_date}, updated: {updated_date}"
+        # )
 
         try:
-            print("💾 [DEBUG] Updating existing ticket and thread...")
+            # print("💾 [DEBUG] Updating existing ticket and thread...")
             cursor.execute(
                 "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
                 (updated_date, "In-Progress", conversation_id),
             )
-            print("✅ [DEBUG] Ticket updated")
+            # print("✅ [DEBUG] Ticket updated")
 
             cursor.execute(
                 "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
                 (updated_date, conversation_id),
             )
-            print("✅ [DEBUG] Thread updated")
+            # print("✅ [DEBUG] Thread updated")
 
             cont_ref = f"{user_id}/messages/{client_id}/{conversation_id}.json"
-            print(f"💾 [DEBUG] Content reference: {cont_ref}")
+            # print(f"💾 [DEBUG] Content reference: {cont_ref}")
 
             print("💾 [DEBUG] Inserting message record...")
             cursor.execute(

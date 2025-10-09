@@ -11,6 +11,7 @@ from utils.base_logger import get_logger
 from utils.normal import can_reply_to_email
 from .suggest_helper import (
     getselectedconv,
+    helper_make_reply_email,
     send_pilot_messages,
     suggest_helper_base,
     umail_get_sorted_lance_emails,
@@ -227,6 +228,10 @@ def triggerassist():
                     else:
                         autopilot_data["logs"].append(update_data)
                     already_active = False
+                print({"base_user": userid, "email_Rec": email})
+                helper_make_reply_email(
+                    baseuserid=userid, baseemail=email, n_connection=connection
+                )
 
             if not already_active:
                 _persist_autopilot(userid, autopilot_data, cursor)

@@ -22,10 +22,19 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
         for conv_id, channels in grouped.items():
             for channel, msgs in channels.items():
                 if msgs:
-                    first_from = msgs[-1].get("from")
-                    if first_from and msgs[-1].get("direction") == "inbound":
-                        if can_reply_to_email(first_from):
-                            emails_to_check.append((conv_id, first_from, msgs))
+                    # Sort by timestamp to ensure correct order
+                    msgs_sorted = sorted(
+                        msgs,
+                        key=lambda x: parse(x.get("timestamp", "")),
+                        reverse=False,  # earliest → latest
+                    )
+
+                    last_msg = msgs_sorted[-1]  # ✅ guaranteed latest
+                    # print("actual last message", last_msg)
+
+                    first_from = last_msg.get("from")
+                    if first_from and can_reply_to_email(first_from):
+                        emails_to_check.append((conv_id, first_from, msgs_sorted))
 
     if not emails_to_check:
         print("No messages found in all_results.")
@@ -41,15 +50,17 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
 
             # --- Helper: analyze conversation with dynamic threshold ---
             def analyze_inbound_outbound(
-                msgs, base_threshold=30, similarity_factor=0.5
+                msgs, base_threshold=30, similarity_factor=0.5, updated_after=None
             ):
                 """
                 Analyze inbound/outbound message timestamps and detect AI-like fast replies.
                 Converts timestamps to UTC for consistent comparison.
+                Ignores messages before `updated_after` if provided.
                 """
                 time_diffs = []
                 revoked = False
                 reason = None
+                print("analyzing started")
 
                 msgs_sorted = sorted(msgs, key=lambda x: x["timestamp"])
                 last_outbound_ts = None
@@ -61,11 +72,14 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                     if not ts_str:
                         continue
 
-                    # Convert string timestamp to datetime in UTC
                     try:
                         ts = parse(ts_str).astimezone(timezone.utc)
                     except Exception:
-                        continue  # skip invalid timestamp
+                        continue
+
+                    # ⏩ Ignore messages before last updated time
+                    if updated_after and ts <= updated_after:
+                        continue
 
                     if direction == "outbound":
                         last_outbound_ts = ts
@@ -73,7 +87,6 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                         diff = (ts - last_outbound_ts).total_seconds()
                         time_diffs.append(diff)
                         outbound_diffs.append(diff)
-                        last_outbound_ts = last_outbound_ts
 
                 # Compute dynamic threshold
                 if outbound_diffs:
@@ -84,7 +97,6 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                 else:
                     dynamic_threshold = base_threshold
 
-                # Flag AI-like inbound
                 for diff in time_diffs:
                     if diff < base_threshold:
                         revoked = True
@@ -96,17 +108,32 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                         revoked = True
                         reason = f"revoked due to AI-like fast dynamic messages ({dynamic_threshold:.1f}s)"
                         break
+                print("returning analyze inbound outbound", time_diffs, revoked, reason)
 
                 return time_diffs, revoked, reason
 
             # --- Process single email ---
             def process_email(conv_id, from_email, msgs):
                 normalized_email = from_email.strip().lower()
+                # print("normal", normalized_email)
                 existing_entry = logs_dict.get(normalized_email)
+                latest_msg = msgs[-1]
+                # print("last message", normalized_email, type(latest_msg))
+                latest_msg_id = latest_msg.get("id")
+
+                # Skip if last message already handled or last msg is outbound
+                if existing_entry and existing_entry.get("last-msg") == latest_msg_id:
+                    # print("already replied")
+                    return f"Last message already replied for {from_email}"
+                if latest_msg.get("direction") != "inbound":
+                    # print("skipping value outbound")
+                    return f"Last msg from {from_email} is outbound, skipping"
 
                 # Skip or add new email
                 if not existing_entry:
+                    print("a new email statted ")
                     if mode == "dynamic":
+                        # print("dynamic val")
                         return f"⏩ Skipped new email {from_email} (dynamic mode)"
                     elif mode == "all" and normalized_email != my_email.strip().lower():
                         new_entry = {
@@ -121,16 +148,30 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                         logs.append(new_entry)
                         logs_dict[normalized_email] = new_entry
                         existing_entry = new_entry
+                        # print("new entry")
 
                 if (
                     not existing_entry
                     or existing_entry.get("status") != "active"
                     or not msgs
                 ):
+                    # print(f"Skippedddddddd {from_email} (inactive or no messages)")
                     return f"Skipped {from_email} (inactive or no messages)"
 
+                # ⏰ Determine updated_after (only for this email)
+                updated_after = None
+                try:
+                    if existing_entry.get("updated_at"):
+                        updated_after = parse(existing_entry["updated_at"]).astimezone(
+                            timezone.utc
+                        )
+                except Exception:
+                    updated_after = None
+
                 # Analyze conversation for AI-like fast inbound
-                time_diffs, revoked, reason = analyze_inbound_outbound(msgs)
+                time_diffs, revoked, reason = analyze_inbound_outbound(
+                    msgs, updated_after=updated_after
+                )
 
                 # Revoke if AI-like fast inbound after 6th message
                 if revoked and len(msgs) > 6:
@@ -145,15 +186,6 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                     return (
                         f"⚠️ {from_email} revoked due to AI-like fast inbound messages"
                     )
-
-                latest_msg = msgs[-1]
-                latest_msg_id = latest_msg.get("id")
-
-                # Skip if last message already handled or last msg is outbound
-                if existing_entry.get("last-msg") == latest_msg_id:
-                    return f"Last message already replied for {from_email}"
-                if latest_msg.get("direction") != "inbound":
-                    return f"Last msg from {from_email} is outbound, skipping"
 
                 # Send reply
                 send_val = helper_make_reply_email(
@@ -201,8 +233,8 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
             )
             connection.commit()
 
-            # for r in results:
-            #     print(r)
+            for r in results:
+                print(r)
 
     except Exception as e:
         print(f"ERROR in autoReplyhelper: {e}")

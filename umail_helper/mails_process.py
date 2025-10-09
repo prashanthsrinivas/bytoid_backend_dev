@@ -518,7 +518,7 @@ def append_subject_to_messages(
                                             conversation_id,
                                             client_id,
                                             cont_ref,
-                                            "inbound",
+                                            direction,
                                             subject,
                                             created_date,
                                             updated_date,

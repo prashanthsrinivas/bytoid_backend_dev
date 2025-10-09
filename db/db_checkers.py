@@ -609,7 +609,7 @@ def update_umail_json(user_id, new_count, connection=None, keep_days=10):
                 break
 
         if today_entry:
-            today_entry["processed_threads"] += new_count
+            today_entry["processed_threads"] = new_count
             today_entry["timestamp"] = now.isoformat()
             today_entry["date_end"] = today.isoformat()
         else:
