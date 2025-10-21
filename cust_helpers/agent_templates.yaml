@@ -311,12 +311,12 @@ scrape_summary_prompt_template: |
     - Extract the company's mission, values, or unique selling proposition.
     - Document the site structure and navigation patterns observed.
     - Identify key subpages and their purposes.
-  
+
   - For the display summary, you must:
     - Write a comprehensive paragraph (4–6 sentences) that synthesizes information from all scraped levels.
     - Include insights about the website's depth and content organization.
     - Highlight any unique features or standout content found in subpages.
-  
+
   - For site structure analysis:
     - Map out the key sections and their relationships.
     - Note any specialized pages or unique functionalities.
@@ -388,7 +388,6 @@ extract_scraping_clarifications_prompt: |
       "User onboarding process not explained"
     ]
   }
-
 
 scraping_response_validator_batch: |
   You are an AI evaluator assessing responses generated from multi-level website scraping data (up to 3 depth levels).

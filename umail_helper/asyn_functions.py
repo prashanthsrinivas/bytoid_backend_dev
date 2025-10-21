@@ -7,7 +7,7 @@ from db.db_checkers import (
     update_umail_json,
 )
 from db.rds_db import get_cursor
-from gmail_route.gmail_service import GmailService
+from services.gmail_service import GmailService
 from gmail_route.routes import v2fetch_gmail_messages_batch
 from umail_helper.auto_rep import autoReplyhelper
 from umail_helper.mails_process import (

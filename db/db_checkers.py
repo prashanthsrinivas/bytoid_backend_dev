@@ -718,3 +718,44 @@ def get_existing_autopilot_json(user_id, connection=None):
     finally:
         if own_conn:
             connection.close()
+
+
+def get_business_info(userid, connection):
+    businessdata = {}
+    with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+        cursor.execute(
+            "SELECT user_type,permissions from users where user_id = %s LIMIT 1",
+            (userid,),
+        )
+        user_row = cursor.fetchone()
+        if user_row:
+            if user_row["user_type"] == "user":
+                user_permissions = (
+                    json.loads(user_row["permissions"])
+                    if user_row.get("permissions")
+                    else {}
+                )
+                invited_by_email = user_permissions.get("invited_by")
+
+                base_user_id = None
+                if invited_by_email:
+                    cursor.execute(
+                        "SELECT user_id from users where email = %s",
+                        (invited_by_email,),
+                    )
+                    base = cursor.fetchone()
+                    base_user_id = base.get("user_id") if base else None
+
+                if base_user_id:
+                    cursor.execute(
+                        "SELECT BusinessName, BillingAddress, WebsiteUrl FROM business_info WHERE user_id_fk = %s LIMIT 1",
+                        (base_user_id,),
+                    )
+                    businessdata = cursor.fetchone() or {}
+            else:
+                cursor.execute(
+                    "SELECT BusinessName, BillingAddress, WebsiteUrl FROM business_info WHERE user_id_fk = %s LIMIT 1",
+                    (userid,),
+                )
+                businessdata = cursor.fetchone() or {}
+    return businessdata

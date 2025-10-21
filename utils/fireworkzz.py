@@ -3,6 +3,7 @@ import re
 import yaml
 from dotenv import load_dotenv
 from fireworks.client import Fireworks
+from langchain_fireworks import FireworksEmbeddings
 import json
 
 load_dotenv()
@@ -10,13 +11,30 @@ load_dotenv()
 
 FIREWORKS_KEY = os.getenv("FIREWORKS_KEY")
 FIREWORKS_MODEL = os.getenv("FIREWORKS_MODEL")
-
+EMBEDMODEL = os.getenv("EMBED_MODEL")
+EVAL_FIREWORKS = os.getenv("FIREWORKS_MODEL_EVAL")
 fw = Fireworks(api_key=FIREWORKS_KEY)
 
 
 def get_fireworks_response(user_message: str, role: str) -> str:
     chat = fw.chat.completions.create(
         model=FIREWORKS_MODEL,
+        messages=[{"role": role, "content": user_message}],
+        temperature=0.7,
+    )
+    return chat.choices[0].message.content.strip()
+
+
+def get_firework_embedding():
+    embeddings = FireworksEmbeddings(
+        model=EMBEDMODEL, api_key=FIREWORKS_KEY, dimensions=3072
+    )
+    return embeddings
+
+
+def get_evaluator_fireworks(user_message: str, role: str) -> str:
+    chat = fw.chat.completions.create(
+        model=EVAL_FIREWORKS,
         messages=[{"role": role, "content": user_message}],
         temperature=0.7,
     )
@@ -84,17 +102,13 @@ def evaluator_context_llama(prompt_template_str, qa_list):
     full_prompt = prompt_template_str.format(qa_list=qa_input_block)
 
     try:
-        llama_response = get_fireworks_response(full_prompt, role="user")
+        llama_response = get_evaluator_fireworks(full_prompt, role="system")
 
         # return yaml.safe_load(llama_response)
         return llama_response
     except Exception as e:
         print(f"🔥 LLaMA Evaluator context Error: {e}")
         return []
-
-
-import json
-import re
 
 
 def enforce_json_keys(data: dict) -> dict:
@@ -110,7 +124,7 @@ def enforce_json_keys(data: dict) -> dict:
 
 def evaluate_transcript(prompt_template_str, text):
     full_prompt = prompt_template_str.format(input_text=text)
-    llama_response = get_fireworks_response(full_prompt, role="system")
+    llama_response = get_evaluator_fireworks(full_prompt, role="system")
 
     cleaned = llama_response.strip()
     if cleaned.startswith("```"):
@@ -138,3 +152,16 @@ def evaluate_transcript(prompt_template_str, text):
         }
 
 
+# def get_firework_embedding():
+#     embeddings = FireworksEmbeddings(
+#         model=EMBEDMODEL, api_key=FIREWORKS_KEY, dimensions=3072
+#     )
+
+#     # # Single string for embed_query
+#     # test_text = "Hello world"
+#     # vec = embeddings.embed_query(test_text)  # <- pass a string, not [string]
+#     # print("Embedding length:", len(vec))  # Should match dimensions
+#     return embeddings
+
+
+# print("embedding of firework", get_firework_embedding())

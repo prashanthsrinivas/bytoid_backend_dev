@@ -15,8 +15,9 @@ from langchain_community.document_loaders import (
     UnstructuredExcelLoader,
 )
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_fireworks import ChatFireworks
 from langchain.prompts import ChatPromptTemplate
+from utils.fireworkzz import get_firework_embedding
 
 # ────────────────────────
 # Setup Logging
@@ -55,42 +56,46 @@ class LanceClient:
         load_dotenv()
         self.lancedb_url = os.getenv("LANCE_DB_IP")
         self.user_id = user_id
-        self.dimension = 3072
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-large",
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
-            dimensions=self.dimension,
+        self.dimension = 2880
+        #     embeddings = OpenAIEmbeddings(
+        # #     model="text-embedding-3-large",
+        # #     openai_api_key=os.getenv("OPENAI_API_KEY"),
+        # #     dimensions=3072,
+        # # )
+
+        # 🔹 Embeddings (you can keep this or replace with nomic-embed-text-v1)
+        self.embeddings = get_firework_embedding()
+
+        # 🔹 Use Fireworks Llama 3.1 405B Instruct instead of GPT-4
+        self.llm = ChatFireworks(
+            model=os.getenv("FIREWORKS_MODEL_EVAL"),
+            fireworks_api_key=os.getenv("FIREWORKS_KEY"),
+            temperature=0.2,
         )
 
-        # Pre-load the LLM and chain for reuse
-        self.llm = ChatOpenAI(model="gpt-4", temperature=0.2)
-
-        # --- FIX: Define prompt_template as a ChatPromptTemplate object ---
-        # Define the prompt template string
+        # --- Friendly prompt ---
         _template_string = """
-        You are an intelligent assistant that extracts relevant information from a block of text based on a user query.
+            You are a friendly and helpful chatbot, acting like a supportive friend or mentor. Your goal is to answer user queries based on the given context in a **natural, human-like way**, keeping responses short, clear, and easy to understand.
 
-        Query: "{query}"
+            Keep in mind:
+            - The user may be young (around 10th grade), may use short forms, typos, or casual language.
+            - Always respond **kindly, patiently, and in a friendly tone**.
+            - Never judge the user for mistakes or short questions.
+            - Avoid anything sexual, offensive, or inappropriate. Even if the user asks about it, respond politely without engaging.
 
-        Context:
-        \"\"\"
-        {context}
-        \"\"\"
-
-        Instructions:
-        - If the query is about a specific **page**, return the **URL** of that page.
-        - If the query is asking for **related questions**, return the relevant **Frequently Asked Questions (FAQs)** from the context.
-        - If both types of information are found, include both.
-        - If no relevant information exists, respond with: **"No relevant content found."**
-
-        Extract only the most relevant part of the context that answers the query. Be concise and direct.
+            Instructions:
+            - If the query is about a specific **page**, mention the **URL** naturally in your reply.
+            - If the query is asking for **related questions**, share the relevant **FAQs** naturally in your response.
+            - If both types of information are found, include both in one smooth, readable message.
+            - If the context does not contain exact information:
+                - Provide 1–2 references, examples, or related ideas that could help answer the query.
+                - You can also ask a polite clarifying question like "Can you tell me a bit more about what you mean?"
+            - Always respond **like a friend**: short, casual, helpful, and human-like.
         """
 
-        # Create the ChatPromptTemplate object
         self.prompt_template = ChatPromptTemplate.from_template(_template_string)
-        # --- END FIX ---
 
-        # Use the created prompt_template object in the RunnableSequence
+        # 🔹 Combine the template with the LLM
         self.relevance_chain = self.prompt_template | self.llm
 
     def check_user(self):

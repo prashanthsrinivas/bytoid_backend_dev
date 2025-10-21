@@ -1,6 +1,5 @@
 import json
 from agent_route.utils import extract_filename
-from langchain_openai import OpenAIEmbeddings
 import yaml
 from utils.base_logger import get_logger
 from utils.normal import load_yaml_file
@@ -10,7 +9,7 @@ import os
 import difflib
 import re
 from cust_helpers import pathconfig
-from utils.fireworkzz import evaluator_batch_llama
+from utils.fireworkzz import evaluator_batch_llama, get_firework_embedding
 import requests
 from utils.chatopenzz import (
     generate_usecases_questions,
@@ -142,11 +141,12 @@ def generate_yaml_ques_batch(usecases_with_docs, prompts, industry):
 def fetch_ques_with_docs(
     usecases: list[str], userid: str, filenames: list[str]
 ) -> list[dict]:
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-large",
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        dimensions=3072,
-    )
+    # embeddings = OpenAIEmbeddings(
+    #     model="text-embedding-3-large",
+    #     openai_api_key=os.getenv("OPENAI_API_KEY"),
+    #     dimensions=3072,
+    # )
+    embeddings = get_firework_embedding()
 
     vectors = embeddings.embed_documents(usecases)
     payload = {
@@ -186,11 +186,12 @@ def fetch_usecases_with_docs(
     Embeds all use cases and sends a single batch query to the LanceDB vector index.
     Returns a list of dictionaries with each use case and the top matching document.
     """
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-large",
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        dimensions=3072,
-    )
+    # embeddings = OpenAIEmbeddings(
+    #     model="text-embedding-3-large",
+    #     openai_api_key=os.getenv("OPENAI_API_KEY"),
+    #     dimensions=3072,
+    # )
+    embeddings = get_firework_embedding()
 
     usecases_with_docs = []
 
@@ -294,8 +295,14 @@ def append_passed_with_ai_diff(existing, new_entries):
 def is_new_file(file_name, passed_data, failed_data):
     """Check if file has never been processed before."""
     file_no_ext = os.path.splitext(file_name.strip().lower())[0]
+
+    def normalize_filename(f):
+        if isinstance(f, list):
+            f = f[0] if f else ""
+        return str(f).strip().lower()
+
     return not any(
-        os.path.splitext(e.get("filename", "").strip().lower())[0] == file_no_ext
+        os.path.splitext(normalize_filename(e.get("filename", "")))[0] == file_no_ext
         for e in passed_data + failed_data
     )
 
@@ -343,6 +350,7 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
 
     # Determine if all files are new
     all_new = all(is_new_file(fn, passed_data, failed_data) for fn in filenames)
+    print("all new data", all_new)
 
     if not all_new:
         failed_data = remove_entries_for_files(failed_data, filenames)

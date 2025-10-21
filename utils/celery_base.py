@@ -1,9 +1,15 @@
 import os
+from random import uniform
+import time
+import traceback
 from dotenv import load_dotenv
 from celery import Celery
 from celery.utils.log import get_task_logger
 import asyncio
 from umail_helper.asyn_functions import v2all_continuous
+import json
+from umail_lance.umail_lance_agent import UmailLanceClient
+
 # from umail_helper.auto_rep import autoReplyhelper
 
 logger = get_task_logger(__name__)
@@ -16,6 +22,8 @@ base_ip = os.getenv("CELERY_BROKER_URL")
 lock_client = redis.StrictRedis.from_url(base_ip)  # or your broker Redis
 
 LOCK_TTL = 600  # 10 minutes
+
+QUEUE_PREFIX = "user_embed_queue:"
 
 
 def acquire_user_lock(user_id):
@@ -119,6 +127,93 @@ def delayed_trigger(self, user_email, history_id):
     finally:
         # Always release lock at the end so new task can start
         lock_client.delete(lock_key)
+
+
+# ------------ REPLY EMBEDDING TASK FOR AI ASSISTANT --------------#
+
+
+def enqueue_user_task(user_id, payload):
+    """
+    Add a new embedding task for a user to their Redis queue.
+    """
+    key = f"{QUEUE_PREFIX}{user_id}"
+    lock_client.rpush(key, json.dumps(payload))
+    logger.info(
+        f"📩 Queued embedding for user {user_id} (queue size: {lock_client.llen(key)})"
+    )
+
+    # Trigger worker to process if not already running
+    process_user_queue.delay(user_id)
+
+
+def exponential_backoff(retries, base=2, cap=300):
+    """Return exponential backoff in seconds (min delay 1s, max 300s)."""
+    return min(base**retries + uniform(0, 1), cap)
+
+
+@new_celery.task(bind=True, name="embedding.process_user_queue")
+def process_user_queue(self, user_id):
+    """
+    Process all embedding tasks for a user sequentially (FIFO).
+    Automatically retries failed tasks and keeps strict ordering.
+    """
+    key = f"{QUEUE_PREFIX}{user_id}"
+    lock_key = f"{key}:lock"
+
+    # Acquire a distributed lock per user (avoid two workers running the same queue)
+    got_lock = lock_client.set(lock_key, "1", nx=True, ex=LOCK_TTL)
+    if not got_lock:
+        logger.info(f"⏸ Queue for user {user_id} already being processed.")
+        return
+
+    try:
+        while True:
+            raw_task = lock_client.lpop(key)
+            if not raw_task:
+                logger.info(f"✅ Queue empty for user {user_id}. Done.")
+                break
+
+            payload = json.loads(raw_task)
+            retries = payload.get("retries", 0)
+
+            user_id = payload["user_id"]
+            client_id = payload["client_id"]
+            conversation_id = payload["conversation_id"]
+            input_data = payload["input_data"]
+
+            logger.info(
+                f"🚀 Processing embedding for user {user_id}, conv_id: {conversation_id}, retry={retries}"
+            )
+
+            try:
+
+                client = UmailLanceClient(user_id)
+                client.embed_json_file_for_reply(
+                    input_data, user_id, client_id, conversation_id
+                )
+
+                logger.info(f"✅ Completed embedding for conv_id: {conversation_id}")
+
+            except Exception as e:
+                logger.error(f"❌ Error embedding for conv_id {conversation_id}: {e}")
+                traceback.print_exc()
+
+                if retries < 5:  # Retry up to 5 times
+                    delay = exponential_backoff(retries)
+                    payload["retries"] = retries + 1
+                    logger.warning(
+                        f"🔁 Retrying task {conversation_id} in {delay:.1f}s (attempt {retries + 1}/5)"
+                    )
+                    time.sleep(delay)
+                    # Requeue task to the *front* so it retries before the next new task
+                    lock_client.lpush(key, json.dumps(payload))
+                else:
+                    logger.error(
+                        f"💀 Max retries reached for conv_id: {conversation_id}"
+                    )
+    finally:
+        lock_client.delete(lock_key)
+        logger.info(f"🔓 Released lock for user {user_id}")
 
 
 # @new_celery.task(bind=True, name="webhook.testautoreply")

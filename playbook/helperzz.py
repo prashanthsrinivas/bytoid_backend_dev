@@ -2,9 +2,15 @@ import json
 import re
 import yaml
 from agent_route.doc_clarity import fetch_ques_with_docs
-from utils.fireworkzz import evaluator_context_llama, get_fireworks_response
+from agent_route.routes import getFilenameData
+from utils.chatopenzz import get_evaluator_gpt4
+from utils.fireworkzz import (
+    evaluator_context_llama,
+    get_evaluator_fireworks,
+    get_fireworks_response,
+)
 from utils.pb_config_utils import *
-from utils.normal import ensure_dir, load_yaml_file
+from utils.normal import ensure_dir, load_yaml_file, read_function_jsons
 from datetime import datetime
 import tempfile
 import os
@@ -138,7 +144,8 @@ def triggeraicontextfinder(instruction_input, userid, templatedata):
     normalized = normalize_input(instruction_input)
     ques = check_doc_context_needed(normalized, templatedata)
     if len(ques) > 0:
-        content = fetch_ques_with_docs(ques, userid)
+        filenames = getFilenameData(userid)
+        content = fetch_ques_with_docs(ques, userid, filenames)
         batch_size = 10
         valid_responses = []
 
@@ -158,71 +165,54 @@ def triggeraicontextfinder(instruction_input, userid, templatedata):
 
 
 def returninsructdata(data):
-    name = data.get("title")
-    description = data.get("description")
-    triggermode = data.get("trigger_mode")
+    """
+    Prepares instruction input for the AI template safely.
+    """
+    name = data.get("title", "")
+    description = data.get("description", "")
+    triggermode = data.get("trigger_mode", "")
     ai_mode = data.get("ai_mode", "normal")
-    priority = data.get("priority", "normal")
+    inp_steps = data.get("steps", [])
 
-    # Clean communication_channels and tags (remove numeric keys like 0, 1)
+    # Communication channels
     communication_channels = list(
         set(
             [ch for ch in data.get("communication_channels", []) if isinstance(ch, str)]
         )
     )
 
-    # Build trigger_input depending on trigger_mode
+    # Trigger input
     trigger_input_list = []
-
     if triggermode.lower() == "scheduled":
         schedule = data.get("scheduled_options", {})
-        frequency = schedule.get("frequency", "daily").lower()
-        start_time = schedule.get("startTime", "09:00")
-        end_time = schedule.get("endTime")  # optional
-
-        # Always add frequency and start time
-        trigger_input_list.append(f"schedule: {frequency}")
-        trigger_input_list.append(f"in_time: {start_time}")
-
-        # Add end time only if present
+        freq = schedule.get("frequency", "daily")
+        start = schedule.get("startTime", "09:00")
+        trigger_input_list.append(f"schedule: {freq}")
+        trigger_input_list.append(f"in_time: {start}")
+        end_time = schedule.get("endTime")
         if end_time:
             trigger_input_list.append(f"out_time: {end_time}")
-
-        # Add frequency-specific values
-        if frequency == "weekly":
-            weekly_day = schedule.get("weeklyDay")
-            if weekly_day:
-                trigger_input_list.append(f"day: {weekly_day}")
-
-        elif frequency == "monthly":
-            monthly_date = schedule.get("monthlyDate")
-            if monthly_date is not None:
-                trigger_input_list.append(f"date: {monthly_date}")
-
-        elif frequency == "custom":
-            start_date = schedule.get("startDate")
-            end_date = schedule.get("endDate")  # optional
-            if start_date:
-                trigger_input_list.append(f"start_date: {start_date}")
-            if end_date:
-                trigger_input_list.append(f"end_date: {end_date}")
-
     else:
         raw_input = data.get("trigger_input", "")
         if raw_input:
             trigger_input_list.append(raw_input)
 
-    # Construct instruction_input for template formatting
     instruction_input = {
         "name": name,
         "description": description,
         "trigger_mode": triggermode,
-        "trigger_input": yaml.dump(trigger_input_list).strip(),
-        "communication_mode": (
-            communication_channels[0] if communication_channels else "auto"
-        ),
+        "trigger_input": trigger_input_list,
+        "communication_mode": communication_channels,
         "ai_mode": ai_mode,
+        "inp_steps": inp_steps,
+        "context_section": "[]",  # to be updated
+        "services_section": "",  # to be updated
+        "additional_data": data.get("additional_data", ""),
+        "todays_date": datetime.now().strftime(
+            "%A, %d %B %Y"
+        ),  # e.g., Monday, 21 October 2025
     }
+
     return instruction_input
 
 
@@ -246,60 +236,89 @@ def clean_json_block(raw: str) -> str:
     return raw.strip()
 
 
+class SafeDict(dict):
+    def __missing__(self, key):
+        return f"<missing {key}>"
+
+
 def create_playbook(data, filename=None):
-    # Extract core fields
+    """
+    Creates a workflow JSON by sending a formatted prompt to the AI safely.
+    """
     userid = data["user_id"]
     instruction_input = returninsructdata(data)
+
+    # Build context section
     template_data = load_yaml_file(path=pathconfig.play_template)
     ques = triggeraicontextfinder(instruction_input, userid, template_data)
-    if ques and len(ques) > 0:
+    if ques:
         context_items = [
-            f"- {item.get('Ai Response', '').strip()}"
+            f"- {item.get('Ai Response','').strip()}"
             for item in ques
             if item.get("Ai Response")
         ]
-        context_block = "context_section:\n" + "\n".join(context_items)
-    else:
-        context_block = "context_section: []"
-
-    instruction_input["context_section"] = context_block
-    template = template_data.get("create_instruction")
-
-    if not template or not isinstance(template, str):
-        raise ValueError(
-            "Missing or invalid 'create_instruction' template in YAML file."
+        instruction_input["context_section"] = yaml.dump(
+            context_items, default_flow_style=False
         )
+    else:
+        instruction_input["context_section"] = "[]"
 
-    try:
-        full_prompt = template.format(**instruction_input)
-    except KeyError as e:
-        raise ValueError(f"Missing placeholder in instruction input: {e}")
+    # Attach dynamic services section
+    instruction_input["services_section"] = read_function_jsons()
 
-    # Send prompt to LLM (Fireworks or any API)
-    raw_response = get_fireworks_response(full_prompt, role="system")
+    # Load template
+    template = template_data.get("create_instruction")
+    if not template:
+        raise ValueError("Missing 'create_instruction' template in YAML file.")
 
-    # Clean output YAML (strip markdown)
+        # --- Build full prompt safely via f-string to avoid .format issues ---
+        #     full_prompt = f"""
+        # You are an **AI Workflow Generation Assistant**.
+
+        # ## INPUT FIELDS
+        # name: {instruction_input['name']}
+        # description: {instruction_input['description']}
+        # trigger_mode: {instruction_input['trigger_mode']}
+        # trigger_input:
+        # {instruction_input['trigger_input']}
+        # communication_mode:
+        # {instruction_input['communication_mode']}
+        # ai_mode: {instruction_input['ai_mode']}
+        # context_section:
+        # {instruction_input['context_section']}
+        # additional_data:
+        # {instruction_input['additional_data']}
+
+        # """
+    full_prompt = template.format(**instruction_input)
+
+    # print("full_prompt", full_prompt)
+
+    # Send prompt to AI
+    # raw_response = get_fireworks_response(full_prompt, role="system")
+    raw_response = get_evaluator_fireworks(full_prompt, role="system")
+    # raw_response = get_evaluator_gpt4(full_prompt)
+    # print("raw response", raw_response)
+
+    # Clean AI response
     cleaned_j = clean_json_block(raw_response)
-
     try:
-        # Parse JSON directly from model output
         response_dict = json.loads(cleaned_j)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON from model output:\n{raw_response}\nError: {e}")
+        raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
 
-    # Save result to JSON file
+    # Save workflow JSON
     filename = filename or f"{uuid.uuid4().hex[:8]}.json"
     ensure_dir(f"{pathconfig.basepath}/test/")
     filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
-
+    print(response_dict)
     full_output = {
         "filename": filename,
         "input_data": data,  # original data from frontend
         "workflow": response_dict,  # AI-generated YAML parsed into dict
         "clarifications_generated": False,
+        "WorkflowDate": datetime.now().isoformat(),
     }
-    # full_output = convert_dates(full_outputs)
-
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(full_output, f, indent=2)
     res = upload_any_file(

@@ -1,7 +1,7 @@
 from time import time
 from flask import Blueprint, request, jsonify
 import pymysql
-from gmail_route.gmail_service import GmailService
+from services.gmail_service import GmailService
 import uuid
 from db.rds_db import connect_to_rds
 import json

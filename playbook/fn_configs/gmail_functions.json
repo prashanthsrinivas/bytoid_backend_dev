@@ -1,0 +1,88 @@
+{
+    "functions": [
+        {
+            "category": "Gmail",
+            "name": "gmail.send_email",
+            "description": "Send a plain text email to a recipient.",
+            "args": {
+                "to": "Recipient email address (string)",
+                "subject": "Email subject (string)",
+                "body_text": "Email body as plain text (string)"
+            },
+            "returns": {
+                "id": "Message ID of the sent email",
+                "thread_id": "Thread ID of the email",
+                "from": "Sender email",
+                "to": "Recipient email",
+                "subject": "Email subject",
+                "body": "Email body",
+                "timestamp": "UTC timestamp of sending",
+                "status": "Status of the email (sent/failed)",
+                "source": "Email source (gmail)",
+                "direction": "outbound",
+                "user_id": "User ID who sent the email"
+            }
+        },
+        {
+            "category": "Gmail",
+            "name": "gmail.send_Meet_mail",
+            "description": "Send an HTML/Plain text email for a Google Meet or similar meeting.",
+            "args": {
+                "to_email": "Recipient email address (string)",
+                "bcc_list": "List of BCC email addresses (list of strings)",
+                "subject": "Email subject (string)",
+                "body_html": "Email body in HTML format (string)"
+            },
+            "returns": {
+                "id": "Message ID of the sent email",
+                "threadId": "Thread ID of the email"
+            }
+        },
+        {
+            "category": "Gmail",
+            "name": "gmail.send_invite_mail",
+            "description": "Send an invitation email with optional business information.",
+            "args": {
+                "inviter": "Inviter's email address (string)",
+                "invitee": "Invitee's email address (string)",
+                "role": "Role details as dictionary (must contain 'name', 'id')",
+                "invite_link": "Invitation link (string)",
+                "business_info": "Optional dictionary containing BusinessName, LineOfBusiness, businessLocation, BusinessImage"
+            },
+            "returns": {
+                "id": "Message ID of the sent email",
+                "threadId": "Thread ID of the email"
+            }
+        },
+        {
+            "category": "Gmail",
+            "name": "gmail.send_reply",
+            "description": "Reply to an existing email thread.",
+            "args": {
+                "to": "Recipient email address (string)",
+                "subject": "Email subject (string)",
+                "thread_id": "Thread ID to reply to (string)",
+                "in_reply_to": "Message ID being replied to (string)",
+                "body_text": "Email body as plain text (string)"
+            },
+            "returns": {
+                "id": "Message ID of the sent reply",
+                "threadId": "Thread ID of the email"
+            }
+        },
+        {
+            "category": "Gmail",
+            "name": "gmail.send_forward",
+            "description": "Forward an email to a recipient.",
+            "args": {
+                "to": "Recipient email address (string)",
+                "subject": "Email subject (string)",
+                "body_text": "Email body as plain text (string)"
+            },
+            "returns": {
+                "id": "Message ID of the forwarded email",
+                "threadId": "Thread ID of the email"
+            }
+        }
+    ]
+}

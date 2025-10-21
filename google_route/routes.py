@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify, session, redirect, make_response
-from gmail_route.gmail_service import GmailService
+from services.gmail_service import GmailService
 from pydrive.auth import GoogleAuth
 from google_auth_oauthlib.flow import Flow
 from pydrive.drive import GoogleDrive

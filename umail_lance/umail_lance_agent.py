@@ -16,6 +16,8 @@ import time
 # from sentence_transformers import SentenceTransformer
 import base64
 
+from utils.fireworkzz import get_firework_embedding
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 # model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -37,12 +39,8 @@ class UmailLanceClient:
     def __init__(self, user_id: str):
         self.lancedb_url = lancedb_url
         self.user_id = user_id
-        self.dimension = 3072
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-large",
-            openai_api_key=openai_api_key,
-            dimensions=self.dimension,
-        )
+        self.dimension = 2880
+        self.embeddings = get_firework_embedding()
 
     def get_records_from_lance(self, user_id: str, client_id: str):
         """

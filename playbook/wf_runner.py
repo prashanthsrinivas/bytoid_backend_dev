@@ -2,14 +2,14 @@ from multiprocessing import get_logger
 import uuid
 from typing import List, Dict, Any, Optional
 from cust_helpers import pathconfig
-from gmail_route.gmail_service import GmailService
+from services.gmail_service import GmailService
+from services.meet_service import GoogleMeetService
 from utils.fireworkzz import get_fireworks_response
 from utils.normal import load_yaml_file
 from utils.s3_utils import read_json_from_s3
 from collections import defaultdict
 from db.db_checkers import get_userinfo, fetch_contacts_by_user
 import re
-from .services.meet_Service import GoogleMeetService
 from datetime import datetime, timedelta, timezone
 import json
 import pytz

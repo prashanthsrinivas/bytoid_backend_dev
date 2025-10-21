@@ -206,5 +206,6 @@ zipp==3.23.0
 zstandard==0.24.0
 selenium==4.26.1
 webdriver-manager==4.0.2
-yt-dlp==2024.12.13
+youtube-transcript-api==0.6.2
+
 

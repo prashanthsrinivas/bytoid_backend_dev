@@ -1,10 +1,11 @@
 import asyncio
 from db.rds_db import get_cursor, safe_execute
 from flask import Blueprint, request, jsonify, session
+from services.gmail_service import GmailService
 from umail_helper.ticketalloc import TicketAllocator
 
 # from utils.delay_mails import DelayTrigger
-from .gmail_service import GmailService
+
 import uuid
 from bs4 import BeautifulSoup
 from email.utils import parsedate_to_datetime, parseaddr
@@ -13,7 +14,7 @@ from datetime import datetime, timezone
 import json
 from cust_helpers import pathconfig
 import os
-from utils.normal import ensure_dir
+from utils.normal import can_reply_to_email, ensure_dir
 from utils.s3_utils import (
     delete_folder_from_s3,
     upload_any_file,
@@ -150,18 +151,19 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
                 client_id, type = email_to_client_id[participant]
             else:
                 client_id, type = get_users_client_id(participant, user_id, cursor)
-                if not client_id:
-                    if not first_time_user:
-                        client_id = add_lead_contact(
-                            user_id, cursor, participant, participant_name
-                        )
-                        type = "Lead"
-                    if first_time_user:
-                        client_id = add_customer_contact(
-                            user_id, cursor, participant, participant_name
-                        )
-                        type = "Customer"
-                email_to_client_id[participant] = (client_id, type)
+                if can_reply_to_email(participant):
+                    if not client_id:
+                        if not first_time_user:
+                            client_id = add_lead_contact(
+                                user_id, cursor, participant, participant_name
+                            )
+                            type = "Lead"
+                        if first_time_user:
+                            client_id = add_customer_contact(
+                                user_id, cursor, participant, participant_name
+                            )
+                            type = "Customer"
+                    email_to_client_id[participant] = (client_id, type)
 
             # Create message object
             message = {
@@ -766,37 +768,55 @@ def sync_gmail_contacts(user_id):
 def gmail_reply(
     user_id, to, subject, thread_id, body_text, in_reply_to, connection=None
 ):
-    if connection:
-        gmail_service = GmailService(user_id, connection)
-    else:
-        gmail_service = GmailService(user_id)
-    user_email = gmail_service.user_email
+    try:
+        gmail_service = (
+            GmailService(user_id, connection) if connection else GmailService(user_id)
+        )
+        user_email = gmail_service.user_email
 
-    # Defensive checks
-    if not to:
-        raise ValueError("Recipient email 'to' is required")
-    if not subject:
-        raise ValueError("Subject is required")
-    if not thread_id:
-        raise ValueError("Thread ID is required")
+        # Defensive checks
+        if not to or not subject or not thread_id or not in_reply_to:
+            missing = [
+                k
+                for k, v in [
+                    ("to", to),
+                    ("subject", subject),
+                    ("thread_id", thread_id),
+                    ("in_reply_to", in_reply_to),
+                ]
+                if not v
+            ]
+            return {"error": f"Missing required fields: {', '.join(missing)}"}
 
-    # Fetch message_id to use as in_reply_to (could be fetched externally)
-    # fallback or replace with actual msg_id
-    print(f"in_reply_to : {in_reply_to}")
-    print(f"subjec : {subject}")
-    sent = gmail_service.send_reply(
-        to=to,
-        subject=subject,
-        thread_id=thread_id,
-        in_reply_to=in_reply_to,
-        body_text=body_text,
-    )
+        print(f"in_reply_to : {in_reply_to}")
+        print(f"subject : {subject}")
 
-    message_api_id = sent["id"]
+        sent = gmail_service.send_reply(
+            to=to,
+            subject=subject,
+            thread_id=thread_id,
+            in_reply_to=in_reply_to,
+            body_text=body_text,
+        )
 
-    message_id = get_message_id(gmail_service.service, user_id, message_api_id)
+        # Ensure we have a dict
+        if not isinstance(sent, dict):
+            return {"error": "Unexpected Gmail response format"}
 
-    return f"{user_id}_{message_id}"
+        message_api_id = sent.get("id")
+        if not message_api_id:
+            return None
+
+        # Get final message_id (optional helper)
+        header_id = get_message_id(gmail_service.service, "me", message_api_id)
+        message_id = header_id or message_api_id
+        print("message id", f"{user_id}_{message_id}")
+
+        return f"{user_id}_{message_id}"
+
+    except Exception as e:
+        print(f"❌ Gmail reply failed: {e}")
+        return {"error": str(e)}
 
 
 def get_message_id(service, user_id, gmail_id):

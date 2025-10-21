@@ -7,6 +7,7 @@ from db.rds_db import connect_to_rds, get_cursor
 from data import MESSAGES  # delete this later, this is just for testing
 from datetime import datetime, timezone
 from googleapiclient.errors import HttpError
+from google.auth.transport.requests import Request
 import traceback
 import time
 import asyncio
@@ -67,14 +68,15 @@ class GmailService:
 
             if not row:
                 raise ValueError(f"No Gmail credentials found for user {user_id}")
-
+        client_id, client_secret, access_token, refresh_token, expiry = row
+        expiryed = datetime.fromisoformat(expiry) if isinstance(expiry, str) else expiry
         # Build credentials object
         self.creds = Credentials(
-            token=row[2],
-            refresh_token=row[3],
+            token=access_token,
+            refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=row[0],
-            client_secret=row[1],
+            client_id=client_id,
+            client_secret=client_secret,
             scopes=[
                 "https://www.googleapis.com/auth/userinfo.profile",
                 "https://www.googleapis.com/auth/userinfo.email",
@@ -88,8 +90,34 @@ class GmailService:
                 "openid",
                 "https://www.googleapis.com/auth/contacts",
             ],
-            expiry=row[4],
+            expiry=expiryed,
         )
+        if self.creds.expired and self.creds.refresh_token:
+            try:
+                # This call uses the refresh_token to get a new access token
+                self.creds.refresh(
+                    Request()
+                )  # You need to import google.auth.transport.requests.Request
+                print(f"✅ Token refreshed successfully for user {user_id}")
+
+                # 4. CRITICAL STEP: Save the NEW tokens and expiry back to the database
+                with get_cursor(self.conn) as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET token = %s, expiry = %s 
+                        WHERE user_id = %s
+                        """,
+                        (self.creds.token, self.creds.expiry, str(user_id)),
+                    )
+                self.conn.commit()
+
+            except Exception as e:
+                # Token refresh failed (e.g., refresh token revoked)
+                print(f"❌ Token refresh failed for user {user_id}: {e}")
+                raise ValueError(
+                    f"Token refresh failed. User must re-authenticate: {e}"
+                )
         if connection is None:
             self.conn.close()
 
@@ -1679,14 +1707,7 @@ class GmailService:
         return sent
 
     def send_reply(self, to, subject, thread_id, in_reply_to, body_text):
-        if not to:
-            raise ValueError("Recipient email 'to' is required")
-        if not subject:
-            raise ValueError("Subject is required")
-        if not thread_id:
-            raise ValueError("Thread ID is required")
-        if not in_reply_to:
-            raise ValueError("In-Reply-To message ID is required")
+        # ... (Your initial validation checks here) ...
 
         message = EmailMessage()
         message["To"] = to
@@ -1696,17 +1717,29 @@ class GmailService:
         message["In-Reply-To"] = in_reply_to
         message["References"] = in_reply_to
         message.set_content(body_text)
+        # print("message", message)
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         message_body = {"raw": raw, "threadId": thread_id}
 
-        sent = (
-            self.service.users()
-            .messages()
-            .send(userId="me", body=message_body)
-            .execute()
-        )
-        return sent
+        try:
+            sent = (
+                self.service.users()
+                .messages()
+                .send(userId="me", body=message_body)
+                .execute()
+            )
+            print("values ", sent)
+            return sent
+        except HttpError as error:
+            # Print the detailed error from the API
+            print(f"An error occurred: {error}")
+            # Reraise or handle the error as needed
+            raise ValueError(f"Gmail reply failed with API error: {error}") from error
+        except Exception as e:
+            # Catch other potential exceptions (e.g., connection issues)
+            print(f"An unexpected error occurred: {e}")
+            raise ValueError(f"Gmail reply failed with unexpected error: {e}") from e
 
     def send_forward(self, to, subject, body_text):
         message = EmailMessage()

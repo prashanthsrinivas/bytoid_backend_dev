@@ -1,0 +1,148 @@
+{
+    "functions": [
+        {
+            "category": "Google Meet",
+            "name": "google_meet.get_all_available_slots",
+            "description": "Retrieve all available meeting time slots across multiple attendees using Google Calendar FreeBusy API.",
+            "args": {
+                "attendees": "list of attendee email addresses",
+                "preferred_date": "string (YYYY-MM-DD)",
+                "start_time": "string (HH:MM, 24-hour)",
+                "end_time": "string (HH:MM, 24-hour)",
+                "duration_minutes": "integer (meeting duration in minutes)",
+                "timezone": "optional string (default: Asia/Kolkata)",
+                "days_to_check": "optional integer (default: 5, number of days to scan)"
+            },
+            "returns": {
+                "slots": "list of dicts with { start, end, date }"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.schedule_meeting_on_first_available",
+            "description": "Find the first available slot across attendees and schedule a Google Meet automatically.",
+            "args": {
+                "summary": "string (meeting title)",
+                "attendees": "list of attendee emails",
+                "preferred_date": "string (YYYY-MM-DD)",
+                "start_time": "string (HH:MM, 24-hour)",
+                "end_time": "string (HH:MM, 24-hour)",
+                "duration_minutes": "integer (meeting duration in minutes)",
+                "description": "optional string (meeting description)",
+                "timezone": "optional string (default: Asia/Kolkata)"
+            },
+            "returns": {
+                "success": "boolean",
+                "meeting": "dict with { event_id, summary, meet_link, start_time, end_time, attendees } or error reason"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.create_meeting",
+            "description": "Create a Google Calendar meeting event with a Meet link for given attendees.",
+            "args": {
+                "summary": "string (meeting title)",
+                "start_time": "string (ISO format: YYYY-MM-DDTHH:MM:SS)",
+                "end_time": "string (ISO format: YYYY-MM-DDTHH:MM:SS)",
+                "attendees": "optional list of attendee emails",
+                "timezone": "optional string (default: Asia/Kolkata)",
+                "description": "optional string (meeting details or notes)"
+            },
+            "returns": {
+                "event_id": "string",
+                "summary": "string",
+                "meet_link": "string (Google Meet URL)",
+                "start_time": "object (with dateTime and timeZone)",
+                "end_time": "object (with dateTime and timeZone)",
+                "attendees": "list of attendee objects"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.update_meeting",
+            "description": "Update an existing Google Calendar event (change title, attendees, or timings).",
+            "args": {
+                "event_id": "string (existing Google Calendar event ID)",
+                "summary": "optional string (new title)",
+                "start_time": "optional string (ISO format)",
+                "end_time": "optional string (ISO format)",
+                "attendees": "optional list of attendee emails",
+                "description": "optional string (updated description)",
+                "timezone": "optional string (default: Asia/Kolkata)"
+            },
+            "returns": {
+                "event_id": "string",
+                "summary": "string",
+                "updated": "boolean",
+                "error": "optional string (if failed)"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.delete_meeting",
+            "description": "Delete a Google Calendar meeting by its event ID.",
+            "args": {
+                "event_id": "string (Google Calendar event ID)"
+            },
+            "returns": {
+                "deleted": "boolean",
+                "event_id": "string",
+                "error": "optional string (if failed)"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.is_meeting_slot_available",
+            "description": "Check if at least one available slot exists across all attendees for a given time window.",
+            "args": {
+                "attendees": "list of attendee email addresses",
+                "preferred_date": "string (YYYY-MM-DD)",
+                "start_time": "string (HH:MM, 24-hour)",
+                "end_time": "string (HH:MM, 24-hour)",
+                "duration_minutes": "integer",
+                "timezone": "optional string (default: Asia/Kolkata)",
+                "days_to_check": "optional integer (default: 3)"
+            },
+            "returns": {
+                "available": "boolean"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.get_event_by_meet_link",
+            "description": "Find a Google Calendar event based on its Meet link.",
+            "args": {
+                "meet_link": "string (Google Meet URL)"
+            },
+            "returns": {
+                "event_id": "string",
+                "summary": "string",
+                "start": "object (start time)",
+                "end": "object (end time)",
+                "attendees": "list of attendee objects",
+                "hangoutLink": "string (Google Meet URL)",
+                "error": "optional string (if not found)"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.get_first_available_slot",
+            "description": "Get the first available meeting slot across attendees for given date and time window.",
+            "args": {
+                "attendees": "list of attendee emails",
+                "preferred_date": "string (YYYY-MM-DD)",
+                "start_time": "string (HH:MM, 24-hour)",
+                "end_time": "string (HH:MM, 24-hour)",
+                "duration_minutes": "integer (meeting duration in minutes)",
+                "timezone": "optional string (default: Asia/Kolkata)",
+                "days_to_check": "optional integer (default: 3)"
+            },
+            "returns": {
+                "startTime": "string (ISO format)",
+                "endTime": "string (ISO format)",
+                "startDate": "string (YYYY-MM-DD)",
+                "error": "optional string (if none found)"
+            }
+        }
+    ]
+}

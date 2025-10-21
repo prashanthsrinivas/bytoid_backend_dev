@@ -25,6 +25,27 @@ def evaluator(prompt, model, query, context, industry):
     return response
 
 
+# Initialize the GPT-4 model
+
+
+from langchain.schema import SystemMessage
+
+
+def get_evaluator_gpt4(prompt: str) -> str:
+    """
+    Sends a system message to GPT-4 via LangChain and returns the assistant's response.
+    """
+    chat_model = ChatOpenAI(model_name="gpt-4", temperature=0.7)
+
+    # Wrap the prompt as a system message
+    messages = [SystemMessage(content=prompt)]
+
+    # Use the recommended invoke method
+    response = chat_model.invoke(messages)
+
+    return response.content.strip()
+
+
 def generate_usecases_questions(
     prompt_block, model, usecase, industry, documents_contents
 ):

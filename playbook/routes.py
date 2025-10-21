@@ -8,6 +8,7 @@ from db.db_checkers import (
 from flask import Blueprint, request, jsonify
 import json
 from cust_helpers import pathconfig
+from services.workflow_service import WorkflowRunnerV2
 from utils.fireworkzz import get_fireworks_response
 from .helperzz import *
 from utils.pb_config_utils import *
@@ -21,6 +22,7 @@ playbook_bp = Blueprint("playbook", __name__)
 def create_new_instruction():
     data = request.json
     userid = data["user_id"]
+    print("data input", data)
     playbook_id, config_path, subagent_id = returnconfigandpath(userid)
     if not playbook_id:
         config_s3_path = create_empty_playbook_config(userid)
@@ -199,6 +201,7 @@ def add_a_step():
     # Append new step
     steps.append(step_data)
     playbook["workflow"]["steps"] = steps
+    playbook["WorkflowDate"] = datetime.now().isoformat()
 
     return save_playbook_to_s3(playbook, user_id, "Step added successfully", filename)
 
@@ -232,6 +235,7 @@ def edit_a_step():
         return jsonify({"status": "error", "message": "Step ID not found"}), 404
 
     playbook["workflow"]["steps"] = steps
+    playbook["WorkflowDate"] = datetime.now().isoformat()
     return save_playbook_to_s3(playbook, user_id, "Step edited successfully", filename)
 
 
@@ -273,16 +277,9 @@ def delete_a_step():
 
     # 3. Save updated steps back to playbook
     playbook["workflow"]["steps"] = new_steps
+    playbook["WorkflowDate"] = datetime.now().isoformat()
 
     return save_playbook_to_s3(playbook, user_id, "Step deleted successfully", filename)
-
-
-@playbook_bp.route("/reeval")
-def reevalchecker():
-    from utils.chatopenzz import reEvaluateinstructionJson
-
-    val = reEvaluateinstructionJson()
-    return val
 
 
 @playbook_bp.route("/modify_instruction", methods=["POST"])
@@ -293,6 +290,7 @@ def modify_instruction():
             return jsonify({"status": "error", "message": "Empty request body"}), 400
 
         update_instruction = body.get("modify_instructions")
+        additional_data = body.get("additional_data") or ""
         user_id = body.get("user_id")
         filename = body.get("filename")
 
@@ -358,9 +356,14 @@ def modify_instruction():
 
         # Prepare prompt
         workflow_json_str = json.dumps(original_json["workflow"], indent=2)
-        full_prompt = update_prompt_template.replace(
-            "{existing_workflow}", workflow_json_str
-        ).replace("{update_instruction}", update_instruction)
+        services_functions = read_function_jsons()
+        full_prompt = (
+            update_prompt_template.replace("{existing_workflow}", workflow_json_str)
+            .replace("{update_instruction}", update_instruction)
+            .replace("{services_section}", services_functions)
+            .replace("{additional_data}", additional_data)
+            .replace("{todays_date}", datetime.now().strftime("%A, %d %B %Y")),
+        )
 
         # Call LLM
         llm_response = get_fireworks_response(full_prompt, role="system")
@@ -421,6 +424,7 @@ def modify_instruction():
 
             # Always update steps
             original_json["workflow"]["steps"] = parsed_json["steps"]
+            original_json["WorkflowDate"] = datetime.now().isoformat()
 
             message = parsed_json.get(
                 "modified_message", "Workflow updated successfully."
@@ -929,12 +933,12 @@ def runWorkflow():
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
     try:
-        runner = WorkflowRunner(userid=userid, filename=filename)
-        bad = runner.execute()
-        print(bad)
-        result = runner.get_execution_log()
-        print("dasdsad", result)
-        return jsonify({"status": "success", "gmail_api_response": result})
+        with WorkflowRunnerV2(userid=userid, filename=filename) as runner:
+            bad = runner.execute()
+            print(bad)
+            result = runner.get_execution_log()
+            print("dasdsad", result)
+            return jsonify({"status": "success", "gmail_api_response": result})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -952,26 +956,38 @@ def run_workflow_step():
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
 
     try:
-        runner = WorkflowRunner(userid=userid, filename=filename)
-        steps = runner.steps
-        # step_id is likely a UUID string
-        selected_step = steps[step_id]
-        if not selected_step:
-            return jsonify({"message": "Step not found", "status": "error"}), 404
+        with WorkflowRunnerV2(userid=userid, filename=filename) as runner:
+            steps = runner.steps
+            # step_id is likely a UUID string
+            selected_step = steps[step_id]
+            if not selected_step:
+                return jsonify({"message": "Step not found", "status": "error"}), 404
 
-        # Execute and capture the actual output
-        step_result = runner._execute_single_step(selected_step)
+            # Execute and capture the actual output
+            step_result = runner._execute_step(selected_step)
 
-        # Also include log if you want
-        execution_log = runner.get_execution_log()
+            # Also include log if you want
+            execution_log = runner.get_execution_log()
 
-        return jsonify(
-            {
-                "status": "success",
-                "workflow_step_result": step_result,
-                "execution_log": execution_log,
-            }
-        )
+            return jsonify(
+                {
+                    "status": "success",
+                    "workflow_step_result": step_result,
+                    "execution_log": execution_log,
+                }
+            )
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/test-playground-step", methods=["POST"])
+def testworkflowbyinput():
+    data = request.json
+    userid = data.get("user_id")
+    userinput = data.get("userinput")
+    filename = data.get("filename")
+    print("test-playground-step", userinput)
+    # Connect to DB
+    with WorkflowRunnerV2(userid=userid, filename=filename) as service:
+        return service.execute_from_text_input(user_input=userinput)

@@ -20,6 +20,8 @@ from search_email.routes import search_bp
 from suggest_assist.route import assist_suggest_bp
 from unified_mailbox.routes import unified_bp
 from ai_assistant_chat.routes import ai_assistant_chat_bp
+from onboarding.routes import onboarding_bps
+from ai_reporting.routes import ai_reporting_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -143,6 +145,16 @@ CORS(
     supports_credentials=True,
     origins=BASE_ORGINS,
 )
+CORS(
+    onboarding_bps,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    ai_reporting_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
 
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
@@ -171,6 +183,9 @@ app.register_blueprint(search_bp)
 app.register_blueprint(assist_suggest_bp)
 app.register_blueprint(unified_bp)
 app.register_blueprint(ai_assistant_chat_bp)
+app.register_blueprint(onboarding_bps)
+app.register_blueprint(ai_reporting_bp)
+
 
 
 import argparse

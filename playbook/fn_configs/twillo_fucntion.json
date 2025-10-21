@@ -1,0 +1,114 @@
+{
+    "functions": [
+        {
+            "category": "Twilio",
+            "name": "twilio.send_whatsapp_message",
+            "description": "Send a WhatsApp text message to a recipient.",
+            "args": {
+                "to": "Recipient WhatsApp number (string, in international format, e.g., +1234567890)",
+                "body": "Message text to send (string)"
+            },
+            "returns": {
+                "id": "Message SID",
+                "from": "Sender WhatsApp number",
+                "to": "Recipient WhatsApp number",
+                "body": "Message text",
+                "timestamp": "UTC timestamp when message was sent",
+                "status": "Message status (sent/delivered/failed)",
+                "source": "whatsapp",
+                "direction": "outbound"
+            }
+        },
+        {
+            "category": "Twilio",
+            "name": "twilio.send_whatsapp_media",
+            "description": "Send a WhatsApp message with a media attachment.",
+            "args": {
+                "to": "Recipient WhatsApp number (string, international format)",
+                "media_url": "URL of the media to send (string)",
+                "body": "Optional message text to include with media (string, optional)"
+            },
+            "returns": {
+                "id": "Message SID",
+                "from": "Sender WhatsApp number",
+                "to": "Recipient WhatsApp number",
+                "body": "Message text",
+                "media_url": "Media URL sent",
+                "timestamp": "UTC timestamp when message was sent",
+                "status": "Message status",
+                "source": "whatsapp",
+                "direction": "outbound"
+            }
+        },
+        {
+            "category": "Twilio",
+            "name": "twilio.send_sms",
+            "description": "Send a standard SMS message to a recipient.",
+            "args": {
+                "to": "Recipient phone number (string, international format)",
+                "body": "SMS message text (string)"
+            },
+            "returns": {
+                "id": "Message SID",
+                "from": "Sender phone number",
+                "to": "Recipient phone number",
+                "body": "Message text",
+                "timestamp": "UTC timestamp when SMS was sent",
+                "status": "Message status",
+                "source": "sms",
+                "direction": "outbound"
+            }
+        },
+        {
+            "category": "Twilio",
+            "name": "twilio.make_call",
+            "description": "Make a voice call to a recipient using Twilio. You can provide TwiML or a simple message to speak.",
+            "args": {
+                "to": "Recipient phone number (string, international format)",
+                "twiml": "Optional TwiML XML string for call instructions (string, optional)",
+                "message": "Optional text message to speak if TwiML is not provided (string, optional)"
+            },
+            "returns": {
+                "id": "Call SID",
+                "from": "Sender phone number",
+                "to": "Recipient phone number",
+                "type": "voice_call",
+                "status": "Call status",
+                "timestamp": "UTC timestamp when call was created"
+            }
+        },
+        {
+            "category": "Twilio",
+            "name": "twilio.get_message_status",
+            "description": "Retrieve the delivery status of a sent message.",
+            "args": {
+                "message_sid": "Message SID (string)"
+            },
+            "returns": {
+                "id": "Message SID",
+                "status": "Message delivery status",
+                "from": "Sender number",
+                "to": "Recipient number",
+                "body": "Message content",
+                "date_sent": "Timestamp when message was sent"
+            }
+        },
+        {
+            "category": "Twilio",
+            "name": "twilio.get_call_status",
+            "description": "Retrieve the status of a voice call.",
+            "args": {
+                "call_sid": "Call SID (string)"
+            },
+            "returns": {
+                "id": "Call SID",
+                "status": "Call status",
+                "from": "Sender number",
+                "to": "Recipient number",
+                "start_time": "Call start time",
+                "end_time": "Call end time",
+                "duration": "Call duration in seconds"
+            }
+        }
+    ]
+}

@@ -3,8 +3,7 @@ import os
 import uuid
 from agent_route.lance_agent import LanceClient, QueryInput
 from cust_helpers import pathconfig
-from db.db_checkers import get_users_clients_id
-from flask import jsonify
+from db.db_checkers import get_business_info, get_users_clients_id
 from db.rds_db import connect_to_rds
 from gmail_route.routes import gmail_reply
 from umail_helper.mails_process import update_config_file
@@ -12,7 +11,7 @@ from umail_lance.umail_lance_agent import UmailLanceClient
 from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response
 from utils.normal import can_reply_to_email, ensure_dir, load_yaml_file
-import pymysql, json
+import json
 
 from utils.s3_utils import read_json_from_s3, upload_any_file
 from zoho_routes.routes import send_zoho_email
@@ -101,7 +100,7 @@ def getselectedconv(conv_id, userid):
     try:
         connection = connect_to_rds()
         if connection is None:
-            return jsonify({"error": "Database connection failed"}), 500
+            return {"error": "Database connection failed"}, 500
         cursor = connection.cursor()
 
         cursor.execute(
@@ -112,15 +111,12 @@ def getselectedconv(conv_id, userid):
         if client_id_row:
             client_id = client_id_row[0]
         else:
-            return (
-                jsonify(
-                    {"message": f"⚠️ No sender_id found for conversation_id {conv_id}"}
-                ),
-                404,
-            )
+            return {
+                "message": f"⚠️ No sender_id found for conversation_id {conv_id}"
+            }, 404
     except Exception as e:
         return (
-            jsonify({"message": f"❌ Error executing sender_id query: {e}"}),
+            {"message": f"❌ Error executing sender_id query: {e}"},
             500,
         )
     finally:
@@ -129,6 +125,14 @@ def getselectedconv(conv_id, userid):
     client = UmailLanceClient(userid)
     recent_msg = client.get_selected_conv_from_lance(userid, client_id)
     return recent_msg[conv_id] or []
+
+
+def normalize_ai_response(resp):
+    if resp is None:
+        return ""
+    if isinstance(resp, dict):
+        return json.dumps(resp, ensure_ascii=False)
+    return str(resp).strip()
 
 
 def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
@@ -159,72 +163,35 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
 
         # Fetch business info
         connection = connect_to_rds()
-        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute(
-                "SELECT user_type,permissions from users where user_id = %s LIMIT 1",
-                (userid,),
-            )
-            user_row = cursor.fetchone()
-            businessdata = {}
+        businessdata = get_business_info(connection=connection, userid=userid)
 
-            if user_row:
-                if user_row["user_type"] == "user":
-                    user_permissions = (
-                        json.loads(user_row["permissions"])
-                        if user_row.get("permissions")
-                        else {}
-                    )
-                    invited_by_email = user_permissions.get("invited_by")
-
-                    base_user_id = None
-                    if invited_by_email:
-                        cursor.execute(
-                            "SELECT user_id from users where email = %s",
-                            (invited_by_email,),
-                        )
-                        base = cursor.fetchone()
-                        base_user_id = base.get("user_id") if base else None
-
-                    if base_user_id:
-                        cursor.execute(
-                            "SELECT BusinessName, BillingAddress, WebsiteUrl FROM business_info WHERE user_id_fk = %s LIMIT 1",
-                            (base_user_id,),
-                        )
-                        businessdata = cursor.fetchone() or {}
-                else:
-                    cursor.execute(
-                        "SELECT BusinessName, BillingAddress, WebsiteUrl FROM business_info WHERE user_id_fk = %s LIMIT 1",
-                        (userid,),
-                    )
-                    businessdata = cursor.fetchone() or {}
-
-        business_name = (
-            businessdata.get("BusinessName") if businessdata else "Our Organization"
-        )
+        business_name = businessdata.get("BusinessName") if businessdata else ""
         business_address = businessdata.get("BillingAddress") if businessdata else ""
         business_website = businessdata.get("WebsiteUrl") if businessdata else ""
 
-        business_name = (
-            businessdata.get("BusinessName") if businessdata else "Our Organization"
-        )
+        business_name = businessdata.get("BusinessName") if businessdata else ""
         business_address = businessdata.get("BillingAddress") if businessdata else ""
         business_website = businessdata.get("WebsiteUrl") if businessdata else ""
 
         # Call model to generate retrieval question
         base_query = get_fireworks_response(filled_prompt, "system")
+        # print("basequery",type(base_query), base_query)
 
         # Parse retrieval question safely
         try:
             question_data = json.loads(base_query)
+            # print("json loads")
         except json.JSONDecodeError:
             import re
 
             json_text = re.search(r"\{.*\}", base_query, re.DOTALL)
             question_data = json.loads(json_text.group(0)) if json_text else {}
-
+            # print("re loads")
+        # print("type of questiondata", type(question_data), question_data)
         question_text = (
             question_data.get("question", "").strip() if question_data else ""
         )
+        # print("queston text", question_text)
         base_doc_ans = []
         if question_text:
             top_k = 3
@@ -238,34 +205,54 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
                 base_doc_ans.append(clean_text)
 
         # Build final prompt for AI reply
-        prompt_template = pr_file.get("base_eval_response")
+        prompt_template = pr_file.get("ai_reply_suggest")
         filled_prompt = (
-            prompt_template.replace("{{email_msg}}", email_msg)
+            (prompt_template or "")
+            .replace("{{email_msg}}", str(email_msg or ""))
             .replace(
                 "{{umail_conversations}}",
-                json.dumps(umail_bodies, ensure_ascii=False, indent=2),
+                json.dumps(umail_bodies or [], ensure_ascii=False, indent=2),
             )
             .replace(
                 "{{base_doc_ans}}",
-                json.dumps(base_doc_ans, ensure_ascii=False, indent=2),
+                json.dumps(base_doc_ans or [], ensure_ascii=False, indent=2),
             )
-            .replace("{{business_name}}", business_name)
-            .replace("{{business_address}}", business_address)
-            .replace("{{business_website}}", business_website)
-            .replace("{{sender_name}}", sender_name)
+            .replace("{{business_name}}", str(business_name or ""))
+            .replace("{{business_address}}", str(business_address or ""))
+            .replace("{{business_website}}", str(business_website or ""))
+            .replace("{{sender_name}}", str(sender_name or ""))
         )
+
         # print("base docs ans", base_doc_ans)
 
-        ai_reply = get_fireworks_response(filled_prompt, "system")
-        if not ai_reply or ai_reply.strip().lower() in ["none", "null", ""]:
-            ai_reply = None
-        else:
-            return ai_reply
+        # ai_reply = get_fireworks_response(filled_prompt, "system")
+        ai_reply = normalize_ai_response(
+            get_fireworks_response(filled_prompt, "system")
+        )
+        # print("AOI RTEPLy", ai_reply)
+        if not ai_reply or ai_reply.lower() in ["none", "null", ""]:
+            return None
+        return ai_reply
     except Exception as e:
         return {"error": f"suggest ai {e}"}
     finally:
         if connection:
             connection.close()
+
+
+def ai_suggest_helper(userid, currentmsg, conversation_id):
+    umail_conversations = getselectedconv(conv_id=conversation_id, userid=userid)
+    umail_bodies = [item.get("body", "") for item in umail_conversations]
+    ai_reply = suggest_helper_base(
+        userid=userid,
+        email_msg=currentmsg,
+        umail_conversations=umail_conversations,
+        umail_bodies=umail_bodies,
+    )
+    if ai_reply:
+        return ai_reply.strip()
+    else:
+        return None
 
 
 def send_pilot_messages(
@@ -283,7 +270,7 @@ def send_pilot_messages(
     ticket_name=None,
     is_reply=True,
 ):
-    print("🚀 [DEBUG] Starting send_messages() function")
+    print("🚀 [DEBUG] Starting send_pilot_messages function")
 
     try:
         if b_connection is None:
@@ -353,14 +340,14 @@ def send_pilot_messages(
                 ]
                 if not valid_messages:
                     print("❌ [DEBUG] No valid messages found in input_data")
-                    return jsonify({"error": "No valid messages found"}), 400
+                    return {"error": "No valid messages found"}, 400
                 latest_msg = max(
                     valid_messages,
                     key=lambda msg: datetime.fromisoformat(msg["timestamp"]),
                 )
             else:
                 print("❌ [DEBUG] input_data is neither dict nor list")
-                return jsonify({"error": "Invalid input_data format"}), 400
+                return {"error": "Invalid input_data format"}, 400
             latest_id = latest_msg["id"]
             print(f"📧 [DEBUG] Latest message ID: {latest_id}")
 
@@ -383,6 +370,8 @@ def send_pilot_messages(
                     in_reply_to=latest_id,
                     connection=connection,
                 )
+                if not sent_message_id:
+                    return {"error": "Gmail send failed"}, 500
                 msg_id = sent_message_id
                 message["id"] = sent_message_id
                 print(
@@ -391,7 +380,7 @@ def send_pilot_messages(
 
             except Exception as e:
                 print(f"❌ [DEBUG] Gmail reply failed: {e}")
-                return jsonify({"error": "Gmail send failed"}), 500
+                return {"error": "Gmail send failed"}, 500
 
         elif channel == "zoho":
             print("📧 [DEBUG] Processing Zoho send...")
@@ -418,17 +407,17 @@ def send_pilot_messages(
                         f"❌ [DEBUG] Zoho send failed: {response_payload.get('error')}"
                     )
                     return (
-                        jsonify({"error": response_payload.get("error")}),
+                        {"error": response_payload.get("error")},
                         status_code,
                     )
 
             except Exception as e:
                 print(f"❌ [DEBUG] Zoho send failed: {e}")
-                return jsonify({"error": "Zoho send failed"}), 500
+                return {"error": "Zoho send failed"}, 500
 
         else:
             print(f"❌ [DEBUG] Unsupported channel: {channel}")
-            return jsonify({"error": "Unsupported channel"}), 400
+            return {"error": "Unsupported channel"}, 400
 
         # Database updates
         # print("💾 [DEBUG] Starting database updates...")
@@ -491,7 +480,7 @@ def send_pilot_messages(
         except Exception as e:
             connection.rollback()
             print(f"❌ [DEBUG] Database operation failed — rolled back: {e}")
-            return jsonify({"error": "Database operation failed"}), 500
+            return {"error": "Database operation failed"}, 500
 
         # Update Conversation File
         print("📄 [DEBUG] Updating conversation file...")
@@ -501,7 +490,7 @@ def send_pilot_messages(
             input_data.append(message)
             conversation_data = {"input_data": input_data}
             print(f"📄 [DEBUG] Total messages in conversation: {len(input_data)}")
-            print(f"conversation_data : {conversation_data}")
+            # print(f"conversation_data : {conversation_data}")
             print(f"💾 [DEBUG] Writing to local file: {conv_filepath}")
             with open(conv_filepath, "w", encoding="utf-8") as f:
                 json.dump(conversation_data, f, indent=2)
@@ -517,7 +506,7 @@ def send_pilot_messages(
 
         except Exception as e:
             print(f"❌ [DEBUG] Failed to update conversation file: {e}")
-            return jsonify({"error": "Failed to save conversation"}), 500
+            return {"error": "Failed to save conversation"}, 500
 
         # updating lancedb
         lance_data = conversation_data.get("input_data", [])
@@ -619,11 +608,10 @@ def send_pilot_messages(
             connection.close()
 
 
-def helper_make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
+def helper_make_reply_email(userid=None, from_email=None, n_connection=None):
     connection = None  # always defined
     try:
-        from_email = baseemail
-        userid = baseuserid
+        userid = userid
 
         if n_connection is None and connection is None:
             connection = connect_to_rds()
@@ -661,12 +649,15 @@ def helper_make_reply_email(baseuserid=None, baseemail=None, n_connection=None):
             return False
 
         if latest_msg.get("direction") == "inbound":
+            # print("email_msg", latest_msg["body"])
+            # print("umail_bodies", [msg.get("body") for msg in all_messages])
             ai_reply = suggest_helper_base(
                 userid=userid,
                 email_msg=latest_msg["body"],
                 umail_conversations=all_messages,
                 umail_bodies=[msg.get("body") for msg in all_messages],
             )
+            # print("aPA reply", ai_reply)
             if ai_reply:
                 send_val = send_pilot_messages(
                     user_id=userid,

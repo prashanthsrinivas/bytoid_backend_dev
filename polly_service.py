@@ -24,7 +24,7 @@ class PollyService:
         self,
         text: str,
         output_path: str,
-        voice_id: str = "Joanna",
+        voice_id: str = "",
         engine: str = "neural",
         language_code: str = "en-US"
     ) -> Optional[str]:

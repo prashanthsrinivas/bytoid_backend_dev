@@ -122,9 +122,9 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                 latest_msg_id = latest_msg.get("id")
 
                 # Skip if last message already handled or last msg is outbound
-                if existing_entry and existing_entry.get("last-msg") == latest_msg_id:
-                    # print("already replied")
-                    return f"Last message already replied for {from_email}"
+                # if existing_entry and existing_entry.get("last-msg") == latest_msg_id:
+                #     # print("already replied")
+                #     return f"Last message already replied for {from_email}"
                 if latest_msg.get("direction") != "inbound":
                     # print("skipping value outbound")
                     return f"Last msg from {from_email} is outbound, skipping"
@@ -189,7 +189,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
 
                 # Send reply
                 send_val = helper_make_reply_email(
-                    baseuserid=user_id, baseemail=from_email, n_connection=connection
+                    userid=user_id, from_email=from_email, n_connection=connection
                 )
                 if not send_val:
                     return f"Failed to send reply to {from_email}"

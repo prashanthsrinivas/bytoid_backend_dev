@@ -3,13 +3,39 @@ import requests
 import os
 import time
 from datetime import datetime
-import urllib.parse
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from langchain_openai import OpenAIEmbeddings
 from datetime import timezone
 from flask import Blueprint, request, jsonify, session, redirect
+import yt_dlp
+import asyncio
+import tempfile
+import os
+import random
+from agent_route.s_t_s import Speech2TextService
+
+# Keep youtube_transcript_api as fallback
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    YOUTUBE_TRANSCRIPT_AVAILABLE = True
+except ImportError:
+    YOUTUBE_TRANSCRIPT_AVAILABLE = False
+
+# Add PyTube for fallback
+try:
+    from pytube import YouTube
+
+    PYTUBE_AVAILABLE = True
+except ImportError:
+    PYTUBE_AVAILABLE = False
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from collections import deque
 
 from agent_route.Drive_downloader import (
     GetEmailandDriveService,
@@ -37,21 +63,20 @@ from utils.chatopenzz import check_lancedb
 from utils.fireworkzz import (
     evaluate_transcript,
     evaluator_llama,
+    get_evaluator_fireworks,
+    get_firework_embedding,
     get_fireworks_response,
 )
 from utils.normal import ensure_dir, load_yaml_file
 import uuid
 import asyncio
 import traceback
-import glob
-from db.rds_db import connect_to_rds
+from db.rds_db import connect_to_rds, safe_execute
 import re
 from datetime import datetime
 import yaml
 
-# YouTube processing imports
-import subprocess
-import tempfile
+
 from werkzeug.utils import secure_filename
 from utils.s3_utils import (
     attach_CLDFRNT_url,
@@ -67,12 +92,15 @@ from db.db_checkers import (
     fetch_document_link,
     fetch_userid_from_launch,
     check_userid_valid,
+    get_business_info,
     get_line_of_business,
     get_user_agent_id,
     update_agent_document_link,
 )
 import pymysql
 from dotenv import load_dotenv
+from collections import defaultdict
+from datetime import datetime, timedelta
 
 
 
@@ -80,6 +108,8 @@ agent_bps = Blueprint("agents", __name__)
 logger = get_logger(__name__)
 
 load_dotenv()
+
+user_query_history = defaultdict(list)
 
 
 @agent_bps.route("/save-training-settings", methods=["POST"])
@@ -136,7 +166,8 @@ def save_training_settings():
                 api_key = str(uuid.uuid4())
 
                 # Insert subagent
-                cursor.execute(
+                safe_execute(
+                    cursor,
                     """
                     INSERT INTO subagents (
                         sub_agent_id, launch_id_fk, name, description, voice_type,
@@ -147,7 +178,8 @@ def save_training_settings():
                 )
 
                 # Insert launch
-                cursor.execute(
+                safe_execute(
+                    cursor,
                     """
                     INSERT INTO launch (
                         launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name
@@ -157,7 +189,8 @@ def save_training_settings():
                 )
 
                 # Link subagent
-                cursor.execute(
+                safe_execute(
+                    cursor,
                     """
                     UPDATE subagents
                     SET launch_id_fk = %s
@@ -172,7 +205,8 @@ def save_training_settings():
                 launch_id, api_key = launch
 
                 # Update launch
-                cursor.execute(
+                safe_execute(
+                    cursor,
                     """
                     UPDATE launch
                     SET website_name = %s
@@ -182,7 +216,8 @@ def save_training_settings():
                 )
 
                 # Update subagent
-                cursor.execute(
+                safe_execute(
+                    cursor,
                     """
                     UPDATE subagents
                     SET name = %s,
@@ -249,7 +284,8 @@ def save_training_settings():
                                 break
 
                         if updated:
-                            cursor.execute(
+                            safe_execute(
+                                cursor,
                                 "UPDATE users SET permissions = %s WHERE user_id = %s",
                                 (json.dumps(owner_permissions), user_id),
                             )
@@ -333,8 +369,8 @@ def get_training_settings():
             connection.close()
 
 
-@agent_bps.route("/process-query-key", methods=["POST"])
-def checkquerywithApiKey():
+@agent_bps.route("/process-query-key-og", methods=["POST"])
+def checkquerywithApiKeyog():
     try:
         print("Query made by:", session.get("user", {}))
 
@@ -419,6 +455,487 @@ def checkquerywithApiKey():
         return jsonify({"error": str(e)}), 400
 
 
+def get_website_url(api_key):
+    """Return a list of active website url for a user."""
+
+    user_id = fetch_userid_from_launch(api_key)
+    website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
+    websites_data = load_yaml_from_s3(website_metadata_path) or []
+    website_urls = [w.get("url") for w in websites_data if w.get("status") == "active"]
+    return website_urls
+
+
+def get_youtube_url(api_key):
+    """Return a list of active you_tube url for a user."""
+
+    user_id = fetch_userid_from_launch(api_key)
+    youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
+    youtube_data = load_yaml_from_s3(youtube_metadata_path) or []
+    youtube_urls = [w.get("url") for w in youtube_data if w.get("status") == "active"]
+    return youtube_urls
+
+
+def parse_llm_response(response_text):
+    """
+    Robustly parse LLM response that might be JSON or YAML,
+    possibly wrapped in markdown code fences or preceded by preamble text.
+
+    Args:
+        response_text: Raw text from LLM
+
+    Returns:
+        dict: Parsed content
+
+    Raises:
+        ValueError: If parsing fails after all attempts
+    """
+    if not response_text or not response_text.strip():
+        raise ValueError("Empty response from LLM")
+
+    cleaned = response_text.strip()
+    print(f"****cleaned : {cleaned}")
+
+    # Strategy 1: Extract content between code fences
+    code_fence_pattern = r"```(?:json|yaml|yml)?\s*\n(.*?)\n```"
+    code_fence_match = re.search(code_fence_pattern, cleaned, re.DOTALL)
+    if code_fence_match:
+        cleaned = code_fence_match.group(1).strip()
+    else:
+        # Strategy 2: Remove leading markdown code fence markers
+        cleaned = re.sub(
+            r"^```(?:json|yaml|yml)?\s*\n", "", cleaned, flags=re.MULTILINE
+        )
+        cleaned = re.sub(r"\n```\s*$", "", cleaned, flags=re.MULTILINE)
+
+    # Strategy 3: Try to find JSON object or YAML content after preamble
+    # Look for content starting with { or a YAML key pattern
+    json_match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+    yaml_match = re.search(
+        r"^([a-zA-Z_][\w]*\s*:.*)", cleaned, re.DOTALL | re.MULTILINE
+    )
+
+    # Prepare multiple candidates to try parsing
+    candidates = [cleaned]
+
+    if json_match:
+        candidates.insert(0, json_match.group(1).strip())
+
+    if yaml_match:
+        candidates.insert(0, yaml_match.group(1).strip())
+
+    # Try parsing each candidate
+    errors = []
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        # Try JSON first (faster and more strict)
+        try:
+            result = json.loads(candidate)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError as e:
+            errors.append(f"JSON parse error: {e}")
+
+        # Try YAML (more forgiving)
+        try:
+            result = yaml.safe_load(candidate)
+            if result is None:
+                continue
+            if isinstance(result, dict):
+                return result
+        except yaml.YAMLError as e:
+            errors.append(f"YAML parse error: {e}")
+
+    # If all attempts failed, raise detailed error
+    error_msg = f"Failed to parse LLM response after trying all strategies.\n"
+    error_msg += f"Errors encountered:\n" + "\n".join(f"  - {e}" for e in errors)
+    error_msg += f"\n\nRaw output (first 500 chars):\n{response_text[:500]}"
+    raise ValueError(error_msg)
+
+def generate_fallback_response(user_id, query, previous_query, previous_response):
+    
+    fallback_response = ""
+    is_repeated = False
+
+    # Normalize the query
+    normalized_query = query.lower().strip()
+    now = datetime.now()
+    
+    # Get this user's recent query history
+    user_history = user_query_history[user_id]
+    
+    # Check how many times THIS USER asked THIS question in the last 10 minutes
+    recent_same_queries = [
+        q for q in user_history 
+        if q['query'] == normalized_query and (now - q['timestamp']) < timedelta(minutes=10)
+    ]
+    repeated_len = len(recent_same_queries)
+    
+    # If this specific user has asked the same question 2+ times, give repeat response
+    if repeated_len >= 1:
+            print(f"repeated_len : {repeated_len}")
+            fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+            prompt_template = fallback_respone.get("fallback_repeated_question")
+            filled_prompt = (
+                prompt_template.replace(
+                    "{{user_query}}",
+                    json.dumps(query, ensure_ascii=False, indent=2),
+                )
+                .replace("{{repeat_count}}", str(repeated_len))
+                .replace("{{previous_query}}", str(previous_query))
+                .replace("{{previous_response}}", str(previous_response))
+            )
+
+            modified_yaml = get_fireworks_response(filled_prompt, "system")
+            
+            try:
+                parsed_yaml = parse_llm_response(modified_yaml)
+            except ValueError as e:
+                print(f"🔥 Fallback response parsing failed: {e}")
+                return jsonify({"error": "Failed to parse fallback response"}), 500
+
+            fallback_response = parsed_yaml.get("response")
+            is_repeated = True
+
+    # Store this query for THIS USER
+    user_query_history[user_id].append({
+        'query': normalized_query,
+        'timestamp': now
+    })
+     
+    # Clean up old queries for THIS USER (keep only last 10 minutes)
+    user_query_history[user_id] = [
+        q for q in user_query_history[user_id] 
+        if (now - q['timestamp']) < timedelta(minutes=10)
+    ]
+    
+    # Optional: Limit storage per user to prevent memory bloat
+    if len(user_query_history[user_id]) > 50:
+        user_query_history[user_id] = user_query_history[user_id][-50:]
+    
+    return {
+        "fallback_response":fallback_response,
+        "is_repeated":is_repeated
+    }
+
+
+def semantically_repeated_response(user_id, query, previous_query, previous_response):
+    
+            fallback_response = ""
+            is_repeated = False
+
+            # Normalize the query
+            normalized_query = query.lower().strip()
+            now = datetime.now()
+
+            fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+            prompt_template = fallback_respone.get("fallback_repeated_question")
+            filled_prompt = (
+                prompt_template.replace(
+                    "{{user_query}}",
+                    json.dumps(query, ensure_ascii=False, indent=2),
+                )
+                .replace("{{previous_query}}", str(previous_query))
+                .replace("{{previous_response}}", str(previous_response))
+            )
+
+            modified_yaml = get_fireworks_response(filled_prompt, "system")
+            
+            try:
+                parsed_yaml = parse_llm_response(modified_yaml)
+            except ValueError as e:
+                print(f"🔥 Fallback response parsing failed: {e}")
+                return jsonify({"error": "Failed to parse fallback response"}), 500
+
+            fallback_response = parsed_yaml.get("response")
+    
+            return fallback_response
+                
+
+
+@agent_bps.route("/process-query-key", methods=["POST"])
+def checkquerywithApiKey():
+    try:
+        print("Query made by:", session.get("user", {}))
+        response_data = []
+
+        data = request.json
+        previous_query = data.get("previous_query","").strip()
+        previous_response = data.get("previous_response").strip()
+        querytext = data.get("query", "").strip()
+        api_key = data.get("api_key")
+        if not api_key:
+            return jsonify({"error": "API key is required"}), 400
+        website = (
+            remove_https_prefix(data.get("website")) if data.get("website") else None
+        )
+        if not website:
+            return jsonify({"error": "Website is required"}), 400
+        if not querytext:
+            return jsonify({"error": "Query is required"}), 400
+
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            # Check if the API key exists for the user
+            cursor.execute(
+                "SELECT user_id_fk,website_name FROM launch WHERE api_id = %s ",
+                (api_key,),
+            )
+            user_row = cursor.fetchone()
+            if not user_row:
+                return jsonify({"error": "Invalid API key"}), 401
+
+            userid, userwebsite = user_row
+            if website != userwebsite and website != "dev.bytoid.ai":
+                return (
+                    jsonify({"error": "API key does not match the provided website"}),
+                    401,
+                )
+            if not check_userid_valid(userid):
+                return jsonify({"error": "Invalid access"}), 404
+
+        #check for repitative user queries
+        repeated_check_ans = generate_fallback_response(userid, querytext, previous_query, previous_response)
+        repeated_fallback_response = repeated_check_ans["fallback_response"]
+        is_repeated = repeated_check_ans["is_repeated"]      
+  
+        if is_repeated:
+            response_data.append(
+                {
+                    "id": "",
+                    "match_score": "",
+                    "extracted_answer": repeated_fallback_response,
+                    "full_text": "",
+                }
+            )
+            return jsonify(response_data), 200
+
+
+        # validate the input query
+        validated_respone = load_yaml_file(path=pathconfig.query_validation)
+        template = validated_respone.get("query_validation")
+        filled_prompt = (
+            template.replace("{{message_text}}", str(querytext))
+            .replace("{{previous_query}}", str(previous_query))
+            .replace("{{previous_response}}", str(previous_response))
+            )
+        modified_yaml = get_fireworks_response(filled_prompt, role="system")
+
+        try:
+            result = parse_llm_response(modified_yaml)
+        except ValueError as e:
+            print(f"🔥 Query validation parsing failed: {e}")
+            return jsonify({"error": "Failed to parse query validation response"}), 500
+        validated_query = result.get("question")
+        type = result.get("type")
+        summary = result.get("summary")
+        print(f"type : {type}")
+        print(f"summary : {summary}")
+
+        if type == "general" or type == "gratitude" or type == "emotional" or type == "unknown" or type == "abuse":
+            response_data.append(
+                {
+                    "id": "",
+                    "match_score": "",
+                    "extracted_answer": validated_query,
+                    "full_text": "",
+                }
+            )
+            return jsonify(response_data), 200
+
+        elif type == "repetition":
+            response = semantically_repeated_response(userid, querytext, previous_query, previous_response)
+            response_data.append(
+                {
+                    "id": "",
+                    "match_score": "",
+                    "extracted_answer": response,
+                    "full_text": "",
+                }
+            )
+            return jsonify(response_data), 200
+
+            
+
+        else:
+
+            # Check for exact match in passed_ques.yaml
+            passed_yaml_path = f"{userid}/yaml/passed_ques.yaml"
+            valid_ones = load_yaml_from_s3(passed_yaml_path)
+            if valid_ones and isinstance(valid_ones[0], list):
+                valid_ones = [item for sublist in valid_ones for item in sublist]
+
+            if valid_ones:
+                for each in valid_ones:
+                    user_query = each.get("User", "").strip().lower()
+                    if user_query == querytext.lower():
+                        response_data.append(
+                            {
+                                "id": "",
+                                "match_score": "",
+                                "extracted_answer": each.get("Ai Response", ""),
+                                "full_text": "",
+                            }
+                        )
+                        return jsonify(response_data), 200
+
+            # If no exact match, perform vector search
+            base_doc_ans = []
+            if validated_query:
+                top_k = 3
+                query_input = QueryInput(
+                    user_id=userid, query_text=validated_query, top_k=top_k
+                )
+                lance_client = LanceClient(user_id=userid)
+                results = lance_client.query_vector(query_input)
+                for r in results:
+                    clean_text = r.get("text", "").encode().decode("unicode_escape")
+                    base_doc_ans.append(clean_text)
+
+            # Fetch business info
+            businessdata = get_business_info(connection=connection, userid=userid)
+
+            business_name = (
+                businessdata.get("BusinessName") if businessdata else "Our Organization"
+            )
+            business_address = businessdata.get("BillingAddress") if businessdata else ""
+            business_website = (
+                businessdata.get("WebsiteUrl") if businessdata else ""
+            ) or ""
+
+            # Build final prompt for AI reply
+            prompt_template = validated_respone.get("base_eval_response")
+            filled_prompt = (
+                prompt_template.replace(
+                    "{{user_query}}",
+                    json.dumps(querytext, ensure_ascii=False, indent=2),
+                )
+                .replace(
+                    "{{base_doc_ans}}",
+                    json.dumps(base_doc_ans, ensure_ascii=False, indent=2),
+                )
+                .replace("{{business_name}}", business_name)
+                .replace("{{business_address}}", business_address)
+                .replace("{{business_website}}", business_website)
+            )
+
+            modified_yaml = get_fireworks_response(filled_prompt, "system")
+
+            try:
+                result = parse_llm_response(modified_yaml)
+            except ValueError as e:
+                print(f"🔥 Base evaluation parsing failed: {e}")
+                return jsonify({"error": "Failed to parse base evaluation response"}), 500
+
+            base_response = result.get("response")
+            no_answer_found = result.get("no_answer_found")
+            if isinstance(no_answer_found, str):
+                val = no_answer_found.strip().lower()
+            else:
+                val = str(no_answer_found).lower()
+
+            if val in ["true", "yes", "1"]:
+                no_answer_found = True
+            elif val == "partial":
+                no_answer_found = "Partial"
+            else:
+                no_answer_found = False
+            print(f"base_response : {base_response}")
+            print(f"no_answer_found : {no_answer_found}")
+
+            if not no_answer_found:
+                response_data.append(
+                    {
+                        "id": "",
+                        "match_score": "",
+                        "extracted_answer": base_response,
+                        "full_text": "",
+                    }
+                )
+                return jsonify(response_data), 200
+            
+            elif no_answer_found == "Partial":
+                # genereate fall back response when no_answer_found is true or partial
+                print(f"inside partial part")
+
+                website_urls = get_website_url(api_key)
+                youtube_urls = get_youtube_url(api_key)
+
+                print(f"website_urls: {website_urls}")
+                print(f"youtube_urls: {youtube_urls}")
+
+                fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+                template = fallback_respone.get("fallback_partial_answer")
+                filled_prompt = template.replace(
+                    "{{website_urls}}", ", ".join(website_urls) if website_urls else ""
+                ).replace("{{youtube_urls}}", ", ".join(youtube_urls) if youtube_urls else ""
+                ).replace("{{base_response}}", base_response
+                ).replace("{{previous_query}}", str(previous_query)
+                ).replace("{{previous_response}}", str(previous_response))
+                modified_yaml = get_fireworks_response(filled_prompt, role="system")
+
+                try:
+                    parsed_yaml = parse_llm_response(modified_yaml)
+                except ValueError as e:
+                    print(f"🔥 Fallback response parsing failed: {e}")
+                    return jsonify({"error": "Failed to parse fallback response"}), 500
+
+                fallback_response = parsed_yaml.get("response")
+
+                print(f"fallback response: {fallback_response}")
+
+                response_data.append(
+                    {
+                        "id": "",
+                        "match_score": "",
+                        "extracted_answer": fallback_response,
+                        "full_text": "",
+                    }
+                )
+                return jsonify(response_data), 200
+
+            else:
+                print(f"inside true part")
+                fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+                prompt = fallback_respone.get("fallback_no_answer")
+                print(f"str(querytext) : {str(querytext)}")
+                filled_prompt = (
+                prompt.replace("{{user_query}}", str(querytext))
+                .replace("{{previous_query}}", str(previous_query))
+                .replace("{{previous_response}}", str(previous_response))
+                )
+                modified_yaml = get_fireworks_response(filled_prompt, role="system")
+
+                try:
+                    parsed_yaml = parse_llm_response(modified_yaml)
+                except ValueError as e:
+                    print(f"🔥 Fallback response parsing failed: {e}")
+                    return jsonify({"error": "Failed to parse fallback response"}), 500
+
+                fallback_response = parsed_yaml.get("response")
+
+                print(f"fallback response: {fallback_response}")
+
+                response_data.append(
+                    {
+                        "id": "",
+                        "match_score": "",
+                        "extracted_answer": fallback_response,
+                        "full_text": "",
+                    }
+                )
+                return jsonify(response_data), 200
+
+    except Exception as e:
+        print("❌ Error during query processing:", e)
+        return jsonify({"error": str(e)}), 400
+    finally:
+        if connection:
+            connection.close()
+
+
 @agent_bps.route("/process-drive", methods=["POST"])
 def download_files():
     """
@@ -495,27 +1012,51 @@ def download_files():
     else:
         redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
+def getFilenameData(fetched_userid):
+    # Load user files metadata YAML
+        user_files_path = f"{fetched_userid}/yaml/users_fileData.yaml"
+        file_data = load_yaml_from_s3(user_files_path) or []
+
+        present_files = []
+
+        if isinstance(file_data, dict):
+            for key, entries in file_data.items():
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if (
+                            isinstance(entry, dict)
+                            and entry.get("FileStatus") == "Present"
+                        ):
+                            if entry.get("filename"):
+                                present_files.append(entry.get("filename"))
+        elif isinstance(file_data, list):
+            for entry in file_data:
+                if isinstance(entry, dict) and entry.get("FileStatus") == "Present":
+                    if entry.get("filename"):
+                        present_files.append(entry.get("filename"))
+        return present_files
+    
+# print("filenamedataons3",getFilenameData("100805564263044911738"))
 
 @agent_bps.route("/clarifications", methods=["POST"])
 def makeuserDocClarifications(userid=None, industry=None):
-    """ "
-    It takes the user_id and industry from the request or defaults to the provided parameters,
-    retrieves the failed questions from a YAML file, and returns clarifications for those questions.
-    If the file does not exist, it triggers the preProcessDocWithUsecases function to
-    process the document and generate clarifications.
-    It returns a JSON response with the clarifications or an error message if the user_id is not provided.
+    """
+    Retrieves clarifications for a user based on failed questions.
+    If the YAML files don't exist, triggers background QA generation.
     """
     data = request.json
     fetched_userid = data.get("userid") or userid
     print("fetched_userid", fetched_userid)
+
     if not check_userid_valid(fetched_userid):
         return jsonify({"error": "Invalid access"}), 404
+
     if fetched_userid:
         task_run = task_status.get(fetched_userid, {}).get("status", "not started")
         if task_run == "running":
             return (
                 jsonify(
-                    {"message": "currently generating clarifications for the user."}
+                    {"message": "Currently generating clarifications for the user."}
                 ),
                 400,
             )
@@ -523,29 +1064,17 @@ def makeuserDocClarifications(userid=None, industry=None):
     if not fetched_userid:
         return jsonify({"error": "User ID is required"}), 400
 
+    # Load failed questions YAML
     failed_path = f"{fetched_userid}/yaml/failed_ques.yaml"
-    failed_entries = load_yaml_from_s3(failed_path)
+    failed_entries = load_yaml_from_s3(failed_path) or []
 
     if not failed_entries:
         logger.info("⚠ failed_ques.yaml not found or empty, regenerating QAs...")
         fetched_industry = get_line_of_business(fetched_userid)
         if not fetched_industry:
             return jsonify({"error": "No line of business present"}), 401
-
-        # Load file metadata to get all Present files
-        user_files_path = f"{fetched_userid}/yaml/users_fileData.yaml"
-
-        file_data = load_yaml_from_s3(user_files_path) or []
-
-        present_files = []
-        for key, entries in file_data.items():
-            if isinstance(entries, list):
-                for entry in entries:
-                    if isinstance(entry, dict):
-                        if entry.get("FileStatus") == "Present" and entry.get(
-                            "filename"
-                        ):
-                            present_files.append(entry.get("filename"))
+        
+        present_files=getFilenameData(fetched_userid)        
 
         if not present_files:
             return (
@@ -553,7 +1082,7 @@ def makeuserDocClarifications(userid=None, industry=None):
                 404,
             )
 
-        # Trigger background QA generation for all present files
+        # Trigger background QA generation
         result = run_background_task(
             userid=fetched_userid,
             industry=fetched_industry,
@@ -566,21 +1095,23 @@ def makeuserDocClarifications(userid=None, industry=None):
             400,
         )
 
-    if not failed_entries:
-        # File exists but is empty
-        return "No clarifications required"
-
-    # Extract clarifications
-    if failed_entries and isinstance(failed_entries[0], list):
+    # Flatten nested lists if needed
+    if isinstance(failed_entries[0], list):
         failed_entries = [item for sublist in failed_entries for item in sublist]
+
+    # Build clarifications
     clarifications = []
     for entry in failed_entries:
-        clarification = {
-            "usecase": entry.get("Rephrased Question", "").strip(),
-            "response": entry.get("Ai Response"),
-            "quote": entry.get("quote", "").strip(),
-        }
-        clarifications.append(clarification)
+        if isinstance(entry, dict):
+            clarification = {
+                "usecase": entry.get("Rephrased Question", "").strip(),
+                "response": entry.get("Ai Response"),
+                "quote": entry.get("quote", "").strip(),
+            }
+            clarifications.append(clarification)
+
+    if not clarifications:
+        return "No clarifications required"
 
     return jsonify(clarifications)
 
@@ -650,7 +1181,6 @@ def updateClarifications(userid=None, industry=None):
 
         failed_entries_backup = failed_entries[:]
         if is_valid:
-            # Remove from failed entries
             failed_entries = [e for e in failed_entries if e.get("User", "") != usecase]
 
             # Avoid duplicates in passed
@@ -1359,743 +1889,2162 @@ def discover_api_endpoints(content, base_url):
     return list(endpoints)
 
 
+class YouTubeScrapingClient:
+    def __init__(self, user_id: str):
+        load_dotenv()
+        self.lancedb_url = os.getenv("LANCE_DB_IP")
+        self.user_id = user_id
+        self.dimension = 2880
+        # self.embeddings = OpenAIEmbeddings(
+        #     model="text-embedding-3-large",
+        #     openai_api_key=os.getenv("OPENAI_API_KEY"),
+        #     dimensions=self.dimension,
+        # )
+        self.embeddings = get_firework_embedding()
+        self.speech_service = Speech2TextService(user_id)
+
+        # Proxy list for rotation (add your proxy servers here)
+        self.proxies = [
+            # Add your proxy servers here
+            # "http://proxy1:port",
+            # "http://proxy2:port",
+        ]
+
+    def get_rotating_proxy(self):
+        """Get a rotating proxy from available proxies"""
+        if self.proxies:
+            return random.choice(self.proxies)
+        return None
+
+    def extract_video_id(self, youtube_url):
+        """Extract video ID from various YouTube URL formats"""
+        patterns = [
+            r"(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)",
+            r"(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]+)",
+            r"(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]+)",
+            r"(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, youtube_url)
+            if match:
+                return match.group(1)
+        return None
+
+    def extract_with_pytube(self, youtube_url):
+        """Extract metadata and audio using PyTube"""
+        if not PYTUBE_AVAILABLE:
+            print(f"[YOUTUBE] PyTube not available")
+            return None, None
+
+        try:
+            print(f"[YOUTUBE] Trying PyTube extraction for: {youtube_url}")
+            yt = YouTube(youtube_url)
+
+            # Get metadata
+            metadata = {
+                "title": yt.title or "YouTube Video",
+                "author": yt.author or "Unknown",
+                "duration": yt.length,
+                "description": yt.description or "",
+                "view_count": yt.views or 0,
+                "upload_date": "",
+            }
+
+            print(
+                f"[YOUTUBE] PyTube metadata: {metadata['title']} by {metadata['author']}"
+            )
+
+            # Download audio
+            audio_stream = yt.streams.filter(only_audio=True).first()
+            if not audio_stream:
+                raise Exception("No audio stream available")
+
+            # Download to temporary location
+            temp_dir = tempfile.gettempdir()
+            audio_file = audio_stream.download(output_path=temp_dir)
+
+            # Rename to a clean name
+            file_ext = os.path.splitext(audio_file)[1]
+            clean_audio_path = os.path.join(
+                temp_dir, f"youtube_audio_pytube_{os.getpid()}{file_ext}"
+            )
+
+            import shutil
+
+            shutil.move(audio_file, clean_audio_path)
+
+            print(f"[YOUTUBE] PyTube audio downloaded: {clean_audio_path}")
+            return metadata, clean_audio_path
+
+        except Exception as e:
+            print(f"[YOUTUBE] PyTube extraction failed: {e}")
+            return None, None
+
+    def get_video_metadata_and_audio_with_proxy(self, youtube_url):
+        """Get video metadata and extract audio using yt-dlp with proxy"""
+        try:
+            print(f"[YOUTUBE] Starting yt-dlp with proxy extraction for: {youtube_url}")
+            proxy = self.get_rotating_proxy()
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_template = os.path.join(temp_dir, "audio.%(ext)s")
+
+                ydl_opts = {
+                    "format": "bestaudio",
+                    "outtmpl": output_template,
+                    "quiet": False,
+                    "no_warnings": False,
+                    # Enhanced headers to avoid bot detection
+                    "http_headers": {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-us,en;q=0.5",
+                        "Accept-Encoding": "gzip,deflate",
+                        "Accept-Charset": "ISO-8859-1,utf-8;q=0.7,*;q=0.7",
+                        "Keep-Alive": "300",
+                        "Connection": "keep-alive",
+                    },
+                    "extractor_args": {
+                        "youtube": {
+                            "skip": ["hls", "dash"],
+                            "player_skip": ["configs"],
+                        }
+                    },
+                    "retries": 5,
+                    "fragment_retries": 5,
+                    "sleep_interval": 2,
+                    "max_sleep_interval": 10,
+                }
+
+                # Add proxy if available
+                if proxy:
+                    ydl_opts["proxy"] = proxy
+                    print(f"[YOUTUBE] Using proxy: {proxy}")
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    print(f"[YOUTUBE] Extracting video info with proxy...")
+                    info = ydl.extract_info(youtube_url, download=False)
+
+                    metadata = {
+                        "title": info.get("title", "YouTube Video"),
+                        "author": info.get("uploader", info.get("channel", "Unknown")),
+                        "duration": info.get("duration", None),
+                        "description": info.get("description", ""),
+                        "view_count": info.get("view_count", 0),
+                        "upload_date": info.get("upload_date", ""),
+                    }
+
+                    print(
+                        f"[YOUTUBE] Proxy extracted metadata: {metadata['title']} by {metadata['author']}"
+                    )
+
+                    print(f"[YOUTUBE] Starting audio download with proxy...")
+                    ydl.download([youtube_url])
+
+                    # Find downloaded file
+                    audio_file = None
+                    for file in os.listdir(temp_dir):
+                        file_path = os.path.join(temp_dir, file)
+                        if os.path.isfile(file_path):
+                            print(
+                                f"[YOUTUBE] Found file: {file} ({os.path.getsize(file_path)} bytes)"
+                            )
+                            audio_file = file_path
+                            break
+
+                    if not audio_file:
+                        raise Exception("No audio file found after download")
+
+                    # Copy to permanent location
+                    import shutil
+
+                    file_ext = os.path.splitext(audio_file)[1] or ".webm"
+                    clean_audio_path = os.path.join(
+                        tempfile.gettempdir(),
+                        f"youtube_audio_proxy_{os.getpid()}{file_ext}",
+                    )
+                    shutil.copy2(audio_file, clean_audio_path)
+                    print(f"[YOUTUBE] Proxy audio copied to: {clean_audio_path}")
+
+                    return metadata, clean_audio_path
+
+        except Exception as e:
+            print(f"[YOUTUBE] yt-dlp with proxy extraction failed: {e}")
+            return None, None
+
+    def get_transcript_with_proxy(self, video_id):
+        """Get transcript using YouTube Transcript API with proxy simulation"""
+        if not YOUTUBE_TRANSCRIPT_AVAILABLE:
+            print(f"[YOUTUBE] YouTube transcript API not available")
+            return None
+
+        try:
+            print(
+                f"[YOUTUBE] Trying transcript API with enhanced headers for {video_id}"
+            )
+
+            # Simulate different session/headers to avoid blocking
+            import requests
+
+            session = requests.Session()
+            session.headers.update(
+                {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept-Encoding": "gzip, deflate",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                }
+            )
+
+            # Add delay to avoid rate limiting
+            import time
+
+            time.sleep(random.uniform(1, 3))
+
+            transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+            print(f"[YOUTUBE] Transcript API found {len(transcript_data)} segments")
+
+            # Combine transcript segments
+            full_transcript = ""
+            for entry in transcript_data:
+                text = entry.get("text", "").strip()
+                if text:
+                    full_transcript += text + " "
+
+            result = full_transcript.strip()
+            print(f"[YOUTUBE] Transcript extracted: {len(result)} characters")
+            print(f"[YOUTUBE] Transcript preview: {result[:200]}...")
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            if (
+                "YouTube is blocking requests from your IP" in error_msg
+                or "cloud provider" in error_msg
+            ):
+                print(
+                    f"[YOUTUBE] YouTube blocked transcript API (cloud provider restriction)"
+                )
+                return None
+            else:
+                print(f"[YOUTUBE] Transcript API with proxy simulation failed: {e}")
+                return None
+
+    def extract_transcript_selenium(self, youtube_url):
+        """Extract transcript using browser automation (Selenium)"""
+        try:
+            print(f"[YOUTUBE] Trying Selenium transcript extraction for: {youtube_url}")
+
+            # Setup Selenium driver (reuse existing setup)
+            driver = (
+                self._setup_selenium_driver()
+                if hasattr(self, "_setup_selenium_driver")
+                else None
+            )
+
+            if not driver:
+                # Basic Chrome setup for transcript extraction
+                from selenium.webdriver.chrome.service import Service
+
+                chrome_options = Options()
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument(
+                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+
+                driver = webdriver.Chrome(options=chrome_options)
+
+            driver.get(youtube_url)
+
+            # Wait for page to load
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+
+            # Try to find and click transcript button
+            try:
+                # Look for transcript button (multiple possible selectors)
+                transcript_selectors = [
+                    "//button[@aria-label='Show transcript']",
+                    "//button[contains(@aria-label, 'transcript')]",
+                    "//button[contains(text(), 'Transcript')]",
+                    "//*[@id='transcript-button']",
+                ]
+
+                transcript_button = None
+                for selector in transcript_selectors:
+                    try:
+                        transcript_button = driver.find_element(By.XPATH, selector)
+                        break
+                    except:
+                        continue
+
+                if transcript_button:
+                    driver.execute_script("arguments[0].click();", transcript_button)
+                    time.sleep(2)
+
+                    # Extract transcript text
+                    transcript_selectors = [
+                        ".transcript-segment",
+                        ".ytd-transcript-segment-renderer",
+                        "[data-purpose='transcript-segment']",
+                    ]
+
+                    transcript_text = ""
+                    for selector in transcript_selectors:
+                        try:
+                            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                            if elements:
+                                transcript_text = " ".join([el.text for el in elements])
+                                break
+                        except:
+                            continue
+
+                    if transcript_text:
+                        print(
+                            f"[YOUTUBE] Selenium transcript extracted: {len(transcript_text)} characters"
+                        )
+                        return transcript_text
+
+            except Exception as e:
+                print(f"[YOUTUBE] Selenium transcript button not found or failed: {e}")
+
+            # Try to extract title and basic info even if transcript fails
+            try:
+                title_element = driver.find_element(
+                    By.CSS_SELECTOR, "h1.ytd-video-primary-info-renderer"
+                )
+                title = title_element.text if title_element else "YouTube Video"
+                print(f"[YOUTUBE] Selenium extracted title: {title}")
+
+                # Could return basic metadata even without transcript
+                return None
+            except:
+                pass
+
+            return None
+
+        except Exception as e:
+            print(f"[YOUTUBE] Selenium transcript extraction failed: {e}")
+            return None
+        finally:
+            if "driver" in locals():
+                try:
+                    driver.quit()
+                except:
+                    pass
+        """Get video metadata and extract audio using yt-dlp"""
+        try:
+            print(f"[YOUTUBE] Starting yt-dlp extraction for: {youtube_url}")
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Use a clean filename template
+                output_template = os.path.join(temp_dir, "audio.%(ext)s")
+
+                ydl_opts = {
+                    "format": "bestaudio",  # Just get best audio, no conversion
+                    "outtmpl": output_template,
+                    "quiet": False,  # Enable verbose output for debugging
+                    "no_warnings": False,
+                    # Enhanced headers to avoid bot detection
+                    "http_headers": {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-us,en;q=0.5",
+                        "Accept-Encoding": "gzip,deflate",
+                        "Accept-Charset": "ISO-8859-1,utf-8;q=0.7,*;q=0.7",
+                        "Keep-Alive": "300",
+                        "Connection": "keep-alive",
+                    },
+                    # Add extractor arguments for YouTube
+                    "extractor_args": {
+                        "youtube": {
+                            "skip": ["hls", "dash"],
+                            "player_skip": ["configs"],
+                        }
+                    },
+                    # Retry settings
+                    "retries": 5,
+                    "fragment_retries": 5,
+                    # Add some delay to avoid rate limiting
+                    "sleep_interval": 2,
+                    "max_sleep_interval": 10,
+                }
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    print(f"[YOUTUBE] Extracting video info...")
+                    # Get video info first
+                    info = ydl.extract_info(youtube_url, download=False)
+
+                    # Extract metadata
+                    metadata = {
+                        "title": info.get("title", "YouTube Video"),
+                        "author": info.get("uploader", info.get("channel", "Unknown")),
+                        "duration": info.get("duration", None),
+                        "description": info.get("description", ""),
+                        "view_count": info.get("view_count", 0),
+                        "upload_date": info.get("upload_date", ""),
+                    }
+
+                    print(
+                        f"[YOUTUBE] Extracted metadata: {metadata['title']} by {metadata['author']} ({metadata['duration']}s)"
+                    )
+
+                    print(f"[YOUTUBE] Starting audio download...")
+                    # Download audio
+                    ydl.download([youtube_url])
+
+                    # Find the downloaded audio file
+                    audio_file = None
+                    print(f"[YOUTUBE] Checking temp directory: {temp_dir}")
+                    for file in os.listdir(temp_dir):
+                        file_path = os.path.join(temp_dir, file)
+                        if os.path.isfile(file_path):
+                            print(
+                                f"[YOUTUBE] Found file: {file} ({os.path.getsize(file_path)} bytes)"
+                            )
+                            audio_file = file_path
+                            break
+
+                    if not audio_file:
+                        raise Exception("No audio file found after download")
+
+                    # Copy the file to a new location with a clean name since temp_dir will be deleted
+                    import shutil
+
+                    file_ext = os.path.splitext(audio_file)[1] or ".webm"
+                    clean_audio_path = os.path.join(
+                        tempfile.gettempdir(), f"youtube_audio_{os.getpid()}{file_ext}"
+                    )
+                    shutil.copy2(audio_file, clean_audio_path)
+                    print(f"[YOUTUBE] Audio copied to: {clean_audio_path}")
+
+                    return metadata, clean_audio_path
+
+        except Exception as e:
+            print(f"[YOUTUBE] yt-dlp extraction failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return None, None
+
+    def get_transcript_fallback(self, video_id):
+        """Fallback to YouTube transcript API if yt-dlp fails"""
+        if not YOUTUBE_TRANSCRIPT_AVAILABLE:
+            print(f"[YOUTUBE] YouTube transcript API not available")
+            return None
+
+        try:
+            print(f"[YOUTUBE] Trying fallback transcript API for {video_id}")
+            # Use the correct API method
+            transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+            print(
+                f"[YOUTUBE] Found transcript data with {len(transcript_data)} segments"
+            )
+
+            # Combine transcript segments
+            full_transcript = ""
+            for entry in transcript_data:
+                text = entry.get("text", "").strip()
+                if text:
+                    full_transcript += text + " "
+
+            result = full_transcript.strip()
+            print(f"[YOUTUBE] Transcript extracted: {len(result)} characters")
+            print(f"[YOUTUBE] Transcript preview: {result[:200]}...")
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            if (
+                "YouTube is blocking requests from your IP" in error_msg
+                or "cloud provider" in error_msg
+            ):
+                print(
+                    f"[YOUTUBE] YouTube blocked our server IP (cloud provider restriction)"
+                )
+                return None
+            else:
+                print(f"[YOUTUBE] Fallback transcript API failed for {video_id}: {e}")
+                import traceback
+
+                traceback.print_exc()
+                return None
+
+    def split_audio_file(self, audio_file_path, max_duration_minutes=10):
+        """Split long audio files into smaller segments for better transcription"""
+        try:
+            # For now, return the original file since ffmpeg is not available
+            # This will be enhanced when ffmpeg is installed
+            print(f"[YOUTUBE] ffmpeg not available, using original file (no splitting)")
+            return [audio_file_path]
+
+        except Exception as e:
+            print(f"[YOUTUBE] Error splitting audio: {e}")
+            return [audio_file_path]
+
+    async def transcribe_audio_segments(self, audio_segments):
+        """Transcribe multiple audio segments and combine them"""
+        try:
+            all_transcripts = []
+
+            for i, segment_file in enumerate(audio_segments):
+                print(
+                    f"[YOUTUBE] Transcribing segment {i+1}/{len(audio_segments)}: {segment_file}"
+                )
+                print(f"[YOUTUBE] File exists: {os.path.exists(segment_file)}")
+                if os.path.exists(segment_file):
+                    print(f"[YOUTUBE] File size: {os.path.getsize(segment_file)} bytes")
+
+                transcript = await self.speech_service.transcribe_audio(segment_file)
+                if transcript:
+                    all_transcripts.append(transcript)
+                    print(f"[YOUTUBE] Segment {i+1} transcript: {transcript[:100]}...")
+                else:
+                    print(f"[YOUTUBE] No transcript for segment {i+1}")
+
+                # Clean up segment file if it's different from original
+                try:
+                    if len(audio_segments) > 1 and segment_file != audio_segments[0]:
+                        os.remove(segment_file)
+                except:
+                    pass
+
+            # Combine all transcripts
+            combined_transcript = " ".join(all_transcripts)
+            print(
+                f"[YOUTUBE] Combined transcript length: {len(combined_transcript)} characters"
+            )
+
+            return combined_transcript if combined_transcript.strip() else None
+
+        except Exception as e:
+            print(f"[YOUTUBE] Error transcribing segments: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return None
+
+    async def transcribe_audio(self, audio_file_path):
+        """Transcribe audio using the existing Speech2TextService with segmentation for long files"""
+        try:
+            print(f"[YOUTUBE] Starting transcription for: {audio_file_path}")
+
+            # Split audio if it's too long (currently returns original file)
+            audio_segments = self.split_audio_file(
+                audio_file_path, max_duration_minutes=10
+            )
+
+            # Transcribe all segments
+            transcript = await self.transcribe_audio_segments(audio_segments)
+
+            return transcript
+        except Exception as e:
+            print(f"[YOUTUBE] Error in transcribe_audio: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return None
+
+    def scrape_youtube_video(self, youtube_url):
+        """Main method now using hybrid approach"""
+        return self.scrape_youtube_video_hybrid(youtube_url)
+
+    def scrape_youtube_video_hybrid(self, youtube_url):
+        """Hybrid approach with multiple fallbacks for robust YouTube scraping"""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        video_id = self.extract_video_id(youtube_url)
+        if not video_id:
+            logger.error(f"[HYBRID] Failed to extract video ID from: {youtube_url}")
+            return None
+
+        logger.info(f"[HYBRID] Starting hybrid YouTube processing for: {youtube_url}")
+        print(f"[HYBRID] Starting hybrid YouTube processing for: {youtube_url}")
+
+        # Method priority order
+        methods = [
+            ("yt-dlp_with_proxy", lambda: self.extract_with_ytdlp_proxy(youtube_url)),
+            ("pytube", lambda: self.extract_with_pytube(youtube_url)),
+            (
+                "transcript_api_proxy",
+                lambda: self.get_transcript_only_with_proxy(video_id, youtube_url),
+            ),
+            ("selenium_transcript", lambda: self.extract_with_selenium(youtube_url)),
+            ("original_ytdlp", lambda: self.get_video_metadata_and_audio(youtube_url)),
+            (
+                "original_transcript",
+                lambda: self.get_transcript_only_original(video_id, youtube_url),
+            ),
+        ]
+
+        for method_name, method_func in methods:
+            try:
+                logger.info(f"[HYBRID] 🔄 Trying {method_name}...")
+                print(f"[HYBRID] 🔄 Trying {method_name}...")
+                result = method_func()
+
+                if result and (
+                    (
+                        isinstance(result, tuple) and result[0] and result[1]
+                    )  # Audio + metadata
+                    or (
+                        isinstance(result, dict) and result.get("transcript_raw")
+                    )  # Transcript result
+                ):
+                    logger.info(f"[HYBRID] ✅ Success with {method_name}")
+                    print(f"[HYBRID] ✅ Success with {method_name}")
+
+                    # Convert transcript-only result to full result format
+                    if isinstance(result, dict) and "transcript_raw" in result:
+                        return result
+
+                    # Convert audio result to full format
+                    if isinstance(result, tuple):
+                        metadata, audio_file = result
+                        return self.process_audio_to_transcript(
+                            metadata, audio_file, youtube_url, video_id, method_name
+                        )
+
+            except Exception as e:
+                logger.error(f"[HYBRID] ❌ {method_name} failed: {e}")
+                print(f"[HYBRID] ❌ {method_name} failed: {e}")
+                continue
+
+        # If all methods fail, return informative error
+        logger.error(f"[HYBRID] 🚫 All methods failed for {youtube_url}")
+        print(f"[HYBRID] 🚫 All methods failed for {youtube_url}")
+        return {
+            "url": youtube_url,
+            "video_id": video_id,
+            "title": "YouTube Video",
+            "content": "Unable to access this video - All extraction methods failed",
+            "error": "all_methods_failed",
+            "metadata": {
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+                "scraping_method": "hybrid_all_failed",
+                "note": "Tried: yt-dlp with proxy, PyTube, transcript API, Selenium, and original methods",
+            },
+        }
+
+    def extract_with_ytdlp_proxy(self, youtube_url):
+        """Extract using yt-dlp with proxy support"""
+        return self.get_video_metadata_and_audio_with_proxy(youtube_url)
+
+    def get_video_metadata_and_audio(self, youtube_url):
+        """Original method - fallback to proxy version"""
+        return self.get_video_metadata_and_audio_with_proxy(youtube_url)
+
+    def get_transcript_only_with_proxy(self, video_id, youtube_url):
+        """Get transcript only using API with proxy simulation"""
+        transcript = self.get_transcript_with_proxy(video_id)
+        if transcript:
+            # Try to get basic metadata
+            try:
+                oembed_url = (
+                    f"https://www.youtube.com/oembed?url={youtube_url}&format=json"
+                )
+                response = requests.get(oembed_url, timeout=10)
+                if response.status_code == 200:
+                    oembed_data = response.json()
+                    title = oembed_data.get("title", f"YouTube Video {video_id}")
+                    author = oembed_data.get("author_name", "Unknown")
+                else:
+                    title = f"YouTube Video {video_id}"
+                    author = "Unknown"
+            except:
+                title = f"YouTube Video {video_id}"
+                author = "Unknown"
+
+            formatted_content = f"""
+**YouTube Video Analysis**
+
+**Title:** {title}
+**Author:** {author}
+**Video URL:** {youtube_url}
+
+**Transcript:**
+{transcript}
+"""
+
+            return {
+                "url": youtube_url,
+                "video_id": video_id,
+                "title": title,
+                "content": formatted_content,
+                "transcript_raw": transcript,
+                "metadata": {
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "scraping_method": "transcript_api_with_proxy_simulation",
+                    "author": author,
+                    "video_id": video_id,
+                    "content_length": len(transcript),
+                },
+            }
+        return None
+
+    def extract_with_selenium(self, youtube_url):
+        """Extract using Selenium browser automation"""
+        transcript = self.extract_transcript_selenium(youtube_url)
+        if transcript:
+            video_id = self.extract_video_id(youtube_url)
+            return {
+                "url": youtube_url,
+                "video_id": video_id,
+                "title": "YouTube Video (Selenium)",
+                "content": f"**Transcript:**\n{transcript}",
+                "transcript_raw": transcript,
+                "metadata": {
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "scraping_method": "selenium_browser_automation",
+                    "video_id": video_id,
+                    "content_length": len(transcript),
+                },
+            }
+        return None
+
+    def get_transcript_only_original(self, video_id, youtube_url):
+        """Get transcript using original method"""
+        transcript = self.get_transcript_fallback(video_id)
+        if transcript:
+            return self.get_transcript_only_with_proxy(
+                video_id, youtube_url
+            )  # Reuse formatting
+        return None
+
+    def process_audio_to_transcript(
+        self, metadata, audio_file, youtube_url, video_id, method_name
+    ):
+        """Process audio file to transcript using Whisper"""
+        try:
+            # Transcribe audio using async function
+            import concurrent.futures
+
+            def run_transcription():
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    return loop.run_until_complete(self.transcribe_audio(audio_file))
+                finally:
+                    loop.close()
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_transcription)
+                transcript = future.result(timeout=300)  # 5 minute timeout
+
+            if not transcript:
+                return {
+                    "url": youtube_url,
+                    "video_id": video_id,
+                    "title": metadata["title"],
+                    "content": "Failed to transcribe audio from this video",
+                    "error": "transcription_failed",
+                    "metadata": {
+                        "scraped_at": datetime.now(timezone.utc).isoformat(),
+                        "scraping_method": f"{method_name}_transcription_failed",
+                        "author": metadata["author"],
+                        "video_id": video_id,
+                    },
+                }
+
+            # Format content with video info and transcript
+            formatted_content = f"""
+**YouTube Video Analysis**
+
+**Title:** {metadata['title']}
+**Author:** {metadata['author']}
+**Video URL:** {youtube_url}
+**Duration:** {metadata['duration']} seconds
+
+**Transcript:**
+{transcript}
+"""
+
+            return {
+                "url": youtube_url,
+                "video_id": video_id,
+                "title": metadata["title"],
+                "content": formatted_content,
+                "transcript_raw": transcript,
+                "metadata": {
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "scraping_method": f"{method_name}_with_whisper",
+                    "author": metadata["author"],
+                    "video_id": video_id,
+                    "duration": metadata["duration"],
+                    "content_length": len(transcript),
+                    "description": (
+                        metadata["description"][:500] if metadata["description"] else ""
+                    ),
+                },
+            }
+
+        except Exception as e:
+            print(f"[HYBRID] Error processing audio to transcript: {e}")
+            return None
+        finally:
+            # Cleanup temporary audio file
+            if audio_file and os.path.exists(audio_file):
+                try:
+                    os.remove(audio_file)
+                except:
+                    pass
+        """Main method to scrape YouTube video and extract transcript using yt-dlp + Whisper"""
+        audio_file = None
+        try:
+            print(f"[YOUTUBE] Processing video: {youtube_url}")
+
+            # Extract video ID
+            video_id = self.extract_video_id(youtube_url)
+            if not video_id:
+                return None
+
+            # Get video metadata and audio
+            metadata, audio_file = self.get_video_metadata_and_audio(youtube_url)
+            if not metadata or not audio_file:
+                print(f"[YOUTUBE] yt-dlp failed, trying fallback transcript API...")
+                # Try fallback to transcript API
+                transcript = self.get_transcript_fallback(video_id)
+                if transcript:
+                    print(
+                        f"[YOUTUBE] Fallback transcript successful: {len(transcript)} chars"
+                    )
+                    # Try to get comprehensive metadata using multiple methods
+                    title = f"YouTube Video {video_id}"
+                    author = "Unknown"
+                    duration = None
+
+                    try:
+                        # Method 1: Try oembed API
+                        oembed_url = f"https://www.youtube.com/oembed?url={youtube_url}&format=json"
+                        response = requests.get(oembed_url, timeout=10)
+                        if response.status_code == 200:
+                            oembed_data = response.json()
+                            title = oembed_data.get("title", title)
+                            author = oembed_data.get("author_name", author)
+                            print(f"[YOUTUBE] oEmbed metadata: {title} by {author}")
+                    except Exception as e:
+                        print(f"[YOUTUBE] oEmbed failed: {e}")
+
+                    try:
+                        # Method 2: Try yt-dlp info extraction without download
+                        ydl_opts = {
+                            "quiet": True,
+                            "no_warnings": True,
+                            "skip_download": True,
+                        }
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(youtube_url, download=False)
+                            title = info.get("title", title)
+                            author = info.get("uploader", info.get("channel", author))
+                            duration = info.get("duration", duration)
+                            print(f"[YOUTUBE] yt-dlp info: {title} by {author}")
+                    except Exception as e:
+                        print(f"[YOUTUBE] yt-dlp info extraction failed: {e}")
+
+                    # Use extracted metadata
+                    formatted_content = f"""
+**YouTube Video Analysis**
+
+**Title:** {title}
+**Author:** {author}
+**Video URL:** {youtube_url}
+{f"**Duration:** {duration} seconds" if duration else ""}
+
+**Transcript:**
+{transcript}
+"""
+                    return {
+                        "url": youtube_url,
+                        "video_id": video_id,
+                        "title": title,
+                        "content": formatted_content,
+                        "transcript_raw": transcript,
+                        "metadata": {
+                            "scraped_at": datetime.now(timezone.utc).isoformat(),
+                            "scraping_method": "youtube_transcript_api_fallback",
+                            "author": author,
+                            "video_id": video_id,
+                            "duration": duration,
+                            "content_length": len(transcript),
+                        },
+                    }
+                else:
+                    return {
+                        "url": youtube_url,
+                        "video_id": video_id,
+                        "title": "YouTube Video",
+                        "content": "Unable to access this video - YouTube is blocking requests from cloud servers",
+                        "error": "youtube_ip_blocked",
+                        "metadata": {
+                            "scraped_at": datetime.now(timezone.utc).isoformat(),
+                            "scraping_method": "blocked_by_youtube",
+                            "note": "YouTube blocks most cloud provider IPs (AWS, Google Cloud, Azure) to prevent automated access. This affects both audio download and transcript extraction.",
+                        },
+                    }
+
+            # Transcribe audio - run in a new thread to avoid event loop conflicts
+            import concurrent.futures
+
+            def run_transcription():
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    return loop.run_until_complete(self.transcribe_audio(audio_file))
+                finally:
+                    loop.close()
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_transcription)
+                transcript = future.result(timeout=300)  # 5 minute timeout
+
+            if not transcript:
+                return {
+                    "url": youtube_url,
+                    "video_id": video_id,
+                    "title": metadata["title"],
+                    "content": "Failed to transcribe audio from this video",
+                    "error": "transcription_failed",
+                    "metadata": {
+                        "scraped_at": datetime.now(timezone.utc).isoformat(),
+                        "scraping_method": "yt-dlp + whisper",
+                        "author": metadata["author"],
+                        "video_id": video_id,
+                    },
+                }
+
+            # Format content with video info and transcript
+            formatted_content = f"""
+**YouTube Video Analysis**
+
+**Title:** {metadata['title']}
+**Author:** {metadata['author']}
+**Video URL:** {youtube_url}
+**Duration:** {metadata['duration']} seconds
+
+**Transcript:**
+{transcript}
+"""
+
+            return {
+                "url": youtube_url,
+                "video_id": video_id,
+                "title": metadata["title"],
+                "content": formatted_content,
+                "transcript_raw": transcript,
+                "metadata": {
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "scraping_method": "yt-dlp + whisper",
+                    "author": metadata["author"],
+                    "video_id": video_id,
+                    "duration": metadata["duration"],
+                    "content_length": len(transcript),
+                    "description": (
+                        metadata["description"][:500] if metadata["description"] else ""
+                    ),
+                },
+            }
+
+        except Exception as e:
+            print(f"[YOUTUBE] Error processing video: {e}")
+            return None
+        finally:
+            # Cleanup temporary audio file
+            if audio_file and os.path.exists(audio_file):
+                try:
+                    os.remove(audio_file)
+                except:
+                    pass
+
+
+# Add this helper function for YouTube content summarization
+def summarize_youtube_data_advanced(youtube_data):
+    """
+    Summarize YouTube video content similar to web scraping summarization
+    """
+    try:
+        video_url = youtube_data.get("url", "N/A")
+        title = youtube_data.get("title", "YouTube Video")
+        transcript = youtube_data.get("transcript_raw", "")
+        author = youtube_data.get("metadata", {}).get("author", "Unknown")
+
+        # Check if transcript is substantial enough
+        MIN_TRANSCRIPT_LENGTH = (
+            20  # Further reduced to 20 characters to catch more content
+        )
+        if not transcript or len(transcript.strip()) < MIN_TRANSCRIPT_LENGTH:
+            logger.warning(
+                f"Transcript for {video_url} is too short to summarize ({len(transcript)} chars)."
+            )
+
+            # Check if this is due to YouTube IP blocking
+            if youtube_data.get("error") == "youtube_ip_blocked":
+                return f"""**YouTube Video Analysis**
+
+**Title:** {title}
+**Author/Channel:** {author}
+**Video URL:** {video_url}
+
+**Access Limitation Notice:**
+This video could not be processed because YouTube is blocking requests from cloud server IPs (AWS, Google Cloud, Azure, etc.) to prevent automated access.
+
+**Possible Solutions:**
+- Use a proxy or VPN service
+- Implement YouTube cookies authentication
+- Access the video from a non-cloud IP address
+- Use alternative video processing methods
+
+**Video Information:**
+While we cannot access the content directly, this appears to be a legitimate YouTube video. You may need to manually review the content or use alternative processing methods."""
+
+            # Return a more detailed basic summary for very short content instead of failing
+            if transcript and len(transcript.strip()) > 0:
+                return f"""**YouTube Video Analysis**
+
+**Title:** {title}
+**Author/Channel:** {author}
+**Video URL:** {video_url}
+
+**Content Summary:**
+This video contains limited speech content. The available transcript shows: "{transcript[:200]}{'...' if len(transcript) > 200 else ''}"
+
+While the transcript is brief, this appears to be a short-form video or one with minimal spoken content. The video may focus more on visual elements, music, or brief commentary rather than extended dialogue."""
+            else:
+                return f"""**YouTube Video Analysis**
+
+**Title:** {title}
+**Author/Channel:** {author}
+**Video URL:** {video_url}
+
+**Content Summary:**
+This video appears to contain no speech content or the audio could not be processed. This could be:
+- A music video without lyrics
+- A visual-only video (animations, montages, etc.)
+- A video where speech recognition was unsuccessful
+- Content that is primarily instrumental or ambient
+
+The video may rely on visual storytelling, music, or non-verbal communication rather than spoken content."""
+
+        # Load prompt template
+        yaml_prompts = load_yaml_file(path=pathconfig.agent_template)
+        summary_prompt_template = yaml_prompts.get("youtube_summary_prompt_template")
+
+        if not summary_prompt_template:
+            # Fallback to web scraping template if YouTube-specific doesn't exist
+            summary_prompt_template = yaml_prompts.get("scrape_summary_prompt_template")
+            if not summary_prompt_template:
+                logger.error("No summary prompt template found in YAML file.")
+                return None
+
+        # Create the prompt
+        full_prompt = f"""
+Please analyze and summarize this YouTube video content:
+
+**Video Title:** {title}
+**Author/Channel:** {author}
+**Video URL:** {video_url}
+
+**Video Transcript:**
+{transcript}
+
+Please provide a comprehensive summary that captures:
+1. Main topics and key points discussed
+2. Important insights or conclusions
+3. Any actionable information or recommendations
+4. Overall theme and purpose of the video
+
+Format the summary to be informative and well-structured.
+"""
+
+        # Get AI response
+        ai_response = get_fireworks_response(full_prompt, role="system")
+
+        if ai_response and isinstance(ai_response, str) and ai_response.strip():
+            return ai_response.strip()
+        else:
+            logger.error(f"AI failed to generate summary for YouTube video {video_url}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error during YouTube summarization: {e}")
+        traceback.print_exc()
+        return None
+
+
+def evaluate_youtube_content(clarification_prompt, youtube_data, summary_text):
+    """
+    Evaluate YouTube content to extract clarifications
+    """
+    try:
+        # Combine video content for evaluation
+        full_content = f"""
+        Video URL: {youtube_data.get('url', '')}
+        Video Title: {youtube_data.get('title', '')}
+        Author/Channel: {youtube_data.get('metadata', {}).get('author', 'Unknown')}
+        Summary: {summary_text}
+        Transcript Preview: {youtube_data.get('transcript_raw', '')[:2000]}...
+        """
+
+        # Replace placeholder in prompt (assuming you have a YouTube-specific prompt)
+        filled_prompt = clarification_prompt.replace(
+            "{{youtube_content}}", full_content
+        )
+
+        # Get AI response
+        ai_response = get_evaluator_fireworks(filled_prompt, "system")
+
+        # Parse response
+        try:
+            result = json.loads(ai_response)
+        except json.JSONDecodeError:
+            json_text = re.search(r"\{.*\}", ai_response, re.DOTALL)
+            result = json.loads(json_text.group(0)) if json_text else {}
+
+        return {
+            "summary": summary_text,
+            "clarifications": result.get("clarifications", []),
+            "clean_content": summary_text,
+        }
+
+    except Exception as e:
+        logger.error(f"Error evaluating YouTube content: {e}")
+        return None
+
+
+def clarific_youtube(user_id, val, video_url, title):
+    """
+    Process clarifications from YouTube content
+    """
+    clarification_responses = []
+    failed_key = f"{user_id}/yaml/failed_ques.yaml"
+
+    failed_ques = flatten_list(load_yaml_from_s3(failed_key) or [])
+    failed_data = failed_ques
+
+    # Check for existing YouTube clarifications to prevent duplicates
+    existing_questions = set()
+    for existing_item in failed_data:
+        if (
+            existing_item.get("is_youtube")
+            and existing_item.get("filename") == video_url
+        ):
+            existing_questions.add(existing_item.get("User", "").strip().lower())
+
+    quote_summary = val["summary"] if "summary" in val else title
+
+    # Process new clarifications
+    for actual_q in val.get("clarifications", []):
+        actual_q = actual_q.strip()
+        if not actual_q or actual_q.lower() in existing_questions:
+            continue
+
+        entry_obj = {
+            "User": actual_q,
+            "Rephrased Question": actual_q,
+            "Ai Response": "",
+            "quote": quote_summary,
+            "filename": video_url,
+            "doc_value": 0,
+            "is_youtube": True,
+            "youtube_url": video_url,
+            "youtube_title": title,
+        }
+        clarification_responses.append(entry_obj)
+        existing_questions.add(actual_q.lower())
+
+    # Merge and save
+    updated_data = failed_data + clarification_responses
+    save_yaml_to_s3(data=updated_data, user_id=user_id, filename="failed_ques.yaml")
+
+    return clarification_responses
+
+
+# Add the main YouTube scraping endpoint
+@agent_bps.route("/scrape-youtube", methods=["POST"])
+def scrape_youtube_route():
+    """
+    Scrape YouTube video, get transcript, summarize, and extract clarifications
+    """
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        youtube_url = data.get("url")
+
+        if not api_key or not youtube_url:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        # Check for duplicates
+        youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
+        existing_videos = load_yaml_from_s3(youtube_metadata_path) or []
+
+        for video in existing_videos:
+            if video.get("status") == "active" and video.get("url") == youtube_url:
+                return (
+                    jsonify(
+                        {
+                            "error": "Duplicate video found",
+                            "message": f"YouTube video '{youtube_url}' has already been processed.",
+                            "existing_entry": video,
+                        }
+                    ),
+                    409,
+                )
+
+        # Step 1: Scrape YouTube video
+        youtube_scraper = YouTubeScrapingClient(user_id=user_id)
+        scraped_data = youtube_scraper.scrape_youtube_video(youtube_url)
+
+        if not scraped_data:
+            return (
+                jsonify({"error": "Failed to access YouTube video or get transcript"}),
+                500,
+            )
+
+        if scraped_data.get("error") == "transcript_unavailable":
+            return (
+                jsonify(
+                    {
+                        "error": "Transcript not available",
+                        "message": "This YouTube video doesn't have captions/transcript available",
+                    }
+                ),
+                422,
+            )
+
+        # Step 2: Summarize
+        summary_text = summarize_youtube_data_advanced(scraped_data)
+
+        if summary_text == "UNSUITABLE_CONTENT":
+            return (
+                jsonify(
+                    {
+                        "error": "Video content could not be analyzed",
+                        "details": "The transcript was too short or not suitable for summarization",
+                    }
+                ),
+                422,
+            )
+
+        if not summary_text:
+            return jsonify({"error": "Failed to generate video summary"}), 500
+
+        # Step 3: Extract clarifications
+        prompts = load_yaml_file(path=pathconfig.agent_template)
+        # Use existing clarification prompt or create YouTube-specific one
+        clarification_prompt = prompts.get(
+            "extract_youtube_clarifications_prompt"
+        ) or prompts.get("extract_scraping_clarifications_prompt")
+
+        val = evaluate_youtube_content(clarification_prompt, scraped_data, summary_text)
+        if not val:
+            return (
+                jsonify(
+                    {"error": "Failed to evaluate video content for clarifications"}
+                ),
+                500,
+            )
+
+        # Step 4: Process clarifications
+        if val["clarifications"]:
+            clarific_youtube(
+                user_id, val, youtube_url, scraped_data.get("title", "No Title")
+            )
+
+        # Step 5: Create embedding and save to LanceDB
+        embedding_client = YouTubeScrapingClient(user_id=user_id)
+        embedding_vector = embedding_client.embeddings.embed_query(summary_text)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        lancedb_payload = {
+            "user_id": user_id,
+            "url": youtube_url,
+            "title": scraped_data.get("title", "YouTube Video"),
+            "content": summary_text,
+            "timestamp": timestamp,
+            "metadata": scraped_data.get("metadata", {}),
+            "embedding": embedding_vector,
+        }
+
+        # Step 6: Save to LanceDB
+        lancedb_server_url = os.getenv("LANCE_DB_IP")
+        if not lancedb_server_url:
+            return jsonify({"error": "LANCE_DB_IP environment variable not set"}), 500
+
+        try:
+            response = requests.post(
+                f"{lancedb_server_url}/insert_scraped_data",
+                json=lancedb_payload,
+                timeout=30,
+            )
+            if response.status_code != 200:
+                raise Exception(f"LanceDB returned status {response.status_code}")
+        except Exception as e:
+            logger.error(f"LanceDB Error: {e}")
+            return jsonify({"error": f"Vector database error: {str(e)}"}), 500
+
+        # Step 7: Save YouTube metadata
+        video_entry = {
+            "url": youtube_url,
+            "video_id": scraped_data.get("video_id"),
+            "title": scraped_data.get("title", "YouTube Video"),
+            "author": scraped_data.get("metadata", {}).get("author", "Unknown"),
+            "summary": summary_text,
+            "timestamp": timestamp,
+            "clarifications_count": len(val.get("clarifications", [])),
+            "status": "active",
+        }
+
+        existing_videos.append(video_entry)
+        save_yaml_to_s3(existing_videos, user_id, "scraped_youtube.yaml")
+
+        # Step 8: Validate clarifications if any
+        if val.get("clarifications"):
+            validate_youtube_clarifications(user_id)
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "summary": summary_text,
+                    "url": youtube_url,
+                    "title": scraped_data.get("title"),
+                    "author": scraped_data.get("metadata", {}).get("author"),
+                    "timestamp": timestamp,
+                    "clarifications_found": len(val.get("clarifications", [])),
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error(f"Error in YouTube scraping route: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+def validate_youtube_clarifications(user_id):
+    """
+    Validate clarifications from YouTube videos
+    """
+    try:
+        prompts = load_yaml_file(path=pathconfig.agent_template)
+
+        passes_key = f"{user_id}/yaml/passed_ques.yaml"
+        failed_key = f"{user_id}/yaml/failed_ques.yaml"
+
+        passed_data = flatten_list(load_yaml_from_s3(passes_key) or [])
+        failed_data = flatten_list(load_yaml_from_s3(failed_key) or [])
+
+        # Filter YouTube clarifications
+        youtube_clarifications = [
+            item
+            for item in failed_data
+            if item.get("is_youtube") and not item.get("Ai Response")
+        ]
+
+        if not youtube_clarifications:
+            logger.info("No YouTube clarifications to validate")
+            return
+
+        # Get answers for clarifications using existing function
+        content = fetch_youtube_ques_with_docs(youtube_clarifications, user_id)
+
+        # Process similar to scraping validation
+        batch_size = 10
+        valid_responses, updated_clarification_responses = [], []
+
+        for i in range(0, len(content), batch_size):
+            batch = content[i : i + batch_size]
+            res_raw = evaluator_batch_llama_youtube(
+                prompts.get(
+                    "youtube_response_validator_batch",
+                    prompts.get("scraping_response_validator_batch"),
+                ),
+                batch,
+            )
+
+            # Parse and process results (similar to scraping validation)
+            try:
+                match = re.search(r"\[\s*\{.*?\}\s*\]", res_raw, re.DOTALL)
+                if match:
+                    json_str = match.group(0).replace("{{", "{").replace("}}", "}")
+                    res_json = json.loads(json_str)
+                else:
+                    res_json = json.loads(res_raw)
+            except:
+                try:
+                    clean_response = res_raw.replace("{{", "{").replace("}}", "}")
+                    match = re.search(r"\[\s*\{.*?\}\s*\]", clean_response, re.DOTALL)
+                    res_json = yaml.safe_load(match.group(0)) if match else []
+                except:
+                    res_json = []
+
+            # Process results
+            for original_item, eval_result in zip(batch, res_json):
+                actual_q = original_item["query"]
+                related_res = eval_result.get("related", False)
+                usecase_res = eval_result.get("has_usecase_details", False)
+                filename = original_item.get("filename", "").strip()
+
+                # Find original entry
+                original_entry = None
+                for item in youtube_clarifications:
+                    if (
+                        item.get("User") == actual_q
+                        and item.get("filename") == filename
+                    ):
+                        original_entry = item
+                        break
+
+                if not original_entry:
+                    continue
+
+                entry_obj = {
+                    "User": actual_q,
+                    "Rephrased Question": original_entry.get("Rephrased Question", ""),
+                    "Ai Response": eval_result.get("explanation", ""),
+                    "quote": original_entry.get("quote", ""),
+                    "filename": filename,
+                    "doc_value": original_item.get("doc_value", ""),
+                    "is_youtube": True,
+                    "youtube_url": original_entry.get("youtube_url", ""),
+                    "youtube_title": original_entry.get("youtube_title", ""),
+                }
+
+                if related_res and usecase_res:
+                    entry_obj["date_processed"] = datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+                    valid_responses.append(entry_obj)
+                else:
+                    updated_clarification_responses.append(entry_obj)
+
+        # Update files
+        npassed_data = append_passed_with_ai_diff(passed_data, valid_responses)
+
+        answered_keys = {(v.get("User"), v.get("filename")) for v in valid_responses}
+        failed_data = [
+            e
+            for e in failed_data
+            if not (
+                e.get("is_youtube")
+                and (e.get("User"), e.get("filename")) in answered_keys
+            )
+        ]
+
+        # Update failed questions with new responses
+        for updated_item in updated_clarification_responses:
+            for i, item in enumerate(failed_data):
+                if (
+                    item.get("User") == updated_item.get("User")
+                    and item.get("filename") == updated_item.get("filename")
+                    and item.get("is_youtube")
+                ):
+                    failed_data[i] = updated_item
+                    break
+
+        # Save
+        if npassed_data:
+            save_yaml_to_s3(npassed_data, user_id, "passed_ques.yaml")
+        if failed_data:
+            save_yaml_to_s3(failed_data, user_id, "failed_ques.yaml")
+
+        logger.info(f"✅ Validated YouTube clarifications for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error validating YouTube clarifications: {e}")
+        traceback.print_exc()
+
+
+def fetch_youtube_ques_with_docs(clarification_list, user_id):
+    """
+    Fetch answers for YouTube clarifications using LanceDB
+    """
+    content = []
+
+    for item in clarification_list:
+        question_text = item.get("User", "").strip()
+        filename = item.get("filename", "")  # YouTube URL
+
+        if not question_text:
+            continue
+
+        # Get answer from LanceDB
+        base_doc_ans = []
+        if question_text:
+            top_k = 3
+            query_input = QueryInput(
+                user_id=user_id, query_text=question_text, top_k=top_k
+            )
+            lance_client = LanceClient(user_id=user_id)
+            results = lance_client.query_vector(query_input)
+            for r in results:
+                clean_text = r.get("text", "").encode().decode("unicode_escape")
+                base_doc_ans.append(clean_text)
+
+        response_text = (
+            " ".join(base_doc_ans) if base_doc_ans else "No relevant information found."
+        )
+
+        content.append(
+            {
+                "query": question_text,
+                "response_text": response_text,
+                "filename": filename,
+                "doc_value": item.get("doc_value", 0),
+            }
+        )
+
+    return content
+
+
+def evaluator_batch_llama_youtube(prompt_template_str, qa_list):
+    """
+    Evaluate YouTube-based questions and answers using LLaMA
+    """
+    qa_input_block = "\n".join(
+        [
+            f"{i+1}.\nUser Question: {item['query']}\nAI Response: {item['response_text']}"
+            for i, item in enumerate(qa_list)
+        ]
+    )
+
+    full_prompt = prompt_template_str.replace("{qa_list}", qa_input_block)
+
+    try:
+        llama_response = get_fireworks_response(full_prompt, role="user")
+        return llama_response
+    except Exception as e:
+        print(f"🔥 LLaMA Evaluator batch Error for YouTube: {e}")
+        return []
+
+
+# Add route to get YouTube summaries
+@agent_bps.route("/get-youtube-summaries", methods=["GET"])
+def get_youtube_summaries():
+    """Get all YouTube video summaries for a user"""
+    try:
+        api_key = request.args.get("api_key")
+        if not api_key:
+            return jsonify({"error": "api_key is required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
+        videos_data = load_yaml_from_s3(youtube_metadata_path)
+
+        if videos_data is None:
+            return jsonify([]), 200
+
+        active_videos = [v for v in videos_data if v.get("status") == "active"]
+        return jsonify(active_videos), 200
+
+    except Exception as e:
+        logger.error(f"Error fetching YouTube summaries: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Add route to delete YouTube summary
+@agent_bps.route("/delete-youtube-summary", methods=["DELETE"])
+def delete_youtube_summary():
+    """Delete a YouTube video summary and related clarifications"""
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        url_to_delete = data.get("url")
+
+        if not api_key or not url_to_delete:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        # Delete from LanceDB
+        lance_client = LanceClient(user_id=user_id)
+        delete_result = lance_client.delete_file_Data(foldername=url_to_delete)
+
+        if delete_result.get("status") != "success":
+            return (
+                jsonify(
+                    {
+                        "error": "Failed to delete from LanceDB",
+                        "details": delete_result.get("message"),
+                    }
+                ),
+                500,
+            )
+
+        # Update metadata
+        youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
+        videos_data = load_yaml_from_s3(youtube_metadata_path) or []
+
+        updated_videos = []
+        for video in videos_data:
+            if video.get("url") == url_to_delete:
+                video["status"] = "deleted"
+                video["deleted_at"] = datetime.now().isoformat()
+            updated_videos.append(video)
+
+        save_yaml_to_s3(updated_videos, user_id, "scraped_youtube.yaml")
+
+        # Delete clarifications
+        success = deletefilebasedData(url_to_delete, user_id)
+        if not success:
+            logger.warning(
+                f"Failed to delete YouTube clarification entries for user {user_id}"
+            )
+
+        return jsonify({"message": "YouTube video summary deleted successfully"}), 200
+
+    except Exception as e:
+        logger.error(f"Error deleting YouTube summary: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 class WebScrapingLanceClient:
     def __init__(self, user_id: str):
         load_dotenv()
         self.lancedb_url = os.getenv("LANCE_DB_IP")
         self.user_id = user_id
-        self.dimension = 3072
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-large",
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
-            dimensions=self.dimension,
-        )
-        # Selenium setup
-        self.driver = None
-        self.scraped_urls = set()
-        self.max_depth = 3  # Maximum depth for multi-level scraping
-        
-        # YouTube processing setup (using yt-dlp for audio download + Whisper for transcription)
-        self.speech_service = Speech2TextService(userid=self.user_id)
+        self.dimension = 2880
+        self.embeddings = get_firework_embedding()
 
     def _setup_selenium_driver(self):
-        """Setup Selenium Chrome driver with options."""
-        if self.driver is None:
-            try:
-                from selenium import webdriver
-                from selenium.webdriver.chrome.options import Options
-                from selenium.webdriver.chrome.service import Service
-                from webdriver_manager.chrome import ChromeDriverManager
-                from selenium.webdriver.common.by import By
-                from selenium.webdriver.support.ui import WebDriverWait
-                from selenium.webdriver.support import expected_conditions as EC
-
-                chrome_options = Options()
-                chrome_options.add_argument("--headless")  # Run in background
-                chrome_options.add_argument("--no-sandbox")
-                chrome_options.add_argument("--disable-dev-shm-usage")
-                chrome_options.add_argument("--disable-gpu")
-                chrome_options.add_argument("--window-size=1920,1080")
-                chrome_options.add_argument(
-                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-                )
-
-                service = Service(ChromeDriverManager().install())
-                self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                print("✅ Selenium Chrome driver initialized successfully")
-
-            except Exception as e:
-                print(f"❌ Failed to setup Selenium driver: {e}")
-                print("Falling back to requests-only scraping")
-                self.driver = None
-
-    def _cleanup_driver(self):
-        """Cleanup Selenium driver."""
-        if self.driver:
-            try:
-                self.driver.quit()
-                self.driver = None
-                print("✅ Selenium driver cleaned up")
-            except Exception as e:
-                print(f"Error cleaning up driver: {e}")
-
-    def scrape_website(self, url: str, use_selenium: bool = True, max_depth: int = 3):
-        """
-        Enhanced scraping with Selenium support, multi-level depth scraping, and YouTube API integration.
-
-        Args:
-            url: The URL to scrape
-            use_selenium: Whether to use Selenium for dynamic content
-            max_depth: Maximum depth for branching (1-3 levels)
-        """
+        """Setup Chrome driver with appropriate options"""
         try:
-            # 🎥 SPECIAL HANDLING: Check if this is a YouTube video
-            if self._is_youtube_url(url):
-                print(f"🎥 Detected YouTube video, using YouTube API...")
-                youtube_result = self._scrape_youtube_video(url)
-                
-                # If YouTube API processing succeeded, return it
-                if youtube_result:
-                    print(f"✅ YouTube API processing successful!")
-                    return youtube_result
-                
-                # If YouTube API processing failed, fall back to regular webpage scraping
-                print(f"⚠️ YouTube API processing failed, falling back to webpage scraping...")
-                print(f"🌐 Proceeding with regular webpage scraping for: {url}")
-
-            self.max_depth = min(max_depth, 3)  # Cap at 3 levels
-            self.scraped_urls.clear()
-
-            if use_selenium:
-                self._setup_selenium_driver()
-
-            # Start scraping from the main URL
-            main_content = self._scrape_single_page(
-                url, use_selenium=use_selenium, current_depth=0
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument(
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
 
-            if not main_content:
-                return None
-
-            # Get all related content from branching
-            all_scraped_content = []
-            all_scraped_content.append(main_content)
-
-            # Multi-level scraping
-            if self.max_depth > 1:
-                branch_content = self._scrape_branches(
-                    main_content.get("all_links", []),
-                    urllib.parse.urljoin(url, "/"),  # base domain
-                    current_depth=1,
-                    use_selenium=use_selenium,
-                )
-                all_scraped_content.extend(branch_content)
-
-            # Combine all content
-            combined_content = self._combine_scraped_content(all_scraped_content)
-
-            # Add metadata about multi-level scraping
-            combined_content["metadata"]["scraping_method"] = (
-                "selenium" if use_selenium else "requests"
-            )
-            combined_content["metadata"]["max_depth_used"] = self.max_depth
-            combined_content["metadata"]["total_pages_scraped"] = len(
-                all_scraped_content
-            )
-            combined_content["metadata"]["unique_urls_scraped"] = len(self.scraped_urls)
-
-            return combined_content
-
-        except Exception as e:
-            print(f"Error in enhanced scraping for {url}: {e}")
-            return None
-        finally:
-            if use_selenium:
-                self._cleanup_driver()
-
-    def _scrape_single_page(
-        self, url: str, use_selenium: bool = True, current_depth: int = 0
-    ):
-        """Scrape a single page using either Selenium or requests."""
-        if url in self.scraped_urls:
-            return None
-
-        self.scraped_urls.add(url)
-
-        try:
-            if use_selenium and self.driver:
-                return self._scrape_with_selenium(url, current_depth)
-            else:
-                return self._scrape_with_requests(url, current_depth)
-        except Exception as e:
-            print(f"Error scraping {url} at depth {current_depth}: {e}")
-            return None
-
-    def _scrape_with_selenium(self, url: str, current_depth: int = 0):
-        """Scrape using Selenium for dynamic content."""
-        try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-
-            self.driver.get(url)
-
-            # Wait for page to load
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-
-            # Wait a bit more for dynamic content
-            time.sleep(2)
-
-            # Try to click on any "Load More" or "Show More" buttons
-            self._handle_dynamic_loading()
-
-            # Get page source after dynamic loading
-            page_source = self.driver.page_source
-            soup = BeautifulSoup(page_source, "html.parser")
-
-            title = soup.find("title")
-            title_text = title.get_text().strip() if title else url
-
-            content = self._extract_content(soup)
-            links = self._extract_links(soup, url)
-
-            # Get additional Selenium-specific data
-            page_height = self.driver.execute_script(
-                "return document.body.scrollHeight"
-            )
-            viewport_height = self.driver.execute_script("return window.innerHeight")
-
-            metadata = {
-                "scraped_at": datetime.now(timezone.utc).isoformat(),
-                "scraping_method": "selenium",
-                "links_found": len(links),
-                "content_length": len(content),
-                "page_height": page_height,
-                "viewport_height": viewport_height,
-                "current_depth": current_depth,
-                "links": links[:50],
-            }
-
-            return {
-                "url": url,
-                "title": title_text,
-                "content": content,
-                "metadata": metadata,
-                "all_links": links,
-            }
-
-        except Exception as e:
-            print(f"Selenium scraping error for {url}: {e}")
-            # Fallback to requests
-            return self._scrape_with_requests(url, current_depth)
-
-    def _scrape_with_requests(self, url: str, current_depth: int = 0):
-        """Fallback scraping using requests."""
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.content, "html.parser")
-
-            title = soup.find("title")
-            title_text = title.get_text().strip() if title else url
-
-            content = self._extract_content(soup)
-            links = self._extract_links(soup, url)
-
-            metadata = {
-                "scraped_at": datetime.now(timezone.utc).isoformat(),
-                "scraping_method": "requests",
-                "links_found": len(links),
-                "content_length": len(content),
-                "current_depth": current_depth,
-                "links": links[:50],
-            }
-
-            return {
-                "url": url,
-                "title": title_text,
-                "content": content,
-                "metadata": metadata,
-                "all_links": links,
-            }
-        except Exception as e:
-            print(f"Requests scraping error for {url}: {e}")
-            return None
-
-    def _handle_dynamic_loading(self):
-        """Handle dynamic content loading by clicking buttons and scrolling."""
-        try:
-            from selenium.webdriver.common.by import By
-            from selenium.common.exceptions import (
-                TimeoutException,
-                NoSuchElementException,
-            )
-
-            # Common button texts for loading more content
-            load_more_selectors = [
-                "//button[contains(text(), 'Load More')]",
-                "//button[contains(text(), 'Show More')]",
-                "//button[contains(text(), 'View More')]",
-                "//a[contains(text(), 'More')]",
-                "//button[contains(@class, 'load-more')]",
-                "//button[contains(@class, 'show-more')]",
+            # Try different Chrome/Chromium paths
+            chrome_paths = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium",
+                "/snap/bin/chromium",
             ]
 
-            # Try clicking load more buttons
-            for selector in load_more_selectors:
-                try:
-                    buttons = self.driver.find_elements(By.XPATH, selector)
-                    for button in buttons[:3]:  # Limit to 3 clicks
-                        if button.is_displayed() and button.is_enabled():
-                            self.driver.execute_script("arguments[0].click();", button)
-                            time.sleep(1)
-                except:
-                    continue
-
-            # Scroll to bottom to trigger lazy loading
-            last_height = self.driver.execute_script(
-                "return document.body.scrollHeight"
-            )
-            scroll_attempts = 0
-            max_scrolls = 3
-
-            while scroll_attempts < max_scrolls:
-                self.driver.execute_script(
-                    "window.scrollTo(0, document.body.scrollHeight);"
-                )
-                time.sleep(2)
-
-                new_height = self.driver.execute_script(
-                    "return document.body.scrollHeight"
-                )
-                if new_height == last_height:
+            for chrome_path in chrome_paths:
+                if os.path.exists(chrome_path):
+                    chrome_options.binary_location = chrome_path
+                    print(f"[SELENIUM] Using Chrome binary: {chrome_path}")
                     break
+            else:
+                raise Exception(
+                    "Chrome/Chromium binary not found. Please install Chrome or Chromium."
+                )
 
-                last_height = new_height
-                scroll_attempts += 1
+            driver = webdriver.Chrome(options=chrome_options)
+            print("[SELENIUM] Chrome driver initialized successfully")
+            return driver
 
         except Exception as e:
-            print(f"Error handling dynamic loading: {e}")
+            print(f"[SELENIUM] Chrome driver setup failed: {e}")
+            raise
 
-    def _scrape_branches(
-        self,
-        links: list,
-        base_domain: str,
-        current_depth: int,
-        use_selenium: bool = True,
-    ):
-        """Scrape branches up to max_depth levels."""
-        if current_depth >= self.max_depth:
-            return []
-
-        branch_content = []
-        processed_count = 0
-        max_links_per_level = 10  # Limit links per level to avoid infinite crawling
-
-        # Filter links to same domain only
-        same_domain_links = []
-        base_netloc = urllib.parse.urlparse(base_domain).netloc
-
-        for link in links:
-            try:
-                link_netloc = urllib.parse.urlparse(link).netloc
-                if link_netloc == base_netloc and link not in self.scraped_urls:
-                    same_domain_links.append(link)
-                    if len(same_domain_links) >= max_links_per_level:
-                        break
-            except:
-                continue
-
-        print(
-            f"🔄 Scraping depth {current_depth}: Found {len(same_domain_links)} links to process"
-        )
-
-        for link in same_domain_links:
-            if processed_count >= max_links_per_level:
-                break
-
-            page_content = self._scrape_single_page(
-                link, use_selenium=use_selenium, current_depth=current_depth
-            )
-
-            if page_content:
-                branch_content.append(page_content)
-                processed_count += 1
-
-                # Recursively scrape next level
-                if current_depth + 1 < self.max_depth:
-                    next_level_content = self._scrape_branches(
-                        page_content.get("all_links", []),
-                        base_domain,
-                        current_depth + 1,
-                        use_selenium,
-                    )
-                    branch_content.extend(next_level_content)
-
-        print(f"✅ Completed depth {current_depth}: Scraped {processed_count} pages")
-        return branch_content
-
-    def _combine_scraped_content(self, content_list: list):
-        """Combine content from multiple pages into a single structure."""
-        if not content_list:
-            return None
-
-        main_content = content_list[0]  # First item is the main page
-
-        # Combine all text content
-        combined_text = main_content.get("content", "")
-        all_titles = [main_content.get("title", "")]
-        all_links = set(main_content.get("all_links", []))
-        total_content_length = len(combined_text)
-
-        # Add content from branch pages
-        for item in content_list[1:]:
-            if item and item.get("content"):
-                combined_text += (
-                    f"\n\n--- Content from {item.get('url', 'Unknown')} ---\n"
-                )
-                combined_text += item.get("content", "")
-                all_titles.append(item.get("title", ""))
-                all_links.update(item.get("all_links", []))
-                total_content_length += len(item.get("content", ""))
-
-        # Update metadata
-        main_content["content"] = combined_text
-        main_content["all_links"] = list(all_links)
-        main_content["metadata"]["combined_content_length"] = total_content_length
-        main_content["metadata"]["branch_titles"] = all_titles[1:]  # Exclude main title
-        main_content["metadata"]["total_links_found"] = len(all_links)
-
-        return main_content
-
-    def _extract_content(self, soup):
-        """Extract main text content from BeautifulSoup object."""
-        # Remove script and style elements
-        for script in soup(["script", "style", "nav", "footer", "aside"]):
-            script.decompose()
-
-        # Extract main content areas first
-        main_content = ""
-
-        # Try to find main content areas
-        content_selectors = [
-            "main",
-            "article",
-            ".content",
-            ".main-content",
-            "#content",
-            "#main",
-            ".post-content",
-            ".entry-content",
-        ]
-
-        for selector in content_selectors:
-            if "." in selector or "#" in selector:
-                elements = soup.select(selector)
-            else:
-                elements = soup.find_all(selector)
-
-            for element in elements:
-                if element:
-                    main_content += " " + element.get_text(separator=" ", strip=True)
-
-        # If no main content found, get all text
-        if not main_content.strip():
-            text = soup.get_text(separator=" ", strip=True)
-        else:
-            text = main_content
-
-        # Clean up the text
-        lines = (line.strip() for line in text.splitlines() if line.strip())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = " ".join(chunk for chunk in chunks if chunk)
-
-        return text
-
-    def _extract_links(self, soup, base_url):
-        """Extract all links from the page."""
+    def _extract_internal_links(self, soup, base_url, base_domain):
+        """Extract internal links from the same domain"""
         links = []
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
-            absolute_url = urllib.parse.urljoin(base_url, href)
-            if absolute_url.startswith(("http://", "https://")):
-                links.append(absolute_url)
-        return list(set(links))
+            absolute_url = urljoin(base_url, href)
 
-    def _check_yt_dlp_available(self) -> bool:
-        """Check if yt-dlp is available for YouTube audio download."""
-        try:
-            subprocess.run(['yt-dlp', '--version'], capture_output=True, check=True)
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("⚠️ yt-dlp not found. Install with: pip install yt-dlp")
-            return False
-
-    def _is_youtube_url(self, url: str) -> bool:
-        """Check if URL is a YouTube video."""
-        youtube_domains = [
-            "youtube.com", "www.youtube.com", "youtu.be", "www.youtu.be",
-            "m.youtube.com", "music.youtube.com"
-        ]
-        parsed_url = urllib.parse.urlparse(url.lower())
-        return any(domain in parsed_url.netloc for domain in youtube_domains)
-
-    def _extract_youtube_video_id(self, url: str) -> str:
-        """Extract YouTube video ID from URL."""
-        import re
-        patterns = [
-            r"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([^&\n?#]+)",
-            r"youtube\.com\/shorts\/([^&\n?#/]+)",
-            r"youtube\.com\/watch\?.*v=([^&\n?#]+)",
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, url.lower())
-            if match:
-                video_id = match.group(1)
-                # Clean up video ID
-                video_id = video_id.split("&")[0].split("?")[0].split("#")[0]
-                return video_id
-        return None
-
-    def _download_youtube_audio(self, url: str) -> dict:
-        """Download YouTube audio using yt-dlp."""
-        if not self._check_yt_dlp_available():
-            return {"success": False, "error": "yt-dlp not available"}
-
-        try:
-            video_id = self._extract_youtube_video_id(url)
-            if not video_id:
-                return {"success": False, "error": "Could not extract video ID"}
-
-            print(f"🎥 Downloading YouTube audio for video: {video_id}")
-
-            # Create temporary file for audio
-            temp_dir = tempfile.mkdtemp()
-            audio_file = os.path.join(temp_dir, f"youtube_{video_id}.%(ext)s")
-
-            # Download audio using yt-dlp
-            cmd = [
-                'yt-dlp',
-                '--extract-audio',
-                '--audio-format', 'mp3',
-                '--audio-quality', '192K',
-                '--no-playlist',
-                '--output', audio_file,
-                url
-            ]
-
-            print(f"🔄 Running yt-dlp command...")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-
-            if result.returncode != 0:
-                print(f"❌ yt-dlp failed: {result.stderr}")
-                return {"success": False, "error": f"yt-dlp failed: {result.stderr}"}
-
-            # Find the actual downloaded file
-            downloaded_files = [f for f in os.listdir(temp_dir) if f.startswith(f"youtube_{video_id}")]
-            if not downloaded_files:
-                return {"success": False, "error": "Audio file not found after download"}
-
-            actual_audio_file = os.path.join(temp_dir, downloaded_files[0])
-            
-            # Extract basic video info from yt-dlp output
-            title = "YouTube Video"
-            duration = 0
-            
-            # Try to get video info
-            try:
-                info_cmd = ['yt-dlp', '--print', '%(title)s|%(duration)s', '--no-playlist', url]
-                info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=30)
-                if info_result.returncode == 0:
-                    parts = info_result.stdout.strip().split('|')
-                    if len(parts) >= 2:
-                        title = parts[0]
-                        try:
-                            duration = int(float(parts[1])) if parts[1] != 'None' else 0
-                        except:
-                            duration = 0
-            except:
-                pass
-
-            print(f"✅ Audio downloaded: {title}")
-            print(f"⏱️ Duration: {duration} seconds")
-
-            return {
-                "success": True,
-                "audio_path": actual_audio_file,
-                "title": title,
-                "duration_seconds": duration,
-                "video_id": video_id,
-                "temp_dir": temp_dir
-            }
-
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Download timeout (5 minutes)"}
-        except Exception as e:
-            print(f"❌ Error downloading YouTube audio: {e}")
-            return {"success": False, "error": f"Download error: {str(e)}"}
-
-    def _scrape_youtube_video(self, url: str) -> dict:
-        """Scrape YouTube video using yt-dlp + Whisper (via Fireworks AI)."""
-        try:
-            video_id = self._extract_youtube_video_id(url)
-            if not video_id:
-                return None
-
-            print(f"🎥 Processing YouTube video: {video_id}")
-
-            # Step 1: Download audio
-            audio_result = self._download_youtube_audio(url)
-            if not audio_result["success"]:
-                print(f"❌ Failed to download audio: {audio_result['error']}")
-                return None
-
-            print(f"✅ Audio downloaded: {audio_result['title']}")
-            
-            # Step 2: Transcribe audio using Whisper (via Fireworks)
-            try:
-                print(f"🎧 Transcribing audio using Whisper...")
-                transcript = asyncio.run(
-                    self.speech_service.transcribe_audio(audio_result['audio_path'])
+            # Only include links from same domain, exclude fragments and queries
+            if (
+                urlparse(absolute_url).netloc == base_domain
+                and not absolute_url.endswith(
+                    (".pdf", ".jpg", ".png", ".gif", ".css", ".js")
                 )
-                
-                if not transcript:
-                    print(f"⚠️ Whisper transcription returned empty result")
-                    transcript = "No transcript could be generated for this video."
-                else:
-                    print(f"✅ Whisper transcription completed: {len(transcript)} characters")
+                and "#" not in absolute_url.split("/")[-1]
+            ):
+                links.append(absolute_url)
 
-            except Exception as e:
-                print(f"❌ Whisper transcription failed: {e}")
-                transcript = f"Transcription failed: {str(e)}"
+        return list(set(links))  # Remove duplicates
 
-            # Step 3: Clean up temporary files
-            try:
-                import shutil
-                shutil.rmtree(audio_result['temp_dir'])
-                print("🧹 Cleaned up temporary audio files")
-            except Exception as e:
-                print(f"⚠️ Could not clean up temp files: {e}")
+    def _compile_multilevel_content(self, level_content):
+        """Compile content from all levels into comprehensive summary"""
+        compiled = f"**Website Overview:**\nThis analysis covers {sum(len(pages) for pages in level_content.values())} pages across {len([k for k, v in level_content.items() if v])} levels.\n\n"
 
-            # Step 4: Combine content
-            combined_content = f"""
-Video Title: {audio_result['title']}
-Video ID: {video_id}
-Duration: {audio_result['duration_seconds']} seconds
-Source URL: {url}
+        for level, pages in level_content.items():
+            if not pages:
+                continue
 
-Transcript (Generated using Whisper AI):
-{transcript}
-            """.strip()
+            compiled += f"**Level {level} ({'Homepage' if level == 0 else f'Sub-pages Level {level}'}):**\n"
 
-            # Step 5: Create metadata
-            metadata = {
-                "scraped_at": datetime.now(timezone.utc).isoformat(),
-                "scraping_method": "youtube_yt-dlp_whisper",
-                "video_id": video_id,
-                "duration_seconds": audio_result['duration_seconds'],
-                "content_length": len(combined_content),
-                "transcript_length": len(transcript),
-                "has_transcript": bool(transcript and transcript != "No transcript could be generated for this video."),
-                "current_depth": 0,
-                "links": [],
+            for page in pages:
+                compiled += f"- **{page['title']}** ({page['word_count']} words): {page['content'][:200]}...\n"
+
+            compiled += "\n"
+
+        return compiled
+
+    def scrape_website(self, url: str, use_selenium=True, max_depth=2, max_pages=20):
+        """Main scraping method - can use either Selenium or requests"""
+        if use_selenium:
+            return self.scrape_website_multilevel_enhanced(url, max_depth, max_pages)
+        else:
+            return self._scrape_single_page_requests_enhanced(url)
+
+    def _scrape_single_page_requests(self, url: str):
+        """Robust single-page scraping method using requests"""
+        try:
+            print(f"[REQUESTS] Attempting to scrape: {url}")
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
             }
+
+            # Make request with longer timeout
+            response = requests.get(
+                url, headers=headers, timeout=15, allow_redirects=True
+            )
+            print(f"[REQUESTS] Response status: {response.status_code}")
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.content, "html.parser")
+            title = soup.find("title")
+            title_text = title.get_text().strip() if title else "Scraped Website"
+            content = self._extract_content_with_structure(soup)
+
+            print(
+                f"[REQUESTS] Successfully scraped: {title_text} ({len(content)} chars)"
+            )
 
             return {
                 "url": url,
-                "title": audio_result['title'],
-                "content": combined_content,
-                "metadata": metadata,
-                "all_links": [],
-                "youtube_data": {
-                    "video_id": video_id,
-                    "duration_seconds": audio_result['duration_seconds'],
-                    "raw_transcript": transcript,
-                    "has_transcript": metadata["has_transcript"],
-                    "transcription_method": "whisper_fireworks"
+                "title": title_text,
+                "content": content,
+                "metadata": {
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "scraping_method": "requests_single_page",
+                    "content_length": len(content),
+                    "status_code": response.status_code,
+                },
+            }
+        except Exception as e:
+            print(f"[REQUESTS] Error scraping {url}: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return None
+
+    def _extract_content_with_structure(self, soup, url=""):
+        """Enhanced content extraction that preserves headings and structure"""
+
+        # Remove unwanted elements
+        for element in soup(["script", "style", "nav", "header", "footer", "aside"]):
+            element.decompose()
+
+        content_data = {
+            "headings": [],
+            "main_content": "",
+            "meta_info": {},
+            "structured_content": [],
+        }
+
+        # Extract meta information
+        title_tag = soup.find("title")
+        content_data["meta_info"]["title"] = (
+            title_tag.get_text().strip() if title_tag else ""
+        )
+
+        meta_desc = soup.find("meta", attrs={"name": "description"})
+        content_data["meta_info"]["description"] = (
+            meta_desc.get("content", "") if meta_desc else ""
+        )
+
+        # Extract all headings with hierarchy
+        headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
+        for heading in headings:
+            heading_text = heading.get_text().strip()
+            if heading_text:
+                content_data["headings"].append(
+                    {
+                        "level": int(heading.name[1]),  # h1 -> 1, h2 -> 2, etc.
+                        "text": heading_text,
+                        "tag": heading.name,
+                    }
+                )
+
+        # Extract structured content sections
+        main_content_areas = soup.find_all(
+            ["main", "article", "section", "div"],
+            class_=lambda x: x
+            and any(
+                term in x.lower()
+                for term in ["content", "main", "article", "body", "text"]
+            ),
+        )
+
+        if not main_content_areas:
+            main_content_areas = [soup.find("body")] if soup.find("body") else [soup]
+
+        for area in main_content_areas:
+            if area:
+                # Extract paragraphs and lists
+                paragraphs = area.find_all(["p", "div", "li"])
+                for para in paragraphs[:20]:  # Limit to avoid too much content
+                    text = para.get_text().strip()
+                    if text and len(text) > 20:  # Filter out short/empty content
+                        content_data["structured_content"].append(
+                            {
+                                "type": para.name,
+                                "text": text[:300] + "..." if len(text) > 300 else text,
+                            }
+                        )
+
+        # Compile main content
+        all_text = soup.get_text()
+        lines = (line.strip() for line in all_text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        content_data["main_content"] = " ".join(chunk for chunk in chunks if chunk)
+
+        return content_data
+
+    def scrape_website_multilevel_enhanced(
+        self, url: str, max_depth: int = 3, max_pages: int = 50
+    ):
+        """Enhanced multi-level scraping with detailed structure extraction"""
+        driver = None
+        try:
+            # Try Selenium first, fallback to requests
+            try:
+                driver = self._setup_selenium_driver()
+            except Exception as selenium_error:
+                print(f"[SELENIUM] Failed: {selenium_error}")
+                print("[FALLBACK] Using requests method")
+                return self._scrape_single_page_requests_enhanced(url)
+
+            scraped_data = {
+                "url": url,
+                "title": "",
+                "content": "",
+                "detailed_analysis": {
+                    "total_pages": 0,
+                    "levels": {},
+                    "all_headings": [],
+                    "site_structure": {},
+                },
+                "metadata": {
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "levels_scraped": {},
+                    "total_pages": 0,
+                    "scraping_method": "selenium_multilevel_enhanced",
                 },
             }
 
+            base_domain = urlparse(url).netloc
+            visited = set()
+            to_visit = deque([(url, 0)])
+            pages_scraped = 0
+            level_detailed_content = {i: [] for i in range(max_depth + 1)}
+
+            while to_visit and pages_scraped < max_pages:
+                current_url, depth = to_visit.popleft()
+
+                if current_url in visited or depth > max_depth:
+                    continue
+
+                print(f"[ENHANCED] Scraping Level {depth}: {current_url}")
+
+                try:
+                    driver.get(current_url)
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                    time.sleep(2)
+
+                    soup = BeautifulSoup(driver.page_source, "html.parser")
+
+                    # Enhanced content extraction
+                    content_data = self._extract_content_with_structure(
+                        soup, current_url
+                    )
+
+                    page_analysis = {
+                        "url": current_url,
+                        "title": content_data["meta_info"]["title"],
+                        "description": content_data["meta_info"]["description"],
+                        "headings": content_data["headings"],
+                        "main_content": content_data["main_content"][
+                            :2000
+                        ],  # Limit for storage
+                        "structured_content": content_data["structured_content"][
+                            :10
+                        ],  # Top 10 sections
+                        "word_count": len(content_data["main_content"].split()),
+                        "heading_count": len(content_data["headings"]),
+                        "content_type": self._classify_page_type(content_data),
+                    }
+
+                    level_detailed_content[depth].append(page_analysis)
+
+                    # Collect all headings for site-wide analysis
+                    for heading in content_data["headings"]:
+                        heading["source_url"] = current_url
+                        heading["level_depth"] = depth
+                        scraped_data["detailed_analysis"]["all_headings"].append(
+                            heading
+                        )
+
+                    # Extract links for next level
+                    if depth < max_depth:
+                        links = self._extract_internal_links(
+                            soup, current_url, base_domain
+                        )
+                        for link in links[:8]:  # Limit links per page
+                            if link not in visited:
+                                to_visit.append((link, depth + 1))
+
+                    visited.add(current_url)
+                    pages_scraped += 1
+
+                    print(
+                        f"[ENHANCED] ✅ Analyzed: {page_analysis['title']} "
+                        f"({page_analysis['word_count']} words, {page_analysis['heading_count']} headings)"
+                    )
+
+                except Exception as e:
+                    print(f"[ENHANCED] ❌ Error analyzing {current_url}: {e}")
+                    continue
+
+            # Compile enhanced final content
+            scraped_data["title"] = (
+                level_detailed_content[0][0]["title"]
+                if level_detailed_content[0]
+                else "Website"
+            )
+            scraped_data["content"] = self._compile_enhanced_multilevel_content(
+                level_detailed_content
+            )
+
+            # Enhanced metadata
+            scraped_data["detailed_analysis"]["total_pages"] = pages_scraped
+            scraped_data["detailed_analysis"]["levels"] = level_detailed_content
+            scraped_data["detailed_analysis"]["site_structure"] = (
+                self._analyze_site_structure(level_detailed_content)
+            )
+
+            scraped_data["metadata"]["levels_scraped"] = {
+                f"level_{i}": len(pages)
+                for i, pages in level_detailed_content.items()
+                if pages
+            }
+            scraped_data["metadata"]["total_pages"] = pages_scraped
+
+            return scraped_data
+
         except Exception as e:
-            print(f"❌ Error processing YouTube video: {e}")
+            print(f"[ENHANCED] Fatal error: {e}")
             return None
 
+        finally:
+            if driver:
+                driver.quit()
 
+    def _classify_page_type(self, content_data):
+        """Classify page type based on content and headings"""
+        title = content_data["meta_info"]["title"].lower()
+        headings_text = " ".join([h["text"].lower() for h in content_data["headings"]])
 
+        if any(word in title for word in ["home", "welcome", "index"]):
+            return "homepage"
+        elif any(word in title for word in ["about", "company", "team"]):
+            return "about_page"
+        elif any(word in title for word in ["contact", "reach", "support"]):
+            return "contact_page"
+        elif any(
+            word in headings_text for word in ["product", "service", "buy", "price"]
+        ):
+            return "product_page"
+        elif any(word in headings_text for word in ["blog", "news", "article"]):
+            return "blog_page"
+        else:
+            return "information_page"
 
+    def _analyze_site_structure(self, level_content):
+        """Analyze overall site structure and patterns"""
+        structure_analysis = {
+            "navigation_depth": len([k for k, v in level_content.items() if v]),
+            "page_types_distribution": {},
+            "common_headings": {},
+            "content_patterns": [],
+        }
 
-        # Save to file (enhanced filename)
-        base_dir = os.path.join("data", "scrape_results")
-        ensure_dir(base_dir)
+        # Analyze page type distribution
+        all_page_types = []
+        for level, pages in level_content.items():
+            for page in pages:
+                page_type = page.get("content_type", "unknown")
+                all_page_types.append(page_type)
 
-        scan_type = "comprehensive" if enable_directory_scan else "basic"
-        filename = f"scrape_{scan_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        filepath = os.path.join(base_dir, filename)
+        from collections import Counter
 
-        with open(filepath, "w") as f:
-            json.dump(scrape_data, f, indent=4)
+        structure_analysis["page_types_distribution"] = dict(Counter(all_page_types))
 
-        return (
-            jsonify({**scrape_data, "file_saved": filename, "status": "success"}),
-            200,
-        )
+        # Find common heading patterns
+        all_headings = []
+        for level, pages in level_content.items():
+            for page in pages:
+                for heading in page.get("headings", []):
+                    all_headings.append(heading["text"].lower())
 
-    # You can add your other methods like process_and_embed_scraped_data here...
+        heading_counter = Counter(all_headings)
+        structure_analysis["common_headings"] = dict(heading_counter.most_common(10))
+
+        return structure_analysis
+
+    def _compile_enhanced_multilevel_content(self, level_content):
+        """Compile enhanced content with detailed structure analysis"""
+
+        total_pages = sum(len(pages) for pages in level_content.values())
+        active_levels = len([k for k, v in level_content.items() if v])
+
+        compiled = f"**Website Overview:**\n"
+        compiled += f"This comprehensive analysis covers {total_pages} pages across {active_levels} levels of depth. "
+        compiled += f"The website structure reveals detailed content organization with specific headings and page classifications.\n\n"
+
+        for level, pages in level_content.items():
+            if not pages:
+                continue
+
+            level_name = "Homepage" if level == 0 else f"Sub-pages Level {level}"
+            compiled += f"**Level {level} ({level_name}) - {len(pages)} pages:**\n"
+
+            for page in pages:
+                compiled += f"- **{page['title']}** ({page['content_type'].replace('_', ' ').title()}):\n"
+
+                # Add exact headings found
+                if page.get("headings"):
+                    compiled += f"  * Key Headings: "
+                    headings_by_level = {}
+                    for h in page["headings"][:8]:  # Limit to top 8 headings
+                        level_key = f"H{h['level']}"
+                        if level_key not in headings_by_level:
+                            headings_by_level[level_key] = []
+                        headings_by_level[level_key].append(h["text"])
+
+                    heading_summary = []
+                    for h_level in sorted(headings_by_level.keys()):
+                        heading_summary.append(
+                            f"{h_level}: {', '.join(headings_by_level[h_level][:3])}"
+                        )
+                    compiled += " | ".join(heading_summary) + "\n"
+
+                # Add content summary
+                compiled += f"  * Content: {page['main_content'][:200]}...\n"
+                compiled += f"  * Stats: {page['word_count']} words, {page['heading_count']} headings\n\n"
+
+        # Add site-wide insights
+        compiled += f"**Site Structure Insights:**\n"
+        compiled += f"The website demonstrates a hierarchical structure with clear content organization. "
+        compiled += f"Navigation patterns show systematic information architecture with specific page types "
+        compiled += f"serving distinct user needs. Content quality and depth vary by page type and level.\n\n"
+
+        return compiled
+
+    def _scrape_single_page_requests_enhanced(self, url: str):
+        """Enhanced single-page scraping with structure extraction"""
+        try:
+            print(f"[REQUESTS ENHANCED] Scraping: {url}")
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.content, "html.parser")
+            content_data = self._extract_content_with_structure(soup, url)
+
+            return {
+                "url": url,
+                "title": content_data["meta_info"]["title"] or "Scraped Website",
+                "content": f"**Single Page Analysis:**\n\n**Headings Found:**\n"
+                + "\n".join(
+                    [
+                        f"- {h['tag'].upper()}: {h['text']}"
+                        for h in content_data["headings"][:15]
+                    ]
+                )
+                + f"\n\n**Main Content:**\n{content_data['main_content'][:2000]}...",
+                "detailed_analysis": {
+                    "total_pages": 1,
+                    "levels": {
+                        0: [
+                            {
+                                "url": url,
+                                "title": content_data["meta_info"]["title"],
+                                "headings": content_data["headings"],
+                                "content_type": self._classify_page_type(content_data),
+                                "word_count": len(content_data["main_content"].split()),
+                            }
+                        ]
+                    },
+                    "all_headings": content_data["headings"],
+                },
+                "metadata": {
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "scraping_method": "requests_enhanced_single_page",
+                    "content_length": len(content_data["main_content"]),
+                },
+            }
+        except Exception as e:
+            print(f"[REQUESTS ENHANCED] Error: {e}")
+            return None
 
 
 @agent_bps.route("/scrape", methods=["POST"])
 def scrape_website_route():
-    """Enhanced web scraping with Selenium support and multi-level branching."""
+    """This function handles the web request, scrapes data, and saves it."""
     try:
         data = request.get_json()
         user_id = data.get("user_id")
         url_to_scrape = data.get("url")
-        use_selenium = data.get(
-            "use_selenium", True
-        )  # Default to True for enhanced scraping
-        max_depth = data.get("max_depth", 3)  # Default to 3 levels of branching
 
         if not user_id or not url_to_scrape:
             return jsonify({"error": "user_id and url are required"}), 400
 
+        # --- Step 1: Scrape the website (This part is correct) ---
         scraper = WebScrapingLanceClient(user_id=user_id)
-        
-        # Check if it's a YouTube URL
-        is_youtube = scraper._is_youtube_url(url_to_scrape)
-
-        print(f"🚀 Starting enhanced scraping for {url_to_scrape}")
-        if is_youtube:
-            print(f"   - Type: YouTube Video (yt-dlp + Whisper)")
-            print(f"   - Max depth: N/A (YouTube videos don't have branching)")
-        else:
-            print(f"   - Type: Regular Website")
-            print(f"   - Using Selenium: {use_selenium}")
-            print(f"   - Max depth: {max_depth}")
-
-        # --- Step 1: Enhanced scraping with multi-level support ---
         scraped_data = scraper.scrape_website(
-            url=url_to_scrape, use_selenium=use_selenium, max_depth=max_depth
+            url=url_to_scrape, use_selenium=True, max_depth=3, max_pages=25
         )
 
         if not scraped_data:
-            error_msg = (
-                "Failed to scrape YouTube video" 
-                if is_youtube 
-                else "Failed to scrape the website content"
-            )
-            return jsonify({"error": error_msg}), 500
+            return jsonify({"error": "Failed to scrape the website content"}), 500
 
-        print(f"✅ Scraping completed:")
-        if is_youtube:
-            print(f"   - Video title: {scraped_data.get('title', 'Unknown')}")
-            print(f"   - Duration: {scraped_data['metadata'].get('duration_seconds', 0)} seconds")
-            print(f"   - Has transcript: {scraped_data['metadata'].get('has_transcript', False)}")
-        else:
-            print(
-                f"   - Pages scraped: {scraped_data['metadata'].get('total_pages_scraped', 1)}"
-            )
-            print(
-                f"   - Content length: {scraped_data['metadata'].get('combined_content_length', 0)} chars"
-            )
-            print(
-                f"   - Links found: {scraped_data['metadata'].get('total_links_found', 0)}"
-            )
-
-        # --- Step 2: Process the scraped text to get an embedding ---
+        # --- Step 2: NEW - Process the scraped text to get an embedding ---
         embedding_client = WebScrapingLanceClient(user_id=user_id)
 
         full_content = f"{scraped_data['title']}\n\n{scraped_data['content']}"
         embedding_vector = embedding_client.embeddings.embed_query(full_content)
 
-        # --- Step 3: Prepare the payload for the LanceDB server ---
+        # --- Step 3: NEW - Prepare the payload for the LanceDB server ---
         lancedb_payload = {
             "user_id": user_id,
             "url": scraped_data["url"],
@@ -2106,7 +4055,7 @@ def scrape_website_route():
             "embedding": embedding_vector,
         }
 
-        # --- Step 4: Send the data to your LanceDB/FastAPI server ---
+        # --- Step 4: NEW - Send the data to your LanceDB/FastAPI server ---
         lancedb_server_url = os.getenv("LANCE_DB_IP")
         if not lancedb_server_url:
             return (
@@ -2120,56 +4069,17 @@ def scrape_website_route():
 
         # Check if the data was saved successfully
         if response.status_code == 200:
-            success_message = (
-                "YouTube video processed and data saved successfully using yt-dlp + Whisper."
-                if is_youtube
-                else "Website scraped and data saved successfully with enhanced multi-level scraping."
-            )
-            
-            response_data = {
-                "status": "success",
-                "message": success_message,
-                "scraped_content": scraped_data,
-                "content_type": "youtube_video" if is_youtube else "website",
-                "scraping_stats": {
-                    "method": scraped_data["metadata"].get(
-                        "scraping_method", "unknown"
-                    ),
-                    "total_content_length": scraped_data["metadata"].get(
-                        "combined_content_length", len(scraped_data.get("content", ""))
-                    ),
-                },
-                "lancedb_response": response.json(),
-            }
-
-            # Add content-type specific stats
-            if is_youtube:
-                response_data["youtube_stats"] = {
-                    "video_id": scraped_data["metadata"].get("video_id", ""),
-                    "duration_seconds": scraped_data["metadata"].get("duration_seconds", 0),
-                    "view_count": scraped_data["metadata"].get("view_count", 0),
-                    "like_count": scraped_data["metadata"].get("like_count", 0),
-                    "comment_count": scraped_data["metadata"].get("comment_count", 0),
-                    "has_transcript": scraped_data["metadata"].get("has_transcript", False),
-                    "transcript_length": scraped_data["metadata"].get("transcript_length", 0),
-                }
-            else:
-                # Add website-specific stats
-                response_data["scraping_stats"].update(
+            return (
+                jsonify(
                     {
-                        "pages_scraped": scraped_data["metadata"].get(
-                            "total_pages_scraped", 1
-                        ),
-                        "max_depth_used": scraped_data["metadata"].get(
-                            "max_depth_used", 1
-                        ),
-                        "unique_urls": scraped_data["metadata"].get(
-                            "unique_urls_scraped", 1
-                        ),
+                        "status": "success",
+                        "message": "Website scraped and data saved successfully.",
+                        "scraped_content": scraped_data,
+                        "lancedb_response": response.json(),
                     }
-                )
-
-            return jsonify(response_data), 200
+                ),
+                200,
+            )
         else:
             return (
                 jsonify(
@@ -2177,6 +4087,7 @@ def scrape_website_route():
                         "error": "Failed to save data to LanceDB server.",
                         "status_code": response.status_code,
                         "details": response.text,
+                        # It's good practice to also return the data that failed to save
                         "scraped_content_that_failed_to_save": scraped_data,
                     }
                 ),
@@ -2321,31 +4232,15 @@ def scrape_and_summarize_route():
                         409,
                     )
 
-        # Step 1: Enhanced Scrape with multi-level support
+        # Step 1: Scrape
         scraper = WebScrapingLanceClient(user_id=user_id)
-        use_selenium = data.get("use_selenium", True)  # Allow frontend to control this
-        max_depth = data.get(
-            "max_depth", 2
-        )  # Default to 2 levels for summarization (less than scrape route)
-
-        print(f"🚀 Starting enhanced scraping for summarization: {url_to_scrape}")
-        print(f"   - Type: Regular Website")
-        print(f"   - Using Selenium: {use_selenium}")
-        print(f"   - Max depth: {max_depth}")
-
         scraped_data = scraper.scrape_website(
-            url=url_to_scrape, use_selenium=use_selenium, max_depth=max_depth
+            url=url_to_scrape, use_selenium=True, max_depth=3, max_pages=25
         )
         if not scraped_data:
-            error_msg = "Failed to access or scrape website content."
-            return jsonify({"error": error_msg}), 500
-
-        print(f"✅ Enhanced scraping completed for summarization:")
-        print(
-            f"   - Pages scraped: {scraped_data['metadata'].get('total_pages_scraped', 1)}"
-        )
-        print(
-            f"   - Content length: {scraped_data['metadata'].get('combined_content_length', 0)} chars"
+            return (
+                jsonify({"error": "Failed to access or scrape website content."}),
+                500,
             )
 
         # Step 2: Summarize
@@ -2408,13 +4303,41 @@ def scrape_and_summarize_route():
 
         # Step 7: Save to LanceDB
         lancedb_server_url = os.getenv("LANCE_DB_IP")
-        response = requests.post(
-            f"{lancedb_server_url}/insert_scraped_data", json=lancedb_payload
-        )
+        if not lancedb_server_url:
+            return jsonify({"error": "LANCE_DB_IP environment variable not set"}), 500
 
-        if response.status_code != 200:
-            logger.error(f"LanceDB Error: {response.text}")
-            raise Exception("Failed to save data to LanceDB")
+        try:
+            response = requests.post(
+                f"{lancedb_server_url}/insert_scraped_data",
+                json=lancedb_payload,
+                timeout=30,  # Add timeout
+            )
+
+            if response.status_code != 200:
+                logger.error(
+                    f"LanceDB HTTP Error {response.status_code}: {response.text}"
+                )
+                raise Exception(f"LanceDB returned status {response.status_code}")
+
+        except requests.exceptions.ConnectionError as e:
+            logger.error(
+                f"Cannot connect to LanceDB server at {lancedb_server_url}: {e}"
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "Vector database service unavailable",
+                        "details": f"Cannot connect to {lancedb_server_url}",
+                    }
+                ),
+                503,
+            )
+        except requests.exceptions.Timeout as e:
+            logger.error(f"LanceDB request timeout: {e}")
+            return jsonify({"error": "Vector database request timeout"}), 504
+        except Exception as e:
+            logger.error(f"LanceDB Error: {e}")
+            return jsonify({"error": f"Vector database error: {str(e)}"}), 500
         # ADD THIS: Save website metadata to YAML
         website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
         existing_websites = load_yaml_from_s3(website_metadata_path) or []
@@ -2478,7 +4401,7 @@ def evaluate_scraped_content(clarification_prompt, scraped_data, summary_text):
         )
 
         # Get AI response
-        ai_response = get_fireworks_response(filled_prompt, "system")
+        ai_response = get_evaluator_fireworks(filled_prompt, "system")
 
         # Parse the response (assuming it returns JSON with clarifications)
         try:

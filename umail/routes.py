@@ -307,7 +307,7 @@ def handle_cache_data(groupedmessages, disp_messages, next_cursor, source):
             "conv_id": conv_id,
             "ticket_id": latest_msg_in_conv.get("ticket_id") or "creating",
             "ticket_name": latest_msg_in_conv.get("ticket_name"),
-            "full_conversation": data,
+            # "full_conversation": data,
             "source": source,
         }
         disp_messages.append(disp_message)
@@ -369,7 +369,7 @@ def handle_lance_data(convo_messages, disp_messages, next_cursor, source):
             "conv_id": conv_id,
             "ticket_id": latest_msg_in_conv.get("ticket_id"),
             "ticket_name": latest_msg_in_conv.get("ticket_name"),
-            "full_conversation": convo_messages,
+            # "full_conversation": convo_messages,
             "source": source,
         }
         # print(f"{conv_id} fetched time {relative_time}")
@@ -454,12 +454,14 @@ def get_latest_conversations(user_id, next_cursor):
             return getall_route(user_id)
 
     else:
+        print("before calling lance")
         # ✅ Step 3: Lance fallback
         client = UmailLanceClient(user_id)
         convo_messages, bnext_cursor = client.latest_messages_from_lance(
             user_id, next_cursor
         )
-        getall_route(user_id)
+        print("in lance fetch next cursor", bnext_cursor)
+        # getall_route(user_id)
         if not convo_messages:
             if next_cursor:
                 cursor_dt = parse_cursor_to_datetime(next_cursor)
@@ -548,15 +550,17 @@ def get_sorted_lance_emails(connection, user_id, client_id):
 
                     assigned_id = ""
                     assignee_full_name = ""
+                    ticket_status = ""
 
                     if ticket_id:
                         cursor.execute(
-                            "SELECT assignee FROM tickets WHERE tickets_id = %s",
+                            "SELECT assignee, status FROM tickets WHERE tickets_id = %s",
                             (ticket_id,),
                         )
                         t_row = cursor.fetchone()
                         if t_row:
                             assigned_id = t_row[0]
+                            ticket_status = t_row[1]
 
                     if assigned_id:
                         cursor.execute(
@@ -571,13 +575,15 @@ def get_sorted_lance_emails(connection, user_id, client_id):
                             if not last_name or last_name == "None":
                                 last_name = ""
                             assignee_full_name = (first_name + " " + last_name).strip()
-
+                    
                     all_messages.append(
                         {
                             "id": conv_id,
                             "channel": channel,
                             "messages": messages,
                             "assigned_name": assignee_full_name,
+                            "ticket_status": ticket_status,
+
                         }
                     )
                 except Exception as e:
@@ -624,6 +630,7 @@ def get_selected_conv(conversation_id, user_id):
             return jsonify({"error": "conversation_id and user_id are required"}), 400
 
         client_id = None
+
 
         # ✅ Step 2: Local JSON
         existing_json = get_existing_umail_json(user_id)
@@ -721,6 +728,7 @@ def get_selected_conv(conversation_id, user_id):
             else:
                 print(f"[DEBUG] No snooze row found for client_id: {client_id}")
 
+
             return (
                 jsonify(
                     {
@@ -729,7 +737,7 @@ def get_selected_conv(conversation_id, user_id):
                         "conversationId": client_id,  # conversation_id is client_id
                         "messages": sorted_conversations,  # this is ConversationThread[]
                         "source": "full",
-                        "snoozed": snooze_flag,
+                        "snoozed": snooze_flag
                     }
                 ),
                 200,
