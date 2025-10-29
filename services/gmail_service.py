@@ -47,10 +47,15 @@ def get_cutoff_ts(days_back: int) -> int:
 
 
 class GmailService:
-    def __init__(self, user_id, connection=None):
+    def __init__(
+        self, user_id, connection=None, testing=False, workflow=None, wf_id=None
+    ):
         # Use provided connection or get a new one
         self.conn = connection or connect_to_rds()
         self.user_id = user_id
+        self.testing = testing
+        self.workflow = workflow
+        self.current_wf_id = wf_id
 
         if not self.conn:
             raise ConnectionError("❌ Failed to connect to RDS (too many connections?)")
@@ -1561,34 +1566,76 @@ class GmailService:
             print(f"❌ Error sending email: {e}")
             raise
 
-    def send_Meet_mail(
-        self, to_email: str, bcc_list: list[str], subject: str, body_html: str
+    def send_Meeting_invite_mail(
+        self, to_email, bcc_list: list[str], subject: str, body_html: str
     ):
+        """
+        Send an email via Gmail API.
+
+        Args:
+            to_email (str or list[str]): Recipient email(s)
+            bcc_list (list[str]): BCC recipients
+            subject (str): Email subject
+            body_html (str): Email body in HTML
+        Returns:
+            dict: {
+                "success": bool,
+                "response": dict | None,
+                "error": str | None,
+                "return_str": str
+            }
+        """
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
         import base64
         import re
 
-        # Create plain-text fallback by stripping HTML tags
-        plain_text = re.sub(r"<[^>]+>", "", body_html)
+        try:
+            # Convert to_email to comma-separated string if it's a list
+            if isinstance(to_email, list):
+                to_email_str = ", ".join(to_email)
+            else:
+                to_email_str = to_email
 
-        # multipart/alternative ensures the client picks the best format
-        message = MIMEMultipart("alternative")
-        message["to"] = to_email
-        if bcc_list:
-            message["bcc"] = ", ".join(bcc_list)
-        message["subject"] = subject
+            # Create plain-text fallback by stripping HTML tags
+            plain_text = re.sub(r"<[^>]+>", "", body_html)
 
-        # Attach plain and HTML versions
-        part1 = MIMEText(plain_text, "plain")
-        part2 = MIMEText(body_html, "html")
-        message.attach(part1)
-        message.attach(part2)
+            # multipart/alternative ensures the client picks the best format
+            message = MIMEMultipart("alternative")
+            message["to"] = to_email_str
+            if bcc_list:
+                message["bcc"] = ", ".join(bcc_list)
+            message["subject"] = subject
 
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        msg = {"raw": raw}
-        sent = self.service.users().messages().send(userId="me", body=msg).execute()
-        return sent
+            # Attach plain and HTML versions
+            message.attach(MIMEText(plain_text, "plain"))
+            message.attach(MIMEText(body_html, "html"))
+
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            msg = {"raw": raw}
+
+            sent = self.service.users().messages().send(userId="me", body=msg).execute()
+
+            # ✅ Friendly summary for UI / logs
+            return_str = (
+                f"✅ Email titled '{subject}' sent successfully to {to_email_str}."
+                f" Gmail message ID: {sent.get('id')}"
+            )
+
+            return {
+                "success": True,
+                "response": sent,
+                "error": None,
+                "return_str": return_str,
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "response": None,
+                "error": str(e),
+                "return_str": f"❌ Failed to send email: {str(e)}",
+            }
 
     def send_invite_mail(
         self,

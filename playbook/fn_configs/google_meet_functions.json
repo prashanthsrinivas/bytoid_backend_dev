@@ -10,7 +10,6 @@
                 "start_time": "string (HH:MM, 24-hour)",
                 "end_time": "string (HH:MM, 24-hour)",
                 "duration_minutes": "integer (meeting duration in minutes)",
-                "timezone": "optional string (default: Asia/Kolkata)",
                 "days_to_check": "optional integer (default: 5, number of days to scan)"
             },
             "returns": {
@@ -19,33 +18,13 @@
         },
         {
             "category": "Google Meet",
-            "name": "google_meet.schedule_meeting_on_first_available",
-            "description": "Find the first available slot across attendees and schedule a Google Meet automatically.",
-            "args": {
-                "summary": "string (meeting title)",
-                "attendees": "list of attendee emails",
-                "preferred_date": "string (YYYY-MM-DD)",
-                "start_time": "string (HH:MM, 24-hour)",
-                "end_time": "string (HH:MM, 24-hour)",
-                "duration_minutes": "integer (meeting duration in minutes)",
-                "description": "optional string (meeting description)",
-                "timezone": "optional string (default: Asia/Kolkata)"
-            },
-            "returns": {
-                "success": "boolean",
-                "meeting": "dict with { event_id, summary, meet_link, start_time, end_time, attendees } or error reason"
-            }
-        },
-        {
-            "category": "Google Meet",
             "name": "google_meet.create_meeting",
-            "description": "Create a Google Calendar meeting event with a Meet link for given attendees.",
+            "description": "Create a Google Calendar meeting event with a Meet link for given attendees. as it takes the first available slot based on details this is preferred ",
             "args": {
                 "summary": "string (meeting title)",
                 "start_time": "string (ISO format: YYYY-MM-DDTHH:MM:SS)",
                 "end_time": "string (ISO format: YYYY-MM-DDTHH:MM:SS)",
                 "attendees": "optional list of attendee emails",
-                "timezone": "optional string (default: Asia/Kolkata)",
                 "description": "optional string (meeting details or notes)"
             },
             "returns": {
@@ -54,7 +33,43 @@
                 "meet_link": "string (Google Meet URL)",
                 "start_time": "object (with dateTime and timeZone)",
                 "end_time": "object (with dateTime and timeZone)",
-                "attendees": "list of attendee objects"
+                "attendees": "list of attendee objects",
+                "return_str": "a meessage type retrun so that it can be used on chatbot or email body"
+            }
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.get_attendees_or_contacts",
+            "description": "Retrieve a cleaned, validated list of attendees or fallback contacts. Supports both testing and normal modes, validates replyable emails, and handles the 'all' keyword to include all contacts. (it is recommended for retrieving meeting or gmail based functions for contacts or emails)",
+            "args": {
+                "attendees": "string or list — attendee email(s) or 'all' keyword"
+            },
+            "returns": {
+                "attendees": "list of valid attendee email addresses"
+            },
+            "notes": [
+                "In testing mode, uses TEST_EMAIL and TEST_EMAIL2 environment variables as fallback.",
+                "Validates emails using can_reply_to_email().",
+                "If 'all' is passed, returns all replyable contact emails.",
+                "Falls back to empty list if no valid attendees found."
+            ]
+        },
+        {
+            "category": "Google Meet",
+            "name": "google_meet.schedule_meeting_on_first_available",
+            "description": "Find the first available slot across attendees and schedule a Google Meet automatically by assigning current date and time if they dont mentioned, as per emails we take user emails or use all contacts or emails.",
+            "args": {
+                "summary": "string (meeting title)",
+                "attendees": "list of attendee emails",
+                "preferred_date": "string (YYYY-MM-DD)",
+                "start_time": "string (HH:MM, 24-hour)",
+                "end_time": "string (HH:MM, 24-hour)",
+                "duration_minutes": "integer (meeting duration in minutes)",
+                "description": "optional string (meeting description)"
+            },
+            "returns": {
+                "success": "boolean",
+                "meeting": "dict with { event_id, summary, meet_link, start_time, end_time, attendees } or error reason"
             }
         },
         {
@@ -67,8 +82,7 @@
                 "start_time": "optional string (ISO format)",
                 "end_time": "optional string (ISO format)",
                 "attendees": "optional list of attendee emails",
-                "description": "optional string (updated description)",
-                "timezone": "optional string (default: Asia/Kolkata)"
+                "description": "optional string (updated description)"
             },
             "returns": {
                 "event_id": "string",
@@ -100,7 +114,6 @@
                 "start_time": "string (HH:MM, 24-hour)",
                 "end_time": "string (HH:MM, 24-hour)",
                 "duration_minutes": "integer",
-                "timezone": "optional string (default: Asia/Kolkata)",
                 "days_to_check": "optional integer (default: 3)"
             },
             "returns": {
@@ -134,7 +147,6 @@
                 "start_time": "string (HH:MM, 24-hour)",
                 "end_time": "string (HH:MM, 24-hour)",
                 "duration_minutes": "integer (meeting duration in minutes)",
-                "timezone": "optional string (default: Asia/Kolkata)",
                 "days_to_check": "optional integer (default: 3)"
             },
             "returns": {

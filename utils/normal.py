@@ -1,11 +1,16 @@
+from typing import Union
 import os
 from pathlib import Path
 import yaml
 import re
 import json
-
+from datetime import datetime, timedelta
 from docx import Document
 from pptx import Presentation
+import pytz
+
+# from astral import LocationInfo
+# from astral.sun import sun
 
 
 def ensure_dir(path):
@@ -148,7 +153,7 @@ def read_function_jsons():
     return "\n\n".join(all_functions_details)
 
 
-from typing import Union
+# print(read_function_jsons())
 
 
 def parse_pptx_content_to_json(content: str) -> dict:
@@ -284,3 +289,130 @@ def save_pptx_from_json(slide_data, file_path):
         slide.placeholders[1].text = content
     prs.save(file_path)
     # os.remove(file_path)
+
+
+def convert_human_date(value, base_date=None, tz_str="Asia/Kolkata"):
+    """
+    Convert human-readable dates or ISO YYYY-MM-DD to a tz-aware datetime (default time 09:00)
+    """
+    tz = pytz.timezone(tz_str)
+    if base_date is None:
+        base_date = datetime.now(tz)
+
+    value = str(value).strip().lower()
+    dt = base_date
+
+    # Handle known human-readable forms
+    if value in ["today", ""]:
+        dt = base_date
+    elif value == "tomorrow":
+        dt = base_date + timedelta(days=1)
+    elif re.match(r"\d{4}-\d{2}-\d{2}", value):  # YYYY-MM-DD
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d")
+        except Exception:
+            return None
+    elif re.match(r"\d{1,2}-\d{1,2}", value):  # 12-10
+        month, day = map(int, value.split("-"))
+        dt = base_date.replace(month=month, day=day)
+    elif re.match(r"\d{1,2}-[a-z]{3}", value):  # 12-jan
+        day, month_str = value.split("-")
+        month = datetime.strptime(month_str.capitalize(), "%b").month
+        dt = base_date.replace(month=month, day=int(day))
+    elif match := re.match(r"(\d+) days from now", value):
+        dt = base_date + timedelta(days=int(match.group(1)))
+    elif match := re.match(r"next (\w+)", value):
+        weekdays = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+        target_wd = weekdays.index(match.group(1).capitalize())
+        delta = (target_wd - base_date.weekday() + 7) % 7 or 7
+        dt = base_date + timedelta(days=delta)
+    else:
+        return None
+
+    # Default time 09:00
+    dt = dt.replace(hour=9, minute=0, second=0, microsecond=0)
+
+    # Ensure tz-aware
+    if dt.tzinfo is None:
+        dt = tz.localize(dt)
+    else:
+        dt = dt.astimezone(tz)
+
+    return dt
+
+
+# ------------------------
+# Human-readable Time
+# ------------------------
+def convert_human_time(value, base_date=None, tz_str="Asia/Kolkata"):
+    """
+    Convert human-readable times to a tz-aware datetime
+    """
+    tz = pytz.timezone(tz_str)
+    if base_date is None:
+        base_date = datetime.now(tz)
+    value = str(value).strip().lower()
+    hour, minute = 9, 0  # default
+
+    # Numeric / AM-PM
+    if m := re.match(r"(\d{1,2}):(\d{2}) ?(am|pm)?", value):
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if m.group(3) == "pm" and hour != 12:
+            hour += 12
+        elif m.group(3) == "am" and hour == 12:
+            hour = 0
+    elif m := re.match(r"(\d{1,2}) ?(am|pm)", value):
+        hour = int(m.group(1))
+        minute = 0
+        if m.group(2) == "pm" and hour != 12:
+            hour += 12
+        elif m.group(2) == "am" and hour == 12:
+            hour = 0
+    elif value.isdigit():
+        hour, minute = int(value), 0
+
+    # Relative times
+    elif m := re.match(r"quarter to (\d+)", value):
+        hour, minute = int(m.group(1)) - 1, 45
+    elif m := re.match(r"quarter past (\d+)", value):
+        hour, minute = int(m.group(1)), 15
+    elif m := re.match(r"half past (\d+)", value):
+        hour, minute = int(m.group(1)), 30
+    elif m := re.match(r"(\d+) past (\d+)", value):
+        minute, hour = int(m.group(1)), int(m.group(2))
+    elif m := re.match(r"(\d+) to (\d+)", value):
+        minute, hour = 60 - int(m.group(1)), int(m.group(2)) - 1
+
+    # Named times
+    elif value in ["8am", "eight", "breakfast", "morning"]:
+        hour, minute = 8, 0
+    elif value in ["9am", "nine"]:
+        hour, minute = 9, 0
+    elif value in ["10am", "ten"]:
+        hour, minute = 10, 0
+    elif value in ["12pm", "lunch time", "noon"]:
+        hour, minute = 12, 0
+    elif value in ["6pm", "dinner", "evening"]:
+        hour, minute = 18, 0
+    elif value in ["midnight"]:
+        hour, minute = 0, 0
+    else:
+        return None
+
+    dt = base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    # Safe tz handling
+    if dt.tzinfo is None:
+        dt = tz.localize(dt)
+    else:
+        dt = dt.astimezone(tz)
+
+    return dt

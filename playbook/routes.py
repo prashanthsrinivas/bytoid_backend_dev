@@ -13,7 +13,6 @@ from utils.fireworkzz import get_fireworks_response
 from .helperzz import *
 from utils.pb_config_utils import *
 from utils.normal import load_yaml_file
-from .wf_runner import WorkflowRunner
 
 playbook_bp = Blueprint("playbook", __name__)
 
@@ -283,16 +282,24 @@ def delete_a_step():
 
 
 @playbook_bp.route("/modify_instruction", methods=["POST"])
-def modify_instruction():
+def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None):
     try:
-        body = request.json
-        if not body:
-            return jsonify({"status": "error", "message": "Empty request body"}), 400
-
-        update_instruction = body.get("modify_instructions")
-        additional_data = body.get("additional_data") or ""
-        user_id = body.get("user_id")
-        filename = body.get("filename")
+        if all(arg is None for arg in [ud_inst, user_id, filename]):
+            body = request.json
+            if not body:
+                return (
+                    jsonify({"status": "error", "message": "Empty request body"}),
+                    400,
+                )
+            update_instruction = body.get("modify_instructions")
+            additional_data = body.get("additional_data") or ""
+            user_id = body.get("user_id")
+            filename = body.get("filename")
+        else:
+            update_instruction = ud_inst
+            additional_data = add_data or ""
+            user_id = user_id
+            filename = filename
 
         if not update_instruction or not user_id or not filename:
             return (
@@ -362,7 +369,7 @@ def modify_instruction():
             .replace("{update_instruction}", update_instruction)
             .replace("{services_section}", services_functions)
             .replace("{additional_data}", additional_data)
-            .replace("{todays_date}", datetime.now().strftime("%A, %d %B %Y")),
+            .replace("{todays_date}", datetime.now().strftime("%A, %d %B %Y"))
         )
 
         # Call LLM
@@ -932,13 +939,28 @@ def runWorkflow():
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    # ✅ Pre-validate workflow existence
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    if not workflow_json:
+        return (
+            jsonify(
+                {
+                    "message": f"Workflow file '{filename}' not found ",
+                    "status": "error",
+                }
+            ),
+            404,
+        )
+
     try:
-        with WorkflowRunnerV2(userid=userid, filename=filename) as runner:
-            bad = runner.execute()
-            print(bad)
+        with WorkflowRunnerV2(
+            userid=userid, filename=filename, workflowJson=workflow_json
+        ) as runner:
+            runner.execute()
             result = runner.get_execution_log()
-            print("dasdsad", result)
-            return jsonify({"status": "success", "gmail_api_response": result})
+            return jsonify({"status": "success", "execution_log": result})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -954,19 +976,42 @@ def run_workflow_step():
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+    if not step_id:
+        return jsonify({"message": "Missing step_id", "status": "error"}), 400
+
+    # ✅ Pre-validate workflow existence
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    if not workflow_json:
+        return (
+            jsonify(
+                {
+                    "message": f"Workflow file '{filename}' not found ",
+                    "status": "error",
+                }
+            ),
+            404,
+        )
 
     try:
-        with WorkflowRunnerV2(userid=userid, filename=filename) as runner:
+        with WorkflowRunnerV2(
+            userid=userid, filename=filename, workflowJson=workflow_json
+        ) as runner:
             steps = runner.steps
-            # step_id is likely a UUID string
-            selected_step = steps[step_id]
+            selected_step = steps.get(step_id)
+
             if not selected_step:
-                return jsonify({"message": "Step not found", "status": "error"}), 404
+                return (
+                    jsonify(
+                        {
+                            "message": f"Step '{step_id}' not found in workflow.",
+                            "status": "error",
+                        }
+                    ),
+                    404,
+                )
 
-            # Execute and capture the actual output
             step_result = runner._execute_step(selected_step)
-
-            # Also include log if you want
             execution_log = runner.get_execution_log()
 
             return jsonify(
@@ -976,7 +1021,6 @@ def run_workflow_step():
                     "execution_log": execution_log,
                 }
             )
-
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -987,7 +1031,149 @@ def testworkflowbyinput():
     userid = data.get("user_id")
     userinput = data.get("userinput")
     filename = data.get("filename")
-    print("test-playground-step", userinput)
-    # Connect to DB
-    with WorkflowRunnerV2(userid=userid, filename=filename) as service:
-        return service.execute_from_text_input(user_input=userinput)
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+    if not userinput:
+        return jsonify({"message": "Missing userinput", "status": "error"}), 400
+
+    # ✅ Pre-validate workflow existence
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    if not workflow_json:
+        return (
+            jsonify(
+                {
+                    "message": f"Workflow file '{filename}' not found ",
+                    "status": "error",
+                }
+            ),
+            404,
+        )
+    print("user input", userinput)
+    try:
+        with WorkflowRunnerV2(
+            userid=userid, filename=filename, workflowJson=workflow_json, testing=True
+        ) as service:
+            # result = service.execute_from_text_input(user_input=userinput)
+            result = service.check_input_tone(user_input=userinput)
+            # result=service.current_implemented_functions
+            return jsonify(result)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/clear-playground-data", methods=["POST"])
+def clear_playground_data():
+    """
+    Clears transient data (chat, online, testing) from a user's workflow file.
+    Keeps workflow logic and metadata intact.
+    """
+    data = request.json
+    userid = data.get("user_id")
+    filename = data.get("filename")
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    try:
+        # 🔹 Load workflow JSON from S3
+        workflow_json = read_json_from_s3(f"{userid}/workflow/{filename}")
+
+        # 🔹 Remove transient sections
+        for key in ["chat", "online", "testing"]:
+            if key in workflow_json:
+                del workflow_json[key]
+
+        # 🔹 Save cleaned JSON back to S3
+        # tmp_path = f"/tmp/{filename}"
+        # with open(tmp_path, "w") as f:
+        #     json.dump(workflow_json, f, indent=4)
+
+        # upload_any_file(tmp_path, userid, filename)
+        save_playbook_to_s3(workflow_json, userid, "Step edited successfully", filename)
+
+        return (
+            jsonify(
+                {
+                    "message": "Playground data (chat, online, testing) cleared successfully.",
+                    "status": "success",
+                    "filename": filename,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        # logger.exception("Error clearing playground data: %s", e)
+        return (
+            jsonify({"message": f"Error clearing data: {str(e)}", "status": "error"}),
+            500,
+        )
+
+
+@playbook_bp.route("/clear-testing-data", methods=["POST"])
+def clear_testing_data():
+    """
+    Clears only the 'testing' section from a user's workflow JSON file.
+    Keeps chat, online, and workflow structure intact.
+    """
+    data = request.json
+    userid = data.get("user_id")
+    filename = data.get("filename")
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    try:
+        # 🔹 Load workflow JSON from S3
+        workflow_json = read_json_from_s3(f"{userid}/workflow/{filename}")
+
+        # 🔹 Remove only testing section
+        if "testing" in workflow_json:
+            del workflow_json["testing"]
+        else:
+            return (
+                jsonify(
+                    {
+                        "message": "No testing data found to clear.",
+                        "status": "success",
+                        "filename": filename,
+                    }
+                ),
+                200,
+            )
+
+        # # 🔹 Save updated workflow JSON back to S3
+        # tmp_path = f"/tmp/{filename}"
+        # with open(tmp_path, "w") as f:
+        #     json.dump(workflow_json, f, indent=4)
+
+        # upload_any_file(tmp_path, userid, filename)
+        save_playbook_to_s3(workflow_json, userid, "Step edited successfully", filename)
+
+        return (
+            jsonify(
+                {
+                    "message": "Testing data cleared successfully.",
+                    "status": "success",
+                    "filename": filename,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        # logger.exception("Error clearing testing data: %s", e)
+        return (
+            jsonify(
+                {"message": f"Error clearing testing data: {str(e)}", "status": "error"}
+            ),
+            500,
+        )

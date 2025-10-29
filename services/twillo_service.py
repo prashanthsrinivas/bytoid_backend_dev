@@ -14,6 +14,9 @@ class TwilioService:
         from_whatsapp_number: str,
         from_sms_number: str,
         from_call_number: str,
+        testing=False,
+        workflow=None,
+        wf_id=None
     ):
         """
         Initialize Twilio client for WhatsApp, SMS, and voice calls.
@@ -22,6 +25,9 @@ class TwilioService:
         self.from_whatsapp = f"whatsapp:{from_whatsapp_number}"
         self.from_sms = from_sms_number
         self.from_call = from_call_number
+        self.testing = testing
+        self.workflow = workflow
+        self.current_wf_id=wf_id
 
     # ---------------------- WhatsApp ----------------------
     def send_whatsapp_message(self, to: str, body: str) -> dict:

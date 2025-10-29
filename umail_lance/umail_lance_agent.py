@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Any, List
 from pydantic import BaseModel
-from datetime import datetime  # from werkzeug.exceptions import HTTPException
+from datetime import datetime, timezone  # from werkzeug.exceptions import HTTPException
 import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
@@ -189,10 +189,21 @@ class UmailLanceClient:
             # except Exception:
             #     continue
 
-            # keep the latest per folder
-            if (folder not in latest_per_folder) or (
-                ts > latest_per_folder[folder]["ts"]
-            ):
+            # keep the latest per folder - fix timezone comparison issue
+            if folder not in latest_per_folder:
+                should_update = True
+            else:
+                existing_ts = latest_per_folder[folder]["ts"]
+                # Ensure both timestamps have timezone info for comparison
+                if existing_ts.tzinfo is None:
+                    # Make existing timestamp timezone-aware (assume UTC)
+                    existing_ts = existing_ts.replace(tzinfo=timezone.utc)
+                elif ts.tzinfo is None:
+                    # Make new timestamp timezone-aware (assume UTC) 
+                    ts = ts.replace(tzinfo=timezone.utc)
+                should_update = ts > existing_ts
+                
+            if should_update:
                 latest_per_folder[folder] = {
                     "ts": ts,
                     "conv_id": conv_id,

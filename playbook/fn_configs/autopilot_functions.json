@@ -32,7 +32,7 @@
         {
             "category": "EmailAutomation",
             "name": "automate.get_conversation_history",
-            "description": "Fetch the sorted email conversation history for a user.",
+            "description": "Fetch the sorted email conversation history for a user. (only for the email messages)",
             "args": {
                 "userid": "User ID of the agent (string or integer)",
                 "clientid": "Client ID or connected Gmail account ID (string)",
@@ -175,14 +175,15 @@
         {
             "category": "AutoMateService",
             "name": "automate.create_custom_email_body",
-            "description": "creates custom message body based on user requirements",
+            "description": "Creates a professional and personalized email body based on user requirements and dynamic inputs from previous steps or additional context.",
             "args": {
-                "user_input": "custom user input for email body"
+                "user_input": "Base description of the email content (string).",
+                "dynamic_inputs": "Optional additional dynamic data (dict). These will be directly included in the email prompt."
             },
             "returns": {
-                "email_body": "returns email body"
+                "email_body": "The generated email body as a string, ready to use in communication steps."
             },
-            "notes": "uses ai to create email body also uses users business info if needed"
+            "notes": "Uses AI to create an email body. All dynamic inputs are interpolated directly into the email content. Includes user's business information if relevant."
         },
         {
             "category": "FileGeneration",

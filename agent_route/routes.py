@@ -660,11 +660,14 @@ def checkquerywithApiKey():
     try:
         print("Query made by:", session.get("user", {}))
         response_data = []
+        summary_generated = ""
 
         data = request.json
         previous_query = data.get("previous_query","").strip()
         previous_response = data.get("previous_response").strip()
         querytext = data.get("query", "").strip()
+        conversation_summary = data.get("conversation_summary")
+        print(f"conversation_summary received: {conversation_summary}")
         api_key = data.get("api_key")
         if not api_key:
             return jsonify({"error": "API key is required"}), 400
@@ -708,6 +711,7 @@ def checkquerywithApiKey():
                     "match_score": "",
                     "extracted_answer": repeated_fallback_response,
                     "full_text": "",
+                    "conversation_summary":conversation_summary,
                 }
             )
             return jsonify(response_data), 200
@@ -720,6 +724,7 @@ def checkquerywithApiKey():
             template.replace("{{message_text}}", str(querytext))
             .replace("{{previous_query}}", str(previous_query))
             .replace("{{previous_response}}", str(previous_response))
+            .replace("{{conversation_summary}}", str(conversation_summary))
             )
         modified_yaml = get_fireworks_response(filled_prompt, role="system")
 
@@ -730,9 +735,9 @@ def checkquerywithApiKey():
             return jsonify({"error": "Failed to parse query validation response"}), 500
         validated_query = result.get("question")
         type = result.get("type")
-        summary = result.get("summary")
+        summary_generated = result.get("summary_generated")
         print(f"type : {type}")
-        print(f"summary : {summary}")
+        print(f"summary : {summary_generated}")
 
         if type == "general" or type == "gratitude" or type == "emotional" or type == "unknown" or type == "abuse":
             response_data.append(
@@ -741,6 +746,7 @@ def checkquerywithApiKey():
                     "match_score": "",
                     "extracted_answer": validated_query,
                     "full_text": "",
+                    "conversation_summary":summary_generated,
                 }
             )
             return jsonify(response_data), 200
@@ -753,6 +759,7 @@ def checkquerywithApiKey():
                     "match_score": "",
                     "extracted_answer": response,
                     "full_text": "",
+                    "conversation_summary":summary_generated,
                 }
             )
             return jsonify(response_data), 200
@@ -777,6 +784,7 @@ def checkquerywithApiKey():
                                 "match_score": "",
                                 "extracted_answer": each.get("Ai Response", ""),
                                 "full_text": "",
+                                "conversation_summary":summary_generated,
                             }
                         )
                         return jsonify(response_data), 200
@@ -852,6 +860,7 @@ def checkquerywithApiKey():
                         "match_score": "",
                         "extracted_answer": base_response,
                         "full_text": "",
+                        "conversation_summary":summary_generated,
                     }
                 )
                 return jsonify(response_data), 200
@@ -892,6 +901,7 @@ def checkquerywithApiKey():
                         "match_score": "",
                         "extracted_answer": fallback_response,
                         "full_text": "",
+                        "conversation_summary":summary_generated,
                     }
                 )
                 return jsonify(response_data), 200
@@ -916,7 +926,7 @@ def checkquerywithApiKey():
 
                 fallback_response = parsed_yaml.get("response")
 
-                print(f"fallback response: {fallback_response}")
+                print(f"summary_generated send : {summary_generated}")
 
                 response_data.append(
                     {
@@ -924,6 +934,7 @@ def checkquerywithApiKey():
                         "match_score": "",
                         "extracted_answer": fallback_response,
                         "full_text": "",
+                        "conversation_summary":summary_generated,
                     }
                 )
                 return jsonify(response_data), 200

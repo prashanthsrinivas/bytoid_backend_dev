@@ -2,102 +2,268 @@ from db.db_checkers import fetch_contacts_by_user
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 import pytz
 from datetime import datetime, timedelta
 from typing import Union, List
+import os
+from utils.normal import can_reply_to_email, convert_human_date, convert_human_time
+from dotenv import load_dotenv
 
-from utils.normal import can_reply_to_email
+load_dotenv()
 
 
 class GoogleMeetService:
-    def __init__(self, access_token: str, user_email: str, contacts=None):
+    def __init__(
+        self,
+        access_token: str,
+        user_email: str,
+        userid: str,
+        contacts=None,
+        testing=False,
+        workflow=None,
+        wf_id=None,
+    ):
         """
         access_token: OAuth 2.0 access token with Calendar, Drive scope
         user_email: authenticated user's email address
         """
         self.creds = Credentials(token=access_token)
+        self.userid = userid
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
         self.calendar_service = build("calendar", "v3", credentials=self.creds)
         self.drive_service = build("drive", "v3", credentials=self.creds)
         self.user_email = user_email
+        calendar_info = (
+            self.calendar_service.calendars().get(calendarId="primary").execute()
+        )
+        self.organizer_tz = calendar_info.get("timeZone", "UTC")
+        self.testing = testing
+        self.workflow = workflow
+        self.current_wf_id = wf_id
+
+    def get_attendees_or_contacts(self, attendees):
+        """
+        Returns a list of attendees.
+        Handles testing mode logic to allow flexible test email usage.
+        Supports string, list, or list of dict input.
+        """
+
+        def normalize_attendees(attendees):
+            """Ensure attendees is always a clean list of valid email strings."""
+            if isinstance(attendees, str):
+                attendees = [attendees.strip()] if attendees.strip() else []
+            elif isinstance(attendees, list):
+                normalized = []
+                for item in attendees:
+                    if isinstance(item, str) and "@" in item:
+                        normalized.append(item.strip())
+                    elif isinstance(item, dict):
+                        email = item.get("email", "").strip()
+                        if email and "@" in email:
+                            normalized.append(email)
+                attendees = normalized
+            else:
+                attendees = []
+            return attendees
+
+        def is_valid_attendee_list(emails):
+            """Check if it's a non-empty list of replyable emails."""
+            if not emails:
+                return False
+            for email in emails:
+                if "@" not in email:
+                    return False
+            return True
+
+        attendees = normalize_attendees(attendees)
+
+        # ---------------- TESTING MODE ----------------
+        if self.testing:
+            main_test_mail = os.getenv("TEST_EMAIL")
+            secondary_mail = os.getenv("TEST_EMAIL2")
+
+            print("🧩 Testing mode ON")
+            print("attendees:", attendees, type(attendees))
+
+            # ✅ If user manually provided valid replyable emails, use them
+            if is_valid_attendee_list(attendees):
+                print("✅ validated attendees:", attendees)
+                return attendees
+
+            # 🚨 Otherwise use default testing logic
+            print("⚠️ Using default test emails")
+            if self.user_email == main_test_mail:
+                return [secondary_mail]
+            else:
+                return [main_test_mail]
+
+        # ---------------- NORMAL MODE ----------------
+        def contact_email_list():
+            emails = []
+            if hasattr(self, "contacts") and isinstance(self.contacts, list):
+                for contact in self.contacts:
+                    email = (
+                        contact.get("email") if isinstance(contact, dict) else contact
+                    )
+                    if can_reply_to_email(email):
+                        emails.append(email)
+            return emails
+
+        # ✅ "all" keyword support
+        if (
+            len(attendees) == 1
+            and isinstance(attendees[0], str)
+            and attendees[0].lower() == "all"
+        ):
+            return contact_email_list()
+
+        elif any(a.lower() == "all" for a in attendees if isinstance(a, str)):
+            return contact_email_list()
+
+        # ✅ If valid emails provided, return filtered list
+        if is_valid_attendee_list(attendees):
+            return list(dict.fromkeys(attendees))  # deduplicate
+
+        # ✅ Fallback: empty (no valid attendees)
+        return []
+
+    # ----------------------------
+    # SLOT FINDER
+    # ----------------------------
 
     def get_all_available_slots(
         self,
         attendees: list,
-        preferred_date: str,
-        start_time: str,
-        end_time: str,
+        preferred_date,
+        start_time,
+        end_time,
         duration_minutes: int,
-        timezone: str = "Asia/Kolkata",
-        days_to_check: int = 5,
+        days_to_check: int = 3,
     ):
         """
-        Get all available time slots across attendees using FreeBusy API.
-        Checks preferred date + next `days_to_check` days.
-        Returns a list of slot dicts with start and end times.
+        Return available slots based on attendees' calendars.
+        If no date/time provided, start from current UTC time.
+        Handles global attendees by normalizing to UTC.
         """
-        tz = pytz.timezone(timezone)
-        date_start = datetime.strptime(
-            f"{preferred_date} {start_time}", "%Y-%m-%d %H:%M"
+        print("all slots check")
+
+        tz = pytz.timezone(self.organizer_tz)
+        print("tz", tz, self.organizer_tz)
+
+        # Normalize attendees
+        if not isinstance(attendees, list):
+            attendees = self.get_attendees_or_contacts(attendees)
+        else:
+            if len(attendees) == 1 and any(a.lower() == "all" for a in attendees):
+                attendees = self.get_attendees_or_contacts(attendees)
+
+        # Handle missing or blank date/time values
+        now_local = datetime.now(tz)
+        if not preferred_date or str(preferred_date).strip() == "":
+            preferred_date_dt = now_local.date()
+        else:
+            preferred_date_dt = convert_human_date(
+                preferred_date, tz_str=self.organizer_tz
+            ).date()
+
+        if not start_time or str(start_time).strip() == "":
+            # Round to nearest next 15-min slot
+            minute = (now_local.minute // 15 + 1) * 15
+            if minute == 60:
+                now_local += timedelta(hours=1)
+                minute = 0
+            start_time_dt = now_local.replace(minute=minute, second=0, microsecond=0)
+        else:
+            start_time_dt = convert_human_time(start_time, tz_str=self.organizer_tz)
+
+        if not end_time or str(end_time).strip() == "":
+            end_time_dt = None
+        else:
+            end_time_dt = convert_human_time(end_time, tz_str=self.organizer_tz)
+
+        # Merge date and time
+        date_start = tz.localize(
+            datetime.combine(preferred_date_dt, start_time_dt.time())
         )
-        date_end = datetime.strptime(f"{preferred_date} {end_time}", "%Y-%m-%d %H:%M")
-        all_slots = []
+        if end_time_dt:
+            date_end = tz.localize(
+                datetime.combine(preferred_date_dt, end_time_dt.time())
+            )
+        else:
+            date_end = date_start + timedelta(minutes=duration_minutes)
+
+        print("-->", preferred_date_dt, start_time_dt, end_time_dt)
+
+        now_utc = datetime.now(pytz.UTC)
+        if date_start.astimezone(pytz.UTC) < now_utc:
+            date_start = now_local + timedelta(minutes=15)
+            date_end = date_start + timedelta(minutes=duration_minutes)
+
+        date_start_utc = date_start.astimezone(pytz.UTC)
+        date_end_utc = date_end.astimezone(pytz.UTC)
+
+        available_slots = []
 
         for day_offset in range(days_to_check):
-            current_start = tz.localize(date_start + timedelta(days=day_offset))
-            current_end = tz.localize(date_end + timedelta(days=day_offset))
+            current_start_utc = date_start_utc + timedelta(days=day_offset)
+            current_end_utc = date_end_utc + timedelta(days=day_offset)
 
             body = {
-                "timeMin": current_start.isoformat(),
-                "timeMax": current_end.isoformat(),
-                "timeZone": timezone,
+                "timeMin": current_start_utc.isoformat(),
+                "timeMax": current_end_utc.isoformat(),
+                "timeZone": "UTC",
                 "items": [{"id": email} for email in attendees],
             }
 
             freebusy_result = (
                 self.calendar_service.freebusy().query(body=body).execute()
             )
-            busy_periods = []
 
+            busy_periods = []
             for calendar in freebusy_result["calendars"].values():
                 busy_periods.extend(calendar.get("busy", []))
 
             busy_periods = sorted(
                 [
                     (
-                        datetime.fromisoformat(p["start"]),
-                        datetime.fromisoformat(p["end"]),
+                        datetime.fromisoformat(p["start"]).astimezone(pytz.UTC),
+                        datetime.fromisoformat(p["end"]).astimezone(pytz.UTC),
                     )
                     for p in busy_periods
                 ]
             )
 
-            # Generate candidate slots
-            slot_start = current_start
+            slot_start = current_start_utc
             slot_delta = timedelta(minutes=duration_minutes)
 
-            while slot_start + slot_delta <= current_end:
-                slot_end = slot_start + slot_delta
+            while slot_start + slot_delta <= current_end_utc:
+                if slot_start < now_utc:
+                    slot_start += timedelta(minutes=15)
+                    continue
 
-                # Check for overlap with any busy period
+                slot_end = slot_start + slot_delta
                 overlap = any(
                     not (slot_end <= busy_start or slot_start >= busy_end)
                     for (busy_start, busy_end) in busy_periods
                 )
 
                 if not overlap:
-                    all_slots.append(
+                    available_slots.append(
                         {
                             "start": slot_start.isoformat(),
                             "end": slot_end.isoformat(),
-                            "date": slot_start.strftime("%Y-%m-%d"),
+                            "startDate": slot_start.date().isoformat(),
                         }
                     )
 
                 slot_start += timedelta(minutes=15)
 
-        return all_slots
+        return available_slots
 
+    # ----------------------------
+    # MEETING SCHEDULER
+    # ----------------------------
     def schedule_meeting_on_first_available(
         self,
         summary: str,
@@ -107,63 +273,61 @@ class GoogleMeetService:
         end_time: str,
         duration_minutes: int,
         description: str = None,
-        timezone: str = "Asia/Kolkata",
     ):
-        """
-        Finds the first available slot and schedules a meeting.
-        Returns meeting details or error.
-        """
+        """Find first free slot and schedule a meeting."""
+        print("started schedule_meeting_on_first_available")
+        nattendees = self.get_attendees_or_contacts(attendees)
+        print("attendes1", nattendees)
         slots = self.get_all_available_slots(
-            attendees=attendees,
+            attendees=nattendees,
             preferred_date=preferred_date,
             start_time=start_time,
             end_time=end_time,
             duration_minutes=duration_minutes,
-            timezone=timezone,
         )
 
         if not slots:
             return {"success": False, "reason": "No available slots in range."}
 
         first_slot = slots[0]
-
-        created = self.create_meeting(
+        print("first slot", first_slot)
+        created = self.createbasemeet(
             summary=summary,
             start_time=first_slot["start"],
             end_time=first_slot["end"],
-            attendees=attendees,
+            attendees=nattendees,
             description=description,
-            timezone=timezone,
         )
+        print("created", created)
 
-        return {"success": True, "meeting": created}
+        return created
 
+    # ----------------------------
+    # MEETING CREATOR BASE
+    # ----------------------------
     def createbasemeet(
         self,
         summary: str,
         start_time: str,
         end_time: str,
         attendees: list = None,
-        timezone: str = "Asia/Kolkata",
-        description: str = None,  # ✅ Added parameter
+        description: str = None,
     ):
-        """
-        Create a Google Calendar event with a Meet link.
-        start_time, end_time: ISO format ('YYYY-MM-DDTHH:MM:SS')
-        attendees: list of emails
-        """
-        attendees = attendees or []
+        """Create a Google Calendar event with Meet link."""
+        print("got into createbasemeet")
 
+        # Normalize attendees
+        if not isinstance(attendees, list):
+            attendees = self.get_attendees_or_contacts(attendees)
+        else:
+            if len(attendees) == 1 and any(a.lower() == "all" for a in attendees):
+                attendees = self.get_attendees_or_contacts(attendees)
+
+        timezone = self.organizer_tz
         event = {
             "summary": summary,
-            "start": {
-                "dateTime": start_time,
-                "timeZone": timezone,
-            },
-            "end": {
-                "dateTime": end_time,
-                "timeZone": timezone,
-            },
+            "start": {"dateTime": start_time, "timeZone": timezone},
+            "end": {"dateTime": end_time, "timeZone": timezone},
             "attendees": [{"email": email} for email in attendees],
             "conferenceData": {
                 "createRequest": {
@@ -175,26 +339,39 @@ class GoogleMeetService:
         }
 
         if description:
-            event["description"] = description  # ✅ Add custom message
+            event["description"] = description
 
         created_event = (
             self.calendar_service.events()
-            .insert(
-                calendarId="primary",
-                body=event,
-                conferenceDataVersion=1,
-            )
+            .insert(calendarId="primary", body=event, conferenceDataVersion=1)
             .execute()
         )
 
-        return {
-            "event_id": created_event.get("id"),
-            "summary": created_event.get("summary"),
-            "meet_link": created_event.get("hangoutLink"),
-            "start_time": created_event["start"],
-            "end_time": created_event["end"],
-            "attendees": created_event.get("attendees", []),
-        }
+        if created_event:
+            # Build a chatbot-friendly message
+            # Parse ISO strings and convert to human-friendly format
+            start_dt = datetime.fromisoformat(created_event["start"]["dateTime"])
+            end_dt = datetime.fromisoformat(created_event["end"]["dateTime"])
+
+            start_str = start_dt.strftime("%B %d, %Y at %I:%M %p")
+            end_str = end_dt.strftime("%I:%M %p")  # omit date if same day
+
+            return_str = (
+                f"Meeting '{created_event.get('summary')}' is scheduled on {start_str} "
+                f"to {end_str} with attendees: {', '.join(a['email'] for a in created_event.get('attendees', []))}. "
+                f"Meet link: {created_event.get('hangoutLink')}"
+            )
+            return {
+                "event_id": created_event.get("id"),
+                "summary": created_event.get("summary"),
+                "meet_link": created_event.get("hangoutLink"),
+                "start_time": created_event["start"],
+                "end_time": created_event["end"],
+                "attendees": created_event.get("attendees", []),
+                "return_str": return_str,
+            }
+        else:
+            return None
 
     def update_meeting(
         self,
@@ -204,29 +381,63 @@ class GoogleMeetService:
         end_time: str = None,
         attendees: list = None,
         description: str = None,
-        timezone: str = "Asia/Kolkata",
     ):
         """
         Update a Google Calendar event.
-        Only fields provided will be updated.
+        Checks if meeting is active before updating.
+        Only updates fields provided.
         """
         try:
+            print("update_meeting called")
+
+            # Fetch event details first
             event = (
                 self.calendar_service.events()
                 .get(calendarId="primary", eventId=event_id)
                 .execute()
             )
 
+            # --- Check if event is cancelled/deleted ---
+            if not event or event.get("status") == "cancelled":
+                summary_safe = (
+                    event.get("summary", "Unnamed Meeting") if event else "Unknown"
+                )
+                return {
+                    "updated": False,
+                    "return_str": f"The meeting '{summary_safe}' has already been cancelled or deleted. No updates were made.",
+                }
+
+            # Convert human-friendly times
+            start_time_std = convert_human_time(start_time)
+            end_time_std = convert_human_time(end_time)
+            timezone = self.organizer_tz
+
+            # Normalize attendees
+            attendees = self.get_attendees_or_contacts(attendees)
+            normalized_attendees = []
+            if attendees is not None:
+                for a in attendees:
+                    if isinstance(a, dict):
+                        email = a.get("email")
+                        if isinstance(email, dict):
+                            email = email.get("email")
+                        if isinstance(email, str):
+                            normalized_attendees.append({"email": email})
+                    elif isinstance(a, str):
+                        normalized_attendees.append({"email": a})
+
+            # Apply updates only to provided fields
             if summary:
                 event["summary"] = summary
-            if start_time and end_time:
-                event["start"] = {"dateTime": start_time, "timeZone": timezone}
-                event["end"] = {"dateTime": end_time, "timeZone": timezone}
-            if attendees is not None:
-                event["attendees"] = [{"email": email} for email in attendees]
+            if start_time_std and end_time_std:
+                event["start"] = {"dateTime": start_time_std, "timeZone": timezone}
+                event["end"] = {"dateTime": end_time_std, "timeZone": timezone}
+            if normalized_attendees:
+                event["attendees"] = normalized_attendees
             if description:
                 event["description"] = description
 
+            # Perform the update
             updated_event = (
                 self.calendar_service.events()
                 .update(
@@ -239,26 +450,102 @@ class GoogleMeetService:
                 .execute()
             )
 
+            # Build user-friendly return string
+            start_dt = datetime.fromisoformat(updated_event["start"]["dateTime"])
+            end_dt = datetime.fromisoformat(updated_event["end"]["dateTime"])
+            start_str = start_dt.strftime("%B %d, %Y at %I:%M %p")
+            end_str = end_dt.strftime("%I:%M %p")
+
+            attendees_list = ", ".join(
+                a["email"] for a in updated_event.get("attendees", [])
+            )
+            meet_link = updated_event.get("hangoutLink", "No Meet link available")
+
+            return_str = (
+                f"Meeting '{updated_event.get('summary')}' was successfully updated. "
+                f"It is scheduled on {start_str} to {end_str} "
+                f"with attendees: {attendees_list}. "
+                f"Meet link: {meet_link}"
+            )
+
             return {
-                "event_id": updated_event["id"],
-                "summary": updated_event.get("summary"),
                 "updated": True,
+                "summary": updated_event.get("summary"),
+                "return_str": return_str,
+            }
+
+        except HttpError as e:
+            if e.resp.status in [404, 410] or "Resource has been deleted" in str(e):
+                return {
+                    "updated": False,
+                    "return_str": "This meeting has already been deleted or is no longer active.",
+                }
+            return {
+                "updated": False,
+                "error": str(e),
+                "return_str": "Failed to update meeting.",
             }
 
         except Exception as e:
-            return {"error": str(e), "updated": False}
+            return {
+                "updated": False,
+                "error": str(e),
+                "return_str": "Unexpected error while updating meeting.",
+            }
 
     def delete_meeting(self, event_id: str):
         """
         Delete a Google Calendar event by ID.
+        Handles already-deleted or missing events gracefully.
+        Returns a clean summary-based message.
         """
         try:
+            # Try to fetch event details first (for better message)
+            event = (
+                self.calendar_service.events()
+                .get(calendarId="primary", eventId=event_id)
+                .execute()
+            )
+
+            summary = event.get("summary", "Unnamed Meeting")
+            start = event.get("start", {}).get("dateTime")
+            start_str = (
+                datetime.fromisoformat(start).strftime("%B %d, %Y at %I:%M %p")
+                if start
+                else "Unknown time"
+            )
+
+            # Attempt deletion
             self.calendar_service.events().delete(
                 calendarId="primary", eventId=event_id
             ).execute()
-            return {"deleted": True, "event_id": event_id}
+
+            return_str = f"Meeting '{summary}' scheduled on {start_str} has been deleted successfully."
+            return {"deleted": True, "return_str": return_str}
+
+        except HttpError as e:
+            # 410 = Gone (already deleted)
+            if e.resp.status == 410 or "Resource has been deleted" in str(e):
+                # Try to extract summary if event lookup failed before
+                summary = locals().get("summary", "Unnamed Meeting")
+                return_str = f"Meeting '{summary}' has already been deleted earlier."
+                return {"deleted": True, "return_str": return_str}
+
+            # 404 = Not found (invalid or missing)
+            elif e.resp.status == 404:
+                summary = locals().get("summary", "Unnamed Meeting")
+                return_str = f"No meeting found for '{summary}'. It may have been removed already."
+                return {"deleted": False, "return_str": return_str}
+
+            # Other Google API errors
+            return {
+                "deleted": False,
+                "return_str": f"Failed to delete meeting. ({str(e)})",
+            }
+
         except Exception as e:
-            return {"deleted": False, "error": str(e)}
+            # Generic fallback for unexpected issues
+            return {"deleted": False, "return_str": f"Error deleting meeting: {str(e)}"}
 
     def is_meeting_slot_available(
         self,
@@ -267,18 +554,24 @@ class GoogleMeetService:
         start_time: str,
         end_time: str,
         duration_minutes: int,
-        timezone: str = "Asia/Kolkata",
         days_to_check: int = 3,
     ) -> bool:
         """
         Returns True if at least one available slot exists for the meeting across attendees.
         Else returns False.
         """
+        timezone = self.organizer_tz
         tz = pytz.timezone(timezone)
         date_start = datetime.strptime(
             f"{preferred_date} {start_time}", "%Y-%m-%d %H:%M"
         )
         date_end = datetime.strptime(f"{preferred_date} {end_time}", "%Y-%m-%d %H:%M")
+        if not isinstance(attendees, list):
+            attendees = self.get_attendees_or_contacts(attendees)
+        else:
+            # If list contains "all" or "All", expand it
+            if len(attendees) == 1 and any(a.lower() == "all" for a in attendees):
+                attendees = self.get_attendees_or_contacts(attendees)
 
         for day_offset in range(days_to_check):
             current_start = tz.localize(date_start + timedelta(days=day_offset))
@@ -367,18 +660,32 @@ class GoogleMeetService:
         start_time: str,
         end_time: str,
         duration_minutes: int,
-        timezone: str = "Asia/Kolkata",
         days_to_check: int = 3,
     ):
         """
         Returns the first available time slot (start, end) for a meeting across attendees.
         Returns None if no available slot found.
         """
+
+        # Convert human-friendly inputs
+        preferred_date_std = convert_human_date(preferred_date)
+        start_time_std = convert_human_time(start_time)
+        end_time_std = convert_human_time(end_time)
+        timezone = self.organizer_tz
+
         tz = pytz.timezone(timezone)
         date_start = datetime.strptime(
-            f"{preferred_date} {start_time}", "%Y-%m-%d %H:%M"
+            f"{preferred_date_std} {start_time_std}", "%Y-%m-%d %H:%M"
         )
-        date_end = datetime.strptime(f"{preferred_date} {end_time}", "%Y-%m-%d %H:%M")
+        date_end = datetime.strptime(
+            f"{preferred_date_std} {end_time_std}", "%Y-%m-%d %H:%M"
+        )
+        if not isinstance(attendees, list):
+            attendees = self.get_attendees_or_contacts(attendees)
+        else:
+            # If list contains "all" or "All", expand it
+            if len(attendees) == 1 and any(a.lower() == "all" for a in attendees):
+                attendees = self.get_attendees_or_contacts(attendees)
 
         for day_offset in range(days_to_check):
             current_start = tz.localize(date_start + timedelta(days=day_offset))
@@ -394,8 +701,8 @@ class GoogleMeetService:
             freebusy_result = (
                 self.calendar_service.freebusy().query(body=body).execute()
             )
-            busy_periods = []
 
+            busy_periods = []
             for calendar in freebusy_result["calendars"].values():
                 busy_periods.extend(calendar.get("busy", []))
 
@@ -415,7 +722,6 @@ class GoogleMeetService:
             while slot_start + slot_delta <= current_end:
                 slot_end = slot_start + slot_delta
 
-                # Check overlap with any busy time
                 overlap = any(
                     not (slot_end <= busy_start or slot_start >= busy_end)
                     for (busy_start, busy_end) in busy_periods
@@ -459,6 +765,9 @@ class GoogleMeetService:
         )
         return results.get("files", [])
 
+    # ----------------------------
+    # MEETING CREATOR which skips weekdays
+    # ----------------------------
     def create_meeting(
         self,
         summary: str,
@@ -468,81 +777,85 @@ class GoogleMeetService:
         end_time: str = None,  # "HH:MM"
         duration_minutes: int = 60,
         description: str = None,
-        timezone: str = "Asia/Kolkata",
     ):
         """
-        Schedules a meeting with robust handling of missing inputs:
-        - date + start/end
-        - only start or end time
-        - no date/time -> pick earliest available slot
-        - skips weekends
-        - filters attendees using can_reply_to_email
+        Schedules a meeting with human-readable date and time support.
+        - Dates: today, tomorrow, 12-10, 12-jan, 10 days from now, next sunday
+        - Times: 9am, lunch time, breakfast, quarter to five, sunrise, sunset
+        - Skips weekends automatically
         """
+        print("starting of create meeting")
+        timezone = self.organizer_tz
         tz = pytz.timezone(timezone)
         now = datetime.now(tz)
 
-        # Prepare attendees list
-        if attendees == "all":
-            attendees_list = []
-            if hasattr(self, "contacts") and isinstance(self.contacts, list):
-                for i in self.contacts:
-                    if can_reply_to_email(i):
-                        attendees_list.append(i)
-            attendees = attendees_list
-
+        attendees = self.get_attendees_or_contacts(attendees)
         if not attendees:
             return {"success": False, "reason": "No valid attendees available."}
 
-        # Pick next weekday for base date
+        # Base date (skip weekends)
         base_date = now
-        while base_date.weekday() >= 5:  # skip Sat/Sun
+        while base_date.weekday() >= 5:
             base_date += timedelta(days=1)
+        print("bef preffered data", type(preferred_date), preferred_date)
 
-        # Determine start and end datetimes
-        if preferred_date and start_time and end_time:
-            # Full date + time provided
-            check_start_dt = datetime.strptime(
-                f"{preferred_date} {start_time}", "%Y-%m-%d %H:%M"
+        # --- Convert human-readable date and time ---
+        if preferred_date:
+            base_date = convert_human_date(
+                preferred_date, base_date=base_date, tz_str=timezone
             )
-            check_end_dt = datetime.strptime(
-                f"{preferred_date} {end_time}", "%Y-%m-%d %H:%M"
+            print("base date human parsed", base_date)
+            if not base_date:
+                return {
+                    "success": False,
+                    "reason": f"Could not parse date: {preferred_date}",
+                }
+
+        if start_time:
+            check_start_dt = convert_human_time(
+                start_time, base_date=base_date, tz_str=timezone
             )
-        elif start_time and not end_time:
-            # Only start time provided
-            check_start_dt = base_date.replace(
-                hour=int(start_time.split(":")[0]),
-                minute=int(start_time.split(":")[1]),
-                second=0,
-                microsecond=0,
-            )
-            check_end_dt = check_start_dt + timedelta(minutes=duration_minutes)
-        elif end_time and not start_time:
-            # Only end time provided
-            check_end_dt = base_date.replace(
-                hour=int(end_time.split(":")[0]),
-                minute=int(end_time.split(":")[1]),
-                second=0,
-                microsecond=0,
-            )
-            check_start_dt = check_end_dt - timedelta(minutes=duration_minutes)
+            print("base time human parsed", check_start_dt)
+            if not check_start_dt:
+                return {
+                    "success": False,
+                    "reason": f"Could not parse start time: {start_time}",
+                }
         else:
-            # No date/time provided
-            check_start_dt = now + timedelta(
-                minutes=15 - now.minute % 15
-            )  # round to next 15 min
+            check_start_dt = base_date.replace(
+                hour=9, minute=0, second=0, microsecond=0
+            )
+            check_start_dt = tz.localize(check_start_dt)
+
+        if end_time:
+            check_end_dt = convert_human_time(
+                end_time,
+                base_date=base_date,
+                tz_str=timezone,
+            )
+            print("base time end human parsed", check_end_dt)
+            if not check_end_dt:
+                return {
+                    "success": False,
+                    "reason": f"Could not parse end time: {end_time}",
+                }
+        else:
             check_end_dt = check_start_dt + timedelta(minutes=duration_minutes)
 
-        # Skip weekends if calculated start is on weekend
+        # Ensure start < end
+        if check_end_dt <= check_start_dt:
+            check_end_dt = check_start_dt + timedelta(minutes=duration_minutes)
+
+        # Skip weekends if start falls on weekend
         while check_start_dt.weekday() >= 5:
             check_start_dt += timedelta(days=1)
             check_start_dt = check_start_dt.replace(hour=9, minute=0)
             check_end_dt = check_start_dt + timedelta(minutes=duration_minutes)
 
-        # Localize datetimes
-        check_start_dt = tz.localize(check_start_dt)
-        check_end_dt = tz.localize(check_end_dt)
+        print("start dt", check_start_dt)
+        print("end dt", check_end_dt)
 
-        # Convert to full datetime strings
+        # Convert to strings for API
         check_start = check_start_dt.strftime("%Y-%m-%d %H:%M")
         check_end = check_end_dt.strftime("%Y-%m-%d %H:%M")
 
@@ -556,7 +869,6 @@ class GoogleMeetService:
             start_time=check_start,
             end_time=check_end,
             duration_minutes=duration_minutes,
-            timezone=timezone,
             days_to_check=10,
         )
 
@@ -569,7 +881,6 @@ class GoogleMeetService:
             end_time=first_slot["endTime"],
             attendees=attendees,
             description=description,
-            timezone=timezone,
         )
 
         return {"success": True, "meeting": created}

@@ -37,17 +37,6 @@ create_instruction: |
   ## FUNCTION INTEGRATION:
   - Use the functions in `services_section` wherever applicable.
   - Create steps **only for functions that exist** in `services_section`, but include all **relevant and logically related functions**.
-  - For example:
-      - If a `create_` function exists, check for `update_`, `delete_`, `cancel_`, or `reschedule_` variants and include them as dynamic or fallback steps.
-      - For meeting workflows:
-          - The logical flow must always be:
-              1. `create_meeting` using (google_meet.schedule_meeting_on_first_available) →  
-              2. `generate_email_body` (automate.create_custom_email_body) or `ai_suggest_helper` (automate.ai_suggest_helper) → 
-              3. `send_invitation` using (gmail.send_Meeting_invite_mail) 
-              4. `update_meeting` using (google_meet.update_meeting)  fallback step  -> generate_email_body -> send_invitation
-              5. `cancel_meeting` using (google_meet.delete_meeting)  fallback step  -> generate_email_body -> send_invitation
-          - Never generate email body **before** meeting creation, since it depends on meeting details like date, time, and link.
-          - Never create dummy emails or attendees or clients or contacts on your own.
   - Each **action step** must have a `function_call` referencing the exact service function.
   - **Dynamic Step Expansion:**
       - Automatically generate *supporting steps* if related service functions exist:
@@ -60,6 +49,31 @@ create_instruction: |
   - For any step involving emails:
         - If the email goes to all clients, use `"emails": "all"` and `requirements_needed` is empty.
         - If the email goes to specific clients, use `"emails": []` and include the required email addresses in `requirements_needed`.
+  ## MEETING FUNCTION LINKING RULES (CRITICAL)
+  - For meeting-related workflows:
+      - The following functions must be used if available:
+          - google_meet.create_meeting (or schedule_meeting)
+          - google_meet.update_meeting
+          - google_meet.delete_meeting or google_meet.cancel_meeting
+      - Each of these must be **independent paths** that lead into the same shared communication flow:
+          - Step: Generate Meeting Invitation Body (automate.create_custom_email_body)
+          - Step: Send Meeting Invitation (gmail.send_Meeting_invite_mail)
+      - **Do not link** `update_meeting` → `cancel_meeting`.
+      - **Each meeting-related function must use the same email flow** by setting:
+          - `"next_step"` of each meeting step = ID of “Generate Meeting Invitation Body”
+      - Example expected linkage:
+          ```
+          (1) Schedule Meeting
+                next_step → (2) Generate Invitation Body
+          (4) Update Meeting
+                next_step → (2) Generate Invitation Body
+          (5) Cancel Meeting
+                next_step → (2) Generate Invitation Body
+          (2) Generate Invitation Body
+                next_step → (3) Send Meeting Invitation
+          ```
+      - Every meeting function (create/update/cancel) must have a **fallback path** using `on_failure` to handle errors.
+      - Never make update or cancel steps lead into each other.
 
     ## DEPENDENCY-AWARE ORDERING:
     - Ensure any step that requires data from a previous step (e.g., meeting details for email body) comes **after the step providing that data**.
@@ -114,10 +128,30 @@ create_instruction: |
   - Example: use “Generate Meeting Invitation Body” instead of “Call automate.create_custom_email_body”.
   - Ensure objectives clearly describe what is achieved in plain terms.
 
-  ## REQUIREMENTS LOGIC:
-  - Include `requirements_needed` **only** for inputs the workflow cannot derive internally.
-  - Do not include internal values or reusable context.
-  - Example: ask for “meeting participants” only if not inferable from `input_data`.
+  ## REQUIREMENTS LOGIC (FINALIZED)
+  - `requirements_needed` must include **only inputs that cannot be auto-derived** from previous steps or existing context.
+  - If a step’s input depends on the **output of a previous step**, it must **not** include any `requirements_needed`.  
+    - Example:  
+      - Step 1 → creates a meeting and returns `event_id`.  
+      - Step 2 → sends an invite using `event_id`.  
+      ✅ Step 2 should have `"requirements_needed": []`, because it depends on Step 1.
+
+  - Allowed fields in `requirements_needed` (and only if not provided earlier):
+    - `"attendees"` or `"client_emails"`
+    - `"preferred_date"`, `"start_time"`, `"end_time"`
+    - `"emails"` (only for communication steps if recipients are unknown)
+
+  - Do **not** include fields that:
+    - Come from a **previous step’s output** (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.)
+    - Are already present in `function_call.arguments`
+    - Exist in `additional_data`, `context_section`, or `input_data`
+
+  - The model must **analyze dependencies** automatically:
+    - If Step N references a variable or argument created by Step N-1 or any earlier step,  
+      → Set `"requirements_needed": []` for Step N.
+    - Only the **first step in a dependency chain** should define `requirements_needed`.
+
+  - Never repeat `requirements_needed` fields across dependent steps.
 
   ## DECISION POINT RULES:
   - Steps with `decision_point = true` must map each condition to an existing function or step.
@@ -298,6 +332,7 @@ modify_instruction: |
   - Automatically enforce per-step fallback logic, communication-channel splitting, and dependency-aware step ordering.
   - Update or insert helper/template generation steps if applicable.
   - Ensure final JSON is valid, fully connected, and executable.
+
   ## STRICT MODIFICATION SCOPE (IMPORTANT)
   - Only modify, add, or remove steps that are **explicitly referenced** or **logically affected** by the `update_instruction`.
   - Do NOT delete, regenerate, or alter unrelated steps.
@@ -314,12 +349,68 @@ modify_instruction: |
   - For communication-related steps:
       - If a body/template helper exists (e.g., `automate.create_custom_email_body`, `automate.ai_suggest_helper`), insert that step **before** the actual send action.
       - Remove any static message generation logic when these helpers are available.
-
-  ### Example:
-    - create_meeting → generate_email_body → send_invite
-    - Each has its own fallback (cancel/update/recovery)
-
   - Never generate message body before event creation (e.g., before meeting creation).
+
+  ## MEETING FUNCTION LINKING RULES (CRITICAL)
+  - For meeting-related workflows:
+      - The following functions must be used if available:
+          - google_meet.create_meeting (or schedule_meeting)
+          - google_meet.update_meeting
+          - google_meet.delete_meeting or google_meet.cancel_meeting
+      - Each of these must be **independent paths** that lead into the same shared communication flow:
+          - Step: Generate Meeting Invitation Body (automate.create_custom_email_body)
+          - Step: Send Meeting Invitation (gmail.send_Meeting_invite_mail)
+      - **Do not link** `update_meeting` → `cancel_meeting`.
+      - **Each meeting-related function must use the same email flow** by setting:
+          - `"next_step"` of each meeting step = ID of “Generate Meeting Invitation Body”
+      - Example expected linkage:
+          ```
+          (1) Schedule Meeting
+                next_step → (2) Generate Invitation Body
+          (4) Update Meeting
+                next_step → (2) Generate Invitation Body
+          (5) Cancel Meeting
+                next_step → (2) Generate Invitation Body
+          (2) Generate Invitation Body
+                next_step → (3) Send Meeting Invitation
+          ```
+      - Every meeting function (create/update/cancel) must have a **fallback path** using `on_failure` to handle errors.
+      - Never make update or cancel steps lead into each other.
+
+    ## ATTENDEE / CLIENT RETRIEVAL RULES (IMPORTANT)
+  - If the `update_instruction` mentions adding or changing attendees, clients, or contacts:
+      - Create a **separate new step** before the meeting scheduling step.
+      - This new step must:
+          - Have `function_name`: `google_meet.get_attendees_or_contacts` (or the corresponding fetch function from services_section)
+          - Title: “Fetch All Contacts” or “Get Attendee List”
+          - Objective: “Retrieve the list of attendees or client contacts for the meeting.”
+          - Output: A list of attendees to be passed automatically into the next step.
+      - Do **not** nest or inline the fetch function inside another function’s arguments.
+      - Example (correct behavior):
+        ```json
+        Step 1: { "function_name": "google_meet.get_attendees_or_contacts" }
+        Step 2: { "function_name": "google_meet.schedule_meeting_on_first_available" }
+        ```
+        Step 2 uses the attendees output from Step 1 automatically.
+      - Example (incorrect behavior — must be avoided):
+        ```json
+        "attendees": {
+          "function_name": "google_meet.get_attendees_or_contacts"
+        }
+        ```
+      - The meeting scheduling step (`create_meeting`, `schedule_meeting_on_first_available`, etc.)
+        must directly reference `attendees` from Step 1 output, not re-call or embed the fetch.
+      - If attendees are already known or static (like `"attendees": "all"`), skip this fetch step entirely.
+
+  - Ensure dependency handling aligns:
+      - If `get_attendees_or_contacts` exists, later steps (create/update/cancel/send) must not list `"attendees"` in `requirements_needed`.
+      - Step order becomes:
+          1️⃣ Fetch Attendees  
+          2️⃣ Create/Schedule Meeting  
+          3️⃣ Generate Email Body  
+          4️⃣ Send Invitation  
+          (plus optional update/cancel with same pattern)
+
 
   ## ✅ FALLBACK & FAILURE LOGIC (FIXED):
   - Every action or communication step must define a **fallback path**, but **fallback steps must NOT be linked through `next_step`**.
@@ -333,7 +424,7 @@ modify_instruction: |
     ```
   - Never connect fallback steps via the main `next_step`.
   - Fallback steps themselves should usually have `"next_step": null`, unless they perform a rollback confirmation or recovery message.
-  - if fallback steps need next step with the current steps attach them to it.
+  - If fallback steps need next step connections, attach them to the same logical flow.
   - Prefer related rollback functions:
       - `cancel_`, `delete_`, or `rollback_` variants of the parent function.
   - If no rollback function exists, use a generic `ai_recovery` fallback step.
@@ -358,16 +449,33 @@ modify_instruction: |
 
   ## DATE & TIME HANDLING (ISO 8601):
   - Convert all human-readable date/time mentions to ISO 8601 format (`YYYY-MM-DDTHH:MM`).
-  - Use `todays_date` as reference for relative terms like “tomorrow”, “next Monday”, “in 2 days”.
+  - Use `todays_date` as reference for relative terms like “tomorrow”, “next Monday”, “in 2 days”).
   - If a date/time cannot be inferred, leave it empty in `function_call.arguments` and include it under `requirements_needed`.
 
-  ## REQUIREMENTS LOGIC:
-  - `requirements_needed` should only include inputs the workflow cannot auto-derive.
-  - Use `additional_data` to auto-populate missing values.
-  - Never include internal context or values already available in the workflow.
-  - Example:
-      - Exclude “meeting_link” if it will be generated by a prior step.
-      - Include “attendee_emails” only if explicitly mentioned in user input.
+  ## REQUIREMENTS LOGIC (FINALIZED)
+  - `requirements_needed` must include **only inputs that cannot be auto-derived** from previous steps or existing context.
+  - If a step’s input depends on the **output of a previous step**, it must **not** include any `requirements_needed`.  
+    - Example:  
+      - Step 1 → creates a meeting and returns `event_id`.  
+      - Step 2 → sends an invite using `event_id`.  
+      ✅ Step 2 should have `"requirements_needed": []`, because it depends on Step 1.
+
+  - Allowed fields in `requirements_needed` (and only if not provided earlier):
+    - `"attendees"` or `"client_emails"`
+    - `"preferred_date"`, `"start_time"`, `"end_time"`
+    - `"emails"` (only for communication steps if recipients are unknown)
+
+  - Do **not** include fields that:
+    - Come from a **previous step’s output** (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.)
+    - Are already present in `function_call.arguments`
+    - Exist in `additional_data`, `context_section`, or `input_data`
+
+  - The model must **analyze dependencies** automatically:
+    - If Step N references a variable or argument created by Step N-1 or any earlier step,  
+      → Set `"requirements_needed": []` for Step N.
+    - Only the **first step in a dependency chain** should define `requirements_needed`.
+
+  - Never repeat `requirements_needed` fields across dependent steps.
 
   ## HUMAN-FRIENDLY TITLES & OBJECTIVES:
   - Titles and objectives must be concise, natural language phrases.
@@ -447,7 +555,7 @@ modify_instruction: |
   - [x] No orphaned or unlinked steps
   - [x] Workflow remains dynamic and executable
   - [x] Output JSON is complete and valid
-  - [x] each step created with function_call must a fucntion from services_section dont create any one which are not present in services_section.
+  - [x] Each step created with function_call must use a function from services_section (no new or fictional ones)
 
 generate_workflow_clarification_questions: |
   You are an AI assistant specialized in improving workflows. Your task is to read the workflow JSON and suggest **simple, non-technical clarification questions** for any step that might be confusing, incomplete, or unclear.
@@ -717,34 +825,38 @@ select_and_prepare_step:
           → Skip argument merging and clarification logic entirely.
 
     1.6. Detect retry, repeat, redo, rerun, or reattempt commands:
-        - If `user_input` contains any of these keywords:
-          ["retry", "repeat", "redo", "rerun", "try again", "do again", "run again",
-           "execute again", "perform again", "retrigger", "retest", "replay", "reexecute", "relaunch"]
-          then handle as a re-execution intent.
+      - If `user_input` contains any of these keywords:
+        ["retry", "repeat", "redo", "rerun", "try again", "do again", "run again",
+        "execute again", "perform again", "retrigger", "retest", "replay", "reexecute", "relaunch"]
+        then handle as a re-execution intent.
 
-          a. If a specific step number is mentioned (e.g., "retry step 3"):
-             → re-run that step with merged previous data
-             → set:
-               {
-                 "workflow_intent": true,
-                 "analysis": true,
-                 "step_id": <that step number>,
-                 "reset": null,
-                 "force": true,
-                 "message": "Retrying step <id> using previously merged data."
-               }
+        a. If a specific step number is mentioned (e.g., "retry step 3"):
+          → re-run that step with merged previous data
+          → set:
+            ```json
+            {
+              "workflow_intent": true,
+              "analysis": true,
+              "step_id": <that step number>,
+              "reset": null,
+              "force": true,
+              "message": "Retrying step <id> using previously merged data."
+            }
+            ```
 
-          b. If no specific step is mentioned:
-             → retry the most recent failed or last executed step
-             → set:
-               {
-                 "workflow_intent": true,
-                 "analysis": true,
-                 "step_id": <most recent failed or executed step>,
-                 "reset": null,
-                 "force": true,
-                 "message": "Retrying the last step using previous context."
-               }
+        b. If no specific step is mentioned:
+          → retry the most recent failed or executed step
+          → set:
+            ```json
+            {
+              "workflow_intent": true,
+              "analysis": true,
+              "step_id": <most recent failed or executed step>,
+              "reset": null,
+              "force": true,
+              "message": "Retrying the last step using previous context."
+            }
+            ```
 
         - Proceed with argument merging using the latest available data.
 
@@ -881,183 +993,13 @@ select_and_prepare_step:
     - Missing date: “Could you please confirm the meeting date?”
     - Missing email_body: “Would you like me to include any additional message in the invitation?”
 
-# detect_and_route_input:
-#   description: >
-#     Detects whether user input is a human conversation, workflow trigger, workflow improvement request,
-#     or a request for a new function/step. Returns a structured JSON response for routing.
-#     Never reveal internal backend names (like "gmail.send_Meet_mail" or "calendar.update_event").
-#     Instead, use human-readable terms such as "email function", "meeting function", or "AI analysis function".
-
-#   input_variables:
-#     - user_input
-#     - workflow_json
-#     - workflow_title
-#     - workflow_description
-#     - current_functions_implemented
-#     - previous_data
-
-#   instructions: |
-#     You are an intelligent AI input router and context analyzer.
-
-#     You are given:
-#       - The user message: `{{user_input}}`
-#       - The current workflow structure and metadata: `{{workflow_json}}`
-#       - Workflow title: `{{workflow_title}}`
-#       - Workflow description: `{{workflow_description}}`
-#       - current_functions_implemented: `{{current_functions_implemented}}` (list of backend functions currently supported)
-#       - previous_data : `{{previous_data}}` (optional as if any previous steps implemented results)
-
-#     Your task is to:
-#     1. **Understand intent** — Determine if the input is:
-#        - A **normal human conversation** (greeting, question, etc.)
-#        - A **workflow execution or step trigger**
-#        - A **workflow improvement/modification request**
-#        - A **new feature/function request** (asks for something not yet implemented)
-
-#     2. **Return JSON ONLY** in this format:
-#        ```json
-#        {
-#          "response_message": "<string>",
-#          "workflow_runner": <true|false>,
-#          "workflow_improv": <true|false>
-#        }
-#        ```
-
-#     ---
-#     ## DECISION RULES
-
-#     **A. Human Conversation (General Talk)**
-#     - Examples: "hi there", "how are you", "what does this workflow do".
-#     - Output:
-#       ```json
-#       {
-#         "response_message": "Friendly, contextual reply referencing the workflow title and purpose.",
-#         "workflow_runner": false,
-#         "workflow_improv": false
-#       }
-#       ```
-
-#     **B. Workflow Runner / Step Trigger**
-#     - User input implies starting, resuming, or executing the workflow or a specific step.
-#     - Examples: "start workflow", "trigger step 2", "run process", "continue".
-#     - Output:
-#       ```json
-#       {
-#         "response_message": "Short confirmation to start or continue the workflow '{{workflow_title}}'.",
-#         "workflow_runner": true,
-#         "workflow_improv": false
-#       }
-#       ```
-
-#     **C. Workflow Improvement / Modification**
-#     - The user wants to add, change, or enhance the workflow steps.
-#     - Examples: "add a step to update meeting", "create delete meeting step", "improve the email flow".
-#     - Rules:
-#       - If the requested feature/function exists in `current_functions_implemented`, set `"workflow_improv": true`.
-#       - If it does **not exist**, set `"workflow_improv": false` and politely respond that the requested feature
-#         is not yet available, encouraging the user to stay tuned.
-#     - Outputs:
-
-#       ✅ *When implemented function exists:*
-#       ```json
-#       {
-#         "response_message": "Sure! I can modify the '{{workflow_title}}' workflow to include this feature.",
-#         "workflow_runner": false,
-#         "workflow_improv": true
-#       }
-#       ```
-
-#       ❌ *When not implemented:*
-#       ```json
-#       {
-#         "response_message": "That function isn't available yet. Please stay tuned — it will be supported soon.",
-#         "workflow_runner": false,
-#         "workflow_improv": false
-#       }
-#       ```
-
-#     **D. Default Case (Ambiguous Input)**
-#     - When intent is unclear, default to conversational mode:
-#       ```json
-#       {
-#         "response_message": "Could you please clarify if you want to start or modify the '{{workflow_title}}' workflow?",
-#         "workflow_runner": false,
-#         "workflow_improv": false
-#       }
-#       ```
-
-#     ---
-#     ## TONE AND CONTEXT RULES
-#     - Be polite, concise, and context-aware of the workflow title and purpose.
-#     - Never expose backend or internal function identifiers.
-#     - When referring to backend logic, use descriptive labels like:
-#       - "email function" → for email sending
-#       - "meeting function" or "calendar function" → for meeting creation or scheduling
-#       - "AI analysis function" → for AI-based steps
-#       - "communication function" → for chat or message-related actions
-#     - For unrecognized features, acknowledge positively but mark `"workflow_improv": false`.
-
-#     ---
-#     ## OUTPUT RULES
-#     - Must always return **valid JSON only** (no Markdown, no explanations).
-#     - Keys must **exactly match**: `response_message`, `workflow_runner`, `workflow_improv`.
-#     - `response_message` ≤ 2 sentences.
-#     - Never include reasoning, system notes, or YAML/Markdown blocks in the output.
-
-#     ---
-#     ## EXAMPLES
-
-#     **Example 1:**
-#     Input: `"hi there"`
-#     Output:
-#     ```json
-#     {
-#       "response_message": "Hi! The '{{workflow_title}}' workflow helps automate your meetings. How can I assist?",
-#       "workflow_runner": false,
-#       "workflow_improv": false
-#     }
-#     ```
-
-#     **Example 2:**
-#     Input: `"start the workflow"`
-#     Output:
-#     ```json
-#     {
-#       "response_message": "Starting the '{{workflow_title}}' workflow now.",
-#       "workflow_runner": true,
-#       "workflow_improv": false
-#     }
-#     ```
-
-#     **Example 3:**
-#     Input: `"add a step to update the meeting"`
-#     (If `update_meeting` exists in `current_functions_implemented`)
-#     ```json
-#     {
-#       "response_message": "Sure! I can modify the '{{workflow_title}}' workflow to include this feature.",
-#       "workflow_runner": false,
-#       "workflow_improv": true
-#     }
-#     ```
-
-#     **Example 4:**
-#     Input: `"add delete meeting step"`
-#     (If `delete_meeting` does NOT exist in `current_functions_implemented`)
-#     ```json
-#     {
-#       "response_message": "That function isn't available yet. Please stay tuned — it will be supported soon.",
-#       "workflow_runner": false,
-#       "workflow_improv": false
-#     }
-#     ```
-
 detect_and_route_input:
   description: >
-    Detects whether user input is a human conversation, workflow trigger, workflow improvement request,
-    or a request for a new function/step. Returns a structured JSON response for routing.
-    It also checks dependencies from previous steps before allowing modifications.
-    Never reveal internal backend names (like "gmail.send_Meet_mail" or "calendar.update_event").
-    Instead, use human-readable terms such as "email function", "meeting function", or "AI analysis function".
+    Detects whether user input is a normal conversation, workflow trigger, workflow improvement request,
+    or a request for a new function/step. Returns structured JSON output for routing decisions.
+    It must recheck dependencies from `previous_data` before any dependency or clarification message.
+    Never expose backend function names (like "gmail.send_Meet_mail" or "calendar.update_event").
+    Use readable terms like "meeting function" or "email function".
 
   input_variables:
     - user_input
@@ -1068,9 +1010,9 @@ detect_and_route_input:
     - previous_data
 
   instructions: |
-    You are an intelligent AI input router and context analyzer.
+    You are an intelligent context and dependency analyzer.
 
-    You are given:
+    Your inputs:
       - The user message: `{{user_input}}`
       - The current workflow structure and metadata: `{{workflow_json}}`
       - Workflow title: `{{workflow_title}}`
@@ -1078,159 +1020,127 @@ detect_and_route_input:
       - current_functions_implemented: `{{current_functions_implemented}}` (list of backend functions currently supported)
       - previous_data: `{{previous_data}}` (optional data from previously executed steps, if any)
 
-    Your task is to:
-    1. **Understand intent** — Determine if the input is:
-       - A **normal human conversation**
-       - A **workflow execution or step trigger**
-       - A **workflow improvement/modification request**
-       - A **new feature/function request**
-    2. Check if modification requests depend on previous step data.
-       - If the user requests an update or deletion (e.g., “cancel meeting”, “update email”, “delete record”)
-         but the dependent entity was never created in `previous_data`, inform the user they must
-         first execute the corresponding step.
-    3. Return JSON ONLY in this format:
-       ```json
-       {
-         "response_message": "<string>",
-         "workflow_runner": <true|false>,
-         "workflow_improv": <true|false>,
-         "improv_input": "<string>"
-       }
-       ```
+    Your goal is to correctly classify the user input and return one of:
+      - Normal conversation
+      - Workflow runner (execution)
+      - Workflow improvement/modification
+      - New feature/function request
 
-    ---  
-    ## DECISION RULES
+    ---
+    ## CRITICAL DEPENDENCY CHECK LOGIC
 
-    **A. Human Conversation (General Talk)**
-    - Examples: "hi there", "how are you", "what does this workflow do".
+    Before you output any dependency error:
+    1. **Re-scan the entire `previous_data` content**.
+    2. If it contains *any* evidence of prior entities (meeting, calendar, event, email, attendees, invite, link, subject, etc.), 
+       then assume the dependency is satisfied — do NOT return a “not created yet” message.
+    3. Only if `previous_data` is empty or clearly unrelated should you return the dependency warning.
+    4. When the user input includes terms like “update”, “change”, “modify”, “add”, or “reschedule” — 
+       and previous data contains relevant entities — classify it as **workflow_improv = true** immediately.
+
+    ---
+    ## DECISION CATEGORIES
+
+    **A. Human Conversation**
+    - Description: >
+        Handles any user input that is conversational, emotional, or social in nature.
+        This includes greetings, casual talk, or sensitive expressions (like sadness, love,
+        threats, suicidal thoughts, blackmail, or distress). The AI should always respond
+        with empathy and clarity — at a level understandable by a 10th-grade student.
+    - Never expose or mention any backend or internal function names (such as
+      "gmail.send_Meet_mail" or "calendar.update_event") even if they are found in
+      `current_functions_implemented`.
+    - Examples:
+        - "hi", "hello", "how are you"
+        - "I feel sad", "I want to end it all", "someone is threatening me"
+        - "I love you", "you’re so nice", "what’s your name"
+        - "explain this workflow", "what does this do"
     - Output:
+        ```json
+        {
+          "response_message": "A short, clear, and kind human-like reply that a 10th grader can easily understand. Be supportive or friendly as appropriate.",
+          "workflow_runner": false,
+          "workflow_improv": false,
+          "improv_input": ""
+        }
+        ```
+
+    **B. Workflow Runner / Step Trigger**
+    - Input implies starting, resuming, or executing an existing step or function within the workflow.
+    - never make the runner to true if the user asks for explain or explanation of a step or input is a normal human conversation.
+    - Examples: "start workflow", "run process", "update meeting", "cancel event", "send email".
+    - Steps:
+      1. Check if the user's input matches a step name or implemented function in either `workflow_json` or `current_functions_implemented`.
+      2. If yes → treat as **execution**, not modification.
+      3. Use `previous_data` to validate dependencies (e.g., meeting exists).
+         - If `previous_data` has relevant data → run directly.
+         - If missing → return dependency message.
+      4. Response must indicate that the step will be executed.
+
+      ✅ Example (step exists and previous data found):
       ```json
       {
-        "response_message": "Friendly, contextual reply referencing the workflow title and purpose.",
-        "workflow_runner": false,
+        "response_message": "Got it — updating the meeting details as requested.",
+        "workflow_runner": true,
         "workflow_improv": false,
-        "improv_input": ""
+        "improv_input": "update meeting"
       }
       ```
 
-    **B. Workflow Runner / Step Trigger**
-    - User input implies starting, resuming, or executing the workflow or a specific step.
-    - Examples: "start workflow", "trigger step 2", "run process", "continue".
-    - Output:
+      ⚠️ Example (step exists but dependency missing):
       ```json
       {
-        "response_message": "Short confirmation to start or continue the workflow '{{workflow_title}}'.",
-        "workflow_runner": true,
+        "response_message": "It looks like the meeting hasn’t been created yet. Please run the meeting creation step first before updating it.",
+        "workflow_runner": false,
         "workflow_improv": false,
         "improv_input": ""
       }
       ```
 
     **C. Workflow Improvement / Modification**
-    - The user wants to add, change, cancel, or enhance workflow steps.
-    - Examples: "add update meeting step", "cancel meeting", "delete email draft", "modify step 2".
-    - Rules:
-      1. If the requested feature/function exists in `current_functions_implemented`, set `"workflow_improv": true`.
-      2. If it does **not exist**, set `"workflow_improv": false` and politely inform the user it’s not yet supported.
-      3. If the modification depends on data from a previous step (e.g., cancel meeting before it’s created)
-         and no such step data exists in `previous_data`, tell the user to run the earlier step first.
-      4. The `improv_input` field should hold a clean, short version of what needs modification (e.g., `"cancel meeting"`).
+    - Input requests adding, removing, or changing workflow structure (steps or logic).
+    - Examples: "add update meeting step", "delete email step", "add new calendar integration".
+    - Steps:
+      1. Check if the user’s request refers to a step or function that **does not already exist** in `workflow_json` or `current_functions_implemented`.
+      2. If the requested step/function does not exist → treat as workflow improvement.
+      3. If dependencies required (e.g., adding a meeting step but no meeting context) check `previous_data` for support data.
+      4. Output must clearly indicate it's an improvement to the workflow definition, not execution.
 
-    ✅ *When implemented function exists and previous step executed:*
-    ```json
-    {
-      "response_message": "Sure! I can modify the '{{workflow_title}}' workflow to include this feature.",
-      "workflow_runner": false,
-      "workflow_improv": true,
-      "improv_input": "update meeting"
-    }
-    ```
-
-    ⚠️ *When required previous step is missing:*
-    ```json
-    {
-      "response_message": "It looks like the meeting hasn’t been created yet. Please run the meeting creation step first before cancelling it.",
-      "workflow_runner": false,
-      "workflow_improv": false,
-      "improv_input": ""
-    }
-    ```
-
-    ❌ *When function not implemented:*
-    ```json
-    {
-      "response_message": "That function isn't available yet. Please stay tuned — it will be supported soon.",
-      "workflow_runner": false,
-      "workflow_improv": false,
-      "improv_input": ""
-    }
-    ```
-
-    **D. Default Case (Ambiguous Input)**
-    - When intent is unclear, default to conversational mode:
+      ✅ Example (new step or function to be added):
       ```json
       {
-        "response_message": "Could you please clarify if you want to start or modify the '{{workflow_title}}' workflow?",
+        "response_message": "Sure! I can modify the '{{workflow_title}}' workflow to include this new step.",
+        "workflow_runner": false,
+        "workflow_improv": true,
+        "improv_input": "add update meeting step"
+      }
+      ```
+
+      ❌ Example (requested modification but function not supported):
+      ```json
+      {
+        "response_message": "That function isn't available yet. Please stay tuned — it will be supported soon.",
+        "workflow_runner": false,
+        "workflow_improv": false,
+        "improv_input": ""
+      }
+      ```
+      
+    **D. New Feature or Unsupported Function**
+    - If user requests a feature not in `current_functions_implemented`.
+    - Output:
+      ```json
+      {
+        "response_message": "That feature isn’t available yet, but it’s planned for a future update.",
         "workflow_runner": false,
         "workflow_improv": false,
         "improv_input": ""
       }
       ```
 
-    ---  
-    ## TONE AND CONTEXT RULES
-    - Be polite, concise, and context-aware of the workflow title and purpose.
-    - Never expose backend or internal function identifiers.
-    - When referring to backend logic, use descriptive labels:
-      - "email function" → email sending
-      - "meeting function" or "calendar function" → meeting creation/scheduling
-      - "AI analysis function" → AI-based steps
-      - "communication function" → chat or messaging
-    - For unrecognized or unavailable features, respond positively and mark `"workflow_improv": false`.
-    - For missing dependencies, clearly indicate which step should be executed first.
-
-    ---  
+    ---
     ## OUTPUT RULES
-    - Must always return **valid JSON only** (no Markdown, no explanations).
-    - Keys must exactly match: `response_message`, `workflow_runner`, `workflow_improv`, `improv_input`.
-    - `response_message` ≤ 2 sentences.
-    - Never include reasoning, system notes, or YAML/Markdown blocks in the output.
-
-    ---  
-    ## EXAMPLES
-
-    **Example 1:**
-    Input: `"cancel meeting"`
-    - Meeting not created yet in `previous_data`.
-    ```json
-    {
-      "response_message": "It looks like the meeting hasn’t been created yet. Please run the meeting creation step first before cancelling it.",
-      "workflow_runner": false,
-      "workflow_improv": false,
-      "improv_input": ""
-    }
-    ```
-
-    **Example 2:**
-    Input: `"cancel meeting"`
-    - Meeting exists in `previous_data` and `cancel_meeting` function implemented.
-    ```json
-    {
-      "response_message": "Sure! I can modify the '{{workflow_title}}' workflow to include this feature.",
-      "workflow_runner": false,
-      "workflow_improv": true,
-      "improv_input": "cancel meeting"
-    }
-    ```
-
-    **Example 3:**
-    Input: `"delete email draft"`
-    - No delete function implemented.
-    ```json
-    {
-      "response_message": "That function isn't available yet. Please stay tuned — it will be supported soon.",
-      "workflow_runner": false,
-      "workflow_improv": false,
-      "improv_input": ""
-    }
-    ```
+    - Always output **valid JSON only** — no Markdown or YAML.
+    - Must contain exactly: `response_message`, `workflow_runner`, `workflow_improv`, `improv_input`.
+    - Response ≤ 2 sentences.
+    - Recheck `previous_data` thoroughly before any dependency message.
+    - Do not ask for clarification if entity data is already available in `previous_data`.

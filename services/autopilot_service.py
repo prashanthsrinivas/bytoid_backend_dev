@@ -29,10 +29,13 @@ logger = get_logger(__name__)
 
 
 class AutoMateService:
-    def __init__(self, userid):
+    def __init__(self, userid, testing=False, workflow=None, wf_id=None):
         self.userid = userid
         self.connection = connect_to_rds()
         self.autopilot_data = None
+        self.testing = testing
+        self.workflow = workflow
+        self.current_wf_id = wf_id
 
     def __enter__(self):
         return self
@@ -41,37 +44,83 @@ class AutoMateService:
         if self.connection:
             self.connection.close()
 
-    def create_custom_email_body(self, user_input: str):
-        # Get business info
-        business_info = get_business_info(
-            userid=self.userid, connection=self.connection
-        )
-
-        # Single combined prompt
-        prompt = f"""
-        You are an expert email designer and a web designer.
-        Write a professional, engaging, and personalized email based on the user's request.
-
-        User Request:
-        "{user_input}"
-
-        Business Details:
-        Name: {business_info.get('BusinessName')}
-        Address: {business_info.get('BillingAddress')}
-        Website: {business_info.get('WebsiteUrl')}
-
-        The email should:
-        - Be clear, polite, and persuasive
-        - Mention the business name and website naturally
-        - Include a call-to-action if relevant
-        - Have a warm greeting and proper closing
-        - include busineess details if needed else dont include
-
-        Write the full email body only, do not include any instructions or explanation.
+    def create_custom_email_body(self, user_input: str, **args):
+        """
+        Generates a modern, professionally designed HTML email using user_input and dynamic data.
+        The AI must return only a fully designed HTML string (no fallbacks, no text, no markdown).
         """
 
-        email_body = get_fireworks_response(prompt, "system")
-        return email_body
+        # Fetch business info
+        business_info = (
+            get_business_info(userid=self.userid, connection=self.connection) or {}
+        )
+
+        # Format dynamic args for prompt readability
+        dynamic_info = ""
+        for key, value in args.items():
+            if isinstance(value, list):
+                value_str = ", ".join(map(str, value))
+            else:
+                value_str = str(value)
+            dynamic_info += f"{key.replace('_', ' ').title()}: {value_str}\n"
+
+        business_name = business_info.get("BusinessName", "")
+        billing_address = business_info.get("BillingAddress", "")
+        website = business_info.get("WebsiteUrl", "")
+        logo_url = business_info.get("LogoUrl", "")
+
+        # Strictly enforce modern HTML email design
+        prompt = f"""
+    You are a professional email designer and marketer.
+
+    Create a **modern, elegant, mobile-responsive HTML email** with inline CSS.
+
+    ### Output Rules
+    - Return only valid HTML (starts with `<html>` and ends with `</html>`).  
+    - Use `<table>` layout with inline CSS for maximum email client compatibility.  
+    - Use **modern visual design**:
+    - White background, soft shadows, subtle color palette (light blue / gray / accent color).
+    - Rounded corners for main container and buttons.
+    - Include padding and spacing between sections.
+    - Include:
+    1. A header section with the business name and logo (if available)
+    2. A warm greeting line
+    3. A clear and concise main body text relevant to the user’s request
+    4. A **CTA button** (only if relevant) styled with a primary color (#007BFF or similar)
+    5. A footer with business name, address, and website
+    - The tone should be friendly, confident, and professional.
+    - The layout should be **max-width: 600px** and center-aligned.
+    - Do **not** include any explanation or text outside the HTML.
+    - Make sure the output is well-formatted HTML.
+    - if timings or dates present make them into natural like 23 november 2025 or 12 am or 12:30 am
+
+    ---
+
+    **User Request:**
+    "{user_input}"
+
+    **Dynamic Info (if any):**
+    {dynamic_info}
+
+    **Business Details:**
+    Business Name: {business_name}
+    Address: {billing_address}
+    Website: {website}
+    Logo URL: {logo_url}
+
+    ---
+
+    Return only the final HTML email — no extra commentary, no markdown.
+    """
+
+        # Get designed HTML from Fireworks model
+        email_html = get_fireworks_response(prompt, "system").strip()
+
+        # Enforce strict HTML-only output
+        # if not email_html.lower().startswith("<html"):
+        #     raise ValueError("Model did not return valid HTML email content.")
+
+        return {"email_body_html": email_html}
 
     # -------------------- Autopilot Data Fetch/Save --------------------
     def fetch_autopilot(self):

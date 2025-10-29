@@ -126,13 +126,13 @@ def changepilotmode():
         return service.change_mode(new_mode)
 
 
-@assist_suggest_bp.route("/ai_autopilot-reset/<int:userid>", methods=["GET"])
+@assist_suggest_bp.route("/ai_autopilot-reset/<userid>", methods=["GET"])
 def reset_autopilot(userid):
     with AutoMateService(userid) as service:
         return service.reset_autopilot()
 
 
-@assist_suggest_bp.route("/ai_autopilot/<int:userid>", methods=["GET"])
+@assist_suggest_bp.route("/ai_autopilot/<userid>", methods=["GET"])
 def get_autopilot(userid):
     with AutoMateService(userid) as service:
         autopilot_data, err, code = service.fetch_autopilot()

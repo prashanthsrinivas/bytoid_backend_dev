@@ -25,7 +25,7 @@
         },
         {
             "category": "Gmail",
-            "name": "gmail.send_Meet_mail",
+            "name": "gmail.send_Meeting_invite_mail",
             "description": "Send an HTML/Plain text email for a Google Meet or similar meeting.",
             "args": {
                 "to_email": "Recipient email address (string)",
@@ -41,7 +41,7 @@
         {
             "category": "Gmail",
             "name": "gmail.send_invite_mail",
-            "description": "Send an invitation email with optional business information.",
+            "description": "Send an invitation email with optional business information. (not for meeting mail)",
             "args": {
                 "inviter": "Inviter's email address (string)",
                 "invitee": "Invitee's email address (string)",
