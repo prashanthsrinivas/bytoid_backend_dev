@@ -1085,7 +1085,7 @@ def clear_playground_data():
         workflow_json = read_json_from_s3(f"{userid}/workflow/{filename}")
 
         # 🔹 Remove transient sections
-        for key in ["chat", "online", "testing"]:
+        for key in ["chat", "online", "testing", "chat_log", "execution_logs"]:
             if key in workflow_json:
                 del workflow_json[key]
 
@@ -1177,3 +1177,208 @@ def clear_testing_data():
             ),
             500,
         )
+
+
+@playbook_bp.route("/generate-workflow-input", methods=["POST"])
+def generate_workflow_input():
+    try:
+        data = request.get_json(force=True)
+        inp_description = data.get("description", "").strip()
+        available_modes = [
+            "auto",
+            "whatsapp",
+            "gmail",
+            "outlook",
+            "facebook",
+            "instagram",
+            "slack",
+            "microsoft_teams",
+            "sms",
+            "zoho",
+            "calendar",
+            "web_assistant",
+        ]
+
+        if not inp_description:
+            return jsonify({"error": "Missing 'description' field"}), 400
+
+        # Load YAML and extract section
+        prompt_yaml = load_yaml_file(path=pathconfig.play_template)
+        prompt_template = prompt_yaml.get("create_workflow_inputs")
+
+        # Convert the YAML dict to string
+        prompt_text = yaml.dump(prompt_template, sort_keys=False)
+
+        # Inject dynamic fields
+        formatted_prompt = prompt_text.replace(
+            "{{inp_description}}", inp_description
+        ).replace("{{available_communication_modes}}", json.dumps(available_modes))
+
+        # LLM call
+        llm_output = get_evaluator_fireworks(formatted_prompt, role="system")
+
+        try:
+            workflow_data = json.loads(llm_output)
+        except json.JSONDecodeError:
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid JSON returned from LLM",
+                        "raw_output": llm_output,
+                    }
+                ),
+                500,
+            )
+
+        return jsonify({"status": "success", "inferred_fields": workflow_data})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@playbook_bp.route("/test-mid", methods=["POST"])
+def testworknput():
+    data = request.json
+    userid = data.get("user_id")
+    userinput = data.get("userinput")
+    filename = data.get("filename")
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+    if not userinput:
+        return jsonify({"message": "Missing userinput", "status": "error"}), 400
+
+    # ✅ Pre-validate workflow existence
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    if not workflow_json:
+        return (
+            jsonify(
+                {
+                    "message": f"Workflow file '{filename}' not found ",
+                    "status": "error",
+                }
+            ),
+            404,
+        )
+    print("user input", userinput)
+    try:
+        with WorkflowRunnerV2(
+            userid=userid, filename=filename, workflowJson=workflow_json, testing=True
+        ) as service:
+            template_data = load_yaml_file(path=pathconfig.play_template)
+            prompt_instructions = template_data.get("input_intent_classifier", {})
+            if not isinstance(prompt_instructions, str):
+                raise TypeError(
+                    "Invalid template structure: expected string for 'instructions'."
+                )
+            if "chat" in workflow_json:
+                chat = workflow_json.get("chat", [])[-10:]
+            else:
+                chat = []
+
+            prompt_text = (
+                prompt_instructions.replace("{{user_input}}", userinput)
+                .replace("{{chat_history}}", json.dumps(chat, ensure_ascii=False))
+                .strip()
+            )
+
+            # result = service.execute_from_text_input(user_input=userinput)
+            result = service.get_parsed_fireworks_response(prompt_text)
+            print("res", result)
+            if result and "intent" in result:
+                if result["intent"] == "normal_conversation":
+                    # prompt_instructions = template_data.get(
+                    #     "normal_conversation_handler", {}
+                    # )
+                    prompt_instructionss = template_data.get(
+                        "workflow_conversation_handler", {}
+                    )
+                    prompt = prompt_instructionss.replace(
+                        "{{chat_history}}", json.dumps(chat, ensure_ascii=False)
+                    ).replace("{{user_input}}", userinput)
+
+                    newresult = service.get_parsed_fireworks_response(prompt)
+                    return jsonify(newresult)
+                elif result["intent"] == "workflow":
+                    print("workflow trigger")
+                    prompt_base = template_data.get("detect_and_route_input2")
+
+                    if not isinstance(prompt_base, str):
+                        raise ValueError(
+                            "Prompt template `detect_and_route_input2` must be a string"
+                        )
+
+                    baseworkflow = workflow_json.get("workflow", {})
+                    current_chats = workflow_json.get("chat", [])
+                    context_key = "testing"
+                    previous_data = (
+                        workflow_json.get(context_key)
+                        or workflow_json[context_key]
+                        or {}
+                    )
+
+                    # Ensure workflow_json[testing] exists
+                    workflow_json.setdefault(context_key, previous_data)
+
+                    prompt_text = (
+                        prompt_base.replace("{{user_input}}", userinput)
+                        .replace("{{workflow_json}}", json.dumps(baseworkflow))
+                        .replace("{{previous_data}}", json.dumps(previous_data))
+                        .replace("{{current_chats}}", json.dumps(current_chats))
+                    ).strip()
+
+                    newresultds = service.get_parsed_fireworks_response(prompt_text)
+                    print("res workflow", newresultds)
+                    return jsonify(newresultds)
+                elif result["intent"] == "resetStep":
+                    custeps = service.steps
+
+                    # Map id -> title
+                    step_map = {
+                        str(step["id"]): step["title"] for _, step in custeps.items()
+                    }
+
+                    # Proper steptitles list for prompt
+                    steptitles = [
+                        {str(step["id"]): step["title"]} for _, step in custeps.items()
+                    ]
+                    print("step titles", steptitles)
+
+                    current_chats = workflow_json.get("chat", [])
+                    context_key = "testing"
+
+                    previous_data = workflow_json.get(context_key) or {}
+                    done_step_ids = list(previous_data.keys())
+                    print("completed step ids", done_step_ids)
+
+                    # ✅ Build executed steps with titles
+                    done_steps_with_titles = [
+                        {sid: step_map.get(str(sid), "")} for sid in done_step_ids
+                    ]
+                    print("completed steps with titles", done_steps_with_titles)
+
+                    prompt_base = template_data.get("reset_intent_handler")
+                    prompt_text = (
+                        prompt_base.replace("{{user_input}}", userinput)
+                        .replace("{{step_titles}}", json.dumps(steptitles))
+                        .replace("{{previous_data}}", json.dumps(previous_data))
+                        .replace("{{current_chats}}", json.dumps(current_chats))
+                        .replace("{{done_step_ids}}", json.dumps(done_step_ids))
+                        .replace(
+                            "{{done_steps_with_titles}}",
+                            json.dumps(done_steps_with_titles),
+                        )
+                    ).strip()
+
+                    newresultds = service.get_parsed_fireworks_response(prompt_text)
+                    print("res reset", newresultds)
+                    return jsonify(newresultds)
+
+            # result=service.current_implemented_functions
+            return jsonify(result)
+            # return service.get_chat_summarization()
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500

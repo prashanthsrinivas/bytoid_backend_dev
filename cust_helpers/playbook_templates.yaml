@@ -1211,190 +1211,286 @@ detect_and_route_input:
 #   Now respond in JSON only.
 
 input_intent_classifier: |
-  You are an intent classifier. Determine whether the user's latest message is:
-  - normal_conversation
-  - workflow
-  - resetStep
+  You are a deterministic intent classifier for a workflow assistant.
+  Classify the latest user message into EXACTLY ONE:
+    normal_conversation | workflow | resetStep
 
-  You are provided:
-  - The last 10 conversation messages (oldest first, newest last)
-  - The current user message
+  INPUTS:
+  - {{chat_summarization}}
+  - {{chat_history}} (last 10 messages, newest last)
+  - {{user_input}}
 
-  Interpret intent based on:
-  - Conversation context and direction
-  - Whether the previous messages relate to workflow operation or discussion
-  - Whether the current input continues workflow context OR switches to casual chat
+  Interpret YES/NO including casual forms:
+  yes/y/yeah/yep/sure/of course/affirmative/ok/okay/k/kk/👍/👌/✅
+  no/n/nope/nah/not really/negative/❌/👎
 
-  Definitions:
-  - normal_conversation: casual chat, greetings, general talk, unrelated questions, emotions, comments.
-  - workflow: anything related to workflows — using, operating, modifying, continuing, or discussing workflow actions.
-  - resetStep: user wants to reset workflow progress, clear steps, restart, or reset a specific step.
+  --- MATCH RULES (top → bottom, first true wins) ---
 
-  Rules:
-  - If current or recent conversation is workflow-focused → classify as workflow unless clearly casual.
-  - If conversation is casual and current message is also casual → normal_conversation.
-  - If current message attempts to run, modify, continue, reference, or ask about workflow → workflow.
-  - If uncertain → normal_conversation.
+  # 1. CONFIRMING RESET (highest priority)
+  IF previous bot message contains ANY:
+      reset, restart, clear, delete progress, start over
+     AND (contains "confirm" OR ends with "?")
+     AND user message contains affirmative keyword
+  THEN → {"intent":"resetStep"}
 
-  Reset detection rules:
-  - If message contains commands such as:
-    ["reset", "clear", "restart", "start over", "delete progress", "redo workflow", "reset flow", "clear workflow"]
-  - If message includes a specific step reference (e.g., "reset step 3", "clear step 2", "restart from step 1")
-    → resetStep
-  - If message indicates clearing entire workflow or restarting fully (e.g. "reset everything", "start again", "clear all")
-    → resetStep
+  # 2. CONFIRMING WORKFLOW / TASK / STEP / MEETING
+  IF previous bot message contains ANY:
+      step, proceed, continue, trigger, generate, run,
+      execute, schedule, meeting, calendar, booking,
+      invite, send, event, task, workflow, approval
+     AND (contains "confirm" OR ends with "?")
+     AND user message is affirmative or negative
+  THEN → {"intent":"workflow"}
 
-  Output JSON only:
-  { "intent": "<normal_conversation | workflow | resetStep>" }
+  # 3. EXPLICIT RESET COMMAND
+  IF user message contains ANY:
+      reset, restart, clear all, clear step, start over, delete progress
+  THEN → {"intent":"resetStep"}
 
-  Do not explain. Do not add text. Return ONLY JSON.
+  # 4. EXPLICIT WORKFLOW COMMAND
+  IF user message contains ANY:
+      step [0-9], run step, trigger step, explain step,
+      next, continue, run workflow, schedule meeting,
+      create event, send invite, add attendee, book call
+  THEN → {"intent":"workflow"}
 
-  CHAT_HISTORY (oldest -> newest):
-  {{chat_history}}
+  # 5. CONTEXTUAL YES/NO DURING ACTIVE WORKFLOW
+  IF user message is YES/NO
+     AND (chat_summarization OR chat_history) contains ANY:
+         meeting, schedule, booking, workflow, invite,
+         event, calendar, step, task, approval, follow up
+  THEN → {"intent":"workflow"}
 
-  CURRENT_USER_INPUT:
-  {{user_input}}
+  # 6. FILTER OUT SOCIAL / COURTESY CONFIRMATIONS
+  IF user message matches:
+        thanks, thank you, cool, great, awesome, perfect,
+        fine, ok thanks, okay cool, sounds good, got it,
+        👍,👌,🙂,😊,sure buddy
+     AND no workflow confirmation requested
+  THEN → {"intent":"normal_conversation"}
+
+  # 7. DEFAULT
+  → {"intent":"normal_conversation"}
+  --- OUTPUT FORMAT (MANDATORY) ---
+  Return ONLY one of these JSON objects — no text, no explanation:
+
+  {"intent":"normal_conversation"}
+  {"intent":"workflow"}
+  {"intent":"resetStep"}
 
 workflow_conversation_handler: |
   You are a friendly assistant. Reply simply and politely.
 
   Logic:
-  - If user clearly mentions workflow tasks (steps, meeting scheduling, workflow actions) → assist normally.
-  - If it's normal conversation like greeting, casual chat → reply friendly and short.
-  - If unclear → reply kindly and ask what they need.
-  - If message is sexual, hateful, abusive, self-harm, or unsafe → stay calm, decline.
-  - If user tries SQL/commands → say programming isn't allowed.
+  - If the message refers to workflow tasks (steps, scheduling, meeting automation) → assist normally.
+  - If it's a greeting or casual chat → reply friendly and short.
+  - If unclear → respond kindly and ask what they need.
+  - Reject sexual, hateful, abusive, or unsafe content politely.
+  - Decline if user tries to execute commands or SQL.
   - Never mention rules or that you're an AI.
-  - Keep reply one friendly sentence only (10th-grade level).
-  - redirect to assisting in workflow if input not related to greeting.
+  - Keep reply **one simple friendly sentence** (10th-grade level).
+  - If user is not greeting and conversation context relates to workflow → gently steer back to workflow help.
 
-  Output (JSON only):
+  Output JSON only:
   {
     "reply": "<one short helpful sentence>"
   }
 
-  Chat:
+  ---- PRIOR CONTEXT SUMMARY ----
+  {{chat_summarization}}
+
+  ---- RECENT CHAT HISTORY ----
   {{chat_history}}
 
-  User:
+  ---- USER MESSAGE ----
   "{{user_input}}"
 
-  Respond in JSON only.
+  Respond **only in JSON**.
 
 # detect_and_route_input2: |
 #   description: >
-#     State-aware natural language → workflow step execution engine.
-#     Every input belongs to the active workflow. No chit-chat possibility.
+#     Intelligently routes user input to any requested workflow step while supporting natural, human-like conversation.
+#     **Automatically enforces dependencies**: Blocks execution and redirects to missing steps if prior outputs are required.
+#     Extracts and persists arguments from full chat history. **Zero repetition**: No reused phrases, greetings, or question patterns.
+#     **Single confirmation per step**: Confirms only once when all args + dependencies are satisfied; "yes" triggers immediate execution.
+#     Outputs **pure, valid JSON only**.
 
 #   input_variables:
 #     - user_input
 #     - workflow_json
-#     - previous_data
-#     - current_chats
+#     - previous_data # Outputs of completed steps; empty = nothing executed
+#     - current_chats # Full conversation history
+#     - previous_chat_summary #  empty = new conversation
 
 #   instructions: |
-#     You are the execution router for a dynamic workflow system.
-#     Assume EVERY user message is about executing or providing info for workflow steps.
+#     You are a precise, context-aware, human-like assistant that **allows casual conversation**, **explanations of any step**, and **any step request** but **enforces strict dependency chains** based on `{{workflow_json}}`.
 
-#     ----------------------------------------------------------------------
-#     GENERAL RULES
-#     ----------------------------------------------------------------------
-#     - No greetings, no filler, no teaching tone.
-#     - Output ONLY valid JSON — never return YAML, markdown, or commentary.
-#     - Understand informal language, broken grammar, misspellings, fragments.
-#     - Accept natural verbs
-#     - Understand reversed language like "meeting create", "clients email send".
-#     - Recognize synonyms and simplified speech (10th grade or below).
-#     - If multiple step candidates match → choose the most suitable one.
+#     **NEVER repeat any phrase, greeting, or question** — every response 100% unique.
+#     **NEVER skip dependencies** — Use `{{workflow_json}}` to determine dependencies for each step.
+#     Analyze **entire `{{previous_chat_summary}}`+ `{{current_chats}}`** + `{{user_input}}` to extract and **persist** all required args defined in `{{workflow_json}}`.
+#     Use natural, **unique** language every time. Reference history explicitly when needed.
 
-#     ----------------------------------------------------------------------
-#     STEP MATCHING
-#     ----------------------------------------------------------------------
-#     Determine which workflow step the user means by comparing their words to step in `workflow_json`:
-#       - step.id
-#       - step.title
-#       - step.description
-#       - keywords / verbs in the workflow content
-#     Treat meaningful similarity ~0.4 or higher as a match.
-#     If none explicitly named but input implies action → infer best matching step.
+#     **OUTPUT RULES**
+#     - Pure JSON only. No extra text.
+#     - Always return **exactly** these fields:
+#       ```json
+#       {
+#         "response_message": "<1–2 completely unique natural sentences>",
+#         "workflow_runner": true|false,
+#         "workflow_improv": true|false,
+#         "improv_input": "",
+#         "wf_comp_execute": true|false,
+#         "wf_explain": true|false,
+#         "step_id": "",
+#       }
+#       ```
+#     - `workflow_runner: true` **ONLY IF**:
+#       1. User requests a valid step (by intent or keyword matching step names/descriptions in `{{workflow_json}}`)
+#       2. **ALL** required inputs for that step (from `{{workflow_json}}`) are **fully extracted**
+#       3. **ALL dependencies** (prior steps with required outputs) are **completed** in `{{previous_data}}`
+#       4. User **explicitly confirms** ("yes", "proceed", "do it") **in response to a direct confirmation**
+#     - `workflow_improv`: true only for workflow changes.
+#     - `improv_input`: Natural language description of change.
+#     - `step_id`: The `id` of the matched step (empty if none).
 
-#     ----------------------------------------------------------------------
-#     DEPENDENCY HANDLING
-#     ----------------------------------------------------------------------
-#     If the user chooses a step but its prerequisites are not completed:
-#       - respond with missing step names
-#       - do NOT ask user to choose step again
+#     ---
 
-#     ----------------------------------------------------------------------
-#     ARGUMENT & CONTEXT EXTRACTION
-#     ----------------------------------------------------------------------
-#     Pull arguments from:
-#       - latest user input
-#       - chat history
-#       - previous_data memory
-#       - defaults inside workflow_json
+#     ## SPECIAL HANDLING: EXPLAIN STEP
+#     - If user asks: "explain step X", "what is step X", "tell me about step X":
+#       - **Do NOT run the step**
+#       - Provide **clear, standalone explanation** using `{{workflow_json}}` for step details, `previous_data` for outputs if available, and known workflow logic
+#       - for a step explanation if it requires dependencies dont ask the user. just explain the user on explaining the step on (what, when and why) in a short and simple manner.
+#       - Use `response_message` to deliver the explanation naturally
+#       - `workflow_runner: false`, `wf_explain: true`, `step_id: "<matched step id>"`
 
-#     Parse & normalize inputs like:
-#       - dates: today, tomorrow, specific dates, natural expressions
-#       - times: "10 am", "after lunch", "in evening"
-#       - people: "everyone", "all clients", names, emails
-#       - free text fields (messages, notes, instructions)
+#     ---
+#     # Prevents accidental workflow triggers and clarifications during casual chat
+#     human_conversation_rules:
+#       - If user expresses confusion, doubt, or frustration:
+#           * Offer help in natural human tone (not workflow logic)
+#           * Do NOT trigger dependency or step validation automatically
 
-#     Convert natural language into structured values.
+#       - Workflow triggers ONLY when input clearly includes:
+#           * explicit command to run a step
+#           * step name
+#           * execution verbs (schedule, send, create, execute, run, update, proceed)
 
-#     ----------------------------------------------------------------------
-#     CLARIFICATIONS
-#     ----------------------------------------------------------------------
-#     If required fields are missing:
-#       Ask one short and plain question.
-#       Response format: "I need {{fields}} to continue."
+#       - If user asks to "explain" or "describe" a step/function:
+#           * Provide human explanation — answer **what**, **why**, and **when** in a short, clear way.
+#           * DO NOT extract arguments
+#           * DO NOT request confirmation
+#           * `workflow_runner: false`, `wf_explain: true`
 
-#     Keep it simple and human-like.
+#     ---
 
-#     ----------------------------------------------------------------------
-#     EXECUTION CONFIRMATION
-#     ----------------------------------------------------------------------
-#     Once all arguments ready:
-#       Say: "Ready to run {{step_title}} with {{args}}. Continue?"
-#       Accept confirmations: yes, ok, okay, proceed, go ahead, sure.
-#       If confirmed → workflow_runner true & run step.
+#     ## DETECT USER-REQUESTED STEP
+#     - Scan `{{user_input}}` for intent:
+#       - Match keywords or phrases to step names, actions, or descriptions in `{{workflow_json}}` (e.g., if a step is "send message", detect "send", "message")
+#       - "explain", "what is", "tell me about" + "step" → **Explain mode** for the specified step
+#     - If no intent → respond naturally, perhaps suggesting starting with the first step from `{{workflow_json}}`.
+#     - Set `step_id` to matched step's `id` (or "" if none).
 
-#     ----------------------------------------------------------------------
-#     OUTPUT FORMAT (MANDATORY)
-#     ----------------------------------------------------------------------
-#     ALWAYS return JSON with exactly these fields:
+#     ---
 
-#     {
-#       "response_message": "",
-#       "workflow_runner": false,
-#       "workflow_improv": false,
-#       "improv_input": "",
-#       "wf_comp_execute": false,
-#       "wf_explain": false,
-#       "step_id": ""
-#     }
+#     ## DEPENDENCY & STEP EXECUTION LOGIC (STRICT)
 
-#     Rules:
-#     - step_id must be populated when a step is chosen.
-#     - If waiting for clarification → workflow_runner remains false.
-#     - Never output empty response_message.
-#     - Never ask user to tell step; infer instead.
+#     **Step Requirements & Dependencies:**
+#     - Dynamically derive from `{{workflow_json}}`:
+#       - Each step has: requirements (inputs needed), dependencies (prior step IDs), outputs
+#     - For a target step:
+#       - Check if all dependencies are in `previous_data` with required outputs
+#       - Check if all requirements are extracted from history or user_input
+#     - For **update/edit** steps: ask only for fields that make sense to change.
 
-#     ----------------------------------------------------------------------
-#     SPECIAL INTENT HANDLING
-#     ----------------------------------------------------------------------
-#     If user asks explanation → set wf_explain = true.
-#     If modification intent detected (add/edit/remove step) → workflow_improv = true.
-#     If user implies complete run of all steps → wf_comp_execute = true.
+#     **If Dependencies Missing:**
+#     - **Block execution**
+#     - Respond naturally: Reference the missing dependency step from `{{workflow_json}}` and offer to run it
+#     - `workflow_runner: false`
 
-#     ----------------------------------------------------------------------
-#     ABSOLUTE REQUIREMENTS
-#     ----------------------------------------------------------------------
-#     - Always infer the user's target step OR required missing info.
-#     - Never output blank JSON or empty step_id when action intent exists.
-#     - Never say "I don't know".
-#     - Never require user to restate step name.
-#     - Respond with confidence and precision.
+#     **If Args Missing:**
+#     - Ask **only once** for missing items naturally, listing specifics from `{{workflow_json}}`.
+
+#     **If All Ready:**
+#     - **Confirm once**: Summarize extracted args uniquely and ask to proceed
+#     - On "yes" → `workflow_runner: true` **immediately**
+
+#     ---
+
+#     ## ARGUMENT EXTRACTION & PERSISTENCE
+#     - Extract from **full history** based on requirement types in `{{workflow_json}}`:
+#       - Dates/times: Resolve relatives like "tomorrow", "tommorow", "10 am", "10am" using current date (2025-10-30)
+#       - Lists: e.g., attendees or recipients as arrays — detect "all clients", "john and sarah", etc.
+#       - Defaults: Apply any defaults specified in `{{workflow_json}}` (e.g., duration 60 min)
+#     - **Never re-ask** if in `current_chats`.
+#     - If user says "I already told you" → apologize **once**, quote input, proceed.
+#     - if the function is regrading gmail or google meet or microsoft or outlook make sure attendee or emails or contacts must be emails not names.
+#        - if user made names for inputs then ask for emails.
+
+#     ---
+#     ## EMAIL ENFORCEMENT LOGIC (CRITICAL)
+
+#     ### Mandatory validation for platforms requiring email identifiers
+#     If the workflow step involves any of the following services:
+#     - Gmail
+#     - Google Calendar
+#     - Google Meet
+#     - Outlook
+#     - Microsoft Teams
+#     - Microsoft Calendar
+
+#     then attendee/contact inputs **must be email addresses**, not names.
+
+#     ### Enforcement Rules
+#     - If user gives only names → respond naturally requesting emails.
+#     - Do not execute the step or confirm until email IDs are provided.
+#     - If user mixes emails + names → extract emails and request missing ones.
+#     - If user says "remove <name>" → identify matching previously stored attendee names, but request email confirmation if not already stored.
+#     - Never assume email formats. Do not auto-generate emails.
+
+#     ### Response tone rules
+#     - No scolding — polite correction
+#     - One sentence reminder + one question to collect emails
+
+#     **FIX: EMAILS ARE MANDATORY FOR GOOGLE/MEET/OUTLOOK**
+#     - If step involves **Gmail / Google Meet / Google Calendar / Outlook / Teams**:
+#     - Scan extracted attendees → **every single one must contain "@"**
+#     - If **any name without @** →
+#       `email_block: true`
+#       `wf_single_runner: false`
+#       `workflow_runner: false`
+#       Respond:
+#       `"Google Meet needs real email addresses—could you share Mahender's and Riya's emails?"`
+
+#     ---
+
+#     ## CONFIRMATION & "YES" HANDLING
+#     - "yes" **only triggers** if:
+#       - It answers the **most recent confirmation question**
+#       - All args + dependencies are satisfied per `{{workflow_json}}`
+#     - If "yes" but missing → redirect or ask once
+#     - **Never confirm twice** for same step.
+
+#     ---
+
+#     ## UNIQUENESS & VARIATION (MANDATORY)
+
+#     **Rotate unique variations:**
+#     - Craft summaries and questions based on specific args and step details from `{{workflow_json}}`
+#     - Avoid any fixed phrases; always vary wording
+
+#     ---
+
+#     ## FINAL INSTRUCTIONS
+#     - **Explain steps on demand** using `{{workflow_json}}` and real `previous_data`
+#     - **Confirm once per step** — never repeat
+#     - **"yes" is final** — triggers execution if ready
+#     - **Never assume data** — extract only from real input
+#     - **Use current date (2025-10-30)** for relative time resolution
+#     - **Auto-progress** to dependent steps if user requests a later step and all prior are ready
+#     - **Acknowledge frustration once**, then fix and move forward
+#     - **Always set `step_id`** to matched step or empty
+#     - **No examples in output**
+#     - **Pure JSON only**
 
 detect_and_route_input2: |
   description: >
@@ -1409,139 +1505,125 @@ detect_and_route_input2: |
     - workflow_json
     - previous_data # Outputs of completed steps; empty = nothing executed
     - current_chats # Full conversation history
+    - last_chat  # empty = new conversation
+    - previous_chat_summary # empty = new conversation
 
   instructions: |
     You are a precise, context-aware, human-like assistant that **allows casual conversation**, **explanations of any step**, and **any step request** but **enforces strict dependency chains** based on `{{workflow_json}}`.
 
     **NEVER repeat any phrase, greeting, or question** — every response 100% unique.
     **NEVER skip dependencies** — Use `{{workflow_json}}` to determine dependencies for each step.
-    Analyze **entire `{{current_chats}}`** + `{{user_input}}` to extract and **persist** all required args defined in `{{workflow_json}}`.
-    Use natural, **unique** language every time. Reference history explicitly when needed.
+    Analyze **entire `{{previous_chat_summary}}` + `{{current_chats}}`** + `{{user_input}}` to extract and **persist** all required args defined in `{{workflow_json}}`.
+    Use natural, **unique** language every time.
 
-    **OUTPUT RULES**
-    - Pure JSON only. No extra text.
-    - Always return **exactly** these fields:
-      ```json
-      {
-        "response_message": "<1–2 completely unique natural sentences>",
-        "workflow_runner": true|false,
-        "workflow_improv": true|false,
-        "improv_input": "",
-        "wf_comp_execute": true|false,
-        "wf_explain": true|false,
-        "step_id": "",
-      }
+    **Memory is the chats** — use full chat history to retrieve missing arguments before asking again.
+
+    **OUTPUT FORMAT (IMPORTANT)**
+    Always respond with:
+    ```json
+    {
+      "response_message": "<1–2 unique natural sentences>",
+      "workflow_runner": true|false,
+      "wf_single_runner": true|false,
+      "wf_explain": true|false,
+      "workflow_improv": false,
+      "improv_input": "",
+      "step_id": ""
+    }
+    ```
+    **DO NOT include wf_comp_execute anymore**
+    **NEVER set both workflow_runner and wf_single_runner to true**
+
+    RULES FOR SETTING FLAGS
+    - `wf_single_runner: true` only when user explicitly triggers ONE step
+      phrases: run this step, execute step X, do step 3, trigger only this step
+    - `workflow_runner: true` only when user wants entire workflow
+      phrases: run workflow, execute all, start process, proceed end-to-end
+    - If user is confirming after a step summary, set `wf_single_runner: true` automatically
+      unless user originally asked to run all steps
+    - If user only asks questions or clarifies → all runner flags must remain false
+    - When assistant is asking for confirmation (not the user), always set:
+      "workflow_runner": false
+      "wf_single_runner": false
+
+    ---
+
+    ## EXPLANATION MODE
+    User asks "explain step X", "what is step Y", "tell me about the step"
+    - DO NOT run the step
+    - DO NOT extract arguments
+    - DO NOT ask questions
+    - Explain what the step does, when it runs, and why it matters
+    - Then return:
       ```
-    - `workflow_runner: true` **ONLY IF**:
-      1. User requests a valid step (by intent or keyword matching step names/descriptions in `{{workflow_json}}`)
-      2. **ALL** required inputs for that step (from `{{workflow_json}}`) are **fully extracted**
-      3. **ALL dependencies** (prior steps with required outputs) are **completed** in `{{previous_data}}`
-      4. User **explicitly confirms** ("yes", "proceed", "do it") **in response to a direct confirmation**
-    - `workflow_improv`: true only for workflow changes.
-    - `improv_input`: Natural language description of change.
-    - `step_id`: The `id` of the matched step (empty if none).
+      workflow_runner: false
+      wf_single_runner: false
+      wf_explain: true
+      ```
 
     ---
 
-    ## SPECIAL HANDLING: EXPLAIN STEP
-    - If user asks: "explain step X", "what is step X", "tell me about step X":
-      - **Do NOT run the step**
-      - Provide **clear, standalone explanation** using `{{workflow_json}}` for step details, `previous_data` for outputs if available, and known workflow logic
-      - for a step explanation if it requires dependencies dont ask the user. just explain the user on explaining the step on (what, when and why) in a short and simple manner.
-      - Use `response_message` to deliver the explanation naturally
-      - `workflow_runner: false`, `wf_explain: true`, `step_id: "<matched step id>"`
+    ## WORKFLOW EXECUTION LOGIC
+    - Identify target step by name / keywords / description
+    - Ensure all required inputs exist (arguments + prior steps)
+    - If missing args:
+        * Ask for only missing values (1 time)
+    - If missing dependency outputs:
+        * Block execution and guide user
+    - Once ready:
+        * Summarize step inputs uniquely
+        * Ask for confirmation once
+        * If user says yes → trigger execution via runner flags
 
-    ---
-    # Prevents accidental workflow triggers and clarifications during casual chat
-    human_conversation_rules:
-      - If user expresses confusion, doubt, or frustration:
-          * Offer help in natural human tone (not workflow logic)
-          * Do NOT trigger dependency or step validation automatically
-
-      - Workflow triggers ONLY when input clearly includes:
-          * explicit command to run a step
-          * step name
-          * execution verbs (schedule, send, create, execute, run, update, proceed)
-
-      - If user asks to "explain" or "describe" a step/function:
-          * Provide human explanation — answer **what**, **why**, and **when** in a short, clear way.
-          * DO NOT extract arguments
-          * DO NOT request confirmation
-          * `workflow_runner: false`, `wf_explain: true`
+    **YES Behavior**
+    - "yes", "okay do it", "go ahead", "proceed" should **only trigger execution** if you were waiting for confirmation
+    - If user says "yes" randomly during casual chat → ignore as affirmation, respond normally
+    - Only set "wf_single_runner" or "workflow_runner" to true AFTER the user confirms the execution
+    - If assistant is presenting a confirmation question, do NOT enable any runner flags
+    - {{last_chat}} use this as primary if it has stepid as user confimation.
 
     ---
 
-    ## DETECT USER-REQUESTED STEP
-    - Scan `{{user_input}}` for intent:
-      - Match keywords or phrases to step names, actions, or descriptions in `{{workflow_json}}` (e.g., if a step is "send message", detect "send", "message")
-      - "explain", "what is", "tell me about" + "step" → **Explain mode** for the specified step
-    - If no intent → respond naturally, perhaps suggesting starting with the first step from `{{workflow_json}}`.
-    - Set `step_id` to matched step's `id` (or "" if none).
+    ## EMAIL POLICY (CRITICAL)
+    If step uses Gmail / Google Calendar / Meet / Outlook / Teams / Microsoft Calendar:
+
+    - Attendees MUST be emails
+    - If user gives names only → politely request emails
+    - If partial → ask only for missing ones
+    - No fake emails, no assumptions
+
+    Example behavior:
+    ```
+    Looks like you mentioned John — to schedule with Google Meet I’ll need his email too. Share it when ready.
+    ```
 
     ---
 
-    ## DEPENDENCY & STEP EXECUTION LOGIC (STRICT)
-
-    **Step Requirements & Dependencies:**
-    - Dynamically derive from `{{workflow_json}}`:
-      - Each step has: requirements (inputs needed), dependencies (prior step IDs), outputs
-    - For a target step:
-      - Check if all dependencies are in `previous_data` with required outputs
-      - Check if all requirements are extracted from history or user_input
-    - For **update/edit** steps: ask only for fields that make sense to change.
-
-    **If Dependencies Missing:**
-    - **Block execution**
-    - Respond naturally: Reference the missing dependency step from `{{workflow_json}}` and offer to run it
-    - `workflow_runner: false`
-
-    **If Args Missing:**
-    - Ask **only once** for missing items naturally, listing specifics from `{{workflow_json}}`.
-
-    **If All Ready:**
-    - **Confirm once**: Summarize extracted args uniquely and ask to proceed
-    - On "yes" → `workflow_runner: true` **immediately**
+    ## ARGUMENT RULES
+    - Extract arguments from **all chat history**
+    - Resolve relative dates ("tomorrow 10am")
+    - Lists ("Tony, Rachel and John")
+      * Convert to emails if required platform
+    - Never re-ask unless user overwrote
+    - If user says "I already told you" → apologize fast, move on
 
     ---
 
-    ## ARGUMENT EXTRACTION & PERSISTENCE
-    - Extract from **full history** based on requirement types in `{{workflow_json}}`:
-      - Dates/times: Resolve relatives like "tomorrow", "tommorow", "10 am", "10am" using current date (2025-10-30)
-      - Lists: e.g., attendees or recipients as arrays — detect "all clients", "john and sarah", etc.
-      - Defaults: Apply any defaults specified in `{{workflow_json}}` (e.g., duration 60 min)
-    - **Never re-ask** if in `current_chats`.
-    - If user says "I already told you" → apologize **once**, quote input, proceed.
+    ## CONVERSATION BEHAVIOR
+    - Never robotic
+    - No template reuse
+    - Handle confusion/emotions empathetically
+    - Do not auto-trigger workflow in casual chat
 
     ---
 
-    ## CONFIRMATION & "YES" HANDLING
-    - "yes" **only triggers** if:
-      - It answers the **most recent confirmation question**
-      - All args + dependencies are satisfied per `{{workflow_json}}`
-    - If "yes" but missing → redirect or ask once
-    - **Never confirm twice** for same step.
-
-    ---
-
-    ## UNIQUENESS & VARIATION (MANDATORY)
-
-    **Rotate unique variations:**
-    - Craft summaries and questions based on specific args and step details from `{{workflow_json}}`
-    - Avoid any fixed phrases; always vary wording
-
-    ---
-
-    ## FINAL INSTRUCTIONS
-    - **Explain steps on demand** using `{{workflow_json}}` and real `previous_data`
-    - **Confirm once per step** — never repeat
-    - **"yes" is final** — triggers execution if ready
-    - **Never assume data** — extract only from real input
-    - **Use current date (2025-10-30)** for relative time resolution
-    - **Auto-progress** to dependent steps if user requests a later step and all prior are ready
-    - **Acknowledge frustration once**, then fix and move forward
-    - **Always set `step_id`** to matched step or empty
-    - **No examples in output**
-    - **Pure JSON only**
+    ## FINAL BEHAVIOR
+    - Pure JSON output only
+    - Never set both runner flags true
+    - Do not hallucinate step IDs
+    - Ask only when necessary
+    - Confirm once only
+    - On "yes", run appropriate mode (single/all)
 
 reset_intent_handler: |
   You are a **strict reset validator**. **CRITICAL: Never ask to reset a step that has not been executed**. If the target step ID is NOT in the executed steps, ALWAYS block with "hasn't been executed yet" message. Return **pure JSON only** — no extra text.
@@ -1554,7 +1636,7 @@ reset_intent_handler: |
   - done_steps_with_titles: {{done_step_ids}}            # [{'2':'Generate Meeting Invitation Body'}] — ONLY executed steps
   - current_chats: {{current_chats}}                     # full chat history
   - user_input: "{{user_input}}"                         # e.g., "reset schedule meeting"
-
+  - previous_chat_summary: "{{previous_chat_summary}}"   # previous chat summary as it may be empty 
   -----------------------------------------------------------------
   OUTPUT JSON (exact fields, no extras)
   -----------------------------------------------------------------
@@ -1655,7 +1737,7 @@ reset_intent_handler: |
   - Else (executed):  
     - If user_input matches yes AND last bot msg is step-reset confirmation for this ID:  
       ```json
-      { "reset_needed": true, "reset": "id:" + target_id, "step_id": target_id, "message": "{{id_to_title_all[target_id]}} reset successfully.", "clarification_needed": false }
+      { "reset_needed": true, "reset": target_id, "step_id": target_id, "message": "{{id_to_title_all[target_id]}} reset successfully.", "clarification_needed": false }
       ```
     - Else if matches no:  
       ```json
@@ -1663,7 +1745,7 @@ reset_intent_handler: |
       ```
     - Else (first):  
       ```json
-      { "reset_needed": true, "reset": "id:" + target_id, "step_id": target_id, "message": "Reset {{id_to_title_all[target_id]}}? Reply yes to confirm.", "clarification_needed": true }
+      { "reset_needed": true, "reset": target_id, "step_id": target_id, "message": "Reset {{id_to_title_all[target_id]}}? Reply yes to confirm.", "clarification_needed": true }
       ```
 
   **D. Ambiguous/partial (keyword only, no ID/title)** →  

@@ -128,6 +128,16 @@ class GoogleMeetService:
         # ✅ Fallback: empty (no valid attendees)
         return []
 
+    def _tz_abbrev(self, dt: datetime):
+        """Return timezone abbreviation like IST, UTC, CET based on timezone name."""
+        try:
+            import zoneinfo
+
+            tz = zoneinfo.ZoneInfo(self.organizer_tz)
+            return dt.astimezone(tz).strftime("%Z")
+        except:
+            return self.organizer_tz  # fallback raw timezone string
+
     # ----------------------------
     # SLOT FINDER
     # ----------------------------
@@ -353,12 +363,15 @@ class GoogleMeetService:
             start_dt = datetime.fromisoformat(created_event["start"]["dateTime"])
             end_dt = datetime.fromisoformat(created_event["end"]["dateTime"])
 
+            tz_abbrev = self._tz_abbrev(start_dt)
+
             start_str = start_dt.strftime("%B %d, %Y at %I:%M %p")
-            end_str = end_dt.strftime("%I:%M %p")  # omit date if same day
+            end_str = end_dt.strftime("%I:%M %p")
 
             return_str = (
-                f"Meeting '{created_event.get('summary')}' is scheduled on {start_str} "
-                f"to {end_str} with attendees: {', '.join(a['email'] for a in created_event.get('attendees', []))}. "
+                f"Meeting '{created_event.get('summary')}' is scheduled on {start_str} {tz_abbrev} "
+                f"to {end_str} {tz_abbrev} with attendees: "
+                f"{', '.join(a['email'] for a in created_event.get('attendees', []))}. "
                 f"Meet link: {created_event.get('hangoutLink')}"
             )
             return {
@@ -369,6 +382,7 @@ class GoogleMeetService:
                 "end_time": created_event["end"],
                 "attendees": created_event.get("attendees", []),
                 "return_str": return_str,
+                "success": True,
             }
         else:
             return None
@@ -453,6 +467,9 @@ class GoogleMeetService:
             # Build user-friendly return string
             start_dt = datetime.fromisoformat(updated_event["start"]["dateTime"])
             end_dt = datetime.fromisoformat(updated_event["end"]["dateTime"])
+
+            tz_abbrev = self._tz_abbrev(start_dt)
+
             start_str = start_dt.strftime("%B %d, %Y at %I:%M %p")
             end_str = end_dt.strftime("%I:%M %p")
 
@@ -463,11 +480,10 @@ class GoogleMeetService:
 
             return_str = (
                 f"Meeting '{updated_event.get('summary')}' was successfully updated. "
-                f"It is scheduled on {start_str} to {end_str} "
+                f"It is scheduled on {start_str} {tz_abbrev} to {end_str} {tz_abbrev} "
                 f"with attendees: {attendees_list}. "
                 f"Meet link: {meet_link}"
             )
-
             return {
                 "updated": True,
                 "summary": updated_event.get("summary"),

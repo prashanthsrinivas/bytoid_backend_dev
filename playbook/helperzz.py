@@ -216,16 +216,6 @@ def returninsructdata(data):
     return instruction_input
 
 
-def convert_dates(obj):
-    if isinstance(obj, dict):
-        return {k: convert_dates(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_dates(item) for item in obj]
-    elif isinstance(obj, datetime.date):
-        return obj.isoformat()
-    return obj
-
-
 def clean_json_block(raw: str) -> str:
     """
     Extracts the first valid JSON code block from a model response.
@@ -234,11 +224,6 @@ def clean_json_block(raw: str) -> str:
     if match:
         return match.group(1).strip()
     return raw.strip()
-
-
-class SafeDict(dict):
-    def __missing__(self, key):
-        return f"<missing {key}>"
 
 
 def create_playbook(data, filename=None):
@@ -270,35 +255,9 @@ def create_playbook(data, filename=None):
     template = template_data.get("create_instruction")
     if not template:
         raise ValueError("Missing 'create_instruction' template in YAML file.")
-
-        # --- Build full prompt safely via f-string to avoid .format issues ---
-        #     full_prompt = f"""
-        # You are an **AI Workflow Generation Assistant**.
-
-        # ## INPUT FIELDS
-        # name: {instruction_input['name']}
-        # description: {instruction_input['description']}
-        # trigger_mode: {instruction_input['trigger_mode']}
-        # trigger_input:
-        # {instruction_input['trigger_input']}
-        # communication_mode:
-        # {instruction_input['communication_mode']}
-        # ai_mode: {instruction_input['ai_mode']}
-        # context_section:
-        # {instruction_input['context_section']}
-        # additional_data:
-        # {instruction_input['additional_data']}
-
-        # """
     full_prompt = template.format(**instruction_input)
 
-    # print("full_prompt", full_prompt)
-
-    # Send prompt to AI
-    # raw_response = get_fireworks_response(full_prompt, role="system")
     raw_response = get_evaluator_fireworks(full_prompt, role="system")
-    # raw_response = get_evaluator_gpt4(full_prompt)
-    # print("raw response", raw_response)
 
     # Clean AI response
     cleaned_j = clean_json_block(raw_response)

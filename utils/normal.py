@@ -119,7 +119,7 @@ def read_function_jsons():
         "playbook/fn_configs/autopilot_functions.json",
         "playbook/fn_configs/gmail_functions.json",
         "playbook/fn_configs/google_meet_functions.json",
-        "playbook/fn_configs/twillo_fucntion.json",
+        # "playbook/fn_configs/twillo_fucntion.json",
     ]
     all_functions_details = []
 
