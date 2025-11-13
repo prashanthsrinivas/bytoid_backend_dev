@@ -116,9 +116,10 @@ def read_function_jsons():
     including function name, description, and arguments.
     """
     paths = [
-        "playbook/fn_configs/autopilot_functions.json",
+        "playbook/fn_configs/automate_functions.json",
         "playbook/fn_configs/gmail_functions.json",
         "playbook/fn_configs/google_meet_functions.json",
+        "playbook/fn_configs/umail_auto_functions.json",
         # "playbook/fn_configs/twillo_fucntion.json",
     ]
     all_functions_details = []
@@ -135,18 +136,27 @@ def read_function_jsons():
                 fn_name = fn.get("name", "Unknown Function")
                 fn_description = fn.get("description", "No description provided.")
                 fn_args = fn.get("args", {})
+                fn_notes = fn.get("notes", {})
+                fn_ret = fn.get("returns", {})
 
                 args_list = [
                     f"    - {arg_name}: {arg_desc}"
                     for arg_name, arg_desc in fn_args.items()
                 ]
+                return_list = [
+                    f"    - {ret_name}: {ret_desc}"
+                    for ret_name, ret_desc in fn_ret.items()
+                ]
                 args_str = "\n".join(args_list) or "    - None"
+                ret_args_str = "\n".join(return_list) or "    - None"
 
                 function_detail = (
                     f"### Function: **{fn_name}**\n"
                     f"Description: {fn_description}\n"
                     f"Arguments:\n"
-                    f"{args_str}"
+                    f"{args_str} \n"
+                    f"{fn_notes} \n"
+                    f"returns:{ret_args_str}"
                 )
                 all_functions_details.append(function_detail)
 
@@ -154,6 +164,52 @@ def read_function_jsons():
 
 
 # print(read_function_jsons())
+def read_function_jsons2(Full=False):
+    """
+    Reads all function JSON files and returns a dictionary of functions.
+
+    If Full=False (default):
+        returns { function_name: description }
+
+    If Full=True:
+        returns { function_name: full_function_dict }
+        where full_function_dict includes name, description, parameters, examples, etc.
+    """
+
+    paths = [
+        "playbook/fn_configs/automate_functions.json",
+        "playbook/fn_configs/gmail_functions.json",
+        "playbook/fn_configs/google_meet_functions.json",
+        "playbook/fn_configs/umail_auto_functions.json",
+        # "playbook/fn_configs/twillo_fucntion.json",
+    ]
+
+    all_functions = {}
+
+    for path in paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except json.JSONDecodeError:
+                print(f"⚠️ Skipped invalid JSON file: {path}")
+                continue
+
+            for fn in data.get("functions", []):
+                fn_name = fn.get("name")
+                if not fn_name:
+                    continue
+
+                if Full:
+                    # Return the entire function metadata object
+                    all_functions[fn_name] = fn
+                else:
+                    # Return only name → description mapping
+                    all_functions[fn_name] = fn.get(
+                        "description", "No description provided."
+                    )
+
+    return all_functions
 
 
 def parse_pptx_content_to_json(content: str) -> dict:

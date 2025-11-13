@@ -5,22 +5,15 @@
             "name": "gmail.send_email",
             "description": "Send a plain text email to a recipient.",
             "args": {
-                "to": "Recipient email address (string)",
+                "receipent_emails": "Recipient email address (list or string)",
                 "subject": "Email subject (string)",
                 "body_text": "Email body as plain text (string)"
             },
             "returns": {
-                "id": "Message ID of the sent email",
-                "thread_id": "Thread ID of the email",
-                "from": "Sender email",
-                "to": "Recipient email",
-                "subject": "Email subject",
-                "body": "Email body",
-                "timestamp": "UTC timestamp of sending",
-                "status": "Status of the email (sent/failed)",
-                "source": "Email source (gmail)",
-                "direction": "outbound",
-                "user_id": "User ID who sent the email"
+                "success": "True or False",
+                "response": "gmail sent message",
+                "error": "None or any error",
+                "return_str": "actual user message like this ✅ Email titled '{subject}' sent successfully to {receipent_emails}. Gmail message ID: {message_id}"
             }
         },
         {
@@ -28,7 +21,7 @@
             "name": "gmail.send_Meeting_invite_mail",
             "description": "Send an HTML/Plain text email for a Google Meet or similar meeting.",
             "args": {
-                "to_email": "Recipient email address (string)",
+                "to_email": "Recipient email address (list or string)",
                 "bcc_list": "List of BCC email addresses (list of strings)",
                 "subject": "Email subject (string)",
                 "body_html": "Email body in HTML format (string)"

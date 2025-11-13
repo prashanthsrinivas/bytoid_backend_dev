@@ -1,0 +1,67 @@
+{
+    "functions": [
+        {
+            "category": "AutoMateService",
+            "name": "automate.create_custom_email_body",
+            "description": "Creates a professional and personalized email body based on user requirements and dynamic inputs from previous steps or additional context.",
+            "args": {
+                "user_input": "Base description of the email content (string).",
+                "dynamic_inputs": "Optional additional dynamic data (dict). These will be directly included in the email prompt."
+            },
+            "returns": {
+                "email_body": "The generated email body as a string, ready to use in communication steps."
+            },
+            "notes": "Uses AI to create an email body. All dynamic inputs are interpolated directly into the email content. Includes user's business information if relevant."
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.generate_file_from_ai",
+            "description": "Generates a file (txt, md, css, html, docx, pptx) with content based on user input. Filename and file type are dynamically suggested by AI.",
+            "args": {
+                "user_input": "The description or instructions for the file content (string). Can specify style, format, structure, or type of file."
+            },
+            "returns": {
+                "file_path": "The path to the generated file on disk (string)."
+            },
+            "notes": "Uses the AI model to generate both content and a suitable filename with extension. Supports structured content for Word (.docx) and PowerPoint (.pptx) files."
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.generate_email_reply",
+            "description": "Generates a polite, professional, and context-aware email reply based on a given previous email message.",
+            "args": {
+                "previous_msg": "The content of the previous email message (string)."
+            },
+            "returns": {
+                "email_reply": "The AI-generated email reply as a string."
+            },
+            "notes": "Uses AI to produce a formal email response."
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.generate_chat_reply",
+            "description": "Generates a friendly and conversational reply based on a previous chat message. Accepts any number of dynamic keyword arguments (**args) such as intent, workflow, tone, or chat history for enhanced contextual responses.",
+            "args": {
+                "previous_msg": "The content of the previous chat message (string).",
+                "**args": "Additional optional keyword arguments (dict). These can include dynamic_inputs, workflow data, chat context, intent, or other runtime variables that help generate the best chat message."
+            },
+            "returns": {
+                "chat_reply": "The AI-generated chat reply as a string."
+            },
+            "notes": "Uses AI to generate a natural and contextually appropriate chat message. Automatically incorporates all **args into the AI prompt for richer contextual understanding."
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.generate_ai_content",
+            "description": "Generates creative or informational content (stories, articles, ideas, summaries, or questions) based on user input. Accepts flexible keyword arguments (**args) for tone, length, workflow, or other contextual hints.",
+            "args": {
+                "user_input": "User's request or topic description (string). Example: 'Write a short story about a robot learning emotions' or 'Generate 5 interview questions about marketing.'",
+                "**args": "Optional keyword arguments such as tone, length, workflow, dynamic_inputs, or other contextual hints that guide the generation style and content."
+            },
+            "returns": {
+                "generated_content": "AI-generated text based on the user request (string)."
+            },
+            "notes": "Uses AI for balanced creativity. Automatically adapts tone, structure, and content based on **args. Suitable for dynamic AI content generation with flexible context injection."
+        }
+    ]
+}

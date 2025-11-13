@@ -6,7 +6,7 @@ from googleapiclient.errors import HttpError
 import pytz
 from datetime import datetime, timedelta
 from typing import Union, List
-import os
+import os, re
 from utils.normal import can_reply_to_email, convert_human_date, convert_human_time
 from dotenv import load_dotenv
 
@@ -372,8 +372,10 @@ class GoogleMeetService:
                 f"Meeting '{created_event.get('summary')}' is scheduled on {start_str} {tz_abbrev} "
                 f"to {end_str} {tz_abbrev} with attendees: "
                 f"{', '.join(a['email'] for a in created_event.get('attendees', []))}. "
-                f"Meet link: {created_event.get('hangoutLink')}"
+                f"Meet link: {created_event.get('hangoutLink')} "
+                f"event id: {created_event.get('id')}"
             )
+
             return {
                 "event_id": created_event.get("id"),
                 "summary": created_event.get("summary"),
@@ -402,7 +404,7 @@ class GoogleMeetService:
         Only updates fields provided.
         """
         try:
-            print("update_meeting called")
+            print("update_meeting called", start_time, end_time)
 
             # Fetch event details first
             event = (
@@ -421,9 +423,24 @@ class GoogleMeetService:
                     "return_str": f"The meeting '{summary_safe}' has already been cancelled or deleted. No updates were made.",
                 }
 
+            def is_iso_datetime(value: str) -> bool:
+                if not value or not isinstance(value, str):
+                    return False
+                return bool(re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", value))
+
+            # Safe handling
+            if start_time and end_time:
+                if is_iso_datetime(start_time) and is_iso_datetime(end_time):
+                    start_time_std, end_time_std = start_time, end_time
+                else:
+                    start_time_std = convert_human_time(start_time)
+                    end_time_std = convert_human_time(end_time)
+            else:
+                start_time_std = end_time_std = None
+
             # Convert human-friendly times
-            start_time_std = convert_human_time(start_time)
-            end_time_std = convert_human_time(end_time)
+            # start_time_std = convert_human_time(start_time)
+            # end_time_std = convert_human_time(end_time)
             timezone = self.organizer_tz
 
             # Normalize attendees
@@ -450,6 +467,7 @@ class GoogleMeetService:
                 event["attendees"] = normalized_attendees
             if description:
                 event["description"] = description
+            print("start and end", event["start"], event["end"])
 
             # Perform the update
             updated_event = (

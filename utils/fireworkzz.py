@@ -25,6 +25,24 @@ def get_fireworks_response(user_message: str, role: str) -> str:
     return chat.choices[0].message.content.strip()
 
 
+def get_fireworks_response2(user_message: str, role: str, temp: float = 0.7) -> str:
+    chat = fw.chat.completions.create(
+        model=FIREWORKS_MODEL,
+        messages=[{"role": role, "content": user_message}],
+        temperature=temp,
+    )
+    return chat.choices[0].message.content.strip()
+
+
+def get_fireworks_response3(user_message: str, role: str, temp: float = 0.7) -> str:
+    chat = fw.chat.completions.create(
+        model="accounts/fireworks/models/deepseek-v3p1-terminus",
+        messages=[{"role": role, "content": user_message}],
+        temperature=temp,
+    )
+    return chat.choices[0].message.content.strip()
+
+
 def get_firework_embedding():
     embeddings = FireworksEmbeddings(
         model=EMBEDMODEL, api_key=FIREWORKS_KEY, dimensions=3072

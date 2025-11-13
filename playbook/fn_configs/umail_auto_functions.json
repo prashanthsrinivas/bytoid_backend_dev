@@ -1,0 +1,124 @@
+{
+    "functions": [
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.helper_make_reply_email",
+            "description": "Automatically compose and send an AI-generated reply to the latest inbound email in a conversation.",
+            "args": {
+                "userid": "User ID of the agent (string or integer)",
+                "from_email": "Agent's email address used for sending (string)",
+                "n_connection": "Optional existing database connection object (optional)"
+            },
+            "returns": {
+                "status": "True if email successfully sent, False if failed, or null on exception",
+                "sent_value": "Result or metadata from send_pilot_messages() if the email was sent successfully"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — For Umail page automation. Do not expose or execute in normal workflows unless explicitly requested by user."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.fetch_autopilot",
+            "description": "Fetch the current AutoPilot configuration and metadata for a specific user.",
+            "args": {
+                "user_id": "User ID whose AutoPilot configuration should be fetched (string or integer)"
+            },
+            "returns": {
+                "autopilot_config": "The stored AutoPilot configuration JSON or null if not found"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — Restricted to Umail page service. Not intended for general-purpose automation."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.persist_autopilot",
+            "description": "Persist or update AutoPilot configuration data for a user.",
+            "args": {
+                "user_id": "User ID of the current user (string or integer)",
+                "autopilot_data": "JSON object containing the AutoPilot configuration details"
+            },
+            "returns": {
+                "status": "True if successfully persisted, False otherwise"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — For managing user-specific AutoPilot setup on Umail service."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.suggest_umail_reply",
+            "description": "Generate a suggested AI reply for an ongoing conversation, without sending it.",
+            "args": {
+                "user_id": "User ID of the agent (string or integer)",
+                "conversation_id": "Unique identifier for the conversation (string)",
+                "message_text": "The last message text from the customer (string)"
+            },
+            "returns": {
+                "ai_suggestion": "AI-generated suggested reply text, or null if no reply was produced"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — Used by Umail page to preview AI reply suggestions before sending."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.auto_reply_umail_email",
+            "description": "Automatically send an AI-generated email reply using AutoPilot mode.",
+            "args": {
+                "user_id": "User ID of the agent (string or integer)",
+                "conversation_id": "Unique conversation ID (string)",
+                "client_id": "Client ID of connected Gmail account (string)",
+                "sender_email": "Agent's email address (string)",
+                "receiver_email": "Recipient email address (string)",
+                "subject": "Email subject line (string)"
+            },
+            "returns": {
+                "status": "True if reply successfully sent, False if failed"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — Core AutoPilot email handler for Umail page; not intended for normal workflows."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.activate_autopilot",
+            "description": "Activate AutoPilot for the current user, enabling automated email replies and workflows.",
+            "args": {
+                "user_id": "User ID to activate AutoPilot for (string or integer)"
+            },
+            "returns": {
+                "status": "True if successfully activated, False if failed"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — Enables Umail AutoPilot automation mode. Do not trigger in normal playbooks."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.revoke_autopilot",
+            "description": "Revoke or disable AutoPilot mode for a user, halting all automation actions.",
+            "args": {
+                "user_id": "User ID to disable AutoPilot for (string or integer)"
+            },
+            "returns": {
+                "status": "True if AutoPilot successfully revoked, False otherwise"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — Used for Umail automation control. Not available in workflow-level automation."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.change_autopilot_mode",
+            "description": "Switch AutoPilot mode (e.g., from manual to auto or semi-auto) for the user.",
+            "args": {
+                "user_id": "User ID (string or integer)",
+                "mode": "New mode to set, such as 'auto', 'manual', or 'semi-auto' (string)"
+            },
+            "returns": {
+                "status": "True if mode successfully changed, False otherwise"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — Allows mode toggling for Umail automation interface only."
+        },
+        {
+            "category": "UmailAutoService",
+            "name": "umail_automate.reset_autopilot",
+            "description": "Reset AutoPilot configuration to default settings for a specific user.",
+            "args": {
+                "user_id": "User ID whose AutoPilot configuration should be reset (string or integer)"
+            },
+            "returns": {
+                "status": "True if reset successfully, False otherwise"
+            },
+            "notes": "⚠️ INTERNAL USE ONLY — For maintenance or reset actions in the Umail service. Hidden from general workflow tools."
+        }
+    ]
+}

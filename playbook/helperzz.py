@@ -3,11 +3,10 @@ import re
 import yaml
 from agent_route.doc_clarity import fetch_ques_with_docs
 from agent_route.routes import getFilenameData
-from utils.chatopenzz import get_evaluator_gpt4
 from utils.fireworkzz import (
     evaluator_context_llama,
     get_evaluator_fireworks,
-    get_fireworks_response,
+    get_fireworks_response2,
 )
 from utils.pb_config_utils import *
 from utils.normal import ensure_dir, load_yaml_file, read_function_jsons
@@ -81,7 +80,8 @@ def check_doc_context_needed(instruction_input, templatedata):
     except KeyError as e:
         raise ValueError(f"Template expects missing key: {e}")
 
-    response = get_fireworks_response(full_prompt, role="system")
+    # response = get_fireworks_response(full_prompt, role="system")
+    response = get_fireworks_response2(full_prompt, role="system", temp=0.4)
 
     try:
         result = json.loads(response)
@@ -257,6 +257,19 @@ def create_playbook(data, filename=None):
         raise ValueError("Missing 'create_instruction' template in YAML file.")
     full_prompt = template.format(**instruction_input)
 
+    # checker_temlate = template_data.get("validate_instruction_capabilities")
+    # checker_prompt = checker_temlate.format(**instruction_input)
+    # raw_check_response = get_evaluator_fireworks(checker_prompt, role="system")
+    # # Clean AI response
+    # cleaned_j = clean_json_block(raw_check_response)
+    # try:
+    #     response_dict = json.loads(cleaned_j)
+    # except json.JSONDecodeError as e:
+    #     raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
+    # if "possible" in response_dict:
+    #     val = response_dict["possible"]
+    #     if val != "yes":
+    #         return response_dict["message"]
     raw_response = get_evaluator_fireworks(full_prompt, role="system")
 
     # Clean AI response
@@ -431,7 +444,8 @@ def answer_clarification_question_validate(prompt_template, question, answer):
         )
 
         # Get LLM response
-        llm_output = get_fireworks_response(prompt_input, role="system")
+        # llm_output = get_fireworks_response(prompt_input, role="system")
+        llm_output = get_fireworks_response2(prompt_input, role="system", temp=0.3)
 
         # Clean and parse JSON
         cleaned = llm_output.strip()
@@ -467,32 +481,32 @@ def generate_meeting_email_body(details: dict, field_data: dict) -> str:
     social_links = field_data.get("sociallinks", "")
 
     return f"""
-<div style="max-width:600px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;font-family:sans-serif;color:#1f2937;">
-  <p style="font-size:16px;margin-bottom:16px;">Hi <strong>{first_name}</strong>,</p>
-  <p style="margin-bottom:24px;">A meeting has been scheduled for you. Below are the details:</p>
+    <div style="max-width:600px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;font-family:sans-serif;color:#1f2937;">
+    <p style="font-size:16px;margin-bottom:16px;">Hi <strong>{first_name}</strong>,</p>
+    <p style="margin-bottom:24px;">A meeting has been scheduled for you. Below are the details:</p>
 
-  <div style="margin-bottom:24px;">
-    <h2 style="color:#1d4ed8;font-size:18px;font-weight:600;margin-bottom:8px;">📌 Meeting Details</h2>
-    <ul style="padding-left:20px;">
-      {"<li><strong>Summary:</strong> " + summary + "</li>" if summary else ""}
-      {"<li><strong>Date & Time:</strong> " + start_time + " to " + end_time + " (" + timezone + ")</li>" if start_time and end_time else ""}
-      <li><strong>Join Link:</strong> <a href="{hangout_link}" style="color:#2563eb;text-decoration:underline;">{hangout_link}</a></li>
-    </ul>
-  </div>
+    <div style="margin-bottom:24px;">
+        <h2 style="color:#1d4ed8;font-size:18px;font-weight:600;margin-bottom:8px;">📌 Meeting Details</h2>
+        <ul style="padding-left:20px;">
+        {"<li><strong>Summary:</strong> " + summary + "</li>" if summary else ""}
+        {"<li><strong>Date & Time:</strong> " + start_time + " to " + end_time + " (" + timezone + ")</li>" if start_time and end_time else ""}
+        <li><strong>Join Link:</strong> <a href="{hangout_link}" style="color:#2563eb;text-decoration:underline;">{hangout_link}</a></li>
+        </ul>
+    </div>
 
-  {"<div style='margin-bottom:24px;'><h2 style='color:#047857;font-size:18px;font-weight:600;margin-bottom:8px;'>🧾 Business Info</h2><ul style='padding-left:20px;'>" if business_name or line_of_business else ""}
-    {f"<li><strong>Business Name:</strong> {business_name}</li>" if business_name else ""}
-    {f"<li><strong>Line of Business:</strong> {line_of_business}</li>" if line_of_business else ""}
-  {"</ul></div>" if business_name or line_of_business else ""}
+    {"<div style='margin-bottom:24px;'><h2 style='color:#047857;font-size:18px;font-weight:600;margin-bottom:8px;'>🧾 Business Info</h2><ul style='padding-left:20px;'>" if business_name or line_of_business else ""}
+        {f"<li><strong>Business Name:</strong> {business_name}</li>" if business_name else ""}
+        {f"<li><strong>Line of Business:</strong> {line_of_business}</li>" if line_of_business else ""}
+    {"</ul></div>" if business_name or line_of_business else ""}
 
-  {"<div style='margin-bottom:24px;'><h2 style='color:#7c3aed;font-size:18px;font-weight:600;margin-bottom:8px;'>📍 Contact Info</h2><ul style='padding-left:20px;'>" if billing_address or business_email or website else ""}
-    {f"<li><strong>Billing Address:</strong> {billing_address}</li>" if billing_address else ""}
-    {f"<li><strong>Business Email:</strong> {business_email}</li>" if business_email else ""}
-    {f"<li><strong>Website:</strong> <a href='{website}' style='color:#2563eb;text-decoration:underline;'>{website}</a></li>" if website else ""}
-  {"</ul></div>" if billing_address or business_email or website else ""}
+    {"<div style='margin-bottom:24px;'><h2 style='color:#7c3aed;font-size:18px;font-weight:600;margin-bottom:8px;'>📍 Contact Info</h2><ul style='padding-left:20px;'>" if billing_address or business_email or website else ""}
+        {f"<li><strong>Billing Address:</strong> {billing_address}</li>" if billing_address else ""}
+        {f"<li><strong>Business Email:</strong> {business_email}</li>" if business_email else ""}
+        {f"<li><strong>Website:</strong> <a href='{website}' style='color:#2563eb;text-decoration:underline;'>{website}</a></li>" if website else ""}
+    {"</ul></div>" if billing_address or business_email or website else ""}
 
-  {f"<div style='margin-bottom:24px;'><h2 style='color:#be185d;font-size:18px;font-weight:600;margin-bottom:8px;'>🌐 Social Links</h2><p>{social_links}</p></div>" if social_links else ""}
+    {f"<div style='margin-bottom:24px;'><h2 style='color:#be185d;font-size:18px;font-weight:600;margin-bottom:8px;'>🌐 Social Links</h2><p>{social_links}</p></div>" if social_links else ""}
 
-  <p style="margin-top:32px;font-size:14px;color:#6b7280;">Regards,<br><strong>Your Team</strong></p>
-</div>
-"""
+    <p style="margin-top:32px;font-size:14px;color:#6b7280;">Regards,<br><strong>Your Team</strong></p>
+    </div>
+    """

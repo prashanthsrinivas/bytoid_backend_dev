@@ -9,10 +9,11 @@ from flask import Blueprint, request, jsonify
 import json
 from cust_helpers import pathconfig
 from services.workflow_service import WorkflowRunnerV2
-from utils.fireworkzz import get_fireworks_response
+from utils.chatopenzz import get_evaluator_gpt4
+from utils.fireworkzz import get_fireworks_response2, get_fireworks_response3
 from .helperzz import *
 from utils.pb_config_utils import *
-from utils.normal import load_yaml_file
+from utils.normal import load_yaml_file, read_function_jsons2
 
 playbook_bp = Blueprint("playbook", __name__)
 
@@ -373,7 +374,8 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
         )
 
         # Call LLM
-        llm_response = get_fireworks_response(full_prompt, role="system")
+        # llm_response = get_fireworks_response(full_prompt, role="system")
+        llm_response = get_fireworks_response2(full_prompt, role="system", temp=0.5)
 
         try:
             cleaned_response = extract_json_from_llm_output(llm_response)
@@ -544,7 +546,8 @@ def generate_clarification_questions():
         )
 
         # 🔥 Get LLM output
-        llm_output = get_fireworks_response(full_prompt, role="system")
+        # llm_output = get_fireworks_response(full_prompt, role="system")
+        llm_output = get_fireworks_response2(full_prompt, role="system", temp=0.6)
 
         # 🧼 Extract valid JSON block (remove any ```json or ```yaml markdown)
         json_match = re.search(r"```(?:json)?\n([\s\S]+?)```", llm_output)
@@ -876,7 +879,8 @@ def workflow_ai_suggest():
         )
 
         # Call LLM
-        llm_output = get_fireworks_response(prompt_input, role="system")
+        # llm_output = get_fireworks_response(prompt_input, role="system")
+        llm_output = get_fireworks_response2(prompt_input, role="system", temp=0.7)
         ai_answer = llm_output.strip()
 
         # Clean markdown formatting if returned (optional safety)
@@ -934,6 +938,7 @@ def runWorkflow():
     data = request.json
     userid = data.get("user_id")
     filename = data.get("filename")
+    testing = data.get("testing")
 
     if not userid:
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
@@ -956,7 +961,10 @@ def runWorkflow():
 
     try:
         with WorkflowRunnerV2(
-            userid=userid, filename=filename, workflowJson=workflow_json
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=testing,
         ) as runner:
             runner.execute()
             result = runner.get_execution_log()
@@ -1085,7 +1093,14 @@ def clear_playground_data():
         workflow_json = read_json_from_s3(f"{userid}/workflow/{filename}")
 
         # 🔹 Remove transient sections
-        for key in ["chat", "online", "testing", "chat_log", "execution_logs"]:
+        for key in [
+            "chat",
+            "online",
+            "testing",
+            "chat_log",
+            "execution_logs",
+            "last_ai_discovered",
+        ]:
             if key in workflow_json:
                 del workflow_json[key]
 
@@ -1183,40 +1198,45 @@ def clear_testing_data():
 def generate_workflow_input():
     try:
         data = request.get_json(force=True)
+        userid = data.get("user_id")
         inp_description = data.get("description", "").strip()
-        available_modes = [
-            "auto",
-            "whatsapp",
-            "gmail",
-            "outlook",
-            "facebook",
-            "instagram",
-            "slack",
-            "microsoft_teams",
-            "sms",
-            "zoho",
-            "calendar",
-            "web_assistant",
-        ]
-
+        if not userid:
+            return {"error": "need userid"}
+        if not inp_description:
+            return {"error": "need input"}
         if not inp_description:
             return jsonify({"error": "Missing 'description' field"}), 400
 
-        # Load YAML and extract section
+        # ✅ Available communication modes
+        available_modes = ["auto", "gmail", "google_meet", "outlook", "calendar"]
+
+        # ✅ Load all available service functions
+        services_section = read_function_jsons2()
+
+        # ✅ Load the YAML prompt
         prompt_yaml = load_yaml_file(path=pathconfig.play_template)
-        prompt_template = prompt_yaml.get("create_workflow_inputs")
-
-        # Convert the YAML dict to string
+        prompt_template = prompt_yaml.get("create_workflow_context")
         prompt_text = yaml.dump(prompt_template, sort_keys=False)
+        # ✅ Inject dynamic values
+        formatted_prompt = (
+            prompt_text.replace("{{inp_description}}", inp_description)
+            .replace("{{available_communication_modes}}", json.dumps(available_modes))
+            .replace("{{services_section}}", json.dumps(services_section))
+        )
+        # print("fomatted prompt", formatted_prompt)
 
-        # Inject dynamic fields
-        formatted_prompt = prompt_text.replace(
-            "{{inp_description}}", inp_description
-        ).replace("{{available_communication_modes}}", json.dumps(available_modes))
+        # ✅ Call the LLM
+        llm_output = get_fireworks_response2(
+            formatted_prompt, role="system", temp=0.3
+        ).strip()
+        # llm_output = get_evaluator_gpt4(formatted_prompt).strip()
+        llm_output = re.sub(
+            r"^```(?:json)?\s*|\s*```$", "", llm_output, flags=re.MULTILINE
+        ).strip()
+        print("input by user ->", inp_description)
+        print("Raw llm output", llm_output)
 
-        # LLM call
-        llm_output = get_evaluator_fireworks(formatted_prompt, role="system")
-
+        # ✅ Parse JSON safely
         try:
             workflow_data = json.loads(llm_output)
         except json.JSONDecodeError:
@@ -1229,156 +1249,115 @@ def generate_workflow_input():
                 ),
                 500,
             )
-
-        return jsonify({"status": "success", "inferred_fields": workflow_data})
+        # ✅ Return structured response
+        return jsonify(workflow_data)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
+# @playbook_bp.route("/test-mid", methods=["POST"])
+# def testworknput():
+#     data = request.json
+#     userid = data.get("user_id")
+#     userinput = data.get("userinput")
+#     filename = data.get("filename")
+
+#     if not userid:
+#         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+#     if not filename:
+#         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+#     if not userinput:
+#         return jsonify({"message": "Missing userinput", "status": "error"}), 400
+
+#     # ✅ Pre-validate workflow existence
+#     wf_loc = f"{userid}/workflow/{filename}"
+#     workflow_json = read_json_from_s3(wf_loc)
+#     if not workflow_json:
+#         return (
+#             jsonify(
+#                 {
+#                     "message": f"Workflow file '{filename}' not found ",
+#                     "status": "error",
+#                 }
+#             ),
+#             404,
+#         )
+#     print("user input", userinput)
+#     try:
+#         allfuns = read_function_jsons2(Full=True)
+#         workflow_steps = workflow_json.get("workflow", {}).get("steps", [])
+#         steps = {step["id"]: step for step in workflow_steps}
+#         # result=service.current_implemented_functions
+#         return jsonify({"steps": steps, "allfuns": allfuns})
+#         # return service.get_chat_summarization()
+#     except Exception as e:
+#         return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @playbook_bp.route("/test-mid", methods=["POST"])
 def testworknput():
-    data = request.json
-    userid = data.get("user_id")
-    userinput = data.get("userinput")
-    filename = data.get("filename")
-
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
-    if not filename:
-        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-    if not userinput:
-        return jsonify({"message": "Missing userinput", "status": "error"}), 400
-
-    # ✅ Pre-validate workflow existence
-    wf_loc = f"{userid}/workflow/{filename}"
-    workflow_json = read_json_from_s3(wf_loc)
-    if not workflow_json:
-        return (
-            jsonify(
-                {
-                    "message": f"Workflow file '{filename}' not found ",
-                    "status": "error",
-                }
-            ),
-            404,
-        )
-    print("user input", userinput)
+    """
+    Test middleware route to return only the function definitions
+    used in the workflow steps, extracted from all function configs.
+    """
     try:
-        with WorkflowRunnerV2(
-            userid=userid, filename=filename, workflowJson=workflow_json, testing=True
-        ) as service:
-            template_data = load_yaml_file(path=pathconfig.play_template)
-            prompt_instructions = template_data.get("input_intent_classifier", {})
-            if not isinstance(prompt_instructions, str):
-                raise TypeError(
-                    "Invalid template structure: expected string for 'instructions'."
-                )
-            if "chat" in workflow_json:
-                chat = workflow_json.get("chat", [])[-10:]
-            else:
-                chat = []
+        data = request.json
+        userid = data.get("user_id")
+        userinput = data.get("userinput")
+        filename = data.get("filename")
 
-            prompt_text = (
-                prompt_instructions.replace("{{user_input}}", userinput)
-                .replace("{{chat_history}}", json.dumps(chat, ensure_ascii=False))
-                .strip()
+        # --- Validation ---
+        if not userid:
+            return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+        if not filename:
+            return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+        if not userinput:
+            return jsonify({"message": "Missing userinput", "status": "error"}), 400
+
+        # --- Load workflow from S3 ---
+        wf_loc = f"{userid}/workflow/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+        if not workflow_json:
+            return (
+                jsonify(
+                    {
+                        "message": f"Workflow file '{filename}' not found",
+                        "status": "error",
+                    }
+                ),
+                404,
             )
 
-            # result = service.execute_from_text_input(user_input=userinput)
-            result = service.get_parsed_fireworks_response(prompt_text)
-            print("res", result)
-            if result and "intent" in result:
-                if result["intent"] == "normal_conversation":
-                    # prompt_instructions = template_data.get(
-                    #     "normal_conversation_handler", {}
-                    # )
-                    prompt_instructionss = template_data.get(
-                        "workflow_conversation_handler", {}
-                    )
-                    prompt = prompt_instructionss.replace(
-                        "{{chat_history}}", json.dumps(chat, ensure_ascii=False)
-                    ).replace("{{user_input}}", userinput)
+        # --- Load all function definitions ---
+        # allfuns = read_function_jsons2(Full=True)
 
-                    newresult = service.get_parsed_fireworks_response(prompt)
-                    return jsonify(newresult)
-                elif result["intent"] == "workflow":
-                    print("workflow trigger")
-                    prompt_base = template_data.get("detect_and_route_input2")
+        # # --- Extract function names from workflow steps ---
+        # workflow_steps = workflow_json.get("workflow", {}).get("steps", [])
+        # used_functions = {}
 
-                    if not isinstance(prompt_base, str):
-                        raise ValueError(
-                            "Prompt template `detect_and_route_input2` must be a string"
-                        )
+        # for step in workflow_steps:
+        #     fn_name = step.get("function_call", {}).get("function_name")
+        #     if fn_name and fn_name in allfuns:
+        #         used_functions[fn_name] = allfuns[fn_name]
+        from services.workflow_service import WorkflowRunnerV2
 
-                    baseworkflow = workflow_json.get("workflow", {})
-                    current_chats = workflow_json.get("chat", [])
-                    context_key = "testing"
-                    previous_data = (
-                        workflow_json.get(context_key)
-                        or workflow_json[context_key]
-                        or {}
-                    )
+        servicemain = WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        )
+        val = servicemain.ai_pre_gather_details(userinput=userinput)
 
-                    # Ensure workflow_json[testing] exists
-                    workflow_json.setdefault(context_key, previous_data)
+        # --- Return only used function definitions ---
+        return jsonify({"status": "success", "result": val})
 
-                    prompt_text = (
-                        prompt_base.replace("{{user_input}}", userinput)
-                        .replace("{{workflow_json}}", json.dumps(baseworkflow))
-                        .replace("{{previous_data}}", json.dumps(previous_data))
-                        .replace("{{current_chats}}", json.dumps(current_chats))
-                    ).strip()
-
-                    newresultds = service.get_parsed_fireworks_response(prompt_text)
-                    print("res workflow", newresultds)
-                    return jsonify(newresultds)
-                elif result["intent"] == "resetStep":
-                    custeps = service.steps
-
-                    # Map id -> title
-                    step_map = {
-                        str(step["id"]): step["title"] for _, step in custeps.items()
-                    }
-
-                    # Proper steptitles list for prompt
-                    steptitles = [
-                        {str(step["id"]): step["title"]} for _, step in custeps.items()
-                    ]
-                    print("step titles", steptitles)
-
-                    current_chats = workflow_json.get("chat", [])
-                    context_key = "testing"
-
-                    previous_data = workflow_json.get(context_key) or {}
-                    done_step_ids = list(previous_data.keys())
-                    print("completed step ids", done_step_ids)
-
-                    # ✅ Build executed steps with titles
-                    done_steps_with_titles = [
-                        {sid: step_map.get(str(sid), "")} for sid in done_step_ids
-                    ]
-                    print("completed steps with titles", done_steps_with_titles)
-
-                    prompt_base = template_data.get("reset_intent_handler")
-                    prompt_text = (
-                        prompt_base.replace("{{user_input}}", userinput)
-                        .replace("{{step_titles}}", json.dumps(steptitles))
-                        .replace("{{previous_data}}", json.dumps(previous_data))
-                        .replace("{{current_chats}}", json.dumps(current_chats))
-                        .replace("{{done_step_ids}}", json.dumps(done_step_ids))
-                        .replace(
-                            "{{done_steps_with_titles}}",
-                            json.dumps(done_steps_with_titles),
-                        )
-                    ).strip()
-
-                    newresultds = service.get_parsed_fireworks_response(prompt_text)
-                    print("res reset", newresultds)
-                    return jsonify(newresultds)
-
-            # result=service.current_implemented_functions
-            return jsonify(result)
-            # return service.get_chat_summarization()
     except Exception as e:
+        print("❌ Error in /test-mid:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/get-allfunctions")
+def get_all_fns():
+    return jsonify(read_function_jsons2())

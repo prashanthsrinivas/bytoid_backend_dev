@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os, time
 from typing import *
@@ -9,8 +9,16 @@ from db.db_checkers import fetch_contacts_by_user, get_userinfo
 from db.rds_db import connect_to_rds
 from playbook.helperzz import save_playbook_to_s3
 from utils.base_logger import get_logger
-from utils.fireworkzz import get_evaluator_fireworks, get_fireworks_response
-from utils.normal import can_reply_to_email, load_yaml_file, read_function_jsons
+from utils.fireworkzz import (
+    get_fireworks_response,
+    get_fireworks_response2,
+)
+from utils.normal import (
+    can_reply_to_email,
+    load_yaml_file,
+    read_function_jsons,
+    read_function_jsons2,
+)
 from utils.s3_utils import read_json_from_s3
 from dotenv import load_dotenv
 import copy, uuid
@@ -49,6 +57,27 @@ class WorkflowRunnerV2:
         self.ai_made_output = {}
         self.current_implemented_functions = read_function_jsons()
 
+    def is_yes(self, text: str) -> bool:
+        yes_words = {
+            "yes",
+            "y",
+            "yeah",
+            "yep",
+            "sure",
+            "ok",
+            "okay",
+            "ya",
+            "affirmative",
+            "confirm",
+            "correct",
+        }
+        text = text.lower()
+
+        # extract alphabetic words only
+        words = re.findall(r"[a-zA-Z]+", text)
+
+        return any(word in yes_words for word in words)
+
     def get_current_execution_data(self):
         if "testing" in self.workflow_json and self.testing:
             return self.workflow_json["testing"]
@@ -64,7 +93,7 @@ class WorkflowRunnerV2:
             last_chat_check = chat_log.get("last_chat_summarized")
             last_summarization = chat_log.get("chat_summarization") or ""
             if last_chat_check:
-                mixchats = allchats[-5:]
+                mixchats = allchats[-10:]
                 return {"chat": mixchats, "chat_summarization": last_summarization}
         else:
             return {"chat": allchats, "chat_summarization": ""}
@@ -196,33 +225,63 @@ class WorkflowRunnerV2:
         #         "step_id": result.get("step_id"),
         #     }
         # )
-        # self.saveworkflowtos3()
+        self.saveworkflowtos3()
         return result
 
     def ai_input_intent_classifier(self, userinput):
+        """
+        Classifies user input into one of: workflow, explanation, resetStep, or normal_conversation.
+        Includes workflow-level context from input_data to improve domain awareness.
+        """
         template_data = self.prompt_template_load()
         prompt_instructions = template_data.get("input_intent_classifier", {})
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
             )
+
+        # Retrieve chat context
         chats_obj = self.get_current_chats()
         new_chat = chats_obj.get("chat", [])
         previous_summary = chats_obj.get("chat_summarization", "")
+        custeps = self.steps
+        inputdata = self.input_data or {}
 
-        # Serialize new chat messages
+        # Prepare workflow step summaries
+        steptitles = [
+            {
+                str(step["id"]): {
+                    "title": step.get("title", ""),
+                    "description": step.get("objective", ""),
+                }
+            }
+            for _, step in custeps.items()
+        ]
+
+        # Serialize chat history
         new_chat_json = json.dumps(new_chat, ensure_ascii=False, indent=2)
 
+        # Build replacements safely
         prompt_text = (
             prompt_instructions.replace("{{user_input}}", userinput)
             .replace("{{chat}}", new_chat_json)
             .replace("{{chat_summarization}}", previous_summary or "")
+            .replace(
+                "{{workflow_titles}}",
+                json.dumps(steptitles, ensure_ascii=False, indent=2),
+            )
+            .replace("{{input_data.title}}", inputdata.get("title", ""))
+            .replace("{{input_data.description}}", inputdata.get("description", ""))
+            .replace("{{input_data.category}}", inputdata.get("category", ""))
+            .replace("{{input_data.tags}}", ", ".join(inputdata.get("tags", [])))
             .strip()
         )
+
+        # Get parsed result from Fireworks
         result = self.get_parsed_fireworks_response(prompt_text)
         return result
 
-    def ai_workflow_conversation_handler(self, userinput):
+    def ai_conversation_handler(self, userinput):
         template_data = self.prompt_template_load()
         prompt_instructions = template_data.get("workflow_conversation_handler", {})
         if not isinstance(prompt_instructions, str):
@@ -247,9 +306,9 @@ class WorkflowRunnerV2:
             return result["reply"]
         return result
 
-    def ai_detect_and_route_input(self, userinput):
+    def ai_detect_trigger_type(self, userinput):
         template_data = self.prompt_template_load()
-        prompt_instructions = template_data.get("detect_and_route_input2", {})
+        prompt_instructions = template_data.get("detect_trigger_type", {})
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
@@ -260,32 +319,348 @@ class WorkflowRunnerV2:
         previous_summary = chats_obj.get("chat_summarization", "")
         previous_data = self.previous_data
         baseworkflow = self.workflow_json.get("workflow", {})
+        base_ai_instruction = None
+        inputdata = self.input_data or {}
 
         # ✅ correct handling when chats are empty
         if new_chat:
             base_chat = new_chat[-1]
         else:
             base_chat = {}
-        
+        step_id = base_chat.get("step_id")
+        if not step_id:
+            step_match = re.search(r"\bstep\s*(\d+)", userinput, re.IGNORECASE)
+            step_id = int(step_match.group(1)) if step_match else None
+
+        # Safe validation
+        if (
+            step_id not in [None, "", "null"]  # handles null, "", None, JSON null
+            and str(step_id).strip().isdigit()  # prevents non-numeric cases
+            and int(step_id) > 0  # avoid zero or negative indexes
+            and self.is_yes(userinput)  # yes-intent check
+        ):
+            last_step = int(step_id)
+            baseworkflow = self.steps.get(last_step)
+            base_ai_instruction = baseworkflow.get("ai_instructions")
+
         # ✅ serialize properly
         last_chat = json.dumps(base_chat, ensure_ascii=False, indent=2)
         new_chat_json = json.dumps(new_chat, ensure_ascii=False, indent=2)
+        custeps = self.steps
+
+        # Proper steptitles list for prompt
+        steptitles = [
+            {
+                str(step["id"]): {
+                    "title": step["title"],
+                    "description": step["objective"],
+                }
+            }
+            for _, step in custeps.items()
+        ]
 
         # ✅ Build prompt (do NOT double-dump JSON for {{current_chats}})
         prompt_text = (
-            prompt_instructions
-            .replace("{{user_input}}", userinput)
+            prompt_instructions.replace("{{user_input}}", userinput)
             .replace("{{workflow_json}}", json.dumps(baseworkflow))
             .replace("{{previous_data}}", json.dumps(previous_data))
             .replace("{{current_chats}}", new_chat_json)
             .replace("{{previous_chat_summary}}", previous_summary)
             .replace("{{last_chat}}", last_chat)
+            .replace("{{ai_instruction}}", base_ai_instruction or "")
+            .replace(
+                "{{workflow_titles}}",
+                json.dumps(steptitles, ensure_ascii=False, indent=2),
+            )
+            .replace("{{input_data.title}}", inputdata.get("title", ""))
+            .replace("{{input_data.description}}", inputdata.get("description", ""))
+            .replace("{{input_data.category}}", inputdata.get("category", ""))
+            .replace("{{input_data.tags}}", ", ".join(inputdata.get("tags", [])))
         ).strip()
 
         newresultds = self.get_parsed_fireworks_response(prompt_text)
-        print("res workflow", newresultds)
+        print("res workflow detector", newresultds)
         return newresultds
 
+    def ai_detect_current_step(self, userinput):
+        template_data = self.prompt_template_load()
+        prompt_instructions = template_data.get("detect_current_step", {})
+        if not isinstance(prompt_instructions, str):
+            raise TypeError(
+                "Invalid template structure: expected string for 'instructions'."
+            )
+        chats_obj = self.get_current_chats()
+        new_chat = chats_obj.get("chat", [])
+        baseworkflow = self.workflow_json.get("workflow", {})
+        # Serialize new chat messages
+        new_chat_json = json.dumps(new_chat, ensure_ascii=False, indent=2)
+
+        prompt_text = (
+            prompt_instructions.replace("{{user_input}}", userinput)
+            .replace("{{chats}}", new_chat_json)
+            .replace(
+                "{{workflow_json}}",
+                json.dumps(baseworkflow, ensure_ascii=False, indent=2),
+            )
+            .strip()
+        )
+        result = self.get_parsed_fireworks_response(prompt_text)
+        if result and "step_id" in result:
+            return result["step_id"]
+        return result
+
+    # def ai_detect_and_route_input(self, userinput, extracted_id=None):
+    #     template_data = self.prompt_template_load()
+    #     prompt_instructions = template_data.get("detect_and_route_input", {})
+    #     if not isinstance(prompt_instructions, str):
+    #         raise TypeError(
+    #             "Invalid template structure: expected string for 'instructions'."
+    #         )
+
+    #     chats_obj = self.get_current_chats()
+    #     new_chat = chats_obj.get("chat", [])
+    #     previous_summary = chats_obj.get("chat_summarization", "")
+    #     previous_data = self.previous_data
+    #     baseworkflow = self.workflow_json.get("workflow", {})
+    #     base_ai_instruction = None
+
+    #     # ✅ Handle empty chat list safely
+    #     if new_chat:
+    #         base_chat = new_chat[-1]
+    #     else:
+    #         base_chat = {}
+
+    #     # 🧩 Step 1: Auto-augment yes/no inputs with step ID context
+    #     # def is_confirmation_or_rejection(text):
+    #     #     text = text.strip().lower()
+    #     #     confirmations = {
+    #     #         "yes",
+    #     #         "y",
+    #     #         "yep",
+    #     #         "yeah",
+    #     #         "sure",
+    #     #         "ok",
+    #     #         "okay",
+    #     #         "confirm",
+    #     #         "alright",
+    #     #     }
+    #     #     # rejections = {"no", "nope", "nah", "cancel", "not now"}
+    #     #     if text in confirmations:
+    #     #         return "yes"
+    #     #     # if text in rejections:
+    #     #     #     return "no"
+    #     #     return None
+
+    #     # confirm_type = is_confirmation_or_rejection(userinput)
+    #     # if confirm_type and base_chat.get("step_id"):
+    #     #     step_id = str(base_chat.get("step_id")).strip()
+    #     #     userinput = f"{confirm_type} proceed with step {step_id}"
+    #     #     print(f"🧩 Auto-modified input for confirmation: {userinput}")
+
+    #     # ✅ Serialize properly
+    #     last_chat = json.dumps(base_chat, ensure_ascii=False, indent=2)
+    #     new_chat_json = json.dumps(new_chat, ensure_ascii=False, indent=2)
+    #     lastly_ai_attached = self.workflow_json.get("last_ai_discovered", {}) or {}
+    #     custeps = self.steps
+    #     inputdata = self.input_data
+    #     if extracted_id:
+    #         userinput = f"{userinput} - it is step{extracted_id}"
+
+    #     # ✅ Proper step titles for prompt
+    #     steptitles = [
+    #         {
+    #             str(step["id"]): {
+    #                 "title": step["title"],
+    #                 "description": step["objective"],
+    #             }
+    #         }
+    #         for _, step in custeps.items()
+    #     ]
+
+    #     # ✅ Build prompt (no double JSON dump)
+    #     prompt_text = (
+    #         prompt_instructions.replace("{{user_input}}", userinput)
+    #         .replace("{{workflow_json}}", json.dumps(baseworkflow))
+    #         .replace("{{previous_data}}", json.dumps(previous_data))
+    #         .replace("{{current_chats}}", new_chat_json)
+    #         .replace("{{last_chat}}", last_chat)
+    #         .replace("{{ai_instruction}}", base_ai_instruction or "")
+    #         .replace(
+    #             "{{previous_trigger_attachements}}", json.dumps(lastly_ai_attached)
+    #         )
+    #         .replace(
+    #             "{{workflow_titles}}",
+    #             json.dumps(steptitles, ensure_ascii=False, indent=2),
+    #         )
+    #         .replace("{{input_data.title}}", inputdata.get("title", ""))
+    #         .replace("{{input_data.description}}", inputdata.get("description", ""))
+    #         .replace("{{input_data.category}}", inputdata.get("category", ""))
+    #         .replace("{{input_data.tags}}", ", ".join(inputdata.get("tags", [])))
+    #     ).strip()
+
+    #     # 🧠 Send final prompt to AI
+    #     newresultds = self.get_parsed_fireworks_response(prompt_text)
+    #     print("res workflow", newresultds)
+    #     return newresultds
+
+    def ai_detect_and_route_input(self, userinput, extracted_id=None):
+        template_data = self.prompt_template_load()
+        prompt_instructions = template_data.get("detect_and_route_input", {})
+        if not isinstance(prompt_instructions, str):
+            raise TypeError(
+                "Invalid template structure: expected string for 'instructions'."
+            )
+
+        chats_obj = self.get_current_chats()
+        new_chat = chats_obj.get("chat", [])
+        previous_data = self.previous_data
+        baseworkflow = self.workflow_json.get("workflow", {})
+        base_ai_instruction = None
+        lastly_ai_attached = self.workflow_json.get("last_ai_discovered", {}) or {}
+        custeps = self.steps
+        inputdata = self.input_data
+
+        # -----------------------------
+        # 1️⃣ Identify the latest confirmation step
+        # -----------------------------
+        last_chat = new_chat[-1]
+
+        print("extracted id", extracted_id)
+        print("last  chat", last_chat)
+
+        # Step titles for prompt
+        steptitles = [
+            {
+                str(step["id"]): {
+                    "title": step["title"],
+                    "description": step["objective"],
+                }
+            }
+            for _, step in custeps.items()
+        ]
+
+        def build_prompt(u_input):
+            return (
+                prompt_instructions.replace("{{user_input}}", u_input)
+                .replace("{{workflow_json}}", json.dumps(baseworkflow))
+                .replace("{{previous_data}}", json.dumps(previous_data))
+                .replace(
+                    "{{current_chats}}",
+                    json.dumps(new_chat, ensure_ascii=False, indent=2),
+                )
+                .replace(
+                    "{{last_chat}}", json.dumps(last_chat, ensure_ascii=False, indent=2)
+                )
+                .replace("{{ai_instruction}}", base_ai_instruction or "")
+                .replace(
+                    "{{previous_trigger_attachements}}", json.dumps(lastly_ai_attached)
+                )
+                .replace(
+                    "{{workflow_titles}}",
+                    json.dumps(steptitles, ensure_ascii=False, indent=2),
+                )
+                .replace("{{input_data.title}}", inputdata.get("title", ""))
+                .replace("{{input_data.description}}", inputdata.get("description", ""))
+                .replace("{{input_data.category}}", inputdata.get("category", ""))
+                .replace("{{input_data.tags}}", ", ".join(inputdata.get("tags", [])))
+            ).strip()
+
+        modinput = userinput
+        if extracted_id:
+            modinput = f"{userinput} - it is step {extracted_id}"
+
+        # -----------------------------
+        # 2️⃣ Initial AI call with raw input
+        # -----------------------------
+        print("user input", modinput)
+        ai_result = self.get_parsed_fireworks_response(build_prompt(modinput))
+        print("ai detect initial", ai_result)
+
+        # If AI already returned wf_single_runner=True, no need for further steps
+        if ai_result.get("wf_single_runner") == True:
+            print("runner single", ai_result.get("wf_single_runner"))
+            return ai_result
+
+        def build_second_stage_prompt(u_input, ai_result):
+            second_stage_instructions = template_data.get(
+                "second_stage_confirmation_handler", ""
+            )
+            return (
+                second_stage_instructions.replace("{{user_input}}", u_input)
+                .replace("{{ai_result}}", json.dumps(ai_result, ensure_ascii=False))
+                .replace(
+                    "{{current_chats}}",
+                    json.dumps(new_chat, ensure_ascii=False, indent=2),
+                )
+                .replace(
+                    "{{previous_data}}", json.dumps(previous_data, ensure_ascii=False)
+                )
+                .replace("{{workflow_json}}", json.dumps(baseworkflow))
+                .replace(
+                    "{{previous_trigger_attachements}}",
+                    json.dumps(lastly_ai_attached, ensure_ascii=False),
+                )
+            ).strip()
+
+        if last_chat and ai_result.get("confirm_step") and ai_result.get("step_id"):
+            # -----------------------------
+            # 3️⃣ Second AI call with augmented confirmation input
+            # -----------------------------
+            prompt_instructions = template_data.get(
+                "second_stage_confirmation_handler", {}
+            )
+
+            ai_result_confirm = self.get_parsed_fireworks_response(
+                build_second_stage_prompt(userinput, ai_result)
+            )
+            print("second AI attempt:", ai_result_confirm)
+
+            if ai_result_confirm.get("wf_single_runner"):
+                if ai_result_confirm.get("response_message") == "":
+                    ai_result_confirm["response_message"] = (
+                        f"Confirmed step {last_chat['step_id']}. Proceeding with {userinput}",
+                    )
+                if ai_result_confirm.get("step_id") == "" or None:
+                    ai_result_confirm["step_id"] = ai_result["step_id"]
+                return ai_result_confirm
+
+        # -----------------------------
+        # 5️⃣ Return AI result as fallback
+        # -----------------------------
+        print("going into fallbacks")
+        return ai_result
+
+    def ai_explain_workflow_steps(self, userinput):
+        template_data = self.prompt_template_load()
+        prompt_section = template_data.get("explain_workflow", {})
+        prompt_instructions = prompt_section.get("instructions", "")
+
+        if not isinstance(prompt_instructions, str):
+            raise TypeError(
+                "Invalid template structure: expected string for 'instructions' field inside 'explain_workflow'."
+            )
+
+        previous_data = self.previous_data
+        baseworkflow = self.workflow_json.get("workflow", {})
+        # 🔍 detect step number from user input
+        step_match = re.search(r"\bstep\s*(\d+)", userinput, re.IGNORECASE)
+        step_id = int(step_match.group(1)) if step_match else None
+        if step_id:
+            # print("step id found", step_id)
+            baseworkflow = self.steps[step_id]
+            # print("step base workflow", baseworkflow)
+
+        # ✅ Build the prompt text with placeholders
+        prompt_text = (
+            prompt_instructions.replace("{{user_input}}", userinput)
+            .replace("{{workflow_json}}", json.dumps(baseworkflow))
+            .replace("{{previous_data}}", json.dumps(previous_data))
+        ).strip()
+        # print("final prompt", prompt_text)
+
+        newresultds = self.get_parsed_fireworks_response(prompt_text)
+        print("res explanation", newresultds)
+        return newresultds
 
     def ai_reset_intent_handler(self, userinput):
         template_data = self.prompt_template_load()
@@ -327,13 +702,80 @@ class WorkflowRunnerV2:
         print("res reset", newresultds)
         return newresultds
 
+    def ai_pre_gather_details(self, userinput):
+        template_data = self.prompt_template_load()
+        chats_obj = self.get_current_chats()
+        new_chat = chats_obj.get("chat", [])
+        previous_data = self.previous_data
+
+        allfuns = read_function_jsons2(Full=True)
+        used_functions = {}
+        workflowjson = self.workflow_json.get("workflow", {}).get("steps", [])
+        if "pre_user_data" not in self.workflow_json:
+            self.workflow_json["pre_user_data"] = {}
+
+        for step in workflowjson:
+            fn_name = step.get("function_call", {}).get("function_name")
+            if fn_name and fn_name in allfuns:
+                used_functions[fn_name] = allfuns[fn_name]
+
+        prompt_base = template_data.get("gather_workflow_missing_inputs")
+        found_details = self.workflow_json["pre_user_data"] or {}
+        prompt_text = (
+            prompt_base.replace("{{user_input}}", userinput)
+            .replace("{{previous_data}}", json.dumps(previous_data))
+            .replace("{{current_chats}}", json.dumps(new_chat))
+            .replace("{{workflowjson}}", json.dumps(workflowjson))
+            .replace(
+                "{{used_functions}}",
+                json.dumps(used_functions),
+            )
+            .replace(
+                "{{found_details}}",
+                json.dumps(found_details),
+            )
+        ).strip()
+
+        newresultds = self.get_parsed_fireworks_response(prompt_text)
+        print("res", newresultds)
+        return newresultds
+
+    def ai_execute_helper(self, all_step_results, arguments_needed, ai_instructions):
+        template_data = self.prompt_template_load()
+        prompt_instructions = template_data.get("execution_helper", {})
+
+        if not isinstance(prompt_instructions, str):
+            raise TypeError(
+                "Invalid template structure: expected string for 'execution_helper' string."
+            )
+        custeps = self.steps
+
+        formatted_prompt = (
+            prompt_instructions.replace(
+                "{{arguments_needed}}", json.dumps(arguments_needed, ensure_ascii=False)
+            )
+            .replace(
+                "{{all_step_results}}", json.dumps(all_step_results, ensure_ascii=False)
+            )
+            .replace(
+                "{{ai_instructions}}", json.dumps(ai_instructions, ensure_ascii=False)
+            )
+            .strip()
+        )
+
+        result = self.get_parsed_fireworks_response(formatted_prompt)
+        print("res ai_execute_helper", result)
+        return result
+
     def get_parsed_fireworks_response(self, prompt_text, role="system"):
         """
         Get and parse Fireworks response.
         Retries once if the response is empty, invalid, or {}.
         """
         for attempt in range(2):  # attempt 0 = first, attempt 1 = retry once
-            response_text = get_fireworks_response(prompt_text, role=role).strip()
+            response_text = get_fireworks_response2(
+                prompt_text, role=role, temp=0.3
+            ).strip()
             response_text = re.sub(
                 r"^```(?:json)?\s*|\s*```$", "", response_text, flags=re.MULTILINE
             ).strip()
@@ -451,7 +893,14 @@ class WorkflowRunnerV2:
         return False
 
     def saveworkflowtos3(self):
-        allowed_keys = ["chat", "testing", "execution_logs", "online", "chat_log"]
+        allowed_keys = [
+            "chat",
+            "testing",
+            "execution_logs",
+            "online",
+            "chat_log",
+            "last_ai_discovered",
+        ]
         original_json = read_json_from_s3(self.wf_loc)
 
         for key in allowed_keys:
@@ -465,7 +914,7 @@ class WorkflowRunnerV2:
             self.filename,
         )
 
-    def execute(self):
+    def execute(self, userinput=None):
         current_step_id = self._get_first_step()
         if not current_step_id:
             self.logger.error("No valid start step found.")
@@ -473,6 +922,9 @@ class WorkflowRunnerV2:
 
         visited = defaultdict(int)
         MAX_RETRIES_PER_STEP = 2
+
+        # should be list not dict
+        all_step_results = []
 
         while current_step_id:
             visited[current_step_id] += 1
@@ -487,27 +939,74 @@ class WorkflowRunnerV2:
                 self.logger.error(f"Step ID {current_step_id} not found.")
                 break
 
-            # Skip step until all requirements are fulfilled
-            if step.get("requirements_needed"):
+            # pause if unmet requirements
+            needs = step.get("requirements_needed")
+            if (
+                needs
+                and isinstance(needs, list)
+                and len(needs) > 0
+                and not self.testing
+            ):
                 self.logger.warning(
-                    f"Step '{step['title']}' requires inputs: {step['requirements_needed']}. Skipping until fulfilled."
+                    f"Step '{step['title']}' requires inputs: {needs}. Pausing execution."
                 )
-                break  # or continue to next, depending on workflow logic
+
+                # Return pause state
+                return {
+                    "status": "paused",
+                    "pending_requirements": needs,
+                    "execution_log": self.execution_log,
+                    "all_step_results": all_step_results,
+                    "next_step": current_step_id,
+                }
 
             try:
                 self.logger.info(f"Executing step: {step['title']} [{step['id']}]")
-                result = self._execute_step(step)
-                self.execution_log.append(
-                    {
-                        "step_id": step["id"],
-                        "step_title": step["title"],
-                        "result": result,
-                    }
-                )
+                if all_step_results:
+                    cu_step = self.steps[current_step_id]
+                    # Extract only argument names for the current step
+                    function_args = (
+                        cu_step.get("function_call", {}).get("arguments", {}) or {}
+                    )
+                    arguments_needed = list(function_args.keys())
+                    print("current step arguments", arguments_needed)
+
+                    ai_result = self.ai_execute_helper(
+                        all_step_results=all_step_results,
+                        arguments_needed=arguments_needed,
+                        ai_instructions=cu_step.get("ai_instructions"),
+                    )
+
+                    print("res value to main execute", ai_result)
+
+                    result = self._execute_step(
+                        step_id=step["id"], ai_result=ai_result, compl=True
+                    )
+                else:
+                    print("normal execute")
+                    result = self._execute_step(step_id=step["id"], compl=True)
+
+                # ensure next_step exists
+                if "next_step" not in result or not result["next_step"]:
+                    result["next_step"] = step.get("next_step")
+
+                values = {
+                    "step_id": step["id"],
+                    "step_title": step["title"],
+                    "result": result["execution_details"],
+                }
+
+                # store result
+                all_step_results.append(values)
+                self.execution_log.append(values)
+
+                # move forward
                 current_step_id = result.get("next_step")
+
             except Exception as e:
                 self.logger.error(f"Error executing step {step['id']}: {e}")
                 fallback = self._find_fallback(step)
+
                 if fallback:
                     self.logger.warning(
                         f"Switching to fallback step: {fallback['title']} [{fallback['id']}]"
@@ -516,6 +1015,28 @@ class WorkflowRunnerV2:
                 else:
                     self.logger.error("No fallback defined. Ending execution.")
                     break
+
+        now = datetime.now()
+        chat_entry = {
+            "id": self.generate_unique_id([e["id"] for e in self.chat_history]),
+            "date": now.isoformat(),
+            "input": userinput or "run workflow",
+            "output": "workflow executed successfully",
+            "status": "success",
+            "step_id": "All",
+        }
+        self.workflow_json["chat"].append(chat_entry)
+        new_summary = self.get_chat_summarization()
+        # ✅ Correct chat_log handling
+        chat_log = self.workflow_json.setdefault("chat_log", {})
+        chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
+        chat_log["chat_summarization"] = new_summary
+        # --- Save workflow ---
+        self.saveworkflowtos3()
+        return self.execution_log
+
+    def get_execution_log(self) -> List[Dict[str, Any]]:
+        return self.execution_log
 
     def _get_first_step(self) -> Optional[str]:
         referenced = set()
@@ -530,24 +1051,14 @@ class WorkflowRunnerV2:
                 return step_id
         return None
 
-    # def _execute_step(self, step: Dict[str, Any]) -> Dict[str, Any]:
-    #     step_type = step.get("type")
-
-    #     # Handle communication steps
-    #     if step_type == "communication":
-    #         return self._handle_communication(step)
-    #     elif step_type == "self-learn":
-    #         return self._handle_self_learn(step)
-    #     elif step_type == "navigation":
-    #         return self._handle_navigation(step)
-    #     else:
-    #         raise ValueError(f"Unknown step type: {step_type}")
-
-    def _execute_step(self, step_id, ai_result) -> Dict[str, Any]:
+    def _execute_step(self, step_id, ai_result=None, compl=False) -> Dict[str, Any]:
         step = self.steps[step_id]
         self.current_wf_id = step_id
-        function_args = ai_result.get("function_args", {})
+        function_args = None
+        if ai_result:
+            function_args = ai_result.get("function_args", {})
         default_message = "Step executed successfully."
+        execution_status = "failed"
 
         try:
             # ==========================================================
@@ -557,7 +1068,8 @@ class WorkflowRunnerV2:
                 func_call = step.get("function_call", {})
                 func_name = func_call.get("function_name")
                 nfunction_args = func_call.get("arguments", {}) or {}
-                nfunction_args.update(function_args)
+                if function_args:
+                    nfunction_args.update(function_args)
 
                 try:
                     execution_result = self._trigger_function(func_name, nfunction_args)
@@ -608,6 +1120,8 @@ class WorkflowRunnerV2:
                     elif isinstance(execution_result, dict):
                         if "email_body" in execution_result:
                             message = execution_result["email_body"]
+                        elif "email_body_html" in execution_result:
+                            message = execution_result["email_body_html"]
                         else:
                             message = (
                                 execution_result.get("return_str") or default_message
@@ -673,6 +1187,33 @@ class WorkflowRunnerV2:
                     "execution_details": {"error": str(e)},
                 }
 
+        if execution_status == "success" and compl:
+            now = datetime.now()
+            # --- Record Testing / Online ---
+            if result.get("step_id"):
+                step_id = int(result["step_id"])
+                key = str(step_id)
+
+                step = self.steps[step_id]
+                title = step.get("title")
+
+                log_entry = {
+                    "title": title,
+                    "date": now.isoformat(),
+                    "input": "complete execution",
+                    "output": result.get("message"),
+                    "status": execution_status,
+                    "details": execution_result or execution_details,
+                }
+                print("log entry", log_entry)
+
+                target_section = "testing" if self.testing else "online"
+                self.workflow_json.setdefault(target_section, {})
+                self.workflow_json[target_section][key] = log_entry
+
+            # --- Save workflow JSON back to S3 ---
+            self.saveworkflowtos3()
+
         return result
 
     def _handle_communication(self, step: Dict[str, Any]) -> Dict[str, Any]:
@@ -697,7 +1238,7 @@ class WorkflowRunnerV2:
     def _handle_self_learn(self, step: Dict[str, Any]) -> Dict[str, Any]:
         # Here, you could trigger AI generation / LLM response
         self.logger.info(f"[SELF-LEARN] {step['ai_instructions']}")
-        result = get_fireworks_response(step["ai_instructions"])
+        result = get_fireworks_response(step["ai_instructions"], role="system")
         self.ai_made_output[step["id"]] = result
         return {"output": result, "next_step": step.get("next_step")}
 
@@ -736,7 +1277,7 @@ class WorkflowRunnerV2:
 
         # Map service prefix to module path and class
         service_classes = {
-            "automate": ("services.autopilot_service", "AutoMateService"),
+            "automate": ("services.automate_service", "AutoMateService"),
             "gmail": ("services.gmail_service", "GmailService"),
             "google_meet": ("services.meet_service", "GoogleMeetService"),
             "twilio": ("services.twillo_service", "TwilioService"),
@@ -818,7 +1359,9 @@ class WorkflowRunnerV2:
             raise ValueError(f"Method '{method_name}' not found in {class_name}")
 
         # Call the function with the provided args
-        # print(method_name, instance, args)
+        print("method name", method_name)
+        print("instance", instance)
+        print("arfuments", args)
         return func(**args)
         # return "ok"
 
@@ -831,7 +1374,7 @@ class WorkflowRunnerV2:
             intent = result["intent"]
 
             if intent == "normal_conversation":
-                convo = self.ai_workflow_conversation_handler(userinput=user_input)
+                convo = self.ai_conversation_handler(userinput=user_input)
                 ai_result = {
                     "response_message": convo,
                     "wf_single_runner": False,
@@ -842,19 +1385,51 @@ class WorkflowRunnerV2:
                 print("convo ai_result", ai_result)
 
             elif intent == "workflow":
-                route = self.ai_detect_and_route_input(userinput=user_input)
-                print("base route workflow", route)
-                ai_result = {
-                    "response_message": route.get("response_message", ""),
-                    "wf_single_runner": bool(route.get("wf_single_runner", False)),
-                    "workflow_improv": bool(route.get("workflow_improv", False)),
-                    "improv_input": route.get("improv_input"),
-                    "workflow_runner": bool(route.get("workflow_runner", False)),
-                    "wf_explain": bool(route.get("wf_explain", False)),
-                    "step_id": route.get("step_id"),
-                    "reset": False,
-                    "log_status": "workflow",
-                }
+                ma_res = self.ai_detect_trigger_type(userinput=user_input)
+                if "bs_wf_single_runner" in ma_res and ma_res["bs_wf_single_runner"]:
+                    extracted_id = None
+                    if "step_id" in ma_res:
+                        extracted_id = ma_res["step_id"]
+
+                    route = self.ai_detect_and_route_input(
+                        userinput=user_input, extracted_id=extracted_id
+                    )
+                    # print("base route workflow", route)
+                    ai_result = {
+                        "response_message": route.get("response_message", ""),
+                        "wf_single_runner": bool(route.get("wf_single_runner", False)),
+                        "confirm_step": bool(route.get("confirm_step", False)),
+                        "step_id": route.get("step_id"),
+                        "log_status": "workflow",
+                        "trigger_step": route.get("trigger_step", {}),
+                    }
+                    # ✅ Workflow text execute
+                    if "wf_single_runner" in ai_result and ai_result.get(
+                        "wf_single_runner"
+                    ):
+                        print("running execute from text input")
+                        return self.execute_from_text_input(
+                            user_input=ai_result["response_message"],
+                            base_input=user_input,
+                            step_id=ai_result.get("step_id"),
+                        )
+                elif "bs_workflow_runner" in ma_res and ma_res.get(
+                    "bs_workflow_runner"
+                ):
+
+                    print("running self.execute")
+                    return self.execute()
+
+                    # ✅ Workflow improvement
+                elif "bs_workflow_improv" in ma_res and ma_res.get(
+                    "bs_workflow_improv"
+                ):
+                    print("running impov request")
+                    improv_result = self.update_steps_workflow(user_input)
+                    ai_result["response_message"] = improv_result.get(
+                        "response_message", str(improv_result)
+                    )
+                    ai_result["log_status"] = "improv"
 
             elif intent == "resetStep":
                 reset = self.ai_reset_intent_handler(userinput=user_input)
@@ -872,71 +1447,68 @@ class WorkflowRunnerV2:
 
                 if res.get("reset_needed"):
                     ai_result = self.handle_workflow_reset(res, user_input)
+            elif intent == "explanation":
+                route = self.ai_explain_workflow_steps(userinput=user_input)
+                ai_result = {
+                    "response_message": route.get("reply", ""),
+                    "step_id": route.get("step_id"),
+                    "log_status": "explanation",
+                }
 
             else:
                 return {"message": "problem with server."}
         else:
             return {"message": "problem with server."}
 
-        # ✅ Workflow full execute (no chat) — must not double-log
-        if "workflow_runner" in ai_result and ai_result.get("workflow_runner"):
-            print("running self.execute")
-            return self.execute()
-
-        # ✅ Workflow text execute
-        if "wf_single_runner" in ai_result and ai_result.get("wf_single_runner"):
-            print("running execute from text input")
-            return self.execute_from_text_input(
-                user_input=ai_result["response_message"], base_input=user_input
-            )
-
-        # ✅ Workflow improvement
-        if "workflow_improv" in ai_result and ai_result.get("workflow_improv"):
-            print("running impov request")
-            improv_request = ai_result.get("improv_input") or user_input
-            improv_result = self.update_steps_workflow(
-                improv_request, workflow_json=self.workflow_json, user_id=self.userid
-            )
-            ai_result["response_message"] = improv_result.get(
-                "response_message", str(improv_result)
-            )
-            ai_result["log_status"] = "improv"
-
         print("log chat check")
         try:
-            now = datetime.now()
-            print("ai result on chat", ai_result)
-            chat_entry = {
-                "id": self.generate_unique_id([e["id"] for e in self.chat_history]),
-                "date": now.isoformat(),
-                "input": user_input,
-                "output": ai_result.get("response_message", ""),
-                "status": ai_result.get("log_status", "normal"),
-                "step_id": ai_result.get("step_id", None),
-            }
+            if (
+                ai_result.get("response_message") != ""
+                and ai_result.get("response_message") != None
+            ):
+                now = datetime.now()
+                chat_entry = {
+                    "id": self.generate_unique_id([e["id"] for e in self.chat_history]),
+                    "date": now.isoformat(),
+                    "input": user_input,
+                    "output": ai_result.get("response_message", ""),
+                    "status": ai_result.get("log_status", "normal"),
+                    "step_id": ai_result.get("step_id", None),
+                    "confirm_step": ai_result.get("confirm_step", False),
+                }
+                if "chat" not in self.workflow_json:
+                    self.workflow_json["chat"] = []
+                if "chat_log" not in self.workflow_json:
+                    self.workflow_json["chat_log"] = {}
+                if "last_ai_discovered" not in self.workflow_json:
+                    self.workflow_json["last_ai_discovered"] = {}
 
-            self.workflow_json.setdefault("chat", []).append(chat_entry)
-            new_summary = self.get_chat_summarization()
+                self.workflow_json["chat"].append(chat_entry)
+                new_summary = self.get_chat_summarization()
+                if "trigger_step" in ai_result:
+                    self.workflow_json["last_ai_discovered"] = ai_result["trigger_step"]
 
-            chat_log = self.workflow_json.setdefault("chat_log", {})
-            chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
-            chat_log["chat_summarization"] = new_summary
+                chat_log = self.workflow_json["chat_log"]
+                chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
+                chat_log["chat_summarization"] = new_summary
+                print("saving before the details")
 
-            self.saveworkflowtos3()
+                self.saveworkflowtos3()
 
         except Exception as e:
             self.logger.warning(f"Failed to log chat entry: {e}")
 
         return ai_result
 
-    def execute_from_text_input(self, user_input: str, base_input=None):
+    def execute_from_text_input(self, user_input: str, step_id, base_input=None):
         """
         Executes a workflow step or handles human conversation dynamically.
         Tracks chat history, testing/online logs, execution logs, and saves workflow to S3.
         Skips execution if step already completed today unless `force=True`.
         """
         now = datetime.now()
-        today_str = now.date().isoformat()
+        main_id_toexecute = None
+        base_ai_instruction = None
 
         # --- Load AI prompt template ---
         template_data = load_yaml_file(path=pathconfig.play_template)
@@ -971,15 +1543,37 @@ class WorkflowRunnerV2:
             if "online" not in self.workflow_json:
                 self.workflow_json["online"] = {}
         if "workflow" in self.workflow_json:
-            pr_workflow = self.workflow_json["workflow"]
+            if step_id:
+                print("step", type(step_id), step_id)
+
+                # clean + convert step id safely
+                if isinstance(step_id, str) and step_id.strip().isdigit():
+                    step_id = int(step_id)
+                    main_id_toexecute = step_id
+
+                # ensure step_id is int
+                if isinstance(step_id, int):
+                    pr_workflow = self.steps.get(step_id)
+                    base_ai_instruction = pr_workflow.get("ai_instructions")
+            else:
+                step_match = re.search(r"\bstep\s*(\d+)", user_input, re.IGNORECASE)
+                step_id = int(step_match.group(1)) if step_match else None
+                if step_id:
+                    pr_workflow = self.steps.get(step_id)
         else:
             pr_workflow = self.workflow_json
+
+        lastly_ai_attached = self.workflow_json.get("last_ai_discovered", {}) or {}
 
         # --- Prepare prompt with previous_data ---
         prompt_text = (
             prompt_instructions.replace("{{user_input}}", user_input)
             .replace("{{workflow_json}}", json.dumps(pr_workflow))
             .replace("{{previous_data}}", json.dumps(previous_data))
+            .replace("{{ai_instruction}}", base_ai_instruction or "")
+            .replace(
+                "{{previous_trigger_attachements}}", json.dumps(lastly_ai_attached)
+            )
         )
 
         # --- Call AI ---
@@ -1008,69 +1602,12 @@ class WorkflowRunnerV2:
                 step_id = int(step_id)
             except (TypeError, ValueError):
                 step_id = None
-            # --- Handle reset actions from chat ---
-            reset_action = ai_result.get("reset")
-            if reset_action:
-                if reset_action == "all":
-                    target_section = "testing" if self.testing else "online"
-                    self.workflow_json[target_section] = {}
-
-                    message = (
-                        "All testing data has been reset. You can now start testing again."
-                        if self.testing
-                        else "All online logs have been cleared."
-                    )
-
-                    result = {
-                        "workflow_intent": True,
-                        "reset": "all",
-                        "message": message,
-                    }
-
-                    execution_status = "success"
-                    execution_details = {"action": "reset_all"}
-
-                elif reset_action == "id" and step_id is not None:
-                    target_section = "testing" if self.testing else "online"
-                    self.workflow_json[target_section].pop(str(step_id), None)
-
-                    message = f"Step {step_id} testing data has been reset. You can now retest this step."
-                    result = {
-                        "workflow_intent": True,
-                        "reset": "id",
-                        "step_id": step_id,
-                        "message": message,
-                    }
-
-                    execution_status = "success"
-                    execution_details = {"action": "reset_step", "step_id": step_id}
-
-                # --- Record chat entry for reset ---
-                chat_entry = {
-                    "id": chid,
-                    "date": now.isoformat(),
-                    "input": user_input,
-                    "output": result["message"],
-                    "status": execution_status,
-                    "step_id": result.get("step_id") or step_id,
-                }
-                self.workflow_json["chat"].append(chat_entry)
-
-                # --- Record in execution logs ---
-                self.workflow_json["execution_logs"].append(
-                    {
-                        "timestamp": now.isoformat(),
-                        "input": user_input,
-                        "output": result["message"],
-                        "status": execution_status,
-                        "details": execution_details,
-                        "step_id": result.get("step_id"),
-                    }
-                )
-
-                # --- Save workflow ---
-                self.saveworkflowtos3()
-                return result
+            if main_id_toexecute and step_id and step_id != main_id_toexecute:
+                print("retrying until i got correct one")
+                ai_result = self.get_parsed_fireworks_response(prompt_text=prompt_text)
+                step_id = ai_result.get("step_id")
+                workflow_intent = ai_result.get("workflow_intent", False)
+                message = ai_result.get("message", "")
 
             if workflow_intent and step_id and self.check_step_exists(step_id):
                 result = self._execute_step(step_id=step_id, ai_result=ai_result)
@@ -1089,14 +1626,14 @@ class WorkflowRunnerV2:
                     "force": False,
                     "message": message,
                 }
-
+        execution_status = result["execution_status"]
         # --- Record Chat ---
         chat_entry = {
             "id": chid,
             "date": now.isoformat(),
             "input": base_input or user_input,
             "output": result["message"],
-            "status": result["execution_status"] or execution_status,
+            "status": execution_status,
             "step_id": result.get("step_id") or step_id,
         }
         self.workflow_json["chat"].append(chat_entry)
@@ -1105,40 +1642,40 @@ class WorkflowRunnerV2:
         chat_log = self.workflow_json.setdefault("chat_log", {})
         chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
         chat_log["chat_summarization"] = new_summary
-        if not already_done:
-            if execution_status == "success" and workflow_intent:
-                # --- Record Testing / Online ---
-                if result.get("step_id"):
-                    step_id = int(result["step_id"])
-                    key = str(step_id)
+        if execution_status == "success" and workflow_intent:
+            # --- Record Testing / Online ---
+            if result.get("step_id"):
+                step_id = int(result["step_id"])
+                key = str(step_id)
 
-                    step = self.steps[step_id]
-                    title = step.get("title")
+                step = self.steps[step_id]
+                title = step.get("title")
 
-                    log_entry = {
-                        "title": title,
-                        "date": now.isoformat(),
-                        "input": user_input,
-                        "output": result.get("message"),
-                        "status": execution_status,
-                        "details": execution_details,
-                    }
-
-                    target_section = "testing" if self.testing else "online"
-                    self.workflow_json.setdefault(target_section, {})
-                    self.workflow_json[target_section][key] = log_entry
-
-            # --- Record Execution Logs ---
-            self.workflow_json["execution_logs"].append(
-                {
-                    "timestamp": now.isoformat(),
+                log_entry = {
+                    "title": title,
+                    "date": now.isoformat(),
                     "input": user_input,
-                    "output": result["message"],
+                    "output": result.get("message"),
                     "status": execution_status,
-                    "details": execution_details,
-                    "step_id": result.get("step_id"),
+                    "details": result["execution_details"],
                 }
-            )
+
+                target_section = "testing" if self.testing else "online"
+                self.workflow_json.setdefault(target_section, {})
+                self.workflow_json[target_section][key] = log_entry
+
+        # --- Record Execution Logs ---
+        self.workflow_json["execution_logs"].append(
+            {
+                "timestamp": now.isoformat(),
+                "input": user_input,
+                "output": result["message"],
+                "status": execution_status,
+                "details": result["execution_details"],
+                "step_id": result.get("step_id"),
+            }
+        )
+        self.workflow_json["last_ai_discovered"] = {}
 
         # --- Save workflow JSON back to S3 ---
         self.saveworkflowtos3()
