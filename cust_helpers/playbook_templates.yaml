@@ -130,30 +130,84 @@ create_instruction: |
   - Ensure objectives clearly describe what is achieved in plain terms.
 
   ## REQUIREMENTS LOGIC (FINALIZED)
-  - if a step is like updating or deleting functionality make `"requirements_needed": []`  
   - `requirements_needed` must include **only inputs that cannot be auto-derived** from previous steps or existing context.
-  - If a step’s input depends on the **output of a previous step**, it must **not** include any `requirements_needed`.  
-    - Example:  
-      - Step 1 → creates a meeting and returns `event_id`.  
-      - Step 2 → sends an invite using `event_id`.  
-      ✅ Step 2 should have `"requirements_needed": []`, because it depends on Step 1.
 
-  - Allowed fields in `requirements_needed` (and only if not provided earlier):
+  - **Output-Aware Dependency Rule**  
+    If a step’s input depends on any value returned by a previous step’s function (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.),  
+    then that step **must have** `"requirements_needed": []`.  
+    These values are already available internally and should **not** be asked again from the user.
+
+  - Use the `returns` section of each service (from `services_section`) to detect which outputs are produced by earlier steps.  
+    If an argument name in the current step matches (or closely resembles) any earlier step’s return key, do **not** include it in `requirements_needed`.
+
+  - Example:
+      - Step 1: `google_meet.create_meeting` → returns `event_id`, `meeting_link`
+      - Step 2: `automate.create_custom_email_body` → uses `meeting_link`  
+        ✅ Step 2 → `"requirements_needed": []`
+      - Step 3: `gmail.send_meeting_invite_mail` → uses `event_id`, `body_html`  
+        ✅ Step 3 → `"requirements_needed": []`
+
+  - If a field is already present in `function_call.arguments`, `context_section`, or `additional_data`,  
+    do **not** repeat it under `requirements_needed`.
+
+  - Only include external inputs (the ones not known yet) such as:
     - `"attendees"` or `"client_emails"`
     - `"preferred_date"`, `"start_time"`, `"end_time"`
-    - `"emails"` (only for communication steps if recipients are unknown)
+    - `"emails"` (only for communication steps when recipients are unknown)
 
-  - Do **not** include fields that:
-    - Come from a **previous step’s output** (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.)
-    - Are already present in `function_call.arguments`
+  - If a step performs updating or deleting functionality, always set `"requirements_needed": []`.
+
+  - Never include fields that:
+    - Are outputs from previous steps (detected from `returns`)
+    - Already exist in `function_call.arguments`
     - Exist in `additional_data`, `context_section`, or `input_data`
 
-  - The model must **analyze dependencies** automatically:
-    - If Step N references a variable or argument created by Step N-1 or any earlier step,  
-      → Set `"requirements_needed": []` for Step N.
-    - Only the **first step in a dependency chain** should define `requirements_needed`.
+  - **Auto-Deduplication Rule:**  
+    If a requirement field was already asked in a previous step, do **not** repeat it again in later dependent steps.
 
-  - Never repeat `requirements_needed` fields across dependent steps.
+  - ✅ **Summary Logic for Model:**
+    1. Build a list of all previous step outputs using their `returns` keys.  
+    2. For each current step argument:
+       - If argument ∈ previous outputs → skip adding to `requirements_needed`
+       - If argument already provided or in context → skip
+       - Otherwise → include it
+    3. Remove duplicates across all steps.
+
+  ## COMMUNICATION CHANNEL ENFORCEMENT (MANDATORY)
+  - Every step with `"type": "communication"` must include BOTH:
+      - `communication_mode`: e.g., "email", "calendar", "sms"
+      - `channels`: a list containing the exact service used, such as:
+          - ["gmail"]
+          - ["google_meet"]
+          - ["outlook"]
+          - ["slack"]
+          - ["whatsapp"]
+
+  - The channel MUST be determined based on the service in `function_call.function_name`.
+      - Example:
+          function_name: "gmail.send_meeting_invite_mail"
+              → channels: ["gmail"]
+              → communication_mode: "email"
+
+          function_name: "google_meet.schedule_meeting_on_first_available"
+              → channels: ["google_meet"]
+              → communication_mode: "calendar"
+
+          function_name: "outlook.send_mail"
+              → channels: ["outlook"]
+              → communication_mode: "email"
+
+  - Communication steps WITHOUT channels are INVALID.
+
+  - If multiple communication services exist for similar actions (e.g., Gmail + Outlook):
+      - Each channel MUST get its own independent step.
+      - Do NOT combine channels inside one step.
+      - Each step must have the same functionality but tied to its service channel.
+
+  - Any step involving interaction with users (sending, notifying, alerting, updating)
+    MUST be a communication step and MUST have channels.
+
+
 
   ## DECISION POINT RULES:
   - Steps with `decision_point = true` must map each condition to an existing function or step.
@@ -501,30 +555,82 @@ modify_instruction: |
 
   ## REQUIREMENTS LOGIC (FINALIZED)
   - `requirements_needed` must include **only inputs that cannot be auto-derived** from previous steps or existing context.
-  - if a step is like updating or deleting functionality make `"requirements_needed": []`  
-  - If a step’s input depends on the **output of a previous step**, it must **not** include any `requirements_needed`.  
-    - Example:  
-      - Step 1 → creates a meeting and returns `event_id`.  
-      - Step 2 → sends an invite using `event_id`.  
-      ✅ Step 2 should have `"requirements_needed": []`, because it depends on Step 1.
 
-  - Allowed fields in `requirements_needed` (and only if not provided earlier):
+  - **Output-Aware Dependency Rule**  
+    If a step’s input depends on any value returned by a previous step’s function (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.),  
+    then that step **must have** `"requirements_needed": []`.  
+    These values are already available internally and should **not** be asked again from the user.
+
+  - Use the `returns` section of each service (from `services_section`) to detect which outputs are produced by earlier steps.  
+    If an argument name in the current step matches (or closely resembles) any earlier step’s return key, do **not** include it in `requirements_needed`.
+
+  - Example:
+      - Step 1: `google_meet.create_meeting` → returns `event_id`, `meeting_link`
+      - Step 2: `automate.create_custom_email_body` → uses `meeting_link`  
+        ✅ Step 2 → `"requirements_needed": []`
+      - Step 3: `gmail.send_meeting_invite_mail` → uses `event_id`, `body_html`  
+        ✅ Step 3 → `"requirements_needed": []`
+
+  - If a field is already present in `function_call.arguments`, `context_section`, or `additional_data`,  
+    do **not** repeat it under `requirements_needed`.
+
+  - Only include external inputs (the ones not known yet) such as:
     - `"attendees"` or `"client_emails"`
     - `"preferred_date"`, `"start_time"`, `"end_time"`
-    - `"emails"` (only for communication steps if recipients are unknown)
-    - never add any placeholders or dummy values for emails, recepiants_emails, attendees until user asks for.     
+    - `"emails"` (only for communication steps when recipients are unknown)
 
-  - Do **not** include fields that:
-    - Come from a **previous step’s output** (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.)
-    - Are already present in `function_call.arguments`
+  - If a step performs updating or deleting functionality, always set `"requirements_needed": []`.
+
+  - Never include fields that:
+    - Are outputs from previous steps (detected from `returns`)
+    - Already exist in `function_call.arguments`
     - Exist in `additional_data`, `context_section`, or `input_data`
 
-  - The model must **analyze dependencies** automatically:
-    - If Step N references a variable or argument created by Step N-1 or any earlier step,  
-      → Set `"requirements_needed": []` for Step N.
-    - Only the **first step in a dependency chain** should define `requirements_needed`.
+  - **Auto-Deduplication Rule:**  
+    If a requirement field was already asked in a previous step, do **not** repeat it again in later dependent steps.
 
-  - Never repeat `requirements_needed` fields across dependent steps.
+  - ✅ **Summary Logic for Model:**
+    1. Build a list of all previous step outputs using their `returns` keys.  
+    2. For each current step argument:
+       - If argument ∈ previous outputs → skip adding to `requirements_needed`
+       - If argument already provided or in context → skip
+       - Otherwise → include it
+    3. Remove duplicates across all steps.
+
+  ## COMMUNICATION CHANNEL ENFORCEMENT (MANDATORY)
+  - Every step with `"type": "communication"` must include BOTH:
+      - `communication_mode`: e.g., "email", "calendar", "sms"
+      - `channels`: a list containing the exact service used, such as:
+          - ["gmail"]
+          - ["google_meet"]
+          - ["outlook"]
+          - ["slack"]
+          - ["whatsapp"]
+
+  - The channel MUST be determined based on the service in `function_call.function_name`.
+      - Example:
+          function_name: "gmail.send_meeting_invite_mail"
+              → channels: ["gmail"]
+              → communication_mode: "email"
+
+          function_name: "google_meet.schedule_meeting_on_first_available"
+              → channels: ["google_meet"]
+              → communication_mode: "calendar"
+
+          function_name: "outlook.send_mail"
+              → channels: ["outlook"]
+              → communication_mode: "email"
+
+  - Communication steps WITHOUT channels are INVALID.
+
+  - If multiple communication services exist for similar actions (e.g., Gmail + Outlook):
+      - Each channel MUST get its own independent step.
+      - Do NOT combine channels inside one step.
+      - Each step must have the same functionality but tied to its service channel.
+
+  - Any step involving interaction with users (sending, notifying, alerting, updating)
+    MUST be a communication step and MUST have channels.
+
 
   ## HUMAN-FRIENDLY TITLES & OBJECTIVES:
   - Titles and objectives must be concise, natural language phrases.
@@ -796,6 +902,7 @@ select_and_prepare_step:
     - previous_data # may be empty or null
     - ai_instruction
     - previous_trigger_attachements
+    - user_made_arguments
 
   instructions: |
     You are an intelligent workflow assistant that prepares step execution contexts dynamically.
@@ -815,6 +922,7 @@ select_and_prepare_step:
     - previous_data: {{previous_data}}
     - ai_instruction: "{{ai_instruction}}"
     - previous_trigger_attachements: "{{previous_trigger_attachements}}" 
+    - user_made_arguments : "{{user_made_arguments}}"
 
     ---
     ## STEP DETECTION LOGIC
@@ -1309,8 +1417,10 @@ detect_and_route_input: |
     - previous_chat_summary
     - ai_instruction
     - previous_trigger_attachements
+    - user_made_arguments
     - workflow_titles
     - input_data
+    - todays_datetime
 
   instructions: |
     You are an intelligent, deterministic workflow step router.
@@ -1318,8 +1428,9 @@ detect_and_route_input: |
 
     Available sources:
       → {{user_input}} = latest message from user
-      → {{previous_data}} = arguments already collected
+      → {{previous_data}} = completed execution results
       → {{previous_trigger_attachements}} = previously confirmed arguments
+      → {{user_made_arguments}} = user confirmed arguments
       → {{current_chats}} = full chat history
       → {{last_chat}} = most recent chat message
       → {{workflow_json}} = workflow definition (all steps)
@@ -1329,6 +1440,7 @@ detect_and_route_input: |
       → {{input_data.description}} = full workflow description
       → {{input_data.category}} = workflow category or type
       → {{input_data.tags}} = keyword tags describing workflow intent
+      → {{todays_datetime}} = current date and time
     
     **INPUT PARSING HELPERS**
     - To extract step ID from routing hint, use regex:  
@@ -1401,7 +1513,7 @@ detect_and_route_input: |
           1. Check if a valid value already exists:
               - In {{previous_data}}
               - In {{previous_trigger_attachements}}
-              - In any successful step in {{current_chats}}
+              - In any successful step in {{current_chats}} and {{previous_data}}
           2. Only ask for missing or invalid values. **Do not re-ask for previously confirmed/valid emails or attendees.**
           3. Placeholder detection:
               - Treat values like `"customer_email"`, `"recipient"`, `"attendees"`, `"placeholder"` or any string without “@” as missing.
@@ -1424,6 +1536,30 @@ detect_and_route_input: |
         3. `current_chats` (both input/output fields)
         4. extracted contextual values from previous successful steps.
     - Do NOT re-ask for any argument that already exists in any of these.
+    -DATE INTERPRETATION RULES (STRICT FUTURE-ONLY):
+      • Parse dates with a library like dateparser / chronic / natty with settings: prefer future dates.
+      • Priority order:
+        1. If user explicitly gives a year → use exactly that year.
+        2. If only day+month or month+day (e.g. "22 Nov", "Nov 22", "15 December") →
+           - First try current year (from {{todays_datetime}})
+           - If result is in the past or today → automatically use next year (current + 1)
+           - Example (today {{todays_datetime}}):
+             "22 Nov"    → 2026-11-22
+             "10 Jan"    → 2026-01-10
+             "25 Dec"    → 2025-12-25 (still future → keep 2025)
+        3. Relative dates ("tomorrow", "next Monday", "in 3 days", "next week") →
+           → always resolve to a future date automatically.
+      • Final strict validation (mandatory):
+        - After resolving, if the date ≤ {{todays_datetime}}.date (inclusive) →
+          → REJECT it completely.
+          → Set the date field to null.
+          → response_message must say:
+            "The date you mentioned ({{human_readable_date}}) is in the past or today. Please provide a future date."
+          → Do NOT silently shift or accept it.
+      • Always normalize final valid dates to YYYY-MM-DD.
+      • Times → normalize to HH:MM (24-hour).
+      • If user updates the date in the latest {{user_input}} → always prefer the new value and re-validate.
+      • Never store or forward a past date under any circumstance.
     - If the user updates any field in the latest message, always prefer that new value.
     - Normalize:
         - Dates → YYYY-MM-DD
@@ -1479,6 +1615,8 @@ detect_and_route_input: |
             }
           }
           ```
+
+
 
     --------------------------
     3️⃣ INFORMATION PASSING VIA RESPONSE_MESSAGE
@@ -1921,11 +2059,12 @@ execution_helper: |
   arguments_needed: {{arguments_needed}}
   all_step_results: {{all_step_results}}
   ai_instructions: {{ai_instructions}}
+  existing_details: {{existing_details}} (can be empty)
 
   ### TASK
   Fill ONLY the arguments listed in `arguments_needed`.
 
-  - Reuse values from `all_step_results` when possible.
+  - Reuse values from `all_step_results` and `existing_details` when possible.
   - Use `ai_instructions` ONLY for context.
   - DO NOT guess values.
   - If a value is missing, request it.
@@ -2016,7 +2155,7 @@ create_workflow_context: |
      {
        "ready": true,
        "name": "<auto-generate a short workflow name>",
-       "description": "<user intent summarized>",
+       "description": "<complete `inp_description`  corrected syntax and grammer check >",
        "trigger_mode": "<self-initiated | scheduled | follow-up>",
        "trigger_input": ["<generated or provided triggers>"],
        "communication_mode": ["<auto or matching mode>"],
@@ -2145,6 +2284,7 @@ detect_trigger_type: |
     2️⃣ **Full Workflow Run**
       - If user says “yes”, “ok”, “confirm”, and last_summary_type == "workflow"
         → `bs_workflow_runner: true`
+      - last_chat.step_id == "All" then make the `bs_workflow_runner: true`
       - If user input includes phrases like:
         "run workflow", "execute all", "start process", "run everything", "start full workflow"
         → `bs_workflow_runner: true`
@@ -2374,6 +2514,8 @@ gather_workflow_missing_inputs: |
   **Previously Founded Details:**
   {{found_details}}
 
+  **todays_date:**
+  {{todays_date}}
   ---
   ### INSTRUCTIONS
 
@@ -2416,7 +2558,7 @@ gather_workflow_missing_inputs: |
   - Do not fabricate values or assumptions.
   - Only include real, discoverable data from workflow, metadata, or user sources.
   - If all required arguments are already found, output empty “needed”.
-  
+
   ---
   ## OUTPUT FORMAT
   Return strict JSON only, no explanations or markdown:

@@ -152,87 +152,135 @@ class GoogleMeetService:
         days_to_check: int = 3,
     ):
         """
-        Return available slots based on attendees' calendars.
-        If no date/time provided, start from current UTC time.
-        Handles global attendees by normalizing to UTC.
+        Return available slots for attendees.
+        RULES:
+        - Future date: use exactly as given, never adjusted.
+        - Future date + no time: default 10:00 to 11:00.
+        - Same-day date: adjust only if time is missing/past.
+        - Never check backward dates.
+        - Step = 15 minutes.
+        - All comparisons in UTC.
         """
-        print("all slots check")
+        import pytz
+        from datetime import datetime, timedelta, time
 
         tz = pytz.timezone(self.organizer_tz)
-        print("tz", tz, self.organizer_tz)
+        now_local = datetime.now(tz)
+        print("values", preferred_date, start_time, end_time)
 
-        # Normalize attendees
+        # -------------------------
+        # 1. Normalize attendees
+        # -------------------------
         if not isinstance(attendees, list):
             attendees = self.get_attendees_or_contacts(attendees)
-        else:
-            if len(attendees) == 1 and any(a.lower() == "all" for a in attendees):
-                attendees = self.get_attendees_or_contacts(attendees)
+        elif len(attendees) == 1 and attendees[0].lower() == "all":
+            attendees = self.get_attendees_or_contacts(attendees)
 
-        # Handle missing or blank date/time values
-        now_local = datetime.now(tz)
+        # -------------------------
+        # 2. Determine the date
+        # -------------------------
         if not preferred_date or str(preferred_date).strip() == "":
             preferred_date_dt = now_local.date()
+            date_is_future = False
         else:
-            preferred_date_dt = convert_human_date(
-                preferred_date, tz_str=self.organizer_tz
-            ).date()
+            preferred_date_dt = convert_human_date(preferred_date, tz_str=self.organizer_tz).date()
+            date_is_future = preferred_date_dt > now_local.date()
 
-        if not start_time or str(start_time).strip() == "":
-            # Round to nearest next 15-min slot
-            minute = (now_local.minute // 15 + 1) * 15
-            if minute == 60:
-                now_local += timedelta(hours=1)
-                minute = 0
-            start_time_dt = now_local.replace(minute=minute, second=0, microsecond=0)
+        # Reject past date
+        if preferred_date_dt < now_local.date():
+            return {
+                "success": False,
+                "reason": "No available slots in range (date is in past).",
+            }
+
+        # -------------------------
+        # 3. Determine start time
+        # -------------------------
+        if date_is_future:
+            if not start_time or str(start_time).strip() == "":
+                start_dt = tz.localize(datetime.combine(preferred_date_dt, time(10, 0)))
+            else:
+                start_dt = convert_human_time(start_time, tz_str=self.organizer_tz)
+                if start_dt.tzinfo is None:
+                    start_dt = tz.localize(start_dt)
         else:
-            start_time_dt = convert_human_time(start_time, tz_str=self.organizer_tz)
+            # SAME-DAY
+            if not start_time or str(start_time).strip() == "":
+                # Next 15-min slot
+                minute = ((now_local.minute // 15) + 1) * 15
+                if minute == 60:
+                    now_local += timedelta(hours=1)
+                    minute = 0
+                start_dt = now_local.replace(minute=minute, second=0, microsecond=0)
+            else:
+                start_dt = convert_human_time(start_time, tz_str=self.organizer_tz)
+                if start_dt.tzinfo is None:
+                    start_dt = tz.localize(start_dt)
+                if start_dt < now_local:
+                    minute = ((now_local.minute // 15) + 1) * 15
+                    if minute == 60:
+                        now_local += timedelta(hours=1)
+                        minute = 0
+                    start_dt = now_local.replace(minute=minute, second=0, microsecond=0)
 
-        if not end_time or str(end_time).strip() == "":
-            end_time_dt = None
+        # -------------------------
+        # 4. Determine end time
+        # -------------------------
+        if date_is_future:
+            if not end_time or str(end_time).strip() == "":
+                end_dt = tz.localize(datetime.combine(preferred_date_dt, time(11, 0)))
+            else:
+                end_dt = convert_human_time(end_time, tz_str=self.organizer_tz)
+                if end_dt.tzinfo is None:
+                    end_dt = tz.localize(end_dt)
         else:
-            end_time_dt = convert_human_time(end_time, tz_str=self.organizer_tz)
+            if not end_time or str(end_time).strip() == "":
+                end_dt = start_dt + timedelta(minutes=duration_minutes)
+            else:
+                end_dt = convert_human_time(end_time, tz_str=self.organizer_tz)
+                if end_dt.tzinfo is None:
+                    end_dt = tz.localize(end_dt)
 
-        # Merge date and time
-        date_start = tz.localize(
-            datetime.combine(preferred_date_dt, start_time_dt.time())
-        )
-        if end_time_dt:
-            date_end = tz.localize(
-                datetime.combine(preferred_date_dt, end_time_dt.time())
-            )
-        else:
-            date_end = date_start + timedelta(minutes=duration_minutes)
+        # -------------------------
+        # 5. Convert to UTC
+        # -------------------------
+        date_start_utc = start_dt.astimezone(pytz.UTC)
+        date_end_utc = end_dt.astimezone(pytz.UTC)
+        print("checking the timings", date_start_utc, date_end_utc)
 
-        print("-->", preferred_date_dt, start_time_dt, end_time_dt)
-
-        now_utc = datetime.now(pytz.UTC)
-        if date_start.astimezone(pytz.UTC) < now_utc:
-            date_start = now_local + timedelta(minutes=15)
-            date_end = date_start + timedelta(minutes=duration_minutes)
-
-        date_start_utc = date_start.astimezone(pytz.UTC)
-        date_end_utc = date_end.astimezone(pytz.UTC)
-
+        # -------------------------
+        # 6. Search forward only
+        # -------------------------
         available_slots = []
 
+        # Calculate loop start offset: ensure future date starts from preferred_date
+        loop_start_date = max(now_local.date(), preferred_date_dt)
+
         for day_offset in range(days_to_check):
-            current_start_utc = date_start_utc + timedelta(days=day_offset)
-            current_end_utc = date_end_utc + timedelta(days=day_offset)
+            current_date = loop_start_date + timedelta(days=day_offset)
+            check_start_utc = date_start_utc.replace(
+                year=current_date.year,
+                month=current_date.month,
+                day=current_date.day,
+            )
+            check_end_utc = date_end_utc.replace(
+                year=current_date.year,
+                month=current_date.month,
+                day=current_date.day,
+            )
 
             body = {
-                "timeMin": current_start_utc.isoformat(),
-                "timeMax": current_end_utc.isoformat(),
+                "timeMin": check_start_utc.isoformat(),
+                "timeMax": check_end_utc.isoformat(),
                 "timeZone": "UTC",
                 "items": [{"id": email} for email in attendees],
             }
 
-            freebusy_result = (
-                self.calendar_service.freebusy().query(body=body).execute()
-            )
+            freebusy = self.calendar_service.freebusy().query(body=body).execute()
 
             busy_periods = []
-            for calendar in freebusy_result["calendars"].values():
-                busy_periods.extend(calendar.get("busy", []))
+            for cal in freebusy["calendars"].values():
+                busy_periods.extend(cal.get("busy", []))
 
             busy_periods = sorted(
                 [
@@ -244,20 +292,16 @@ class GoogleMeetService:
                 ]
             )
 
-            slot_start = current_start_utc
-            slot_delta = timedelta(minutes=duration_minutes)
+            # Step through 15-min increments
+            slot_start = check_start_utc
+            slot_length = timedelta(minutes=duration_minutes)
 
-            while slot_start + slot_delta <= current_end_utc:
-                if slot_start < now_utc:
-                    slot_start += timedelta(minutes=15)
-                    continue
-
-                slot_end = slot_start + slot_delta
+            while slot_start + slot_length <= check_end_utc:
+                slot_end = slot_start + slot_length
                 overlap = any(
-                    not (slot_end <= busy_start or slot_start >= busy_end)
-                    for (busy_start, busy_end) in busy_periods
+                    not (slot_end <= bstart or slot_start >= bend)
+                    for bstart, bend in busy_periods
                 )
-
                 if not overlap:
                     available_slots.append(
                         {
@@ -266,7 +310,6 @@ class GoogleMeetService:
                             "startDate": slot_start.date().isoformat(),
                         }
                     )
-
                 slot_start += timedelta(minutes=15)
 
         return available_slots
@@ -368,12 +411,18 @@ class GoogleMeetService:
             start_str = start_dt.strftime("%B %d, %Y at %I:%M %p")
             end_str = end_dt.strftime("%I:%M %p")
 
+            # return_str = (
+            #     f"Meeting '{created_event.get('summary')}' is scheduled on {start_str} {tz_abbrev} "
+            #     f"to {end_str} {tz_abbrev} with attendees: "
+            #     f"{', '.join(a['email'] for a in created_event.get('attendees', []))}. "
+            #     f"Meet link: {created_event.get('hangoutLink')} "
+            #     f"event id: {created_event.get('id')}"
+            # )
             return_str = (
                 f"Meeting '{created_event.get('summary')}' is scheduled on {start_str} {tz_abbrev} "
                 f"to {end_str} {tz_abbrev} with attendees: "
                 f"{', '.join(a['email'] for a in created_event.get('attendees', []))}. "
                 f"Meet link: {created_event.get('hangoutLink')} "
-                f"event id: {created_event.get('id')}"
             )
 
             return {
@@ -429,12 +478,55 @@ class GoogleMeetService:
                 return bool(re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", value))
 
             # Safe handling
+            # if start_time and end_time:
+            #     if is_iso_datetime(start_time) and is_iso_datetime(end_time):
+            #         start_time_std, end_time_std = start_time, end_time
+            #     else:
+            #         start_time_std = convert_human_time(start_time)
+            #         end_time_std = convert_human_time(end_time)
+            # else:
+            #     start_time_std = end_time_std = None
+
             if start_time and end_time:
                 if is_iso_datetime(start_time) and is_iso_datetime(end_time):
                     start_time_std, end_time_std = start_time, end_time
                 else:
                     start_time_std = convert_human_time(start_time)
                     end_time_std = convert_human_time(end_time)
+
+                # --- If times are in the past, shift to tomorrow ---
+                try:
+                    # ✅ ensure datetime objects
+                    if isinstance(start_time_std, str):
+                        start_dt = datetime.fromisoformat(start_time_std)
+                    else:
+                        start_dt = start_time_std
+
+                    if isinstance(end_time_std, str):
+                        end_dt = datetime.fromisoformat(end_time_std)
+                    else:
+                        end_dt = end_time_std
+
+                    now = (
+                        datetime.now(start_dt.tzinfo)
+                        if start_dt.tzinfo
+                        else datetime.now()
+                    )
+
+                    if end_dt < now:
+                        delta = timedelta(days=1)
+                        start_dt += delta
+                        end_dt += delta
+                        print(
+                            f"[update_meeting] Times were in the past — rescheduled to tomorrow: {start_dt} → {end_dt}"
+                        )
+
+                    # ✅ convert final times to ISO strings
+                    start_time_std = start_dt.isoformat()
+                    end_time_std = end_dt.isoformat()
+
+                except Exception as time_err:
+                    print("Warning: could not adjust times to tomorrow:", time_err)
             else:
                 start_time_std = end_time_std = None
 

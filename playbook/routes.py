@@ -5,12 +5,11 @@ from db.db_checkers import (
     create_subagent_to_playbook,
     get_subagent_by_userid,
 )
-from flask import Blueprint, request, jsonify
-import json
+from flask import Blueprint, request, jsonify, Response, stream_with_context
+import json, queue, time
 from cust_helpers import pathconfig
 from services.workflow_service import WorkflowRunnerV2
-from utils.chatopenzz import get_evaluator_gpt4
-from utils.fireworkzz import get_fireworks_response2, get_fireworks_response3
+from utils.fireworkzz import get_fireworks_response2
 from .helperzz import *
 from utils.pb_config_utils import *
 from utils.normal import load_yaml_file, read_function_jsons2
@@ -237,6 +236,154 @@ def edit_a_step():
     playbook["workflow"]["steps"] = steps
     playbook["WorkflowDate"] = datetime.now().isoformat()
     return save_playbook_to_s3(playbook, user_id, "Step edited successfully", filename)
+
+
+@playbook_bp.route("/update_step_arguments", methods=["POST"])
+def update_step_arguments():
+    body = request.json
+
+    user_id = body.get("user_id")
+    filename = body.get("filename")
+    step_id = body.get("step_id")
+    new_arguments = body.get("arguments")
+
+    if not user_id or not filename or step_id is None or new_arguments is None:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Missing user_id, filename, step_id, or arguments",
+                }
+            ),
+            400,
+        )
+
+    # Load playbook
+    playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
+    steps = playbook.get("workflow", {}).get("steps", [])
+
+    updated = False
+
+    for step in steps:
+        if step.get("id") == int(step_id):
+
+            # Must have function_call.arguments
+            if "function_call" not in step or "arguments" not in step["function_call"]:
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": f"Step {step_id} does not contain function_call.arguments",
+                        }
+                    ),
+                    400,
+                )
+
+            # 1️⃣ Replace ONLY arguments
+            step["function_call"]["arguments"] = new_arguments
+
+            # 2️⃣ Remove any added/updated argument names from requirements_needed
+            req_list = step.get("requirements_needed", [])
+
+            # Every key in new_arguments should be removed from requirements
+            for arg in new_arguments.keys():
+                if arg in req_list:
+                    req_list.remove(arg)
+
+            step["requirements_needed"] = req_list
+
+            updated = True
+            break
+
+    if not updated:
+        return jsonify({"status": "error", "message": "Step ID not found"}), 404
+
+    # Update workflow date
+    playbook["WorkflowDate"] = datetime.now().isoformat()
+
+    # Save
+    return save_playbook_to_s3(
+        playbook, user_id, "Step arguments updated successfully", filename
+    )
+
+
+@playbook_bp.route("/delete_step_argument", methods=["POST"])
+def delete_step_argument():
+    body = request.json
+
+    user_id = body.get("user_id")
+    filename = body.get("filename")
+    step_id = body.get("step_id")
+    arg_name = body.get("argument_name")
+
+    if not user_id or not filename or step_id is None or not arg_name:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Missing user_id, filename, step_id, or argument_name",
+                }
+            ),
+            400,
+        )
+
+    # Load playbook
+    playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
+    steps = playbook.get("workflow", {}).get("steps", [])
+
+    updated = False
+
+    for step in steps:
+        if step.get("id") == int(step_id):
+
+            # Step must contain function_call.arguments
+            if "function_call" not in step or "arguments" not in step["function_call"]:
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": f"Step {step_id} has no function_call.arguments",
+                        }
+                    ),
+                    400,
+                )
+
+            arguments = step["function_call"]["arguments"]
+
+            # If argument not present → nothing to delete
+            if arg_name not in arguments:
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": f"Argument '{arg_name}' not found in step {step_id}",
+                        }
+                    ),
+                    404,
+                )
+
+            # DELETE the argument
+            del arguments[arg_name]
+
+            # Restore requirement
+            req_list = step.get("requirements_needed", [])
+            if arg_name not in req_list:
+                req_list.append(arg_name)
+                step["requirements_needed"] = req_list
+
+            updated = True
+            break
+
+    if not updated:
+        return jsonify({"status": "error", "message": "Step ID not found"}), 404
+
+    # Update date
+    playbook["WorkflowDate"] = datetime.now().isoformat()
+
+    # SAVE
+    return save_playbook_to_s3(
+        playbook, user_id, "Argument deleted and requirement restored", filename
+    )
 
 
 @playbook_bp.route("/delete_a_step", methods=["POST"])
@@ -1033,12 +1180,12 @@ def run_workflow_step():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@playbook_bp.route("/test-playground-step", methods=["POST"])
-def testworkflowbyinput():
-    data = request.json
-    userid = data.get("user_id")
-    userinput = data.get("userinput")
-    filename = data.get("filename")
+@playbook_bp.route("/test-playground-step", methods=["GET"])
+def testworkflowbyinput_stream():
+    userid = request.args.get("user_id")
+    userinput = request.args.get("userinput")
+    filename = request.args.get("filename")
+    print("details", userid, userinput, filename)
 
     if not userid:
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
@@ -1047,30 +1194,33 @@ def testworkflowbyinput():
     if not userinput:
         return jsonify({"message": "Missing userinput", "status": "error"}), 400
 
-    # ✅ Pre-validate workflow existence
     wf_loc = f"{userid}/workflow/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+
     if not workflow_json:
         return (
-            jsonify(
-                {
-                    "message": f"Workflow file '{filename}' not found ",
-                    "status": "error",
-                }
-            ),
+            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
             404,
         )
-    print("user input", userinput)
-    try:
-        with WorkflowRunnerV2(
-            userid=userid, filename=filename, workflowJson=workflow_json, testing=True
-        ) as service:
-            # result = service.execute_from_text_input(user_input=userinput)
-            result = service.check_input_tone(user_input=userinput)
-            # result=service.current_implemented_functions
-            return jsonify(result)
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+
+    def event_stream():
+        try:
+            with WorkflowRunnerV2(
+                userid=userid,
+                filename=filename,
+                workflowJson=workflow_json,
+                testing=True,
+            ) as service:
+                result = service.check_input_tone(user_input=userinput)
+
+            print("result from back", result)
+
+            yield f"event: done\ndata: {json.dumps(result)}\n\n"
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
 
 @playbook_bp.route("/clear-playground-data", methods=["POST"])
@@ -1100,6 +1250,7 @@ def clear_playground_data():
             "chat_log",
             "execution_logs",
             "last_ai_discovered",
+            "pre_user_data",
         ]:
             if key in workflow_json:
                 del workflow_json[key]
