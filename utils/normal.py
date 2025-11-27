@@ -1,4 +1,3 @@
-from typing import Union
 import os
 from pathlib import Path
 import yaml
@@ -8,6 +7,7 @@ from datetime import datetime, timedelta
 from docx import Document
 from pptx import Presentation
 import pytz
+from bs4 import BeautifulSoup
 
 # from astral import LocationInfo
 # from astral.sun import sun
@@ -31,15 +31,34 @@ def load_yaml_file(path):
 def can_reply_to_email(email: str) -> bool:
     """
     Returns True if it is safe to reply to this email.
+
     Rules:
     1. Skip system/no-reply/admin/bounce/automation emails.
-    2. Skip emails from blocked domains (both .com and .in).
-    3. Only allow .com and .in emails; reject others.
+    2. Skip emails from blocked domains.
+    3. Only allow .com, .in, .ai TLDs.
+    4. EXCEPTION: any @bytoid.<anything> is always allowed.
     """
     if not email:
         return False
 
     email = email.lower().strip()
+
+    # Extract local part + domain
+    match = re.match(r"^[\w\.-]+@([\w\.-]+)$", email)
+    if not match:
+        return False
+
+    full_domain = match.group(1)  # example: bytoid.ca
+    parts = full_domain.split(".")
+    if len(parts) < 2:
+        return False
+
+    domain_name = parts[0]  # bytoid
+    tld = parts[-1]  # ca
+
+    # ✅ 4️⃣ BYPASS RULE — ALWAYS ALLOW bytoid.*
+    if domain_name == "bytoid":
+        return True
 
     # 1️⃣ Blocked keywords in local part
     blocked_keywords = [
@@ -59,11 +78,11 @@ def can_reply_to_email(email: str) -> bool:
         "robot",
         "automation",
     ]
-    if any(keyword in email for keyword in blocked_keywords):
+    if any(k in email for k in blocked_keywords):
         return False
 
-    # 2️⃣ Blocked domain names (without TLD)
-    blocked_domains = [
+    # 2️⃣ Blocked domains
+    blocked_domains = {
         "naukri",
         "google",
         "amazon",
@@ -90,21 +109,14 @@ def can_reply_to_email(email: str) -> bool:
         "aubank",
         "kotak",
         "railone",
-    ]
+    }
 
-    # Extract domain name and TLD
-    match = re.match(r"^[\w\.-]+@([\w-]+)\.(\w+)$", email)
-    if not match:
-        return False
-
-    domain_name, tld = match.groups()
-
-    # 3️⃣ Only allow .com and .in emails
-    if tld not in {"com", "in"}:
-        return False
-
-    # 2️⃣ Block specific domains
+    # 2️⃣ Block domain if in blocked list
     if domain_name in blocked_domains:
+        return False
+
+    # 3️⃣ Only allow TLDs: .com .in .ai
+    if tld not in {"com", "in", "ai"}:
         return False
 
     return True
@@ -472,3 +484,83 @@ def convert_human_time(value, base_date=None, tz_str="Asia/Kolkata"):
         dt = dt.astimezone(tz)
 
     return dt
+
+
+EMAIL_TITLES = [
+    "AI Automation",
+    "SaaS Growth Strategies",
+    "Developer Tools Evolution",
+    "Modern Cybersecurity",
+    "Cloud Computing Trends",
+    "Workflow Orchestration",
+    "Customer Engagement Intelligence",
+    "Productivity Hacks 2025",
+    "Edge Computing",
+    "Microservice Architecture",
+    "Zero Trust Security",
+    "Smart Assistants",
+    "Intelligent Workflows",
+    "Data Privacy Essentials",
+    "Machine Learning at Work",
+    "API-First Infrastructure",
+    "Serverless Technology",
+    "Quantum Computing",
+    "Observability & Monitoring",
+    "Cloud-Native Engineering",
+    "DevOps Culture",
+    "Platform Engineering",
+    "LLM-Powered Applications",
+    "Automation Pipelines",
+    "Adaptive Workflows",
+    "ChatOps Workflows",
+    "Event-Driven Systems",
+    "Composable SaaS",
+    "Realtime Analytics",
+    "AI for Developers",
+    "Security Automation",
+    "Email Automation",
+    "Smart Scheduling",
+    "AI-Powered Customer Support",
+    "Autonomous Agents",
+    "Identity Management",
+    "API Integration",
+    "Container Orchestration",
+    "Kubernetes Automation",
+    "Tech Workflow Insights",
+    "Business Automation",
+    "Digital Transformation",
+    "AI-Augmented Workforce",
+    "Intelligent Routing",
+    "Smart CRM Automation",
+    "Cloud Optimization",
+    "Future of Work",
+    "AI Productivity Boost",
+    "Scalable Infrastructure",
+    "AI-Driven Work Management",
+]
+
+
+# --------------------------
+# SUBJECT EXTRACTOR
+# --------------------------
+
+
+def extract_subject_from_html(html: str, fallback: str) -> str:
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 1) Prefer <title>
+        title_tag = soup.find("title")
+        if title_tag and title_tag.text.strip():
+            return title_tag.text.strip()
+
+        # 2) Or an <h1>
+        h1_tag = soup.find("h1")
+        if h1_tag and h1_tag.text.strip():
+            return h1_tag.text.strip()
+
+    except Exception:
+        pass
+
+    # fallback
+    return fallback

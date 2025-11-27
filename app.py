@@ -22,6 +22,8 @@ from unified_mailbox.routes import unified_bp
 from ai_assistant_chat.routes import ai_assistant_chat_bp
 from onboarding.routes import onboarding_bps
 from ai_reporting.routes import ai_reporting_bp
+from umail_helper.forwarding_rules_route import forwarding_bp
+from calenders.routes import calenders_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -37,6 +39,7 @@ app.secret_key = os.getenv(
 )  # set a secret key as an enviornmental variable later
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 BASE_ORGINS = [
+    # "http://localhost:4173/",
     "http://172.31.12.212",
     "https://www.bytoid.ai",
     "https://bytoid.ai",
@@ -155,6 +158,16 @@ CORS(
     supports_credentials=True,
     origins=BASE_ORGINS,
 )
+CORS(
+    forwarding_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    calenders_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
 
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
@@ -185,7 +198,8 @@ app.register_blueprint(unified_bp)
 app.register_blueprint(ai_assistant_chat_bp)
 app.register_blueprint(onboarding_bps)
 app.register_blueprint(ai_reporting_bp)
-
+app.register_blueprint(forwarding_bp)
+app.register_blueprint(calenders_bp)
 
 
 import argparse

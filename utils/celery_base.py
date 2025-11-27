@@ -216,27 +216,83 @@ def process_user_queue(self, user_id):
         logger.info(f"🔓 Released lock for user {user_id}")
 
 
-# @new_celery.task(bind=True, name="webhook.testautoreply")
-# def testassistfeat(self, user_id, all_results, my_email):
+@celery.task(bind=True, name="tasks.send_bulk_emails")
+def send_bulk_emails(self, user_id: str, email_count: int, receiver_email: str):
+    """
+    Send multiple AI-generated emails for a specific user.
+    """
+    from services.gmail_service import GmailService
+    from services.automate_service import AutoMateService
+    import random
+    from utils.normal import EMAIL_TITLES, extract_subject_from_html
 
-#     lock_key = f"umail_autopilot:{my_email}"
-#     acquired = lock_client.set(lock_key, "1", nx=True, ex=60)
-#     if not acquired:
-#         return {"status": "skipped", "user_email": my_email}
+    # Lock user to avoid multiple parallel bulk sends
+    if not acquire_user_lock(user_id):
+        return {
+            "status": "locked",
+            "message": f"Bulk email task already running for user {user_id}",
+        }
 
-#     try:
-#         result = asyncio.run(
-#             autoReplyhelper(all_results=all_results, my_email=my_email, user_id=user_id)
-#         )
-#         return {"status": "completed", "user_id": user_id, "result": result}
-#     except Exception as exc:
-#         countdown = backoff(self.request.retries)
-#         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
-#     finally:
-#         release_user_lock(user_id)
+    try:
+        ai = AutoMateService(userid=user_id)
+        gmail = GmailService(user_id=user_id)
+
+        sent = 0
+        failed = 0
+
+        for i in range(email_count):
+
+            # Pick random title
+            rand_title = random.choice(EMAIL_TITLES)
+
+            # Generate email body (HTML)
+            email_body_html = ai.create_custom_email_body(
+                user_input=f"Write a short memo/news update about {rand_title} with 200 - 300 words and it must have a title included in <title> tag "
+            )
+            print("emmail_body_html", type(email_body_html))
+
+            # Extract subject from HTML (or fallback)
+            subject = extract_subject_from_html(
+                email_body_html, fallback=f"News Update: {rand_title}"
+            )
+
+            # Send the email
+            try:
+                gmail.send_email(
+                    receipent_emails=receiver_email,
+                    subject=subject,
+                    body_text=email_body_html["email_body_html"],
+                )
+                sent += 1
+            except Exception as send_err:
+                failed += 1
+                print(f"Email send failed ({i}):", send_err)
+
+        return {
+            "status": "completed",
+            "user_id": user_id,
+            "total_requested": email_count,
+            "sent": sent,
+            "failed": failed,
+        }
+
+    except Exception as exc:
+        countdown = min(2**self.request.retries, 300)
+        raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+
+    finally:
+        release_user_lock(user_id)
 
 
-@new_celery.task
-def addbase(x, y):
-    print("OKKKK")
-    return x + y
+@celery.task(bind=True, max_retries=3, name="tasks.workflow_scheduler")
+def run_scheduled_job(self, userid, filename):
+    try:
+        from services.workflow_service import WorkflowRunnerV2
+
+        service = WorkflowRunnerV2(userid=userid, filename=filename)
+        message = service.execute()
+        return {"status": "done", "message": message}
+
+    except Exception as exc:
+        countdown = 2**self.request.retries  # exponential backoff
+        raise self.retry(exc=exc, countdown=countdown)

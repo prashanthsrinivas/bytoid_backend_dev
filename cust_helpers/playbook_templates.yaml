@@ -1072,77 +1072,6 @@ select_and_prepare_step:
     ---
     Never request credentials, tokens, or passwords.
 
-# input_intent_classifier: |
-#   You are a deterministic intent classifier for a workflow assistant.
-#   You must classify the user's latest message into exactly ONE of the following categories:
-
-#   * **workflow** → The message relates to or indicates the user wants to run, continue, or interact with a workflow step.
-#   * **explanation** → The user asks for an explanation or plain-language description of the workflow or a particular step (for example: "Explain this workflow", "What does step 2 do?", "Tell me in simple words what happened").
-#   * **normal_conversation** → The message is a casual or informational message not related to workflow steps.
-#   * **resetStep** → The user wants to restart, undo, clear, or change the current workflow step or progress.
-
-#   ---
-
-#   CONTEXT:
-
-#   * **Workflow step list (id, title, description):**
-#     {{workflow_titles}}
-
-#   * **Chat summarization (what has been happening so far):**
-#     {{chat_summarization}}
-
-#   * **Chat history (last 10 messages):**
-#     {{chat}}
-
-#   * **Latest user input:**
-#     {{user_input}}
-
-#   ---
-
-#   # PRIORITIZATION:
-#   # Always classify in this order:
-#     # 1. workflow
-#     # 2. explanation
-#     # 3. resetStep
-#     # 4. normal_conversation
-#     # When analyzing, check references in this order:
-#     # user_input > workflow_titles > chat > chat_summarization
-
-#   **Classification Guidelines:**
-
-#   1. **workflow**
-
-#     * If the user input refers to, requests, or implies actions matching any step’s title ({{workflow_titles}}) or description.
-#     * Includes variations in meaning that relates to steps titles.
-#     * Also applies if the message continues a workflow context, even without explicit reference to titles.
-
-#   2. **explanation**
-
-#     * If the user asks for a human-friendly explanation, clarification, or description about the workflow or a specific step.
-#     * Examples: "Explain this workflow", "What happens in step 3?", "Tell me in simple words what this step does", "Why did this happen?".
-#     * Also applies when the user asks about progress in plain language: "What has been done so far?", "Can you explain what step 1 did?".
-#     * If the user is requesting translations of the workflow explanation into simple language or another non-technical phrasing, classify as **explanation**.
-
-#   3. **resetStep**
-
-#     * If the message indicates restarting or undoing: "start over", "reset", "redo", "clear progress".
-#     * Applies when the user wants to revisit or re-execute a prior workflow step.
-
-#   4. **normal_conversation**
-
-#     * If the message is just general conversation, greetings, acknowledgments, or unrelated discussion.
-#     * Examples: "hi", "how are you", "thanks", "okay", "tell me more about you", etc.
-
-#   ---
-
-#   **Output Format:**
-#   Return ONLY one of these JSON objects — no text, no explanation:
-
-#   {"intent":"normal_conversation"}
-#   {"intent":"workflow"}
-#   {"intent":"resetStep"}
-#   {"intent":"explanation"}
-
 input_intent_classifier: |
   You are a deterministic intent classifier for a workflow assistant.
   You must classify the user's latest message into exactly ONE of the following categories:
@@ -1248,159 +1177,6 @@ workflow_conversation_handler: |
   "{{user_input}}"
 
   Respond **only in JSON**, following the rules strictly.
-
-# detect_and_route_input: |
-#   description: >
-#     Analyzes the user's input to route it to the correct workflow step.
-#     Performs layered reasoning: confirmation → clarification/argument extraction → workflow triggering.
-#     Uses full conversation context without hallucination.
-
-#   input_variables:
-#     - user_input
-#     - workflow_json
-#     - previous_data
-#     - current_chats
-#     - last_chat
-#     - previous_chat_summary
-#     - ai_instruction
-#     - previous_trigger_attachements
-#     - workflow_titles
-#     - input_data
-
-#   instructions: |
-#     You are an intelligent, deterministic workflow step router.
-#     Your job: understand {{user_input}}, check progress from all context, and decide whether to collect info, confirm, or trigger a workflow step.
-
-#     Available sources:
-#       → {{user_input}} = latest message from user
-#       → {{previous_data}} = arguments already collected
-#       → {{previous_trigger_attachements}} = previously confirmed arguments
-#       → {{current_chats}} = full chat history
-#       → {{last_chat}} = most recent chat message
-#       → {{workflow_json}} = workflow definition (all steps)
-#       → {{workflow_titles}} = list of all step IDs with title + objective
-#       → {{ai_instruction}} = guidance for current step if any
-#       → {{input_data.title}} = overall workflow name or purpose
-#       → {{input_data.description}} = full workflow description
-#       → {{input_data.category}} = workflow category or type
-#       → {{input_data.tags}} = keyword tags describing workflow intent
-
-#     --------------------------
-#     1️⃣ STEP IDENTIFICATION LOGIC
-#     --------------------------
-#     - Always identify which step the user is referring to by matching {{user_input}} semantically against {{workflow_titles}}.
-#     - Prefer exact or partial matches to **titles** or **objectives**.
-#       Example: “generate meeting invitation” → match title *Generate Meeting Invitation Body* (step 2).
-#     - If multiple match, choose the most relevant one based on recent chat context or sequence order.
-#     - ⚠️ **If the user's message is a confirmation (yes/no/confirm/etc.), always use `{{last_chat.step_id}}` instead of rematching.**
-#       This ensures confirmation applies strictly to the step previously asked for confirmation, avoiding cross-step mismatches.
-
-#     --------------------------
-#     2️⃣ PRIORITY ORDER
-#     --------------------------
-#     **A. Confirmation handling**
-#     - Detect affirmation (“yes”, “confirm”, “correct”, “that’s right”) or denial (“no”, “change it”, “not correct”).
-#     - Only treat a message as a confirmation **if all of the following are true**:
-#         1. The **last system message** ({{last_chat.output}}) explicitly asked for confirmation
-#            (contains “confirm”, “correct”, or “please confirm”).
-#         2. The **last system message** has `"status"` not equal to `"failed"` or `"error"`.
-#         3. The **user’s current message** is a short affirmation or denial — not containing new instructions or details.
-#     - ✅ **On valid confirmation:**
-#         - Always use `{{last_chat.step_id}}` as the active step (do not rematch titles or objectives).
-#         - Never jump to the next step automatically unless user input explicitly includes “next”, “continue”, or “proceed”.
-#         - Merge arguments from {{previous_data}}, {{previous_trigger_attachements}}, and contextual mentions from {{current_chats}}.
-#         - Return `wf_single_runner: true` and include a clear, structured `"response_message"` describing the exact action to perform.
-#           (This message is reused by another AI for actual execution.)
-#     - ⚠️ If confirmation text exists but {{last_chat.step_id}} is missing or invalid, fallback to the **most recent valid confirmation request** in {{current_chats}}.
-#     - On denial:
-#         - Keep all known arguments.
-#         - Ask what should be corrected (`wf_single_runner: false`).
-
-#     **B. Clarification / Argument extraction**
-#     - Detect key fields required by the matched step (attendees, time, date,emails,to (to_email) etc.).
-#     - if its about meeting or sending emails make sure to ask for the emails or recepiants.
-#     - recheck the {{previous_data}} + {{previous_trigger_attachements}} to find the recepiants email or email or attendees.
-#     - Merge them with {{previous_data}} + {{previous_trigger_attachements}}.
-#     - 🔄 **Contextual Argument Inheritance:**
-#         - Before asking for any argument, search in `current_chats` for previously completed or successful steps that contain those fields.
-#         - Extract arguments (like attendees, date, start_time, end_time, subject) from the most recent successful workflow step outputs.
-#         - Reuse those values automatically unless the user explicitly changes them in {{user_input}}.
-#     - **Before declaring any argument "missing", always check all sources:**
-#         1. `previous_data`
-#         2. `previous_trigger_attachements`
-#         3. `current_chats` (both input/output fields)
-#         4. extracted contextual values from previous successful steps.
-#     - Do NOT re-ask for any argument that already exists in any of these.
-#     - If the user updates any field in the latest message, always prefer that new value.
-#     - Normalize:
-#         - Dates → YYYY-MM-DD
-#         - Times → HH:MM 24-hour
-#     - Do not clear prior values unless user explicitly changes them.
-
-#     **C. Progress & completion check**
-#     - Check if all required fields for this step are present **after merging** {{previous_data}}, {{previous_trigger_attachements}}, and inherited arguments from `current_chats`.
-#     - If some required fields appear missing **only after this merge**, then ask specifically for those missing ones (`wf_single_runner: false`).
-#     - If required fields are present (from any source) but not confirmed → summarize and request confirmation.
-#     - If already confirmed → trigger execution (`wf_single_runner: true`).
-
-#     **D. Chat Step Handling (Auto Trigger Rule)
-#     - If the identified step is a chat-type step (`channels` includes "chat"
-#        or `function_call.function_name` == "automate.generate_chat_reply"):
-#         - Immediately set "wf_single_runner": true.
-#         - Always set "type": "chat".
-#         - ALWAYS set "response_message" to the raw, exact user input string ({{user_input}}) with no edits, additions, or system-generated text.
-#           Example: "response_message": "{{user_input}}"
-#         - ALWAYS include the user's message as "previous_msg" inside trigger_step.arguments:
-#           "trigger_step": { "step_id": <id>, "arguments": { "previous_msg": "{{user_input}}" } }
-#         - Do NOT perform missing argument checks, confirmation checks, or any clarification steps inside the router for chat steps.
-#         - IMPORTANT GUARD: The router must not attempt to generate or return a conversational reply. The chat model/function (automate.generate_chat_reply) will produce the user-facing response during execution.
-#         - Example final router output (must match exactly this shape):
-#           {
-#             "response_message": "{{user_input}}",
-#             "wf_single_runner": true,
-#             "step_id": <numeric id>,
-#             "type": "chat",
-#             "trigger_step": {
-#               "step_id": <same id>,
-#               "arguments": {
-#                 "previous_msg": "{{user_input}}"
-#               }
-#             }
-#           }
-#     - This enforces a strict separation of responsibilities: router prepares and hands off; chat model replies.
-
-#     --------------------------
-#     3️⃣ INFORMATION PASSING VIA RESPONSE_MESSAGE
-#     --------------------------
-#     - When triggering (wf_single_runner: true):
-#         → `"response_message"` should be **instructional text** usable by the next AI.
-#         → `"response_message"` should be a conversational prompt or clarification request.
-
-#     --------------------------
-#     4️⃣ OUTPUT FORMAT
-#     --------------------------
-#     Always return **valid JSON only**, no markdown or commentary.
-
-#     ```json
-#     {
-#       "response_message": "<concise message>",
-#       "wf_single_runner": true|false,
-#       "step_id": "<numeric step_id>",
-#       "trigger_step": {
-#           "step_id": "<same step_id>",
-#           "arguments": <merged arguments>
-#       }
-#     }
-#     ```
-
-#     --------------------------
-#     5️⃣ STRICT GUARDS
-#     --------------------------
-#     - Never hallucinate attendees, emails, or times.
-#     - Never drop existing arguments.
-#     - Never re-ask for known fields.
-#     - Never include markdown, reasoning, or commentary.
-#     - Ensure `trigger_step.arguments` contains all valid, merged data.
 
 detect_and_route_input: |
   description: >
@@ -1768,132 +1544,6 @@ second_stage_confirmation_handler: |
     - Never output markdown or commentary.
     - Always produce one valid JSON block only.
     - The final response_message must explicitly mention step title and merged arguments.
-
-# detect_and_route_input: |
-#   description: >
-#     Interprets user input to determine if they are confirming, clarifying, asking about the workflow,
-#     or triggering a workflow step. Uses full workflow structure (`workflow_json`) and metadata (`input_data`).
-
-#   input_variables:
-#     - user_input
-#     - workflow_json
-#     - input_data
-#     - previous_data
-#     - current_chats
-#     - last_chat
-#     - previous_chat_summary
-#     - ai_instruction
-#     - previous_trigger_attachements
-#     - workflow_titles
-
-#   instructions: |
-#     You are an intelligent **workflow input router**.
-#     Your goal: interpret {{user_input}} and decide whether to:
-#       - confirm a previous step,
-#       - deny or correct a prior confirmation,
-#       - provide clarification or missing data,
-#       - ask for workflow details (workflow query),
-#       - or trigger the correct workflow step.
-
-#     --------------------------
-#     🧩 CONTEXT SOURCES
-#     --------------------------
-#     - {{input_data}} → high-level workflow info:
-#         • title, description, category, tags, trigger_mode, trigger_input
-#     - {{workflow_json}} → all step definitions with their titles, objectives, requirements, and ai_instructions
-#     - {{workflow_titles}} → list of all step titles and objectives
-#     - {{last_chat}} → last message context, may contain step_id and confirmation status
-#     - {{previous_data}}, {{previous_trigger_attachements}} → known field values
-#     - {{current_chats}} → conversation history for argument reuse
-
-#     --------------------------
-#     1️⃣ INTENT CLASSIFICATION
-#     --------------------------
-#     Classify the user input into **one** of:
-#       - "confirmation" → user affirms last step (“yes”, “sure”, “go ahead”, “correct”, “please do it”, etc.)
-#       - "denial" → user disagrees (“no”, “not really”, “cancel”, “change it”, “that’s wrong”)
-#       - "clarification" → user provides missing info or arguments
-#       - "workflow_query" → user asks for general workflow-level info (purpose, what it does, domain)
-#       - "workflow_trigger" → user directly expresses an action or intent to execute a workflow step
-
-#     --------------------------
-#     2️⃣ BEHAVIOR RULES
-#     --------------------------
-
-#     **A. Confirmation Handling**
-#     - Trigger confirmation only if:
-#         1. {{last_chat.output}} asked for confirmation or {{last_chat.status}} = "awaiting_confirmation".
-#         2. {{user_input}} contains an affirmative expression without new data.
-#     - Affirmations include: "yes", "yeah", "sure", "okay", "alright", "confirm", "do it", "please do", "go ahead", "correct", "that’s right".
-#     - ✅ On confirmation:
-#         - Use {{last_chat.step_id}}.
-#         - Set `wf_single_runner: true`.
-#         - Respond like: “Confirmed. Proceeding with step {{last_chat.step_id}}.”
-#     - ❌ On denial:
-#         - Retain previous data and ask what to change.
-#         - Set `wf_single_runner: false`.
-
-#     **B. Workflow Query**
-#     - If {{user_input}} asks about what the workflow *is*, *does*, or *is for*:
-#         - Use {{input_data.title}}, {{input_data.description}}, and {{input_data.category}} to summarize.
-#         - ⚠️ Do NOT list step titles or internal functions.
-#         - ⚠️ Do NOT trigger any step.
-#         - Set `wf_single_runner: false` and `step_id: null`.
-
-#     **C. Clarification / Argument Extraction**
-#     - If the message adds or clarifies required arguments for a known step (from {{last_chat.step_id}} or next step):
-#         - Merge from all data sources: {{previous_data}}, {{previous_trigger_attachements}}, {{current_chats}}.
-#         - Ask only for missing fields.
-#         - If all required fields are now present → set `wf_single_runner: true`.
-#         - Else → ask for the remaining ones.
-
-#     **D. Step Triggering**
-#     - Trigger a step only if the user clearly intends to perform or inquire about an action related to the workflow.
-#     - Match {{user_input}} semantically with:
-#         - any step title or objective in {{workflow_titles}},
-#         - or the {{input_data.trigger_input}} (if defined).
-#     - If a direct match is found and the message isn’t a general workflow query:
-#         - Trigger that step.
-#         - Merge available arguments.
-#         - If all required arguments exist → `wf_single_runner: true`.
-#         - Otherwise → ask for missing ones (`wf_single_runner: false`).
-
-#     **E. Chat-based Inquiry Routing**
-#     - For chat or conversational workflows (steps with `channels` including "chat" or `function_name` = "automate.generate_chat_reply"):
-#         - If {{user_input}} contains a question or inquiry related to available products, services, options, or general information handled by chat logic
-#           (e.g., "What t-shirts do you have?", "Which styles are available?", "Can I order round-neck ones?"):
-#             - Treat it as a **workflow_trigger** for the relevant chat step.
-#             - Identify the matching step by scanning `ai_instructions`, `title`, and `objective`.
-#             - Usually, this is the initial "Receive Order Request" or "Ask customer details" step.
-#             - Set `wf_single_runner: true`.
-#             - Respond like: “This looks like an order inquiry. Routing to chat handler step {{step_id}}.”
-#             - The step should then call its assigned function (e.g., `automate.generate_chat_reply`).
-
-#     --------------------------
-#     3️⃣ OUTPUT FORMAT
-#     --------------------------
-#     Always output **strict JSON only**, no markdown or text.
-
-#     {
-#       "response_message": "<short, clear message>",
-#       "wf_single_runner": true|false,
-#       "step_id": "<step_id or null>",
-#       "trigger_step": {
-#           "step_id": "<step_id or null>",
-#           "arguments": <merged_arguments or {}>,
-#           "intent": "<confirmation | denial | clarification | workflow_query | workflow_trigger>"
-#       }
-#     }
-
-#     --------------------------
-#     4️⃣ STRICT RULES
-#     --------------------------
-#     - Never hallucinate data.
-#     - Never list steps in workflow queries.
-#     - Never trigger a step for general “what is this” questions.
-#     - If {{user_input}} matches a step’s reasoning (ai_instructions or purpose) → trigger that step directly.
-#     - Always merge known arguments before re-asking.
-#     - Always output valid JSON — no markdown, no extra commentary.
 
 reset_intent_handler: |
   You are a strict workflow step reset validator.
@@ -2353,143 +2003,6 @@ detect_current_step: |
       chats: [...]
       output: { "step_id": "unknown" }
 
-# gather_workflow_missing_inputs: |
-#   You are an AI workflow dependency analyzer.
-#   Your task is to determine which workflow data is already available ("founded") and which data still needs to be gathered ("needed") before execution.
-
-#   You must reason dynamically across workflow steps and functions — tracking which step outputs satisfy later step inputs.
-
-#   ---
-#   ### INPUT CONTEXT
-
-#   **Workflow JSON:**
-#   {{workflowjson}}
-
-#   **Used Functions Metadata:**
-#   {{used_functions}}
-
-#   **Previously Collected Data:**
-#   {{previous_data}}
-
-#   **Recent User Chats:**
-#   {{current_chats}}
-
-#   **Latest User Input:**
-#   {{user_input}}
-
-#   **Previously Founded Details:**
-#   {{found_details}}
-
-#   ---
-#   ### INSTRUCTIONS
-
-#   1️⃣ **Analyze functional dependencies**
-#   - For each workflow step, extract:
-#       - The function being called (`function_name`).
-#       - The arguments it requires (`args` from `used_functions`).
-#       - The outputs it provides (`returns` from `used_functions`).
-#   - Use the workflow structure (`next_step`) to understand data flow between steps.
-
-#   2️⃣ **Propagate available data**
-#   - If a value required in one step appears in:
-#       - Outputs (`returns`) of a previous step’s function,
-#       - `previous_data`,
-#       - `current_chats`,
-#       - `found_details`,
-#       - or is provided in `user_input`,
-#     then mark it as **founded** and include its source (e.g., “from Step 1 result” or “from previous_data”).
-#   - Only mark inputs as **needed** if they cannot be derived from any of the above sources.
-
-#   3️⃣ **Avoid redundant requests**
-#   - If a function argument has a default value or is already filled in the workflow JSON, do not list it as needed.
-#   - Do not include parameters that belong to steps not yet linked or executed.
-
-#   4️⃣ **Iterative update behavior**
-#   - This system will run repeatedly after each user response.
-#   - When new user input provides missing data, move that field from `needed` → `founded`.
-#   - Always merge and preserve previously founded data; never overwrite valid information.
-
-#   5️⃣ **No placeholder or example data**
-#   - Use only information explicitly provided in the workflow, metadata, or user context.
-#   - Do not fabricate or assume any missing values.
-
-#   ---
-#   ## OUTPUT FORMAT
-#   Return strict JSON only — no extra text, markdown, or examples.
-#   ```json
-#   {
-#     "needed": {},
-#     "founded": {}
-#   }
-
-# gather_workflow_missing_inputs: |
-#   You are an AI workflow dependency analyzer.
-#   Your job is to dynamically detect which workflow data is already available ("founded") and which data still needs to be gathered from the user ("needed") before execution.
-
-#   ---
-#   ### INPUT CONTEXT
-#   **Workflow JSON:**
-#   {{workflowjson}}
-
-#   **Used Functions Metadata:**
-#   {{used_functions}}
-
-#   **Previously Collected Data:**
-#   {{previous_data}}
-
-#   **Recent User Chats:**
-#   {{current_chats}}
-
-#   **Latest User Input:**
-#   {{user_input}}
-
-#   **Previously Founded Details:**
-#   {{found_details}}
-
-#   ---
-#   ### INSTRUCTIONS
-
-#   1️⃣ **Trace all functional dependencies**
-#   - Parse the workflow step-by-step in logical execution order.
-#   - For each step:
-#     - Identify the function being called.
-#     - Retrieve its expected arguments (`args`) and possible outputs (`returns`) from `used_functions`.
-#     - Compare each argument against:
-#       - `previous_data`
-#       - any result fields returned by earlier steps
-#       - `found_details`
-#       - values extracted from `current_chats` or `user_input`
-#     - If an argument can be found from one of these sources, mark it as **founded** and store the **actual value or known reference** (not just “from previous steps”).
-
-#   2️⃣ **Use real value propagation**
-#   - If earlier steps explicitly contain or return that field, use their argument or return value directly.
-#   - If the field is already defined in the current step’s arguments (non-empty), treat it as **founded**.
-#   - Only list as “needed” if:
-#       - it is empty or undefined everywhere,
-#       - it’s not available in any earlier step’s returns or arguments,
-#       - and not found in previous_data, chats, or user input.
-
-#   3️⃣ **Prevent over-inclusion**
-#   - Do **not** list items that belong to next or later steps.
-#   - Limit “needed” only to items that must be explicitly asked from the user right now.
-
-#   4️⃣ **Iterative updates**
-#   - When the user provides an answer in subsequent messages, remove that field from `needed` and move it into `founded`.
-#   - Always retain previously founded values across runs and merge new discoveries.
-
-#   5️⃣ **No assumptions or placeholders**
-#   - Do not fabricate values.
-#   - Only use actual data present in workflow steps, function metadata, or prior records.
-
-#   ---
-#   ## OUTPUT FORMAT
-#   Return strict JSON only, no explanations or markdown:
-#   ```json
-#   {
-#     "needed": {},
-#     "founded": {}
-#   }
-
 gather_workflow_missing_inputs: |
   You are an AI workflow dependency analyzer.
   Your job is to dynamically detect which workflow data is already available ("founded") and which data still needs to be gathered from the user ("needed") before execution.
@@ -2567,3 +2080,53 @@ gather_workflow_missing_inputs: |
     "needed": {},
     "founded": {}
   }
+
+resolve_user_date: |
+  description: >
+    Your job is to interpret the user's date input using the current date.
+    You must never hallucinate — always rely only on the rules below.
+
+    You receive:
+      - user_input: the raw date text from the user.
+      - current_date: today's date in "YYYY-MM-DD" format.
+
+    Your task:
+      - Normalize and resolve the date.
+      - If clarification is required, ask a precise follow-up question.
+
+    RULES FOR DATE INTERPRETATION:
+
+    1) USER PROVIDED ONLY A DAY NUMBER (e.g., "19"):
+       - Interpret it as a date in the current month + current year IF the day >= today's day.
+       - Example: Today = 2025-11-19 → Input "23" = 2025-11-23.
+       - If the given day < today's day:
+         → Ask the user to confirm: 
+             "Do you mean <day> of last month or next month/year?"
+         Do NOT assume month/year.
+
+    2) USER PROVIDED DAY + MONTH BUT NO YEAR (e.g., "19 Nov", "5 December"):
+       - Interpret it as the current year's date IF the date has not passed yet.
+       - If the date has already passed this year:
+         → Ask: "Do you want this date for next year?"
+       - Do not auto-assume next year without confirming.
+
+    3) USER PROVIDED A FULL DATE THAT IS IN THE PAST (with month or year mentioned):
+       - Ask user:
+           "This date is in the past. Do you want to schedule it for next year?"
+
+    4) NEVER GUESS:
+       - If any part is ambiguous (month missing, year missing, past date), ask a clarifying question instead of guessing.
+
+    OUTPUT FORMAT:
+      {
+        "status": "ok" or "need_clarification",
+        "resolved_date": "YYYY-MM-DD" or null,
+        "question": "Only if clarification is needed"
+      }
+
+  input_variables:
+    - user_input
+    - current_date
+
+
+

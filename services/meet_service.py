@@ -1,8 +1,10 @@
 from db.db_checkers import fetch_contacts_by_user
+from db.rds_db import connect_to_rds, get_cursor
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
+from google.auth.transport.requests import Request
 import pytz
 from datetime import datetime, timedelta
 from typing import Union, List
@@ -16,8 +18,6 @@ load_dotenv()
 class GoogleMeetService:
     def __init__(
         self,
-        access_token: str,
-        user_email: str,
         userid: str,
         contacts=None,
         testing=False,
@@ -28,12 +28,77 @@ class GoogleMeetService:
         access_token: OAuth 2.0 access token with Calendar, Drive scope
         user_email: authenticated user's email address
         """
-        self.creds = Credentials(token=access_token)
+        self.conn = connect_to_rds()
         self.userid = userid
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
+        with get_cursor(self.conn) as cursor:
+            cursor.execute(
+                """
+                SELECT client_id, client_secret, token, refresh_token, expiry,email
+                FROM users
+                WHERE user_id = %s
+                """,
+                (str(userid),),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                raise ValueError(f"No Gmail credentials found for user {userid}")
+        client_id, client_secret, access_token, refresh_token, expiry, user_email = row
+        expiryed = datetime.fromisoformat(expiry) if isinstance(expiry, str) else expiry
+        self.user_email = user_email
+
+        self.creds = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=[
+                "https://www.googleapis.com/auth/userinfo.profile",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.compose",
+                "https://www.googleapis.com/auth/drive.metadata.readonly",
+                "https://www.googleapis.com/auth/drive",
+                "https://www.googleapis.com/auth/calendar",
+                "openid",
+                "https://www.googleapis.com/auth/contacts",
+            ],
+            expiry=expiryed,
+        )
+        if self.creds.expired and self.creds.refresh_token:
+            try:
+                # This call uses the refresh_token to get a new access token
+                self.creds.refresh(
+                    Request()
+                )  # You need to import google.auth.transport.requests.Request
+                print(f"✅ Token refreshed successfully for user {userid}")
+
+                # 4. CRITICAL STEP: Save the NEW tokens and expiry back to the database
+                with get_cursor(self.conn) as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET token = %s, expiry = %s 
+                        WHERE user_id = %s
+                        """,
+                        (self.creds.token, self.creds.expiry, str(userid)),
+                    )
+                self.conn.commit()
+
+            except Exception as e:
+                # Token refresh failed (e.g., refresh token revoked)
+                print(f"❌ Token refresh failed for user {userid}: {e}")
+                raise ValueError(
+                    f"Token refresh failed. User must re-authenticate: {e}"
+                )
+
+        self.conn.close()
         self.calendar_service = build("calendar", "v3", credentials=self.creds)
         self.drive_service = build("drive", "v3", credentials=self.creds)
-        self.user_email = user_email
         calendar_info = (
             self.calendar_service.calendars().get(calendarId="primary").execute()
         )
@@ -41,6 +106,8 @@ class GoogleMeetService:
         self.testing = testing
         self.workflow = workflow
         self.current_wf_id = wf_id
+
+        # Build credentials object
 
     def get_attendees_or_contacts(self, attendees):
         """
@@ -183,7 +250,9 @@ class GoogleMeetService:
             preferred_date_dt = now_local.date()
             date_is_future = False
         else:
-            preferred_date_dt = convert_human_date(preferred_date, tz_str=self.organizer_tz).date()
+            preferred_date_dt = convert_human_date(
+                preferred_date, tz_str=self.organizer_tz
+            ).date()
             date_is_future = preferred_date_dt > now_local.date()
 
         # Reject past date
@@ -1010,3 +1079,296 @@ class GoogleMeetService:
         )
 
         return {"success": True, "meeting": created}
+
+    def view_all_events(
+        self,
+        max_results=2500,
+        holidays=False,
+        from_date=None,
+        to_date=None,
+    ):
+        """
+        Fetch Google Calendar events across all calendars.
+
+        Args:
+            max_results   : Max events fetched per page
+            show_holidays :
+                False = exclude holiday calendars (default)
+                True  = include holiday calendars + user calendars (both)
+            from_date     : Optional start date (ISO date or datetime string)
+            to_date       : Optional end date   (ISO date or datetime string)
+        """
+
+        print("got into viewallevents")
+
+        # ------------ Date Range Logic ------------
+        now = datetime.utcnow()
+
+        default_from = now - timedelta(days=365)
+        default_to = now + timedelta(days=365)
+
+        # Parse from_date
+        if from_date:
+            try:
+                from_dt = datetime.fromisoformat(from_date.replace("Z", "+00:00"))
+            except:
+                from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+        else:
+            from_dt = default_from
+
+        # Parse to_date
+        if to_date:
+            try:
+                to_dt = datetime.fromisoformat(to_date.replace("Z", "+00:00"))
+            except:
+                to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+        else:
+            to_dt = default_to
+
+        # Convert to RFC3339
+        time_min = from_dt.isoformat() + "Z"
+        time_max = to_dt.isoformat() + "Z"
+
+        print(f"Fetching events from {time_min} to {time_max}")
+
+        # ------------ Fetch all calendars ------------
+        try:
+            calendars = (
+                self.calendar_service.calendarList().list().execute().get("items", [])
+            )
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to fetch calendar list: {str(e)}",
+            }
+
+        all_events = []
+
+        # ------------ Loop Through Calendars ------------
+        for cal in calendars:
+            cal_id = cal["id"].lower()
+            cal_name = cal.get("summary", cal_id)
+
+            # Detect holiday calendars
+            is_holiday_calendar = (
+                "holiday" in cal_id
+                or "holidays" in cal_id
+                or cal_name.lower().startswith("holidays")
+            )
+
+            # FINAL REQUIRED LOGIC:
+            # -------------------------------------------------
+            # If show_holidays = False → exclude holiday calendars
+            # If show_holidays = True  → include ALL calendars
+            # -------------------------------------------------
+            if not holidays and is_holiday_calendar:
+                continue
+            # (When show_holidays=True → do not filter anything)
+
+            print(f"Fetching events from calendar: {cal_name}")
+
+            page_token = None
+
+            try:
+                while True:
+                    # result = (
+                    #     self.calendar_service.events()
+                    #     .list(
+                    #         calendarId=cal["id"],
+                    #         singleEvents=True,
+                    #         orderBy="startTime",
+                    #         timeMin=time_min,
+                    #         timeMax=time_max,
+                    #         maxResults=max_results,
+                    #         pageToken=page_token,
+                    #     )
+                    #     .execute()
+                    # )
+                    result = (
+                        self.calendar_service.events()
+                        .list(
+                            calendarId=cal["id"],
+                            singleEvents=True,
+                            orderBy="startTime",
+                            timeMin=time_min,
+                            timeMax=time_max,
+                            maxResults=max_results,
+                            pageToken=page_token,
+                            # 👇 ADD THIS
+                            showDeleted=True,
+                        )
+                        .execute()
+                    )
+
+                    items = result.get("items", [])
+                    print(f"  Got {len(items)} events")
+
+                    for ev in items:
+                        all_events.append(
+                            {
+                                "calendar_id": cal["id"],
+                                "calendar_name": cal_name,
+                                "event_id": ev.get("id"),
+                                "summary": ev.get("summary"),
+                                "start": ev.get("start"),
+                                "end": ev.get("end"),
+                                "attendees": ev.get("attendees", []),
+                                "hangoutLink": ev.get("hangoutLink"),
+                                "location": ev.get("location"),
+                                "description": ev.get("description"),
+                                "status": ev.get("status"),
+                            }
+                        )
+
+                    page_token = result.get("nextPageToken")
+                    if not page_token:
+                        break
+
+            except Exception as e:
+                print(f"Error in calendar {cal['id']}: {e}")
+                continue
+
+        # ------------ Return Result ------------
+        return {
+            "success": True,
+            "from": time_min,
+            "to": time_max,
+            "count": len(all_events),
+            "events": all_events,
+        }
+
+    def create_calendar_event(
+        self,
+        title,
+        start_dt,
+        end_dt,
+        attendees=None,
+        description=None,
+        location=None,
+        meet=False,
+    ):
+        attendees = attendees or []
+
+        event_body = {
+            "summary": title,
+            "description": description,
+            "location": location,
+            "start": {
+                "dateTime": start_dt.isoformat(),
+                "timeZone": str(start_dt.tzinfo),
+            },
+            "end": {
+                "dateTime": end_dt.isoformat(),
+                "timeZone": str(end_dt.tzinfo),
+            },
+            "attendees": [{"email": a} for a in attendees],
+        }
+
+        # ---- Add Google Meet Conference ----
+        if meet:
+            event_body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": f"c-meet-{datetime.now().timestamp()}",
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+
+        # ---- Create event ----
+        created_event = (
+            self.calendar_service.events()
+            .insert(
+                calendarId="primary",
+                body=event_body,
+                conferenceDataVersion=1 if meet else 0,
+            )
+            .execute()
+        )
+
+        return {
+            "id": created_event.get("id"),
+            "hangoutLink": created_event.get("hangoutLink"),
+            "summary": created_event.get("summary"),
+            "start": created_event.get("start"),
+            "end": created_event.get("end"),
+            "attendees": created_event.get("attendees"),
+            "conferenceData": created_event.get("conferenceData"),
+        }
+
+    def update_calendar_event(
+        self,
+        event_id,
+        title=None,
+        start_dt=None,
+        end_dt=None,
+        attendees=None,
+        description=None,
+        location=None,
+        googlemeet=False,
+    ):
+        try:
+            # Fetch existing event first
+            event = (
+                self.calendar_service.events()
+                .get(calendarId="primary", eventId=event_id)
+                .execute()
+            )
+
+            # Update simple fields
+            if title:
+                event["summary"] = title
+            if description:
+                event["description"] = description
+            if location:
+                event["location"] = location
+            if attendees:
+                event["attendees"] = [{"email": a} for a in attendees]
+
+            # Update time fields
+            if start_dt and end_dt:
+                event["start"] = {
+                    "dateTime": start_dt.isoformat(),
+                    "timeZone": str(start_dt.tzinfo),
+                }
+                event["end"] = {
+                    "dateTime": end_dt.isoformat(),
+                    "timeZone": str(end_dt.tzinfo),
+                }
+
+            # ---- Google Meet Logic ----
+            if googlemeet:
+                event["conferenceData"] = {
+                    "createRequest": {
+                        "requestId": f"c-meet-{datetime.now().timestamp()}",
+                        "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                    }
+                }
+            else:
+                # Remove meet link if exists
+                event.pop("conferenceData", None)
+
+            updated = (
+                self.calendar_service.events()
+                .patch(
+                    calendarId="primary",
+                    eventId=event_id,
+                    body=event,
+                    conferenceDataVersion=1 if googlemeet else 0,
+                )
+                .execute()
+            )
+
+            return updated
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_calendar_event(self, event_id):
+        try:
+            self.calendar_service.events().delete(
+                calendarId="primary", eventId=event_id
+            ).execute()
+
+            return {"message": "Event deleted", "event_id": event_id}
+
+        except Exception as e:
+            return {"success": False, "error": f"Failed to delete event: {e}"}
