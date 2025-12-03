@@ -1,0 +1,14 @@
+{
+  "service_requests": {
+    "status": ["open", "pending", "solved", "none", "all"],
+    "priority": ["low", "medium", "high","none", "all"]
+  },
+  "msgs": {
+    "channel": ["gmail","website","zoho","outlook","whatsapp","sms","phone","instagram_dm","facebook_messenger","none","all"]
+  },
+  "integrated": {
+    "intergration_platform": ["facebook_messenger","instagram_dm","whatsapp","twilio_sms","none", "all"]
+  }
+}
+
+   

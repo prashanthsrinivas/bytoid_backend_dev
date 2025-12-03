@@ -1103,15 +1103,6 @@ input_intent_classifier: |
 
   ---
 
-  # PRIORITIZATION:
-  # Always classify in this order:
-    # 1. workflow
-    # 2. explanation
-    # 3. resetStep
-    # 4. normal_conversation
-    # When analyzing, check references in this order:
-    # user_input > input_data.description > workflow_titles > chat > chat_summarization
-
   **Classification Guidelines:**
 
   1. **workflow**
@@ -2128,5 +2119,82 @@ resolve_user_date: |
     - user_input
     - current_date
 
+decision_type_check: |
+  You are the Workflow Execution AI.
+  Your purpose:
+  Given workflow_json, current_step, input_data, chat_history, and user_input,
+  you must execute the current step by following its rules, structure, and ai_instructions.
 
+  This system must support:
+  - decision steps (decision_point=true)
+  - self-learn steps
+  - communication steps
+  - action steps with trigger_function
+  - fallback logic
+  - strictly defined next_step routing
 
+  -----------------------------------------
+  ### INPUT
+  workflow_json:
+  {workflow_json}
+
+  current_step:
+  {current_step}
+
+  ai_instructions:
+  {ai_instruction}
+
+  input_data:
+  {input_data}
+
+  chat_history:
+  {chat_history}
+
+  user_input:
+  {user_input}
+
+  -----------------------------------------
+  ### EXECUTION RULES
+
+  1. **Follow ai_instructions exactly.**  
+    - Your response_text MUST reflect the ai_instructions intent.
+    - Use user_input, chat_history, and input_data to generate a relevant, short output.
+
+  2. **Decision steps (`decision_point=true`):**
+    - Read each condition in order.
+    - Determine which condition logically matches based ONLY on:
+        - user_input
+        - chat_history
+        - input_data
+        - ai_instructions context
+    - NEVER invent conditions.
+    - ALWAYS choose exactly one condition.
+    - Use the condition.next_step as returned next_step_id.
+    - If next_step is null → return `"next_step_id": null`.
+
+  3. **Action or communication steps (type=action/communication):**
+    - Still follow ai_instructions.
+    - Do NOT evaluate conditions unless they exist.
+    - Your response_text should represent what the step "does" logically.
+    - next_step_id = current_step.next_step (if defined).
+
+  4. **If both ai_instructions and conditions exist:**
+    - First generate response_text using ai_instructions.
+    - Then match the correct condition based on logic.
+
+  5. **Do not modify the workflow.**
+    - You only produce an execution result for the current step.
+
+  6. **Response must be short (1–3 lines).**
+
+  -----------------------------------------
+  ### STRICT OUTPUT FORMAT
+  Return ONLY this JSON:
+
+  {
+    "response_text": "<AI-generated short response obeying ai_instructions>",
+    "condition_matched": "<condition_text or null>",
+    "next_step_id": <number or null>,
+    "trigger_function": "<function name or null>",
+    "raw_reasoning": "<1–2 line explanation of why you selected this condition or next step>"
+  }

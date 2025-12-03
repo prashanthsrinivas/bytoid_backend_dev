@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import json
 import os
 from flask import Blueprint, request, jsonify
-from services.autopilot_service import AutoMateService
+from services.uamil_auto_service import UmailAutoService
 from utils.base_logger import get_logger
 from utils.celery_base import delayed_trigger, lock_client
 
@@ -71,16 +71,26 @@ def receive_gmail_notification():
     with open(WEBHOOK_LOG_FILE, "w") as f:
         json.dump(log_data, f, indent=2)
 
-    # Deduplication: Only trigger Celery if no other recent webhook for this user
-    dedup_key = f"webhook_dedup:{user_email}"
-    # Set a short TTL to ensure only the latest webhook triggers
+    # ✅ FIX #1: Deduplication based on HISTORY_ID, not user_email
+    # This allows multiple webhooks from the same user if they have different historyIds
+    # (meaning different email arrival events, not duplicates)
+    dedup_key = f"webhook_dedup:{user_email}:{history_id}"
+
+    # Check if THIS specific history_id was already processed recently
     recent = lock_client.get(dedup_key)
-    lock_client.set(dedup_key, history_id, ex=DEDUP_WINDOW)
     if recent:
-        # A recent webhook exists; skip this one
+        # This exact history_id was already processed; skip it
+        logger.info(
+            f"Duplicate webhook skipped for {user_email}, historyId={history_id}"
+        )
         return "Duplicate webhook skipped", 200
 
-    # Trigger Celery for this webhook
+    # Mark this specific history_id as processed for 5 minutes
+    # (to avoid processing the exact same webhook multiple times)
+    lock_client.set(dedup_key, "1", ex=300)
+
+    # ✅ Trigger Celery for this webhook (even if same user, different history_id)
+    logger.info(f"Processing webhook for {user_email}, historyId={history_id}")
     delayed_trigger.delay(user_email, history_id)
     return "OK", 200
 
@@ -95,7 +105,7 @@ def triggerassist():
     if not userid or not from_email:
         return jsonify({"error": "Missing required fields"}), 400
 
-    with AutoMateService(userid) as service:
+    with UmailAutoService(userid) as service:
         return service.activate_autopilot(from_email, selected_agent)
 
 
@@ -109,7 +119,7 @@ def revoke_autopilot():
     if not userid or not target_email:
         return jsonify({"error": "Missing required fields"}), 400
 
-    with AutoMateService(userid) as service:
+    with UmailAutoService(userid) as service:
         return service.revoke_autopilot(target_email, pilot_override)
 
 
@@ -122,19 +132,19 @@ def changepilotmode():
     if not userid or not new_mode:
         return jsonify({"error": "Missing required fields"}), 400
 
-    with AutoMateService(userid) as service:
-        return service.change_mode(new_mode)
+    with UmailAutoService(userid) as service:
+        return service.change_autopilot_mode(new_mode)
 
 
 @assist_suggest_bp.route("/ai_autopilot-reset/<userid>", methods=["GET"])
 def reset_autopilot(userid):
-    with AutoMateService(userid) as service:
+    with UmailAutoService(userid) as service:
         return service.reset_autopilot()
 
 
 @assist_suggest_bp.route("/ai_autopilot/<userid>", methods=["GET"])
 def get_autopilot(userid):
-    with AutoMateService(userid) as service:
+    with UmailAutoService(userid) as service:
         autopilot_data, err, code = service.fetch_autopilot()
         if err:
             return jsonify(err), code
@@ -151,7 +161,7 @@ def update_selected_agent():
     if not all([userid, target_email, selected_agent]):
         return jsonify({"error": "Missing required fields"}), 400
 
-    with AutoMateService(userid) as service:
+    with UmailAutoService(userid) as service:
         # Reuse activate_autopilot logic to update selected_agent
         return service.activate_autopilot(target_email, selected_agent)
 
@@ -168,8 +178,8 @@ def make_reply_email():
     if not userid or not from_email:
         return jsonify({"error": "Missing required fields"}), 400
 
-    with AutoMateService(userid) as service:
-        success = service.auto_reply_email(from_email)
+    with UmailAutoService(userid) as service:
+        success = service.auto_reply_umail_email(from_email)
         if success is True:
             return jsonify({"status": "sent"}), 200
         elif success is False:
@@ -188,8 +198,8 @@ def triggersuggest():
     if not all([userid, msg_body, conv_id]):
         return jsonify({"error": "Missing required fields"}), 400
 
-    with AutoMateService(userid) as service:
-        return service.suggest_reply(msg_body, conv_id)
+    with UmailAutoService(userid) as service:
+        return service.suggest_umail_reply(msg_body, conv_id)
 
 
 @assist_suggest_bp.route("/test_functions", methods=["POST"])
@@ -197,7 +207,7 @@ def messcheckgmail():
     data = request.json
     userid = data.get("user_id")
     userinput = data.get("userinput")
-    # print("userinp", userinput)
+    ##print("userinp", userinput)
     # Connect to DB
-    with AutoMateService(userid) as service:
+    with UmailAutoService(userid) as service:
         return service.generate_file_from_ai(user_input=userinput)

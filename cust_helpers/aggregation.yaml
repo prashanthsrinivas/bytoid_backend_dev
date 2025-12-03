@@ -1,0 +1,222 @@
+schema_mapper: |
+  You map structured_query fields to actual database schema.
+
+  Input:
+    structured_query: {{structured_query}}
+    database_schema: {{database_schema}}
+    table_relationships: {{table_relationships}}
+
+  Task:
+    Convert structured_query into schema-mapped tables, columns, and join paths.
+
+  Output JSON:
+  {
+      "entity_table": "<table>",
+      "entity_columns": ["<readable_first_name_column>", "<readable_last_name_column>"],
+
+      "metric_table": "<table>",
+      "metric_column": "<table.column>",
+
+      "filter_columns": [
+        {
+          "field": "<structured field>",
+          "column": "<mapped table.column>",
+          "operator": "<>=",
+          "value": "<value>"
+        }
+      ],
+
+      "time_column": "<table.column or null>",
+
+      "joins": [
+        {
+          "left_table": "<table>",
+          "right_table": "<table>",
+          "left_column": "<table.column>",
+          "right_column": "<table.column>"
+        }
+      ]
+    }
+  
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - Use ONLY table/column names present in database_schema.
+    - Compute minimal join path via table_relationships.
+    - Replace *_id fields with readable names according to rules:
+        * customer_account_id → CONCAT(first, last)
+        * users_account_id → CONCAT(first, last)
+        * service_request_id → service_request_name
+    - No invented columns.
+    - No SQL.
+
+ast_select_builder: |
+  You generate ONLY the SELECT node of the AST.
+
+  Input:
+  select_columns: {{select_columns}}
+  metric_table: {{metric_table}}
+  metric_column: {{metric_column}}
+  aggregation: {{aggregation}}
+
+  Output JSON:
+  {
+    "SELECT": {
+      "type": "SELECT",
+      "columns": [
+        {{#each select_columns}}
+        {
+          "type": "COLUMN",
+          "name": "{{this}}"
+        }{{#unless @last}},{{/unless}}
+        {{/each}}{{#if metric_column}}, 
+        {
+          "type": "ALIAS",
+          "alias": "metric_value",
+          "expression": {
+            "type": "AGGREGATION",
+            "operator": "{{aggregation}}",
+            "operands": [
+              {
+                "type": "COLUMN",
+                "name": "{{metric_column}}"
+              }
+            ]
+          }
+        }
+        {{/if}}
+      ]
+    }
+  }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - No made-up column names.
+    - No SQL strings.
+    - Only stable JSON AST output.
+
+ast_from_join_builder: |
+  You generate FROM and JOIN nodes.
+
+  Input:
+    entity_table: {{entity_table}}
+    metric_table: {{metric_table}}
+    joins: {{joins}}
+
+  Output JSON:
+    {
+      "FROM": { "type": "FROM", "tables": [ { "type": "TABLE", "name": "<entity_table>" } ] },
+      "JOIN": [
+        {
+          "type": "JOIN",
+          "join_type": "INNER",
+          "tables": [ { "type": "TABLE", "name": "<right_table>" } ],
+          "on": {
+            "type": "BINARY_EXPRESSION",
+            "operator": "=",
+            "operands": [
+              { "type": "COLUMN", "name": "<left_table.left_column>" },
+              { "type": "COLUMN", "name": "<right_table.right_column>" }
+            ]
+          }
+        }
+      ]
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - Emit one JOIN object per join entry.
+    - No SQL.
+    - Use only validated join info.
+
+ast_where_builder: |
+  You generate ONLY the WHERE node.
+
+  Input:
+    filter_columns: {{filter_columns}}
+    time_column: {{time_column}}
+    time_range: {{time_range}}
+
+  Output JSON:
+    {
+      "WHERE": {
+        "type": "WHERE",
+        "conditions": [
+          {
+            "type": "BINARY_EXPRESSION",
+            "operator": "<operator>",
+            "operands": [
+              { "type": "COLUMN", "name": "<column>" },
+              { "type": "VALUE", "value": "<value>" }
+            ]
+          }
+        ]
+      }
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - Use double quotes everywhere. No trailing commas.
+    - Do NOT generate timestamps. Never output ISO dates.
+    - Do NOT use SQL functions like NOW(), DATE_SUB(), INTERVAL, CURRENT_DATE, etc.
+    - Do NOT write natural language inside JSON.
+    - If time_range is provided → generate a TIME_RANGE node.
+    - If time_range is null or empty → do NOT generate TIME_RANGE.
+    - For filters:
+        - Skip filters where the value is null, empty, "all", or "none".
+        - Each filter must produce a BINARY_EXPRESSION node.
+        - Allowed operators ONLY: "=", "!=", ">", "<", ">=", "<=".
+        - Operators MUST be inside double quotes. Never single quotes.
+        - No extra characters allowed.
+    - The TIME_RANGE node has this format:
+
+        {
+          "type": "TIME_RANGE",
+          "column": "<time_column>",
+          "range": "<time_range>"
+        }
+
+ast_group_order_limit_builder: |
+  You generate GROUP BY, ORDER BY, and LIMIT nodes.
+
+  Input:
+    entity_table : {{entity_table}}
+    entity_columns: {{entity_columns}}
+    metric_column: {{metric_column}}
+    aggregation: {{aggregation}}
+    limit: {{limit}}
+
+  Output JSON:
+    {
+      "GROUP_BY": {
+        "type": "GROUP_BY",
+        "columns": [
+          { "type": "COLUMN", "name": "<entity_table.entity_column>" }
+        ]
+      },
+      "ORDER_BY": {
+        "type": "ORDER_BY",
+        "columns": [
+          {
+            "type": "AGGREGATION",
+            "operator": "<aggregation>",
+            "operands": [
+              { "type": "COLUMN", "name": "<metric_table.metric_column>" }
+            ]
+          }
+        ],
+        "direction": "DESC"
+      },
+      "LIMIT": {
+        "type": "LIMIT",
+        "value": <limit or null>
+      }
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - Always output all 3 nodes.
+    - No missing keys.
+    - No SQL.
+
+

@@ -71,7 +71,7 @@ class UmailAutoService:
         try:
             umail_conversations = getselectedconv(conv_id=conv_id, userid=self.userid)
             umail_bodies = [msg.get("body", "") for msg in umail_conversations]
-            print("umail conversations", umail_bodies)
+            # print("umail conversations", umail_bodies)
             ai_reply = suggest_helper_base(
                 userid=self.userid,
                 email_msg=email_msg,
@@ -251,5 +251,3 @@ class UmailAutoService:
             )
             self.connection.commit()
         return jsonify({"message": f"Autopilot data reset for user {self.userid}"}), 200
-
-    

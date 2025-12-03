@@ -4,11 +4,15 @@ from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
     get_subagent_by_userid,
+    save_or_update_workflow_schedule,
 )
+from db.rds_db import connect_to_rds, get_cursor
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 import json, queue, time
 from cust_helpers import pathconfig
+from services.scheduler_service import SchedulerService
 from services.workflow_service import WorkflowRunnerV2
+from services.meet_service import GoogleMeetService
 from utils.fireworkzz import get_fireworks_response2
 from .helperzz import *
 from utils.pb_config_utils import *
@@ -21,11 +25,11 @@ playbook_bp = Blueprint("playbook", __name__)
 def create_new_instruction():
     data = request.json
     userid = data["user_id"]
-    print("data input", data)
+    # print("data input", data)
     playbook_id, config_path, subagent_id = returnconfigandpath(userid)
     if not playbook_id:
         config_s3_path = create_empty_playbook_config(userid)
-        print("created new empty playbook")
+        # print("created new empty playbook")
 
         playb_id = str(uuid.uuid4())
 
@@ -33,9 +37,9 @@ def create_new_instruction():
             playb_id, subagent_id, config_s3_path
         )
     # config_path = "107642411636394027005/workflow/config_playbook_0195b8dd.json"
-    print("found the play", config_path)
+    # print("found the play", config_path)
     full_output, npath = create_playbook(data)
-    print("made the new instruction", npath)
+    # print("made the new instruction", npath)
     update_playbook_config(
         configpath=config_path,
         user_id=userid,
@@ -57,7 +61,7 @@ def updateInstruction():
     playbook_id, config_path, subagent_id = returnconfigandpath(userid)
 
     full_output, npath = create_playbook(data, filename)
-    print("made the new instruction", npath)
+    # print("made the new instruction", npath)
     update_playbook_config(
         configpath=config_path,
         user_id=userid,
@@ -240,71 +244,154 @@ def edit_a_step():
 
 @playbook_bp.route("/update_step_arguments", methods=["POST"])
 def update_step_arguments():
-    body = request.json
+    try:
+        body = request.json
 
-    user_id = body.get("user_id")
-    filename = body.get("filename")
-    step_id = body.get("step_id")
-    new_arguments = body.get("arguments")
+        user_id = body.get("user_id")
+        filename = body.get("filename")
+        step_id = body.get("step_id")
+        new_arguments = body.get("arguments")
 
-    if not user_id or not filename or step_id is None or new_arguments is None:
+        if not user_id or not filename or step_id is None or new_arguments is None:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Missing user_id, filename, step_id, or arguments",
+                    }
+                ),
+                400,
+            )
+
+        # -----------------------------------------------------------
+        # 1) Load playbook from S3
+        # -----------------------------------------------------------
+        try:
+            playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
+        except Exception as e:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Failed to load playbook: {e}",
+                    }
+                ),
+                500,
+            )
+
+        steps = playbook.get("workflow", {}).get("steps", [])
+        updated = False
+
+        # -----------------------------------------------------------
+        # 2) Update the step arguments
+        # -----------------------------------------------------------
+        try:
+            for step in steps:
+                if step.get("id") == int(step_id):
+
+                    # Must have function_call.arguments
+                    if (
+                        "function_call" not in step
+                        or "arguments" not in step["function_call"]
+                    ):
+                        return (
+                            jsonify(
+                                {
+                                    "status": "error",
+                                    "message": f"Step {step_id} does not contain function_call.arguments",
+                                }
+                            ),
+                            400,
+                        )
+
+                    # Replace ONLY arguments
+                    step["function_call"]["arguments"] = new_arguments
+
+                    # Remove filled arguments from requirements_needed
+                    req_list = step.get("requirements_needed", [])
+                    for arg in new_arguments.keys():
+                        if arg in req_list:
+                            req_list.remove(arg)
+                    step["requirements_needed"] = req_list
+
+                    updated = True
+                    break
+        except Exception as e:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Failed while updating step arguments: {e}",
+                    }
+                ),
+                500,
+            )
+
+        if not updated:
+            return jsonify({"status": "error", "message": "Step ID not found"}), 404
+
+        # -----------------------------------------------------------
+        # 3) Update workflow date
+        # -----------------------------------------------------------
+        playbook["WorkflowDate"] = datetime.now().isoformat()
+        if "pre_user_data" not in playbook:
+            playbook["pre_user_data"] = {}
+
+        # -----------------------------------------------------------
+        # 4) Call storeargument_results (inside WorkflowRunnerV2)
+        # -----------------------------------------------------------
+        try:
+            with WorkflowRunnerV2(
+                userid=user_id,
+                filename=filename,
+                workflowJson=playbook,
+                testing=True,
+            ) as runner:
+                # print("adding values to the ")
+                values = runner.storeargument_results(
+                    nfunction_args=new_arguments,
+                    execution_result={},  # satisfies signature
+                )
+                playbook["pre_user_data"] = values
+        except Exception as e:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Failed in storeargument_results: {e}",
+                    }
+                ),
+                500,
+            )
+
+        # -----------------------------------------------------------
+        # 5) Save back to S3
+        # -----------------------------------------------------------
+        try:
+            return save_playbook_to_s3(
+                playbook, user_id, "Step arguments updated successfully", filename
+            )
+        except Exception as e:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Failed to save playbook: {e}",
+                    }
+                ),
+                500,
+            )
+
+    except Exception as main_e:
         return (
             jsonify(
                 {
                     "status": "error",
-                    "message": "Missing user_id, filename, step_id, or arguments",
+                    "message": f"Unexpected error: {main_e}",
                 }
             ),
-            400,
+            500,
         )
-
-    # Load playbook
-    playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
-    steps = playbook.get("workflow", {}).get("steps", [])
-
-    updated = False
-
-    for step in steps:
-        if step.get("id") == int(step_id):
-
-            # Must have function_call.arguments
-            if "function_call" not in step or "arguments" not in step["function_call"]:
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": f"Step {step_id} does not contain function_call.arguments",
-                        }
-                    ),
-                    400,
-                )
-
-            # 1️⃣ Replace ONLY arguments
-            step["function_call"]["arguments"] = new_arguments
-
-            # 2️⃣ Remove any added/updated argument names from requirements_needed
-            req_list = step.get("requirements_needed", [])
-
-            # Every key in new_arguments should be removed from requirements
-            for arg in new_arguments.keys():
-                if arg in req_list:
-                    req_list.remove(arg)
-
-            step["requirements_needed"] = req_list
-
-            updated = True
-            break
-
-    if not updated:
-        return jsonify({"status": "error", "message": "Step ID not found"}), 404
-
-    # Update workflow date
-    playbook["WorkflowDate"] = datetime.now().isoformat()
-
-    # Save
-    return save_playbook_to_s3(
-        playbook, user_id, "Step arguments updated successfully", filename
-    )
 
 
 @playbook_bp.route("/delete_step_argument", methods=["POST"])
@@ -753,7 +840,7 @@ def generate_clarification_questions():
         # clarifications=True,
 
     except Exception as e:
-        print("⚠️ Error while generating workflow clarifications:", str(e))
+        # print("⚠️ Error while generating workflow clarifications:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -846,7 +933,7 @@ def remove_clarification_question():
         )
 
     except Exception as e:
-        print("⚠️ Error while removing clarification question:", str(e))
+        # print("⚠️ Error while removing clarification question:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -977,7 +1064,7 @@ def answer_clarification_question():
         )
 
     except Exception as e:
-        print("⚠️ Error while updating clarification answer:", str(e))
+        # print("⚠️ Error while updating clarification answer:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -1185,7 +1272,7 @@ def testworkflowbyinput_stream():
     userid = request.args.get("user_id")
     userinput = request.args.get("userinput")
     filename = request.args.get("filename")
-    print("details", userid, userinput, filename)
+    # print("details", userid, userinput, filename)
 
     if not userid:
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
@@ -1213,7 +1300,7 @@ def testworkflowbyinput_stream():
             ) as service:
                 result = service.check_input_tone(user_input=userinput)
 
-            print("result from back", result)
+            # print("result from back", result)
 
             yield f"event: done\ndata: {json.dumps(result)}\n\n"
 
@@ -1374,7 +1461,7 @@ def generate_workflow_input():
             .replace("{{available_communication_modes}}", json.dumps(available_modes))
             .replace("{{services_section}}", json.dumps(services_section))
         )
-        # print("fomatted prompt", formatted_prompt)
+        ##print("fomatted prompt", formatted_prompt)
 
         # ✅ Call the LLM
         llm_output = get_fireworks_response2(
@@ -1384,8 +1471,8 @@ def generate_workflow_input():
         llm_output = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", llm_output, flags=re.MULTILINE
         ).strip()
-        print("input by user ->", inp_description)
-        print("Raw llm output", llm_output)
+        # print("input by user ->", inp_description)
+        # print("Raw llm output", llm_output)
 
         # ✅ Parse JSON safely
         try:
@@ -1407,21 +1494,103 @@ def generate_workflow_input():
         return jsonify({"error": str(e)}), 500
 
 
-# @playbook_bp.route("/test-mid", methods=["POST"])
-# def testworknput():
-#     data = request.json
-#     userid = data.get("user_id")
-#     userinput = data.get("userinput")
-#     filename = data.get("filename")
+@playbook_bp.route("/test-mid", methods=["POST"])
+def testmidcheck():
+    from services.gmail_service import GmailService
+    from services.automate_service import AutoMateService
+    import random
 
-#     if not userid:
-#         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
-#     if not filename:
-#         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-#     if not userinput:
-#         return jsonify({"message": "Missing userinput", "status": "error"}), 400
+    # Lock user to avoid multiple parallel bulk sends
+    user_id = "100805564263044911738"
+    receiver_email = "service@bytoid.ca"  # FIXED: valid email
+    email_count = 2
 
-#     # ✅ Pre-validate workflow existence
+    EMAIL_TITLES = [
+        "AI Automation",
+        "SaaS Growth Strategies",
+        "Developer Tools Evolution",
+        "Modern Cybersecurity",
+        "Cloud Computing Trends",
+        "Workflow Orchestration",
+    ]
+
+    try:
+        ai = AutoMateService(userid=user_id)
+        gmail = GmailService(user_id=user_id)
+
+        sent = 0
+        failed = 0
+
+        for i in range(email_count):
+
+            # Pick random title
+            rand_title = random.choice(EMAIL_TITLES)
+
+            # Generate email body (HTML)
+            email_body_html = ai.create_custom_email_body(
+                user_input=f"Write a short memo/news update about {rand_title} with 200 - 300 words and it must have a title included in <title> tag  "
+            )
+            # print("emmail_body_html", email_body_html)
+
+            # Extract subject from HTML (or fallback)
+
+            # Send the email
+            try:
+                gmail.send_email(
+                    receipent_emails=receiver_email,
+                    subject=f"Write a short memo/news update about {rand_title}. "
+                    f"Return a rich HTML email body.",
+                    body_text=email_body_html["email_body_html"],
+                )
+                sent += 1
+            except Exception as send_err:
+                failed += 1
+                print(f"Email send failed ({i}):", send_err)
+
+        return {
+            "status": "completed",
+            "user_id": user_id,
+            "total_requested": email_count,
+            "sent": sent,
+            "failed": failed,
+        }
+    except Exception as e:
+        # print("❌ Error in /test-email_checks:", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/test-email-checks", methods=["GET"])
+def test_email_checks():
+    """
+    Test route to trigger bulk email sending using Celery.
+    """
+    # emails = request.args.get("emails", type=int)
+    try:
+       from db.lance_db_service import LanceDBServer
+       ser=LanceDBServer()
+       val=ser.check_lance_db_Connection()
+       return jsonify(
+            {
+                "status": val,
+                # # "task_id": tasks,
+                # "message": f"Bulk email task queued for {emails} emails",
+            }
+        )
+
+    except Exception as e:
+        # print("❌ Error in /test-email_checks:", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# @playbook_bp.route("/schedule-workflow", methods=["POST"])
+# def schedule_workflow():
+#     body = request.json
+
+#     schedule_type = body["type"]
+#     userid = body["userid"]
+#     contacts = body["contacts"] #
+#     filename = body["filename"]
+#     timezone = body.get("timezone", "UTC")  # default UTC if not provided
 #     wf_loc = f"{userid}/workflow/{filename}"
 #     workflow_json = read_json_from_s3(wf_loc)
 #     if not workflow_json:
@@ -1434,79 +1603,93 @@ def generate_workflow_input():
 #             ),
 #             404,
 #         )
-#     print("user input", userinput)
-#     try:
-#         allfuns = read_function_jsons2(Full=True)
-#         workflow_steps = workflow_json.get("workflow", {}).get("steps", [])
-#         steps = {step["id"]: step for step in workflow_steps}
-#         # result=service.current_implemented_functions
-#         return jsonify({"steps": steps, "allfuns": allfuns})
-#         # return service.get_chat_summarization()
-#     except Exception as e:
-#         return jsonify({"status": "error", "message": str(e)}), 500
+
+#     if schedule_type == "one_time":
+#         dt = datetime.fromisoformat(body["datetime"])
+#         result = SchedulerService.schedule_one_time(dt, userid, filename, timezone)
+#         return {"status": "success", "result": result}
+
+#     if schedule_type == "daily":
+#         hour = body["hour"]
+#         minute = body["minute"]
+#         result = SchedulerService.schedule_daily(
+#             hour, minute, userid, filename, timezone
+#         )
+#         return {"status": "success", "result": result}
+
+#     if schedule_type == "weekly":
+#         weekday = body["weekday"]
+#         hour = body["hour"]
+#         minute = body["minute"]
+#         result = SchedulerService.schedule_weekly(
+#             weekday, hour, minute, userid, filename, timezone
+#         )
+#         return {"status": "success", "result": result}
+
+#     return {"status": "error", "message": "Invalid schedule type"}, 400
 
 
-@playbook_bp.route("/test-mid", methods=["POST"])
-def testworknput():
-    """
-    Test middleware route to return only the function definitions
-    used in the workflow steps, extracted from all function configs.
-    """
-    try:
-        data = request.json
-        userid = data.get("user_id")
-        userinput = data.get("userinput")
-        filename = data.get("filename")
+@playbook_bp.route("/schedule-workflow", methods=["POST"])
+def schedule_workflow():
+    body = request.json
 
-        # --- Validation ---
-        if not userid:
-            return jsonify({"message": "Not a valid userid", "status": "error"}), 400
-        if not filename:
-            return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-        if not userinput:
-            return jsonify({"message": "Missing userinput", "status": "error"}), 400
+    schedule_type = body["type"]
+    userid = body["userid"]
+    contacts = body["contacts"]
+    filename = body["filename"]
+    timezone = body.get("timezone", "UTC")
 
-        # --- Load workflow from S3 ---
-        wf_loc = f"{userid}/workflow/{filename}"
-        workflow_json = read_json_from_s3(wf_loc)
-        if not workflow_json:
-            return (
-                jsonify(
-                    {
-                        "message": f"Workflow file '{filename}' not found",
-                        "status": "error",
-                    }
-                ),
-                404,
-            )
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
 
-        # --- Load all function definitions ---
-        # allfuns = read_function_jsons2(Full=True)
-
-        # # --- Extract function names from workflow steps ---
-        # workflow_steps = workflow_json.get("workflow", {}).get("steps", [])
-        # used_functions = {}
-
-        # for step in workflow_steps:
-        #     fn_name = step.get("function_call", {}).get("function_name")
-        #     if fn_name and fn_name in allfuns:
-        #         used_functions[fn_name] = allfuns[fn_name]
-        from services.workflow_service import WorkflowRunnerV2
-
-        servicemain = WorkflowRunnerV2(
-            userid=userid,
-            filename=filename,
-            workflowJson=workflow_json,
-            testing=True,
+    if not workflow_json:
+        return (
+            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
+            404,
         )
-        val = servicemain.ai_pre_gather_details(userinput=userinput)
 
-        # --- Return only used function definitions ---
-        return jsonify({"status": "success", "result": val})
+    # ---------------------------------------------------
+    # Prepare JSON payload to save into DB
+    activation_schedule = {"type": schedule_type, "data": {}}
+    # ---------------------------------------------------
 
-    except Exception as e:
-        print("❌ Error in /test-mid:", e)
-        return jsonify({"status": "error", "message": str(e)}), 500
+    if schedule_type == "one_time":
+        dt = datetime.fromisoformat(body["datetime"])
+        activation_schedule["data"] = {"datetime": body["datetime"]}
+        result = SchedulerService.schedule_one_time(dt, userid, filename, timezone)
+
+    elif schedule_type == "daily":
+        activation_schedule["data"] = {
+            "hour": body["hour"],
+            "minute": body["minute"],
+        }
+        result = SchedulerService.schedule_daily(
+            body["hour"], body["minute"], userid, filename, timezone
+        )
+
+    elif schedule_type == "weekly":
+        activation_schedule["data"] = {
+            "weekday": body["weekday"],
+            "hour": body["hour"],
+            "minute": body["minute"],
+        }
+        result = SchedulerService.schedule_weekly(
+            body["weekday"], body["hour"], body["minute"], userid, filename, timezone
+        )
+
+    else:
+        return {"status": "error", "message": "Invalid schedule type"}, 400
+
+    val = updateconfigstatus(user_id=userid, name=filename, new_status="Running")
+    if val is None:
+        return {"error": "error in scheduling"}, 500
+
+    # -----------------------------------------------
+    # SAVE OR UPDATE IN DB
+    save_or_update_workflow_schedule(userid, filename, activation_schedule, contacts)
+    # -----------------------------------------------
+
+    return {"status": "success", "result": result}
 
 
 @playbook_bp.route("/get-allfunctions")

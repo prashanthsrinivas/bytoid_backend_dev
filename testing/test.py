@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS users_clients (
 def alter_communication_table():
     connection = connect_to_rds()
     if connection is None:
-        print("Failed to connect to DB")
+       #print("Failed to connect to DB")
         return
 
     cursor = connection.cursor()
@@ -49,7 +49,7 @@ def alter_communication_table():
         '''
         cursor.execute(alter_query)
         connection.commit()
-        print("Foreign key constraint added successfully.")
+       #print("Foreign key constraint added successfully.")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")

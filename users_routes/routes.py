@@ -36,7 +36,7 @@ def format_address(door, unit, street, zip_code):
 def submit_onboarding():
     try:
         payload = request.get_json()
-        print("onboarding", payload)
+        # print("onboarding", payload)
 
         user_id = session.get("user_id") or payload.get("user_id")
         data = payload.get("data", {})
@@ -46,8 +46,8 @@ def submit_onboarding():
 
         ProofOfBusinessFile = request.files.get("businessProof_filename", "")
         BusinessImageFile = request.files.get("businessImage_filename", "")
-        print("proffbusiness", ProofOfBusinessFile)
-        print("businessimage", BusinessImageFile)
+        # print("proffbusiness", ProofOfBusinessFile)
+        # print("businessimage", BusinessImageFile)
         # Prepare sociallinks JSON
         sociallinks = {
             "whatsapp": data.get("whatsappNumber"),
@@ -151,7 +151,7 @@ def submit_onboarding():
         )
 
     except Exception as e:
-        print("Error in onboarding:", e)
+        # print("Error in onboarding:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -218,7 +218,7 @@ def get_onboarding():
         )
 
     except Exception as e:
-        print("Error in get_onboarding:", e)
+        # print("Error in get_onboarding:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -419,7 +419,7 @@ def onboarding_update():
         )
 
     except Exception as e:
-        print("Error in onboarding_update:", e)
+        # print("Error in onboarding_update:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -480,7 +480,9 @@ def generate_api_key():
                 cursor.execute(sql, (user_id,))
                 result = cursor.fetchone()
 
-                if result[0]:
+                if (
+                    result and result[0]
+                ):  # ✅ Check if result exists AND api_id is not None
                     return jsonify({"apiKey": result[0]}), 200
                 else:
                     update_sql = """

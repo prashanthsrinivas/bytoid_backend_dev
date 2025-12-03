@@ -1,0 +1,158 @@
+{
+  "schema_graph": {
+    "tables": {
+      "customer_accounts": {
+        "primary_key": "customer_account_id",
+        "foreign_keys": {
+          "comm_id_fk": "comm.comm_id"
+        },
+        "joins": {
+          "service_request_allocations": "customer_accounts.customer_account_id = service_request_allocations.customer_account_id_fk",
+          "comm": "customer_accounts.comm_id_fk = comm.comm_id"
+        },
+        "connected_to": ["comm", "service_request_allocations", "msgs", "service_requests", "conversation_thread", "reviews"]
+      },
+
+      "users_account": {
+        "primary_key": "users_account_id",
+        "foreign_keys": {
+          "deployment_id_fk": "deployments.deployment_id",
+          "user_account_membership_id": "memberships.membership_id"
+        },
+        "joins": {
+          "comm": "users_account.users_account_id = comm.users_account_id_fk",
+          "service_request_allocations": "users_account.users_account_id = service_request_allocations.users_account_id_fk",
+          "conversation_thread": "users_account.users_account_id = conversation_thread.external_user_account_id"
+        },
+        "connected_to": ["comm", "deployments", "memberships", "conversation_thread", "service_request_allocations"]
+      },
+
+      "comm": {
+        "primary_key": "comm_id",
+        "foreign_keys": {
+          "users_account_id_fk": "users_account.users_account_id",
+          "customer_account_id_fk": "customer_accounts.customer_account_id"
+        },
+        "joins": {
+          "users_account": "comm.users_account_id_fk = users_account.users_account_id",
+          "customer_accounts": "comm.customer_account_id_fk = customer_accounts.customer_account_id"
+        },
+        "connected_to": ["users_account", "customer_accounts", "service_requests"]
+      },
+
+      "service_requests": {
+        "primary_key": "service_request_id",
+        "foreign_keys": {
+          "conversation_thread_id_fk": "conversation_thread.conversation_thread_id",
+          "comm_id_fk": "comm.comm_id"
+        },
+        "joins": {
+          "conversation_thread": "service_requests.conversation_thread_id_fk = conversation_thread.conversation_thread_id",
+          "comm": "service_requests.comm_id_fk = comm.comm_id",
+          "customer_accounts": "comm.customer_account_id_fk = customer_accounts.customer_account_id"
+        },
+        "connected_to": ["conversation_thread", "comm", "customer_accounts", "service_request_allocations"]
+      },
+
+      "service_request_allocations": {
+        "primary_key": "allocation_id",
+        "foreign_keys": {
+          "customer_account_id_fk": "customer_accounts.customer_account_id",
+          "users_account_id_fk": "users_account.users_account_id",
+          "request_id_fk": "service_requests.service_request_id"
+        },
+        "joins": {
+          "customer_accounts": "service_request_allocations.customer_account_id_fk = customer_accounts.customer_account_id",
+          "users_account": "service_request_allocations.users_account_id_fk = users_account.users_account_id",
+          "service_requests": "service_request_allocations.request_id_fk = service_requests.service_request_id"
+        },
+        "connected_to": ["customer_accounts", "users_account", "service_requests"]
+      },
+
+      "conversation_thread": {
+        "primary_key": "conversation_thread_id",
+        "foreign_keys": {
+          "external_user_account_id": "users_account.users_account_id",
+          "service_request_id_fk": "service_requests.service_request_id"
+        },
+        "joins": {
+          "users_account": "conversation_thread.external_user_account_id = users_account.users_account_id",
+          "service_requests": "conversation_thread.service_request_id_fk = service_requests.service_request_id",
+          "customer_accounts": "service_requests.comm_id_fk = comm.comm_id AND comm.customer_account_id_fk = customer_accounts.customer_account_id"
+        },
+        "connected_to": ["users_account", "service_requests", "msgs", "reviews"]
+      },
+
+      "msgs": {
+        "primary_key": "msg_id",
+        "foreign_keys": {
+          "conversation_thread_id_fk": "conversation_thread.conversation_thread_id",
+          "customer_id_fk": "customer_accounts.customer_account_id"
+        },
+        "joins": {
+          "conversation_thread": "msgs.conversation_thread_id_fk = conversation_thread.conversation_thread_id",
+          "customer_accounts": "msgs.customer_id_fk = customer_accounts.customer_account_id"
+        },
+        "connected_to": ["conversation_thread", "customer_accounts"]
+      },
+
+      "reviews": {
+        "primary_key": "review_id",
+        "foreign_keys": {
+          "conversation_thread_id_fk": "conversation_thread.conversation_thread_id"
+        },
+        "joins": {
+          "conversation_thread": "reviews.conversation_thread_id_fk = conversation_thread.conversation_thread_id",
+          "users_account": "conversation_thread.external_user_account_id = users_account.users_account_id",
+          "customer_accounts": "conversation_thread.service_request_id_fk = service_requests.service_request_id AND service_requests.comm_id_fk = comm.comm_id AND comm.customer_account_id_fk = customer_accounts.customer_account_id"
+        },
+        "connected_to": ["conversation_thread", "users_account", "customer_accounts"]
+      },
+
+      "integrated": {
+        "primary_key": "integrated_id",
+        "foreign_keys": {
+          "assistant_id_fk": "assistants.assistant_id"
+        },
+        "joins": {
+          "assistants": "integrated.assistant_id_fk = assistants.assistant_id",
+          "conversation_thread": "integrated.integrated_id = conversation_thread.integrated_id_fk"
+        },
+        "connected_to": ["assistants", "conversation_thread"]
+      },
+
+      "assistants": {
+        "primary_key": "assistant_id",
+        "foreign_keys": {
+          "deployment_id_fk": "deployments.deployment_id"
+        },
+        "joins": {
+          "deployments": "assistants.deployment_id_fk = deployments.deployment_id"
+        },
+        "connected_to": ["deployments", "integrated", "assistant_guidelines", "workflow"]
+      },
+
+      "deployments": {
+        "primary_key": "deployment_id",
+        "foreign_keys": {
+          "users_account_id_fk": "users_account.users_account_id"
+        },
+        "joins": {
+          "users_account": "deployments.users_account_id_fk = users_account.users_account_id"
+        },
+        "connected_to": ["users_account", "assistants"]
+      },
+
+      "memberships": {
+        "primary_key": "membership_id",
+        "foreign_keys": {
+          "users_account_id_fk": "users_account.users_account_id"
+        },
+        "joins": {
+          "users_account": "memberships.users_account_id_fk = users_account.users_account_id"
+        },
+        "connected_to": ["users_account"]
+      }
+    }
+  }
+}

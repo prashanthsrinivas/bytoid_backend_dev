@@ -273,7 +273,7 @@ class OutlookService:
             "$orderby": "receivedDateTime desc",
             "$top": top,
             "$skip": skip,
-            "$select": "id,subject,body,from,toRecipients,receivedDateTime,sentDateTime,sender,internetMessageId,conversationId,hasAttachments",
+            "$select": "id,subject,body,from,toRecipients,receivedDateTime,sentDateTime,sender,internetMessageId,conversationId,hasAttachments,importance,flag,categories,isDraft",
         }
 
         try:
@@ -385,28 +385,32 @@ class OutlookService:
             all_messages = []
             total_fetched = 0
             skip_count = 0
+            batch_count = 0
 
             logger.info(f"📧 My email: {self.user_email}")
+            logger.info(f"🎯 Target: {max_results} messages, Last {months} months")
 
             while True:
                 try:
+                    batch_count += 1
                     logger.info(
-                        f"🔄 Fetching page of messages (already got {total_fetched})..."
+                        f"🔄 Batch {batch_count}: Fetching messages (already got {total_fetched})..."
                     )
 
-                    # Fetch batch of messages
+                    # Fetch batch of messages with larger batch size for efficiency
+                    batch_size = min(100, max_results - total_fetched if max_results else 100)
                     batch_result = await self._fetch_messages_batch(
-                        skip=skip_count, top=self.batch_size, months=months
+                        skip=skip_count, top=batch_size, months=months
                     )
 
                     if batch_result["status"] != "success":
                         logger.error(
-                            f"❌ Batch fetch failed: {batch_result.get('error')}"
+                            f"❌ Batch {batch_count} fetch failed: {batch_result.get('error')}"
                         )
                         break
 
                     messages = batch_result["messages"]
-                    logger.info(f"📬 Retrieved {len(messages)} messages in this batch")
+                    logger.info(f"📬 Batch {batch_count}: Retrieved {len(messages)} messages")
 
                     if not messages:
                         logger.info("📭 No more messages found")
@@ -440,7 +444,7 @@ class OutlookService:
                             failed_messages += 1
 
                     logger.info(
-                        f"📊 Batch complete - Success: {successful_messages}, Failed: {failed_messages}"
+                        f"📊 Batch {batch_count} complete - Success: {successful_messages}, Failed: {failed_messages}"
                     )
 
                     # Add delay between batches to avoid rate limiting
@@ -463,15 +467,15 @@ class OutlookService:
                         )  # Return skip count for continuation
 
                     # Check if we got fewer messages than requested (end of data)
-                    if len(messages) < self.batch_size:
+                    if len(messages) < batch_size:
                         logger.info("🏁 Reached end of available messages")
                         return all_messages, None
 
                 except Exception as e:
-                    logger.error(f"❌ Error fetching message batch: {str(e)}")
+                    logger.error(f"❌ Error fetching message batch {batch_count}: {str(e)}")
                     break
 
-            logger.info(f"✅ Completed! Total messages fetched: {len(all_messages)}")
+            logger.info(f"✅ Completed! Total messages fetched: {len(all_messages)} across {batch_count} batches")
             return all_messages, None
 
         except Exception as e:
@@ -723,7 +727,8 @@ async def fetch_outlook_emails_batch(
 ) -> Dict[str, Any]:
     """Fetch Outlook emails in batches - main function for batch processing"""
     try:
-        service = OutlookService(user_id, batch_size=25, concurrent_limit=5)
+        # Use larger batch size for better performance
+        service = OutlookService(user_id, batch_size=100, concurrent_limit=5)
         return await service.fetch_emails_batch_with_semaphore(
             months=months, max_messages=max_messages
         )

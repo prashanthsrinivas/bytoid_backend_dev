@@ -4,72 +4,74 @@ Debug issues with finding messages in your search function
 
 # Your message data
 target_message = {
-    'id': '<863396117.6937594.1758096748131@lva1-app100614.prod.linkedin.com>',
-    'from': 'invitations@linkedin.com',
-    'to': 'abc@gmail.com',
-    'body': 'Daya, HR Executive from Cloudium Software is waiting for your response...',
-    'subject': 'I want to connect',
-    'timestamp': '2025-09-17T08:12:28+00:00',
-    'source': 'gmail',
-    'direction': 'inbound',
-    'user_id': '112359636982080060072',
-    'thread_id': '19956bb6eb5c24fa',
-    'conversation_id': '1988acec-f92e-4bbf-9a0f-f13b95ce1e3d',
-    'type': 'Lead',
-    'ticket_id': 'TKT-1#aa24ef3c-0a40-4b83-bc78-88a8b0b901be',
-    'ticket_name': 'I want to connect'
+    "id": "<863396117.6937594.1758096748131@lva1-app100614.prod.linkedin.com>",
+    "from": "invitations@linkedin.com",
+    "to": "abc@gmail.com",
+    "body": "Daya, HR Executive from Cloudium Software is waiting for your response...",
+    "subject": "I want to connect",
+    "timestamp": "2025-09-17T08:12:28+00:00",
+    "source": "gmail",
+    "direction": "inbound",
+    "user_id": "112359636982080060072",
+    "thread_id": "19956bb6eb5c24fa",
+    "conversation_id": "1988acec-f92e-4bbf-9a0f-f13b95ce1e3d",
+    "type": "Lead",
+    "ticket_id": "TKT-1#aa24ef3c-0a40-4b83-bc78-88a8b0b901be",
+    "ticket_name": "I want to connect",
 }
+
 
 def debug_search_issues():
     """
     Potential issues and fixes for message not being found
     """
-    
-    print("=== POTENTIAL ISSUES ===\n")
-    
+
+    # print("=== POTENTIAL ISSUES ===\n")
+
     # Issue 1: Message ID format
-    print("1. MESSAGE ID FORMAT ISSUE:")
+    # print("1. MESSAGE ID FORMAT ISSUE:")
     print(f"Message ID: {target_message['id']}")
-    print("- Contains special characters: < > @ .")
-    print("- May need escaping in SQL queries")
-    print("- Could be causing SQL syntax errors")
+    # print("- Contains special characters: < > @ .")
+    # print("- May need escaping in SQL queries")
+    # print("- Could be causing SQL syntax errors")
     print()
-    
+
     # Issue 2: Ticket ID format mismatch
-    print("2. TICKET ID FORMAT MISMATCH:")
+    # print("2. TICKET ID FORMAT MISMATCH:")
     print(f"Actual ticket_id: {target_message['ticket_id']}")
-    print("Expected in SQL: TKT-1#%%")
-    print("- Your SQL uses: WHERE t.tickets_id LIKE 'TKT-{ticket_id}#%%'")
-    print("- But actual format is: TKT-1#aa24ef3c-0a40-4b83-bc78-88a8b0b901be")
-    print("- The LIKE pattern should match!")
+    # print("Expected in SQL: TKT-1#%%")
+    # print("- Your SQL uses: WHERE t.tickets_id LIKE 'TKT-{ticket_id}#%%'")
+    # print("- But actual format is: TKT-1#aa24ef3c-0a40-4b83-bc78-88a8b0b901be")
+    # print("- The LIKE pattern should match!")
     print()
-    
+
     # Issue 3: Date range
-    print("3. DATE RANGE ISSUE:")
+    # print("3. DATE RANGE ISSUE:")
     print(f"Message timestamp: {target_message['timestamp']}")
-    print("- Check if your date range includes 2025-09-17T08:12:28+00:00")
-    print("- Verify timezone handling")
+    # print("- Check if your date range includes 2025-09-17T08:12:28+00:00")
+    # print("- Verify timezone handling")
     print()
-    
+
     # Issue 4: User ID mismatch
-    print("4. USER ID MISMATCH:")
+    # print("4. USER ID MISMATCH:")
     print(f"Message user_id: {target_message['user_id']}")
-    print("- Ensure the user_id parameter matches exactly")
-    print("- Check if you're using external_user_id vs user_id correctly")
+    # print("- Ensure the user_id parameter matches exactly")
+    # print("- Check if you're using external_user_id vs user_id correctly")
     print()
-    
+
     # Issue 5: Data structure issues
-    print("5. DATA STRUCTURE ISSUES:")
-    print("- Check if input_data is list vs dict")
-    print("- Verify S3 key path is correct")
-    print("- Ensure message parsing logic handles the structure")
+    # print("5. DATA STRUCTURE ISSUES:")
+    # print("- Check if input_data is list vs dict")
+    # print("- Verify S3 key path is correct")
+    # print("- Ensure message parsing logic handles the structure")
     print()
+
 
 def create_debug_search_function():
     """
     Enhanced search function with debugging
     """
-    
+
     code = '''
 def search_db_with_debug(db_queries, user_id, cursor):
     """
@@ -109,7 +111,7 @@ def search_db_with_debug(db_queries, user_id, cursor):
                         if isinstance(input_data, list):
                             print(f"    Searching in list of {len(input_data)} messages")
                             matching_messages = [msg for msg in input_data if msg.get("id") == message_id]
-                            print(f"    Found {len(matching_messages)} matching messages")
+                            print(f"    Found {len(matching_messages)} matching ")
                             
                             if matching_messages:
                                 message_data = matching_messages[0]
@@ -204,17 +206,18 @@ def search_db_with_debug(db_queries, user_id, cursor):
     
     return s3_results, debug_info
 '''
-    
+
     return code
+
 
 def check_sql_queries():
     """
     Check if SQL queries would find the target message
     """
-    print("=== SQL QUERY CHECKS ===\\n")
-    
+    # print("=== SQL QUERY CHECKS ===\\n")
+
     # Check time-based query
-    print("1. TIME-BASED QUERY:")
+    # print("1. TIME-BASED QUERY:")
     time_query = """
     SELECT m.message_id, m.content_ref 
     FROM messages m 
@@ -225,11 +228,11 @@ def check_sql_queries():
     """
     print(f"Query: {time_query.strip()}")
     print(f"Target timestamp: {target_message['timestamp']}")
-    print("✓ Should match if message exists in database")
+    # print("✓ Should match if message exists in database")
     print()
-    
-    # Check ticket-based query  
-    print("2. TICKET-BASED QUERY:")
+
+    # Check ticket-based query
+    # print("2. TICKET-BASED QUERY:")
     ticket_query = """
     SELECT t.conversation_id_fk 
     FROM tickets t 
@@ -239,18 +242,19 @@ def check_sql_queries():
     """
     print(f"Query: {ticket_query.strip()}")
     print(f"Target ticket_id: {target_message['ticket_id']}")
-    print("✓ Should match: TKT-1#aa24ef3c-0a40-4b83-bc78-88a8b0b901be matches TKT-1#%%")
+    # print("✓ Should match: TKT-1#aa24ef3c-0a40-4b83-bc78-88a8b0b901be matches TKT-1#%%")
     print()
+
 
 # Run the debug analysis
 if __name__ == "__main__":
     debug_search_issues()
-    print("\\n" + "="*50 + "\\n")
+    # print("\\n" + "="*50 + "\\n")
     check_sql_queries()
-    
-    print("\\n=== DEBUGGING STEPS ===")
-    print("1. Add debug prints to your search function")
-    print("2. Check SQL query results before S3 processing")  
-    print("3. Verify S3 key paths and JSON structure")
-    print("4. Ensure message ID matching logic is correct")
-    print("5. Check for any SQL escaping issues with special characters")
+
+# print("\\n=== DEBUGGING STEPS ===")
+# print("1. Add debug prints to your search function")
+# print("2. Check SQL query results before S3 processing")
+# print("3. Verify S3 key paths and JSON structure")
+# print("4. Ensure message ID matching logic is correct")
+# print("5. Check for any SQL escaping issues with special characters")

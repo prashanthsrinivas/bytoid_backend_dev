@@ -21,7 +21,7 @@
             "name": "gmail.send_Meeting_invite_mail",
             "description": "Send an HTML/Plain text email for a Google Meet or similar meeting.",
             "args": {
-                "to_email": "Recipient email address (list or string)",
+                "receipent_emails": "Recipient email address (list or string)",
                 "bcc_list": "List of BCC email addresses (list of strings)",
                 "subject": "Email subject (string)",
                 "body_html": "Email body in HTML format (string)"
@@ -36,8 +36,7 @@
             "name": "gmail.send_invite_mail",
             "description": "Send an invitation email with optional business information. (not for meeting mail)",
             "args": {
-                "inviter": "Inviter's email address (string)",
-                "invitee": "Invitee's email address (string)",
+                "receipent_emails": "Invitee's email address (string)",
                 "role": "Role details as dictionary (must contain 'name', 'id')",
                 "invite_link": "Invitation link (string)",
                 "business_info": "Optional dictionary containing BusinessName, LineOfBusiness, businessLocation, BusinessImage"
@@ -52,7 +51,7 @@
             "name": "gmail.send_reply",
             "description": "Reply to an existing email thread.",
             "args": {
-                "to": "Recipient email address (string)",
+                "receipent_emails": "Recipient email address (string)",
                 "subject": "Email subject (string)",
                 "thread_id": "Thread ID to reply to (string)",
                 "in_reply_to": "Message ID being replied to (string)",
@@ -68,7 +67,7 @@
             "name": "gmail.send_forward",
             "description": "Forward an email to a recipient.",
             "args": {
-                "to": "Recipient email address (string)",
+                "receipent_emails": "Recipient email address (string)",
                 "subject": "Email subject (string)",
                 "body_text": "Email body as plain text (string)"
             },

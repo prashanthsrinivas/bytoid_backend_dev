@@ -150,16 +150,16 @@ class GoogleMeetService:
             main_test_mail = os.getenv("TEST_EMAIL")
             secondary_mail = os.getenv("TEST_EMAIL2")
 
-            print("🧩 Testing mode ON")
-            print("attendees:", attendees, type(attendees))
+            # print("🧩 Testing mode ON")
+            # print("attendees:", attendees, type(attendees))
 
             # ✅ If user manually provided valid replyable emails, use them
             if is_valid_attendee_list(attendees):
-                print("✅ validated attendees:", attendees)
+                # print("✅ validated attendees:", attendees)
                 return attendees
 
             # 🚨 Otherwise use default testing logic
-            print("⚠️ Using default test emails")
+            # print("⚠️ Using default test emails")
             if self.user_email == main_test_mail:
                 return [secondary_mail]
             else:
@@ -233,7 +233,7 @@ class GoogleMeetService:
 
         tz = pytz.timezone(self.organizer_tz)
         now_local = datetime.now(tz)
-        print("values", preferred_date, start_time, end_time)
+        # print("values", preferred_date, start_time, end_time)
 
         # -------------------------
         # 1. Normalize attendees
@@ -315,7 +315,7 @@ class GoogleMeetService:
         # -------------------------
         date_start_utc = start_dt.astimezone(pytz.UTC)
         date_end_utc = end_dt.astimezone(pytz.UTC)
-        print("checking the timings", date_start_utc, date_end_utc)
+        # print("checking the timings", date_start_utc, date_end_utc)
 
         # -------------------------
         # 6. Search forward only
@@ -397,9 +397,9 @@ class GoogleMeetService:
         description: str = None,
     ):
         """Find first free slot and schedule a meeting."""
-        print("started schedule_meeting_on_first_available")
+        # print("started schedule_meeting_on_first_available")
         nattendees = self.get_attendees_or_contacts(attendees)
-        print("attendes1", nattendees)
+        # print("attendes1", nattendees)
         slots = self.get_all_available_slots(
             attendees=nattendees,
             preferred_date=preferred_date,
@@ -412,7 +412,7 @@ class GoogleMeetService:
             return {"success": False, "reason": "No available slots in range."}
 
         first_slot = slots[0]
-        print("first slot", first_slot)
+        # print("first slot", first_slot)
         created = self.createbasemeet(
             summary=summary,
             start_time=first_slot["start"],
@@ -420,7 +420,7 @@ class GoogleMeetService:
             attendees=nattendees,
             description=description,
         )
-        print("created", created)
+        # print("created", created)
 
         return created
 
@@ -436,7 +436,7 @@ class GoogleMeetService:
         description: str = None,
     ):
         """Create a Google Calendar event with Meet link."""
-        print("got into createbasemeet")
+        # print("got into createbasemeet")
 
         # Normalize attendees
         if not isinstance(attendees, list):
@@ -522,7 +522,7 @@ class GoogleMeetService:
         Only updates fields provided.
         """
         try:
-            print("update_meeting called", start_time, end_time)
+            # print("update_meeting called", start_time, end_time)
 
             # Fetch event details first
             event = (
@@ -628,7 +628,7 @@ class GoogleMeetService:
                 event["attendees"] = normalized_attendees
             if description:
                 event["description"] = description
-            print("start and end", event["start"], event["end"])
+            # print("start and end", event["start"], event["end"])
 
             # Perform the update
             updated_event = (
@@ -979,7 +979,7 @@ class GoogleMeetService:
         - Times: 9am, lunch time, breakfast, quarter to five, sunrise, sunset
         - Skips weekends automatically
         """
-        print("starting of create meeting")
+        # print("starting of create meeting")
         timezone = self.organizer_tz
         tz = pytz.timezone(timezone)
         now = datetime.now(tz)
@@ -992,14 +992,14 @@ class GoogleMeetService:
         base_date = now
         while base_date.weekday() >= 5:
             base_date += timedelta(days=1)
-        print("bef preffered data", type(preferred_date), preferred_date)
+        # print("bef preffered data", type(preferred_date), preferred_date)
 
         # --- Convert human-readable date and time ---
         if preferred_date:
             base_date = convert_human_date(
                 preferred_date, base_date=base_date, tz_str=timezone
             )
-            print("base date human parsed", base_date)
+            # print("base date human parsed", base_date)
             if not base_date:
                 return {
                     "success": False,
@@ -1010,7 +1010,7 @@ class GoogleMeetService:
             check_start_dt = convert_human_time(
                 start_time, base_date=base_date, tz_str=timezone
             )
-            print("base time human parsed", check_start_dt)
+            # print("base time human parsed", check_start_dt)
             if not check_start_dt:
                 return {
                     "success": False,
@@ -1028,7 +1028,7 @@ class GoogleMeetService:
                 base_date=base_date,
                 tz_str=timezone,
             )
-            print("base time end human parsed", check_end_dt)
+            # print("base time end human parsed", check_end_dt)
             if not check_end_dt:
                 return {
                     "success": False,
@@ -1047,15 +1047,15 @@ class GoogleMeetService:
             check_start_dt = check_start_dt.replace(hour=9, minute=0)
             check_end_dt = check_start_dt + timedelta(minutes=duration_minutes)
 
-        print("start dt", check_start_dt)
-        print("end dt", check_end_dt)
+        # print("start dt", check_start_dt)
+        # print("end dt", check_end_dt)
 
         # Convert to strings for API
         check_start = check_start_dt.strftime("%Y-%m-%d %H:%M")
         check_end = check_end_dt.strftime("%Y-%m-%d %H:%M")
 
-        print("Meeting creation with attendees:", attendees)
-        print("Start:", check_start, "End:", check_end)
+        # print("Meeting creation with attendees:", attendees)
+        # print("Start:", check_start, "End:", check_end)
 
         # Find first available slot
         first_slot = self.get_first_available_slot(
@@ -1099,7 +1099,7 @@ class GoogleMeetService:
             to_date       : Optional end date   (ISO date or datetime string)
         """
 
-        print("got into viewallevents")
+        # print("got into viewallevents")
 
         # ------------ Date Range Logic ------------
         now = datetime.utcnow()

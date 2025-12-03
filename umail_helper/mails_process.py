@@ -15,7 +15,7 @@ import uuid
 async def vtooanalyze_and_collect_messages_for_batch(
     user_id, grouped_messages, batch_count, cursor, ticket_allocator
 ):
-    print("vtoo analyze")
+    # print("vtoo analyze")
     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
     ensure_dir(user_folder)
 
@@ -29,7 +29,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
         )
         row = cursor.fetchone()
         if not row:
-            print("❌ Error: User not found")
+            # print("❌ Error: User not found")
             return []
         client_email = row[0]
 
@@ -137,7 +137,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
 def generate_subject(user_id, output_path, channel):
     try:
         if not user_id or not output_path:
-            print("❌ Missing user_id or filename")
+            # print("❌ Missing user_id or filename")
             return None
 
         with open(output_path, "r", encoding="utf-8") as f:
@@ -160,7 +160,7 @@ def generate_subject(user_id, output_path, channel):
         yaml_data = load_yaml_file(path=pathconfig.conv_template)
         update_prompt_template = yaml_data.get("summarize_message_body")
         if not update_prompt_template:
-            print("❌ Prompt 'summarize_message_body' not found in template")
+            # print("❌ Prompt 'summarize_message_body' not found in template")
             return None
 
         # Inject message data into prompt
@@ -177,7 +177,7 @@ def generate_subject(user_id, output_path, channel):
             if "subject_groups" in parsed_yaml:
                 return parsed_yaml["subject_groups"]
             else:
-                print("⚠️ Key 'subject_groups' missing after parsing")
+                # print("⚠️ Key 'subject_groups' missing after parsing")
                 return None
         except Exception as e:
             print(f"🔥 YAML parse failed: {e}")
@@ -207,7 +207,7 @@ def append_subject_to_messages(
 
     connection = connect_to_rds()
     if connection is None:
-        print("❌ DB connection failed inside append_subject_to_messages")
+        # print("❌ DB connection failed inside append_subject_to_messages")
         return None
 
     cursor = connection.cursor()
@@ -228,7 +228,7 @@ def append_subject_to_messages(
 
     # Iterate through grouped_messages structure
     for client_id, channels in grouped_messages.items():
-        # print("IN the loop of append_subject")
+        ##print("IN the loop of append_subject")
         s3_config_key = f"{user_id}/messages/{client_id}/config.json"
         try:
             config_data = read_json_from_s3(s3_config_key) or {}
@@ -267,7 +267,7 @@ def append_subject_to_messages(
 
         messages = grouped_messages.get(client_id, {}).get(channel, [])
         if not messages:
-            print("messages not found for client", client_id)
+            # print("messages not found for client", client_id)
             continue
 
         # ----------- BIG WIN: Batch existence check for messages -----------
@@ -304,12 +304,12 @@ def append_subject_to_messages(
                 continue
 
             if msg_id in processed_message_ids:
-                print("skipping bcz of processed_message", msg_id)
+                # print("skipping bcz of processed_message", msg_id)
                 continue
 
             # Use the batched set instead of per-message SELECT
             if msg_id in existing_ids:
-                print("skipping because it is present in existing ids", msg_id)
+                # print("skipping because it is present in existing ids", msg_id)
                 continue
 
             processed_message_ids.add(msg_id)
@@ -324,67 +324,14 @@ def append_subject_to_messages(
                 msg.get("timestamp").replace("Z", "+00:00")
             ).strftime("%Y-%m-%d %H:%M:%S")
             lance_ticket_id = asyncio.run(_get_ticket())
-            print(f"internally lance_ticket_id_ : {lance_ticket_id}")
-
-            # # 1) ZOHO reply path
-            # if channel == "zoho" and is_reply:
-            #     normalized_subject = re.sub(
-            #         r"^re:\s*", "", subject, flags=re.IGNORECASE
-            #     )
-            #     config_thread = config_subject_lookup.get(normalized_subject)
-            #     if config_thread:
-            #         c_id = config_thread["conv_id"]
-            #         t_id = config_thread["ticket_id"]
-            #         t_name = config_thread["ticket_name"]
-            #         msg["conversation_id"] = c_id
-            #         msg["ticket_id"] = t_id
-            #         msg["ticket_name"] = t_name
-
-            #         cursor.execute(
-            #             "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
-            #             (updated_date, "In-Progress", c_id),
-            #         )
-            #         cursor.execute(
-            #             "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
-            #             (updated_date, c_id),
-            #         )
-
-            #         grouped_messages[client_id][channel] = messages
-            #         update_or_create_conversation_file(
-            #             msg, client_id, cursor, batch_count
-            #         )
-
-            #         # NOTE: original code updated messages.update_at by conversation_id (comment said incorrect)
-            #         cursor.execute(
-            #             "UPDATE messages SET update_at = %s WHERE conversation_id = %s",
-            #             (updated_date, c_id),
-            #         )
-
-            #         # update config_data in memory
-            #         for i, conv in enumerate(config_data.get("conversations", [])):
-            #             if conv.get("conv_id") == c_id:
-            #                 config_data["conversations"][i][
-            #                     "updated_date"
-            #                 ] = updated_date
-            #                 config_data["conversations"][i][
-            #                     "parsed_timestamp"
-            #                 ] = dt_utc.isoformat()
-            #                 break
-
-            #         update_config_file(user_id, client_id, config_data)
-            #         connection.commit()
-            #         continue
-            #     else:
-            #         print(
-            #             f"⚠️ No matching config thread for normalized subject: {normalized_subject}"
-            #         )
+            # print(f"internally lance_ticket_id_ : {lance_ticket_id}")
 
             # 2) Gmail reply (has thread_id)
             thread_id = msg.get("thread_id")
             direction = msg.get("direction")
             msg_body = msg.get("body")
             new_conversation_id = f"{user_id}_{thread_id}"
-            print("conversation id", new_conversation_id)
+            # print("conversation id", new_conversation_id)
             cursor.execute(
                 "SELECT 1 from threads where conversation_id = %s",
                 (new_conversation_id,),
@@ -393,13 +340,13 @@ def append_subject_to_messages(
             if row:
                 print("found an existing conversation", new_conversation_id)
                 if thread_id:
-                    print("THREAD BASE CASE", msg_id)
+                    # print("THREAD BASE CASE", msg_id)
                     # # mesag_id = msg_id  # keep original name usage
-                    # print("MSG BODY", msg_body)
+                    ##print("MSG BODY", msg_body)
 
                     # We already batched existing message ids; this keeps behavior
                     if msg_id in existing_ids:
-                        print("SKIPPING line 509")
+                        # print("SKIPPING line 509")
                         continue
 
                     found_existing_conversation = False
@@ -437,7 +384,7 @@ def append_subject_to_messages(
                                 # )
 
                                 communication_id = communication_id_cache.get(client_id)
-                                # print("thread case insert to tickets")
+                                ##print("thread case insert to tickets")
                                 safe_execute(
                                     cursor,
                                     """
@@ -459,7 +406,7 @@ def append_subject_to_messages(
                                 # lance_ticket_id += 1
 
                                 assigned_id = str(uuid.uuid4())
-                                # print("thread case insert to assigned")
+                                ##print("thread case insert to assigned")
                                 safe_execute(
                                     cursor,
                                     """
@@ -468,7 +415,7 @@ def append_subject_to_messages(
                                     """,
                                     (assigned_id, user_id, client_id, ticket_id),
                                 )
-                                # print("CREATED TICKET 569")
+                                ##print("CREATED TICKET 569")
                             else:
                                 # print(
                                 #     f"matched config TKT {lance_ticket_id} thread {thread_id} clientid {client_id} conv {conversation_id}"
@@ -526,12 +473,12 @@ def append_subject_to_messages(
                                         ),
                                     )
                                     existing_ids.add(msg_id)  # keep local set in sync
-                                    # print("MSG ADDED 623", msg_id)
+                                    ##print("MSG ADDED 623", msg_id)
 
                                 update_or_create_conversation_file(
                                     msg, client_id, cursor, batch_count
                                 )
-                                # print("UPDATE CONVERSATION FILE 628", msg_id)
+                                ##print("UPDATE CONVERSATION FILE 628", msg_id)
 
                                 # update config memory
                                 for i, conv in enumerate(
@@ -542,22 +489,22 @@ def append_subject_to_messages(
                                         conv["parsed_timestamp"] = dt_utc.isoformat()
                                         conv["ticket_id"] = ticket_id
                                         conv["ticket_name"] = ticket_name
-                                        # print("found the config", i)
+                                        ##print("found the config", i)
                                         break
 
                                 update_config_file(user_id, client_id, config_data)
                                 connection.commit()
-                                # print("UPDATED CONFIG FILE 643", msg_id)
+                                ##print("UPDATED CONFIG FILE 643", msg_id)
                                 continue
                 else:
                     print("NOT A GMAIL")
 
                 # if found_existing_conversation:
-                #     print("found_existing_conversation Line 637")
+                #    #print("found_existing_conversation Line 637")
                 #     continue
             else:
                 # 3/4) No existing thread → create new thread (inbound/outbound paths)
-                print("new conversation creating", direction)
+                # print("new conversation creating", direction)
                 msg["conversation_id"] = new_conversation_id
 
                 safe_execute(
@@ -570,8 +517,8 @@ def append_subject_to_messages(
                 )
 
                 if direction == "inbound":
-                    print("INBOUND msg", msg_id)
-                    # print("MSG BODY", msg_body)
+                    # print("INBOUND msg", msg_id)
+                    ##print("MSG BODY", msg_body)
                     ticket_uuid = str(uuid.uuid4())
                     new_ticket_id = f"TKT-{lance_ticket_id}#{ticket_uuid}"
                     # print(f"new inbound TKT {lance_ticket_id} thread {thread_id} clientid {client_id} conv {new_conversation_id}")
@@ -634,7 +581,7 @@ def append_subject_to_messages(
                             """,
                             (assigned_id, user_id, client_id, new_ticket_id),
                         )
-                        # print("NEW TKT CREATED 718")
+                        ##print("NEW TKT CREATED 718")
 
                     safe_execute(
                         cursor,
@@ -685,7 +632,7 @@ def append_subject_to_messages(
                             ),
                         )
                         existing_ids.add(msg_id)
-                        # print("MSG ADDED 762")
+                        ##print("MSG ADDED 762")
 
                     updated_entry = {
                         "conv_id": new_conversation_id,
@@ -702,17 +649,17 @@ def append_subject_to_messages(
                     config_data.setdefault("userclients_id", client_id)
                     config_data.setdefault("conversations", []).append(updated_entry)
                     update_config_file(user_id, client_id, config_data)
-                    # print("UPDATED CONFIG FILE 779")
+                    ##print("UPDATED CONFIG FILE 779")
                     connection.commit()
 
                 else:
-                    print("OUTBOUND MSG", msg_id)
-                    # print("MSG BODY", msg_body)
+                    # print("OUTBOUND MSG", msg_id)
+                    ##print("MSG BODY", msg_body)
                     # outbound
                     msg["ticket_id"] = None
                     msg["ticket_name"] = None
                     msg["conversation_id"] = new_conversation_id
-                    # print("OUTBOUND placed")
+                    ##print("OUTBOUND placed")
 
                     safe_execute(
                         cursor,
@@ -777,7 +724,7 @@ def append_subject_to_messages(
                     config_data.setdefault("userclients_id", client_id)
                     config_data.setdefault("conversations", []).append(updated_entry)
                     update_config_file(user_id, client_id, config_data)
-                    # print("OUTBOUND CONFIG UPDATED")
+                    ##print("OUTBOUND CONFIG UPDATED")
                     connection.commit()
                     # print(
                     #     f"✅ CASE 4 COMPLETE: Committed new outbound message processing for {msg_id}"
@@ -799,6 +746,8 @@ def update_config_file(user_id, client_id, config_data):
     # Save locally
     with open(config_filepath, "w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
 
     # Upload to S3
     upload_any_file(
@@ -810,9 +759,9 @@ def update_config_file(user_id, client_id, config_data):
 
 
 def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
-    # print("entered in update_or_create_conversation_file")
+    ##print("entered in update_or_create_conversation_file")
     user_id = msg.get("user_id")
-    # print("email appended", msg)
+    ##print("email appended", msg)
     channel = msg.get("source")
     prefix = f"{user_id}/messages/{client_id}"
     config_key = f"{prefix}/config.json"
@@ -832,10 +781,10 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
     # print(f"existing_conversations : {existing_conversations}")
 
     message_id = msg.get("id")
-    # print("CURRENT MSGID", message_id)
+    ##print("CURRENT MSGID", message_id)
     # cursor.execute("SELECT 1 FROM messages WHERE message_id = %s", (message_id,))
     # m_id = cursor.fetchone()
-    # print("message id found", m_id)
+    ##print("message id found", m_id)
     # if not m_id:
 
     conv_id = msg.get("conversation_id")
@@ -851,7 +800,7 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
 
     lance_file = None
     if conv_id in existing_conversations:
-        # print(f"** found an existing conversation", message_id)
+        # print(f"** found an existing conversation in update or create converstion", message_id)
         raw_data = read_json_from_s3(file_key)
         input_data = raw_data.get("input_data", [])
         msg = normalize_datetimes(msg)  # check this later
@@ -861,6 +810,8 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
 
         with open(conv_filepath, "w", encoding="utf-8") as f:
             json.dump({"input_data": input_data}, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
 
         upload_any_file(
             conv_filepath,
@@ -874,6 +825,8 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
         # print(f"conv not in existing_conversations", message_id)
         with open(conv_filepath, "w", encoding="utf-8") as f:
             json.dump({"input_data": [msg]}, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
 
         upload_any_file(
             conv_filepath,
@@ -892,11 +845,13 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
 
     with open(full_file_path, "w", encoding="utf-8") as f:
         json.dump(lance_file, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
         # print("created and added the messages to lance_file")
 
 
 # def update_or_create_conversation_file(grouped_messages, user_id, client_id, channel,cursor,batch_count):
-#     # print("entered in update_or_create_conversation_file")
+#     ##print("entered in update_or_create_conversation_file")
 #     prefix = f"{user_id}/messages/{client_id}"
 #     config_key = f"{prefix}/config.json"
 #     config_data = read_json_from_s3(config_key)
@@ -981,12 +936,12 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
 
 #             with open(full_file_path, "w", encoding="utf-8") as f:
 #                 json.dump(data, f, indent=2)
-#             # print("appended the messages to lance_file")
+#             ##print("appended the messages to lance_file")
 
 #         else:
 #             with open(full_file_path, "w", encoding="utf-8") as f:
 #                 json.dump(messages, f, indent=2)
-#                 # print("created and added the messages to lance_file")
+#                 ##print("created and added the messages to lance_file")
 
 
 def normalize_datetimes(obj):

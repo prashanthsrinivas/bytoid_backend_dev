@@ -27,6 +27,7 @@ def read_status_file():
     with global_file_lock:
         if os.path.isfile(SYNC_STATUS_FILE):
             with open(SYNC_STATUS_FILE, "r") as f:
+                # print("reading local file")
                 return json.load(f)
         return {}
 
@@ -35,12 +36,14 @@ def write_status_file(status_data):
     """Write the full status JSON safely."""
     with global_file_lock:
         with open(SYNC_STATUS_FILE, "w") as f:
+            # print("writing status file")
             json.dump(status_data, f, indent=2)
 
 
 class DelayTrigger:
     def __init__(self, wait_seconds=30):
         self.wait_seconds = wait_seconds
+        self.status_file = "data/internal_user_sync.json"
 
     def trigger(self, email, history_id):
         """Queue a per-user delayed trigger."""
@@ -82,15 +85,17 @@ class DelayTrigger:
         ).start()
 
     def _delayed_trigger(self, user_id):
-        """Waits for the delay and triggers the Celery task."""
         user_lock = get_user_lock(user_id)
+        MAX_STARTED_AGE = 60  # 1 minutes in seconds
 
         while True:
             with user_lock:
                 status_data = read_status_file()
                 user_info = status_data.get(user_id)
+
                 if not user_info:
-                    return  # User removed?
+                    # print("no user found for trigger")
+                    return
 
                 status = user_info.get("status")
                 ts_str = user_info.get("timestamp")
@@ -100,11 +105,25 @@ class DelayTrigger:
                     else datetime.now(timezone.utc)
                 )
 
-                # Already started? exit
+                # If already started, check age
                 if status == "started":
-                    return
+                    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
 
-                # Wait until wait_seconds since last timestamp
+                    if age_seconds < MAX_STARTED_AGE:
+                        # Started recently → do not re-trigger
+                        print(
+                            f"Status 'started' but age {age_seconds}s < {MAX_STARTED_AGE}s → skipping."
+                        )
+                        return
+                    else:
+                        # Started old → allow retry
+                        print(
+                            f"Status 'started' but old ({age_seconds}s). Retrying trigger."
+                        )
+                        # Treat as pending
+                        status = "pending"
+
+                # Normal pending wait logic
                 elapsed = (datetime.now(timezone.utc) - ts).total_seconds()
                 wait_time = max(0, self.wait_seconds - elapsed)
 
@@ -115,9 +134,33 @@ class DelayTrigger:
             with user_lock:
                 status_data = read_status_file()
                 user_info = status_data.get(user_id)
-                if not user_info or user_info.get("status") == "started":
+                if not user_info:
                     return
 
+                # Re-check status (protect from races)
+                status = user_info.get("status")
+                ts_str = user_info.get("timestamp")
+                ts = (
+                    datetime.fromisoformat(ts_str)
+                    if ts_str
+                    else datetime.now(timezone.utc)
+                )
+
+                # If started again recently, re-check after sleep
+                if status == "started":
+                    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+
+                    if age_seconds < MAX_STARTED_AGE:
+                        print(
+                            f"[ABORT] Second check: still started recently ({age_seconds}s)."
+                        )
+                        return
+                    else:
+                        print(
+                            f"[CONTINUE] Second check: started old ({age_seconds}s). Proceeding."
+                        )
+
+                # Set started
                 user_info["status"] = "started"
                 user_info["timestamp"] = datetime.now(timezone.utc).isoformat()
                 status_data[user_id] = user_info
@@ -128,7 +171,7 @@ class DelayTrigger:
             )
             web_umail_sync.delay(user_id)
 
-            # Mark complete
+            # Mark as complete immediately (your logic)
             with user_lock:
                 status_data = read_status_file()
                 user_info = status_data.get(user_id)
@@ -136,5 +179,6 @@ class DelayTrigger:
                     user_info["status"] = "complete"
                     user_info["timestamp"] = datetime.now(timezone.utc).isoformat()
                     status_data[user_id] = user_info
+                    # print("complete made ok")
                     write_status_file(status_data)
             return

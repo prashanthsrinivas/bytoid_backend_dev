@@ -1,127 +1,972 @@
-from utils.base_logger import get_logger
-from db.db_checkers import fetch_userid_from_launch
-from flask import Blueprint, request, jsonify, session, redirect
-from msal import ConfidentialClientApplication
 import os
-import requests
-from db.rds_db import connect_to_rds
-from data import MESSAGES  # delete this later, this is just for testing
+import sys
 import uuid
-from data import MESSAGES  # delete this later
-from bs4 import BeautifulSoup
-import uuid
-from datetime import datetime, timezone
-from agent_route.routes import process_and_update_yaml
-from utils.chatopenzz import check_lancedb
+import json
+import hashlib
+import traceback
 import asyncio
-from db.db_checkers import check_onboarding_user
-import pymysql
+import threading
+from datetime import datetime, timezone, timedelta
+from contextlib import contextmanager
+from agent_route.ag_helperzz import (
+    deletefilebasedData,
+    process_and_update_yaml,
+    remove_https_prefix,
+)
 
-microsoft_bp = Blueprint("microsoft", __name__)
+# Third-party imports
+from flask import Blueprint, request, jsonify, session, redirect, make_response, stream_with_context, Response
+from msal import ConfidentialClientApplication
+import requests
+import pymysql
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from glide import GlideClusterClient
+
+
+# Load environment variables
+load_dotenv()
+
+# Add project root to path for imports
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+# Local imports with error handling
+try:
+    from utils.base_logger import get_logger
+except ImportError:
+    import logging
+
+    def get_logger(name):
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.INFO)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s - %(levelname)s - [%(name)s] - %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+        return logger
+
+
+try:
+    from db.rds_db import connect_to_rds
+except ImportError:
+    # Fallback database connection
+    def connect_to_rds():
+        import boto3
+        import json
+
+        def get_secret():
+            secret_name = "rds!db-9db402d8-3595-4048-bf23-979d5e5985e4"
+            region_name = "ca-central-1"
+            client = boto3.client("secretsmanager", region_name=region_name)
+            response = client.get_secret_value(SecretId=secret_name)
+
+            if "SecretString" in response:
+                return json.loads(response["SecretString"])
+            else:
+                import base64
+
+                return json.loads(base64.b64decode(response["SecretBinary"]))
+
+        creds = get_secret()
+        rds_host = "bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
+
+        return pymysql.connect(
+            host=rds_host,
+            user=creds["username"],
+            password=creds["password"],
+            database="bytoid_support_agent",
+            port=3306,
+            charset="utf8mb4",
+            connect_timeout=10,
+        )
+
+
+try:
+    from db.db_checkers import (
+        fetch_userid_from_launch,
+        check_onboarding_user,
+        fetch_apikey_from_launch,
+    )
+except ImportError:
+    # Fallback implementations
+    def fetch_userid_from_launch(apikey):
+        try:
+            conn = connect_to_rds()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM users WHERE api_key = %s", (apikey,))
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return result[0] if result else None
+        except:
+            return None
+
+    def check_onboarding_user(user_id):
+        try:
+            conn = connect_to_rds()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return result[0] == "user" if result else True
+        except:
+            return True
+
+    def fetch_apikey_from_launch(user_id):
+        try:
+            conn = connect_to_rds()
+            cursor = conn.cursor()
+            cursor.execute("SELECT api_key FROM users WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return result[0] if result else None
+        except:
+            return None
+
+
+try:
+    from session_manager_route.routes import session_login
+except ImportError:
+    # Fallback session login
+    def session_login(user_id):
+        session_id = str(uuid.uuid4())
+        access_token = str(uuid.uuid4())
+        refresh_token = str(uuid.uuid4())
+        return session_id, access_token, refresh_token
+
+
+try:
+    from utils.s3_utils import upload_any_file, s3bucket
+except ImportError:
+    # Mock S3 utils
+    def upload_any_file(*args, **kwargs):
+        return True
+
+    def s3bucket():
+        class MockS3:
+            def upload_fileobj(self, *args, **kwargs):
+                pass
+
+        return MockS3()
+
+
+try:
+    from data import MESSAGES
+except ImportError:
+    # Initialize MESSAGES if not available
+    MESSAGES = {}
+
+try:
+    from utils.redis_config import redis_config_glide
+except ImportError:
+    redis_config_glide = None
+
+# Initialize logger
 logger = get_logger(__name__)
+
+
+# Redis helper functions for Microsoft OAuth flow persistence
+async def store_auth_state_in_redis(
+    state_key: str, code_verifier: str, ttl: int = 600
+) -> bool:
+    """
+    Store minimal OAuth state in Redis (only PKCE code_verifier needed).
+    Uses state parameter as the key to associate login with callback.
+    """
+    try:
+        if not redis_config_glide:
+            logger.warning("⚠️ Redis not configured, falling back to session")
+            return False
+
+        client = await GlideClusterClient.create(redis_config_glide)
+        key = f"microsoft_auth_state:{state_key}"
+
+        # Store only the essential PKCE verifier as JSON
+        state_data = {
+            "code_verifier": code_verifier,
+            "client_id": CLIENT_ID,
+            "state": state_key,
+        }
+
+        await client.set(key, json.dumps(state_data))
+        await client.expire(key, ttl)  # Set expiration separately (Glide API)
+        logger.info(f"✅ Stored auth state in Redis for state: {state_key[:20]}...")
+        await client.close()
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to store auth state in Redis: {str(e)}")
+        return False
+
+
+async def retrieve_auth_state_from_redis(state_key: str) -> dict:
+    """
+    Retrieve the PKCE verifier and client_id from Redis using the state parameter.
+    """
+    try:
+        if not redis_config_glide:
+            logger.warning("⚠️ Redis not configured, state retrieval failed")
+            return None
+
+        client = await GlideClusterClient.create(redis_config_glide)
+        key = f"microsoft_auth_state:{state_key}"
+
+        # Retrieve state data from Redis
+        state_json = await client.get(key)
+
+        if state_json:
+            logger.info(
+                f"✅ Retrieved auth state from Redis for state: {state_key[:20]}..."
+            )
+            await client.delete(key)  # Delete after retrieval (one-time use)
+            await client.close()
+            return json.loads(state_json)
+        else:
+            logger.warning(
+                f"❌ No auth state found in Redis for state: {state_key[:20]}..."
+            )
+            await client.close()
+            return None
+    except Exception as e:
+        logger.error(f"❌ Failed to retrieve auth state from Redis: {str(e)}")
+        return None
+
+
+# Create Blueprint
+microsoft_bp = Blueprint("microsoft", __name__)
+
+# Microsoft OAuth Configuration
 CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET")
 TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID")
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-REDIRECT_URI = "https://bytoid.ai/microsoft/callback"
-SCOPES = ["User.Read", "Mail.Send", "Mail.ReadWrite"]
+# Dynamic redirect URI - will be set based on current request (like Gmail)
+REDIRECT_URI = None  # Will be dynamically set
+# SCOPES = ["User.Read", "Mail.Send", "Mail.ReadWrite"]
+SCOPES = [
+    "User.Read",
+    "Mail.Send",
+    "Mail.ReadWrite",
+    "Calendars.ReadWrite",
+    "OnlineMeetings.ReadWrite",
+    "Chat.ReadWrite",
+    "Files.Read.All",
 
-msal_app = ConfidentialClientApplication(
-    client_id=CLIENT_ID, client_credential=CLIENT_SECRET, authority=AUTHORITY
-)
+]
+
+                        
 
 
-@microsoft_bp.route("/microsoft/login", methods=["GET"])
-def microsoft_login():
+def get_microsoft_redirect_uri(request):
+    """Generate dynamic redirect URI based on current request (always HTTPS for Microsoft)"""
+    if request:
+        # Use the current host from the request
+        host = request.headers.get("Host")
+        if host:
+            # Always use HTTPS for Microsoft OAuth (required by Azure)
+            return f"https://{host}/microsoft/callback"
 
-    flow = msal_app.initiate_auth_code_flow(
-        scopes=SCOPES,
-        redirect_uri="https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/microsoft/callback",
+    # Fallback: try to use BASE_API_URL if available
+    base_api = os.getenv("BASE_API_URL")
+    if base_api:
+        return f"{base_api}/microsoft/callback"
+
+    # Final fallback: use current working endpoint
+    return "https://v0eoj1kl71.execute-api.us-east-1.amazonaws.com/microsoft/callback"
+
+
+def is_microsoft_allowed_origin(origin):
+    """Check if origin is allowed for Microsoft OAuth CORS"""
+    if not origin:
+        return False
+
+    # Allowed origins (expandable for global access)
+    allowed_patterns = [
+        "https://dev.bytoid.ai",
+        "https://bytoid.ai",
+        "https://www.bytoid.ai",
+        "http://localhost:3000",
+        "http://localhost:4173",
+        "http://172.31.12.212",
+    ]
+
+    # Check exact matches first
+    if origin in allowed_patterns:
+        return True
+
+    # Allow any bytoid.ai subdomain for global access
+    if origin.endswith(".bytoid.ai") and origin.startswith("https://"):
+        return True
+
+    # Allow localhost for development (any port)
+    if origin.startswith("http://localhost:") or origin.startswith(
+        "https://localhost:"
+    ):
+        return True
+
+    return False
+
+
+# Validate required environment variables
+if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID]):
+    logger.error("❌ Missing required Microsoft OAuth environment variables")
+    logger.error(f"CLIENT_ID: {'✓' if CLIENT_ID else '✗'}")
+    logger.error(f"CLIENT_SECRET: {'✓' if CLIENT_SECRET else '✗'}")
+    logger.error(f"TENANT_ID: {'✓' if TENANT_ID else '✗'}")
+
+try:
+    msal_app = ConfidentialClientApplication(
+        client_id=CLIENT_ID,
+        client_credential=CLIENT_SECRET,
+        authority=AUTHORITY,
+        # Explicitly set token_cache to None for stateless operation
+        token_cache=None,
     )
+    logger.info("✅ MSAL app initialized successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize MSAL app: {str(e)}")
+    msal_app = None
 
-    session["auth_flow"] = flow
-    return redirect(flow["auth_uri"])
-    # return {"message":"api works"}
+
+# Outlook Service Fallback (simplified version)
+class OutlookService:
+    def __init__(self, user_id):
+        self.user_id = user_id
+
+    async def get_total_message_count(self, months=3):
+        """Get approximate count of messages"""
+        try:
+            conn = connect_to_rds()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT token FROM users WHERE user_id = %s", (self.user_id,)
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return 0
+
+            access_token = row[0]
+            headers = {"Authorization": f"Bearer {access_token}"}
+
+            # Simple count request
+            response = requests.get(
+                "https://graph.microsoft.com/v1.0/me/messages/$count", headers=headers
+            )
+
+            if response.status_code == 200:
+                return int(response.text)
+            return 0
+
+        except Exception as e:
+            logger.error(f"Error getting message count: {str(e)}")
+            return 0
 
 
-@microsoft_bp.route("/microsoft/callback")
-def microsoft_callback():
-
-    flow = session.pop("auth_flow", None)
-    if not flow:
-        #     return "Flow not found ", 400
-        return redirect("https://bytoid.ai/login")
-
-    result = msal_app.acquire_token_by_auth_code_flow(flow, request.args, scopes=SCOPES)
-
-    if "access_token" not in result:
-        return (
-            jsonify({"error": "Failed to obtain access token", "details": result}),
-            400,
+async def fetch_outlook_emails_batch(
+    user_id, page_token=None, batch_size=100, months=12
+):  # ✅ Changed default from 3 to 12 months
+    """
+    Fetch a batch of Outlook emails with pagination support (like Gmail)
+    Uses Microsoft Graph API with skipToken for pagination
+    """
+    try:
+        logger.info(
+            f"🚀 Starting Outlook batch fetch for user: {user_id}, batch_size: {batch_size}"
         )
 
-    # Retrieve user information
-    id_token_claims = result.get("id_token_claims", {})
-    if not id_token_claims:
-        return (
-            jsonify(
-                {
-                    "error": "Failed to obtain id token claims",
-                    "details": id_token_claims,
+        # Get user token
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        cursor.execute("SELECT token, email FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not row:
+            logger.error(f"❌ User not found: {user_id}")
+            return {"status": "error", "error": "User not found", "new_messages": 0}
+
+        access_token, user_email = row
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Calculate date filter (last N months)
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=months * 30)
+        start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        # Build request parameters with pagination
+        params = {
+            "$filter": f"receivedDateTime ge {start_date_str}",
+            "$orderby": "receivedDateTime desc",
+            "$top": min(batch_size, 100),  # API limit is 100
+            "$select": "id,subject,body,from,toRecipients,receivedDateTime,sentDateTime,sender,internetMessageId,conversationId,hasAttachments,importance,categories",
+        }
+
+        # Use skipToken for pagination (continuation from where we left off)
+        if page_token:
+            params["$skiptoken"] = page_token
+            logger.info(f"📄 Using skip token for pagination")
+
+        # Make API call
+        logger.info(f"📨 Calling Microsoft Graph API with params: {params}")
+        response = requests.get(
+            "https://graph.microsoft.com/v1.0/me/messages",
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
+
+        if response.status_code != 200:
+            logger.error(
+                f"❌ Microsoft Graph API error: {response.status_code} - {response.text}"
+            )
+            return {
+                "status": "error",
+                "error": f"API error: {response.status_code}",
+                "new_messages": 0,
+            }
+
+        data = response.json()
+        messages = data.get("value", [])
+        next_page_token = data.get("@odata.nextLink")  # Get continuation link
+
+        logger.info(f"✅ Fetched {len(messages)} messages from Outlook")
+
+        # Process messages
+        processed_messages = []
+        for msg in messages:
+            try:
+                email_id = msg.get("id")
+                from_data = msg.get("from", {}).get("emailAddress", {})
+                from_address = from_data.get("address", "")
+                from_name = from_data.get("name", "")
+
+                to_recipients = msg.get("toRecipients", [])
+                to_email = ""
+                to_name = ""
+                if to_recipients and len(to_recipients) > 0:
+                    to_email = (
+                        to_recipients[0].get("emailAddress", {}).get("address", "")
+                    )
+                    to_name = to_recipients[0].get("emailAddress", {}).get("name", "")
+
+                # Extract body
+                body_content = msg.get("body", {}).get("content", "")
+                soup = BeautifulSoup(body_content, "html.parser")
+                plain_text = soup.get_text(separator="\n").strip()
+
+                # Determine direction
+                direction = (
+                    "inbound"
+                    if from_address.lower() != user_email.lower()
+                    else "outbound"
+                )
+
+                # Create processed message
+                processed_msg = {
+                    "id": email_id,
+                    "email_id": email_id,  # Duplicate for consistency
+                    "from_email": from_address,
+                    "from_name": from_name,
+                    "from": from_name or from_address,
+                    "to_email": to_email,
+                    "to_name": to_name,
+                    "to": to_name or to_email,
+                    "body": plain_text,
+                    "subject": msg.get("subject", ""),
+                    "timestamp": msg.get("receivedDateTime") or msg.get("sentDateTime"),
+                    "received_time": msg.get("receivedDateTime"),
+                    "sent_time": msg.get("sentDateTime"),
+                    "direction": direction,
+                    "conversation_id": msg.get("conversationId"),
+                    "internet_message_id": msg.get("internetMessageId"),
+                    "has_attachments": msg.get("hasAttachments", False),
+                    "importance": msg.get("importance", "normal"),
+                    "source": "outlook",
+                    "user_id": user_id,
+                    "categories": msg.get("categories", []),
                 }
-            ),
-            400,
-        )
+                processed_messages.append(processed_msg)
+                logger.debug(f"✅ Processed message: {email_id} from {from_address}")
 
-    session["user"] = {
-        "id": id_token_claims.get("oid"),
-        "name": id_token_claims.get("name"),
-        "email": id_token_claims.get("preferred_username"),
-    }
+            except Exception as e:
+                logger.error(
+                    f"❌ Error processing message {msg.get('id', 'unknown')}: {str(e)}"
+                )
+                continue
 
-    access_token = result["access_token"]
-    refresh_token = result["refresh_token"]
-    # print("access_token microsoft:", access_token)
-    # print("access_token microsoft length:", len(access_token))
-    # print("access_token microsoft length:", len(refresh_token))
+        # Extract next skip token from continuation link if present
+        next_skip_token = None
+        if next_page_token:
+            try:
+                import urllib.parse as urlparse
 
-    headers = {"Authorization": f"Bearer {access_token}"}
+                parsed_url = urlparse.urlparse(next_page_token)
+                query_params = urlparse.parse_qs(parsed_url.query)
+                if "$skiptoken" in query_params:
+                    next_skip_token = query_params["$skiptoken"][0]
+                    logger.info(f"📄 Next skip token available for pagination")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not extract skip token: {str(e)}")
 
-    userinfo_response = requests.get(
-        "https://graph.microsoft.com/v1.0/me", headers=headers
+        return {
+            "status": "success",
+            "new_messages": len(processed_messages),
+            "messages": processed_messages,
+            "next_page_token": next_skip_token,
+            "has_more": bool(next_skip_token),
+            "batch_size": len(processed_messages),
+        }
+
+    except requests.Timeout:
+        logger.error(f"❌ Timeout fetching emails for user {user_id}")
+        return {"status": "error", "error": "Request timeout", "new_messages": 0}
+    except Exception as e:
+        logger.error(f"❌ Batch fetch error: {str(e)}")
+        return {"status": "error", "error": str(e), "new_messages": 0}
+
+
+def store_outlook_emails_in_db(user_id: str, messages: list) -> dict:
+    """
+    Store Outlook emails in database with duplicate checking
+    Returns: {"status": "success"/"error", "stored_count": N, "skipped_count": N, "error": "..."}
+    """
+    logger.info(
+        f"🔄 Starting to store {len(messages)} Outlook messages for user {user_id}"
     )
 
-    if userinfo_response.status_code == 200:
-        userinfo = userinfo_response.json()
-        email = userinfo.get("mail")
-        given_name = userinfo.get("givenName")
-        family_name = userinfo.get("surname")
-        user_id = userinfo.get("id")
-        # print("all from microsoft", userinfo)
+    if not messages:
+        logger.warning("⚠️ No messages to store")
+        return {"status": "success", "stored_count": 0, "skipped_count": 0}
 
+    stored_count = 0
+    skipped_count = 0
+    error_count = 0
+
+    try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        # cursor.execute("SELECT refresh_token FROM users WHERE email = %s", (email,))
-        cursor.execute("SELECT user_id,user_type FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
-        print("db row ", row)
+        for message in messages:
+            try:
+                message_id = message.get("id")
+                internet_message_id = message.get("internet_message_id", "")
 
-        access_token_ = result.get("access_token") or ""
-        print("stored access_token_: ", access_token_)
+                # Check if message already exists
+                cursor.execute(
+                    "SELECT 1 FROM messages WHERE message_id = %s OR internet_message_id = %s",
+                    (message_id, internet_message_id),
+                )
+                if cursor.fetchone():
+                    logger.debug(f"⏭️  Skipping duplicate message: {message_id}")
+                    skipped_count += 1
+                    continue
 
-        refresh_token_ = result.get("refresh_token")
-        expires_in_ = result.get("expires_in")
+                # Extract message data
+                conversation_id = message.get("conversation_id", str(uuid.uuid4()))
+                from_email = message.get("from_email", "")
+                to_email = message.get("to_email", "")
+                from_name = message.get("from_name", message.get("from", ""))
+                to_name = message.get("to_name", message.get("to", ""))
+                subject = message.get("subject", "")
+                body = message.get("body", "")
+                timestamp = message.get(
+                    "timestamp", datetime.now(timezone.utc).isoformat()
+                )
+                direction = message.get("direction", "inbound")
+                has_attachments = message.get("has_attachments", False)
+                importance = message.get("importance", "normal")
 
-        if not row:
-            print("nmew user")
+                # Determine participant
+                if direction == "inbound":
+                    participant_email = from_email
+                    participant_name = from_name
+                else:
+                    participant_email = to_email
+                    participant_name = to_name
 
+                # Get or create user client
+                client_id = None
+                try:
+                    cursor.execute(
+                        "SELECT users_clients_id FROM users_clients WHERE email_id = %s AND user_id_fk = %s",
+                        (participant_email, user_id),
+                    )
+                    client_row = cursor.fetchone()
+                    if client_row:
+                        client_id = client_row["users_clients_id"]
+                    else:
+                        # Create new contact if not exists
+                        client_id = str(uuid.uuid4())
+                        cursor.execute(
+                            """
+                            INSERT INTO users_clients (users_clients_id, user_id_fk, first_name, last_name, email_id, created_in)
+                            VALUES (%s, %s, %s, %s, %s, NOW())
+                        """,
+                            (
+                                client_id,
+                                user_id,
+                                participant_name or "",
+                                "",
+                                participant_email,
+                            ),
+                        )
+                        logger.debug(f"✅ Created new contact: {participant_email}")
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ Could not get/create client for {participant_email}: {str(e)}"
+                    )
+                    client_id = str(uuid.uuid4())
+
+                # Insert message
+                cursor.execute(
+                    """
+                    INSERT INTO messages (
+                        message_id, user_id_fk, client_id_fk, from_address, to_address,
+                        from_name, to_name, subject, body, timestamp, direction,
+                        source, conversation_id, internet_message_id, has_attachments,
+                        importance, created_in
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                """,
+                    (
+                        message_id,
+                        user_id,
+                        client_id,
+                        from_email,
+                        to_email,
+                        from_name,
+                        to_name,
+                        subject,
+                        body,
+                        timestamp,
+                        direction,
+                        "outlook",
+                        conversation_id,
+                        internet_message_id,
+                        has_attachments,
+                        importance,
+                    ),
+                )
+
+                stored_count += 1
+                logger.debug(f"✅ Stored message: {message_id}")
+
+            except Exception as e:
+                logger.error(
+                    f"❌ Error storing message {message.get('id', 'unknown')}: {str(e)}"
+                )
+                error_count += 1
+                continue
+
+        conn.commit()
+        conn.close()
+
+        logger.info(
+            f"✅ Storage complete - Stored: {stored_count}, Skipped: {skipped_count}, Errors: {error_count}"
+        )
+        return {
+            "status": "success",
+            "stored_count": stored_count,
+            "skipped_count": skipped_count,
+            "error_count": error_count,
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Database error in store_outlook_emails_in_db: {str(e)}")
+        return {"status": "error", "error": str(e), "stored_count": 0}
+
+
+@microsoft_bp.route("/microsoft/session-debug", methods=["GET"])
+def session_debug():
+    """Debug endpoint to check session status"""
+    try:
+        return jsonify(
+            {
+                "session_id": session.get("_id"),
+                "session_keys": list(session.keys()),
+                "has_auth_flow": "auth_flow" in session,
+                "auth_flow_keys": (
+                    list(session.get("auth_flow", {}).keys())
+                    if session.get("auth_flow")
+                    else []
+                ),
+                "user": session.get("user"),
+                "permanent": session.permanent,
+                "msal_available": msal_app is not None,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/test-cors", methods=["GET", "OPTIONS"])
+def test_cors():
+    """Simple endpoint to test CORS configuration"""
+    if request.method == "OPTIONS":
+        response = make_response()
+        origin = request.headers.get("Origin")
+        logger.info(f"🔍 CORS Preflight - Origin: {origin}")
+        if is_microsoft_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        return response
+
+    logger.info(f"🔍 CORS Test - Origin: {request.headers.get('Origin')}")
+    logger.info(f"🔍 CORS Test - Headers: {dict(request.headers)}")
+
+    response = make_response(
+        jsonify(
+            {
+                "status": "success",
+                "message": "CORS test successful",
+                "origin": request.headers.get("Origin"),
+                "headers": dict(request.headers),
+            }
+        )
+    )
+
+    origin = request.headers.get("Origin")
+    if is_microsoft_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+
+    return response
+
+
+@microsoft_bp.route("/microsoft/login", methods=["GET", "OPTIONS"])
+def microsoft_login():
+    """Simple Microsoft login with global access like Gmail"""
+
+    # Handle CORS preflight for global access
+    if request.method == "OPTIONS":
+        response = make_response()
+        origin = request.headers.get("Origin")
+        if is_microsoft_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-Requested-With"
+        )
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response
+
+    logger.info("🚀 Starting Microsoft OAuth login (global access)")
+
+    # Validate MSAL app is available
+    if not msal_app:
+        logger.error("❌ MSAL app not available")
+        return jsonify({"error": "Microsoft OAuth not properly configured"}), 500
+
+    try:
+        # Clear any existing auth state from session
+        session.pop("auth_flow", None)
+        session.pop("microsoft_state", None)
+
+        # Get dynamic redirect URI based on current request (like Gmail does)
+        redirect_uri = get_microsoft_redirect_uri(request)
+        logger.info(f"🌍 Using dynamic redirect URI: {redirect_uri}")
+
+        # Create auth flow with dynamic redirect URI (like Google's approach)
+        flow = msal_app.initiate_auth_code_flow(
+            scopes=SCOPES, redirect_uri=redirect_uri
+        )
+
+        if not flow.get("auth_uri"):
+            logger.error("❌ Failed to generate auth URI")
+            return jsonify({"error": "Failed to generate auth URI"}), 500
+
+        # Extract state and code_verifier from flow for Redis storage
+        state_key = flow.get("state")
+        code_verifier = flow.get("code_verifier")
+
+        if not state_key:
+            logger.error("❌ No state parameter in auth flow")
+            return jsonify({"error": "Failed to generate state"}), 500
+
+        if not code_verifier:
+            logger.error("❌ No code_verifier (PKCE) in auth flow")
+            return jsonify({"error": "Failed to generate PKCE verifier"}), 500
+
+        # ✅ Store only the minimal OAuth state in Redis (code_verifier for PKCE)
+        # This ensures it's available regardless of which server handles the callback
+        asyncio.run(store_auth_state_in_redis(state_key, code_verifier, ttl=600))
+
+        logger.info("✅ Microsoft auth flow created and state stored in Redis")
+
+        # Create response with CORS headers for global access
+        response = jsonify({"auth_url": flow["auth_uri"], "status": "success"})
+
+        # Add CORS headers for global frontend access
+        origin = request.headers.get("Origin")
+        if is_microsoft_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-Requested-With"
+        )
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+
+        return response
+
+    except Exception as e:
+        logger.error(f"❌ Error in Microsoft login: {str(e)}")
+        return jsonify({"error": f"Login initiation failed: {str(e)}"}), 500
+
+
+@microsoft_bp.route("/microsoft/login/debug", methods=["GET"])
+def microsoft_login_debug():
+    """Debug endpoint to test Microsoft login flow without frontend"""
+    try:
+        # Validate MSAL app
+        if not msal_app:
+            return "<h2>Error:</h2><p>MSAL app not configured</p>"
+
+        # Get dynamic redirect URI for debug
+        redirect_uri = get_microsoft_redirect_uri(request)
+
+        flow = msal_app.initiate_auth_code_flow(
+            scopes=SCOPES,
+            redirect_uri=redirect_uri,
+        )
+
+        # Return HTML that redirects to Microsoft login
+        auth_url = flow["auth_uri"]
+        session["auth_flow"] = flow
+        session.permanent = True
+
+        # Debug info
+        debug_info = f"""
+        <h3>Debug Info:</h3>
+        <ul>
+            <li><strong>CLIENT_ID:</strong> {CLIENT_ID[:10]}...</li>
+            <li><strong>TENANT_ID:</strong> {TENANT_ID}</li>
+            <li><strong>REDIRECT_URI:</strong> {redirect_uri}</li>
+            <li><strong>SCOPES:</strong> {', '.join(SCOPES)}</li>
+            <li><strong>Flow Keys:</strong> {', '.join(flow.keys())}</li>
+            <li><strong>Has PKCE:</strong> {'Yes' if 'code_verifier' in flow else 'No'}</li>
+            <li><strong>Session ID:</strong> {session.get('_id', 'Not set')}</li>
+        </ul>
+        """
+
+        html = f"""
+        <html>
+        <head><title>Microsoft Login Debug</title></head>
+        <body>
+            <h2>Microsoft OAuth Debug</h2>
+            <p>Click the link below to test Microsoft login:</p>
+            <a href="{auth_url}" target="_blank" style="
+                background: #0078d4; 
+                color: white; 
+                padding: 10px 20px; 
+                text-decoration: none; 
+                border-radius: 5px;
+            ">Login with Microsoft</a>
+            <br><br>
+            {debug_info}
+            <p><small>Auth URL: <code>{auth_url}</code></small></p>
+        </body>
+        </html>
+        """
+        return html
+
+    except Exception as e:
+        logger.error(f"Debug endpoint error: {str(e)}")
+        return f"<h2>Error:</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre>"
+
+
+def microsoft_oauth_callback(url, state):
+    """Simplified Microsoft OAuth callback - similar to Google's oauth2callback"""
+    try:
+        logger.info("🔄 Microsoft oauth callback processing (simplified)")
+
+        # Parse URL to get authorization code (like Google does)
+        from urllib.parse import parse_qs, urlparse
+
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+
+        auth_code = query_params.get("code", [None])[0]
+        url_state = query_params.get("state", [None])[0]
+
+        if not auth_code:
+            raise Exception("Authorization code not found")
+
+        # Skip state verification for reliability (like Google's approach)
+        logger.info("✅ Skipping state verification in helper function")
+
+        # Simple token acquisition (like Google's flow.fetch_token)
+        # Note: This uses a fallback redirect URI for global access
+        result = msal_app.acquire_token_by_authorization_code(
+            auth_code,
+            scopes=SCOPES,
+            redirect_uri=get_microsoft_redirect_uri(None),  # Use fallback redirect URI
+        )
+
+        if not result or "access_token" not in result:
+            raise Exception(f"Failed to obtain access token: {result}")
+
+        # Get user info (like Google does)
+        access_token = result["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        userinfo_response = requests.get(
+            "https://graph.microsoft.com/v1.0/me", headers=headers
+        )
+
+        if userinfo_response.status_code != 200:
+            raise Exception("Failed to get user info from Microsoft")
+
+        userinfo = userinfo_response.json()
+        email = userinfo.get("mail") or userinfo.get("userPrincipalName")
+        given_name = userinfo.get("givenName", "")
+        family_name = userinfo.get("surname", "")
+        user_id = userinfo.get("id")
+
+        # Save to database (simplified)
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute(
+            "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
+        )
+        existing_user = cursor.fetchone()
+
+        if existing_user:
+            # Update existing user
+            cursor.execute(
+                """
+                UPDATE users SET 
+                    user_id = %s, first_name = %s, last_name = %s,
+                    token = %s, refresh_token = %s, social = %s,
+                    logged_in_at = NOW(), updated_in = NOW()
+                WHERE email = %s
+            """,
+                (
+                    user_id,
+                    given_name,
+                    family_name,
+                    access_token,
+                    result.get("refresh_token", ""),
+                    "microsoft",
+                    email,
+                ),
+            )
+        else:
+            # Create new user - EXACTLY like Google does
             cursor.execute(
                 """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
                 client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s)
-                               """,
+                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
+            """,
                 (
                     user_id,
                     "admin",
@@ -129,11 +974,12 @@ def microsoft_callback():
                     given_name,
                     family_name,
                     email,
+                    "",
                     CLIENT_ID,
                     CLIENT_SECRET,
-                    access_token_,
-                    refresh_token_,
-                    expires_in_,
+                    access_token,
+                    result.get("refresh_token", ""),
+                    None,
                     "",
                     "",
                     "",
@@ -143,232 +989,1037 @@ def microsoft_callback():
                     None,
                     None,
                     None,
+                    True,
                 ),
             )
 
-        else:
-            logger.info("users update data")
-            prev_id = row.get("user_id", "NODATA")
-            logger.info("Microsoft prev-> %s", prev_id)
-            if user_id != prev_id:
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Check onboarding status
+        if existing_user and existing_user.get("user_type") == "user":
+            return user_id, True
+
+        newuser = check_onboarding_user(user_id)
+        return user_id, newuser
+
+    except Exception as e:
+        logger.error(f"❌ Microsoft OAuth callback error: {str(e)}")
+        raise Exception(f"Microsoft OAuth failed: {str(e)}")
+
+
+# Add a new route that matches Gmail's browser_url pattern
+@microsoft_bp.route("/browser_url_microsoft", methods=["POST"])
+def receive_browser_url_microsoft():
+    try:
+        data = request.get_json()
+        browser_url = data.get("url")
+        state = session.get("state", data.get("state"))
+
+        # This function should return the user ID (e.g., Microsoft account ID)
+        user_id, newuser = microsoft_oauth_callback(browser_url, state)
+        session_id, access_token, refresh_token = session_login(user_id)
+        # print("Microsoft login:", user_id, newuser)
+        apikey = fetch_apikey_from_launch(user_id)
+
+        # Note: Microsoft doesn't have watch requests like Gmail, so we skip that
+
+        # Prepare response
+        response = make_response(
+            jsonify(
+                {
+                    "status": "success",
+                    "url": browser_url,
+                    "userid": user_id,
+                    "user_onboarded": newuser,
+                    "api_key": apikey or "",
+                }
+            )
+        )
+        # print("response from browser_url_microsoft", response)
+
+        # Set secure session cookie (HttpOnly, Secure)
+        response.set_cookie(
+            "session_id",
+            session_id,
+            max_age=30 * 24 * 60 * 60,  # 30 days
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+
+        response.set_cookie(
+            "access_token",
+            access_token,
+            max_age=30 * 24 * 60 * 60,  # 30 days
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+
+        response.set_cookie(
+            "refresh_token",
+            refresh_token,
+            max_age=30 * 24 * 60 * 60,  # 30 days
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in browser_url_microsoft: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Simplified Microsoft callback - similar to Google's approach
+@microsoft_bp.route("/microsoft/callback")
+@microsoft_bp.route("/microsoft/callback/")
+def microsoft_callback():
+    """Simple Microsoft callback - like Google oauth2callback"""
+    try:
+        logger.info("🔄 Microsoft callback (simplified)")
+
+        # Get parameters
+        auth_code = request.args.get("code")
+        error = request.args.get("error")
+        state = request.args.get("state")
+        newuser = None
+        user_type = None
+
+        if error:
+            logger.error(f"❌ OAuth error: {error}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error={error}")
+
+        if not auth_code:
+            logger.error("❌ No authorization code")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=missing_code")
+
+        if not state:
+            logger.error("❌ No state parameter in callback")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=missing_state")
+
+        logger.info(f"✅ Callback received with state: {state[:20]}...")
+
+        # ✅ Retrieve the stored PKCE verifier from Redis using state
+        stored_state = asyncio.run(retrieve_auth_state_from_redis(state))
+
+        if not stored_state:
+            logger.error(f"❌ No auth state found in Redis for state: {state[:20]}...")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=no_flow")
+
+        code_verifier = stored_state.get("code_verifier")
+
+        if not code_verifier:
+            logger.error(f"❌ No code_verifier found in stored state")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=no_verifier")
+
+        # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
+        # redirect_uri = get_microsoft_redirect_uri(request)
+        redirect_uri = "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/microsoft/callback"
+        token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+
+        try:
+            token_data = {
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "code": auth_code,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+                "code_verifier": code_verifier,  # ✅ Send PKCE verifier directly
+                "scope": " ".join(SCOPES),
+            }
+
+            token_response = requests.post(token_url, data=token_data, timeout=10)
+
+            if token_response.status_code != 200:
+                logger.error(
+                    f"❌ Token exchange failed: {token_response.status_code} - {token_response.text}"
+                )
+                frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+                return redirect(f"{frontend_url}/login?error=token_failed")
+
+            result = token_response.json()
+
+        except Exception as e:
+            logger.error(f"❌ Token acquisition failed: {str(e)}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=token_failed")
+
+        if not result or "access_token" not in result:
+            logger.error(f"❌ No access token in result: {result}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=no_token")
+
+        # Get user info (like Google does)
+        access_token = result["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        userinfo_response = requests.get(
+            "https://graph.microsoft.com/v1.0/me", headers=headers
+        )
+
+        if userinfo_response.status_code != 200:
+            logger.error(f"❌ Failed to get user info: {userinfo_response.status_code}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=userinfo_failed")
+
+        userinfo = userinfo_response.json()
+        email = userinfo.get("mail") or userinfo.get("userPrincipalName")
+        given_name = userinfo.get("givenName", "")
+        family_name = userinfo.get("surname", "")
+        user_id = userinfo.get("id")
+
+        # Store user in session (like Google does)
+        session["user"] = {
+            "id": user_id,
+            "name": f"{given_name} {family_name}".strip(),
+            "email": email,
+        }
+
+        # Save to database (simplified like Google)
+        try:
+            conn = connect_to_rds()
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+            cursor.execute(
+                "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
+            )
+            existing_user = cursor.fetchone()
+            # print("exising valus", existing_user)
+
+            if existing_user:
+                print(f"***** existing user")
+                print(f"user_id : {user_id}")
+                print(f"token : {access_token}")
+                # Update existing user
+                user_type = existing_user["user_type"]
+                # print("usertype", user_type)
                 cursor.execute(
-                    """  
-                    UPDATE users 
-                    SET 
-                        user_id = %s,
-                        first_name = %s,
-                        last_name = %s,
-                        client_id = %s,
-                        client_secret = %s,
-                        token = %s,
-                        refresh_token = %s,
-                        expiry = %s,
-                        updated_in = NOW(),
-                        logged_in_at = NOW(),
-                        logged_out_at = NOW()
+                    """
+                    UPDATE users SET 
+                        user_id = %s, first_name = %s, last_name = %s,
+                        token = %s, refresh_token = %s, social = %s,
+                        logged_in_at = NOW(), updated_in = NOW()
                     WHERE email = %s
-                    """,
+                """,
                     (
                         user_id,
                         given_name,
                         family_name,
-                        CLIENT_ID,
-                        CLIENT_SECRET,
-                        access_token_,
-                        refresh_token_,
-                        expires_in_,
+                        access_token,
+                        result.get("refresh_token", ""),
+                        "microsoft",
                         email,
                     ),
                 )
             else:
+                # Create new user - EXACTLY like Google does
                 cursor.execute(
-                    """  
-                    UPDATE users 
-                    SET 
-                        first_name = %s,
-                        last_name = %s,
-                        client_id = %s,
-                        client_secret = %s,
-                        token = %s,
-                        refresh_token = %s,
-                        expiry = %s,
-                        updated_in = NOW(),
-                        logged_in_at = NOW(),
-                        logged_out_at = NOW()
-                    WHERE email = %s
-                    """,
+                    """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
+                    client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
+                    created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
+                """,
                     (
+                        user_id,
+                        "admin",
+                        "",
                         given_name,
                         family_name,
+                        email,
+                        "",
                         CLIENT_ID,
                         CLIENT_SECRET,
-                        access_token_,
-                        refresh_token_,
-                        expires_in_,
-                        email,
+                        access_token,
+                        result.get("refresh_token", ""),
+                        None,
+                        "",
+                        "",
+                        "",
+                        "microsoft",
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        True,
                     ),
                 )
+                print(f"******** created new user")
 
-        print("at last", given_name, family_name)
-        conn.commit()
-        conn.close()
+                # Auto-generate API key for new Microsoft users (like we do in users/generate-website-api-key)
+                new_api_key = str(uuid.uuid4())
+                new_launch_id = str(uuid.uuid4())
+                new_sub_agent_id = str(uuid.uuid4())
 
-        if row:
-            prev_type = row.get("user_type", "NO TYPE")
-            logger.info("Microsoft prev UserType -> %s", prev_type)
-            if prev_type == "user":
-                logger.info("Invited User Logged in")
-                return redirect(
-                    f"https://bytoid.ai/auth/microsoft/callback?userid={user_id}&user_onboarded={True}"
+                # Create default subagent
+                cursor.execute(
+                    """
+                    INSERT INTO subagents (
+                        sub_agent_id, launch_id_fk, name, description, voice_type,
+                        documentation_link, model_version, created_at, updated_at
+                    ) VALUES (%s, %s, %s, NULL, NULL, NULL, NULL, NULL, NULL)
+                """,
+                    (new_sub_agent_id, None, "Default Agent"),
                 )
 
-        newuser = check_onboarding_user(user_id)
-        # else:
-        #     return redirect("https://bytoid.ai/login")
-        print(f"going to return to dashboard: {newuser}")
-        return redirect(
-            f"https://bytoid.ai/auth/microsoft/callback?userid={user_id}&user_onboarded={newuser}"
+                # Create launch with API key
+                print(f"api key created : ")
+                print(f"new_api_key : {new_api_key}")
+                print(f"user_id : {user_id}")
+                cursor.execute(
+                    """
+                    INSERT INTO launch (launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name)
+                    VALUES (%s, %s, %s, %s, NULL)
+                """,
+                    (new_launch_id, new_sub_agent_id, user_id, new_api_key),
+                )
+
+                # Update subagent with correct launch_id
+                cursor.execute(
+                    """
+                    UPDATE subagents SET launch_id_fk = %s WHERE sub_agent_id = %s
+                """,
+                    (new_launch_id, new_sub_agent_id),
+                )
+
+                logger.info(
+                    f"✅ Auto-generated API key {str(new_api_key)[:20]}... for new Microsoft user {email}"
+                )
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+        except Exception as db_error:
+            logger.error(f"❌ Database error: {str(db_error)}")
+            # Continue anyway - don't fail login for DB issues
+
+        # Check if user needs onboarding
+        if user_type == "user":
+            newuser = True
+        else:
+            newuser = check_onboarding_user(user_id)
+
+        # Create session and redirect (like Google does)
+        session_id, access_token_session, refresh_token_session = session_login(user_id)
+        frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+
+        # Build redirect URL with all required params
+        callback_url = f"{frontend_url}/auth/microsoft/callback?userid={user_id}&service=microsoft&user_onboarded={newuser}&session_id={session_id}&access_token={access_token_session}&refresh_token={refresh_token_session}"
+
+        response = make_response(redirect(callback_url))
+
+        # Set cookies (like Google does)
+        response.set_cookie(
+            "session_id",
+            session_id,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+        response.set_cookie(
+            "access_token",
+            access_token_session,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+        response.set_cookie(
+            "refresh_token",
+            refresh_token_session,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
         )
 
-        # return jsonify({"user_id": user_id, "user_onboarded": newuser})
+        logger.info(f"✅ Microsoft login successful for {email}")
+        return response, user_id
 
-    else:
-        return (
-            jsonify(
-                {
-                    "error": "Failed to get user info from Microsoft",
-                    "details": "Microsoft Graph API request failed",
-                }
-            ),
-            400,
-        )
-    # return redirect('https://bytoid.ai/dashboard')
-    # return jsonify(result)
+    except Exception as e:
+        logger.error(f"❌ Microsoft callback error: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+        return redirect(f"{frontend_url}/login?error=callback_failed")
 
 
-@microsoft_bp.route("/microsoft/get_email")
-def microsoft_get_email():
-
+def save_outlook_message_to_db(
+    cursor,
+    user_id,
+    message_id,
+    from_address,
+    message_content,
+    subject,
+    timestamp,
+    direction,
+    conversation_id,
+):
+    """Save Outlook message to database in same format as Gmail"""
     try:
-        conn = connect_to_rds()
-        cursor = conn.cursor()
+        from datetime import datetime, timezone
+        from utils.s3_utils import upload_any_file
+        import json
+        import os
 
+        # Create message data in same format as Gmail
+        message_data = {
+            "id": message_id,
+            "from_email": from_address,
+            "content": message_content,
+            "subject": subject,
+            "timestamp": timestamp,
+            "direction": direction,
+            "source": "outlook",
+            "conversation_id": conversation_id,
+        }
+
+        # Create S3 content reference (same pattern as Gmail)
+        timestamp_obj = datetime.now(timezone.utc)
+
+        # For now, store basic info - can be enhanced later to match Gmail's full S3 storage
+        content_ref = f"outlook/{message_id}.json"
+
+        # Insert into messages table (same as Gmail does)
+        cursor.execute(
+            """
+            INSERT INTO messages (
+                message_id, conversation_id_fk, sender_id, content_ref,
+                message_type, is_summary, created_at, update_at, sender_type
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE update_at = VALUES(update_at)
+        """,
+            (
+                message_id,
+                conversation_id,
+                from_address,  # Use email as sender_id for now
+                content_ref,
+                direction,
+                subject,
+                timestamp_obj,
+                timestamp_obj,
+                "outlook",
+            ),
+        )
+
+        logger.info(f"💾 Saved Outlook message {message_id} to database")
+
+    except Exception as e:
+        logger.error(f"❌ Error saving Outlook message to DB: {str(e)}")
+
+
+@microsoft_bp.route("/microsoft/get_emails_infinite", methods=["POST"])
+def microsoft_get_emails_infinite():
+    """Infinite scroll email fetching - loads emails in chunks as user scrolls"""
+    try:
+        data = request.get_json() or {}
+
+        # Get pagination parameters
+        page_size = data.get("page_size", 100)  # ✅ Increased default from 20 to 100
+        skip_token = data.get("skip_token")  # For continuing from where we left off
+        cursor = data.get("cursor")  # Alternative cursor-based pagination
+        last_timestamp = data.get("last_timestamp")  # For timestamp-based continuation
+        months = data.get("months", 12)  # ✅ Increased from 3 to 12 months (1 year)
+
+        # Get user info
         email = session.get("user", {}).get("email")
-        print(email)
+        user_id = data.get("user_id")
 
-        if not email:
-            return redirect("https://bytoid.ai/login")
+        if not email and not user_id:
+            return jsonify({"error": "User authentication required"}), 401
 
-        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
+        conn = connect_to_rds()
+        cursor_db = conn.cursor()
 
-        if not row:
-            return jsonify({"error": "Access token not found for user"}), 404
+        if email and not user_id:
+            cursor_db.execute(
+                "SELECT token, user_id FROM users WHERE email = %s", (email,)
+            )
+            row = cursor_db.fetchone()
+            if not row:
+                cursor_db.close()
+                conn.close()
+                return jsonify({"error": "User not found"}), 404
+            access_token, user_id = row
+        else:
+            cursor_db.execute(
+                "SELECT token, email FROM users WHERE user_id = %s", (user_id,)
+            )
+            row = cursor_db.fetchone()
+            if not row:
+                cursor_db.close()
+                conn.close()
+                return jsonify({"error": "User not found"}), 404
+            access_token, email = row
 
-        access_token = row[0]
-        # print("access token :", access_token)
-        headers = {"Authorization": f"Bearer {access_token}"}
-        url = "https://graph.microsoft.com/v1.0/me/messages"
-
-        response = requests.get(url, headers=headers)
-        print(response)
-
-        cursor.close()
+        cursor_db.close()
         conn.close()
 
-        if response.status_code == 200:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        base_url = "https://graph.microsoft.com/v1.0/me/messages"
 
-            user_email = "riya@bytoid.io"
+        # Calculate date filter
+        from datetime import datetime, timedelta, timezone
 
-            ####################################
-            # headers = {
-            #     "Authorization": f"Bearer {access_token}",
-            #     "Accept": "application/json"
-            # }
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=months * 30)
+        start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-            # url = f"https://graph.microsoft.com/v1.0/users/{user_email}/mailFolders"
+        # Build request parameters
+        params = {
+            "$orderby": "receivedDateTime desc",
+            "$top": page_size,
+            "$select": "id,subject,body,from,toRecipients,receivedDateTime,sentDateTime,sender,internetMessageId,conversationId,hasAttachments,importance",
+        }
 
-            # try:
-            #     resp = requests.get(url, headers=headers)
-            #     resp.raise_for_status()
+        # Add date filter
+        filter_conditions = [f"receivedDateTime ge {start_date_str}"]
 
-            #     folders = resp.json()
-            #     for f in folders.get("value", []):
-            #         print("Folder Name:", f["displayName"])
-            #         print("Folder ID:  ", f["id"])
-            #         print("-" * 40)
+        # Add timestamp filter for infinite scroll continuation
+        if last_timestamp:
+            filter_conditions.append(f"receivedDateTime lt {last_timestamp}")
 
-            # except requests.exceptions.HTTPError as e:
-            #     print("HTTP error:", e)
-            #     print("Response text:", resp.text)
+        params["$filter"] = " and ".join(filter_conditions)
 
-            ###########################################
+        # Use skip token if provided (Microsoft Graph pagination)
+        if skip_token:
+            params["$skiptoken"] = skip_token
 
-            emails = response.json().get("value", [])
+        logger.info(
+            f"🔄 Infinite scroll request: page_size={page_size}, skip_token={skip_token is not None}"
+        )
 
-            for email_data in emails:
-                # print(f"email_data: {email_data}")
+        # Make the request
+        response = requests.get(base_url, headers=headers, params=params)
+
+        if response.status_code != 200:
+            logger.error(
+                f"❌ Failed to fetch emails: {response.status_code} - {response.text}"
+            )
+            return (
+                jsonify({"error": f"Failed to fetch emails: {response.text}"}),
+                response.status_code,
+            )
+
+        response_data = response.json()
+        emails = response_data.get("value", [])
+        next_link = response_data.get("@odata.nextLink")
+
+        logger.info(f"📧 Fetched {len(emails)} emails for infinite scroll")
+
+        # Process emails for frontend
+        processed_emails = []
+        new_skip_token = None
+        new_last_timestamp = None
+
+        for email_data in emails:
+            try:
+                # Extract email details
                 email_id = email_data.get("id")
                 from_name = (
-                    email_data.get("sender", {}).get("emailAddress", {}).get("name")
+                    email_data.get("sender", {}).get("emailAddress", {}).get("name", "")
                 )
-                to_recipients = email_data.get("toRecipients", [])
-                to_addr = ", ".join(
-                    [r["emailAddress"]["address"] for r in to_recipients]
-                )
-
-                body_content = email_data.get("body", {}).get("content")
-                # conversation_id = email_data.get("conversationId")
-                internet_message_id = email_data.get("internetMessageId")
-                soup = BeautifulSoup(body_content, "html.parser")
-                plain_text = soup.get_text().strip()
-                subject = email_data.get("subject")
-                sent_time = email_data.get("sentDateTime")
-
                 from_address = (
                     email_data.get("from", {})
                     .get("emailAddress", {})
                     .get("address", "")
                 )
+
+                to_recipients = email_data.get("toRecipients", [])
+                to_email = ""
+                to_name = ""
+                if to_recipients:
+                    to_email = to_recipients[0]["emailAddress"]["address"]
+                    to_name = to_recipients[0]["emailAddress"]["name"]
+
+                body_content = email_data.get("body", {}).get("content", "")
+                soup = BeautifulSoup(body_content, "html.parser")
+                plain_text = soup.get_text().strip()
+
+                # Truncate body for infinite scroll (show preview only)
+                preview_text = (
+                    plain_text[:200] + "..." if len(plain_text) > 200 else plain_text
+                )
+
+                subject = email_data.get("subject", "")
+                received_time = email_data.get("receivedDateTime")
+                sent_time = email_data.get("sentDateTime")
+
                 direction = (
                     "inbound" if from_address.lower() != email.lower() else "outbound"
                 )
-                from_email = email_data["from"]["emailAddress"]["address"]
-                to_email = email_data["toRecipients"][0]["emailAddress"]["address"]
 
-                conversation_id = from_email if direction == "inbound" else to_email
-
-                message_id = str(uuid.uuid4())
-                MESSAGES[email_id] = {
-                    "id": message_id,
-                    "from": email_data["from"]["emailAddress"]["name"],
-                    "to": email_data["toRecipients"][0]["emailAddress"]["name"],
-                    "to_email": to_email,  # remove after session is working
-                    "from_email": from_email,
-                    "body": plain_text,
+                # Format for frontend
+                processed_email = {
+                    "id": email_id,
                     "subject": subject,
-                    "timestamp": sent_time,
-                    "status": "received",
-                    "source": "outlook",
+                    "from_name": from_name,
+                    "from_email": from_address,
+                    "to_name": to_name,
+                    "to_email": to_email,
+                    "preview": preview_text,
+                    "timestamp": received_time or sent_time,
+                    "received_time": received_time,
                     "direction": direction,
-                    "conversation_id": conversation_id,
-                    "internet_message_id": internet_message_id,
+                    "has_attachments": email_data.get("hasAttachments", False),
+                    "importance": email_data.get("importance", "normal"),
+                    "conversation_id": email_data.get("conversationId"),
                 }
-                # print(MESSAGES)
-            return jsonify({"stored_messages": list(MESSAGES.keys())})
+
+                processed_emails.append(processed_email)
+
+                # Update last timestamp for next request
+                if received_time:
+                    new_last_timestamp = received_time
+
+            except Exception as e:
+                logger.error(
+                    f"❌ Error processing email {email_data.get('id', 'unknown')}: {str(e)}"
+                )
+                continue
+
+        # Extract skip token from next_link if available
+        if next_link:
+            import urllib.parse as urlparse
+
+            parsed_url = urlparse.urlparse(next_link)
+            query_params = urlparse.parse_qs(parsed_url.query)
+            if "$skiptoken" in query_params:
+                new_skip_token = query_params["$skiptoken"][0]
+
+        # Determine if there are more emails
+        has_more = len(emails) == page_size and (next_link is not None)
+
+        logger.info(
+            f"✅ Infinite scroll response: {len(processed_emails)} emails, has_more={has_more}"
+        )
+
+        return jsonify(
+            {
+                "status": "success",
+                "emails": processed_emails,
+                "has_more": has_more,
+                "skip_token": new_skip_token,
+                "last_timestamp": new_last_timestamp,
+                "page_size": page_size,
+                "total_returned": len(processed_emails),
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Error in infinite scroll fetch: {str(e)}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/get_email_detail", methods=["POST"])
+def microsoft_get_email_detail():
+    """Get full email content when user clicks on an email"""
+    try:
+        data = request.get_json() or {}
+        email_id = data.get("email_id")
+
+        if not email_id:
+            return jsonify({"error": "Email ID is required"}), 400
+
+        # Get user info
+        email = session.get("user", {}).get("email")
+        user_id = data.get("user_id")
+
+        if not email and not user_id:
+            return jsonify({"error": "User authentication required"}), 401
+
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+
+        if email and not user_id:
+            cursor.execute(
+                "SELECT token, user_id FROM users WHERE email = %s", (email,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "User not found"}), 404
+            access_token, user_id = row
         else:
+            cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            if not row:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "User not found"}), 404
+            access_token = row[0]
+
+        cursor.close()
+        conn.close()
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        url = f"https://graph.microsoft.com/v1.0/me/messages/{email_id}"
+
+        # Get full email details
+        params = {
+            "$select": "id,subject,body,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,sender,internetMessageId,conversationId,hasAttachments,importance,flag,categories,attachments"
+        }
+
+        response = requests.get(url, headers=headers, params=params)
+
+        if response.status_code != 200:
+            logger.error(
+                f"❌ Failed to fetch email detail: {response.status_code} - {response.text}"
+            )
             return (
-                jsonify({"error": "Failed to fetch emails", "details": response.text}),
+                jsonify({"error": f"Failed to fetch email: {response.text}"}),
                 response.status_code,
             )
 
+        email_data = response.json()
+
+        # Process full email data
+        body_content = email_data.get("body", {}).get("content", "")
+        body_type = email_data.get("body", {}).get("contentType", "html")
+
+        # Parse HTML to plain text for plain text version
+        soup = BeautifulSoup(body_content, "html.parser")
+        plain_text = soup.get_text().strip()
+
+        # Get attachments if any
+        attachments = []
+        if email_data.get("hasAttachments", False):
+            attachments_url = (
+                f"https://graph.microsoft.com/v1.0/me/messages/{email_id}/attachments"
+            )
+            att_response = requests.get(attachments_url, headers=headers)
+            if att_response.status_code == 200:
+                att_data = att_response.json()
+                for attachment in att_data.get("value", []):
+                    attachments.append(
+                        {
+                            "id": attachment.get("id"),
+                            "name": attachment.get("name"),
+                            "contentType": attachment.get("contentType"),
+                            "size": attachment.get("size"),
+                            "isInline": attachment.get("isInline", False),
+                        }
+                    )
+
+        # Format detailed response
+        detailed_email = {
+            "id": email_data.get("id"),
+            "subject": email_data.get("subject", ""),
+            "from": {
+                "name": email_data.get("from", {})
+                .get("emailAddress", {})
+                .get("name", ""),
+                "email": email_data.get("from", {})
+                .get("emailAddress", {})
+                .get("address", ""),
+            },
+            "to": [
+                {
+                    "name": recipient.get("emailAddress", {}).get("name", ""),
+                    "email": recipient.get("emailAddress", {}).get("address", ""),
+                }
+                for recipient in email_data.get("toRecipients", [])
+            ],
+            "cc": [
+                {
+                    "name": recipient.get("emailAddress", {}).get("name", ""),
+                    "email": recipient.get("emailAddress", {}).get("address", ""),
+                }
+                for recipient in email_data.get("ccRecipients", [])
+            ],
+            "bcc": [
+                {
+                    "name": recipient.get("emailAddress", {}).get("name", ""),
+                    "email": recipient.get("emailAddress", {}).get("address", ""),
+                }
+                for recipient in email_data.get("bccRecipients", [])
+            ],
+            "body": {
+                "html": body_content if body_type.lower() == "html" else None,
+                "text": plain_text,
+                "contentType": body_type,
+            },
+            "received_time": email_data.get("receivedDateTime"),
+            "sent_time": email_data.get("sentDateTime"),
+            "importance": email_data.get("importance", "normal"),
+            "has_attachments": email_data.get("hasAttachments", False),
+            "attachments": attachments,
+            "conversation_id": email_data.get("conversationId"),
+            "internet_message_id": email_data.get("internetMessageId"),
+            "categories": email_data.get("categories", []),
+            "flag": email_data.get("flag", {}),
+        }
+
+        logger.info(f"✅ Retrieved full email detail for {email_id}")
+
+        return jsonify({"status": "success", "email": detailed_email})
+
     except Exception as e:
+        logger.error(f"❌ Error getting email detail: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/get_email")
+def microsoft_get_email():
+    """Fetch Outlook emails with proper pagination and date filtering"""
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+
+        email = session.get("user", {}).get("email")
+        print(f"Fetching emails for: {email}")
+
+        if not email:
+            return redirect("https://bytoid.ai/login")
+
+        cursor.execute("SELECT token, user_id FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+
+        if not row:
+            return jsonify({"error": "Access token not found for user"}), 404
+
+        access_token, user_id = row
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Calculate date filter for last 12 months (1 year of history)
+        from datetime import datetime, timedelta, timezone
+
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(
+            days=365
+        )  # ✅ Changed from 90 to 365 days (1 year)
+        start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        # Use proper Microsoft Graph API with filtering and pagination
+        base_url = "https://graph.microsoft.com/v1.0/me/messages"
+
+        all_emails = []
+        page_size = 100  # ✅ Increased from 50 to 100 for better performance
+        total_fetched = 0
+        max_emails = 2000  # ✅ Increased limit from 1000 to 2000
+
+        # Initial request with filters
+        params = {
+            "$filter": f"receivedDateTime ge {start_date_str}",
+            "$orderby": "receivedDateTime desc",
+            "$top": page_size,
+            "$select": "id,subject,body,from,toRecipients,receivedDateTime,sentDateTime,sender,internetMessageId,conversationId,hasAttachments",
+        }
+
+        logger.info(f"🔄 Starting to fetch emails with date filter: {start_date_str}")
+
+        # Fetch first page
+        response = requests.get(base_url, headers=headers, params=params)
+
+        if response.status_code != 200:
+            logger.error(
+                f"❌ Failed to fetch emails: {response.status_code} - {response.text}"
+            )
+            cursor.close()
+            conn.close()
+            return (
+                jsonify({"error": f"Failed to fetch emails: {response.text}"}),
+                response.status_code,
+            )
+
+        response_data = response.json()
+        emails = response_data.get("value", [])
+        next_link = response_data.get("@odata.nextLink")
+
+        logger.info(f"📧 First page: {len(emails)} emails")
+        all_emails.extend(emails)
+        total_fetched += len(emails)
+
+        # Continue fetching pages using nextLink
+        while next_link and total_fetched < max_emails:
+            logger.info(f"🔄 Fetching next page... (total so far: {total_fetched})")
+
+            response = requests.get(next_link, headers=headers)
+
+            if response.status_code != 200:
+                logger.warning(f"⚠️ Failed to fetch page: {response.status_code}")
+                break
+
+            response_data = response.json()
+            emails = response_data.get("value", [])
+            next_link = response_data.get("@odata.nextLink")
+
+            if not emails:
+                logger.info("📭 No more emails found")
+                break
+
+            all_emails.extend(emails)
+            total_fetched += len(emails)
+
+            logger.info(
+                f"📧 Fetched {len(emails)} emails this page (total: {total_fetched})"
+            )
+
+            # Add small delay to avoid rate limiting
+            import time
+
+            time.sleep(0.1)
+
+        logger.info(f"✅ Total emails fetched: {len(all_emails)}")
+        cursor.close()
+        conn.close()
+
+        if all_emails:
+            # Process and save emails to database (same pattern as Gmail)
+            processed_count = 0
+
+            # Reconnect to database for processing
+            conn = connect_to_rds()
+            cursor = conn.cursor()
+
+            logger.info(f"🔄 Processing {len(all_emails)} emails...")
+
+            for i, email_data in enumerate(all_emails):
+                try:
+                    if i % 100 == 0:  # Log progress every 100 emails
+                        logger.info(f"📧 Processing email {i+1}/{len(all_emails)}")
+
+                    # Process email data same as before
+                    email_id = email_data.get("id")
+                    from_name = (
+                        email_data.get("sender", {})
+                        .get("emailAddress", {})
+                        .get("name", "")
+                    )
+                    to_recipients = email_data.get("toRecipients", [])
+
+                    body_content = email_data.get("body", {}).get("content", "")
+                    internet_message_id = email_data.get("internetMessageId")
+                    soup = BeautifulSoup(body_content, "html.parser")
+                    plain_text = soup.get_text().strip()
+                    subject = email_data.get("subject", "")
+                    sent_time = email_data.get("sentDateTime")
+                    received_time = email_data.get("receivedDateTime")
+
+                    from_address = (
+                        email_data.get("from", {})
+                        .get("emailAddress", {})
+                        .get("address", "")
+                    )
+                    direction = (
+                        "inbound"
+                        if from_address.lower() != email.lower()
+                        else "outbound"
+                    )
+
+                    # Get to_email safely
+                    to_email = ""
+                    to_name = ""
+                    if to_recipients:
+                        to_email = to_recipients[0]["emailAddress"]["address"]
+                        to_name = to_recipients[0]["emailAddress"]["name"]
+
+                    conversation_id = email_data.get("conversationId") or (
+                        from_address if direction == "inbound" else to_email
+                    )
+                    message_id = str(uuid.uuid4())
+
+                    # Check if message already exists in MESSAGES to avoid duplicates
+                    if email_id not in MESSAGES:
+                        # Save to MESSAGES for backward compatibility
+                        MESSAGES[email_id] = {
+                            "id": message_id,
+                            "from": from_name,
+                            "to": to_name,
+                            "to_email": to_email,
+                            "from_email": from_address,
+                            "body": plain_text,
+                            "subject": subject,
+                            "timestamp": sent_time or received_time,
+                            "received_time": received_time,
+                            "sent_time": sent_time,
+                            "status": "received" if direction == "inbound" else "sent",
+                            "source": "outlook",
+                            "direction": direction,
+                            "conversation_id": conversation_id,
+                            "internet_message_id": internet_message_id,
+                            "has_attachments": email_data.get("hasAttachments", False),
+                        }
+
+                        # Now save to database exactly like Gmail does
+                        save_outlook_message_to_db(
+                            cursor,
+                            user_id,
+                            message_id,
+                            from_address,
+                            plain_text,
+                            subject,
+                            sent_time or received_time,
+                            direction,
+                            conversation_id,
+                        )
+                        processed_count += 1
+                    else:
+                        logger.debug(f"📧 Email {email_id} already exists, skipping")
+
+                except Exception as e:
+                    logger.error(
+                        f"❌ Error processing Outlook email {email_data.get('id', 'unknown')}: {str(e)}"
+                    )
+                    continue
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            logger.info(
+                f"✅ Processed {processed_count} new Outlook emails for user {email}"
+            )
+
+            return jsonify(
+                {
+                    "status": "success",
+                    "total_fetched": len(all_emails),
+                    "processed_count": processed_count,
+                    "stored_messages": len(
+                        [
+                            k
+                            for k in MESSAGES.keys()
+                            if MESSAGES[k].get("source") == "outlook"
+                        ]
+                    ),
+                    "message": f"Successfully fetched {len(all_emails)} emails and processed {processed_count} new ones",
+                }
+            )
+        else:
+            logger.info("📭 No emails found in the specified date range")
+            return jsonify(
+                {
+                    "status": "success",
+                    "total_fetched": 0,
+                    "processed_count": 0,
+                    "stored_messages": 0,
+                    "message": "No emails found in the last 3 months",
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Error in microsoft_get_email: {str(e)}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 
 def send_outlook_email(to_email, subject, body_text, from_user_email, conversation_id):
 
-    print("Sending Outlook email...")
+    # print("Sending Outlook email...")
     print(f"To: {to_email}, Subject: {subject}, Body: {body_text}")
 
     # email = session.get("user", {}).get("email")  # remove after session is working
@@ -408,15 +2059,15 @@ def send_outlook_email(to_email, subject, body_text, from_user_email, conversati
         print(f"Using from_user_email: {from_user_email}")
     else:
         url = "https://graph.microsoft.com/v1.0/me/sendMail"
-        print("Using current user's email for sending.")
+    # print("Using current user's email for sending.")
 
     # Send mail
     response = requests.post(url, headers=headers, json=payload)
 
     if not response.ok:
-        print("Graph API returned an error!")
-        print("Status:", response.status_code)
-        print("Response text:", response.text)
+        # print("Graph API returned an error!")
+        # print("Status:", response.status_code)
+        # print("Response text:", response.text)
         response.raise_for_status()
         response.raise_for_status()
 
@@ -609,16 +2260,17 @@ def microsoft_sent_items():
                     "source": "outlook",
                     "direction": "outbound",
                 }
-            else:
-                return (
-                    jsonify(
-                        {
-                            "error": "Failed to fetch sent items",
-                            "details": response.text,
-                        }
-                    ),
-                    response.status_code,
-                )
+            return jsonify({"sent_items": emails}), 200
+        else:
+            return (
+                jsonify(
+                    {
+                        "error": "Failed to fetch sent items",
+                        "details": response.text,
+                    }
+                ),
+                response.status_code,
+            )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -742,12 +2394,13 @@ def microsoft_list_trash():
         return jsonify({"error": str(e)}), 500
 
 
-@microsoft_bp.route("/process-outlook", methods=["POST"])
-def process_outlook():
+@microsoft_bp.route("/process-outlook-og", methods=["POST"])
+def process_outlook_og():
     try:
-        ok, val = check_lancedb()
-        if not ok:
-            logger.info(f"LanceDB service down: {val}")
+        # Note: LanceDB and YAML processing functions need to be imported
+        # if this route is used. For now, return a simple response.
+        logger.info("📧 Outlook processing endpoint called")
+
         data = request.get_json(force=True, silent=True)
         if not data:
             return jsonify({"error": "Invalid or missing JSON body"}), 400
@@ -756,90 +2409,586 @@ def process_outlook():
         if not apikey:
             return jsonify({"error": "Missing api_key"}), 400
 
-        userid = fetch_userid_from_launch(apikey)
-        if not userid:
-            return jsonify({"error": "Invalid API key or user not found"}), 401
+        # Note: This endpoint requires additional dependencies that may not be available
+        # in the current simplified Microsoft OAuth implementation
+        return (
+            jsonify(
+                {"message": "Outlook processing endpoint - additional setup required"}
+            ),
+            501,
+        )
 
-        files = data.get("files")
-        if not files or not isinstance(files, list):
+    except Exception as e:
+        return jsonify({"error": f"Unexpected server error: {str(e)}"}), 500
+
+
+def GetOutlookDriveService(access_token):
+    import requests
+
+    session = requests.Session()
+    session.headers.update({
+        "Authorization": f"Bearer {access_token}"
+    })
+
+    return session
+
+def download_onedrive_file(session, file_id, local_path):
+    url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_id}/content"
+
+    response = session.get(url, stream=True)
+    print(f"reponse code from url :{response.status_code}")
+    
+    if response.status_code != 200:
+        return False
+
+    with open(local_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=2048):
+            if chunk:
+                f.write(chunk)
+    return True
+
+@microsoft_bp.route("/process-outlook", methods=["POST"])
+def process_outlook():
+    try:
+        data = request.json
+        if not data or "files" not in data or not isinstance(data["files"], list):
             return (
-                jsonify({"error": "Invalid or missing 'files' (must be a list)"}),
+                jsonify({"error": "Invalid payload. Expected JSON with 'files' array."}),
                 400,
             )
 
-        pathdown = f"data/{userid}/outlook"
-        os.makedirs(pathdown, exist_ok=True)
-        all_downloaded_paths = []
-        file_errors = []
+        if len(data["files"]) == 0:
+            return jsonify({"error": "No files picked"}), 400
 
-        # Download files
-        for file_info in files:
-            file_url = file_info.get("downloadUrl")
-            file_name = file_info.get("name")
 
-            if not file_url or not file_name:
-                file_errors.append(
-                    {
-                        "file": file_name or "unknown",
-                        "error": "Missing file_url or file_name",
-                    }
-                )
-                continue
+        apikey = data.get("api_key")
+        # userid = fetch_userid_from_launch(apikey)
+        userid = data.get("user_id")
+        access_token = get_outlook_token(userid)   
 
-            try:
-                resp = requests.get(file_url, timeout=30)
-                resp.raise_for_status()
-            except requests.RequestException as e:
-                file_errors.append({"file": file_name, "error": str(e)})
-                continue
+        # ensure_dir("data")
+       
 
-            save_path = os.path.join(pathdown, file_name)
-            try:
-                with open(save_path, "wb") as f:
-                    f.write(resp.content)
-                all_downloaded_paths.append(save_path)
-            except OSError as e:
-                file_errors.append(
-                    {"file": file_name, "error": f"File save error: {str(e)}"}
-                )
 
-        if not all_downloaded_paths:
-            return (
-                jsonify(
-                    {
-                        "error": "No files downloaded successfully",
-                        "details": file_errors,
-                    }
-                ),
-                400,
-            )
+        def event_stream():
+            yield "event: start\ndata: Starting Outlook file processing...\n\n"
 
-        # Process files
-        try:
+            graph_client = GetOutlookDriveService(access_token)
+            if not graph_client:
+                yield "event: error\ndata: Unable to initialize Microsoft Graph service\n\n"
+                return
+
+            # Step 1 — Download OneDrive/SharePoint files
+            downloaded_paths = []
+            total = len(data["files"])
+
+            for index, file in enumerate(data["files"], start=1):
+                try:
+                    file_id = file["id"]
+                    file_name = file.get("name", f"file_{index}")
+                    local_path = os.path.join("data", file_name)
+                    print(f"file_id:{file_id}")
+                    print(f"file_name:{file_name}")
+                    print(f"local_path:{local_path}")
+
+
+                    success = download_onedrive_file(graph_client, file_id, local_path)
+                    if not success:
+                        yield f"event: error\ndata: Failed to download {file_name}\n\n"
+                        return
+
+                    downloaded_paths.append(local_path)
+                    yield f"event: progress\ndata: Downloaded {index}/{total}: {file_name}\n\n"
+
+                except Exception as e:
+                    yield f"event: error\ndata: Error downloading file: {str(e)}\n\n"
+                    return
+
+            if not downloaded_paths:
+                yield "event: error\ndata: No files downloaded\n\n"
+                return
+
+            # Step 2 — Process files (your existing pipeline)
+            folderpath = os.path.commonpath(downloaded_paths)
             all_file_data = asyncio.run(
                 process_and_update_yaml(
-                    all_downloaded_paths=all_downloaded_paths,
+                    all_downloaded_paths=downloaded_paths,
                     userid=userid,
-                    provider="outlook",
-                    folderpath=pathdown,
+                    provider="microsoft",
+                    folderpath=folderpath,
                 )
             )
-        except Exception as e:
-            return jsonify({"error": f"Error processing files: {str(e)}"}), 500
+
+            yield (
+                "event: complete\ndata: "
+                + json.dumps(
+                    {
+                        "message": "Successfully processed OneDrive files",
+                        "files": all_file_data,
+                    }
+                )
+                + "\n\n"
+            )
+
+        return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
+
+    except Exception as e:
+        return jsonify({"error": f"Unexpected Outlook processing error: {str(e)}"}), 500
+
+
+@microsoft_bp.route("/microsoft/get_emails_batch", methods=["POST"])
+def microsoft_get_emails_batch():
+    """Fetch Outlook emails in batches with pagination support"""
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        page_token = data.get("page_token")  # For pagination continuation
+        batch_size = data.get("batch_size", 100)  # Default 100 per batch
+        months = data.get("months", 3)  # Default to 12 months (1 year of history)
+
+        # Try to get user_id from session if not provided
+        if not user_id:
+            user_info = session.get("user", {})
+            user_id = user_info.get("id")
+
+        if not user_id:
+            return jsonify({"error": "User ID is required"}), 400
+
+        logger.info(
+            f"🚀 Starting batch email fetch for user: {user_id} (batch_size: {batch_size}, months: {months}, page_token: {page_token is not None})"
+        )
+
+        # Fetch emails using the new batch service with pagination
+        result = asyncio.run(
+            fetch_outlook_emails_batch(
+                user_id=user_id,
+                page_token=page_token,
+                batch_size=batch_size,
+                months=months,
+            )
+        )
+
+        if result["status"] == "error":
+            logger.error(f"❌ Batch fetch failed: {result['error']}")
+            return jsonify({"error": result["error"]}), 500
+
+        # Store the fetched emails in the database
+        stored_result = {}
+        if result.get("messages"):
+            try:
+                logger.info(
+                    f"🔄 About to store {len(result['messages'])} messages in database"
+                )
+                stored_result = store_outlook_emails_in_db(user_id, result["messages"])
+                logger.info(f"✅ Storage result: {stored_result}")
+            except Exception as storage_error:
+                logger.error(f"❌ Error storing messages: {str(storage_error)}")
+                logger.error(f"❌ Storage traceback: {traceback.format_exc()}")
+                stored_result = {
+                    "status": "error",
+                    "stored_count": 0,
+                    "error": str(storage_error),
+                }
+
+        response_data = {
+            "status": "success",
+            "user_id": user_id,
+            "batch_size": batch_size,
+            "months": months,
+            "new_messages": result.get("new_messages", 0),
+            "has_more": result.get("has_more", False),
+            "next_page_token": result.get("next_page_token"),
+            "stored_count": stored_result.get("stored_count", 0),
+            "skipped_count": stored_result.get("skipped_count", 0),
+            "message": f"Fetched {result.get('new_messages', 0)} emails, stored {stored_result.get('stored_count', 0)}",
+        }
+
+        # Only include full message list if specifically requested
+        if data.get("include_messages", False):
+            response_data["messages"] = result.get("messages", [])
+
+        logger.info(f"✅ Batch fetch completed: {response_data}")
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        logger.error(f"❌ Error in batch email fetch: {str(e)}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/get_emails_count", methods=["POST"])
+async def microsoft_get_emails_count():
+    """Get total count of emails for the last N months"""
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        months = data.get("months", 3)
+
+        # Try to get user_id from session if not provided
+        if not user_id:
+            user_info = session.get("user", {})
+            user_id = user_info.get("id")
+
+        if not user_id:
+            return jsonify({"error": "User ID is required"}), 400
+
+        logger.info(f"📊 Getting email count for user: {user_id}")
+
+        # Initialize Outlook service and get count
+        service = OutlookService(user_id)
+        total_count = await service.get_total_message_count(months=months)
 
         return (
             jsonify(
                 {
-                    "message": "Files processed",
-                    "files": all_file_data,
-                    "failed_files": file_errors,
+                    "user_id": user_id,
+                    "months": months,
+                    "total_messages": total_count,
+                    "status": "success",
                 }
             ),
             200,
         )
 
     except Exception as e:
-        return jsonify({"error": f"Unexpected server error: {str(e)}"}), 500
+        logger.error(f"❌ Error getting email count: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/fetch_all_emails", methods=["POST"])
+def microsoft_fetch_all_emails():
+    """Enhanced endpoint to fetch all emails with better pagination and filtering"""
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        months = data.get("months", 6)  # Default to 6 months for comprehensive fetch
+        max_emails = data.get("max_emails", 5000)  # Higher default limit
+
+        # Try to get user_id from session if not provided
+        if not user_id:
+            user_info = session.get("user", {})
+            user_id = user_info.get("id")
+            email = session.get("user", {}).get("email")
+
+            if email and not user_id:
+                # Get user_id from database
+                conn = connect_to_rds()
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+                row = cursor.fetchone()
+                if row:
+                    user_id = row[0]
+                cursor.close()
+                conn.close()
+
+        if not user_id:
+            return jsonify({"error": "User ID is required"}), 400
+
+        logger.info(f"🚀 Starting comprehensive email fetch for user: {user_id}")
+        logger.info(f"📊 Parameters: {months} months, max {max_emails} emails")
+
+        # Get user credentials
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        cursor.execute("SELECT token, email FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+
+        access_token, user_email = row
+        cursor.close()
+        conn.close()
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # Calculate comprehensive date filter
+        from datetime import datetime, timedelta, timezone
+
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(
+            days=months * 30
+        )  # More precise month calculation
+        start_date_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        logger.info(
+            f"📅 Fetching emails from {start_date_str} to {end_date.strftime('%Y-%m-%dT%H:%M:%S.%fZ')}"
+        )
+
+        # Use Microsoft Graph API with comprehensive filtering
+        base_url = "https://graph.microsoft.com/v1.0/me/messages"
+
+        all_emails = []
+        page_size = 100  # Larger page size for efficiency
+        total_fetched = 0
+        page_count = 0
+
+        # Enhanced initial request with more comprehensive selection
+        params = {
+            "$filter": f"receivedDateTime ge {start_date_str}",
+            "$orderby": "receivedDateTime desc",
+            "$top": page_size,
+            "$select": "id,subject,body,from,toRecipients,receivedDateTime,sentDateTime,sender,internetMessageId,conversationId,hasAttachments,importance,flag,categories,isDraft",
+        }
+
+        logger.info(f"🔄 Starting comprehensive fetch...")
+
+        # First request
+        response = requests.get(base_url, headers=headers, params=params)
+
+        if response.status_code != 200:
+            logger.error(
+                f"❌ Failed to fetch emails: {response.status_code} - {response.text}"
+            )
+            return (
+                jsonify({"error": f"Failed to fetch emails: {response.text}"}),
+                response.status_code,
+            )
+
+        response_data = response.json()
+        emails = response_data.get("value", [])
+        next_link = response_data.get("@odata.nextLink")
+
+        logger.info(f"📧 First page: {len(emails)} emails")
+        all_emails.extend(emails)
+        total_fetched += len(emails)
+        page_count += 1
+
+        # Continue fetching all pages
+        while next_link and total_fetched < max_emails:
+            page_count += 1
+            logger.info(
+                f"🔄 Fetching page {page_count}... (total so far: {total_fetched})"
+            )
+
+            response = requests.get(next_link, headers=headers)
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"⚠️ Failed to fetch page {page_count}: {response.status_code}"
+                )
+                break
+
+            response_data = response.json()
+            emails = response_data.get("value", [])
+            next_link = response_data.get("@odata.nextLink")
+
+            if not emails:
+                logger.info("📭 No more emails found")
+                break
+
+            all_emails.extend(emails)
+            total_fetched += len(emails)
+
+            logger.info(
+                f"📧 Page {page_count}: {len(emails)} emails (total: {total_fetched})"
+            )
+
+            # Add delay to be respectful to the API
+            import time
+
+            time.sleep(0.05)  # 50ms delay
+
+        logger.info(
+            f"✅ Fetch complete: {len(all_emails)} emails from {page_count} pages"
+        )
+
+        # Process and store emails
+        if all_emails:
+            conn = connect_to_rds()
+            cursor = conn.cursor()
+
+            processed_count = 0
+            duplicate_count = 0
+            error_count = 0
+
+            logger.info(f"🔄 Processing {len(all_emails)} emails...")
+
+            for i, email_data in enumerate(all_emails):
+                try:
+                    if i % 200 == 0:  # Log progress every 200 emails
+                        logger.info(
+                            f"📧 Processing email {i+1}/{len(all_emails)} ({processed_count} processed, {duplicate_count} duplicates)"
+                        )
+
+                    email_id = email_data.get("id")
+
+                    # Check if already exists
+                    if email_id in MESSAGES:
+                        duplicate_count += 1
+                        continue
+
+                    # Extract email details
+                    from_name = (
+                        email_data.get("sender", {})
+                        .get("emailAddress", {})
+                        .get("name", "")
+                    )
+                    to_recipients = email_data.get("toRecipients", [])
+
+                    body_content = email_data.get("body", {}).get("content", "")
+                    internet_message_id = email_data.get("internetMessageId")
+
+                    # Parse HTML to plain text
+                    soup = BeautifulSoup(body_content, "html.parser")
+                    plain_text = soup.get_text().strip()
+
+                    subject = email_data.get("subject", "")
+                    sent_time = email_data.get("sentDateTime")
+                    received_time = email_data.get("receivedDateTime")
+
+                    from_address = (
+                        email_data.get("from", {})
+                        .get("emailAddress", {})
+                        .get("address", "")
+                    )
+                    direction = (
+                        "inbound"
+                        if from_address.lower() != user_email.lower()
+                        else "outbound"
+                    )
+
+                    to_email = ""
+                    to_name = ""
+                    if to_recipients:
+                        to_email = to_recipients[0]["emailAddress"]["address"]
+                        to_name = to_recipients[0]["emailAddress"]["name"]
+
+                    conversation_id = email_data.get("conversationId") or (
+                        from_address if direction == "inbound" else to_email
+                    )
+                    message_id = str(uuid.uuid4())
+
+                    # Store in MESSAGES
+                    MESSAGES[email_id] = {
+                        "id": message_id,
+                        "from": from_name,
+                        "to": to_name,
+                        "to_email": to_email,
+                        "from_email": from_address,
+                        "body": plain_text,
+                        "subject": subject,
+                        "timestamp": sent_time or received_time,
+                        "received_time": received_time,
+                        "sent_time": sent_time,
+                        "status": "received" if direction == "inbound" else "sent",
+                        "source": "outlook",
+                        "direction": direction,
+                        "conversation_id": conversation_id,
+                        "internet_message_id": internet_message_id,
+                        "has_attachments": email_data.get("hasAttachments", False),
+                        "importance": email_data.get("importance", "normal"),
+                        "is_draft": email_data.get("isDraft", False),
+                    }
+
+                    # Save to database
+                    save_outlook_message_to_db(
+                        cursor,
+                        user_id,
+                        message_id,
+                        from_address,
+                        plain_text,
+                        subject,
+                        sent_time or received_time,
+                        direction,
+                        conversation_id,
+                    )
+                    processed_count += 1
+
+                except Exception as e:
+                    error_count += 1
+                    logger.error(
+                        f"❌ Error processing email {email_data.get('id', 'unknown')}: {str(e)}"
+                    )
+                    continue
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            logger.info(
+                f"✅ Processing complete: {processed_count} new, {duplicate_count} duplicates, {error_count} errors"
+            )
+
+            return jsonify(
+                {
+                    "status": "success",
+                    "user_id": user_id,
+                    "months": months,
+                    "pages_fetched": page_count,
+                    "total_fetched": len(all_emails),
+                    "processed_count": processed_count,
+                    "duplicate_count": duplicate_count,
+                    "error_count": error_count,
+                    "total_stored": len(
+                        [
+                            k
+                            for k in MESSAGES.keys()
+                            if MESSAGES[k].get("source") == "outlook"
+                        ]
+                    ),
+                    "message": f"Successfully fetched {len(all_emails)} emails across {page_count} pages. Processed {processed_count} new emails.",
+                }
+            )
+        else:
+            logger.info("📭 No emails found in the specified date range")
+            return jsonify(
+                {
+                    "status": "success",
+                    "total_fetched": 0,
+                    "processed_count": 0,
+                    "message": f"No emails found in the last {months} months",
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Error in microsoft_fetch_all_emails: {str(e)}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/trigger_email_fetch", methods=["POST"])
+async def trigger_email_fetch():
+    """Manually trigger email fetching for a user"""
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        months = data.get("months", 3)
+        max_messages = data.get("max_messages", 1000)
+
+        # Try to get user_id from session if not provided
+        if not user_id:
+            user_info = session.get("user", {})
+            user_id = user_info.get("id")
+
+        if not user_id:
+            return jsonify({"error": "User ID is required"}), 400
+
+        logger.info(f"🔄 Manual trigger for email fetch: {user_id}")
+
+        # Start background fetch
+        result = await fetch_outlook_emails_batch(
+            user_id=user_id, months=months, max_messages=max_messages
+        )
+
+        return (
+            jsonify(
+                {
+                    "status": "success" if result["status"] == "success" else "error",
+                    "message": "Email fetch completed",
+                    "user_id": user_id,
+                    "result": result,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Error in manual trigger: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 @microsoft_bp.route("/logout")
@@ -850,6 +2999,262 @@ def microsoft_logout():
         return jsonify({"error": "No user is currently logged in"}), 400
 
     user_id = user.get("id")
-    session.pop("user")
+    session.pop("user", None)
+    session.pop("user_id", None)
 
     return jsonify({"status": "User logged out", "user_id": user_id}), 200
+
+
+# Add routes that match Gmail's pattern
+@microsoft_bp.route("/get_microsoft_client_id", methods=["POST"])
+def get_microsoft_client_id():
+    """Get Microsoft client ID - similar to Gmail's get_google_client_id"""
+    try:
+        data = request.get_json()
+        secretkey = data.get("secretkey", "")
+
+        microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID")
+        microsoft_tenantid = os.getenv("MICROSOFT_TENANT_ID")
+
+        def xor_encrypt(data, key):
+            """XOR encryption function"""
+            return "".join(
+                chr(ord(c) ^ ord(k))
+                for c, k in zip(data, key * (len(data) // len(key) + 1))
+            )
+
+        if not microsoft_client_id:
+            return jsonify({"error": "Missing MICROSOFT_CLIENT_ID"}), 500
+
+        response_data = {
+            "status": "success",
+            "data": {
+                "value": xor_encrypt(microsoft_client_id, secretkey),
+                "tenant_id": microsoft_tenantid,
+            },
+        }
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_microsoft_client_id: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft_login", methods=["POST"])
+def microsoft_login_post():
+    """Microsoft login endpoint similar to Gmail's google_login"""
+    try:
+        data = request.json
+        if not data or "access_token" not in data:
+            return jsonify({"error": "Access token is required"}), 400
+
+        access_token = data["access_token"]
+
+        # Verify the token with Microsoft Graph
+        headers = {"Authorization": f"Bearer {access_token}"}
+        response = requests.get("https://graph.microsoft.com/v1.0/me", headers=headers)
+
+        if response.status_code != 200:
+            return jsonify({"error": "Invalid token"}), 403
+
+        user_info = response.json()
+        email = user_info.get("mail") or user_info.get("userPrincipalName")
+        user_id = user_info.get("id")
+
+        return jsonify({"success": True, "email": email, "user_id": user_id})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/auth/microsoft/token_og", methods=["POST"])
+def get_microsoft_token(inuser=None, value=None, in_connection=None):
+    """Microsoft token endpoint similar to Gmail's auth/google/token"""
+    try:
+        data = request.get_json()
+        user_email = data.get("email")
+
+        if not user_email:
+            return jsonify({"error": "Email is required"}), 400
+
+        conn = in_connection or connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute(
+            "SELECT token, refresh_token, user_id FROM users WHERE email = %s AND social = 'microsoft'",
+            (user_email,),
+        )
+        user_data = cursor.fetchone()
+
+        if not user_data:
+            return jsonify({"error": "User not found"}), 404
+
+        if not in_connection:
+            cursor.close()
+            conn.close()
+
+        return (
+            jsonify(
+                {
+                    "access_token": user_data.get("token"),
+                    "refresh_token": user_data.get("refresh_token"),
+                    "user_id": user_data.get("user_id"),
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error(f"Error in get_microsoft_token: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@microsoft_bp.route("/auth/microsoft/token", methods=["POST"])
+def get_outlook_token(inuser=None, value=None, in_connection=None):
+    """
+    Microsoft token fetch & refresh — mirrors Gmail get_token() behavior
+    """
+    if inuser:
+        user_id = inuser
+    else:
+        data = request.json
+        user_id = (
+            session.get("user_id")
+            or session.get("userState_id")
+            or inuser
+            or data.get("userid")
+        )
+    if not in_connection:
+        connection = connect_to_rds()
+    else:
+        connection = in_connection
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT client_id, client_secret, token, refresh_token, expiry
+                FROM users
+                WHERE user_id = %s AND social = 'microsoft'
+            """,
+                (str(user_id),),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return jsonify({"error": "Microsoft user not found"}), 404
+
+            client_id, client_secret, token, refresh_token, expiry = row
+
+            # Convert expiry from string if needed
+            if isinstance(expiry, str):
+                expiry = datetime.fromisoformat(expiry)
+
+            time_to_expiry = expiry - datetime.now()
+
+            # Refresh if expiring soon (same 10 min rule as Google)
+            if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
+                print(f"** expired**")
+                try:
+                    # Microsoft Graph OAuth refresh URL
+                    token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+                    payload = {
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "refresh_token": refresh_token,
+                        "grant_type": "refresh_token",
+                        "scope": " ".join(SCOPES + ["offline_access"]),
+
+                    }
+
+                    response = requests.post(token_url, data=payload)
+                    if response.status_code != 200:
+                        print("Refresh failed:", response.text)
+                        return redirect("https://bytoid.ai/login")
+
+
+                    new_data = response.json()
+
+                    new_token = new_data.get("access_token")
+                    new_refresh = new_data.get("refresh_token", refresh_token)
+                    expires_in = new_data.get("expires_in", 3600)
+                  
+                    new_expiry = datetime.now() + timedelta(seconds=expires_in)
+
+                    # Store updated token
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET token = %s, refresh_token = %s, expiry = %s
+                        WHERE user_id = %s
+                        """,
+                        (new_token, new_refresh, new_expiry.isoformat(), user_id),
+                    )
+                    connection.commit()
+
+                    if value:
+                        return new_token
+
+                    return jsonify({"token": new_token})
+
+                except Exception as e:
+                    print(f"Microsoft token refresh failed: {e}")
+                    return redirect("https://bytoid.ai/login")
+
+            # Return existing token (not expired)
+            # cursor.execute(
+            #     "SELECT token FROM users WHERE user_id = %s AND social='microsoft'",
+            #     (user_id,),
+            # )
+            # user_row = cursor.fetchone()
+            # print(f"user_row:{user_row}")
+            # token =  user_row[0]
+
+            # if not user_row:
+            #     return jsonify({"error": "Token missing after fallback"}), 400
+
+            # if value:
+            #     return user_row["token"]
+            return token
+
+    except Exception as e:
+        print(f"Microsoft token error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+    finally:
+        if not in_connection and connection:
+            connection.close()
+
+
+
+@microsoft_bp.route("/check-microsoft-user", methods=["POST"])
+def check_microsoft_user():
+    """Check if Microsoft user exists - similar to Gmail's check-user"""
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+
+        if not user_id:
+            return jsonify({"error": "User ID is required"}), 400
+
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute(
+            "SELECT user_id, email, first_name, last_name FROM users WHERE user_id = %s AND social = 'microsoft'",
+            (user_id,),
+        )
+        user = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if user:
+            return jsonify({"exists": True, "user": user}), 200
+        else:
+            return jsonify({"exists": False}), 200
+
+    except Exception as e:
+        logger.error(f"Error in check_microsoft_user: {str(e)}")
+        return jsonify({"error": str(e)}), 500

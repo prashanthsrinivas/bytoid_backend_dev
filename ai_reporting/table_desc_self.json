@@ -1,0 +1,50 @@
+{
+  "tables": {
+    "service_request_allocations": {
+      "description": "links customer_accounts to service_requests",
+      "join with users_account": "users_account_id_fk → users_account.users_account_id "
+    },
+    "comm": {
+      "description": "links users_account to customer_accounts",
+      "join with users_account": "users_account_id_fk → users_account.users_account_id",
+      "join with customer_accounts": "customer_account_id_fk → customer_accounts.customer_account_id"
+    },
+   
+    "reviews": {
+      "description": "ratings/comments on conversations",
+      "join with users_account": "conversation_thread_id_fk → conversation_thread.users_account_id_fk → users_account.users_account_id",
+      "join with customer_accounts": "conversation_thread_id_fk → conversation_thread.service_request_id_fk → service_requests.comm_id_fk → comm.customer_account_id_fk → customer_accounts.customer_account_id"
+    },
+    
+    "integrated": {
+      "description": "integration configurations (messenger, WhatsApp, SMS, etc.)",
+      "join with users_account": "assistant_id_fk → assistants.assistant_id → deployments.users_account_id_fk → users_account.users_account_id",
+      "join with customer_accounts": "integrated_id → conversation_thread.service_request_id_fk → service_requests.comm_id_fk → comm.customer_account_id_fk → customer_accounts.customer_account_id"
+    }, 
+    "msgs": {
+      "description": "messages sent/received by users from customers",
+      "join with users_account": "conversation_thread_id_fk → conversation_thread.users_account_id_fk → users_account.users_account_id",
+      "join with customer_accounts": "customer_id_fk → customer_accounts.customer_account_id"
+    },
+    "conversation_thread": {
+      "description": "links msgs and service_requests",
+      "join with users_account": "external_user_account_id → users_account.users_account_id",
+      "join with customer_accounts": "service_request_id_fk → service_requests.comm_id_fk → comm.customer_account_id_fk → customer_accounts.customer_account_id"
+    },
+    "service_requests": {
+      "description": "user service issues or requests",
+      "join with users_account": "conversation_thread_id_fk → conversation_thread.users_account_id_fk → users_account.users_account_id",
+      "join with customer_accounts": "comm_id_fk → comm.customer_account_id_fk → customer_accounts.customer_account_id"
+    },
+    "users_account": {
+      "description": "contains data about the users",
+      "join with users_account": "users_account_id is the user id column",
+      "join with customer_accounts": "users_account.users_account_id → comm.users_account_id_fk → comm.customer_account_id_fk → customer_accounts.customer_account_id"
+    },
+    "customer_accounts": {
+      "description": "contains details about the customers, contacts, leads",
+      "join with users_account": "comm_id_fk → comm.users_account_id_fk → users_account.users_account_id",
+      "join with customer_accounts": "customer_account_id is the customer id the customer"
+    }
+  }
+}

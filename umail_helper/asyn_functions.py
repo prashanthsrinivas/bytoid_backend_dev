@@ -72,9 +72,10 @@ async def get_datewise_info_base(
         today = datetime.now(timezone.utc)
 
         enddate = to_datetime_safe(endDate, default=today)
-        startdate = to_datetime_safe(
-            startDate, default=enddate - relativedelta(months=months)
-        )
+        # startdate = to_datetime_safe(
+        #     startDate, default=enddate - relativedelta(months=months)
+        # )
+        startdate = to_datetime_safe(startDate, default=enddate - relativedelta(days=7))
 
         enddate_str = enddate.strftime("%Y-%m-%d")
         startdate_str = startdate.strftime("%Y-%m-%d")
@@ -193,9 +194,16 @@ async def v2all_continuous(user_id):
             newly_creation = False
         else:
             total_messages = await get_datewise_info_base(
-                userid=user_id, connection=connection, months=3
+                userid=user_id, connection=connection, months=1
             )
             newly_creation = True
+        # # print("total messages data", total_messages)
+        # total_messages = await get_datewise_info_base(
+        #     userid=user_id, connection=connection, months=3
+        # )
+        # newly_creation = False
+        if not total_messages:
+            return "cant have the messages fetched."
 
         threads_max = total_messages["threadsTotal"]["count"]
         threads = total_messages["threadsTotal"]["threads"]
@@ -296,10 +304,10 @@ async def v2all_continuous(user_id):
             for item in batch_results
             if item
         ]
-        # print("all_results", all_results)
+        ##print("all_results", all_results)
 
         if newly_creation:
-            print("NEW CREATION attaching to valkey", len(all_results))
+            # print("NEW CREATION attaching to valkey", len(all_results))
             # Merge all grouped_messages and collect next_page_token if any
             merged_grouped = {}
             next_page_token = None
@@ -345,20 +353,11 @@ async def v2all_continuous(user_id):
 
         # ✅ Only update umail_json + finalize if any batch had new messages
         if any_new_messages:
-            folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
-            today_ts = datetime.now(timezone.utc)
-            # new_entry = {
-            #     "date_start": startdate,
-            #     "date_end": enddate,
-            #     "processed_threads": threads_max,
-            #     "timestamp": today_ts.isoformat(),
-            #     "newly_creation": newly_creation,
-            # }
             update_umail_json(
                 user_id=user_id, new_count=threads_max, connection=connection
             )
             await ticket_allocator.finalize()
-
+            folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
             if os.path.exists(folder_path):
                 shutil.rmtree(folder_path)
                 print(f"🗑️ Deleted folder and contents: {folder_path}")
@@ -369,7 +368,7 @@ async def v2all_continuous(user_id):
                 "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
             )
         if not newly_creation and any_new_messages:
-            print("Triggering this api")
+            print("Triggering this api autopilot check")
             pilotvalues = get_existing_autopilot_json(
                 user_id=user_id, connection=connection
             )
@@ -403,6 +402,251 @@ async def v2all_continuous(user_id):
             pass
 
 
+async def fetchnextmonthmails(user_id, startDate):
+    """
+    Fetch next-month mails with correct date logic.
+    startDate = boundary date (ISO string or datetime)
+    bs_startdate = startDate minus 1 month
+    """
+    connection = connect_to_rds()
+    if connection is None:
+        return {"error": "Database connection failed", "status": "failed"}
+
+    # Convert startDate safely
+    if isinstance(startDate, str):
+        startDate = to_datetime_safe(startDate, default=datetime.now(timezone.utc))
+    elif isinstance(startDate, datetime):
+        startDate = startDate.replace(tzinfo=timezone.utc)
+    else:
+        startDate = datetime.now(timezone.utc)
+    any_new_messages = False
+    all_results = []
+    complete_results = 0
+    embedding_futures = []
+    start_time = time.perf_counter()
+
+    # ---------------------------
+    # Correct date computation
+    # ---------------------------
+    endDate = startDate  # end boundary
+    bs_startdate = startDate - relativedelta(months=1)  # start boundary
+
+    # Optional: strip to date() if backend expects date only
+    # endDate = endDate.date()
+    # bs_startdate = bs_startdate.date()
+
+    # Debug logs
+    print("➡ startDate (end):", endDate)
+    print("➡ bs_startdate (start):", bs_startdate)
+
+    try:
+        newly_creation = False
+        total_messages = await get_datewise_info_base(
+            userid=user_id,
+            connection=connection,
+            endDate=endDate,
+            startDate=bs_startdate,
+        )
+        if not total_messages:
+            return "cant have the messages fetched."
+
+        threads_max = total_messages["threadsTotal"]["count"]
+        threads = total_messages["threadsTotal"]["threads"]
+        my_email = total_messages["email"]
+        startdate = total_messages["start_date"]
+        enddate = total_messages["end_date"]
+
+        logger.info("🚀 Starting continuous batch processing for user %s, ", user_id)
+        logger.info("total threads: %s with creation=%s", threads_max, newly_creation)
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def process_with_semaphore(
+            threads, batch_count, max_batchval, ticket_allocator
+        ):
+            nonlocal complete_results, any_new_messages
+            async with semaphore:
+                try:
+                    gmail_result = await v2fetch_gmail_messages_batch(
+                        user_id, threads, my_email, batch_count, connection
+                    )
+                except Exception as e:
+                    print(f"❌ Error fetching Gmail batch {batch_count}: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                    return None
+
+                if gmail_result.get("status") != "success":
+                    print(
+                        f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}"
+                    )
+                    return None
+
+                complete_results += len(gmail_result)
+
+                new_messages = gmail_result.get("new_messages", 0)
+                if new_messages > 0:
+                    any_new_messages = True  # mark that we did get something
+                    print(f"📬 Batch {batch_count}: {new_messages} new messages")
+                else:
+                    print(f"📭 Batch {batch_count}: no new messages")
+
+                current_batch_messages = gmail_result.get("grouped_messages", {})
+                if new_messages > 0 and current_batch_messages:
+                    lance_folder = os.path.join(
+                        pathconfig.basepath,
+                        "messages",
+                        user_id,
+                        f"lance_folder:{batch_count}",
+                    )
+                    os.makedirs(lance_folder, exist_ok=True)
+                    task = asyncio.to_thread(
+                        v2process_batch_with_embedding,
+                        user_id,
+                        current_batch_messages,
+                        batch_count,
+                        lance_folder,
+                        ticket_allocator,
+                        None,
+                    )
+                    embedding_futures.append(task)
+                else:
+                    print(f"📭 Batch {batch_count}: no new messages to process")
+                    return None
+                return gmail_result
+
+        max_batchval = len(threads)
+        batch_size = min(1000, max(100, len(threads) // 2 or 1))
+        batches = [
+            threads[i : i + batch_size] for i in range(0, max_batchval, batch_size)
+        ]
+        client = await GlideClusterClient.create(redis_config_glide)
+        ticket_allocator = await TicketAllocator.create(user_id)
+
+        async def process_batch(batch_index, batch):
+            batch_start_time = time.perf_counter()
+            print(
+                f"\n⚡ Starting batch {batch_index+1}/{max_batchval} with {len(batch)} threads..."
+            )
+            tasks = [
+                process_with_semaphore(
+                    batch, batch_index + 1, max_batchval, ticket_allocator
+                )
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            batch_runtime = time.perf_counter() - batch_start_time
+            print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
+            return results
+
+        all_batch_results = await asyncio.gather(
+            *[process_batch(i, batch) for i, batch in enumerate(batches)],
+            return_exceptions=True,
+        )
+        all_results = [
+            item
+            for batch_results in all_batch_results
+            for item in batch_results
+            if item
+        ]
+        ##print("all_results", all_results)
+
+        if newly_creation:
+            # print("NEW CREATION attaching to valkey", len(all_results))
+            # Merge all grouped_messages and collect next_page_token if any
+            merged_grouped = {}
+            next_page_token = None
+            total_new_messages = 0
+
+            for batch_result in all_results:
+                if not isinstance(batch_result, dict):
+                    continue
+                grouped = batch_result.get("grouped_messages", {})
+                if isinstance(grouped, dict):
+                    merged_grouped.update(grouped)
+                total_new_messages += batch_result.get("new_messages", 0)
+                if batch_result.get("next_page_token"):
+                    next_page_token = batch_result["next_page_token"]
+
+            # Prepare cache payload
+            cache_payload = {
+                "status": "success",
+                "total_new_messages": total_new_messages,
+                "next_page_token": next_page_token,
+                "grouped_messages": merged_grouped,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+            # await client.set(
+            #     f"{user_id}", json.dumps(all_results, default=str), TTL_90_DAYS
+            # )
+            await client.set(
+                f"{user_id}",
+                json.dumps(cache_payload, default=str),
+                TTL_90_DAYS,
+            )
+
+        # wait for embeddings to finish
+        if embedding_futures:
+            await asyncio.gather(*embedding_futures)
+
+        total_runtime = time.perf_counter() - start_time
+        print(
+            f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
+            f"\n total gmail results counted: {complete_results}",
+        )
+
+        # ✅ Only update umail_json + finalize if any batch had new messages
+        if any_new_messages:
+            update_umail_json(
+                user_id=user_id, new_count=threads_max, connection=connection
+            )
+            await ticket_allocator.finalize()
+            folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
+                print(f"🗑️ Deleted folder and contents: {folder_path}")
+            else:
+                print(f"⚠️ Folder not found: {folder_path}")
+        else:
+            print(
+                "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
+            )
+        # if not newly_creation and any_new_messages:
+        #     print("Triggering this api autopilot check")
+        #     pilotvalues = get_existing_autopilot_json(
+        #         user_id=user_id, connection=connection
+        #     )
+        #     if pilotvalues is not None:
+        #         autoReplyhelper(
+        #             all_results=all_results,
+        #             user_id=user_id,
+        #             my_email=my_email,
+        #             pilotvalues=pilotvalues,
+        #         )
+
+        return {
+            "user": user_id,
+            "total_threads": threads_max,
+            "batches": len(batches),
+            "runtime_seconds": total_runtime,
+            "results": all_results,
+        }
+
+    except Exception as e:
+        print(f"[ERROR] v2all_continuous failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return {"error": str(e), "status": "failed"}
+
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
 def v2process_batch_with_embedding(
     user_id,
     current_batch_messages,
@@ -411,9 +655,11 @@ def v2process_batch_with_embedding(
     ticket_allocator,
     cursor=None,
 ):
+    from utils.celery_base import run_lance_embedding
+
     async def _inner(cursor):
         start_time = time.perf_counter()
-        print("||||||||||| Start time Lance |||||||||", start_time)
+        # print("||||||||||| Start time Lance |||||||||", start_time)
 
         connection = None
         try:
@@ -442,7 +688,8 @@ def v2process_batch_with_embedding(
 
             client = UmailLanceClient(user_id)
             # run CPU-bound embedding in a thread so we don’t block
-            await asyncio.to_thread(client.embed_json_files, lance_folder)
+            client.embed_both_json_and_plain(lance_folder)
+            # run_lance_embedding.delay(user_id, batch_count, lance_folder)
 
             total_runtime = time.perf_counter() - start_time
             print("************ Total Time Lance *******", total_runtime)
@@ -474,7 +721,7 @@ def v2process_batch_with_embedding(
 #     messages = analyze_and_collect_messages_for_batch(
 #         user_id, current_batch_messages, batch_count
 #     )
-#     print("batch messages", len(messages))
+#    #print("batch messages", len(messages))
 #     client = UmailLanceClient(user_id)
 #     client.embed_json_files(lance_folder)
 

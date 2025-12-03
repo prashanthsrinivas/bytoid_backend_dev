@@ -1,6 +1,6 @@
 import asyncio
 from db.rds_db import get_cursor, safe_execute
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, current_app, request, jsonify, session, send_file
 from services.gmail_service import GmailService
 from umail_helper.ticketalloc import TicketAllocator
 
@@ -46,9 +46,9 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
         threads, next_page_token = await gmail_service.get_threads_async(
             "INBOX", max_results=batch_size, start_page_token=page_token
         )
-        print("threads fetched are", len(threads))
+        # print("threads fetched are", len(threads))
         if not threads:
-            print("📭 No threads found in this batch")
+            # print("📭 No threads found in this batch")
             return {"status": "success", "new_messages": 0, "next_page_token": None}
 
         count_new = 0
@@ -129,12 +129,9 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
             direction = "inbound" if msg["from"] != user_email else "outbound"
             subject = msg["subject"]
             body_content = msg.get("body", "")
-            plain_text = (
-                BeautifulSoup(body_content, "html.parser")
-                .get_text(separator="\n")
-                .strip()
-            )
-            extracted_body = extract_reply_content(plain_text)
+            # ✅ FIXED: Keep HTML body as-is with images and formatting
+            # Don't convert to plain text - that destroys all embedded images and HTML structure
+            extracted_body = body_content  # Keep original HTML/text format
 
             from_name, from_email = parseaddr(msg["from"])
             to_name, to_email = parseaddr(msg.get("to", ""))
@@ -213,6 +210,8 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
                     }
                     with open(config_filepath, "w", encoding="utf-8") as f:
                         json.dump(dummy_config, f, indent=2)
+                        f.flush()
+                        os.fsync(f.fileno())
 
                     s3_config_key = f"{user_id}/messages/{client_id}/config.json"
                     s3_data = read_json_from_s3(s3_config_key)
@@ -282,7 +281,7 @@ def safe_json_load(filepath):
         return {}
 
 
-async def v2fetch_gmail_messages_batch(
+async def v2fetch_gmail_messages_batch_og(
     user_id, threads, my_email, batch_count, connection
 ):
     """
@@ -298,7 +297,10 @@ async def v2fetch_gmail_messages_batch(
         gmail_service = GmailService(user_id, connection)
         # user_email = gmail_service.user_email
 
-        # Fetch one batch of messages
+        # Fetch one batch of messages - THIS IS WHERE MIME EXTRACTION HAPPENS
+        print(
+            f"\n📧 [GMAIL SYNC] Calling process_threads_batch with {len(threads)} threads"
+        )
         results = await gmail_service.process_threads_batch(
             threads, my_email, batch_count
         )
@@ -322,10 +324,10 @@ async def v2fetch_gmail_messages_batch(
 
         #     if thread_data:
         #         all_messages.append(thread_data)
-        print("ALL mesages complete")
+        # print("ALL mesages complete")
 
         if not results:
-            print("📭 No messages found in this batch")
+            # print("📭 No messages found in this batch")
             return {"status": "success", "new_messages": 0, "next_page_token": None}
         count_new = 0
         grouped_messages = defaultdict(list)
@@ -345,12 +347,12 @@ async def v2fetch_gmail_messages_batch(
         input_data_local = {}
 
         if os.path.exists(filepath):
-            print("filepath exists")
+            # print("filepath exists")
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     existing_data_local = json.load(f)
                     input_data_local = existing_data_local.get("input_data", {})
-                    print("file loaded")
+                # print("file loaded")
 
                 # Extract existing message IDs
                 for client_data in input_data_local.values():
@@ -375,12 +377,12 @@ async def v2fetch_gmail_messages_batch(
         configs_created = set()
 
         first_time_user = True
-        # print("starting checks for messages in db")
+        ##print("starting checks for messages in db")
         cursor.execute(
             "SELECT m.message_id,th.conversation_id FROM messages m JOIN threads th  ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
             (user_id,),
         )
-        print("got a result")
+        # print("got a result")
         rows = cursor.fetchall()
         if rows:
             # cursor.execute(
@@ -392,13 +394,13 @@ async def v2fetch_gmail_messages_batch(
             # """,
             #     (user_id,),
             # )
-            # print("Count of rows:", cursor.fetchone())
+            ##print("Count of rows:", cursor.fetchone())
 
-            # print("GOT CURSOR RESULTS Line 382 v2 fetch", rows)
+            ##print("GOT CURSOR RESULTS Line 382 v2 fetch", rows)
             first_time_user = False
         else:
             print("ERROR dont got any result")
-        # print("goting into for loop of all messages")
+        ##print("goting into for loop of all messages")
         for idx, thread in enumerate(threads):
             thread_id = thread["id"]
             res = results.get(thread_id)
@@ -436,16 +438,32 @@ async def v2fetch_gmail_messages_batch(
 
                 if row:
                     external_user_id = row[2]
-                    # print("GOT CURSOR RESULTS Line 389 v2 fetch", row)
+                    ##print("GOT CURSOR RESULTS Line 389 v2 fetch", row)
 
                     if external_user_id == user_id:
                         print("message added already")
                         # skip/continue whatever you need
 
-                # Skip if already exists locally
+                # ⭐ FIXED: Do NOT skip existing messages!
+                # Old messages need to be reprocessed to extract HTML with images
+                # The MIME extraction now preserves embedded images, so we need to update old messages
+                # ONLY skip if it's VERY recent (last 1 hour) to avoid reprocessing duplicates
                 if message_id in existing_ids_local:
-                    print("skipping message in v2fetch gmail", message_id)
-                    continue
+                    # Check if this is a very recent message (last hour)
+                    # If so, skip. If older, reprocess with MIME extraction
+                    msg_time = parsedate_to_datetime(msg["date"])
+                    time_since_msg = datetime.now(timezone.utc) - msg_time
+                    if time_since_msg.total_seconds() < 3600:  # Less than 1 hour old
+                        print(
+                            f"skipping recent message in v2fetch gmail (already processed): {message_id}"
+                        )
+                        continue
+                    else:
+                        print(
+                            f"⭐ REPROCESSING old message with MIME extraction: {message_id} (age: {time_since_msg.total_seconds()/3600:.1f}h)"
+                        )
+                        # Remove from local cache to force reprocessing
+                        existing_ids_local.discard(message_id)
 
                 # Your existing message processing logic...
                 thread_id = msg["thread_id"]
@@ -454,12 +472,10 @@ async def v2fetch_gmail_messages_batch(
                 direction = msg["direction"]
                 subject = msg["subject"]
                 body_content = msg.get("body", "")
-                plain_text = (
-                    BeautifulSoup(body_content, "html.parser")
-                    .get_text(separator="\n")
-                    .strip()
-                )
-                extracted_body = extract_reply_content(plain_text)
+                # ✅ FIXED: Keep HTML body as-is with images and formatting
+                # Don't convert to plain text - that destroys all embedded images and HTML structure
+                # The backend already extracted clean HTML with 54 Base64 images embedded
+                extracted_body = body_content  # Keep original HTML/text format
 
                 from_name, from_email = parseaddr(msg["from"])
                 to_name, to_email = parseaddr(msg.get("to", ""))
@@ -501,10 +517,20 @@ async def v2fetch_gmail_messages_batch(
                     email_to_client_id[participant] = (client_id, client_type)
 
                 # Create message object
+                # 📎 DEBUG: Show attachments BEFORE message dict creation
+                gmail_attachments = msg.get("attachments", [])
+                # print(
+                #     f"📎 [GMAIL_ROUTE] Before message dict - msg has {len(gmail_attachments)} attachments"
+                # )
+                # for att in gmail_attachments[:2]:
+                #     print(f"   - {att.get('filename', '?')}: {att.get('status', '?')}")
+
                 message = {
                     "id": row_id,
                     "from": from_email,
                     "to": to_email,
+                    "cc": msg.get("cc", ""),
+                    "bcc": msg.get("bcc", ""),
                     "body": extracted_body,
                     "subject": subject,
                     "timestamp": timestamp_iso,
@@ -516,8 +542,20 @@ async def v2fetch_gmail_messages_batch(
                         from_email if direction == "inbound" else my_email
                     ),
                     "type": client_type,
-                    "attachments": msg["attachments"],
+                    "attachments": gmail_attachments,
                 }
+
+                # 📎 DEBUG: Show attachments AFTER message dict creation
+                # print(
+                #     f"📧 [GMAIL_ROUTE] After message dict - message has {len(message.get('attachments', []))} attachments"
+                # )
+                # if message.get("attachments"):
+                #     for att in message["attachments"][:2]:
+                #         print(
+                #             f"     ✅ {att.get('filename', '?')}: {att.get('status', '?')}"
+                #         )
+                # else:
+                #     print(f"     ⚠️ NO attachments in message dict!")
 
                 grouped_messages.setdefault(client_id, {}).setdefault(
                     "gmail", []
@@ -539,6 +577,364 @@ async def v2fetch_gmail_messages_batch(
                         }
                         with open(config_filepath, "w", encoding="utf-8") as f:
                             json.dump(dummy_config, f, indent=2)
+                            f.flush()
+                            os.fsync(f.fileno())
+
+                        s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                        s3_data = read_json_from_s3(s3_config_key)
+                        if s3_data is None:
+
+                            upload_any_file(
+                                config_filepath,
+                                user_id,
+                                type="messages",
+                                s3_key_C=s3_config_key,
+                            )
+                            # print(f"uploaded config for client_id: {client_id}")
+
+                    configs_created.add(client_id)
+
+        # Merge with existing data and save
+        existing_data = safe_json_load(filepath)
+
+        merged_messages = existing_data.get("input_data", {})
+
+        for client_id, channels in grouped_messages.items():
+            for channel, messages in channels.items():
+                merged_messages.setdefault(client_id, {}).setdefault(
+                    "gmail", []
+                ).extend(messages)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(
+                {"filename": filename, "input_data": merged_messages}, f, indent=2
+            )
+
+        # cursor.close()
+        # connection.close()
+
+        print(f"✅ Batch complete: {count_new} new messages processed")
+        return {
+            "status": "success",
+            "new_messages": count_new,
+            "next_page_token": None,
+            "grouped_messages": dict(grouped_messages),  # Return current batch data
+        }
+
+    except Exception as e:
+        print(f"[ERROR] → v2fetch_gmail_messages_batch failed: {e}")
+        return {
+            "error": str(e),
+            "status": "failed",
+            "next_page_token": None,
+            "grouped_messages": {},
+        }
+    finally:
+        if connection is None and new_connection:
+            new_connection.close()
+
+
+async def v2fetch_gmail_messages_batch(
+    user_id, threads, my_email, batch_count, connection
+):
+    """
+    Fetch a single batch of Gmail messages
+    """
+    try:
+        if connection is None:
+            new_connection = connect_to_rds()
+            connection = new_connection
+        # Use cursor context for all DB operations
+        cursor = connection.cursor()
+        print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
+        gmail_service = GmailService(user_id, connection)
+        # user_email = gmail_service.user_email
+
+        # Fetch one batch of messages - THIS IS WHERE MIME EXTRACTION HAPPENS
+        print(
+            f"\n📧 [GMAIL SYNC] Calling process_threads_batch with {len(threads)} threads"
+        )
+        results = await gmail_service.process_threads_batch(
+            threads, my_email, batch_count
+        )
+        # print(
+        #     f"GOT the data from results {batch_count} in v2 fetch gmail", len(results)
+        # )
+        # all_messages = []
+        # for idx, thread in enumerate(threads):
+        #     thread_id = thread["id"]
+        #     res = results.get(thread_id)
+
+        #     if not res:
+        #         print(f"⚠️ No response for thread {thread_id}")
+        #         continue
+
+        #     thread_data, err = res  # ✅ unpack tuple
+
+        #     if err:
+        #         print(f"⚠️ Thread {thread_id} error: {err}")
+        #         continue
+
+        #     if thread_data:
+        #         all_messages.append(thread_data)
+        # print("ALL mesages complete")
+
+        if not results:
+            # print("📭 No messages found in this batch")
+            return {"status": "success", "new_messages": 0, "next_page_token": None}
+        count_new = 0
+        grouped_messages = defaultdict(list)
+        # cursor = connection.cursor()
+
+        # File setup
+        timestamp = datetime.now(timezone.utc)
+        date_str = timestamp.strftime("%Y-%m-%d")
+        filename = f"{date_str}.json"
+
+        user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
+        ensure_dir(user_folder)
+        filepath = os.path.join(user_folder, filename)
+
+        # Load existing data
+        existing_ids_local = set()
+        input_data_local = {}
+
+        if os.path.exists(filepath):
+            # print("filepath exists")
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    existing_data_local = json.load(f)
+                    input_data_local = existing_data_local.get("input_data", {})
+                # print("file loaded")
+
+                # Extract existing message IDs
+                for client_data in input_data_local.values():
+                    if isinstance(client_data, dict):
+                        for client_channels in client_data.values():
+                            if isinstance(client_channels, dict):
+                                for channel_msgs in client_channels.values():
+                                    if isinstance(channel_msgs, list):
+                                        for msg in channel_msgs:
+                                            if isinstance(msg, dict):
+                                                msg_id = msg.get("id")
+                                                if msg_id:
+                                                    idms = f"{user_id}_{msg_id}"
+                                                    existing_ids_local.add(idms)
+            except Exception as e:
+                print(f"⚠️ Error loading existing data: {e}")
+
+        # Process messages (your existing logic)
+        email_to_client_id = {}
+        client_id = ""
+        client_type = ""
+        configs_created = set()
+
+        first_time_user = True
+        ##print("starting checks for messages in db")
+        cursor.execute(
+            "SELECT m.message_id,th.conversation_id FROM messages m JOIN threads th  ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
+            (user_id,),
+        )
+        # print("got a result")
+        rows = cursor.fetchall()
+        if rows:
+            # cursor.execute(
+            #     """
+            # SELECT COUNT(*)
+            # FROM messages m
+            # JOIN threads th ON m.conversation_id_fk = th.conversation_id
+            # WHERE th.external_user_id = %s
+            # """,
+            #     (user_id,),
+            # )
+            ##print("Count of rows:", cursor.fetchone())
+
+            ##print("GOT CURSOR RESULTS Line 382 v2 fetch", rows)
+            first_time_user = False
+        else:
+            print("ERROR dont got any result")
+        ##print("goting into for loop of all messages")
+        for idx, thread in enumerate(threads):
+            thread_id = thread["id"]
+            res = results.get(thread_id)
+
+            if not res:
+                print(f"⚠️ No response for thread {thread_id}")
+                continue
+
+            thread_data, err = res  # ✅ unpack tuple
+
+            if err:
+                print(f"⚠️ Thread {thread_id} error: {err}")
+                continue
+
+            if not thread_data:
+                continue
+
+            # directly iterate messages here
+            for msg in thread_data:
+                message_id = msg["messageId"]
+                row_id = f"{user_id}_{message_id}"
+                # print({"message_id": row_id, "timestamp": msg["date"]})
+                # Skip if already exists in database
+                sql = """
+                SELECT m.conversation_id_fk,
+                    m.sender_id,
+                    t.external_user_id
+                FROM messages m
+                JOIN threads t
+                ON m.conversation_id_fk = t.conversation_id     -- join condition
+                WHERE m.message_id = %s
+                """
+                cursor.execute(sql, (row_id,))
+                row = cursor.fetchone()
+
+                if row:
+                    external_user_id = row[2]
+                    ##print("GOT CURSOR RESULTS Line 389 v2 fetch", row)
+
+                    if external_user_id == user_id:
+                        print("message added already")
+                        # skip/continue whatever you need
+                        continue
+
+                # ⭐ FIXED: Do NOT skip existing messages!
+                # Old messages need to be reprocessed to extract HTML with images
+                # The MIME extraction now preserves embedded images, so we need to update old messages
+                # ONLY skip if it's VERY recent (last 1 hour) to avoid reprocessing duplicates
+                if message_id in existing_ids_local:
+                    # Check if this is a very recent message (last hour)
+                    # If so, skip. If older, reprocess with MIME extraction
+                    msg_time = parsedate_to_datetime(msg["date"])
+                    time_since_msg = datetime.now(timezone.utc) - msg_time
+                    if time_since_msg.total_seconds() < 3600:  # Less than 1 hour old
+                        print(
+                            f"skipping recent message in v2fetch gmail (already processed): {message_id}"
+                        )
+                        continue
+                    else:
+                        print(
+                            f"⭐ REPROCESSING old message with MIME extraction: {message_id} (age: {time_since_msg.total_seconds()/3600:.1f}h)"
+                        )
+                        # Remove from local cache to force reprocessing
+                        existing_ids_local.discard(message_id)
+
+                # Your existing message processing logic...
+                thread_id = msg["thread_id"]
+                dt = parsedate_to_datetime(msg["date"])
+                timestamp_iso = dt.isoformat()
+                direction = msg["direction"]
+                subject = msg["subject"]
+                body_content = msg.get("body", "")
+                plain_text = msg.get("plain_text", "")
+                # ✅ FIXED: Keep HTML body as-is with images and formatting
+                # Don't convert to plain text - that destroys all embedded images and HTML structure
+                # The backend already extracted clean HTML with 54 Base64 images embedded
+                extracted_body = body_content  # Keep original HTML/text format
+
+                from_name, from_email = parseaddr(msg["from"])
+                to_name, to_email = parseaddr(msg.get("to", ""))
+
+                if direction == "inbound":
+                    participant = from_email
+                    participant_name = from_name
+                else:
+                    participant = to_email
+                    participant_name = to_name
+
+                # Get or create client
+                if participant in email_to_client_id:
+                    client_id, client_type = email_to_client_id[participant]
+                else:
+                    result = get_users_client_id(participant, user_id, cursor)
+
+                    if isinstance(result, tuple) and len(result) == 2:
+                        client_id, client_type = result
+                    else:
+                        # assume function returned only client_id
+                        client_id = result if result else None
+                        client_type = None
+
+                    if not client_id:
+                        if not first_time_user:
+                            # print(f"first_time_user : {first_time_user}")
+                            client_id = add_lead_contact(
+                                user_id, cursor, participant, participant_name
+                            )
+                            client_type = "Lead"
+                        if first_time_user:
+                            # print(f"first_time_user : {first_time_user}")
+                            client_id = add_customer_contact(
+                                user_id, cursor, participant, participant_name
+                            )
+                            client_type = "Customer"
+
+                    email_to_client_id[participant] = (client_id, client_type)
+
+                # Create message object
+                # 📎 DEBUG: Show attachments BEFORE message dict creation
+                gmail_attachments = msg.get("attachments", [])
+                # print(
+                #     f"📎 [GMAIL_ROUTE] Before message dict - msg has {len(gmail_attachments)} attachments"
+                # )
+                # for att in gmail_attachments[:2]:
+                #     print(f"   - {att.get('filename', '?')}: {att.get('status', '?')}")
+
+                message = {
+                    "id": row_id,
+                    "from": from_email,
+                    "to": to_email,
+                    "cc": msg.get("cc", ""),
+                    "bcc": msg.get("bcc", ""),
+                    "body": extracted_body,
+                    "plain_text": plain_text,
+                    "subject": subject,
+                    "timestamp": timestamp_iso,
+                    "source": "gmail",
+                    "direction": direction,
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "conversation_id": (
+                        from_email if direction == "inbound" else my_email
+                    ),
+                    "type": client_type,
+                    "attachments": gmail_attachments,
+                }
+
+                # 📎 DEBUG: Show attachments AFTER message dict creation
+                # print(
+                #     f"📧 [GMAIL_ROUTE] After message dict - message has {len(message.get('attachments', []))} attachments"
+                # )
+                # if message.get("attachments"):
+                #     for att in message["attachments"][:2]:
+                #         print(
+                #             f"     ✅ {att.get('filename', '?')}: {att.get('status', '?')}"
+                #         )
+                # else:
+                #     print(f"     ⚠️ NO attachments in message dict!")
+
+                grouped_messages.setdefault(client_id, {}).setdefault(
+                    "gmail", []
+                ).append(message)
+                count_new += 1
+
+                if client_id not in configs_created:
+
+                    # Create config files if needed (your existing logic)
+                    config_folder = os.path.join(
+                        pathconfig.basepath, "messages", user_id, client_id
+                    )
+                    ensure_dir(config_folder)
+                    config_filepath = os.path.join(config_folder, "config.json")
+                    if not os.path.exists(config_filepath):
+                        dummy_config = {
+                            "userclients_id": client_id,
+                            "conversations": [],
+                        }
+                        with open(config_filepath, "w", encoding="utf-8") as f:
+                            json.dump(dummy_config, f, indent=2)
+                            f.flush()
+                            os.fsync(f.fileno())
 
                         s3_config_key = f"{user_id}/messages/{client_id}/config.json"
                         s3_data = read_json_from_s3(s3_config_key)
@@ -600,16 +996,16 @@ def sync_gmail_contacts(user_id):
 
     try:
         # Initialize Gmail service
-        print("📧 Initializing Gmail service...")
+        # print("📧 Initializing Gmail service...")
         gmail_service = GmailService(user_id)
 
         # Get contacts
-        print("🔍 Fetching contacts from Gmail...")
+        # print("🔍 Fetching contacts from Gmail...")
         messages = gmail_service.get_contacts()
         print(f"📬 Retrieved {len(messages)} contact entries")
 
         if not messages:
-            print("⚠️ No messages retrieved from Gmail")
+            # print("⚠️ No messages retrieved from Gmail")
             response = jsonify(
                 {
                     "success": True,
@@ -622,17 +1018,17 @@ def sync_gmail_contacts(user_id):
             return response
 
         # Database connection
-        print("🗄️ Connecting to database...")
+        # print("🗄️ Connecting to database...")
         connection = connect_to_rds()
         if connection is None:
-            print("❌ Database connection failed")
+            # print("❌ Database connection failed")
             error_response = jsonify(
                 {"success": False, "error": "Database connection failed", "results": []}
             )
             print(f"📤 Returning error response: {error_response.get_json()}")
             return error_response, 500
 
-        print("✅ Database connection successful")
+        # print("✅ Database connection successful")
         cursor = connection.cursor()
         results = []
         processed_count = 0
@@ -723,7 +1119,7 @@ def sync_gmail_contacts(user_id):
                 continue
 
         # Close database connection
-        print("🔒 Closing database connection...")
+        # print("🔒 Closing database connection...")
         cursor.close()
         connection.close()
 
@@ -766,7 +1162,16 @@ def sync_gmail_contacts(user_id):
 
 
 def gmail_reply(
-    user_id, to, subject, thread_id, body_text, in_reply_to, connection=None
+    user_id,
+    to,
+    subject,
+    thread_id,
+    body_text,
+    in_reply_to,
+    connection=None,
+    attachments=None,
+    cc=None,
+    bcc=None,
 ):
     try:
         gmail_service = (
@@ -774,32 +1179,47 @@ def gmail_reply(
         )
         user_email = gmail_service.user_email
 
-        # Defensive checks
+        # Normalize recipient fields
+        def normalize_address(val):
+            if not val:
+                return None
+            if isinstance(val, str):
+                return val.strip()
+            if isinstance(val, dict):
+                return val.get("email") or val.get("address")
+            if isinstance(val, list):
+                return [normalize_address(v) for v in val]
+            raise ValueError(f"Invalid email field: {val}")
+
+        to = normalize_address(to)
+        cc = normalize_address(cc)
+        bcc = normalize_address(bcc)
+
+        # Validate
         if not to or not subject or not thread_id or not in_reply_to:
             missing = [
                 k
-                for k, v in [
-                    ("to", to),
-                    ("subject", subject),
-                    ("thread_id", thread_id),
-                    ("in_reply_to", in_reply_to),
-                ]
+                for k, v in {
+                    "to": to,
+                    "subject": subject,
+                    "thread_id": thread_id,
+                    "in_reply_to": in_reply_to,
+                }.items()
                 if not v
             ]
             return {"error": f"Missing required fields: {', '.join(missing)}"}
 
-        print(f"in_reply_to : {in_reply_to}")
-        print(f"subject : {subject}")
-
         sent = gmail_service.send_reply(
-            to=to,
+            receipent_emails=to,
             subject=subject,
             thread_id=thread_id,
             in_reply_to=in_reply_to,
             body_text=body_text,
+            attachments=attachments,
+            cc=cc,
+            bcc=bcc,
         )
 
-        # Ensure we have a dict
         if not isinstance(sent, dict):
             return {"error": "Unexpected Gmail response format"}
 
@@ -807,10 +1227,8 @@ def gmail_reply(
         if not message_api_id:
             return None
 
-        # Get final message_id (optional helper)
         header_id = get_message_id(gmail_service.service, "me", message_api_id)
         message_id = header_id or message_api_id
-        print("message id", f"{user_id}_{message_id}")
 
         return f"{user_id}_{message_id}"
 
@@ -832,7 +1250,7 @@ def get_message_id(service, user_id, gmail_id):
     )
 
 
-def send_mail(user_id, to, subject, body_text):
+def send_mail(user_id, to, subject, body_text, attachments=None):
     message_id = None
     thread_id = None
 
@@ -841,7 +1259,16 @@ def send_mail(user_id, to, subject, body_text):
         gmail_service = GmailService(user_id)
         user_email = gmail_service.user_email
 
-        sent = gmail_service.send_email(to=to, subject=subject, body_text=body_text)
+        # Log attachment info if provided
+        if attachments:
+            print(f"📎 [DEBUG] Sending email with {len(attachments)} attachment(s)")
+
+        sent = gmail_service.send_email(
+            receipent_emails=to,
+            subject=subject,
+            body_text=body_text,
+            attachments=attachments,
+        )
 
         if not sent or "id" not in sent:
             raise ValueError("No message ID returned from Gmail API")
@@ -861,7 +1288,7 @@ def add_lead_contact(user_id, cursor, participant, participant_name):
     Create a new Lead contact safely with deadlock retry.
     """
     try:
-        print("Creating new lead")
+        # print("Creating new lead")
         communication_id = str(uuid.uuid4())
         users_clients_id = str(uuid.uuid4())
 
@@ -928,7 +1355,7 @@ def add_customer_contact(user_id, cursor, participant, participant_name):
     Create a new Customer contact safely with deadlock retry.
     """
     try:
-        print("Creating new customer")
+        # print("Creating new customer")
         communication_id = str(uuid.uuid4())
         users_clients_id = str(uuid.uuid4())
 
@@ -1005,7 +1432,7 @@ def list_drafts():
 def list_threads():
     try:
         user_id = session.get("user_id")
-        print("userID", user_id)
+        # print("userID", user_id)
         gmail_service = GmailService(user_id)
         threads = gmail_service.get_inbox()
         return jsonify({"threads": threads})
@@ -1093,6 +1520,107 @@ def respond_to_email():
         return jsonify({"error": str(e)}), 500
 
 
+@gmail_bp.route("/gmail/forward", methods=["POST"])
+def forward_email():
+    """
+    Forward an email to one or more recipients with CC/BCC support
+
+    Request body:
+    {
+        "to": "recipient@example.com" or ["email1@example.com", "email2@example.com"],
+        "cc": "cc@example.com" (optional, string or array),
+        "bcc": "bcc@example.com" (optional, string or array),
+        "subject": "Original Subject",
+        "body": "Email body (HTML or plain text) with original message",
+        "message_id": "gmail_message_id" (optional, for reference)
+    }
+
+    Returns:
+    {
+        "status": "success",
+        "message": "Email forwarded successfully",
+        "result": {...}
+    }
+    """
+    try:
+        user_id = session.get("user_id")
+        if not user_id:
+            return jsonify({"error": "User not authenticated"}), 401
+
+        gmail_service = GmailService(user_id)
+        data = request.get_json()
+
+        to = data.get("to")
+        cc = data.get("cc")
+        bcc = data.get("bcc")
+        subject = data.get("subject")
+        body = data.get("body")
+        attachments = data.get("attachments", [])
+
+        # Validate required fields
+        if not all([to, subject, body]):
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields",
+                        "required": ["to", "subject", "body"],
+                    }
+                ),
+                400,
+            )
+
+        # Handle multiple recipients (convert to comma-separated string if list)
+        if isinstance(to, list):
+            to = ", ".join(to)
+        if isinstance(cc, list):
+            cc = ", ".join(cc) if cc else None
+        if isinstance(bcc, list):
+            bcc = ", ".join(bcc) if bcc else None
+
+        print(f"📧 Forwarding email to: {to}")
+        if cc:
+            print(f"📧 CC: {cc}")
+        if bcc:
+            print(f"📧 BCC: {bcc}")
+        print(f"📝 Subject: {subject}")
+        if attachments:
+            print(f"📎 Attachments: {len(attachments)}")
+
+        # Send forward using the service method with CC/BCC support and attachments
+        result = gmail_service.send_forward(
+            to, subject, body, cc=cc, bcc=bcc, attachments=attachments or []
+        )
+
+        if result:
+            print(f"✅ Email forwarded successfully")
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": "Email forwarded successfully",
+                        "result": result,
+                    }
+                ),
+                200,
+            )
+        else:
+            return jsonify({"status": "error", "error": "Failed to forward email"}), 500
+
+    except Exception as e:
+        print(f"❌ Error forwarding email: {e}")
+        print(f"📋 Traceback: {traceback.format_exc()}")
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "error": str(e),
+                    "message": "Failed to forward email",
+                }
+            ),
+            500,
+        )
+
+
 @gmail_bp.route("/gmail/inbox_info/<userid>", methods=["GET"])
 def get_inbox_info(userid):
     try:
@@ -1135,7 +1663,6 @@ def get_inbox_info(userid):
         return jsonify({"error": str(e)}), 500
 
 
-from flask import request, jsonify
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 
@@ -1322,20 +1849,20 @@ def delete_all_user_data(user_id):
 
             # 2. Delete from session
             cursor.execute("DELETE FROM session WHERE user_id_fk = %s", (user_id,))
-            print("DONE 1")
+            # print("DONE 1")
 
             # 3. Delete business_info
             cursor.execute(
                 "DELETE FROM business_info WHERE user_id_fk = %s", (user_id,)
             )
-            print("DONE 2")
+            # print("DONE 2")
 
             # 4. Delete launch entries (get launch_id for subagents cleanup)
             cursor.execute(
                 "SELECT launch_id FROM launch WHERE user_id_fk = %s", (user_id,)
             )
             launch_ids = [row[0] for row in cursor.fetchall() if row[0]]
-            print("DONE 3")
+            # print("DONE 3")
 
             # 5. Delete subagents and linked playbooks/instructions/integrations/connect
             if launch_ids:
@@ -1345,34 +1872,34 @@ def delete_all_user_data(user_id):
                     tuple(launch_ids),
                 )
                 subagent_ids = [row[0] for row in cursor.fetchall() if row[0]]
-                print("DONE 4")
+                # print("DONE 4")
                 if subagent_ids:
                     fmt = ",".join(["%s"] * len(subagent_ids))
                     cursor.execute(
                         f"DELETE FROM playbook WHERE sub_agent_id IN ({fmt})",
                         tuple(subagent_ids),
                     )
-                    print("DONE 5")
+                    # print("DONE 5")
                     cursor.execute(
                         f"DELETE FROM instructions WHERE sub_agent_id_fk IN ({fmt})",
                         tuple(subagent_ids),
                     )
-                    print("DONE 6")
+                    # print("DONE 6")
                     cursor.execute(
                         f"DELETE FROM integrations WHERE sub_agent_id_fk IN ({fmt})",
                         tuple(subagent_ids),
                     )
-                    print("DONE 7")
+                    # print("DONE 7")
                     cursor.execute(
                         f"DELETE FROM connect WHERE sub_agent_id_fk IN ({fmt})",
                         tuple(subagent_ids),
                     )
-                    print("DONE 8")
+                    # print("DONE 8")
                     cursor.execute(
                         f"DELETE FROM subagents WHERE sub_agent_id IN ({fmt})",
                         tuple(subagent_ids),
                     )
-                    print("DONE 9")
+                # print("DONE 9")
 
             # 6. Delete launch rows
             if launch_ids:
@@ -1380,7 +1907,7 @@ def delete_all_user_data(user_id):
                 cursor.execute(
                     f"DELETE FROM launch WHERE launch_id IN ({fmt})", tuple(launch_ids)
                 )
-                print("DONE 10")
+            # print("DONE 10")
 
             # === Handle invited-user/owner relationships ===
             with connection.cursor(pymysql.cursors.DictCursor) as cursor2:
@@ -1418,11 +1945,11 @@ def delete_all_user_data(user_id):
                                 "UPDATE users SET permissions=%s WHERE user_id=%s",
                                 (json.dumps(owner_perms), owner_row["user_id"]),
                             )
-                            print("Owner permissions updated for invited user removal")
+                        # print("Owner permissions updated for invited user removal")
 
             # 7. Delete the user itself
             cursor.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
-            print("DONE 12")
+            # print("DONE 12")
 
             connection.commit()
 
@@ -1486,3 +2013,442 @@ def histcheckmail(userid, hisid):
     serv = GmailService(user_id=userid)
     res = serv.check_hisdata(hisid)
     return jsonify(res)
+
+
+# ============ SECURE ATTACHMENT DOWNLOAD ENDPOINT ============
+
+
+@gmail_bp.route("/gmail/attachment/download", methods=["POST"])
+def download_attachment():
+    """
+    Direct attachment download endpoint
+
+    """
+    try:
+        user_id = session.get("user_id")
+        if not user_id:
+            # print("❌ No user_id in session")
+            return jsonify({"error": "Unauthorized: No active session"}), 401
+
+        data = request.get_json() or {}
+        s3_key = data.get("s3_key", "").strip()
+        filename = data.get("filename", "").strip()
+        message_id = data.get("message_id", "").strip()
+        thread_id = data.get("thread_id", "").strip()
+
+        # Verify all fields present
+        if not all([s3_key, filename, message_id, thread_id]):
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: s3_key, filename, message_id, thread_id"
+                    }
+                ),
+                400,
+            )
+
+        # Verify user owns the S3 path
+        if not s3_key.startswith(f"{user_id}/"):
+            print(f"❌ User {user_id} attempting to download: {s3_key}")
+            return jsonify({"error": "Forbidden: You do not own this attachment"}), 403
+
+        # Verify S3 file exists
+        from utils.s3_utils import s3bucket
+
+        s3 = s3bucket()
+        bucket_name = os.getenv("S3_BUCKET")
+
+        try:
+            print(f"☁️ Checking S3 file: {s3_key}")
+            s3.head_object(Bucket=bucket_name, Key=s3_key)
+            print(f"✅ S3 file verified")
+
+        except s3.exceptions.NoSuchKey:
+            print(f"❌ File not found in S3: {s3_key}")
+            return jsonify({"error": "File not found"}), 404
+
+        except Exception as e:
+            print(f"❌ S3 error: {e}")
+            return jsonify({"error": f"S3 access error: {str(e)}"}), 500
+
+        # Generate presigned URL
+        try:
+            print(f"🔐 Generating presigned URL for {filename}")
+            presigned_url = s3.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": bucket_name,
+                    "Key": s3_key,
+                    "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                },
+                ExpiresIn=3600,  # URL valid for 1 hour
+            )
+
+            print(f"✅ Presigned URL generated, valid for 1 hour")
+            print(f"📋 AUDIT: User {user_id} downloading {filename} from {s3_key}")
+
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "download_url": presigned_url,
+                        "filename": filename,
+                        "expires_in_seconds": 3600,
+                        "message": "Download ready",
+                    }
+                ),
+                200,
+            )
+
+        except Exception as e:
+            print(f"❌ Presigned URL generation failed: {e}")
+            return (
+                jsonify({"error": f"Failed to generate download link: {str(e)}"}),
+                500,
+            )
+
+    except Exception as e:
+        print(f"💥 Unexpected error in download_attachment: {e}")
+        print(f"📋 Traceback: {traceback.format_exc()}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+# # ============ REPROCESS OLD EMAILS FOR IMAGE VISIBILITY ============
+
+
+# @gmail_bp.route("/gmail/reprocess_old_emails/<user_id>", methods=["POST"])
+# def reprocess_user_old_emails(user_id):
+#     """
+#     Reprocess all old emails for a specific user with MIME extraction
+#     to ensure images are visible in the frontend.
+
+#     This endpoint:
+#     1. Fetches all email history from Gmail using MIME extraction
+#     2. Re-extracts embedded images and attachments
+#     3. Updates local JSON files with processed content
+#     4. Syncs for the specified user
+
+#     Query params:
+#     - force: If "true", bypasses cache and reprocesses all emails
+#     """
+#     try:
+#         force_reprocess = request.args.get("force", "false").lower() == "true"
+
+#         print(f"\n{'='*60}")
+#         print(f"🔄 Reprocessing old emails for user: {user_id}")
+#         print(f"   Force: {force_reprocess}")
+#         print(f"{'='*60}")
+
+#         # Validate user exists in session or is admin
+#         session_user_id = session.get("user_id")
+#         if session_user_id != user_id and not session.get("is_admin"):
+#             print(
+#                 f"❌ Unauthorized: User {session_user_id} trying to reprocess {user_id}"
+#             )
+#             return jsonify({"error": "Unauthorized"}), 403
+
+#         # Import here to avoid circular imports
+#         from umail_helper.asyn_functions import v2all_continuous
+
+#         # Run the reprocessing in the background
+#         result = asyncio.run(v2all_continuous(user_id))
+
+#         return (
+#             jsonify(
+#                 {
+#                     "status": "success",
+#                     "message": f"Old emails reprocessed for user {user_id}",
+#                     "result": result,
+#                 }
+#             ),
+#             200,
+#         )
+
+#     except Exception as e:
+#         print(f"❌ Error reprocessing emails: {e}")
+#         print(f"📋 Traceback: {traceback.format_exc()}")
+#         return (
+#             jsonify(
+#                 {
+#                     "status": "failed",
+#                     "error": str(e),
+#                     "message": "Failed to reprocess old emails",
+#                 }
+#             ),
+#             500,
+#         )
+
+
+# @gmail_bp.route("/gmail/reprocess_all_users", methods=["POST"])
+# def reprocess_all_users_emails():
+#     """
+#     Admin endpoint to reprocess all old emails for all users with MIME extraction
+#     to ensure images are visible across the entire system.
+
+#     This endpoint:
+#     1. Fetches all users from database
+#     2. For each user, reprocesses all their emails with MIME extraction
+#     3. Updates all local JSON files with properly extracted images
+#     4. Syncs emails for all users
+
+#     **ADMIN ONLY** - Requires admin session
+#     """
+#     try:
+#         # Verify admin access
+#         is_admin = session.get("is_admin", False)
+#         if not is_admin:
+#             print(
+#                 f"❌ Unauthorized: Non-admin user {session.get('user_id')} tried to reprocess all users"
+#             )
+#             return jsonify({"error": "Admin access required"}), 403
+
+#         print(f"\n{'='*80}")
+#        #print("🚀 STARTING GLOBAL EMAIL REPROCESSING FOR ALL USERS")
+#         print(f"{'='*80}")
+
+#         # Import here to avoid circular imports
+#         from utils.celery_base import new_celery
+
+#         # Get all users from database
+#         connection = connect_to_rds()
+#         try:
+#             with connection.cursor() as cursor:
+#                 cursor.execute(
+#                     "SELECT user_id, email FROM users WHERE user_id IS NOT NULL ORDER BY created_at DESC LIMIT 1000"
+#                 )
+#                 users = cursor.fetchall()
+#                 user_count = len(users)
+#         finally:
+#             connection.close()
+
+#         print(f"✅ Found {user_count} users to process")
+
+#         # Queue each user's reprocessing as a Celery task
+#         task_ids = []
+#         for user_id, user_email in users:
+#             print(f"   📧 Queueing {user_email}...")
+#             # Use the existing umail_sync task which does full reprocessing
+#             task = new_celery.send_task("tasks.umailSync", args=[user_id])
+#             task_ids.append(
+#                 {"user_id": user_id, "email": user_email, "task_id": task.id}
+#             )
+
+#         print(f"\n✅ Queued {len(task_ids)} reprocessing tasks")
+
+#         return (
+#             jsonify(
+#                 {
+#                     "status": "queued",
+#                     "message": f"Reprocessing queued for {user_count} users",
+#                     "task_count": len(task_ids),
+#                     "tasks": task_ids,
+#                 }
+#             ),
+#             202,
+#         )
+
+#     except Exception as e:
+#         print(f"❌ Error queuing reprocessing: {e}")
+#         print(f"📋 Traceback: {traceback.format_exc()}")
+#         return (
+#             jsonify(
+#                 {
+#                     "status": "failed",
+#                     "error": str(e),
+#                     "message": "Failed to queue reprocessing for all users",
+#                 }
+#             ),
+#             500,
+#         )
+
+
+# @gmail_bp.route("/gmail/reprocessing_status", methods=["GET"])
+# def get_reprocessing_status():
+#     """
+#     Get the status of ongoing email reprocessing tasks.
+
+#     Returns:
+#     - List of all active reprocessing tasks
+#     - Status of each task (pending, active, success, failed)
+#     - Progress statistics
+#     """
+#     try:
+#         from utils.celery_base import new_celery
+
+#         # Get active tasks
+#         active_tasks = new_celery.control.inspect().active()
+
+#         reprocessing_tasks = []
+#         if active_tasks:
+#             for worker, tasks in active_tasks.items():
+#                 for task_id, task_info in tasks.items():
+#                     if "umailSync" in task_info.get("name", ""):
+#                         reprocessing_tasks.append(
+#                             {
+#                                 "task_id": task_id,
+#                                 "user_id": task_info.get("args", [None])[0],
+#                                 "worker": worker,
+#                                 "started": task_info.get("time_start"),
+#                             }
+#                         )
+
+#         return (
+#             jsonify(
+#                 {
+#                     "status": "success",
+#                     "active_tasks": len(reprocessing_tasks),
+#                     "tasks": reprocessing_tasks,
+#                 }
+#             ),
+#             200,
+#         )
+
+#     except Exception as e:
+#         print(f"❌ Error getting reprocessing status: {e}")
+#         return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@gmail_bp.route("/gmail/download_attachment", methods=["POST"])
+def download_attachment_on_demand():
+    """
+    ⚠️ NEW ENDPOINT: On-demand attachment download
+
+    Purpose:
+    - User clicks "Download" button on attachment in frontend
+    - Frontend sends attachment_id + message_id to this endpoint
+    - Backend retrieves file from Gmail API
+    - Uploads to S3 temporarily
+    - Returns CloudFront URL for direct download
+
+    Request body:
+    {
+        "user_id": "user123",
+        "message_id": "gmail_message_id",
+        "attachment_id": "gmail_attachment_id",
+        "filename": "document.pdf"
+    }
+
+    Returns:
+    {
+        "status": "success",
+        "filename": "document.pdf",
+        "download_url": "https://cloudfront.../file.pdf",
+        "s3_key": "user123/messages/attachments/..."
+    }
+    """
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+        message_id = data.get("message_id")
+        attachment_id = data.get("attachment_id")
+        filename = data.get("filename", "attachment")
+
+        if not all([user_id, message_id, attachment_id]):
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "error": "Missing required fields: user_id, message_id, attachment_id",
+                    }
+                ),
+                400,
+            )
+
+        print(f"\n📥 [DOWNLOAD] Attachment download requested:")
+        print(f"   User: {user_id}")
+        print(f"   Message: {message_id}")
+        print(f"   Attachment: {attachment_id}")
+        print(f"   Filename: {filename}")
+
+        # Initialize Gmail service
+        gmail_service = GmailService(user_id)
+
+        # Retrieve attachment from Gmail API
+        print(f"☁️ [DOWNLOAD] Fetching from Gmail API...")
+        attachment_data = (
+            gmail_service.service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+            .execute()
+        )
+
+        # Decode the attachment data
+        import base64
+        import tempfile
+        import os
+
+        file_data = base64.urlsafe_b64decode(attachment_data.get("data", b""))
+
+        if not file_data:
+            return jsonify({"status": "error", "error": "Attachment has no data"}), 400
+
+        print(f"✅ [DOWNLOAD] Retrieved {len(file_data)} bytes from Gmail API")
+
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=os.path.splitext(filename)[1]
+        ) as tmp_file:
+            tmp_file.write(file_data)
+            tmp_path = tmp_file.name
+
+        # Upload to S3
+        from utils.s3_utils import upload_any_file, attach_CLDFRNT_url
+
+        filename_safe = filename.replace("/", "_").replace("\\", "_")
+        s3_key = (
+            f"{user_id}/messages/attachments/downloads/{message_id}/{filename_safe}"
+        )
+
+        print(f"☁️ [DOWNLOAD] Uploading to S3: {s3_key}")
+        result = upload_any_file(tmp_path, user_id, type="messages", s3_key_C=s3_key)
+
+        # Clean up temp file
+        try:
+            os.remove(tmp_path)
+        except Exception as e:
+            print(f"⚠️ Could not delete temp file: {e}")
+
+        # Check upload result
+        if result.get("status") != "success":
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "error": result.get("message", "S3 upload failed"),
+                    }
+                ),
+                500,
+            )
+
+        # Generate CloudFront URL
+        download_url = attach_CLDFRNT_url(s3_key)
+
+        print(f"✅ [DOWNLOAD] Success! URL: {download_url}")
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "filename": filename,
+                    "download_url": download_url,
+                    "s3_key": s3_key,
+                    "size": len(file_data),
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print(f"❌ [DOWNLOAD] Error: {e}")
+        print(f"📋 [DOWNLOAD] Traceback: {traceback.format_exc()}")
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "error": str(e),
+                    "message": "Failed to download attachment",
+                }
+            ),
+            500,
+        )

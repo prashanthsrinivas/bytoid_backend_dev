@@ -6,8 +6,10 @@ from cust_helpers import pathconfig
 from db.db_checkers import get_business_info, get_users_clients_id
 from db.rds_db import connect_to_rds
 from gmail_route.routes import gmail_reply
+from services.gmail_service import GmailService
 from umail_helper.mails_process import update_config_file
 from umail_lance.umail_lance_agent import UmailLanceClient
+from utils.async_check import run_async
 from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response
 from utils.normal import can_reply_to_email, ensure_dir, load_yaml_file
@@ -22,14 +24,21 @@ logger = get_logger(__name__)
 def umail_get_sorted_lance_emails(connection, user_id, client_id):
     client = UmailLanceClient(user_id)
     recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
+    if not recent_msg:
+        print("NO RECENT MSG")
+        return None
 
     all_messages = []
     sorted_conversations = []
+    if isinstance(recent_msg, dict):
+        values = recent_msg.items()
+    else:
+        values = recent_msg
 
     # open a cursor once and reuse
     with connection.cursor() as cursor:
-        print("connection", connection)
-        for conv_id, messages_list in recent_msg.items():
+        # print("connection", connection)
+        for conv_id, messages_list in values:
             try:
                 # 🔥 Deduplicate messages
                 unique_messages = {}
@@ -92,7 +101,7 @@ def umail_get_sorted_lance_emails(connection, user_id, client_id):
             ),
             reverse=False,
         )
-
+    print("len ofumail_get_sorted_lance_emails ", len(sorted_conversations))
     return sorted_conversations
 
 
@@ -175,23 +184,24 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
 
         # Call model to generate retrieval question
         base_query = get_fireworks_response(filled_prompt, "system")
-        # print("basequery",type(base_query), base_query)
+        ##print("basequery",type(base_query), base_query)
 
         # Parse retrieval question safely
         try:
             question_data = json.loads(base_query)
-            # print("json loads")
+            ##print("json loads")
         except json.JSONDecodeError:
             import re
 
             json_text = re.search(r"\{.*\}", base_query, re.DOTALL)
             question_data = json.loads(json_text.group(0)) if json_text else {}
-            # print("re loads")
-        # print("type of questiondata", type(question_data), question_data)
+            ##print("re loads")
+        ##print("type of questiondata", type(question_data), question_data)
         question_text = (
             question_data.get("question", "").strip() if question_data else ""
         )
         # print("queston text", question_text)
+        # print("len of question", len(question_text))
         base_doc_ans = []
         if question_text:
             top_k = 3
@@ -199,7 +209,7 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
                 user_id=userid, query_text=question_text, top_k=top_k
             )
             lance_client = LanceClient(user_id=userid)
-            results = lance_client.query_vector(query_input)
+            results = run_async(lance_client.query_vector(query_input))
             for r in results:
                 clean_text = r.get("text", "").encode().decode("unicode_escape")
                 base_doc_ans.append(clean_text)
@@ -223,9 +233,10 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
             .replace("{{sender_name}}", str(sender_name or ""))
         )
 
-        # print("base docs ans", base_doc_ans)
+        ##print("base docs ans", base_doc_ans)
 
         # ai_reply = get_fireworks_response(filled_prompt, "system")
+        ##print("print filled prompt",filled_prompt)
         ai_reply = normalize_ai_response(
             get_fireworks_response(filled_prompt, "system")
         )
@@ -270,7 +281,7 @@ def send_pilot_messages(
     ticket_name=None,
     is_reply=True,
 ):
-    print("🚀 [DEBUG] Starting send_pilot_messages function")
+    # print("🚀 [DEBUG] Starting send_pilot_messages function")
 
     try:
         if b_connection is None:
@@ -327,7 +338,7 @@ def send_pilot_messages(
         # print(f"🚀 [DEBUG] Sending message via channel: {channel}")
 
         if channel == "gmail":
-            print("📧 [DEBUG] Processing Gmail send...")
+            # print("📧 [DEBUG] Processing Gmail send...")
             if isinstance(input_data, dict):
                 # input_data is a single message dict
                 latest_msg = input_data
@@ -339,14 +350,14 @@ def send_pilot_messages(
                     if isinstance(msg, dict) and "timestamp" in msg
                 ]
                 if not valid_messages:
-                    print("❌ [DEBUG] No valid messages found in input_data")
+                    # print("❌ [DEBUG] No valid messages found in input_data")
                     return {"error": "No valid messages found"}, 400
                 latest_msg = max(
                     valid_messages,
                     key=lambda msg: datetime.fromisoformat(msg["timestamp"]),
                 )
             else:
-                print("❌ [DEBUG] input_data is neither dict nor list")
+                # print("❌ [DEBUG] input_data is neither dict nor list")
                 return {"error": "Invalid input_data format"}, 400
             latest_id = latest_msg["id"]
             print(f"📧 [DEBUG] Latest message ID: {latest_id}")
@@ -383,7 +394,7 @@ def send_pilot_messages(
                 return {"error": "Gmail send failed"}, 500
 
         elif channel == "zoho":
-            print("📧 [DEBUG] Processing Zoho send...")
+            # print("📧 [DEBUG] Processing Zoho send...")
             try:
                 print(f"📧 [DEBUG] Calling send_zoho_email()...")
                 response_payload, status_code = send_zoho_email(
@@ -420,7 +431,7 @@ def send_pilot_messages(
             return {"error": "Unsupported channel"}, 400
 
         # Database updates
-        # print("💾 [DEBUG] Starting database updates...")
+        ##print("💾 [DEBUG] Starting database updates...")
         updated_date = datetime.now(timezone.utc).isoformat()
         created_date = updated_date
         # print(
@@ -428,23 +439,23 @@ def send_pilot_messages(
         # )
 
         try:
-            # print("💾 [DEBUG] Updating existing ticket and thread...")
+            ##print("💾 [DEBUG] Updating existing ticket and thread...")
             cursor.execute(
                 "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
                 (updated_date, "In-Progress", conversation_id),
             )
-            # print("✅ [DEBUG] Ticket updated")
+            ##print("✅ [DEBUG] Ticket updated")
 
             cursor.execute(
                 "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
                 (updated_date, conversation_id),
             )
-            # print("✅ [DEBUG] Thread updated")
+            ##print("✅ [DEBUG] Thread updated")
 
             cont_ref = f"{user_id}/messages/{client_id}/{conversation_id}.json"
             # print(f"💾 [DEBUG] Content reference: {cont_ref}")
 
-            print("💾 [DEBUG] Inserting message record...")
+            # print("💾 [DEBUG] Inserting message record...")
             cursor.execute(
                 """
                 INSERT INTO messages (
@@ -472,10 +483,10 @@ def send_pilot_messages(
                     channel,
                 ),
             )
-            print("✅ [DEBUG] Message record inserted")
+            # print("✅ [DEBUG] Message record inserted")
 
             connection.commit()
-            print("✅ [DEBUG] Database transaction committed")
+        # print("✅ [DEBUG] Database transaction committed")
 
         except Exception as e:
             connection.rollback()
@@ -483,7 +494,7 @@ def send_pilot_messages(
             return {"error": "Database operation failed"}, 500
 
         # Update Conversation File
-        print("📄 [DEBUG] Updating conversation file...")
+        # print("📄 [DEBUG] Updating conversation file...")
         try:
             if isinstance(input_data, dict):
                 input_data = [input_data]
@@ -502,7 +513,7 @@ def send_pilot_messages(
                 type="messages",
                 s3_key_C=s3_conv_key,
             )
-            print("✅ [DEBUG] Conversation file updated successfully")
+        # print("✅ [DEBUG] Conversation file updated successfully")
 
         except Exception as e:
             print(f"❌ [DEBUG] Failed to update conversation file: {e}")
@@ -516,7 +527,7 @@ def send_pilot_messages(
         )
 
         # Update Config File
-        print("⚙️ [DEBUG] Updating config file...")
+        # print("⚙️ [DEBUG] Updating config file...")
         config_folder = os.path.join(
             pathconfig.basepath, "messages", user_id, client_id
         )
@@ -564,7 +575,7 @@ def send_pilot_messages(
                 print(f"⚙️ [DEBUG] Using existing thread_id: {thread_id}")
         else:
             updated_entry["thread_id"] = ""
-            print("⚙️ [DEBUG] Non-Gmail channel, no thread_id")
+        # print("⚙️ [DEBUG] Non-Gmail channel, no thread_id")
 
         print(f"⚙️ [DEBUG] Updated entry: {updated_entry}")
 
@@ -579,12 +590,12 @@ def send_pilot_messages(
 
         if not conversation_exists:
             config_data.setdefault("conversations", []).append(updated_entry)
-            print("⚙️ [DEBUG] Added new conversation to config")
+        # print("⚙️ [DEBUG] Added new conversation to config")
 
         config_data["userclients_id"] = client_id
         print(f"⚙️ [DEBUG] Calling update_config_file()...")
         update_config_file(user_id, client_id, config_data)
-        print("✅ [DEBUG] Config file updated successfully")
+        # print("✅ [DEBUG] Config file updated successfully")
 
         # Final Response
         response_data = {
@@ -615,17 +626,17 @@ def helper_make_reply_email(userid=None, from_email=None, n_connection=None):
 
         if n_connection is None and connection is None:
             connection = connect_to_rds()
-            print("make connection creation", connection)
+        # print("make connection creation", connection)
         else:
-            print("conn", connection)
+            # print("conn", connection)
             connection = n_connection
 
         clientid = get_users_clients_id(email=from_email, user_id=userid)
         if not clientid:
-            print("No client id")
+            # print("No client id")
             return None
 
-        print("max connection", connection)
+        # print("max connection", connection)
 
         # sorted conversations
         sorted_conversations = umail_get_sorted_lance_emails(
@@ -640,24 +651,40 @@ def helper_make_reply_email(userid=None, from_email=None, n_connection=None):
         for conv in sorted_conversations:
             all_messages.extend(conv.get("messages", []))
         if not all_messages:
+            print("no all messages")
             return None
+        # print("all msg", all_messages)
 
         latest_msg = all_messages[-1]
+        # print("latest message", latest_msg)
         client_email = latest_msg.get("from")
 
         if not can_reply_to_email(client_email):
-            return False
+            return False, "its not a valid email to make an auto reply"
 
         if latest_msg.get("direction") == "inbound":
-            # print("email_msg", latest_msg["body"])
-            # print("umail_bodies", [msg.get("body") for msg in all_messages])
+            serv = GmailService(user_id=userid)
+            thread_id = latest_msg.get("thread_id")
+            res = run_async(serv.get_thread_last_message_direction(thread_id=thread_id))
+            if res.get("direction") != "inbound":
+                return False, "cant send because last message of user is outbound"
+            msgs_same_thread = (
+                [m for m in all_messages if m.get("thread_id") == thread_id]
+                if thread_id
+                else all_messages  # fallback if no thread ID
+            )
+
+            # Re-sort after filtering
+            msgs_same_thread = sorted(msgs_same_thread, key=lambda x: x["timestamp"])
             ai_reply = suggest_helper_base(
                 userid=userid,
                 email_msg=latest_msg["body"],
-                umail_conversations=all_messages,
-                umail_bodies=[msg.get("body") for msg in all_messages],
+                umail_conversations=msgs_same_thread,
+                umail_bodies=[msg.get("body") for msg in msgs_same_thread],
             )
-            # print("aPA reply", ai_reply)
+            # print("aPA reply from gmail ", ai_reply)
+            # logger.info("apa reply %s", ai_reply)
+            # print("values", latest_msg["to"], latest_msg["from"])
             if ai_reply:
                 send_val = send_pilot_messages(
                     user_id=userid,
@@ -675,19 +702,20 @@ def helper_make_reply_email(userid=None, from_email=None, n_connection=None):
                     is_reply=True,
                 )
                 if send_val:
-                    print("sent val ok")
-                    return send_val
+                    # print("sent val ok")
+                    return send_val, "sent email success"
                 else:
-                    print("sent val fail")
-                    return False
+                    # print("sent val fail")
+                    return False, "sending email to user failed"
             else:
-                print("cant generate suggest")
-                return False
+                # print("cant generate suggest")
+                return False, "failed to generate emailbody"
         else:
-            print("sent val outbound")
-            return False
+            # print("sent val outbound")
+            return False, "cant send because last message of user is outbound"
 
     except Exception as e:
+        # print("ERROR at helper make reply email", e)
         logger.info("ERROR %s", e)
         return None
     finally:

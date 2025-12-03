@@ -1,0 +1,1093 @@
+{
+  "service_request_allocations": {
+    "columns": [
+      {
+        "column_name": "allocation_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "customer_account_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "request_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "customer_account_id_fk",
+        "referenced_table": "customer_accounts",
+        "referenced_column": "customer_account_id"
+      },
+      {
+        "column_name": "request_id_fk",
+        "referenced_table": "service_requests",
+        "referenced_column": "service_request_id"
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "referenced_table": "users_account",
+        "referenced_column": "users_account_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "allocation_id",
+        "non_unique": false
+      },
+      {
+        "index_name": "allocation_staff_fk",
+        "column_name": "users_account_id_fk",
+        "non_unique": true
+      },
+      {
+        "index_name": "allocation_customers_fk",
+        "column_name": "customer_account_id_fk",
+        "non_unique": true
+      },
+      {
+        "index_name": "allocation_request_fk",
+        "column_name": "request_id_fk",
+        "non_unique": true
+      }
+    ]
+  },
+  "comm": {
+    "columns": [
+      {
+        "column_name": "comm_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_account_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "users_account_id_fk",
+        "referenced_table": "users_account",
+        "referenced_column": "users_account_id"
+      },
+      {
+        "column_name": "customer_account_id_fk",
+        "referenced_table": "customer_accounts",
+        "referenced_column": "customer_account_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "comm_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "linkage": {
+    "columns": [
+      {
+        "column_name": "linkage_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "assistant_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "workflow_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "assistant_id_fk",
+        "referenced_table": "assistants",
+        "referenced_column": "assistant_id"
+      },
+      {
+        "column_name": "workflow_id_fk",
+        "referenced_table": "workflow",
+        "referenced_column": "workflow_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "linkage_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "reviews": {
+    "columns": [
+      {
+        "column_name": "review_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "conversation_thread_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "ratings_given",
+        "data_type": "int",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "comment_posted",
+        "data_type": "text",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "review_created_at",
+        "data_type": "text",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "conversation_thread_id_fk",
+        "referenced_table": "conversation_thread",
+        "referenced_column": "conversation_thread_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "review_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "assistant_guidelines": {
+    "columns": [
+      {
+        "column_name": "assistant_guideline_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "assistant_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+
+      {
+        "column_name": "assistant_guidelines_tag",
+        "data_type": "text",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_guidelines_transcript",
+        "data_type": "text",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_guidelines_created_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_guidelines_updated_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "assistant_id_fk",
+        "referenced_table": "assistants",
+        "referenced_column": "assistant_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "assistant_guideline_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "integrated": {
+    "columns": [
+      {
+        "column_name": "integrated_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "assistant_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "intergration_platform",
+        "data_type": "enum('facebook_messenger','instagram_dm','whatsapp','twilio_sms')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "intergration_description",
+        "data_type": "text",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "intergration_page_id_or_number",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "intergration_webhook_url",
+        "data_type": "text",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "intergration_status",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "intergration_created_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "assistant_id_fk",
+        "referenced_table": "assistants",
+        "referenced_column": "assistant_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "integrated_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "deployments": {
+    "columns": [
+      {
+        "column_name": "deployment_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "assistant_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "website_name",
+        "data_type": "text",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "assistant_id_fk",
+        "referenced_table": "assistants",
+        "referenced_column": "assistant_id"
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "referenced_table": "users_account",
+        "referenced_column": "users_account_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "deployment_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "msgs": {
+    "columns": [
+      {
+        "column_name": "msg_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "conversation_thread_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "channel",
+        "data_type": "enum('gmail','website','zoho','outlook','whatsapp','sms','phone','instagram_dm','facebook_messenger')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_account_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "msg_content_ref",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "msg_direction",
+        "data_type": "enum('inbound','outbound')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "msg_summary",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "msg_created_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "msg_update_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "conversation_thread_id_fk",
+        "referenced_table": "conversation_thread",
+        "referenced_column": "conversation_thread_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "msg_id",
+        "non_unique": false
+      },
+      {
+        "index_name": "fk_msgs_dialogue",
+        "column_name": "conversation_thread_id_fk",
+        "non_unique": true
+      }
+    ]
+  },
+  "subscriptions": {
+    "columns": [
+      {
+        "column_name": "subscription_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "membership_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "subscription_type",
+        "data_type": " enum('Bytoid:tm: Support for Consultants','Bytoid:tm: Support - Part-time AI Worker','Bytoid:tm: Support - Full time AI Worker','Bytoid:tm: Support - 24/7 AI Worker')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "credit_score",
+        "data_type": "enum('250','500','1000','1500','2500','5000','7500','15000')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "subscriptions_add-on",
+        "data_type": "enum('Bytoid:tm: LiveTalk','Bytoid:tm: LiveResolve','Bytoid:tm: Reporting Agent')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "subscriptions_add_on_measurement",
+        "data_type": "json",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "subscriptions_created_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "subscriptions_updated_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "subscriptions_logged_in_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "subscriptions_logged_out_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "subscription_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "workflow": {
+    "columns": [
+      {
+        "column_name": "workflow_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "assistant_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "workflow_created_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "workflow_updated_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+        {
+        "column_name": "assistant_id_fk",
+        "referenced_table": "assistants",
+        "referenced_column": "assistant_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "workflow_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "assistants": {
+    "columns": [
+      {
+        "column_name": "assistant_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "deployment_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_name",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_description",
+        "data_type": "enum('Registered','Suspended','Deleted')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_created_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_updated_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "assistant_voice",
+        "data_type": "enum('Man','Woman')",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "deployment_id_fk",
+        "referenced_table": "deployments",
+        "referenced_column": "deployment_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "assistant_id",
+        "non_unique": false
+      }
+    ]
+  },
+  "memberships": {
+    "columns": [
+      {
+        "column_name": "membership_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "subscription_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "users_account_id_fk",
+        "referenced_table": "users_account",
+        "referenced_column": "users_account_id"
+      },
+      {
+        "column_name": "subscription_id_fk",
+        "referenced_table": "subscriptions",
+        "referenced_column": "subscription_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "membership_id",
+        "non_unique": false
+      },
+      {
+        "index_name": "subscription_id",
+        "column_name": "subscription_id",
+        "non_unique": true
+      },
+      {
+        "index_name": "membership_ibfk_1",
+        "column_name": "users_account_id",
+        "non_unique": true
+      }
+    ]
+  },
+  "conversation_thread": {
+    "columns": [
+      {
+        "column_name": "conversation_thread_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "_comment": "deleted in the used schema",
+
+        "column_name": "integrated_id_fk",    
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "conversation_thread_started_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "conversation_thread_last_message",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "conversation_thread_status",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "service_request_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "integrated_id_fk",
+        "referenced_table": "integrated",
+        "referenced_column": "integrated_id"
+      },
+      {
+        "column_name": "service_request_id_fk",
+        "referenced_table": "service_requests",
+        "referenced_column": "service_request_id"
+      },
+      {
+        "column_name": "users_account_id_fk",
+        "referenced_table": "users_account",
+        "referenced_column": "users_account_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "conversation_thread_id",
+        "non_unique": false
+      },
+      {
+        "index_name": "fk_connection",
+        "column_name": "integrated_id_fk",
+        "non_unique": true
+      },
+      {
+        "index_name": "fk_service_request",
+        "column_name": "service_request_id_fk",
+        "non_unique": true
+      }
+    ]
+  },
+  "service_requests": {
+    "columns": [
+      {
+        "column_name": "service_request_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "conversation_thread_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "service_requests_priority",
+        "data_type": "enum('High','Medium','Low')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "service_requests_status",
+        "data_type": "enum('Open','Pending','Solved')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "service_requests_created_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "service_requests_updated_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "comm_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "service_request_name",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "service_requests_SLA",
+        "data_type": "int",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "service_requests_assignee_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "conversation_thread_id_fk",
+        "referenced_table": "conversation_thread",
+        "referenced_column": "conversation_thread_id"
+      },
+      {
+        "column_name": "comm_id_fk",
+        "referenced_table": "comm",
+        "referenced_column": "comm_id"
+      },
+      {
+        "column_name": "service_requests_assignee_id",
+        "referenced_table": "users_account",
+        "referenced_column": "users_account_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "service_request_id",
+        "non_unique": false
+      },
+      {
+        "index_name": "service_requests_ibfk_1",
+        "column_name": "conversation_thread_id_fk",
+        "non_unique": true
+      }
+    ]
+  },
+  "users_account": {
+    "columns": [
+      {
+        "column_name": "users_account_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "user_account_typ",
+        "data_type": "enum('superadmin','admin','user')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "deployment_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_first_name",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_last_name",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_email",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_phone",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_client_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_location",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_created_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_updated_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_logged_in_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_logged_out_at",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_membership_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "user_account_roles_created",
+        "data_type": "json",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_permission",
+        "data_type": "json",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_umail_json",
+        "data_type": "json",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "user_account_autopilot_mode",
+        "data_type": "json",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "user_account_membership_id",
+        "referenced_table": "memberships",
+        "referenced_column": "membership_id"
+      },
+      {
+        "column_name": "deployment_id_fk",
+        "referenced_table": "deployments",
+        "referenced_column": "deployment_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "users_account_id",
+        "non_unique": false
+      },
+      {
+        "index_name": "fk_staff_membership",
+        "column_name": "user_account_membership_id",
+        "non_unique": true
+      }
+    ]
+  },
+  "customer_accounts": {
+    "columns": [
+      {
+        "column_name": "customer_account_id",
+        "data_type": "varchar",
+        "is_nullable": "NO",
+        "column_key": "PRI"
+      },
+      {
+        "column_name": "comm_id_fk",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": "MUL"
+      },
+      {
+        "column_name": "customer_first_name",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_last_name",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_phone_number",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_whatsapp_number",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_email_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_fb_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_instagram_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_slack_id",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_slack_workspace",
+        "data_type": "varchar",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_created_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_updated_in",
+        "data_type": "datetime",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_type",
+        "data_type": "enum('Customer','Lead')",
+        "is_nullable": "YES",
+        "column_key": ""
+      },
+      {
+        "column_name": "customer_snooze",
+        "data_type": "tinyint",
+        "is_nullable": "YES",
+        "column_key": ""
+      }
+    ],
+    "foreign_keys": [
+      {
+        "column_name": "comm_id_fk",
+        "referenced_table": "comm",
+        "referenced_column": "comm_id"
+      }
+    ],
+    "indexes": [
+      {
+        "index_name": "PRIMARY",
+        "column_name": "customer_account_id",
+        "non_unique": false
+      },
+      {
+        "index_name": "fk_comm",
+        "column_name": "comm_id_fk",
+        "non_unique": true
+      }
+    ]
+  }
+}

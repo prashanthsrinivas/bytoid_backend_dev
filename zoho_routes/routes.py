@@ -66,7 +66,7 @@ def zoho_callback():
     data = request.json
     code = request.args.get("code") or data["code"]
     if not code:
-        print("no code provided")
+        # print("no code provided")
         return "❌ No code provided"
 
     token_data = {
@@ -98,7 +98,7 @@ def zoho_callback():
         id_token = tokens.get("id_token")
         data = jwt.decode(id_token, options={"verify_signature": False})
     else:
-        print("\u274c No user info available (API or id_token)")
+        # print("\u274c No user info available (API or id_token)")
         return redirect("https://bytoid.ai/login")
 
     # Extract user info
@@ -126,8 +126,8 @@ def zoho_callback():
         cursor.execute(
             """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email, client_id,
             client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-            created_in, updated_in, logged_in_at, logged_out_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())""",
+            created_in, updated_in, logged_in_at, logged_out_at, special_access )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(),%s)""",
             (
                 id,
                 "admin",
@@ -145,6 +145,7 @@ def zoho_callback():
                 "",
                 "zoho",
                 None,
+                True,
             ),
         )
     else:
@@ -219,7 +220,7 @@ def get_zoho_account_id(access_token):
     except Exception as e:
         import traceback
 
-        print("❌ Exception in get_zoho_account_id:")
+        # print("❌ Exception in get_zoho_account_id:")
         print(traceback.format_exc())
         return None
 
@@ -254,7 +255,10 @@ def fetch_zoho_emails(user_id):
         cursor = conn.cursor()
 
         # Step 1: Try to fetch token info from users table
-        cursor.execute("SELECT token, refresh_token, email FROM users WHERE user_id = %s", (user_id,))
+        cursor.execute(
+            "SELECT token, refresh_token, email FROM users WHERE user_id = %s",
+            (user_id,),
+        )
         row = cursor.fetchone()
 
         user_email = None
@@ -264,21 +268,23 @@ def fetch_zoho_emails(user_id):
             user_email = email
             old_access_token = access_token
         else:
-        # Step 2: Fallback to business_info table
+            # Step 2: Fallback to business_info table
             cursor.execute(
-                "SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,)
+                "SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s",
+                (user_id,),
             )
             biz_row = cursor.fetchone()
             if not biz_row:
-                # return {"error": "User not found in users or business_info tables"}, 404
-                print("error : User not found in users or business_info tables")
+                return {"error": "User not found in users or business_info tables"}, 404
+            # print("error : User not found in users or business_info tables")
 
             business_email = biz_row[0]
             user_email = business_email
 
             # Step 3: Get token info using BusinessEmail
             cursor.execute(
-                "SELECT token, refresh_token FROM users WHERE email = %s", (business_email,)
+                "SELECT token, refresh_token FROM users WHERE email = %s",
+                (business_email,),
             )
             token_row = cursor.fetchone()
 
@@ -304,7 +310,6 @@ def fetch_zoho_emails(user_id):
             )
             conn.commit()
 
-        
         # Step 6: Get account_id and make mail request
         account_id = get_zoho_account_id(access_token)
         mails_url = f"https://mail.zoho.in/api/accounts/{account_id}/messages/view"
@@ -365,9 +370,7 @@ def fetch_zoho_emails(user_id):
             has_attachment = mail_data.get("hasAttachment")
 
             direction = (
-                "inbound"
-                if from_address.lower() != user_email.lower()
-                else "outbound"
+                "inbound" if from_address.lower() != user_email.lower() else "outbound"
             )
             conversation_id = from_address if direction == "inbound" else email_only
 
@@ -379,72 +382,74 @@ def fetch_zoho_emails(user_id):
                 participant_name = to_name
 
             if participant in email_to_client_id:
-                    client_id = email_to_client_id[participant]
-                    print(f"Using cached client_id {client_id} for {participant}")
+                client_id = email_to_client_id[participant]
+                print(f"Using cached client_id {client_id} for {participant}")
             else:
-                    # Check database for existing client
-                    client_id = get_users_client_id(participant,user_id, cursor)
-                    
-                    if not client_id:
-                        # Create new client
-                        client_id = add_lead_contact(user_id, cursor, participant, participant_name)
-                    
-                    # Cache the client_id for this email
-                    email_to_client_id[participant] = client_id
+                # Check database for existing client
+                client_id = get_users_client_id(participant, user_id, cursor)
+
+                if not client_id:
+                    # Create new client
+                    client_id = add_lead_contact(
+                        user_id, cursor, participant, participant_name
+                    )
+
+                # Cache the client_id for this email
+                email_to_client_id[participant] = client_id
 
             message = {
-                    "id": message_id,
-                    "from": from_address,
-                    "to": email_only,
-                    "body": extracted_body,
-                    "subject": subject,
-                    "timestamp": timestamp_dt,
-                    "status": "received",
-                    "source": "zoho",
-                    "direction": direction,
-                    "user_id": user_id,
-                }
+                "id": message_id,
+                "from": from_address,
+                "to": email_only,
+                "body": extracted_body,
+                "subject": subject,
+                "timestamp": timestamp_dt,
+                "status": "received",
+                "source": "zoho",
+                "direction": direction,
+                "user_id": user_id,
+            }
 
-            grouped_messages.setdefault(client_id, {}).setdefault(
-                    "zoho", []
-                ).append(message)
+            grouped_messages.setdefault(client_id, {}).setdefault("zoho", []).append(
+                message
+            )
 
             config_folder = os.path.join(
-                    pathconfig.basepath, "messages", user_id, client_id
-                )
+                pathconfig.basepath, "messages", user_id, client_id
+            )
             ensure_dir(config_folder)
 
             config_filepath = os.path.join(config_folder, "config.json")
             if not os.path.exists(config_filepath):
-                    dummy_config = {
-                        "userclients_id": client_id,
-                        "conversations": [
-                            {
-                                "conv_id": "",
-                                "ticket_id": "",
-                                "ticket_name": "",
-                                "subject": "",
-                                "channel": "",
-                                "updated_date": "",
-                                "subject": "",
-                                "parsed_timestamp": "",
-                            }
-                        ],
-                    }
+                dummy_config = {
+                    "userclients_id": client_id,
+                    "conversations": [
+                        {
+                            "conv_id": "",
+                            "ticket_id": "",
+                            "ticket_name": "",
+                            "subject": "",
+                            "channel": "",
+                            "updated_date": "",
+                            "subject": "",
+                            "parsed_timestamp": "",
+                        }
+                    ],
+                }
 
-                    with open(config_filepath, "w", encoding="utf-8") as f:
-                        json.dump(dummy_config, f, indent=2)
+                with open(config_filepath, "w", encoding="utf-8") as f:
+                    json.dump(dummy_config, f, indent=2)
 
-                    s3_config_key = f"{user_id}/messages/{client_id}/config.json"
-                    s3_data = read_json_from_s3(s3_config_key)
-                    if s3_data is None:
+                s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+                s3_data = read_json_from_s3(s3_config_key)
+                if s3_data is None:
 
-                        upload_any_file(
-                            config_filepath,
-                            user_id,
-                            type="messages",
-                            s3_key_C=s3_config_key,
-                        )
+                    upload_any_file(
+                        config_filepath,
+                        user_id,
+                        type="messages",
+                        s3_key_C=s3_config_key,
+                    )
 
         existing_data = {}
         if os.path.exists(filepath):
@@ -544,17 +549,18 @@ def send_zoho_email(user_id, to_email, subject, body_text, from_user_email):
         print(traceback.format_exc())
         return {"error": str(e)}, 500
 
-def add_lead_contact(user_id,cursor, participant, participant_name):
-                
-                print("creating new user client and communication table")
-                communication_id = str(uuid.uuid4())
-                users_clients_id = str(uuid.uuid4())
 
-                dt_utc = datetime.now(timezone.utc)
-                created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
-                updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
-                
-                insert_communication_sql = """
+def add_lead_contact(user_id, cursor, participant, participant_name):
+
+    # print("creating new user client and communication table")
+    communication_id = str(uuid.uuid4())
+    users_clients_id = str(uuid.uuid4())
+
+    dt_utc = datetime.now(timezone.utc)
+    created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
+    updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+
+    insert_communication_sql = """
                     INSERT INTO communication (
                         communication_id,
                         user_id_fk,
@@ -562,9 +568,9 @@ def add_lead_contact(user_id,cursor, participant, participant_name):
                     )
                     VALUES (%s, %s, NULL)
                 """
-                cursor.execute(insert_communication_sql, (communication_id, user_id))
+    cursor.execute(insert_communication_sql, (communication_id, user_id))
 
-                insert_sql = """
+    insert_sql = """
                     INSERT INTO users_clients (
                         users_clients_id,
                         communication_id_fk,
@@ -586,32 +592,31 @@ def add_lead_contact(user_id,cursor, participant, participant_name):
                     )
                     VALUES (%s, %s, %s, %s, NULL, NULL, %s, NULL, NULL, NULL, NULL,%s,%s,%s,%s)
                 """
-                cursor.execute(
-                    insert_sql,
-                    (
-                        users_clients_id,
-                        communication_id,
-                        participant_name,
-                        "",
-                        participant,                   
-                        "Lead",
-                        created_date,
-                        updated_date,
-                        False,
+    cursor.execute(
+        insert_sql,
+        (
+            users_clients_id,
+            communication_id,
+            participant_name,
+            "",
+            participant,
+            "Lead",
+            created_date,
+            updated_date,
+            False,
+        ),
+    )
 
-                    ),
-                )
-
-                link_sql = """
+    link_sql = """
                     UPDATE communication
                     SET users_clients_id_fk = %s
                     WHERE communication_id = %s
                 """
-                cursor.execute(link_sql, (users_clients_id, communication_id))
+    cursor.execute(link_sql, (users_clients_id, communication_id))
 
-                cursor.connection.commit()
-            
-                return users_clients_id
+    cursor.connection.commit()
+
+    return users_clients_id
 
 
 @zoho_bp.route("/zoho/workdrive/root/<userId>", methods=["GET", "POST"])
@@ -916,6 +921,7 @@ import pytz
 
 UTC = pytz.UTC  # or use timezone.utc if you're not using pytz
 
+
 def token_expired(expiry_str: str) -> bool:
     try:
         if not expiry_str or expiry_str.startswith("0000-00-00"):
@@ -923,7 +929,9 @@ def token_expired(expiry_str: str) -> bool:
 
         # Try parsing with expected format
         try:
-            expiry = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+            expiry = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=UTC
+            )
         except ValueError:
             # Fallback to ISO format or other common formats
             expiry = datetime.fromisoformat(expiry_str)

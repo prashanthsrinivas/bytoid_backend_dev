@@ -1,0 +1,267 @@
+schema_mapper: |
+  You map structured_query fields to actual database schema for TREND intent.
+
+  Input:
+    structured_query: {{structured_query}}
+    database_schema: {{database_schema}}
+    table_relationships: {{table_relationships}}
+
+  Task:
+    Convert structured_query into schema-mapped tables, columns, join paths, and identify the correct time column for trend grouping.
+
+  Output JSON:
+    {
+      "entity_table": "<table>",
+      "entity_columns": ["<entity_display_column>"],
+
+      "metric_table": "<table>",
+      "metric_column": "<table.column>",
+
+      "time_table": "<table>",
+      "time_column": "<table.column>",
+
+      "filter_columns": [
+        {
+          "field": "<structured field>",
+          "column": "<mapped table.column>",
+          "operator": "<>=",
+          "value": "<value>"
+        }
+      ],
+
+      "joins": [
+        {
+          "left_table": "<table>",
+          "right_table": "<table>",
+          "left_column": "<table.column>",
+          "right_column": "<table.column>"
+        }
+      ]
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - No SQL.
+    - Use only schema-valid table/column names.
+    - Compute minimal join path including the time table.
+    - No invented columns.
+
+ast_select_builder: |
+  You generate ONLY the SELECT node of the TREND AST.
+
+  Input:
+    time_column: {{time_column}}
+    metric_column: {{metric_column}}
+    aggregation: {{aggregation}}
+    granularity: {{granularity}}   # e.g., 'day', 'week', 'month'
+
+  Output JSON:
+    {
+      "SELECT": {
+        "type": "SELECT",
+        "columns": [
+          {
+            "type": "ALIAS",
+            "alias": "time_bucket",
+            "expression": {
+              "type": "FUNCTION",
+              "name": "DATE_TRUNC",
+              "arguments": [
+                { "type": "VALUE", "value": "<granularity>" },
+                { "type": "COLUMN", "name": "<time_column>" }
+              ]
+            }
+          },
+          {
+            "type": "ALIAS",
+            "alias": "metric_value",
+            "expression": {
+              "type": "AGGREGATION",
+              "operator": "<aggregation>",
+              "operands": [
+                { "type": "COLUMN", "name": "<metric_column>" }
+              ]
+            }
+          }
+        ]
+      }
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - No SQL strings.
+    - Always wrap the time column in DATE_TRUNC with the given granularity.
+    - Alias the time bucket as "time_bucket".
+
+
+ast_select_builder_pivot: |
+  You generate ONLY the SELECT node of the TREND AST with support for multiple pivot columns.
+
+  Input:
+    time_column: {{time_column}}
+    metric_column: {{metric_column}}
+    aggregation: {{aggregation}}
+    granularity: {{granularity}}
+    pivot_case_columns: {{pivot_case_columns}}
+
+  Output JSON:
+    {
+      "SELECT": {
+        "type": "SELECT",
+        "columns": [
+          {
+            "type": "ALIAS",
+            "alias": "time_bucket",
+            "expression": {
+              "type": "FUNCTION",
+              "name": "DATE_TRUNC",
+              "arguments": [
+                { "type": "VALUE", "value": "<granularity>" },
+                { "type": "COLUMN", "name": "<time_column>" }
+              ]
+            }
+          }
+          {{#if pivot_case_columns}},
+          {{#each pivot_case_columns}}
+          {
+            "type": "ALIAS",
+            "alias": "{{this.alias}}",
+            "expression": {
+              "type": "AGGREGATION",
+              "operator": "SUM",
+              "operands": [
+                {
+                  "type": "CASE_WHEN",
+                  "cases": [
+                    {
+                      "when": {
+                        "type": "BINARY_EXPRESSION",
+                        "operator": "=",
+                        "operands": [
+                          { "type": "COLUMN", "name": "{{this.column}}" },
+                          { "type": "VALUE", "value": "{{this.value}}" }
+                        ]
+                      },
+                      "then": 1
+                    }
+                  ],
+                  "else": 0
+                }
+              ]
+            }
+          }{{#unless @last}},{{/unless}}
+          {{/each}}
+          {{/if}}
+        ]
+      }
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - No SQL strings.
+    - Always wrap the time column in DATE_TRUNC with the given granularity.
+    - Alias the time bucket as "time_bucket".
+    - The alias **must exactly equal the pivot value**.
+    - No pivot combinations.
+  
+ast_from_join_builder: |
+  You generate FROM and JOIN nodes for TREND intent.
+
+  Input:
+    entity_table: {{entity_table}}
+    metric_table: {{metric_table}}
+    time_table: {{time_table}}
+    joins: {{joins}}
+
+  Output JSON:
+    {
+      "FROM": { "type": "FROM", "tables": [ { "type": "TABLE", "name": "<entity_table>" } ] },
+      "JOIN": [
+        {
+          "type": "JOIN",
+          "join_type": "INNER",
+          "tables": [ { "type": "TABLE", "name": "<right_table>" } ],
+          "on": {
+            "type": "BINARY_EXPRESSION",
+            "operator": "=",
+            "operands": [
+              { "type": "COLUMN", "name": "<left_table.left_column>" },
+              { "type": "COLUMN", "name": "<right_table.right_column>" }
+            ]
+          }
+        }
+      ]
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - No SQL.
+    - Use validated join info.
+
+ast_where_builder: |
+  You generate ONLY the WHERE node for TREND intent.
+
+  Input:
+    filter_columns: {{filter_columns}}
+    time_column: {{time_column}}
+    time_range: {{time_range}}
+
+  Output JSON:
+    {
+      "WHERE": {
+        "type": "WHERE",
+        "conditions": [
+          {
+            "type": "BINARY_EXPRESSION",
+            "operator": "<operator>",
+            "operands": [
+              { "type": "COLUMN", "name": "<column>" },
+              { "type": "VALUE", "value": "<value>" }
+            ]
+          }
+        ]
+      }
+    }
+
+  Rules:
+    - **Strict JSON Only**: No markdown, explanations, or commentary outside the JSON.
+    - Exclude filters with null, "all", or "none".
+    - Convert time_range into STRUCTURED operators (>=, <=).
+    - No SQL functions like NOW().
+
+
+ast_group_order_limit_builder: |
+  You generate GROUP BY, ORDER BY, and LIMIT nodes for trend queries.
+
+  Input:
+    time_bucket_column: {{time_bucket_column}}  # ONLY the aliased name, always "time_bucket"
+    limit: {{limit}}
+
+  Output JSON:
+    {
+      "GROUP_BY": {
+        "type": "GROUP_BY",
+        "columns": [
+          { "type": "COLUMN", "name": "<time_bucket_column>" }
+        ]
+      },
+      "ORDER_BY": {
+        "type": "ORDER_BY",
+        "columns": [
+          { "type": "COLUMN", "name": "<time_bucket_column>" }
+        ],
+        "direction": "ASC"
+      },
+      "LIMIT": {
+        "type": "LIMIT",
+        "value": <limit or null>
+      }
+    }
+
+  Rules:
+    - Strict JSON only.
+    - Group ONLY by the time bucket.
+    - ORDER BY must reference the alias "time_bucket".
+    - Always generate LIMIT (can be null).
+
+

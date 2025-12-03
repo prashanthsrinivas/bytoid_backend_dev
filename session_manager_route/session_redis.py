@@ -33,7 +33,7 @@ def verify_sha256(text: str, given_hash: str) -> bool:
 
 async def session_login_redis(user_id, request_data):  # during login
 
-    print("inside session_login_redis")
+    # print("inside session_login_redis")
     # 1. Generate session_id
     session_id = str(uuid.uuid4())
 

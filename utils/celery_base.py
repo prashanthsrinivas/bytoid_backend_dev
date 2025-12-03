@@ -1,12 +1,14 @@
 import os
 from random import uniform
+import shutil
 import time
 import traceback
+from cust_helpers import pathconfig
 from dotenv import load_dotenv
 from celery import Celery
 from celery.utils.log import get_task_logger
 import asyncio
-from umail_helper.asyn_functions import v2all_continuous
+from umail_helper.asyn_functions import fetchnextmonthmails, v2all_continuous
 import json
 from umail_lance.umail_lance_agent import UmailLanceClient
 
@@ -36,8 +38,8 @@ def release_user_lock(user_id):
 
 
 def make_celery(app_name=__name__):
-    print("having celery instanced")
-    print("base IP", base_ip)
+    # print("having celery instanced")
+    # print("base IP", base_ip)
     celery = Celery(
         app_name,
         broker=base_ip,
@@ -249,7 +251,7 @@ def send_bulk_emails(self, user_id: str, email_count: int, receiver_email: str):
             email_body_html = ai.create_custom_email_body(
                 user_input=f"Write a short memo/news update about {rand_title} with 200 - 300 words and it must have a title included in <title> tag "
             )
-            print("emmail_body_html", type(email_body_html))
+            # print("emmail_body_html", type(email_body_html))
 
             # Extract subject from HTML (or fallback)
             subject = extract_subject_from_html(
@@ -296,3 +298,46 @@ def run_scheduled_job(self, userid, filename):
     except Exception as exc:
         countdown = 2**self.request.retries  # exponential backoff
         raise self.retry(exc=exc, countdown=countdown)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.lance_embedding")
+def run_lance_embedding(self, user_id, batch_count, lance_folder):
+    try:
+
+        client = UmailLanceClient(user_id)
+        client.embed_both_json_and_plain(lance_folder)
+        folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
+        if os.path.exists(folder_path):
+            shutil.rmtree(folder_path)
+            print(f"🗑️ Deleted folder and contents: {folder_path}")
+        else:
+            print(f"⚠️ Folder not found: {folder_path}")
+        return {"status": "done", "batch": batch_count, "folder": lance_folder}
+
+    except Exception as exc:
+        countdown = 2**self.request.retries
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+@new_celery.task(bind=True, name="tasks.next_month_emails")
+def next_monthemails(self, user_id, lastmsgdate):
+
+    try:
+        if not acquire_user_lock(user_id):
+            # Lock exists → task is running or within TTL
+            logger.info(
+                "get_all_messages Task already running currently for  %s", user_id
+            )
+            return {
+                "message": "Task already running or recently triggered",
+                "user_id": user_id,
+            }  # Too Many Requests
+
+        result = asyncio.run(fetchnextmonthmails(user_id, startDate=lastmsgdate))
+        return {"status": "completed", "user_id": user_id, "result": result}
+    except Exception as exc:
+        countdown = backoff(self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+    finally:
+        # always release lock at end so new task can start
+        release_user_lock(user_id)

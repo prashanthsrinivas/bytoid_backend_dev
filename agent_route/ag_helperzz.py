@@ -101,10 +101,10 @@ def deletefilebasedData(filename, userid):
             for q in flat_data:
                 if isinstance(q, dict):
                     file_value = (q.get("filename") or "").strip()
-                    
+
                     # Handle different types of entries
                     should_keep = True
-                    
+
                     if q.get("is_scraping"):
                         # For scraped websites, do exact URL match
                         if file_value == target_name:
@@ -115,7 +115,7 @@ def deletefilebasedData(filename, userid):
                         target_base = os.path.splitext(target_name)[0].lower()
                         if file_base == target_base:
                             should_keep = False
-                    
+
                     if should_keep:
                         filtered_data.append(q)
                 else:
@@ -141,21 +141,23 @@ def deletefilebasedData(filename, userid):
         )
         return False
 
+
 def normalize_url_for_comparison(url):
     """Normalize URL for consistent comparison"""
     if not url:
         return ""
-    
+
     # Remove trailing slashes and convert to lowercase
-    normalized = url.rstrip('/').lower()
-    
+    normalized = url.rstrip("/").lower()
+
     # Remove common protocol variations
-    if normalized.startswith('https://'):
+    if normalized.startswith("https://"):
         normalized = normalized[8:]
-    elif normalized.startswith('http://'):
+    elif normalized.startswith("http://"):
         normalized = normalized[7:]
-    
+
     return normalized
+
 
 async def process_and_update_yaml(all_downloaded_paths, userid, provider, folderpath):
     """
@@ -184,18 +186,18 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
             base_permission = base_user["permissions"]
             if isinstance(base_permission, str):
                 base_permission = json.loads(base_permission)
-            print("base data permissions", base_permission)
+            # print("base data permissions", base_permission)
             if base_permission and "invited_by" in base_permission:
                 email = base_permission["invited_by"]
                 cursor.execute("select user_id from users where email = %s", (email,))
                 row = cursor.fetchone()
                 if row:
                     selected_id = row["user_id"]
-                    print("attached id", selected_id)
+                # print("attached id", selected_id)
         else:
             selected_id = userid
-            print("admin selected", selected_id)
-        print("fetched", selected_id)
+        # print("admin selected", selected_id)
+        # print("fetched", selected_id)
         cursor.execute(
             "SELECT LineOfBusiness FROM business_info WHERE user_id_fk = %s ",
             (selected_id,),
@@ -208,7 +210,7 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     for path in all_downloaded_paths:
         filename = os.path.basename(path)
         lance_client = LanceClient(user_id=userid)
-        result = lance_client.process_document(file_path=path, filename=filename)
+        result = await lance_client.process_document(file_path=path, filename=filename)
 
         if result.get("vectors_made", 0) > 0:
             current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -285,6 +287,11 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
         print(f"[DEBUG] Background task queued: {result}")
     all_file_data = load_yaml_from_s3(yaml_path) or {}
     return all_file_data
+
+
+# print(
+#     "values ", get_industry_names_from_yaml(f"{pathconfig.basepath}/smb_usecases.yaml")
+# )
 
 
 def scrape_links(base_url, max_pages=50):

@@ -52,7 +52,7 @@ def get_user_info(email):
 
     # lookup the user by email
     user = service.users().get(userKey=email).execute()
-    print("details invite user", user)
+    # print("details invite user", user)
     return {
         "id": user["id"],
         "primaryEmail": user["primaryEmail"],
@@ -69,7 +69,7 @@ def create_invited_user(email, connection, permission, launch_id_fk):
 
             # generate unique user_id
             user_id = str(uuid.uuid4())
-            print("Launch id ", launch_id_fk)  # Not inserting now
+            # print("Launch id ", launch_id_fk)  # Not inserting now
 
             cursor.execute(
                 """
@@ -77,11 +77,11 @@ def create_invited_user(email, connection, permission, launch_id_fk):
                     user_id, user_type, launch_id_fk, first_name, last_name, email, phone, 
                     client_id, client_secret, token, refresh_token, expiry, password_hash, 
                     profile_pic, location, social, created_in, updated_in, logged_in_at, 
-                    logged_out_at, sociallinks, subscribe_id, roles_creation, permissions
+                    logged_out_at, sociallinks, subscribe_id, roles_creation, permissions, special_access 
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    NOW(), NOW(), NOW(), %s, %s, %s, %s, %s
+                    NOW(), NOW(), NOW(), %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -106,6 +106,7 @@ def create_invited_user(email, connection, permission, launch_id_fk):
                     None,  # subscribe_id
                     None,  # roles_creation
                     permission,  # permissions
+                    False,
                 ),
             )
 

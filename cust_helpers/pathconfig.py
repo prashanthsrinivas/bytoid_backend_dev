@@ -6,4 +6,13 @@ conv_template = f"{basepath}/conversation_template.yaml"
 search_email_template = f"{basepath}/search_template.yaml"
 search_summary = f"{basepath}/email_summarize_template.yaml"
 query_validation = f"{basepath}/validate_query.yaml"
+
+#------------ AI Reporting -------------------#
 reporting = f"{basepath}/ai_reporting.yaml"
+ner = f"{basepath}/ner.yaml"
+aggregation_path = f"{basepath}/aggregation.yaml"
+trend_path = f"{basepath}/trend.yaml"
+ranking_path= f"{basepath}/ranking_yaml_files/ranking.yaml"
+ranking_temporal_path= f"{basepath}/ranking_yaml_files/ranking_temporal.yaml"
+ranking_no_aggregate_path= f"{basepath}/ranking_yaml_files/ranking_no_aggregate.yaml"
+retrieval_path = f"{basepath}/retrieval.yaml"

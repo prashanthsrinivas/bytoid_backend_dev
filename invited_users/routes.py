@@ -82,6 +82,7 @@ def add_role_admin():
 def get_roles(userid):
     """Get all roles and invited users for a user"""
     try:
+        special_access_status = {}
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
@@ -90,20 +91,51 @@ def get_roles(userid):
             )
             row = cursor.fetchone()
 
-        conn.close()
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+            if row["user_type"] == "user":
+                return jsonify({"error": "unAuthrotized access"}), 404
 
-        if not row:
-            return jsonify({"error": "User not found"}), 404
-        if row["user_type"] == "user":
-            return jsonify({"error": "unAuthrotized access"}), 404
+            roles = (
+                json.loads(row["roles_creation"]) if row.get("roles_creation") else []
+            )
+            permissions = (
+                json.loads(row["permissions"]) if row.get("permissions") else []
+            )
 
-        roles = json.loads(row["roles_creation"]) if row.get("roles_creation") else []
-        permissions = json.loads(row["permissions"]) if row.get("permissions") else []
+            # Get shared emails from permissions
+            emails = [
+                entry["email"]
+                for entry in permissions.get("shared", [])
+                if "email" in entry
+            ]
 
-        return jsonify({"roles": roles, "invited_users": permissions}), 200
+            # Fetch special access for each invited user
+            for email in emails:
+                cursor.execute(
+                    "SELECT special_access FROM users WHERE email=%s",
+                    (email,),
+                )
+                row = cursor.fetchone()
+                special_access_status[email] = str(bool(row and row["special_access"]))
+
+        return (
+            jsonify(
+                {
+                    "roles": roles,
+                    "invited_users": permissions,
+                    "special_access_status": special_access_status,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    finally:
+        if conn:
+            conn.close()
 
 
 @inv_users_bp.route("/admin/roles-update", methods=["POST"])
@@ -290,7 +322,7 @@ def delete_role(userid, role_id):
 @inv_users_bp.route("/admin/invite_user", methods=["POST"])
 def send_invite_user():
     data = request.get_json()
-    print("invite data", data)
+    # print("invite data", data)
     userid = data.get("userid")
     email = data.get("email")
     role_id = data.get("role_id")
@@ -393,8 +425,7 @@ def send_invite_user():
             # send email *after* updating DB, but still inside try
             gmail_service = GmailService(user_id=userid)
             gmail_service.send_invite_mail(
-                inviter=user_email,
-                invitee=email,
+                receipent_emails=email,
                 role=role,
                 invite_link=base_invitation_link,
                 business_info=business_info,

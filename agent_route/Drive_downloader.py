@@ -19,16 +19,6 @@ SERVICE_ACCOUNT_FILE = "new_service_secrets.json"
 SERVICE_ACCOUNT_EMAIL = os.getenv("SERVICE_CLIENT_EMAIL")  # Replace this
 logger = get_logger(__name__)
 
-# --- Google Drive API Initialization ---
-try:
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
-    Main_service = build("drive", "v3", credentials=creds)
-    logger.info("Google Drive service initialized successfully.")
-except Exception as e:
-    logger.info(f"Error initializing Google Drive service: {e}")
-    service = None
 
 # --- Export map for Google Docs types ---
 export_map = {
@@ -39,6 +29,20 @@ export_map = {
     ),
     "application/vnd.google-apps.presentation": ("application/pdf", ".pdf"),
 }
+
+
+def get_main_service():
+    # --- Google Drive API Initialization ---
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+        Main_service = build("drive", "v3", credentials=creds)
+        logger.info("Google Drive service initialized successfully.")
+    except Exception as e:
+        logger.info(f"Error initializing Google Drive service: {e}")
+        Main_service = None
+    return Main_service
 
 
 def get_files_in_folder(service_instance, folder_id):
@@ -120,7 +124,7 @@ def revoke_permission(file_id, permission_id, user_service):
 
 
 def download_file(f, userid, base_dir=None):
-    service_instance = Main_service
+    service_instance = get_main_service()
     file_id = f.get("id")
     name = f.get("name")
     mime_type = f.get("mimeType")

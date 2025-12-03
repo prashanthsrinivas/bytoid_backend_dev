@@ -207,7 +207,7 @@ query_validation: |
   {
     "question": "<empathetic, professional, service-focused response or reframed query>",
     "type": "<general/emotional/query/scraping/gratitude/repetition/abuse/unknown>",
-    "summary": "<updated conversation summary including emotional/abusive patterns"
+    "summary_generated": "<updated conversation summary including emotional/abusive patterns"
   }
 
   ============================================================

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from agent_route.utils import extract_filename
 import yaml
@@ -16,7 +17,7 @@ from utils.chatopenzz import (
     generate_usecases_questions_batch,
 )
 from datetime import datetime
-
+from db.lance_db_service import BatchQueryData, LanceDBServer
 from utils.s3_utils import (
     load_yaml_from_s3,
     read_json_from_s3,
@@ -138,7 +139,7 @@ def generate_yaml_ques_batch(usecases_with_docs, prompts, industry):
     return all_entries
 
 
-def fetch_ques_with_docs(
+async def fetch_ques_with_docs(
     usecases: list[str], userid: str, filenames: list[str]
 ) -> list[dict]:
     # embeddings = OpenAIEmbeddings(
@@ -149,17 +150,16 @@ def fetch_ques_with_docs(
     embeddings = get_firework_embedding()
 
     vectors = embeddings.embed_documents(usecases)
-    payload = {
-        "user_id": userid,
-        "embeddings": vectors,
-        "top_k": 1,
-        "filenames": filenames,
-    }
+    payload = BatchQueryData(
+        user_id=userid,
+        embeddings=vectors,
+        top_k=1,
+        filenames=filenames,
+    )
 
     try:
-        response = requests.post(f"{dburl}/query_batch", json=payload)
-        response.raise_for_status()
-        batch_results = response.json().get("results", [])
+        res = LanceDBServer()
+        batch_results = await res.query_vector_batch(payload)
     except Exception as e:
         logger.error(f"[!] Batch query failed: {e}")
         return []
@@ -179,48 +179,30 @@ def fetch_ques_with_docs(
     return usecases_with_docs
 
 
-def fetch_usecases_with_docs(
+async def fetch_usecases_with_docs(
     usecases: list[str], userid: str, filenames: list[str]
 ) -> list[dict]:
-    """
-    Embeds all use cases and sends a single batch query to the LanceDB vector index.
-    Returns a list of dictionaries with each use case and the top matching document.
-    """
-    # embeddings = OpenAIEmbeddings(
-    #     model="text-embedding-3-large",
-    #     openai_api_key=os.getenv("OPENAI_API_KEY"),
-    #     dimensions=3072,
-    # )
+
     embeddings = get_firework_embedding()
-
-    usecases_with_docs = []
-
-    # Step 1: Embed all usecases in a single batch
     vectors = embeddings.embed_documents(usecases)
 
-    # Step 2: Prepare and send batch query to LanceDB
-    batch_payload = {
-        "user_id": userid,
-        "embeddings": vectors,
-        "top_k": 1,
-        "filenames": filenames,
-    }
+    batch_payload = BatchQueryData(
+        user_id=userid,
+        embeddings=vectors,
+        top_k=1,
+        filenames=filenames,
+    )
 
     try:
-        response = requests.post(f"{dburl}/query_batch", json=batch_payload)
-        response.raise_for_status()
-        batch_results = response.json().get("results", [])
+        res = LanceDBServer()
+        batch_results = await res.query_vector_batch(batch_payload)
     except Exception as e:
         logger.error(f"[!] Batch query failed: {e}")
         return []
 
-    # Step 3: Merge usecase and top document result
+    usecases_with_docs = []
     for usecase, results in zip(usecases, batch_results):
         if results:
-            # Combine up to top_k result texts
-            # combined_text = "\n\n".join(
-            #     r.get("text", "").strip() for r in results if r.get("text", "").strip()
-            # ).strip()
             usecases_with_docs.append(
                 {
                     "usecase": usecase,
@@ -229,18 +211,11 @@ def fetch_usecases_with_docs(
                 }
             )
         else:
-            logger.warning(f"[⚠️] No results found for usecase: {usecase}")
             usecases_with_docs.append(
-                {
-                    "usecase": usecase,
-                    "documents_contents": "",
-                    "filename": "",
-                }
+                {"usecase": usecase, "documents_contents": "", "filename": ""}
             )
 
     return usecases_with_docs
-
-    # --- Helper: Remove old entries for given files ---
 
 
 def remove_entries_for_files(filepath, filenames):
@@ -350,13 +325,15 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
 
     # Determine if all files are new
     all_new = all(is_new_file(fn, passed_data, failed_data) for fn in filenames)
-    print("all new data", all_new)
+    # print("all new data", all_new)
 
     if not all_new:
         failed_data = remove_entries_for_files(failed_data, filenames)
 
     # Step 1: Fetch docs & generate questions
-    usecases_with_docs = fetch_usecases_with_docs(usecases, userid, filenames=filenames)
+    usecases_with_docs = asyncio.run(
+        fetch_usecases_with_docs(usecases, userid, filenames=filenames)
+    )
     all_entries = generate_yaml_ques_batch(usecases_with_docs, prompts, industry)
     logger.info(f"✅ Generated {len(all_entries)} question entries for {industry}.")
 
@@ -373,7 +350,7 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
                 actual_to_quote[actual] = quote
 
     # Step 3: Get answers & evaluate
-    content = fetch_ques_with_docs(all_ques, userid, filenames=filenames)
+    content = asyncio.run(fetch_ques_with_docs(all_ques, userid, filenames=filenames))
     batch_size = 10
     valid_responses, clarification_responses = [], []
 

@@ -12,13 +12,15 @@ from utils.base_logger import get_logger
 
 logger = get_logger(__name__)
 load_dotenv()
-AUDIO_MODEL = os.getenv("AUDIO_MODEL", "whisper-v3-turbo")  # Default to whisper-v3-turbo if not set
+AUDIO_MODEL = os.getenv(
+    "AUDIO_MODEL", "whisper-v3-turbo"
+)  # Default to whisper-v3-turbo if not set
 # AUDIO_MODEL = "accounts/fireworks/models/whisper-v3-turbo"
 FK_VAL = os.getenv("FIREWORKS_KEY")
 
 
 class Speech2TextService:
-    def __init__(self,userid):
+    def __init__(self, userid):
         self.user_id = userid
         self.model = Fireworks(api_key=FK_VAL)
         self.model_name = AUDIO_MODEL
@@ -47,4 +49,4 @@ class Speech2TextService:
 #     service = Speech2TextService()
 #     result = asyncio.run(service.transcribe_audio("agent_route/podcast_20min.mp3"))
 #     # result = asyncio.run(service.transcribe_audio("agent_route/Recording.m4a"))
-#     print("Final transcription:", result)
+#    #print("Final transcription:", result)

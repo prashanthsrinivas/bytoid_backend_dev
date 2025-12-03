@@ -388,7 +388,7 @@ def get_userinfo(userid, connection=None):
             try:
                 result["sociallinks"] = json.loads(result["sociallinks"])
             except Exception as e:
-                print("Could not decode sociallinks:", e)
+                # print("Could not decode sociallinks:", e)
                 result["sociallinks"] = {}
         if token_access:
             result["token"] = token_access
@@ -759,3 +759,64 @@ def get_business_info(userid, connection):
                 )
                 businessdata = cursor.fetchone() or {}
     return businessdata
+
+
+def fetch_user_Social(user_id, connection=None):
+    try:
+        own_conn = False
+        if connection is None:
+            connection = connect_to_rds()
+            own_conn = True
+
+        with get_cursor(connection) as cursor:
+            cursor.execute("SELECT social FROM users WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+
+        if row and row[0]:
+            try:
+                return row[0]
+            except Exception:
+                return None
+        return None
+    finally:
+        if own_conn:
+            connection.close()
+
+
+def save_or_update_workflow_schedule(user_id, filename, activation_schedule, contacts):
+    connection = connect_to_rds()
+    if not connection:
+        return None
+
+    cursor = connection.cursor()
+
+    try:
+        query = """
+        INSERT INTO user_workflows (user_id_fk, filename, activation_schedule, contacts, outlog)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            activation_schedule = VALUES(activation_schedule),
+            contacts = VALUES(contacts);
+        """
+
+        cursor.execute(
+            query,
+            (
+                user_id,
+                filename,
+                json.dumps(activation_schedule),
+                json.dumps(contacts),
+                json.dumps({}),  # default empty outlog
+            ),
+        )
+
+        connection.commit()
+        return True
+
+    except Exception as e:
+        # print("❌ DB Error:", e)
+        return False
+
+    finally:
+        cursor.close()
+        connection.close()

@@ -110,18 +110,18 @@ def evallogic(templatedata, batch):
             json_block = match.group(0)
             try:
                 res_json = yaml.safe_load(json_block)
-                print("✅ Extracted & parsed response block.")
+            # print("✅ Extracted & parsed response block.")
             except Exception as e:
                 print(f"❌ YAML parsing error: {e}")
                 res_json = []
         else:
-            print("❌ Could not extract JSON list from model output.")
+            # print("❌ Could not extract JSON list from model output.")
             res_json = []
     elif isinstance(res_raw, list):
         # Already structured response
         res_json = res_raw
     else:
-        print("❌ Unexpected type of response from evaluator.")
+        # print("❌ Unexpected type of response from evaluator.")
         res_json = []
 
     # Evaluate results
@@ -152,11 +152,11 @@ def triggeraicontextfinder(instruction_input, userid, templatedata):
         print(len(content), "context length")
 
         for i in range(0, len(content), batch_size):
-            print("loop index for context", i)
+            # print("loop index for context", i)
             batch = content[i : i + batch_size]
             responses = evallogic(templatedata, batch)
             if len(responses) == 0:
-                print("⚠️ First evaluation attempt failed. Retrying...")
+                # print("⚠️ First evaluation attempt failed. Retrying...")
                 responses = evallogic(templatedata, batch)
             valid_responses.extend(responses)
 
@@ -216,17 +216,18 @@ def returninsructdata(data):
     return instruction_input
 
 
-def clean_json_block(raw: str) -> str:
-    """
-    Extracts the first valid JSON code block from a model response.
-    """
+def clean_json_block(raw):
+    if isinstance(raw, dict):
+        return json.dumps(raw)
+
     match = re.search(r"```json(.*?)```", raw, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
+
     return raw.strip()
 
 
-def create_playbook(data, filename=None):
+def create_playbook(data, nfilename=None):
     """
     Creates a workflow JSON by sending a formatted prompt to the AI safely.
     """
@@ -257,21 +258,8 @@ def create_playbook(data, filename=None):
         raise ValueError("Missing 'create_instruction' template in YAML file.")
     full_prompt = template.format(**instruction_input)
 
-    # checker_temlate = template_data.get("validate_instruction_capabilities")
-    # checker_prompt = checker_temlate.format(**instruction_input)
-    # raw_check_response = get_evaluator_fireworks(checker_prompt, role="system")
-    # # Clean AI response
-    # cleaned_j = clean_json_block(raw_check_response)
-    # try:
-    #     response_dict = json.loads(cleaned_j)
-    # except json.JSONDecodeError as e:
-    #     raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
-    # if "possible" in response_dict:
-    #     val = response_dict["possible"]
-    #     if val != "yes":
-    #         return response_dict["message"]
     raw_response = get_evaluator_fireworks(full_prompt, role="system")
-
+    # print("raw response", raw_response)
     # Clean AI response
     cleaned_j = clean_json_block(raw_response)
     try:
@@ -280,7 +268,7 @@ def create_playbook(data, filename=None):
         raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
 
     # Save workflow JSON
-    filename = filename or f"{uuid.uuid4().hex[:8]}.json"
+    filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
     ensure_dir(f"{pathconfig.basepath}/test/")
     filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
     print(response_dict)
@@ -291,6 +279,7 @@ def create_playbook(data, filename=None):
         "clarifications_generated": False,
         "WorkflowDate": datetime.now().isoformat(),
     }
+    delete_file_from_s3(filepath=f"{userid}/workflow/{filename}")
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(full_output, f, indent=2)
     res = upload_any_file(
@@ -325,23 +314,14 @@ def save_playbook_to_s3(
     )
     os.remove(temp_file_path)
     if clarifications:
-        return (
-            jsonify(
-                {
-                    "status": "success",
-                    "message": success_message,
-                    "data": playbook["clarification_questions"],
-                }
-            ),
-            200,
-        )
+        return {
+            "status": "success",
+            "message": success_message,
+            "data": playbook["clarification_questions"],
+        }
+
     else:
-        return (
-            jsonify(
-                {"status": "success", "message": success_message, "data": playbook}
-            ),
-            200,
-        )
+        return {"status": "success", "message": success_message, "data": playbook}
 
 
 def format_step_data(stepdata: dict) -> dict:

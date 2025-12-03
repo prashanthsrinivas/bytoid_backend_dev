@@ -4,14 +4,16 @@ import yaml
 from dotenv import load_dotenv
 from fireworks.client import Fireworks
 from langchain_fireworks import FireworksEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 import json
+import requests
 
 load_dotenv()
 
 
 FIREWORKS_KEY = os.getenv("FIREWORKS_KEY")
 FIREWORKS_MODEL = os.getenv("FIREWORKS_MODEL")
-EMBEDMODEL = os.getenv("EMBED_MODEL")
+EMBEDMODEL = os.getenv("EMBEDMODEL")
 EVAL_FIREWORKS = os.getenv("FIREWORKS_MODEL_EVAL")
 fw = Fireworks(api_key=FIREWORKS_KEY)
 
@@ -34,29 +36,70 @@ def get_fireworks_response2(user_message: str, role: str, temp: float = 0.7) -> 
     return chat.choices[0].message.content.strip()
 
 
-def get_fireworks_response3(user_message: str, role: str, temp: float = 0.7) -> str:
-    chat = fw.chat.completions.create(
-        model="accounts/fireworks/models/deepseek-v3p1-terminus",
-        messages=[{"role": role, "content": user_message}],
-        temperature=temp,
-    )
-    return chat.choices[0].message.content.strip()
-
-
 def get_firework_embedding():
+
     embeddings = FireworksEmbeddings(
-        model=EMBEDMODEL, api_key=FIREWORKS_KEY, dimensions=3072
+        model=EMBEDMODEL,
+        api_key=FIREWORKS_KEY,
+        dimensions=4096,
     )
+    # embeddings = OpenAIEmbeddings(
+    #     model="text-embedding-3-large",
+    #     openai_api_key=os.getenv("OPENAI_API_KEY"),
+    #     dimensions=2880,
+    # )
     return embeddings
 
 
+##print("Using Fireworks model =", EVAL_FIREWORKS)
+
+
+# def get_evaluator_fireworks(user_message: str, role: str) -> str:
+#     chat = fw.chat.completions.create(
+#         model=EVAL_FIREWORKS,
+#         messages=[{"role": role, "content": user_message}],
+#         temperature=0.5,
+#     )
+#     val = chat.choices[0].message.content.strip()
+#     if not val:
+#         chat = fw.chat.completions.create(
+#             model=EMBEDMODEL,
+#             messages=[{"role": role, "content": user_message}],
+#             temperature=0.5,
+#         )
+#         val = chat.choices[0].message.content.strip()
+#        #print("using alternate gpt oss")
+#     return val
 def get_evaluator_fireworks(user_message: str, role: str) -> str:
-    chat = fw.chat.completions.create(
-        model=EVAL_FIREWORKS,
-        messages=[{"role": role, "content": user_message}],
-        temperature=0.7,
-    )
-    return chat.choices[0].message.content.strip()
+    url = "https://api.fireworks.ai/inference/v1/chat/completions"
+
+    payload = {
+        "model": EVAL_FIREWORKS,
+        "temperature": 0.7,
+        "messages": [{"role": role, "content": user_message}],
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {FIREWORKS_KEY}",
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+
+        data = response.json()
+
+        # Return the LLM text response
+        return data["choices"][0]["message"]["content"]
+
+    except requests.exceptions.RequestException as e:
+        # print("❌ Fireworks API error:", e)
+        return None
+    except KeyError:
+        # print("❌ Fireworks API returned unexpected format:", response.text)
+        return None
 
 
 def evaluator_llama(prompt_template_str, query, context, industry):
@@ -108,7 +151,7 @@ def evaluator_batch_llama(prompt_template_str, qa_list, industry):
 
 def evaluator_context_llama(prompt_template_str, qa_list):
     if not prompt_template_str:
-        print("❌ Error: Prompt template is missing.")
+        # print("❌ Error: Prompt template is missing.")
         return []
     qa_input_block = "\n".join(
         [
@@ -170,16 +213,18 @@ def evaluate_transcript(prompt_template_str, text):
         }
 
 
-# def get_firework_embedding():
+# def get_firework_embedding2():
 #     embeddings = FireworksEmbeddings(
-#         model=EMBEDMODEL, api_key=FIREWORKS_KEY, dimensions=3072
+#         model="accounts/fireworks/models/qwen3-embedding-8b",
+#         api_key=FIREWORKS_KEY,
+#         dimensions=3072,
 #     )
 
 #     # # Single string for embed_query
-#     # test_text = "Hello world"
-#     # vec = embeddings.embed_query(test_text)  # <- pass a string, not [string]
-#     # print("Embedding length:", len(vec))  # Should match dimensions
-#     return embeddings
+#     test_text = "Hello world"
+#     vec = embeddings.embed_query(test_text)  # <- pass a string, not [string]
+#     print("Embedding length:", len(vec))  # Should match dimensions
+#     return vec
 
 
-# print("embedding of firework", get_firework_embedding())
+# print("embedding of firework", get_firework_embedding2())

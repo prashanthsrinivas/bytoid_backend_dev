@@ -2,7 +2,6 @@ import re
 from create_db import connect_to_rds
 
 
-
 IDENTITY_MAP = {}
 CONTACTS = {}
 
@@ -240,7 +239,7 @@ def get_users_client_id(participant, user_id, cursor):
     if row:
         users_clients_id = row[0]
         type = row[1]
-        # print("Matched client ID:", users_clients_id)
+        ##print("Matched client ID:", users_clients_id)
         return users_clients_id, type
 
     else:

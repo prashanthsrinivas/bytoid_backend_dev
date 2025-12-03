@@ -1,0 +1,131 @@
+{
+  "customer_accounts": {
+    "description": "Stores information about customers, including their personal details, account type, and timestamps.",
+    "fields": {
+      "customer_account_id": "Unique identifier for each customer account.",
+      "comm_id_fk": "Foreign key linking the customer to a communication record.",
+      "customer_first_name": "First name of the customer.",
+      "customer_last_name": "Last name of the customer.",
+      "customer_email_id": "Email address of the customer.",
+      "customer_created_in": "Timestamp indicating when the customer record was created.",
+      "customer_updated_in": "Timestamp indicating the last update made to the customer record.",
+      "customer_type": "Specifies whether it is a lead or customer.",
+      "customer_snooze": "Indicates if the customer account is snoozed or inactive temporarily."
+    },
+    "relationships": {
+      "linked_to": [
+        "service_request_allocations (via customer_account_id_fk in service_request_allocations)",
+        "comm (via comm_id_fk)"
+      ]
+    }
+  },
+
+  "users_account": {
+    "description": "Stores user account details including profile information, roles, permissions, and login activity.",
+    "fields": {
+      "users_account_id": "Unique identifier for each user account.",
+      "deployment_id_fk": "Foreign key linking the user account to a deployments table.",
+      "user_account_first_name": "First name of the user.",
+      "user_account_last_name": "Last name of the user.",
+      "user_account_email": "Email address associated with the user account.",
+      "user_account_location": "Geographical or operational location of the user.",
+      "user_account_created_in": "Timestamp indicating when the user account was created.",
+      "user_account_updated_in": "Timestamp indicating the most recent update to the user record.",
+      "user_account_logged_in_at": "Timestamp when the user last logged in.",
+      "user_account_logged_out_at": "Timestamp when the user last logged out.",
+      "user_account_membership_id": "Membership id associated with the user account. Used to link with the memberships table",
+      "user_account_roles_created": "Defines the roles or permissions created for the user.",
+      "user_account_permission": "Access control or permission level for the user account.",
+      "user_account_umail_json": "Stores unified mail or communication configuration in JSON format.",
+      "user_account_autopilot_mode": "Indicates if the user operates in autopilot or automated mode.",
+      "special_access": "Boolean value indicatingf the user has special access privileges to view other user's accounts."
+    },
+    "relationships": {
+      "linked_to": [
+        "memberships (via user_account_membership_id)",
+        "deployments (via deployment_id_fk)",
+        "conversation_thread (via external_user_account_id in conversation_thread)",
+        "comm (via users_account_id_fk in comm)",
+        "service_request_allocations (via users_account_id_fk in service_request_allocations)"
+      ]
+    }
+  },
+
+  "service_requests": {
+    "description": "Contains details about tickets.",
+    "fields": {
+      "service_request_id": "Unique identifier for each service request.",
+      "conversation_thread_id_fk": "Foreign key linking the service request to a conversation thread.",
+      "service_requests_created_in": "Timestamp when the service request was created.",
+      "service_requests_updated_in": "Timestamp when the service request was last updated.",
+      "comm_id_fk": "Foreign key linking the service_requests to the comm table.",
+      "service_request_name": "Title or short name of the ticket",
+      "service_requests_SLA": "Service Level Agreement details associated with the ticket.",
+      "service_requests_assignee_id": "The user assigned to handle this ticket. (Dont use this to filter by user)"
+    },
+    "relationships": {
+      "linked_to": [
+        "conversation_thread (via conversation_thread_id_fk)",
+        "comm (via comm_id_fk)",
+        "service_request_allocations (via request_id_fk in service_request_allocations)"
+      ]
+    }
+  },
+
+  "msgs": {
+    "description": "Stores individual message / mail records exchanged within conversation threads.",
+    "fields": {
+      "msg_id": "Unique identifier for each message.",
+      "conversation_thread_id_fk": "Foreign key linking the message to a conversation_thread table.",
+      "channel": "Channel through which the message was sent, enum value : ('gmail','website','zoho','outlook','whatsapp','sms','phone','instagram_dm','facebook_messenger').",
+      "customer_id_fk": "Foreign key linking the message to a customer record.",
+      "msg_direction": "Indicates whether the message was incoming or outgoing.",
+      "msg_summary": "Short summary of the message.",
+      "msg_created_at": "Timestamp when the message was created.",
+      "msg_update_at": "Timestamp when the message was last updated."
+    },
+    "relationships": {
+      "linked_to": [
+        "conversation_thread (via conversation_thread_id_fk)",
+        "customer_accounts (via customer_id_fk)"
+      ]
+    }
+  },
+
+  "integrated": {
+    "description": "Stores details about external integrations connected to assistants or systems (e.g., Slack, Gmail, or APIs).",
+    "fields": {
+      "integrated_id": "Unique identifier for each integration record.",
+      "assistant_id_fk": "Foreign key linking the integration to a specific assistant.",
+      "intergration_description": "Short description of the integration purpose or usage.",
+      "intergration_page_id_or_number": "Associated page ID, number, or identifier for the integration.",
+      "intergration_webhook_url": "Webhook URL used to communicate with the integration platform.",
+      "intergration_status": "Indicates whether the integration is active, inactive, or pending.",
+      "intergration_created_at": "Timestamp indicating when the integration record was created."
+    },
+    "relationships": {
+      "linked_to": [
+        "assistants (via assistant_id_fk)",
+        "conversation_thread (via integrated_id_fk in conversation_thread)"
+      ]
+    }
+  },
+
+  "reviews": {
+    "description": "Stores customer reviews and ratings related to conversations or tickets. Each record represents a user's feedback, including their rating, comments, and the time when the review was created.",
+    "fields": {
+      "review_id": "Unique identifier for each review record",
+      "conversation_thread_id_fk": "Foreign key linking the review to conversation thread table.",
+      "ratings_given": "Rating provided by the user",
+      "comment_posted": "Text of the review or feedback provided by the user.",
+      "review_created_at": "Timestamp indicating when the review was created."
+      
+    },
+    "relationships": {
+      "linked_to": [
+        "assistants (via assistant_id_fk)",
+        "conversation_thread (via integrated_id_fk in conversation_thread)"
+      ]
+    }
+  }
+}

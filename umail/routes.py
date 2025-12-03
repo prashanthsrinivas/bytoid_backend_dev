@@ -18,7 +18,13 @@ from umail_helper.asyn_functions import v2all_continuous
 from umail_lance.umail_lance_agent import UmailLanceClient
 from umail_helper.mails_process import update_config_file, generate_subject
 from utils.redis_config import redis_config_glide
-from utils.celery_base import acquire_user_lock, umail_sync
+from utils.celery_base import acquire_user_lock, next_monthemails, umail_sync
+from umail_helper.sync_manager import SyncManager
+from umail_helper.attachment_handler import (
+    handle_attachment_upload,
+    handle_multiple_attachments,
+    create_attachment_metadata_for_message,
+)
 
 umail_bp = Blueprint("umail", __name__)
 logger = get_logger(__name__)
@@ -78,7 +84,7 @@ def get_latest_convo_info(config):
     client_id = config.get("userclients_id", [])
 
     if not config_data:
-        print("[DEBUG] input_data is empty")
+        # print("[DEBUG] input_data is empty")
         return None
 
     conversations = {}
@@ -138,7 +144,7 @@ def extract_unique_client_folders(file_list, base_prefix):
 #     print(f"next_cursor from api: {next_cursor}")
 #     connection = connect_to_rds()
 #     if connection is None:
-#         print("❌ [DEBUG] Database connection failed")
+#        #print("❌ [DEBUG] Database connection failed")
 #         return jsonify({"error": "Database connection failed"}), 500
 #     cursor = connection.cursor()
 
@@ -262,7 +268,7 @@ def format_relative_time(ts):
 def handle_cache_data(groupedmessages, disp_messages, next_cursor, source):
     connection = connect_to_rds()
     if connection is None:
-        print("❌ [DEBUG] Database connection failed")
+        # print("❌ [DEBUG] Database connection failed")
         return jsonify({"error": "Database connection failed"}), 500
     cursor = connection.cursor()
 
@@ -271,7 +277,8 @@ def handle_cache_data(groupedmessages, disp_messages, next_cursor, source):
         if not messages:
             continue
 
-        latest_msg_in_conv = messages[-1]
+        # Find the actual newest message by timestamp, not by position
+        latest_msg_in_conv = max(messages, key=lambda x: x.get("timestamp", ""))
         ts = normalize_timestamp(latest_msg_in_conv.get("timestamp"))
         if not ts:
             continue
@@ -322,7 +329,7 @@ def handle_cache_data(groupedmessages, disp_messages, next_cursor, source):
 def handle_lance_data(convo_messages, disp_messages, next_cursor, source):
     connection = connect_to_rds()
     if connection is None:
-        print("❌ [DEBUG] Database connection failed")
+        # print("❌ [DEBUG] Database connection failed")
         return jsonify({"error": "Database connection failed"}), 500
     cursor = connection.cursor()
 
@@ -410,9 +417,10 @@ def get_latest_conversations(user_id, next_cursor):
     """
     Get the latest conversation from each client's config file.
     Priority:
-    1. Local JSON (get_existing_umail_json)
-    2. Cache (GlideClusterClient)
-    3. Lance (fallback)
+    1. Fetch fresh Gmail emails (real-time)
+    2. Local JSON (get_existing_umail_json)
+    3. Cache (GlideClusterClient)
+    4. Lance (fallback)
     Always return flattened disp_messages format.
     """
 
@@ -421,13 +429,7 @@ def get_latest_conversations(user_id, next_cursor):
     convo_messages = {}
     cached = None
 
-    # ✅ Step 1: Local JSON
-    existing_json = get_existing_umail_json(user_id)
-    print("data added", existing_json)
-    if not existing_json:
-        # ✅ Step 2: Cache
-        getall_route(user_id=user_id)
-
+    def rediscync():
         def get_from_cache_sync(user_id):
             async def _inner():
                 client = await GlideClusterClient.create(redis_config_glide)
@@ -436,7 +438,7 @@ def get_latest_conversations(user_id, next_cursor):
             return asyncio.run(_inner())
 
         cached = get_from_cache_sync(user_id)
-        print("⚡ Using cached Gmail data")
+        # print("⚡ Using cached Gmail data")
         if cached:
             cached_json = json.loads(cached) or {}
             if isinstance(cached_json, list):
@@ -453,24 +455,42 @@ def get_latest_conversations(user_id, next_cursor):
         else:
             return getall_route(user_id)
 
+    # ✅ Step 1: Local JSON
+    existing_json = get_existing_umail_json(user_id)
+    print("data added", existing_json)
+    if not existing_json:
+        # ✅ Step 2: Cache
+        getall_route(user_id=user_id)
+        return rediscync()
+
     else:
-        print("before calling lance")
+        # print("before calling lance")
         # ✅ Step 3: Lance fallback
         client = UmailLanceClient(user_id)
         convo_messages, bnext_cursor = client.latest_messages_from_lance(
             user_id, next_cursor
         )
-        print("in lance fetch next cursor", bnext_cursor)
+        print("convo messages length", len(convo_messages))
+        # print("in lance fetch next cursor", bnext_cursor)
         # getall_route(user_id)
         if not convo_messages:
-            if next_cursor:
-                cursor_dt = parse_cursor_to_datetime(next_cursor)
-                if cursor_dt and cursor_dt.date() == datetime.now(timezone.utc).date():
-                    logger.info(
-                        "Backfall process created if lance table deleted. started"
-                    )
-                    return getall_route(user_id)
-            logger.info("No messages from lance")
+            # If LanceDB returned a date-like cursor
+            try:
+                cursor_date = datetime.fromisoformat(str(next_cursor)).date()
+            except:
+                cursor_date = None
+
+            today_date = datetime.today().date()
+
+            # If next_cursor is NOT today → trigger next month Gmail fetch
+            if cursor_date and cursor_date != today_date:
+                # next_monthemails.delay(user_id, cursor_date)
+                pass
+            else:
+                # next_cursor matches today OR not a date → stop Gmail paging
+                getall_route(user_id=user_id)
+
+            return rediscync()
 
         # If nothing matched, return a clean response
         source = "full"
@@ -513,7 +533,7 @@ def get_conv_order(config):
             continue
 
     if not conversations:
-        print("[DEBUG] No valid conversations found after timestamp parsing")
+        # print("[DEBUG] No valid conversations found after timestamp parsing")
         return None
 
     sorted_convos = sorted(conversations, key=lambda x: x[1], reverse=True)
@@ -575,7 +595,7 @@ def get_sorted_lance_emails(connection, user_id, client_id):
                             if not last_name or last_name == "None":
                                 last_name = ""
                             assignee_full_name = (first_name + " " + last_name).strip()
-                    
+
                     all_messages.append(
                         {
                             "id": conv_id,
@@ -583,7 +603,6 @@ def get_sorted_lance_emails(connection, user_id, client_id):
                             "messages": messages,
                             "assigned_name": assignee_full_name,
                             "ticket_status": ticket_status,
-
                         }
                     )
                 except Exception as e:
@@ -631,12 +650,11 @@ def get_selected_conv(conversation_id, user_id):
 
         client_id = None
 
-
         # ✅ Step 2: Local JSON
         existing_json = get_existing_umail_json(user_id)
 
         if not existing_json:
-            print("fetching from cache")
+            # print("fetching from cache")
 
             # ✅ Step 3: Cache
             def get_from_cache_sync(user_id):
@@ -728,7 +746,6 @@ def get_selected_conv(conversation_id, user_id):
             else:
                 print(f"[DEBUG] No snooze row found for client_id: {client_id}")
 
-
             return (
                 jsonify(
                     {
@@ -737,7 +754,7 @@ def get_selected_conv(conversation_id, user_id):
                         "conversationId": client_id,  # conversation_id is client_id
                         "messages": sorted_conversations,  # this is ConversationThread[]
                         "source": "full",
-                        "snoozed": snooze_flag
+                        "snoozed": snooze_flag,
                     }
                 ),
                 200,
@@ -759,7 +776,7 @@ def _format_selected_conversation(conversation_id, client_id, messages_data, sou
     Format messages_data (dict of channels -> messages OR list of messages) into API response structure
     """
     all_messages = []
-    print("message data", type(messages_data))
+    # print("message data", type(messages_data))
 
     if isinstance(messages_data, dict):
         iterable = messages_data.items()
@@ -841,7 +858,7 @@ def start_conversation():
         cursor = connection.cursor()
 
         client = UmailLanceClient(user_id)
-        print("calling get_selected_conv_from_lance")
+        # print("calling get_selected_conv_from_lance")
         recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
         if recent_msg is None:
             print(f"recent_msg is none , id : {client_id}")
@@ -905,7 +922,7 @@ def match_email_to_channel(email, channel):
 
 @umail_bp.route("/send-reply", methods=["POST"])
 def send_messages():
-    print("🚀 [DEBUG] Starting send_messages() function")
+    # print("🚀 [DEBUG] Starting send_messages() function")
 
     try:
         # Parse request data
@@ -919,16 +936,48 @@ def send_messages():
         contact_id = data.get("contact_id")
         conv_id = data.get("conversation_id")
 
+        # CC and BCC support for replies
+        cc_list = data.get("cc", [])
+        bcc_list = data.get("bcc", [])
+        if isinstance(cc_list, str):
+            cc_list = [cc_list] if cc_list else []
+        if isinstance(bcc_list, str):
+            bcc_list = [bcc_list] if bcc_list else []
+
+        # Extract attachments from request
+        attachments = data.get("attachments", [])
+        print(f"📎 [DEBUG] Received {len(attachments)} attachment(s)")
+        if cc_list:
+            print(f"📧 [DEBUG] CC recipients: {cc_list}")
+        if bcc_list:
+            print(f"📧 [DEBUG] BCC recipients: {bcc_list}")
+        if attachments:
+            print(
+                f"📎 [DEBUG] Attachment details: {[{'filename': att.get('filename'), 'size': att.get('file_size')} for att in attachments]}"
+            )
+
         status = None
         client_id = None
         connection = connect_to_rds()
         if connection is None:
-            print("❌ [DEBUG] Database connection failed")
+            # print("❌ [DEBUG] Database connection failed")
             return jsonify({"error": "Database connection failed"}), 500
-        print("✅ [DEBUG] Database connection successful")
+        # print("✅ [DEBUG] Database connection successful")
 
         cursor = connection.cursor()
-        c_id = ticket_conversation_id if ticket_conversation_id else conv_id
+
+        # ✅ CRITICAL: Use the conversation the user ACTUALLY CLICKED on
+        # Priority: conversation_id (clicked) > ticket_conversation_id (tracking)
+        if conv_id:
+            c_id = conv_id
+            print(f"🎯 [DEBUG] Using conversation_id from request: {c_id}")
+        elif ticket_conversation_id:
+            c_id = ticket_conversation_id
+            print(f"🎯 [DEBUG] Falling back to ticket_conversation_id: {c_id}")
+        else:
+            print(f"❌ [DEBUG] No conversation_id or ticket_conversation_id provided")
+            return jsonify({"error": "Missing conversation_id"}), 400
+
         # print(f"🔍 [DEBUG] Querying for sender_id with conversation_id: {c_id}")
         cursor.execute(
             "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
@@ -941,6 +990,7 @@ def send_messages():
         else:
             status = "existing"
             client_id = client_id_row[0]
+            print(f"🔍 [DEBUG] Using client_id from database: {client_id}")
 
         if status == "existing":
             # Validate required fields
@@ -957,10 +1007,10 @@ def send_messages():
                 # print(f"❌ [DEBUG] Missing required fields: {missing_fields}")
                 return jsonify({"error": "Missing required payload fields"}), 400
 
-            # print("✅ [DEBUG] All required fields present")
+            ##print("✅ [DEBUG] All required fields present")
 
         # Database connection
-        # print("🔗 [DEBUG] Attempting database connection...")
+        ##print("🔗 [DEBUG] Attempting database connection...")
 
         # Initialize variables
         ticket_id = conversation_id = ticket_name = subject = thread_id = None
@@ -968,7 +1018,7 @@ def send_messages():
         # print(f"🔄 [DEBUG] Initialized variables - is_reply: {is_reply}")
 
         if status == "existing":
-            print("🔍 [DEBUG] Processing existing conversation")
+            # print("🔍 [DEBUG] Processing existing conversation")
 
             try:
                 s3_config_key = f"{user_id}/messages/{client_id}/config.json"
@@ -1003,7 +1053,58 @@ def send_messages():
                         break
 
                 if not is_reply:
-                    print("⚠️ [DEBUG] No matching conversation found in config")
+                    # print("⚠️ [DEBUG] No matching conversation found in config - attempting to reconstruct from conversation file")
+                    # FALLBACK: If conversation not in config but exists in DB, try to get data from conversation file
+                    try:
+                        s3_conv_key = f"{user_id}/messages/{client_id}/{c_id}.json"
+                        conv_file_data = read_json_from_s3(s3_conv_key)
+                        input_data_from_file = conv_file_data.get("input_data", [])
+
+                        if input_data_from_file:
+                            # Use latest message from conversation file to extract subject and thread_id
+                            latest_msg = (
+                                input_data_from_file[-1]
+                                if isinstance(input_data_from_file, list)
+                                else input_data_from_file
+                            )
+
+                            if isinstance(latest_msg, dict):
+                                # Extract subject and thread_id from message if available
+                                file_subject = latest_msg.get("subject")
+                                file_thread_id = latest_msg.get("thread_id", "")
+
+                                if file_subject:
+                                    subject = file_subject
+
+                                # If thread_id not in message, try to extract from conversation_id
+                                # Format: {user_id}_{thread_id}
+                                if file_thread_id:
+                                    thread_id = file_thread_id
+                                elif "_" in c_id:
+                                    # Extract thread_id from conversation_id (second part after user_id)
+                                    parts = c_id.split("_", 1)
+                                    if len(parts) == 2:
+                                        thread_id = parts[1]
+                                        print(
+                                            f"📋 [DEBUG] Extracted thread_id from conversation_id: {thread_id}"
+                                        )
+
+                                # Mark as reply since conversation file exists
+                                is_reply = True
+                                conversation_id = c_id
+                                print(
+                                    f"✅ [DEBUG] Reconstructed conversation data from file - thread_id: {thread_id}, subject: {subject}"
+                                )
+                            else:
+                                print(
+                                    f"⚠️ [DEBUG] Conversation file data invalid format"
+                                )
+                        else:
+                            print(f"⚠️ [DEBUG] Conversation file empty or not found")
+                    except Exception as fallback_err:
+                        print(
+                            f"⚠️ [DEBUG] Could not reconstruct from conversation file: {fallback_err}"
+                        )
 
             except FileNotFoundError:
                 print(
@@ -1013,7 +1114,7 @@ def send_messages():
                 print(f"❌ [DEBUG] Error checking config file for reply status: {e}")
 
         else:
-            print("🆕 [DEBUG] Processing new conversation")
+            # print("🆕 [DEBUG] Processing new conversation")
             conversation_id = str(uuid.uuid4())
             client_id = contact_id
             print(
@@ -1043,7 +1144,7 @@ def send_messages():
         # print(f"📖 [DEBUG] input_data length: {len(input_data)}")
 
         # Get user email
-        print("📧 [DEBUG] Retrieving user email...")
+        # print("📧 [DEBUG] Retrieving user email...")
         cursor.execute("SELECT email FROM users WHERE user_id = %s", (user_id,))
         u_email = cursor.fetchone()
         user_email = None
@@ -1054,13 +1155,13 @@ def send_messages():
             print("⚠️ [DEBUG] No user email found")
 
         # Get business email
-        # print("🏢 [DEBUG] Retrieving business email...")
+        ##print("🏢 [DEBUG] Retrieving business email...")
         # cursor.execute(
         #     "SELECT BusinessEmail FROM business_info WHERE user_id_fk = %s", (user_id,)
         # )
         # b_email = cursor.fetchone()
         # if not b_email:
-        #     print("❌ [DEBUG] No email found from business_info table")
+        #    #print("❌ [DEBUG] No email found from business_info table")
         #     return jsonify({"error": "No business email found"}), 500
         # business_email = b_email[0]
         # print(f"🏢 [DEBUG] Business email: {business_email}")
@@ -1094,12 +1195,28 @@ def send_messages():
         if c_email:
             client_email = c_email[0]
             print(f"👤 [DEBUG] Client email: {client_email}")
+
+            # ✅ VALIDATION: Ensure the email from request matches what we found
+            if contact_id and "@" not in str(contact_id):
+                # contact_id is a UUID, validate it matches
+                if contact_id != client_id:
+                    print(
+                        f"⚠️ [DEBUG] Contact ID mismatch - request sent: {contact_id}, DB found: {client_id}"
+                    )
+                    print(
+                        f"⚠️ [DEBUG] Using database value: {client_id} to ensure correct recipient"
+                    )
+            else:
+                print(
+                    f"⚠️ [DEBUG] Frontend sent email instead of contact UUID: {contact_id}"
+                )
+                print(f"✅ [DEBUG] Using correct client_id from database: {client_id}")
         else:
             print("❌ [DEBUG] No client email found")
 
         # Subject generation for new conversations
         if not is_reply:
-            # print("📝 [DEBUG] Generating subject for new conversation...")
+            ##print("📝 [DEBUG] Generating subject for new conversation...")
 
             # Create initial message structure
             now_utc = datetime.now(timezone.utc)
@@ -1128,7 +1245,7 @@ def send_messages():
                 json.dump({"new_messages": [initial_message]}, f, indent=2)
 
             # Generate subject using AI
-            # print("🤖 [DEBUG] Calling generate_subject()...")
+            ##print("🤖 [DEBUG] Calling generate_subject()...")
             subjects = generate_subject(user_id, conv_filepath, channel)
             # print(f"🤖 [DEBUG] Generated subjects: {subjects}")
 
@@ -1168,6 +1285,37 @@ def send_messages():
             "ticket_id": ticket_id,
             "ticket_name": ticket_name,
         }
+
+        # Add attachments to message if present
+        if attachments:
+            # Ensure attachments have proper structure for frontend download
+            enhanced_attachments = []
+            for i, att in enumerate(attachments):
+                enhanced_att = {
+                    "filename": att.get("original_filename")
+                    or att.get("filename", f"attachment_{i}"),
+                    "mime_type": att.get("mime_type", "application/octet-stream"),
+                    "s3_key": att.get("s3_key"),
+                    "size": att.get("file_size") or att.get("size", 0),
+                    # These will be populated when message is retrieved from Gmail
+                    "message_id": att.get("message_id"),
+                    "attachment_id": att.get("attachment_id"),
+                }
+                enhanced_attachments.append(enhanced_att)
+
+            message["attachments"] = enhanced_attachments
+            message["has_attachments"] = True
+            print(
+                f"📎 [DEBUG] Added {len(enhanced_attachments)} attachment(s) to message object"
+            )
+            for att in enhanced_attachments:
+                print(
+                    f"   📎 Attachment: {att.get('filename')} ({att.get('mime_type')})"
+                )
+        else:
+            message["has_attachments"] = False
+            message["attachments"] = []
+
         # print(f"📧 [DEBUG] Final message object created: {message}")
 
         # # CRITICAL: Check if this message already exists in input_data
@@ -1189,8 +1337,10 @@ def send_messages():
         # print(f"🚀 [DEBUG] Sending message via channel: {channel}")
 
         if channel == "gmail":
-            print("📧 [DEBUG] Processing Gmail send...")
-            if thread_id:
+            # print("📧 [DEBUG] Processing Gmail send...")
+            # Only send as reply if we have a valid thread_id
+            if thread_id and is_reply:
+                print(f"📧 [DEBUG] Sending as REPLY with thread_id: {thread_id}")
                 if isinstance(input_data, dict):
                     # input_data is a single message dict
                     latest_msg = input_data
@@ -1202,14 +1352,14 @@ def send_messages():
                         if isinstance(msg, dict) and "timestamp" in msg
                     ]
                     if not valid_messages:
-                        # print("❌ [DEBUG] No valid messages found in input_data")
+                        ##print("❌ [DEBUG] No valid messages found in input_data")
                         return jsonify({"error": "No valid messages found"}), 400
                     latest_msg = max(
                         valid_messages,
                         key=lambda msg: datetime.fromisoformat(msg["timestamp"]),
                     )
                 else:
-                    # print("❌ [DEBUG] input_data is neither dict nor list")
+                    ##print("❌ [DEBUG] input_data is neither dict nor list")
                     return jsonify({"error": "Invalid input_data format"}), 400
                 latest_id = latest_msg["id"]
                 # print(f"📧 [DEBUG] Latest message ID: {latest_id}")
@@ -1231,6 +1381,9 @@ def send_messages():
                         thread_id=thread_id,
                         body_text=text,
                         in_reply_to=latest_id,
+                        attachments=attachments or [],
+                        cc=cc_list or None,
+                        bcc=bcc_list or None,
                     )
                     msg_id = sent_message_id
                     message["id"] = sent_message_id
@@ -1243,7 +1396,7 @@ def send_messages():
                     return jsonify({"error": "Gmail send failed"}), 500
 
             else:
-                # print("📧 [DEBUG] Sending new Gmail message...")
+                ##print("📧 [DEBUG] Sending new Gmail message...")
                 try:
                     # print(f"📧 [DEBUG] Calling send_mail()...")
                     result = send_mail(
@@ -1251,6 +1404,7 @@ def send_messages():
                         to=client_email,
                         subject=subject,
                         body_text=text,
+                        attachments=attachments or [],
                     )
                     send_status = result.get("status")
                     if send_status == "success":
@@ -1263,15 +1417,15 @@ def send_messages():
                             f"✅ [DEBUG] Gmail message sent, message_id: {sent_message_id}, thread_id: {sent_thread_id}"
                         )
                     else:
-                        print("sending through gmail failed")
-                        return
+                        # print("sending through gmail failed")
+                        return jsonify({"error": "Gmail send failed"}), 500
 
                 except Exception as e:
                     print(f"❌ [DEBUG] Gmail send failed: {e}")
                     return jsonify({"error": "Gmail send failed"}), 500
 
         elif channel == "zoho":
-            print("📧 [DEBUG] Processing Zoho send...")
+            # print("📧 [DEBUG] Processing Zoho send...")
             try:
                 print(f"📧 [DEBUG] Calling send_zoho_email()...")
                 response_payload, status_code = send_zoho_email(
@@ -1308,7 +1462,7 @@ def send_messages():
             return jsonify({"error": "Unsupported channel"}), 400
 
         # Database updates
-        print("💾 [DEBUG] Starting database updates...")
+        # print("💾 [DEBUG] Starting database updates...")
         updated_date = datetime.now(timezone.utc).isoformat()
         created_date = updated_date
         print(
@@ -1317,7 +1471,7 @@ def send_messages():
 
         try:
             if not is_reply:
-                # print("💾 [DEBUG] Inserting new thread...")
+                ##print("💾 [DEBUG] Inserting new thread...")
                 cursor.execute(
                     """
                     INSERT INTO threads (conversation_id, started_at, status, last_message_at,external_user_id )
@@ -1325,25 +1479,25 @@ def send_messages():
                     """,
                     (conversation_id, created_date, "Open", updated_date, user_id),
                 )
-                # print("✅ [DEBUG] New thread inserted")
+                ##print("✅ [DEBUG] New thread inserted")
             else:
-                # print("💾 [DEBUG] Updating existing ticket and thread...")
+                ##print("💾 [DEBUG] Updating existing ticket and thread...")
                 cursor.execute(
                     "UPDATE tickets SET updated_in = %s, status = %s WHERE conversation_id_fk = %s",
                     (updated_date, "In-Progress", conversation_id),
                 )
-                # print("✅ [DEBUG] Ticket updated")
+                ##print("✅ [DEBUG] Ticket updated")
 
                 cursor.execute(
                     "UPDATE threads SET last_message_at = %s WHERE conversation_id = %s",
                     (updated_date, conversation_id),
                 )
-                # print("✅ [DEBUG] Thread updated")
+                ##print("✅ [DEBUG] Thread updated")
 
             cont_ref = f"{user_id}/messages/{client_id}/{conversation_id}.json"
             # print(f"💾 [DEBUG] Content reference: {cont_ref}")
 
-            # print("💾 [DEBUG] Inserting message record...")
+            ##print("💾 [DEBUG] Inserting message record...")
             cursor.execute(
                 """
                 INSERT INTO messages (
@@ -1371,10 +1525,10 @@ def send_messages():
                     channel,
                 ),
             )
-            print("✅ [DEBUG] Message record inserted")
+            # print("✅ [DEBUG] Message record inserted")
 
             connection.commit()
-            # print("✅ [DEBUG] Database transaction committed")
+            ##print("✅ [DEBUG] Database transaction committed")
 
         except Exception as e:
             connection.rollback()
@@ -1382,7 +1536,7 @@ def send_messages():
             return jsonify({"error": "Database operation failed"}), 500
 
         # Update Conversation File
-        # print("📄 [DEBUG] Updating conversation file...")
+        ##print("📄 [DEBUG] Updating conversation file...")
         try:
             if isinstance(input_data, dict):
                 input_data = [input_data]
@@ -1401,7 +1555,7 @@ def send_messages():
                 type="messages",
                 s3_key_C=s3_conv_key,
             )
-            # print("✅ [DEBUG] Conversation file updated successfully")
+            ##print("✅ [DEBUG] Conversation file updated successfully")
 
         except Exception as e:
             print(f"❌ [DEBUG] Failed to update conversation file: {e}")
@@ -1415,7 +1569,7 @@ def send_messages():
         )
 
         # Update Config File
-        # print("⚙️ [DEBUG] Updating config file...")
+        ##print("⚙️ [DEBUG] Updating config file...")
         config_folder = os.path.join(
             pathconfig.basepath, "messages", user_id, client_id
         )
@@ -1494,7 +1648,7 @@ def send_messages():
                 # print(f"⚙️ [DEBUG] Using existing thread_id: {thread_id}")
         else:
             updated_entry["thread_id"] = ""
-            print("⚙️ [DEBUG] Non-Gmail channel, no thread_id")
+        # print("⚙️ [DEBUG] Non-Gmail channel, no thread_id")
 
         print(f"⚙️ [DEBUG] Updated entry: {updated_entry}")
 
@@ -1509,12 +1663,12 @@ def send_messages():
 
         if not conversation_exists:
             config_data.setdefault("conversations", []).append(updated_entry)
-            print("⚙️ [DEBUG] Added new conversation to config")
+        # print("⚙️ [DEBUG] Added new conversation to config")
 
         config_data["userclients_id"] = client_id
         # print(f"⚙️ [DEBUG] Calling update_config_file()...")
         update_config_file(user_id, client_id, config_data)
-        # print("✅ [DEBUG] Config file updated successfully")
+        ##print("✅ [DEBUG] Config file updated successfully")
 
         # Final Response
         response_data = {
@@ -1537,7 +1691,7 @@ def send_messages():
     finally:
         if "connection" in locals():
             connection.close()
-            print("🔗 [DEBUG] Database connection closed")
+        # print("🔗 [DEBUG] Database connection closed")
 
 
 @umail_bp.route("/async_message/<userid>", methods=["GET"])
@@ -1547,3 +1701,648 @@ def get_inbox_info(userid):
         return jsonify({"result": result}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# SYNC MANAGEMENT ENDPOINTS - For Frontend Login & Manual Sync Triggers
+# ============================================================================
+
+
+@umail_bp.route("/sync/check_should_sync/<user_id>", methods=["GET"])
+def check_should_sync(user_id):
+    """
+    Check if a sync should happen for a user without triggering it.
+    Useful for frontend to decide whether to call /get_all_messages
+
+    Query Parameters:
+    - context: 'login' (default) or 'manual'
+      - 'login': Always triggers sync on first call, respects 30min for subsequent
+      - 'manual': Checks 30min interval for button clicks/refreshes
+
+    Returns:
+    {
+        "should_sync": bool,
+        "reason": string explaining the decision,
+        "last_sync": ISO timestamp of last sync or null,
+        "next_allowed_sync": ISO timestamp of when next sync is allowed,
+        "time_until_next_sync": seconds to wait,
+        "context": "login" or "manual"
+    }
+    """
+    try:
+        context = request.args.get("context", "login").lower()
+
+        if context == "login":
+            sync_info = asyncio.run(SyncManager.should_sync_on_login(user_id))
+        elif context == "manual":
+            sync_info = asyncio.run(SyncManager.should_sync_on_manual_action(user_id))
+        else:
+            return jsonify({"error": "Invalid context. Use 'login' or 'manual'"}), 400
+
+        logger.info(f"Sync check for {user_id} (context={context}): {sync_info}")
+        return jsonify(sync_info), 200
+    except Exception as e:
+        logger.error(f"Error in check_should_sync: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@umail_bp.route("/sync/trigger_on_login/<user_id>", methods=["GET"])
+def trigger_sync_on_login(user_id):
+    """
+    Trigger a sync on user login if 30 minutes have passed since last sync.
+    Should be called by frontend after user successfully logs in.
+
+    This endpoint:
+    1. Checks if 30 minutes have passed since last sync
+    2. If yes: triggers email fetch and records the sync time
+    3. If no: returns rate_limited status
+    4. Returns status and task info
+
+    Returns:
+    {
+        "status": "syncing" | "rate_limited" | "already_syncing",
+        "message": description,
+        "task_id": celery task ID (if syncing),
+        "last_sync": previous sync time,
+        "next_allowed_sync": when next sync is allowed,
+        "time_until_next_sync": seconds to wait,
+        "reason": explanation,
+        "context": "login"
+    }
+    """
+    try:
+        # Check if sync should happen (respects 30-minute interval)
+        sync_check = asyncio.run(SyncManager.should_sync_on_login(user_id))
+
+        logger.info(f"Login sync trigger for {user_id}: {sync_check}")
+
+        # If sync should not happen, return rate limited
+        if not sync_check["should_sync"]:
+            logger.info(f"Login sync skipped for {user_id}: {sync_check['reason']}")
+            return (
+                jsonify(
+                    {
+                        "status": "rate_limited",
+                        "message": sync_check["reason"],
+                        "user_id": user_id,
+                        "last_sync": sync_check.get("last_sync"),
+                        "next_allowed_sync": sync_check.get("next_allowed_sync"),
+                        "time_until_next_sync": sync_check.get("time_until_next_sync"),
+                        "context": "login",
+                    }
+                ),
+                429,  # Too Many Requests
+            )
+
+        # Check if already syncing
+        if not acquire_user_lock(user_id):
+            logger.info(f"Sync task already running for {user_id}")
+            return (
+                jsonify(
+                    {
+                        "status": "already_syncing",
+                        "message": "Sync task is already running for this user",
+                        "user_id": user_id,
+                        "context": "login",
+                    }
+                ),
+                202,
+            )
+
+        # Trigger the sync
+        async_result = umail_sync.delay(user_id)
+
+        # Record this sync time
+        asyncio.run(SyncManager.record_sync_time(user_id))
+
+        logger.info(f"Login sync triggered for {user_id}, task_id={async_result.id}")
+
+        return (
+            jsonify(
+                {
+                    "status": "syncing",
+                    "message": "Email sync triggered on login",
+                    "user_id": user_id,
+                    "task_id": async_result.id,
+                    "last_sync": sync_check.get("last_sync"),
+                    "context": "login",
+                }
+            ),
+            202,
+        )
+    except Exception as e:
+        logger.error(f"Error in trigger_sync_on_login: {e}")
+        return jsonify({"error": str(e), "context": "login"}), 500
+
+
+@umail_bp.route("/sync/trigger_manual/<user_id>", methods=["GET"])
+def trigger_sync_manual(user_id):
+    """
+    Manually trigger a sync (from button click or page refresh).
+    Respects the 30-minute interval - will reject if too soon.
+
+    Returns:
+    {
+        "status": "syncing" | "rate_limited" | "already_running",
+        "message": description,
+        "task_id": celery task ID (if syncing),
+        "next_allowed_sync": ISO timestamp,
+        "time_until_next_sync": seconds,
+        "context": "manual"
+    }
+    """
+    try:
+        # Check if manual sync is allowed
+        sync_check = asyncio.run(SyncManager.should_sync_on_manual_action(user_id))
+
+        if not sync_check["should_sync"]:
+            logger.info(f"Manual sync rejected for {user_id}: {sync_check['reason']}")
+            return (
+                jsonify(
+                    {
+                        "status": "rate_limited",
+                        "message": sync_check["reason"],
+                        "next_allowed_sync": sync_check["next_allowed_sync"],
+                        "time_until_next_sync": sync_check["time_until_next_sync"],
+                        "user_id": user_id,
+                        "context": "manual",
+                    }
+                ),
+                429,  # Too Many Requests
+            )
+
+        # Check if already running
+        if not acquire_user_lock(user_id):
+            logger.info(f"Sync task already running for {user_id} (manual trigger)")
+            return (
+                jsonify(
+                    {
+                        "status": "already_running",
+                        "message": "Sync task is already running for this user",
+                        "user_id": user_id,
+                        "context": "manual",
+                    }
+                ),
+                202,
+            )
+
+        # Trigger the sync
+        async_result = umail_sync.delay(user_id)
+
+        # Record this sync time
+        asyncio.run(SyncManager.record_sync_time(user_id))
+
+        next_sync = datetime.now(timezone.utc) + asyncio.run(
+            _get_timedelta_until_next()
+        )
+
+        logger.info(f"Manual sync triggered for {user_id}, task_id={async_result.id}")
+
+        return (
+            jsonify(
+                {
+                    "status": "syncing",
+                    "message": "Email sync triggered manually",
+                    "user_id": user_id,
+                    "task_id": async_result.id,
+                    "context": "manual",
+                }
+            ),
+            202,
+        )
+    except Exception as e:
+        logger.error(f"Error in trigger_sync_manual: {e}")
+        return jsonify({"error": str(e), "context": "manual"}), 500
+
+
+@umail_bp.route("/sync/status/<user_id>", methods=["GET"])
+def get_sync_status(user_id):
+    """
+    Get the current sync status for a user.
+    Shows when the last sync happened and when the next one is allowed.
+
+    Returns:
+    {
+        "user_id": user_id,
+        "last_sync": ISO timestamp or null,
+        "next_allowed_sync": ISO timestamp,
+        "time_until_next_sync": seconds,
+        "sync_interval": 1800 (seconds, 30 minutes),
+        "can_manual_sync": bool
+    }
+    """
+    try:
+        sync_info = asyncio.run(SyncManager.get_last_sync_time(user_id))
+
+        return (
+            jsonify(
+                {
+                    "user_id": user_id,
+                    "last_sync": sync_info.get("last_sync"),
+                    "next_allowed_sync": sync_info.get("next_allowed_sync"),
+                    "time_until_next_sync": sync_info.get("time_until_next_sync"),
+                    "sync_interval": 1800,  # 30 minutes in seconds
+                    "can_manual_sync": sync_info.get("should_sync", False),
+                }
+            ),
+            200,
+        )
+    except Exception as e:
+        logger.error(f"Error in get_sync_status: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@umail_bp.route("/sync/reset_timer/<user_id>", methods=["POST"])
+def reset_sync_timer(user_id):
+    """
+    Admin endpoint to reset the sync timer for a user (for testing/troubleshooting).
+
+    Returns:
+    {
+        "status": "success" | "failed",
+        "message": description
+    }
+    """
+    try:
+        # Optional: Add authentication check here for production
+        success = asyncio.run(SyncManager.clear_sync_timer(user_id))
+
+        if success:
+            logger.info(f"Sync timer reset for {user_id}")
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": f"Sync timer cleared for {user_id}",
+                    }
+                ),
+                200,
+            )
+        else:
+            return (
+                jsonify(
+                    {
+                        "status": "failed",
+                        "message": f"Failed to clear sync timer for {user_id}",
+                    }
+                ),
+                500,
+            )
+    except Exception as e:
+        logger.error(f"Error in reset_sync_timer: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+async def _get_timedelta_until_next():
+    """Helper to get timedelta until next sync"""
+    from datetime import timedelta
+
+    return timedelta(seconds=1800)  # 30 minutes
+
+
+# ============================================================================
+# ATTACHMENT HANDLING ENDPOINTS
+# ============================================================================
+
+
+@umail_bp.route("/attachment-test", methods=["GET"])
+def attachment_test():
+    """
+    Simple test endpoint to verify attachment endpoints are accessible
+    """
+    return (
+        jsonify(
+            {
+                "status": "ok",
+                "message": "Attachment endpoints are accessible",
+                "endpoints": [
+                    "/umail/attach-file (POST)",
+                    "/umail/attach-files (POST)",
+                    "/umail/send-reply-with-attachments (POST)",
+                ],
+            }
+        ),
+        200,
+    )
+
+
+@umail_bp.route("/attach-file", methods=["POST", "OPTIONS"])
+def upload_attachment():
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
+    """
+    Upload a single attachment file for email
+    
+    Expected multipart/form-data payload:
+    - user_id: str (optional - will use session if not provided)
+    - conversation_id: str (optional - will use fallback if not provided)
+    - client_id: str (optional)
+    - file: FileStorage (required) - the file to upload
+    
+    Returns:
+        {
+            'status': 'success' | 'error',
+            'attachment_id': str (if success),
+            'filename': str (if success),
+            'original_filename': str (if success),
+            'file_size': int (if success),
+            'mime_type': str (if success),
+            's3_key': str (if success),
+            'upload_timestamp': str (if success),
+            'error': str (if error),
+            'message': str (if error)
+        }
+    """
+    try:
+        # Log incoming request for debugging
+        logger.info(f"[ATTACH-FILE] Request received")
+        logger.info(f"[ATTACH-FILE] Form data keys: {list(request.form.keys())}")
+        logger.info(f"[ATTACH-FILE] Files keys: {list(request.files.keys())}")
+
+        # Get required fields - with fallbacks
+        user_id = request.form.get("user_id") or "anonymous-user"
+        conversation_id = request.form.get("conversation_id") or "temp-conversation"
+        client_id = request.form.get("client_id", "default-client")
+
+        logger.info(
+            f"[ATTACH-FILE] Extracted - user_id: {user_id}, conv_id: {conversation_id}, client_id: {client_id}"
+        )
+
+        # Check if file is in request
+        if "file" not in request.files:
+            logger.warning("[ATTACH-FILE] No file part in attachment request")
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "error": "no_file",
+                        "message": "No file provided in request. Please select a file to upload.",
+                    }
+                ),
+                400,
+            )
+
+        file = request.files["file"]
+
+        # Allow empty user_id/conversation_id for now - use defaults
+        if not user_id:
+            user_id = "anonymous-user"
+            logger.warning(f"[ATTACH-FILE] No user_id provided, using: {user_id}")
+
+        logger.info(f"[ATTACH-FILE] Processing file: {file.filename}")
+
+        # Handle attachment
+        result = handle_attachment_upload(user_id, conversation_id, client_id, file)
+
+        logger.info(f"[ATTACH-FILE] Result status: {result.get('status')}")
+
+        # Check if upload was successful (status can be 'success' or 'ready')
+        if result.get("status") in ["success", "ready"]:
+            logger.info(
+                f"[ATTACH-FILE] Attachment uploaded successfully - ID: {result.get('attachment_id')}"
+            )
+            return jsonify(result), 200
+        else:
+            logger.warning(
+                f"[ATTACH-FILE] Attachment upload failed: {result.get('message')}"
+            )
+            return jsonify(result), 400
+
+    except Exception as e:
+        logger.error(
+            f"[ATTACH-FILE] Error in upload_attachment endpoint: {str(e)}",
+            exc_info=True,
+        )
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "error": "server_error",
+                    "message": f"Server error: {str(e)}",
+                }
+            ),
+            500,
+        )
+
+
+@umail_bp.route("/attach-files", methods=["POST", "OPTIONS"])
+def upload_multiple_attachments():
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
+    """
+    Upload multiple attachment files for email
+    
+    Expected multipart/form-data payload:
+    - user_id: str (optional - will use fallback if not provided)
+    - conversation_id: str (optional - will use fallback if not provided)
+    - client_id: str (optional)
+    - files: FileStorage[] (required) - multiple files to upload
+    
+    Returns:
+        {
+            'status': 'success' | 'partial' | 'error',
+            'attachments': [attachment_metadata],
+            'failed': [{'filename': str, 'error': str}],
+            'total_uploaded': int,
+            'total_failed': int,
+            'total_size': int,
+            'message': str
+        }
+    """
+    try:
+        # Log incoming request for debugging
+        logger.info(f"[ATTACH-FILES] Request received")
+        logger.info(f"[ATTACH-FILES] Form data keys: {list(request.form.keys())}")
+        logger.info(f"[ATTACH-FILES] Files keys: {list(request.files.keys())}")
+
+        # Get required fields - with fallbacks
+        user_id = request.form.get("user_id") or "anonymous-user"
+        conversation_id = request.form.get("conversation_id") or "temp-conversation"
+        client_id = request.form.get("client_id", "default-client")
+
+        logger.info(
+            f"[ATTACH-FILES] Extracted - user_id: {user_id}, conv_id: {conversation_id}, client_id: {client_id}"
+        )
+
+        # Check if files are in request
+        if "files" not in request.files:
+            logger.warning("[ATTACH-FILES] No files part in attachment request")
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "error": "no_files",
+                        "message": "No files provided in request. Please select files to upload.",
+                    }
+                ),
+                400,
+            )
+
+        files = request.files.getlist("files")
+
+        if not files or all(f.filename == "" for f in files):
+            logger.warning("[ATTACH-FILES] Empty files list in attachment request")
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "error": "no_files",
+                        "message": "No files provided in request. Please select files to upload.",
+                    }
+                ),
+                400,
+            )
+
+        logger.info(f"[ATTACH-FILES] Processing {len(files)} files")
+
+        # Handle multiple attachments
+        result = handle_multiple_attachments(user_id, conversation_id, client_id, files)
+
+        logger.info(f"[ATTACH-FILES] Result status: {result.get('status')}")
+
+        # Check if upload was successful (status can be 'success', 'partial', or 'ready')
+        if result.get("status") in ["success", "partial", "ready"]:
+            logger.info(
+                f"[ATTACH-FILES] Multiple attachments uploaded - Success: {result.get('total_uploaded')}, Failed: {result.get('total_failed')}"
+            )
+            return jsonify(result), 200
+        else:
+            logger.warning(
+                f"[ATTACH-FILES] Multiple attachments upload failed: {result.get('message')}"
+            )
+            return jsonify(result), 400
+
+    except Exception as e:
+        logger.error(
+            f"[ATTACH-FILES] Error in upload_multiple_attachments endpoint: {str(e)}",
+            exc_info=True,
+        )
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "error": "server_error",
+                    "message": f"Server error: {str(e)}",
+                }
+            ),
+            500,
+        )
+
+
+@umail_bp.route("/send-reply-with-attachments", methods=["POST", "OPTIONS"])
+def send_reply_with_attachments():
+    """
+    Send a reply with attachments (enhanced version of /send-reply)
+
+    Expected JSON payload:
+    {
+        'user_id': str (required),
+        'channel': str (required) - 'gmail' or 'zoho',
+        'text': str (required),
+        'ticket_conversation_id': str (optional),
+        'conversation_id': str (optional),
+        'contact_id': str (optional),
+        'attachments': [
+            {
+                'attachment_id': str,
+                's3_key': str,
+                'filename': str,
+                'mime_type': str,
+                'file_size': int
+            }
+        ] (optional)
+    }
+
+    Returns:
+        {
+            'status': 'sent' | 'error',
+            'id': str,
+            'channel': str,
+            'conversationId': str,
+            'is_reply': bool,
+            'attachments_count': int,
+            'attachments': [attachment_info],
+            'message': str (if error)
+        }
+    """
+    # Handle CORS preflight requests
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
+    try:
+        logger.info("📎 [SEND-REPLY-ATTACHMENTS] Endpoint called")
+
+        # Extract request data
+        data = request.json
+        attachments_list = data.get("attachments", [])
+
+        logger.info(
+            f"📎 [SEND-REPLY-ATTACHMENTS] Processing request with {len(attachments_list)} attachment(s)"
+        )
+
+        # Simply call send_messages() - it will handle attachments from request.json
+        # send_messages() is a Flask view function, so we call it directly via make_response
+
+        # Call the send_messages function which already handles attachments
+        response = send_messages()
+
+        # Extract response data
+        if isinstance(response, tuple):
+            response_json, status_code = response
+            response_dict = (
+                response_json.get_json()
+                if hasattr(response_json, "get_json")
+                else response_json
+            )
+        else:
+            response_dict = response
+            status_code = 200
+
+        # If send was successful, enhance response with attachment info
+        if status_code == 200 and response_dict.get("status") == "sent":
+            response_dict["attachments_count"] = len(attachments_list)
+            response_dict["attachments"] = [
+                {
+                    "id": att.get("attachment_id"),
+                    "filename": att.get("filename"),
+                    "size": att.get("file_size"),
+                    "s3_key": att.get("s3_key"),
+                }
+                for att in attachments_list
+            ]
+
+            logger.info(
+                f"📎 [SEND-REPLY-ATTACHMENTS] Message sent successfully with {len(attachments_list)} attachments - "
+                f"Message ID: {response_dict.get('id')}"
+            )
+
+        return jsonify(response_dict), status_code
+
+    except Exception as e:
+        logger.error(f"❌ [SEND-REPLY-ATTACHMENTS] Error: {str(e)}")
+        import traceback
+
+        logger.error(f"❌ [SEND-REPLY-ATTACHMENTS] Traceback: {traceback.format_exc()}")
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": f"Error sending reply with attachments: {str(e)}",
+                }
+            ),
+            500,
+        )
+
+
+@umail_bp.route("/check-lastmsg/<user_id>/<thread_id>", methods=["GET"])
+def checkgmail_last_msg(user_id, thread_id):
+    from services.gmail_service import GmailService
+    import asyncio
+
+    val = GmailService(user_id=user_id)
+    data = asyncio.run(val.get_thread_last_message_direction(thread_id=thread_id))
+    return data, 200

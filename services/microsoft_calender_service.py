@@ -266,7 +266,7 @@ class MicrosoftGraphCalendarService:
     def ensure_fresh_token(self):
         # If token is near expiry (within 2 min), refresh it
         if not self.expiry or datetime.utcnow() >= self.expiry - timedelta(minutes=2):
-            print("🔄 Refreshing Microsoft token...")
+            # print("🔄 Refreshing Microsoft token...")
 
             scopes = "User.Read Mail.Send Mail.ReadWrite Calendars.ReadWrite OnlineMeetings.ReadWrite Chat.ReadWrite"
 
@@ -283,7 +283,7 @@ class MicrosoftGraphCalendarService:
             )
 
             data = resp.json()
-            # print("Data on refresh:", data)
+            ##print("Data on refresh:", data)
 
             if "access_token" not in data:
                 raise ValueError(f"MS token refresh failed: {data}")
@@ -548,7 +548,7 @@ class MicrosoftGraphCalendarService:
         }
 
         # DEBUG
-        print("🟦 Final PATCH body sent to Microsoft:", json.dumps(body, indent=2))
+        # print("🟦 Final PATCH body sent to Microsoft:", json.dumps(body, indent=2))
 
         # ---------------------------------------
         # STEP 4: PATCH request
@@ -560,7 +560,7 @@ class MicrosoftGraphCalendarService:
         )
 
         if resp.status_code not in (200, 202):
-            print("❌ Microsoft update failed:", resp.text)
+            # print("❌ Microsoft update failed:", resp.text)
             return {"success": False, "error": resp.text}
 
         updated = resp.json()

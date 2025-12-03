@@ -4,16 +4,26 @@ import os
 import time
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
+from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from datetime import timezone
-from flask import Blueprint, request, jsonify, session, redirect
+from flask import (
+    Blueprint,
+    request,
+    jsonify,
+    session,
+    redirect,
+    Response,
+    stream_with_context,
+)
 import yt_dlp
 import asyncio
 import tempfile
-import os
 import random
+import logging
 from agent_route.s_t_s import Speech2TextService
+from utils.async_check import run_async
 
 # Keep youtube_transcript_api as fallback
 try:
@@ -39,8 +49,8 @@ from collections import deque
 
 from agent_route.Drive_downloader import (
     GetEmailandDriveService,
-    Main_service,
     Mediatorservice,
+    get_main_service,
 )
 from agent_route.ag_helperzz import (
     deletefilebasedData,
@@ -56,6 +66,7 @@ from agent_route.doc_clarity import (
 from agent_route.lance_agent import LanceClient
 from agent_route.s_t_s import Speech2TextService
 from agent_route.utils import extract_filename, extract_transcript_filename
+from agent_route.fast_multilevel_scraper import scrape_website_fast
 from cust_helpers import pathconfig
 from google_route.routes import get_token
 from utils.base_logger import get_logger
@@ -103,7 +114,6 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 
-
 agent_bps = Blueprint("agents", __name__)
 logger = get_logger(__name__)
 
@@ -121,7 +131,7 @@ def save_training_settings():
     connection = None
     try:
         data = request.get_json()
-        print("dasdsa", data, session)
+        # print("dasdsa", data, session)
         assistant_name = data.get("assistant_name")
         voice_type = data.get("voice_type", "").capitalize()
         sync_website = (
@@ -133,19 +143,19 @@ def save_training_settings():
 
         # Validate required fields
         if not user_id:
-            print("no userid")
+            # print("no userid")
             return jsonify({"error": "User not logged in"}), 400
         if voice_type not in ["Man", "Woman"]:
-            print("no voice")
+            # print("no voice")
             return jsonify({"error": "Invalid voice type"}), 400
         if not assistant_name:
-            print("no name")
+            # print("no name")
             return jsonify({"error": "Assistant name is required"}), 400
         if not sync_website:
-            print("no website")
+            # print("no website")
             return jsonify({"error": "Website is required"}), 400
         if not check_userid_valid(user_id):
-            print("not a valid")
+            # print("not a valid")
             return jsonify({"error": "Invalid access"}), 404
 
         connection = connect_to_rds()
@@ -159,7 +169,7 @@ def save_training_settings():
             launch = cursor.fetchone()
 
             if not launch:
-                print("Creating new launch and subagent")
+                # print("Creating new launch and subagent")
 
                 launch_id = str(uuid.uuid4())
                 sub_agent_id = str(uuid.uuid4())
@@ -200,7 +210,7 @@ def save_training_settings():
                 )
 
             else:
-                print("Updating existing launch and subagent")
+                # print("Updating existing launch and subagent")
 
                 launch_id, api_key = launch
 
@@ -315,7 +325,7 @@ def get_training_settings():
     It takes the user_id from the session or request,
     retrieves the launch_id and api_id for that user,
     and returns the subagent settings including assistant name, voice type, sync website, and api key.
-    If the user is not logged in or no launch record is found, it returns an error message.
+    If no launch record is found (e.g., for Outlook/Microsoft users), return default settings.
     """
     try:
         user_id = str(session.get("user_id") or request.args.get("user_id"))
@@ -331,10 +341,19 @@ def get_training_settings():
             sql = "SELECT launch_id,api_id FROM launch WHERE user_id_fk = %s LIMIT 1"
             cursor.execute(sql, (user_id,))
             result = cursor.fetchone()
+
+            # If no launch record, return default settings (for Outlook/Microsoft users)
             if result is None:
                 return (
-                    jsonify({"error": "No launch record found for given user_id"}),
-                    404,
+                    jsonify(
+                        {
+                            "assistant_name": "Assistant",
+                            "voice_type": "default",
+                            "sync_website": "",
+                            "api_key": "",
+                        }
+                    ),
+                    200,
                 )
 
             launch_id, api_id = result
@@ -350,7 +369,18 @@ def get_training_settings():
             settings = cursor.fetchone()
 
             if settings is None:
-                return jsonify({"error": "No settings found for this user"}), 404
+                # Return default settings if no subagent settings found
+                return (
+                    jsonify(
+                        {
+                            "assistant_name": "Assistant",
+                            "voice_type": "default",
+                            "sync_website": "",
+                            "api_key": api_id or "",
+                        }
+                    ),
+                    200,
+                )
 
             response_data = {
                 "assistant_name": settings[0],
@@ -372,7 +402,7 @@ def get_training_settings():
 @agent_bps.route("/process-query-key-og", methods=["POST"])
 def checkquerywithApiKeyog():
     try:
-        print("Query made by:", session.get("user", {}))
+        # print("Query made by:", session.get("user", {}))
 
         data = request.json
         querytext = data.get("query", "").strip()
@@ -432,7 +462,7 @@ def checkquerywithApiKeyog():
         top_k = 1
         query_input = QueryInput(user_id=userid, query_text=querytext, top_k=top_k)
         lance_client = LanceClient(user_id=userid)
-        results = lance_client.query_vector(query_input)
+        results = run_async(lance_client.query_vector(query_input))
 
         for r in results:
             clean_text = r.get("text", "").encode().decode("unicode_escape")
@@ -451,7 +481,7 @@ def checkquerywithApiKeyog():
         return jsonify(response_data), 200
 
     except Exception as e:
-        print("❌ Error during query processing:", e)
+        # print("❌ Error during query processing:", e)
         return jsonify({"error": str(e)}), 400
 
 
@@ -554,116 +584,113 @@ def parse_llm_response(response_text):
     error_msg += f"\n\nRaw output (first 500 chars):\n{response_text[:500]}"
     raise ValueError(error_msg)
 
+
 def generate_fallback_response(user_id, query, previous_query, previous_response):
-    
+
     fallback_response = ""
     is_repeated = False
 
     # Normalize the query
     normalized_query = query.lower().strip()
     now = datetime.now()
-    
+
     # Get this user's recent query history
     user_history = user_query_history[user_id]
-    
+
     # Check how many times THIS USER asked THIS question in the last 10 minutes
     recent_same_queries = [
-        q for q in user_history 
-        if q['query'] == normalized_query and (now - q['timestamp']) < timedelta(minutes=10)
+        q
+        for q in user_history
+        if q["query"] == normalized_query
+        and (now - q["timestamp"]) < timedelta(minutes=10)
     ]
     repeated_len = len(recent_same_queries)
-    
+
     # If this specific user has asked the same question 2+ times, give repeat response
     if repeated_len >= 1:
-            print(f"repeated_len : {repeated_len}")
-            fallback_respone = load_yaml_file(path=pathconfig.query_validation)
-            prompt_template = fallback_respone.get("fallback_repeated_question")
-            filled_prompt = (
-                prompt_template.replace(
-                    "{{user_query}}",
-                    json.dumps(query, ensure_ascii=False, indent=2),
-                )
-                .replace("{{repeat_count}}", str(repeated_len))
-                .replace("{{previous_query}}", str(previous_query))
-                .replace("{{previous_response}}", str(previous_response))
+        print(f"repeated_len : {repeated_len}")
+        fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+        prompt_template = fallback_respone.get("fallback_repeated_question")
+        filled_prompt = (
+            prompt_template.replace(
+                "{{user_query}}",
+                json.dumps(query, ensure_ascii=False, indent=2),
             )
+            .replace("{{repeat_count}}", str(repeated_len))
+            .replace("{{previous_query}}", str(previous_query))
+            .replace("{{previous_response}}", str(previous_response))
+        )
 
-            modified_yaml = get_fireworks_response(filled_prompt, "system")
-            
-            try:
-                parsed_yaml = parse_llm_response(modified_yaml)
-            except ValueError as e:
-                print(f"🔥 Fallback response parsing failed: {e}")
-                return jsonify({"error": "Failed to parse fallback response"}), 500
+        modified_yaml = get_fireworks_response(filled_prompt, "system")
 
-            fallback_response = parsed_yaml.get("response")
-            is_repeated = True
+        try:
+            parsed_yaml = parse_llm_response(modified_yaml)
+        except ValueError as e:
+            print(f"🔥 Fallback response parsing failed: {e}")
+            return jsonify({"error": "Failed to parse fallback response"}), 500
+
+        fallback_response = parsed_yaml.get("response")
+        is_repeated = True
 
     # Store this query for THIS USER
-    user_query_history[user_id].append({
-        'query': normalized_query,
-        'timestamp': now
-    })
-     
+    user_query_history[user_id].append({"query": normalized_query, "timestamp": now})
+
     # Clean up old queries for THIS USER (keep only last 10 minutes)
     user_query_history[user_id] = [
-        q for q in user_query_history[user_id] 
-        if (now - q['timestamp']) < timedelta(minutes=10)
+        q
+        for q in user_query_history[user_id]
+        if (now - q["timestamp"]) < timedelta(minutes=10)
     ]
-    
+
     # Optional: Limit storage per user to prevent memory bloat
     if len(user_query_history[user_id]) > 50:
         user_query_history[user_id] = user_query_history[user_id][-50:]
-    
-    return {
-        "fallback_response":fallback_response,
-        "is_repeated":is_repeated
-    }
+
+    return {"fallback_response": fallback_response, "is_repeated": is_repeated}
 
 
 def semantically_repeated_response(user_id, query, previous_query, previous_response):
-    
-            fallback_response = ""
-            is_repeated = False
 
-            # Normalize the query
-            normalized_query = query.lower().strip()
-            now = datetime.now()
+    fallback_response = ""
+    is_repeated = False
 
-            fallback_respone = load_yaml_file(path=pathconfig.query_validation)
-            prompt_template = fallback_respone.get("fallback_repeated_question")
-            filled_prompt = (
-                prompt_template.replace(
-                    "{{user_query}}",
-                    json.dumps(query, ensure_ascii=False, indent=2),
-                )
-                .replace("{{previous_query}}", str(previous_query))
-                .replace("{{previous_response}}", str(previous_response))
-            )
+    # Normalize the query
+    normalized_query = query.lower().strip()
+    now = datetime.now()
 
-            modified_yaml = get_fireworks_response(filled_prompt, "system")
-            
-            try:
-                parsed_yaml = parse_llm_response(modified_yaml)
-            except ValueError as e:
-                print(f"🔥 Fallback response parsing failed: {e}")
-                return jsonify({"error": "Failed to parse fallback response"}), 500
+    fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+    prompt_template = fallback_respone.get("fallback_repeated_question")
+    filled_prompt = (
+        prompt_template.replace(
+            "{{user_query}}",
+            json.dumps(query, ensure_ascii=False, indent=2),
+        )
+        .replace("{{previous_query}}", str(previous_query))
+        .replace("{{previous_response}}", str(previous_response))
+    )
 
-            fallback_response = parsed_yaml.get("response")
-    
-            return fallback_response
-                
+    modified_yaml = get_fireworks_response(filled_prompt, "system")
+
+    try:
+        parsed_yaml = parse_llm_response(modified_yaml)
+    except ValueError as e:
+        print(f"🔥 Fallback response parsing failed: {e}")
+        return jsonify({"error": "Failed to parse fallback response"}), 500
+
+    fallback_response = parsed_yaml.get("response")
+
+    return fallback_response
 
 
 @agent_bps.route("/process-query-key", methods=["POST"])
 def checkquerywithApiKey():
     try:
-        print("Query made by:", session.get("user", {}))
+        # print("Query made by:", session.get("user", {}))
         response_data = []
         summary_generated = ""
 
         data = request.json
-        previous_query = data.get("previous_query","").strip()
+        previous_query = data.get("previous_query", "").strip()
         previous_response = data.get("previous_response").strip()
         querytext = data.get("query", "").strip()
         conversation_summary = data.get("conversation_summary")
@@ -699,11 +726,13 @@ def checkquerywithApiKey():
             if not check_userid_valid(userid):
                 return jsonify({"error": "Invalid access"}), 404
 
-        #check for repitative user queries
-        repeated_check_ans = generate_fallback_response(userid, querytext, previous_query, previous_response)
+        # check for repitative user queries
+        repeated_check_ans = generate_fallback_response(
+            userid, querytext, previous_query, previous_response
+        )
         repeated_fallback_response = repeated_check_ans["fallback_response"]
-        is_repeated = repeated_check_ans["is_repeated"]      
-  
+        is_repeated = repeated_check_ans["is_repeated"]
+
         if is_repeated:
             response_data.append(
                 {
@@ -711,11 +740,10 @@ def checkquerywithApiKey():
                     "match_score": "",
                     "extracted_answer": repeated_fallback_response,
                     "full_text": "",
-                    "conversation_summary":conversation_summary,
+                    "conversation_summary": conversation_summary,
                 }
             )
             return jsonify(response_data), 200
-
 
         # validate the input query
         validated_respone = load_yaml_file(path=pathconfig.query_validation)
@@ -725,7 +753,7 @@ def checkquerywithApiKey():
             .replace("{{previous_query}}", str(previous_query))
             .replace("{{previous_response}}", str(previous_response))
             .replace("{{conversation_summary}}", str(conversation_summary))
-            )
+        )
         modified_yaml = get_fireworks_response(filled_prompt, role="system")
 
         try:
@@ -739,32 +767,38 @@ def checkquerywithApiKey():
         print(f"type : {type}")
         print(f"summary : {summary_generated}")
 
-        if type == "general" or type == "gratitude" or type == "emotional" or type == "unknown" or type == "abuse":
+        if (
+            type == "general"
+            or type == "gratitude"
+            or type == "emotional"
+            or type == "unknown"
+            or type == "abuse"
+        ):
             response_data.append(
                 {
                     "id": "",
                     "match_score": "",
                     "extracted_answer": validated_query,
                     "full_text": "",
-                    "conversation_summary":summary_generated,
+                    "conversation_summary": summary_generated,
                 }
             )
             return jsonify(response_data), 200
 
         elif type == "repetition":
-            response = semantically_repeated_response(userid, querytext, previous_query, previous_response)
+            response = semantically_repeated_response(
+                userid, querytext, previous_query, previous_response
+            )
             response_data.append(
                 {
                     "id": "",
                     "match_score": "",
                     "extracted_answer": response,
                     "full_text": "",
-                    "conversation_summary":summary_generated,
+                    "conversation_summary": summary_generated,
                 }
             )
             return jsonify(response_data), 200
-
-            
 
         else:
 
@@ -784,7 +818,7 @@ def checkquerywithApiKey():
                                 "match_score": "",
                                 "extracted_answer": each.get("Ai Response", ""),
                                 "full_text": "",
-                                "conversation_summary":summary_generated,
+                                "conversation_summary": summary_generated,
                             }
                         )
                         return jsonify(response_data), 200
@@ -797,7 +831,7 @@ def checkquerywithApiKey():
                     user_id=userid, query_text=validated_query, top_k=top_k
                 )
                 lance_client = LanceClient(user_id=userid)
-                results = lance_client.query_vector(query_input)
+                results = run_async(lance_client.query_vector(query_input))
                 for r in results:
                     clean_text = r.get("text", "").encode().decode("unicode_escape")
                     base_doc_ans.append(clean_text)
@@ -808,7 +842,9 @@ def checkquerywithApiKey():
             business_name = (
                 businessdata.get("BusinessName") if businessdata else "Our Organization"
             )
-            business_address = businessdata.get("BillingAddress") if businessdata else ""
+            business_address = (
+                businessdata.get("BillingAddress") if businessdata else ""
+            )
             business_website = (
                 businessdata.get("WebsiteUrl") if businessdata else ""
             ) or ""
@@ -835,7 +871,10 @@ def checkquerywithApiKey():
                 result = parse_llm_response(modified_yaml)
             except ValueError as e:
                 print(f"🔥 Base evaluation parsing failed: {e}")
-                return jsonify({"error": "Failed to parse base evaluation response"}), 500
+                return (
+                    jsonify({"error": "Failed to parse base evaluation response"}),
+                    500,
+                )
 
             base_response = result.get("response")
             no_answer_found = result.get("no_answer_found")
@@ -860,11 +899,11 @@ def checkquerywithApiKey():
                         "match_score": "",
                         "extracted_answer": base_response,
                         "full_text": "",
-                        "conversation_summary":summary_generated,
+                        "conversation_summary": summary_generated,
                     }
                 )
                 return jsonify(response_data), 200
-            
+
             elif no_answer_found == "Partial":
                 # genereate fall back response when no_answer_found is true or partial
                 print(f"inside partial part")
@@ -877,12 +916,19 @@ def checkquerywithApiKey():
 
                 fallback_respone = load_yaml_file(path=pathconfig.query_validation)
                 template = fallback_respone.get("fallback_partial_answer")
-                filled_prompt = template.replace(
-                    "{{website_urls}}", ", ".join(website_urls) if website_urls else ""
-                ).replace("{{youtube_urls}}", ", ".join(youtube_urls) if youtube_urls else ""
-                ).replace("{{base_response}}", base_response
-                ).replace("{{previous_query}}", str(previous_query)
-                ).replace("{{previous_response}}", str(previous_response))
+                filled_prompt = (
+                    template.replace(
+                        "{{website_urls}}",
+                        ", ".join(website_urls) if website_urls else "",
+                    )
+                    .replace(
+                        "{{youtube_urls}}",
+                        ", ".join(youtube_urls) if youtube_urls else "",
+                    )
+                    .replace("{{base_response}}", base_response)
+                    .replace("{{previous_query}}", str(previous_query))
+                    .replace("{{previous_response}}", str(previous_response))
+                )
                 modified_yaml = get_fireworks_response(filled_prompt, role="system")
 
                 try:
@@ -901,7 +947,7 @@ def checkquerywithApiKey():
                         "match_score": "",
                         "extracted_answer": fallback_response,
                         "full_text": "",
-                        "conversation_summary":summary_generated,
+                        "conversation_summary": summary_generated,
                     }
                 )
                 return jsonify(response_data), 200
@@ -912,9 +958,9 @@ def checkquerywithApiKey():
                 prompt = fallback_respone.get("fallback_no_answer")
                 print(f"str(querytext) : {str(querytext)}")
                 filled_prompt = (
-                prompt.replace("{{user_query}}", str(querytext))
-                .replace("{{previous_query}}", str(previous_query))
-                .replace("{{previous_response}}", str(previous_response))
+                    prompt.replace("{{user_query}}", str(querytext))
+                    .replace("{{previous_query}}", str(previous_query))
+                    .replace("{{previous_response}}", str(previous_response))
                 )
                 modified_yaml = get_fireworks_response(filled_prompt, role="system")
 
@@ -934,13 +980,13 @@ def checkquerywithApiKey():
                         "match_score": "",
                         "extracted_answer": fallback_response,
                         "full_text": "",
-                        "conversation_summary":summary_generated,
+                        "conversation_summary": summary_generated,
                     }
                 )
                 return jsonify(response_data), 200
 
     except Exception as e:
-        print("❌ Error during query processing:", e)
+        # print("❌ Error during query processing:", e)
         return jsonify({"error": str(e)}), 400
     finally:
         if connection:
@@ -948,23 +994,17 @@ def checkquerywithApiKey():
 
 
 @agent_bps.route("/process-drive", methods=["POST"])
-def download_files():
-    """
-    Takes the picker metadata from the frontend and makes a sharable with the service account
-    after completion of sharing we process the file or folder if not retry after 3-4 seconds
-    then download the files in data folder
-    after download preprocess with langchain and send it as embedding to lancedb
-    """
-    ok, val = check_lancedb()
-    if not ok:
-        logger.info(f"LanceDB service down: {val}")
-        return jsonify({"error": f"service down! Please try again later"}), 503
-
-    if not Main_service:
+def download_files_stream():
+    # from db.lance_db_service import LanceDBServer
+    data = request.json
+    if not get_main_service():
         return (
             jsonify({"error": "Google Drive service not initialized."}),
             500,
         )
+    # service=LanceDBServer()
+    # if not service.check_lance_db_Connection():
+    #     yield "event: error\ndata: Problem with the server\n\n"
 
     try:
         ensure_dir("data")
@@ -983,71 +1023,74 @@ def download_files():
         )
     if len(data["files"]) == 0:
         return jsonify({"error": "No files Picked"}), 400
-
-    apikey = data["api_key"]
-    if not apikey:
-        return jsonify({"error": "API key is required"}), 400
+    apikey = data.get("api_key")
     userid = fetch_userid_from_launch(apikey)
-    if not userid:
-        return jsonify({"error": "User ID not found for the provided API key"}), 401
-    if not check_userid_valid(userid):
-        return jsonify({"error": "Invalid access"}), 404
     access_token = get_token(userid, value=True)
 
-    user_service = None
-    if access_token:
+    def event_stream():
+        yield "event: start\ndata: Starting processing...\n\n"
+
+        # Step 1: Validate Drive service
+        if not get_main_service():
+            yield "event: error\ndata: Google Drive service not initialized.\n\n"
+            return
+
         user_service = GetEmailandDriveService(access_token)
-        if user_service:
-            all_downloaded_paths, is_downloaded = Mediatorservice(
-                data, userid, user_service
+        if not user_service:
+            yield "event: error\ndata: Cannot access drive\n\n"
+            return
+
+        # Step 2: Download files
+        all_downloaded_paths, is_downloaded = Mediatorservice(
+            data, userid, user_service
+        )
+        if not is_downloaded:
+            yield "event: error\ndata: Problem with accessing files\n\n"
+            return
+
+        for i, path in enumerate(all_downloaded_paths, 1):
+            yield f"event: progress\ndata: Downloaded {i}/{len(all_downloaded_paths)}: {path}\n\n"
+
+        # Step 3: Process files (embedding, YAML update)
+        folderpath = os.path.commonpath(all_downloaded_paths)
+        all_file_data = asyncio.run(
+            process_and_update_yaml(
+                all_downloaded_paths=all_downloaded_paths,
+                userid=userid,
+                provider="google",
+                folderpath=folderpath,
             )
-            print(all_downloaded_paths)
-            if is_downloaded and len(all_downloaded_paths) > 0:
-                folderpath = os.path.commonpath(all_downloaded_paths)
-                all_file_data = asyncio.run(
-                    process_and_update_yaml(
-                        all_downloaded_paths=all_downloaded_paths,
-                        userid=userid,
-                        provider="google",
-                        folderpath=folderpath,
-                    )
-                )
-                return {
-                    "message": "Successfully processed files",
-                    "files": all_file_data,  # Return full file history
-                }, 200
-            else:
-                return {"message": "Problem with accessing files"}, 400
-        else:
-            return {"message": "cant access drive"}, 400
-    else:
-        redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
+        )
+
+        yield f"event: complete\ndata: {json.dumps({'message': 'Successfully processed files', 'files': all_file_data})}\n\n"
+
+    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
+
 
 def getFilenameData(fetched_userid):
     # Load user files metadata YAML
-        user_files_path = f"{fetched_userid}/yaml/users_fileData.yaml"
-        file_data = load_yaml_from_s3(user_files_path) or []
+    user_files_path = f"{fetched_userid}/yaml/users_fileData.yaml"
+    file_data = load_yaml_from_s3(user_files_path) or []
 
-        present_files = []
+    present_files = []
 
-        if isinstance(file_data, dict):
-            for key, entries in file_data.items():
-                if isinstance(entries, list):
-                    for entry in entries:
-                        if (
-                            isinstance(entry, dict)
-                            and entry.get("FileStatus") == "Present"
-                        ):
-                            if entry.get("filename"):
-                                present_files.append(entry.get("filename"))
-        elif isinstance(file_data, list):
-            for entry in file_data:
-                if isinstance(entry, dict) and entry.get("FileStatus") == "Present":
-                    if entry.get("filename"):
-                        present_files.append(entry.get("filename"))
-        return present_files
-    
-# print("filenamedataons3",getFilenameData("100805564263044911738"))
+    if isinstance(file_data, dict):
+        for key, entries in file_data.items():
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict) and entry.get("FileStatus") == "Present":
+                        if entry.get("filename"):
+                            present_files.append(entry.get("filename"))
+    elif isinstance(file_data, list):
+        for entry in file_data:
+            if isinstance(entry, dict) and entry.get("FileStatus") == "Present":
+                if entry.get("filename"):
+                    present_files.append(entry.get("filename"))
+    return present_files
+
+
+##print("filenamedataons3",getFilenameData("100805564263044911738"))
+
 
 @agent_bps.route("/clarifications", methods=["POST"])
 def makeuserDocClarifications(userid=None, industry=None):
@@ -1057,7 +1100,7 @@ def makeuserDocClarifications(userid=None, industry=None):
     """
     data = request.json
     fetched_userid = data.get("userid") or userid
-    print("fetched_userid", fetched_userid)
+    # print("fetched_userid", fetched_userid)
 
     if not check_userid_valid(fetched_userid):
         return jsonify({"error": "Invalid access"}), 404
@@ -1084,8 +1127,8 @@ def makeuserDocClarifications(userid=None, industry=None):
         fetched_industry = get_line_of_business(fetched_userid)
         if not fetched_industry:
             return jsonify({"error": "No line of business present"}), 401
-        
-        present_files=getFilenameData(fetched_userid)        
+
+        present_files = getFilenameData(fetched_userid)
 
         if not present_files:
             return (
@@ -1179,10 +1222,10 @@ def updateClarifications(userid=None, industry=None):
                 try:
                     parsed_output = yaml.safe_load(match.group(0))
                 except Exception as e:
-                    print("❌ Failed to parse LLaMA JSON:", e)
+                    # print("❌ Failed to parse LLaMA JSON:", e)
                     parsed_output = {}
             else:
-                print("❌ Could not extract JSON from LLaMA response")
+                # print("❌ Could not extract JSON from LLaMA response")
                 parsed_output = {}
         else:
             parsed_output = res  # already a dict
@@ -1430,49 +1473,50 @@ def get_ai_suggestion():
         # --- Get user's business type ---
         fetched_industry = get_line_of_business(userid)
 
-        # --- Scrape the website ---
-        scraper = WebScrapingLanceClient(user_id=userid)
-        scraped_data = scraper.scrape_website(
-            url=website_url, use_selenium=True, max_depth=1
-        )
-        if not scraped_data:
-            return jsonify({"error": "Scraping failed"}), 500
+        # # --- Scrape the website ---
+        # scraper = WebScrapingLanceClient(user_id=userid)
+        # scraped_data = scraper.scrape_website(
+        #     url=website_url, use_selenium=True, max_depth=1
+        # )
+        # if not scraped_data:
+        #     return jsonify({"error": "Scraping failed"}), 500
 
-        # --- Save scraped data as JSON ---
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        json_filename = f"scrape_{timestamp}.json"
-        json_path = os.path.join(
-            "/home/ec2-user/bytoid/exe2/data/scrape_results", json_filename
-        )
-        # Convert to the expected format for saving
-        scraped_data_for_json = {
-            "url": scraped_data["url"],
-            "title": scraped_data["title"],
-            "results": [{"text": scraped_data["content"]}],  # Match expected format
-            "metadata": scraped_data["metadata"],
-        }
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(scraped_data_for_json, f, ensure_ascii=False, indent=2)
+        # # --- Save scraped data as JSON ---
+        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # json_filename = f"scrape_{timestamp}.json"
+        # json_path = os.path.join(
+        #     "/home/ec2-user/bytoid/exe2/data/scrape_results", json_filename
+        # )
+        # # Convert to the expected format for saving
+        # scraped_data_for_json = {
+        #     "url": scraped_data["url"],
+        #     "title": scraped_data["title"],
+        #     "results": [{"text": scraped_data["content"]}],  # Match expected format
+        #     "metadata": scraped_data["metadata"],
+        # }
+        # with open(json_path, "w", encoding="utf-8") as f:
+        #     json.dump(scraped_data_for_json, f, ensure_ascii=False, indent=2)
 
-        # --- Prepare context from scraped JSON ---
-        context_text = scraped_data.get(
-            "content", ""
-        )  # Use content directly from enhanced scraper
+        # # --- Prepare context from scraped JSON ---
+        # context_text = scraped_data.get(
+        #     "content", ""
+        # )  # Use content directly from enhanced scraper
 
         # --- Create final AI prompt ---
         full_prompt = QA_assist_prompt_template.format(
             question=query_text,
             business_type=fetched_industry,
         )
-        full_prompt += f"\n\nHere is additional context from the company's website:\n{context_text}"
+        # full_prompt += f"\n\nHere is additional context from the company's website:\n{context_text}"
 
         # --- Get AI response ---
         ai_suggestion = get_fireworks_response(full_prompt, role="user")
 
-        return jsonify({"suggestion": ai_suggestion, "scraped_file": json_path}), 200
+        # return jsonify({"suggestion": ai_suggestion, "scraped_file": json_path}), 200
+        return jsonify({"suggestion": ai_suggestion}), 200
 
     except Exception as e:
-        print("❌ Error during AI suggestion processing:", e)
+        # print("❌ Error during AI suggestion processing:", e)
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -1494,7 +1538,7 @@ def create_sub_ticket():
 
 @agent_bps.route("/process_audio", methods=["POST"])
 def process_audio():
-    print("request data", request.form, request.files)
+    # print("request data", request.form, request.files)
     api_key = request.form.get("api_key")
     if not api_key:
         return jsonify({"error": "API key is required"}), 400
@@ -1898,6 +1942,41 @@ def discover_api_endpoints(content, base_url):
                 if path:
                     endpoints.add(path)
     return list(endpoints)
+
+
+def is_youtube_video_url(url: str) -> bool:
+    """
+    Detect if a URL is a YouTube video URL (not just youtube.com).
+
+    Returns True for:
+    - https://www.youtube.com/watch?v=VIDEO_ID
+    - https://youtu.be/VIDEO_ID
+    - https://youtube.com/watch?v=VIDEO_ID
+
+    Returns False for:
+    - https://www.youtube.com/ (home page)
+    - https://www.youtube.com/channel/... (channel page)
+    - https://www.youtube.com/user/... (user page)
+    - https://www.youtube.com/@... (handle page)
+    - https://www.youtube.com/results?search_query=... (search results)
+    """
+    if not url:
+        return False
+
+    import re
+
+    # Match specific YouTube video URL patterns
+    patterns = [
+        r"(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})",  # Standard YouTube
+        r"(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})",  # Short YouTube
+        r"(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})",  # Embedded
+    ]
+
+    for pattern in patterns:
+        if re.search(pattern, url):
+            return True
+
+    return False
 
 
 class YouTubeScrapingClient:
@@ -2462,12 +2541,25 @@ class YouTubeScrapingClient:
             traceback.print_exc()
             return None
 
+    def scrape_youtube_single_video_only(self, youtube_url):
+        """
+        Scrape ONLY a single YouTube video (NOT multi-level, NOT related videos).
+
+        This is specifically for /scrape-and-summarize endpoint to prevent Selenium
+        from treating YouTube as a regular website and following all internal links.
+
+        Uses the proven working hybrid method but for a single video only.
+        """
+        # Simply use the working hybrid scraping method
+        # This already handles all the extraction logic properly
+        return self.scrape_youtube_video_hybrid(youtube_url)
+
     def scrape_youtube_video(self, youtube_url):
         """Main method now using hybrid approach"""
         return self.scrape_youtube_video_hybrid(youtube_url)
 
     def scrape_youtube_video_hybrid(self, youtube_url):
-        """Hybrid approach with multiple fallbacks for robust YouTube scraping"""
+        """Fast YouTube scraping - uses only Selenium which works reliably"""
         import logging
 
         logger = logging.getLogger(__name__)
@@ -2477,71 +2569,38 @@ class YouTubeScrapingClient:
             logger.error(f"[HYBRID] Failed to extract video ID from: {youtube_url}")
             return None
 
-        logger.info(f"[HYBRID] Starting hybrid YouTube processing for: {youtube_url}")
-        print(f"[HYBRID] Starting hybrid YouTube processing for: {youtube_url}")
+        logger.info(f"[HYBRID] Starting YouTube processing for: {youtube_url}")
+        print(f"[HYBRID] Starting YouTube processing for: {youtube_url}")
 
-        # Method priority order
-        methods = [
-            ("yt-dlp_with_proxy", lambda: self.extract_with_ytdlp_proxy(youtube_url)),
-            ("pytube", lambda: self.extract_with_pytube(youtube_url)),
-            (
-                "transcript_api_proxy",
-                lambda: self.get_transcript_only_with_proxy(video_id, youtube_url),
-            ),
-            ("selenium_transcript", lambda: self.extract_with_selenium(youtube_url)),
-            ("original_ytdlp", lambda: self.get_video_metadata_and_audio(youtube_url)),
-            (
-                "original_transcript",
-                lambda: self.get_transcript_only_original(video_id, youtube_url),
-            ),
-        ]
+        # Use only Selenium which works reliably
+        # Skip yt-dlp (blocked by YouTube), pytube (400 errors), transcript API (requires auth)
+        try:
+            logger.info(f"[HYBRID] 🔄 Extracting with Selenium...")
+            print(f"[HYBRID] 🔄 Extracting with Selenium...")
+            result = self.extract_with_selenium(youtube_url)
 
-        for method_name, method_func in methods:
-            try:
-                logger.info(f"[HYBRID] 🔄 Trying {method_name}...")
-                print(f"[HYBRID] 🔄 Trying {method_name}...")
-                result = method_func()
+            if result and isinstance(result, dict) and result.get("transcript_raw"):
+                logger.info(f"[HYBRID] ✅ Success with Selenium")
+                print(f"[HYBRID] ✅ Success with Selenium")
+                return result
 
-                if result and (
-                    (
-                        isinstance(result, tuple) and result[0] and result[1]
-                    )  # Audio + metadata
-                    or (
-                        isinstance(result, dict) and result.get("transcript_raw")
-                    )  # Transcript result
-                ):
-                    logger.info(f"[HYBRID] ✅ Success with {method_name}")
-                    print(f"[HYBRID] ✅ Success with {method_name}")
+        except Exception as e:
+            logger.error(f"[HYBRID] Selenium failed: {e}")
+            print(f"[HYBRID] Selenium failed: {e}")
 
-                    # Convert transcript-only result to full result format
-                    if isinstance(result, dict) and "transcript_raw" in result:
-                        return result
-
-                    # Convert audio result to full format
-                    if isinstance(result, tuple):
-                        metadata, audio_file = result
-                        return self.process_audio_to_transcript(
-                            metadata, audio_file, youtube_url, video_id, method_name
-                        )
-
-            except Exception as e:
-                logger.error(f"[HYBRID] ❌ {method_name} failed: {e}")
-                print(f"[HYBRID] ❌ {method_name} failed: {e}")
-                continue
-
-        # If all methods fail, return informative error
-        logger.error(f"[HYBRID] 🚫 All methods failed for {youtube_url}")
-        print(f"[HYBRID] 🚫 All methods failed for {youtube_url}")
+        # If Selenium fails, return error
+        logger.error(f"[HYBRID] 🚫 Failed to extract video for {youtube_url}")
+        print(f"[HYBRID] 🚫 Failed to extract video for {youtube_url}")
         return {
             "url": youtube_url,
             "video_id": video_id,
             "title": "YouTube Video",
-            "content": "Unable to access this video - All extraction methods failed",
-            "error": "all_methods_failed",
+            "content": "Unable to access this video - Failed to extract transcript",
+            "error": "extraction_failed",
             "metadata": {
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
-                "scraping_method": "hybrid_all_failed",
-                "note": "Tried: yt-dlp with proxy, PyTube, transcript API, Selenium, and original methods",
+                "scraping_method": "selenium_failed",
+                "note": "Could not extract video content using available methods",
             },
         }
 
@@ -3399,7 +3458,7 @@ def fetch_youtube_ques_with_docs(clarification_list, user_id):
                 user_id=user_id, query_text=question_text, top_k=top_k
             )
             lance_client = LanceClient(user_id=user_id)
-            results = lance_client.query_vector(query_input)
+            results = run_async(lance_client.query_vector(query_input))
             for r in results:
                 clean_text = r.get("text", "").encode().decode("unicode_escape")
                 base_doc_ans.append(clean_text)
@@ -3566,7 +3625,7 @@ class WebScrapingLanceClient:
                 )
 
             driver = webdriver.Chrome(options=chrome_options)
-            print("[SELENIUM] Chrome driver initialized successfully")
+            # print("[SELENIUM] Chrome driver initialized successfully")
             return driver
 
         except Exception as e:
@@ -3747,7 +3806,7 @@ class WebScrapingLanceClient:
                 driver = self._setup_selenium_driver()
             except Exception as selenium_error:
                 print(f"[SELENIUM] Failed: {selenium_error}")
-                print("[FALLBACK] Using requests method")
+                # print("[FALLBACK] Using requests method")
                 return self._scrape_single_page_requests_enhanced(url)
 
             scraped_data = {
@@ -4049,24 +4108,32 @@ def scrape_website_route():
         if not scraped_data:
             return jsonify({"error": "Failed to scrape the website content"}), 500
 
-        # --- Step 2: NEW - Process the scraped text to get an embedding ---
+        # --- Step 2: NEW - AI Summarization of scraped content ---
+        logger.info(f"Summarizing scraped content for: {scraped_data['url']}")
+        summary_text = summarize_scraped_data_advanced(scraped_data)
+
+        if not summary_text or summary_text == "UNSUITABLE_CONTENT":
+            logger.warning(f"Summarization failed, using original content")
+            summary_text = scraped_data["content"][:2000]  # Fallback to raw content
+
+        # --- Step 3: Process the summarized text to get an embedding ---
         embedding_client = WebScrapingLanceClient(user_id=user_id)
 
-        full_content = f"{scraped_data['title']}\n\n{scraped_data['content']}"
+        full_content = f"{scraped_data['title']}\n\n{summary_text}"
         embedding_vector = embedding_client.embeddings.embed_query(full_content)
 
-        # --- Step 3: NEW - Prepare the payload for the LanceDB server ---
+        # --- Step 4: NEW - Prepare the payload for the LanceDB server (using summary) ---
         lancedb_payload = {
             "user_id": user_id,
             "url": scraped_data["url"],
             "title": scraped_data["title"],
-            "content": scraped_data["content"],
+            "content": summary_text,  # Use AI-generated summary, not raw content
             "timestamp": scraped_data["metadata"]["scraped_at"],
             "metadata": scraped_data["metadata"],
             "embedding": embedding_vector,
         }
 
-        # --- Step 4: NEW - Send the data to your LanceDB/FastAPI server ---
+        # --- Step 5: NEW - Send the data to your LanceDB/FastAPI server ---
         lancedb_server_url = os.getenv("LANCE_DB_IP")
         if not lancedb_server_url:
             return (
@@ -4085,7 +4152,10 @@ def scrape_website_route():
                     {
                         "status": "success",
                         "message": "Website scraped and data saved successfully.",
-                        "scraped_content": scraped_data,
+                        "scraped_content": {
+                            **scraped_data,
+                            "summary": summary_text,  # Return AI-generated summary
+                        },
                         "lancedb_response": response.json(),
                     }
                 ),
@@ -4155,14 +4225,17 @@ def summarize_scraped_data_advanced(scraped_json_data):
     """
     Takes scraped data, validates it, injects it into a prompt, and returns
     a natural language summary from the AI model.
+
+    For YouTube videos: Uses simple summary prompt (clean, no steps)
+    For websites: Uses detailed analysis prompt (with structure analysis)
     """
     try:
         url = scraped_json_data.get("url", "N/A")
         content = scraped_json_data.get("content", "")
 
         # ✅ FIX 1: Add a minimum content length check.
-        # If the content is less than 250 characters, it's probably not summarizable.
-        MIN_CONTENT_LENGTH = 250
+        # If the content is less than 50 characters, it's probably not summarizable.
+        MIN_CONTENT_LENGTH = 50
         if not content or len(content.strip()) < MIN_CONTENT_LENGTH:
             logger.warning(
                 f"Content for {url} is too short to summarize ({len(content)} chars)."
@@ -4171,9 +4244,22 @@ def summarize_scraped_data_advanced(scraped_json_data):
             return "UNSUITABLE_CONTENT"
 
         # Load the updated prompt from your YAML file
-        # Make sure the path in pathconfig.scrape_template is correct
         yaml_prompts = load_yaml_file(path=pathconfig.agent_template)
-        summary_prompt_template = yaml_prompts.get("scrape_summary_prompt_template")
+
+        # Check if this is YouTube content and use simpler prompt
+        is_youtube = is_youtube_video_url(url)
+
+        if is_youtube:
+            summary_prompt_template = yaml_prompts.get(
+                "youtube_summary_prompt_template"
+            )
+            if not summary_prompt_template:
+                logger.warning("YouTube prompt not found, using default scrape prompt")
+                summary_prompt_template = yaml_prompts.get(
+                    "scrape_summary_prompt_template"
+                )
+        else:
+            summary_prompt_template = yaml_prompts.get("scrape_summary_prompt_template")
 
         if not summary_prompt_template:
             logger.error(
@@ -4207,8 +4293,11 @@ def summarize_scraped_data_advanced(scraped_json_data):
 @agent_bps.route("/scrape-and-summarize", methods=["POST"])
 def scrape_and_summarize_route():
     """
-    Handles adding a new website: scrapes, summarizes, embeds, saves to LanceDB,
+    Handles adding a new website or YouTube video: scrapes, summarizes, embeds, saves to LanceDB,
     extracts clarifications, and returns the result for the frontend.
+
+    ASYNC APPROACH: All heavy processing happens in background thread.
+    User gets immediate response while scraping/processing happens in background.
     """
     try:
         data = request.get_json()
@@ -4222,165 +4311,53 @@ def scrape_and_summarize_route():
         if not user_id:
             return jsonify({"error": "Invalid API Key"}), 401
 
-        # ADD THIS: Check for duplicates
-        website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
-        existing_websites = load_yaml_from_s3(website_metadata_path) or []
+        # Quick validation check only - no heavy processing
+        is_youtube = is_youtube_video_url(url_to_scrape)
 
-        # Normalize URLs for comparison
-        normalized_new_url = url_to_scrape.rstrip("/")
-        for website in existing_websites:
-            if website.get("status") == "active":
-                existing_url = website.get("url", "").rstrip("/")
-                if existing_url == normalized_new_url:
-                    return (
-                        jsonify(
-                            {
-                                "error": "Duplicate website found",
-                                "message": f"Website '{url_to_scrape}' has already been added and processed.",
-                                "existing_entry": website,
-                            }
-                        ),
-                        409,
-                    )
+        # Check for duplicates only for websites (quick operation)
+        if not is_youtube:
+            website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
+            existing_websites = load_yaml_from_s3(website_metadata_path) or []
+            normalized_new_url = url_to_scrape.rstrip("/")
 
-        # Step 1: Scrape
-        scraper = WebScrapingLanceClient(user_id=user_id)
-        scraped_data = scraper.scrape_website(
-            url=url_to_scrape, use_selenium=True, max_depth=3, max_pages=25
+            for website in existing_websites:
+                if website.get("status") == "active":
+                    existing_url = website.get("url", "").rstrip("/")
+                    if existing_url == normalized_new_url:
+                        return (
+                            jsonify(
+                                {
+                                    "error": "Duplicate website found",
+                                    "message": f"Website '{url_to_scrape}' has already been added and processed.",
+                                    "existing_entry": website,
+                                }
+                            ),
+                            409,
+                        )
+
+        # RESPOND IMMEDIATELY - All heavy work happens in background
+        from threading import Thread
+
+        processing_thread = Thread(
+            target=_scrape_and_process_async,
+            args=(user_id, url_to_scrape, is_youtube),
+            daemon=True,
         )
-        if not scraped_data:
-            return (
-                jsonify({"error": "Failed to access or scrape website content."}),
-                500,
-            )
+        processing_thread.start()
 
-        # Step 2: Summarize
-        summary_text = summarize_scraped_data_advanced(scraped_data)
-
-        if summary_text == "UNSUITABLE_CONTENT":
-            return (
-                jsonify(
-                    {
-                        "error": "Website content could not be analyzed.",
-                        "details": "The content was too short, may require a password, or is not suitable for summarization.",
-                    }
-                ),
-                422,
-            )
-
-        if not summary_text:
-            return (
-                jsonify(
-                    {"error": "The AI failed to generate a summary for the content."}
-                ),
-                500,
-            )
-
-        # Step 3: Extract clarifications from scraped content
-        prompts = load_yaml_file(path=pathconfig.agent_template)
-        clarification_prompt = prompts.get("extract_scraping_clarifications_prompt")
-
-        # Evaluate scraped content for clarifications
-        val = evaluate_scraped_content(clarification_prompt, scraped_data, summary_text)
-        if not val:
-            return (
-                jsonify(
-                    {"error": "Failed to evaluate scraped content for clarifications"}
-                ),
-                500,
-            )
-
-        # Step 4: Process clarifications if any exist
-        if val["clarifications"]:
-            clarific_scraping(
-                user_id, val, url_to_scrape, scraped_data.get("title", "No Title")
-            )
-
-        # Step 5: Embed
-        embedding_client = WebScrapingLanceClient(user_id=user_id)
-        embedding_vector = embedding_client.embeddings.embed_query(summary_text)
-
-        # Step 6: Prepare Payload for LanceDB
+        # Return immediate response to frontend
         timestamp = datetime.now(timezone.utc).isoformat()
-        lancedb_payload = {
-            "user_id": user_id,
-            "url": url_to_scrape,
-            "title": scraped_data.get("title", "No Title"),
-            "content": summary_text,
-            "timestamp": timestamp,
-            "metadata": scraped_data.get("metadata", {}),
-            "embedding": embedding_vector,
-        }
-
-        # Step 7: Save to LanceDB
-        lancedb_server_url = os.getenv("LANCE_DB_IP")
-        if not lancedb_server_url:
-            return jsonify({"error": "LANCE_DB_IP environment variable not set"}), 500
-
-        try:
-            response = requests.post(
-                f"{lancedb_server_url}/insert_scraped_data",
-                json=lancedb_payload,
-                timeout=30,  # Add timeout
-            )
-
-            if response.status_code != 200:
-                logger.error(
-                    f"LanceDB HTTP Error {response.status_code}: {response.text}"
-                )
-                raise Exception(f"LanceDB returned status {response.status_code}")
-
-        except requests.exceptions.ConnectionError as e:
-            logger.error(
-                f"Cannot connect to LanceDB server at {lancedb_server_url}: {e}"
-            )
-            return (
-                jsonify(
-                    {
-                        "error": "Vector database service unavailable",
-                        "details": f"Cannot connect to {lancedb_server_url}",
-                    }
-                ),
-                503,
-            )
-        except requests.exceptions.Timeout as e:
-            logger.error(f"LanceDB request timeout: {e}")
-            return jsonify({"error": "Vector database request timeout"}), 504
-        except Exception as e:
-            logger.error(f"LanceDB Error: {e}")
-            return jsonify({"error": f"Vector database error: {str(e)}"}), 500
-        # ADD THIS: Save website metadata to YAML
-        website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
-        existing_websites = load_yaml_from_s3(website_metadata_path) or []
-
-        website_entry = {
-            "url": url_to_scrape,
-            "title": scraped_data.get("title", "No Title"),
-            "summary": summary_text,
-            "timestamp": timestamp,
-            "clarifications_count": len(val.get("clarifications", [])),
-            "status": "active",
-        }
-
-        existing_websites.append(website_entry)
-        save_yaml_to_s3(existing_websites, user_id, "scraped_websites.yaml")
-
-        # Step 8: Validate clarifications using AI
-        if val.get("clarifications"):
-            validate_scraping_clarifications(user_id)
-
-        # Step 9: Return the correct object for the frontend
         return (
             jsonify(
                 {
-                    "status": "success",
-                    "summary": summary_text,
+                    "status": "processing",
+                    "message": "Your content is being scraped and processed in the background",
                     "url": url_to_scrape,
                     "timestamp": timestamp,
-                    "clarifications_found": len(val.get("clarifications", [])),
+                    "note": "Check back in a few moments for the summary",
                 }
             ),
-            200,
+            202,  # 202 Accepted - request accepted for processing but not completed
         )
 
     except Exception as e:
@@ -4390,6 +4367,155 @@ def scrape_and_summarize_route():
             jsonify({"error": "An internal server error occurred", "details": str(e)}),
             500,
         )
+
+
+def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
+    """
+    Background thread function that does all the heavy processing:
+    - Scraping
+    - Summarization
+    - Embedding
+    - LanceDB saving
+    - Clarification extraction
+
+    This runs in background so user interface is never blocked.
+    """
+    try:
+        logger.info(f"[ASYNC] Starting background processing for: {url_to_scrape}")
+
+        # STEP 1: Scrape content
+        if is_youtube:
+            logger.info(f"[ASYNC] Scraping YouTube video...")
+            yt_scraper = YouTubeScrapingClient(user_id=user_id)
+            scraped_data = yt_scraper.scrape_youtube_single_video_only(url_to_scrape)
+
+            if not scraped_data:
+                logger.error(f"[ASYNC] Failed to scrape YouTube: {url_to_scrape}")
+                return
+        else:
+            logger.info(f"[ASYNC] Scraping website (multi-level)...")
+            scraper = WebScrapingLanceClient(user_id=user_id)
+            scraped_data = scraper.scrape_website(
+                url=url_to_scrape, use_selenium=True, max_depth=3, max_pages=25
+            )
+
+            if not scraped_data:
+                logger.error(f"[ASYNC] Failed to scrape website: {url_to_scrape}")
+                return
+
+        logger.info(f"[ASYNC] Content scraped, generating summary...")
+
+        # STEP 2: Summarize
+        summary_text = summarize_scraped_data_advanced(scraped_data)
+
+        if not summary_text or summary_text == "UNSUITABLE_CONTENT":
+            logger.warning(f"[ASYNC] Summarization failed for: {url_to_scrape}")
+            return
+
+        # STEP 3: Extract clarifications from scraped content
+        prompts = load_yaml_file(path=pathconfig.agent_template)
+        clarification_prompt = prompts.get("extract_scraping_clarifications_prompt")
+
+        val = evaluate_scraped_content(clarification_prompt, scraped_data, summary_text)
+        if not val:
+            logger.warning(f"[ASYNC] Failed to evaluate content for: {url_to_scrape}")
+            val = {"clarifications": []}
+
+        # STEP 4: Process clarifications if any exist
+        if val.get("clarifications"):
+            try:
+                clarific_scraping(
+                    user_id, val, url_to_scrape, scraped_data.get("title", "No Title")
+                )
+            except Exception as e:
+                logger.error(f"[ASYNC] Clarification processing failed: {e}")
+
+        # STEP 5: Embed and save to LanceDB
+        try:
+            logger.info(f"[ASYNC] Creating embeddings and saving to LanceDB...")
+            embedding_client = WebScrapingLanceClient(user_id=user_id)
+            embedding_vector = embedding_client.embeddings.embed_query(summary_text)
+
+            timestamp = datetime.now(timezone.utc).isoformat()
+            lancedb_payload = {
+                "user_id": user_id,
+                "url": url_to_scrape,
+                "title": scraped_data.get("title", "No Title"),
+                "content": summary_text,
+                "timestamp": timestamp,
+                "metadata": scraped_data.get("metadata", {}),
+                "embedding": embedding_vector,
+            }
+
+            # Save to LanceDB
+            lancedb_server_url = os.getenv("LANCE_DB_IP")
+            if lancedb_server_url:
+                try:
+                    response = requests.post(
+                        f"{lancedb_server_url}/insert_scraped_data",
+                        json=lancedb_payload,
+                        timeout=30,
+                    )
+                    if response.status_code == 200:
+                        logger.info(f"[ASYNC] Saved to LanceDB: {url_to_scrape}")
+                    else:
+                        logger.warning(
+                            f"[ASYNC] LanceDB save failed: {response.status_code}"
+                        )
+                except Exception as e:
+                    logger.warning(f"[ASYNC] LanceDB connection error: {e}")
+
+            # STEP 6: Save website metadata to YAML
+            if not is_youtube:
+                website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
+                existing_websites = load_yaml_from_s3(website_metadata_path) or []
+
+                website_entry = {
+                    "url": url_to_scrape,
+                    "title": scraped_data.get("title", "No Title"),
+                    "summary": summary_text,
+                    "timestamp": timestamp,
+                    "clarifications_count": len(val.get("clarifications", [])),
+                    "status": "active",
+                }
+
+                existing_websites.append(website_entry)
+                save_yaml_to_s3(existing_websites, user_id, "scraped_websites.yaml")
+                logger.info(f"[ASYNC] Saved website metadata: {url_to_scrape}")
+            else:
+                # For YouTube, save to scraped_youtube.yaml
+                youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
+                existing_videos = load_yaml_from_s3(youtube_metadata_path) or []
+
+                video_entry = {
+                    "url": url_to_scrape,
+                    "title": scraped_data.get("title", "No Title"),
+                    "summary": summary_text,
+                    "timestamp": timestamp,
+                    "status": "active",
+                }
+
+                existing_videos.append(video_entry)
+                save_yaml_to_s3(existing_videos, user_id, "scraped_youtube.yaml")
+                logger.info(f"[ASYNC] Saved YouTube metadata: {url_to_scrape}")
+
+            # STEP 7: Validate clarifications using AI (in background)
+            if val.get("clarifications"):
+                try:
+                    validate_scraping_clarifications(user_id)
+                    logger.info(f"[ASYNC] Clarifications validated: {url_to_scrape}")
+                except Exception as e:
+                    logger.warning(f"[ASYNC] Clarification validation error: {e}")
+
+        except Exception as e:
+            logger.error(f"[ASYNC] Processing failed: {e}")
+            traceback.print_exc()
+
+        logger.info(f"[ASYNC] ✅ Completed background processing: {url_to_scrape}")
+
+    except Exception as e:
+        logger.error(f"[ASYNC] Fatal error in background processing: {e}")
+        traceback.print_exc()
 
 
 def evaluate_scraped_content(clarification_prompt, scraped_data, summary_text):
@@ -4648,7 +4774,7 @@ def fetch_scraping_ques_with_docs(clarification_list, user_id):
                 user_id=user_id, query_text=question_text, top_k=top_k
             )
             lance_client = LanceClient(user_id=user_id)
-            results = lance_client.query_vector(query_input)
+            results = run_async(lance_client.query_vector(query_input))
             for r in results:
                 clean_text = r.get("text", "").encode().decode("unicode_escape")
                 base_doc_ans.append(clean_text)
@@ -4713,13 +4839,105 @@ def get_website_summaries():
             logger.info(f"No scraped websites file found for user {user_id}")
             return jsonify([]), 200
 
-        # Filter only active websites
-        active_websites = [w for w in websites_data if w.get("status") == "active"]
+        # Filter only active websites and normalize pages_by_level keys to strings for JSON compatibility
+        active_websites = []
+        for w in websites_data:
+            if w.get("status") == "active":
+                # Normalize pages_by_level integer keys to string keys for JSON serialization
+                if "pages_by_level" in w and isinstance(w["pages_by_level"], dict):
+                    normalized_pages = {}
+                    for level_key, pages in w["pages_by_level"].items():
+                        normalized_pages[str(level_key)] = pages
+                    w["pages_by_level"] = normalized_pages
+                active_websites.append(w)
 
         return jsonify(active_websites), 200
 
     except Exception as e:
         logger.error(f"Error fetching summaries: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@agent_bps.route("/get-website-details", methods=["POST"])
+def get_website_details():
+    """Fetches full website details with page hierarchy for a specific saved website."""
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        url = data.get("url")
+
+        if not api_key or not url:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        # Load all websites metadata
+        website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
+        websites_data = load_yaml_from_s3(website_metadata_path)
+
+        if websites_data is None:
+            return jsonify({"error": "No scraped websites found"}), 404
+
+        # Find the specific website
+        website = None
+        for w in websites_data:
+            if w.get("url") == url:
+                website = w
+                break
+
+        if not website:
+            return jsonify({"error": "Website not found"}), 404
+
+        # Format response with pages_by_level structure for frontend explorer
+        pages_by_level = website.get("pages_by_level", {})
+
+        # Get homepage summary from level 0 (may have integer or string keys)
+        level_0_pages = pages_by_level.get(0) or pages_by_level.get("0", [])
+        if level_0_pages:
+            # Handle both 'summary' and 'content' field names
+            homepage_summary = level_0_pages[0].get("summary") or level_0_pages[0].get(
+                "content", ""
+            )
+        else:
+            homepage_summary = ""
+
+        response_data = {
+            "status": "success",
+            "url": website.get("url"),
+            "title": website.get("title"),
+            "homepage_summary": homepage_summary,
+            "pages_by_level": {},
+            "total_pages": website.get("pages_count"),
+            "scraping_time": website.get("scraping_time"),
+            "timestamp": website.get("timestamp"),
+        }
+
+        # Format pages for each level - handle both integer and string keys
+        for level_key in [0, 1, 2]:
+            # Try integer key first (from YAML), then string key (from JSON)
+            level_pages = pages_by_level.get(level_key) or pages_by_level.get(
+                str(level_key), []
+            )
+            response_data["pages_by_level"][str(level_key)] = [
+                {
+                    "url": page.get("url"),
+                    "title": page.get("title"),
+                    "summary": page.get("summary")
+                    or page.get("content", ""),  # Handle both field names
+                    "word_count": page.get("word_count", 0),
+                    "depth": page.get("depth", level_key),
+                    "has_sublinks": len(page.get("links", [])) > 0,
+                }
+                for page in level_pages
+            ]
+
+        logger.info(f"[GET_WEBSITE_DETAILS] Retrieved details for {url}")
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        logger.error(f"[GET_WEBSITE_DETAILS] Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -4889,3 +5107,1047 @@ def check_lancedb():
     except Exception as e:
         logger.error(f"Error checking func: {e}")
         return jsonify({"error": "Internal server error"}), 500
+
+
+# ============================================================================
+# FAST MULTI-LEVEL WEBSITE SCRAPING ENDPOINTS
+# ============================================================================
+
+
+@agent_bps.route("/scrape-website-fast", methods=["POST"])
+def scrape_website_fast_endpoint():
+    """
+    Fast multi-level website scraping endpoint
+
+    Returns structure with:
+    - Homepage summary
+    - Links to sub-pages with their individual summaries
+    - Up to 5 links per level, 3 levels total
+
+    Response structure:
+    {
+        "url": "https://example.com",
+        "title": "Website Title",
+        "summary": "Homepage summary",
+        "pages_by_level": {
+            "0": [{page_with_summary}, ...],
+            "1": [{page_with_summary}, ...],
+            "2": [{page_with_summary}, ...]
+        },
+        "all_pages": [all_pages_list]
+    }
+    """
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        url = data.get("url")
+
+        if not api_key or not url:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        if not check_userid_valid(user_id):
+            return jsonify({"error": "Invalid access"}), 404
+
+        logger.info(f"[FAST_SCRAPE] Starting fast scrape for {url}")
+
+        # Perform fast multi-level scraping
+        scraped_data = scrape_website_fast(url, user_id)
+
+        if not scraped_data:
+            return jsonify({"error": "Failed to scrape website"}), 500
+
+        # Check if this is a duplicate
+        is_duplicate = scraped_data.get("is_duplicate", False)
+
+        # Check if this is a YouTube video
+        is_youtube = (
+            scraped_data.get("metadata", {}).get("scraping_method") == "youtube_video"
+        )
+
+        # Check if scraping failed
+        has_error = scraped_data.get("metadata", {}).get("error") is not None
+
+        if is_duplicate:
+            # Return duplicate detection response
+            response_data = {
+                "status": "duplicate_detected",
+                "url": scraped_data["url"],
+                "title": scraped_data.get("title", "Website"),
+                "message": "This website was already scraped recently",
+                "homepage_summary": scraped_data.get("content", ""),
+                "duplicate_info": scraped_data.get("duplicate_info", {}),
+                "cache_expires_at": scraped_data.get("metadata", {}).get(
+                    "original_scrape_time"
+                ),
+                "retry_after_hours": 24,
+                "pages_by_level": {},
+                "total_pages": 0,
+                "scraping_time": 0,
+            }
+            return jsonify(response_data), 409  # 409 Conflict status code
+        elif is_youtube:
+            # For YouTube videos, return video analysis format
+            response_data = {
+                "status": "success",
+                "url": scraped_data["url"],
+                "title": scraped_data["title"],
+                "content_type": "video",
+                "video_summary": scraped_data.get("content", ""),
+                "total_pages": 1,
+                "scraping_time": 0,
+                "metadata": scraped_data.get("metadata", {}),
+            }
+        else:
+            # For websites, return website analysis format
+            if has_error:
+                # Return error message if scraping failed
+                response_data = {
+                    "status": "partial_failure",
+                    "url": scraped_data["url"],
+                    "title": scraped_data.get("title", "Failed to Scrape"),
+                    "homepage_summary": scraped_data.get(
+                        "content", "Unable to extract content from this website"
+                    ),
+                    "pages_by_level": {},
+                    "total_pages": 0,
+                    "scraping_time": scraped_data["metadata"].get(
+                        "total_time_seconds", 0
+                    ),
+                    "error": scraped_data["metadata"].get("error", "unknown_error"),
+                }
+            else:
+                response_data = {
+                    "status": "success",
+                    "url": scraped_data["url"],
+                    "title": scraped_data["title"],
+                    "homepage_summary": (
+                        scraped_data["pages_by_level"][0][0]["content"]
+                        if scraped_data["pages_by_level"][0]
+                        else ""
+                    ),
+                    "pages_by_level": {},
+                    "total_pages": scraped_data["metadata"]["total_pages"],
+                    "scraping_time": scraped_data["metadata"]["total_time_seconds"],
+                }
+
+                # Format pages for each level (only if successful)
+                for level in range(3):
+                    pages = scraped_data["pages_by_level"][level]
+                    response_data["pages_by_level"][str(level)] = [
+                        {
+                            "url": page["url"],
+                            "title": page["title"],
+                            "summary": page["content"],  # Each page has its own summary
+                            "word_count": page["word_count"],
+                            "depth": page["depth"],
+                            "has_sublinks": len(page.get("links", [])) > 0,
+                        }
+                        for page in pages
+                    ]
+
+        # Save to S3 in the background (start async thread)
+        from threading import Thread
+
+        save_thread = Thread(
+            target=_save_website_to_s3, args=(user_id, url, scraped_data), daemon=True
+        )
+        save_thread.start()
+
+        # Also save to database in the background
+        db_save_thread = Thread(
+            target=_save_website_summary_to_db,
+            args=(user_id, url, scraped_data),
+            daemon=True,
+        )
+        db_save_thread.start()
+
+        return jsonify(response_data), 200 if not is_duplicate else 409
+
+    except Exception as e:
+        logger.error(f"[FAST_SCRAPE] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@agent_bps.route("/save-website-summary", methods=["POST"])
+def save_website_summary():
+    """
+    Save scraped website summary to database
+
+    Request body:
+    {
+        "api_key": "user_api_key",
+        "url": "https://example.com",
+        "title": "Website Title",
+        "original_summary": "AI generated summary",
+        "total_pages": 5,
+        "total_words": 1500,
+        "scrape_method": "fast_multilevel_concurrent",
+        "scrape_duration_seconds": 12.5
+    }
+    """
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        url = data.get("url")
+        title = data.get("title", "")
+        original_summary = data.get("original_summary", "")
+
+        if not api_key or not url:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        if not check_userid_valid(user_id):
+            return jsonify({"error": "Invalid access"}), 404
+
+        connection = connect_to_rds()
+        if connection is None:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = connection.cursor()
+
+        try:
+            import uuid
+            from urllib.parse import urlparse
+
+            # Check if table exists first
+            check_table_query = """
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'scraped_websites'
+            """
+            cursor.execute(check_table_query)
+            table_exists = cursor.fetchone()[0] > 0
+
+            if not table_exists:
+                logger.warning("[SAVE_SUMMARY] scraped_websites table does not exist")
+                return (
+                    jsonify(
+                        {
+                            "error": "Website summary table not found. Please create the scraped_websites table first."
+                        }
+                    ),
+                    500,
+                )
+
+            scrape_id = str(uuid.uuid4())
+            parsed_url = urlparse(url)
+            normalized_url = (
+                f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}".rstrip(
+                    "/"
+                ).lower()
+            )
+
+            cursor.execute(
+                """
+                INSERT INTO scraped_websites 
+                (scrape_id, user_id_fk, url, normalized_url, title, original_summary, edited_summary, 
+                 total_pages, total_words, scrape_method, scrape_duration_seconds, is_edited)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    original_summary = VALUES(original_summary),
+                    title = VALUES(title),
+                    total_pages = VALUES(total_pages),
+                    total_words = VALUES(total_words),
+                    scrape_method = VALUES(scrape_method),
+                    scrape_duration_seconds = VALUES(scrape_duration_seconds),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    scrape_id,
+                    user_id,
+                    url,
+                    normalized_url,
+                    title,
+                    original_summary,
+                    original_summary,  # edited_summary initially same as original
+                    data.get("total_pages", 0),
+                    data.get("total_words", 0),
+                    data.get("scrape_method", ""),
+                    data.get("scrape_duration_seconds", 0),
+                    False,
+                ),
+            )
+            connection.commit()
+
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": "Website summary saved successfully",
+                        "scrape_id": scrape_id,
+                        "url": url,
+                        "title": title,
+                    }
+                ),
+                201,
+            )
+
+        finally:
+            cursor.close()
+            connection.close()
+
+    except Exception as e:
+        logger.error(f"[SAVE_SUMMARY] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@agent_bps.route("/edit-website-summary", methods=["POST"])
+def edit_website_summary():
+    """
+    Edit saved website summary
+
+    Request body:
+    {
+        "api_key": "user_api_key",
+        "url": "https://example.com",
+        "edited_summary": "User edited summary text"
+    }
+    """
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        url = data.get("url")
+        edited_summary = data.get("edited_summary", "")
+
+        if not api_key or not url:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        if not edited_summary:
+            return jsonify({"error": "edited_summary is required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        if not check_userid_valid(user_id):
+            return jsonify({"error": "Invalid access"}), 404
+
+        connection = connect_to_rds()
+        if connection is None:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = connection.cursor()
+
+        try:
+            from urllib.parse import urlparse
+
+            # Check if table exists first
+            check_table_query = """
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'scraped_websites'
+            """
+            cursor.execute(check_table_query)
+            table_exists = cursor.fetchone()[0] > 0
+
+            if not table_exists:
+                logger.warning("[EDIT_SUMMARY] scraped_websites table does not exist")
+                return jsonify({"error": "Website summary not found"}), 404
+
+            parsed_url = urlparse(url)
+            normalized_url = (
+                f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}".rstrip(
+                    "/"
+                ).lower()
+            )
+
+            # Update the summary
+            cursor.execute(
+                """
+                UPDATE scraped_websites 
+                SET edited_summary = %s, is_edited = TRUE, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id_fk = %s AND normalized_url = %s
+                """,
+                (edited_summary, user_id, normalized_url),
+            )
+            connection.commit()
+
+            if cursor.rowcount == 0:
+                return jsonify({"error": "Website summary not found"}), 404
+
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": "Website summary updated successfully",
+                        "url": url,
+                    }
+                ),
+                200,
+            )
+
+        finally:
+            cursor.close()
+            connection.close()
+
+    except Exception as e:
+        logger.error(f"[EDIT_SUMMARY] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@agent_bps.route("/get-website-summary", methods=["POST"])
+def get_website_summary():
+
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        url = data.get("url")
+
+        if not api_key or not url:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        if not check_userid_valid(user_id):
+            return jsonify({"error": "Invalid access"}), 404
+
+        connection = connect_to_rds()
+        if connection is None:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = connection.cursor()
+
+        try:
+            from urllib.parse import urlparse
+
+            # Check if table exists first
+            check_table_query = """
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'scraped_websites'
+            """
+            cursor.execute(check_table_query)
+            table_exists = cursor.fetchone()[0] > 0
+
+            if not table_exists:
+                logger.warning("[GET_SUMMARY] scraped_websites table does not exist")
+                return jsonify({"error": "Website summary not found"}), 404
+
+            parsed_url = urlparse(url)
+            normalized_url = (
+                f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}".rstrip(
+                    "/"
+                ).lower()
+            )
+
+            cursor.execute(
+                """
+                SELECT scrape_id, url, title, original_summary, edited_summary, 
+                       total_pages, total_words, scrape_method, scrape_duration_seconds, 
+                       is_edited, created_at, updated_at
+                FROM scraped_websites 
+                WHERE user_id_fk = %s AND normalized_url = %s
+                """,
+                (user_id, normalized_url),
+            )
+
+            row = cursor.fetchone()
+
+            if not row:
+                return jsonify({"error": "Website summary not found"}), 404
+
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "scrape_id": row[0],
+                        "url": row[1],
+                        "title": row[2],
+                        "original_summary": row[3],
+                        "edited_summary": row[4],
+                        "total_pages": row[5],
+                        "total_words": row[6],
+                        "scrape_method": row[7],
+                        "scrape_duration_seconds": row[8],
+                        "is_edited": row[9],
+                        "created_at": row[10].isoformat() if row[10] else None,
+                        "updated_at": row[11].isoformat() if row[11] else None,
+                        "current_summary": (
+                            row[4] if row[9] else row[3]
+                        ),  # Return edited if available, else original
+                    }
+                ),
+                200,
+            )
+
+        finally:
+            cursor.close()
+            connection.close()
+
+    except Exception as e:
+        logger.error(f"[GET_SUMMARY] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@agent_bps.route("/list-scraped-websites", methods=["POST"])
+def list_scraped_websites():
+    """
+    List all scraped websites for a user with pagination
+
+    Request body:
+    {
+        "api_key": "user_api_key",
+        "page": 1,
+        "limit": 10,
+        "filter_edited": false  // Optional: only show edited summaries
+    }
+    """
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+
+        if not api_key:
+            return jsonify({"error": "api_key is required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        if not check_userid_valid(user_id):
+            return jsonify({"error": "Invalid access"}), 404
+
+        page = max(1, int(data.get("page", 1)))
+        limit = min(100, int(data.get("limit", 10)))  # Max 100 per page
+        offset = (page - 1) * limit
+        filter_edited = data.get("filter_edited", False)
+
+        connection = connect_to_rds()
+        if connection is None:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = connection.cursor()
+
+        try:
+            # Check if table exists first
+            check_table_query = """
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'scraped_websites'
+            """
+            cursor.execute(check_table_query)
+            table_exists = cursor.fetchone()[0] > 0
+
+            if not table_exists:
+                logger.warning("[LIST_WEBSITES] scraped_websites table does not exist")
+                return (
+                    jsonify(
+                        {
+                            "status": "success",
+                            "total_count": 0,
+                            "page": page,
+                            "limit": limit,
+                            "total_pages": 0,
+                            "websites": [],
+                            "message": "No scraped websites found. Please create the scraped_websites table first.",
+                        }
+                    ),
+                    200,
+                )
+
+            # Get total count
+            where_clause = "WHERE user_id_fk = %s"
+            params = [user_id]
+
+            if filter_edited:
+                where_clause += " AND is_edited = TRUE"
+
+            cursor.execute(
+                f"SELECT COUNT(*) FROM scraped_websites {where_clause}", params
+            )
+            total_count = cursor.fetchone()[0]
+
+            # Get paginated results
+            cursor.execute(
+                f"""
+                SELECT scrape_id, url, title, original_summary, edited_summary,
+                       total_pages, total_words, is_edited, created_at, updated_at
+                FROM scraped_websites 
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+
+            websites = []
+            for row in cursor.fetchall():
+                websites.append(
+                    {
+                        "scrape_id": row[0],
+                        "url": row[1],
+                        "title": row[2],
+                        "original_summary": row[3],
+                        "edited_summary": row[4],
+                        "total_pages": row[5],
+                        "total_words": row[6],
+                        "is_edited": row[7],
+                        "created_at": row[8].isoformat() if row[8] else None,
+                        "updated_at": row[9].isoformat() if row[9] else None,
+                    }
+                )
+
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "total_count": total_count,
+                        "page": page,
+                        "limit": limit,
+                        "total_pages": (total_count + limit - 1) // limit,
+                        "websites": websites,
+                    }
+                ),
+                200,
+            )
+
+        finally:
+            cursor.close()
+            connection.close()
+
+    except Exception as e:
+        logger.error(f"[LIST_WEBSITES] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+def _save_website_summary_to_db(user_id: str, url: str, scraped_data: dict):
+    """
+    Save scraped website summary to database in background
+    """
+    try:
+        logger.info(f"[SAVE_DB] Starting database save for {url}")
+
+        connection = connect_to_rds()
+        if connection is None:
+            logger.error("[SAVE_DB] Database connection failed")
+            return
+
+        cursor = connection.cursor()
+
+        try:
+            import uuid
+            from urllib.parse import urlparse
+
+            scrape_id = str(uuid.uuid4())
+            parsed_url = urlparse(url)
+            normalized_url = (
+                f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}".rstrip(
+                    "/"
+                ).lower()
+            )
+
+            title = scraped_data.get("title", "")
+            original_summary = scraped_data.get("content", "")
+            total_pages = scraped_data.get("metadata", {}).get("total_pages", 0)
+            total_words = sum(
+                p.get("word_count", 0) for p in scraped_data.get("all_pages", [])
+            )
+            scrape_method = scraped_data.get("metadata", {}).get("scraping_method", "")
+            scrape_duration = scraped_data.get("metadata", {}).get(
+                "total_time_seconds", 0
+            )
+
+            cursor.execute(
+                """
+                INSERT INTO scraped_websites 
+                (scrape_id, user_id_fk, url, normalized_url, title, original_summary, edited_summary, 
+                 total_pages, total_words, scrape_method, scrape_duration_seconds, is_edited)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    original_summary = VALUES(original_summary),
+                    edited_summary = VALUES(original_summary),
+                    title = VALUES(title),
+                    total_pages = VALUES(total_pages),
+                    total_words = VALUES(total_words),
+                    scrape_method = VALUES(scrape_method),
+                    scrape_duration_seconds = VALUES(scrape_duration_seconds),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    scrape_id,
+                    user_id,
+                    url,
+                    normalized_url,
+                    title,
+                    original_summary,
+                    original_summary,  # edited_summary initially same as original
+                    total_pages,
+                    total_words,
+                    scrape_method,
+                    scrape_duration,
+                    False,
+                ),
+            )
+            connection.commit()
+            logger.info(f"[SAVE_DB] Successfully saved website summary for {url}")
+
+        finally:
+            cursor.close()
+            connection.close()
+
+    except Exception as e:
+        logger.error(f"[SAVE_DB] Error saving website summary: {e}")
+        traceback.print_exc()
+
+
+def _save_website_to_s3(user_id: str, url: str, scraped_data: dict):
+    """
+    Save scraped website data to S3 YAML file in background
+    Saves YouTube videos to scraped_youtube.yaml and websites to scraped_websites.yaml
+    """
+    try:
+        logger.info(f"[SAVE_S3] Starting background save for {url}")
+
+        # Check if this is a YouTube video
+        is_youtube = (
+            scraped_data.get("metadata", {}).get("scraping_method") == "youtube_video"
+        )
+
+        # Generate summary from scraped data
+        summary_text = _compile_fast_scrape_summary(scraped_data)
+        if not summary_text:
+            logger.warning(f"[SAVE_S3] Failed to generate summary for {url}")
+            summary_text = scraped_data.get(
+                "title", "Website" if not is_youtube else "YouTube Video"
+            )
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        if is_youtube:
+            # Save YouTube video to YouTube file
+            youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
+            logger.info(
+                f"[SAVE_S3] Loading existing YouTube videos from {youtube_metadata_path}"
+            )
+            existing_videos = load_yaml_from_s3(youtube_metadata_path) or []
+            logger.info(
+                f"[SAVE_S3] Found {len(existing_videos)} existing YouTube videos"
+            )
+
+            # Create YouTube entry
+            youtube_entry = {
+                "url": url,
+                "title": scraped_data.get("title", "YouTube Video"),
+                "summary": summary_text[:500],
+                "timestamp": timestamp,
+                "status": "active",
+                "content": scraped_data.get("content", ""),
+                "metadata": scraped_data.get("metadata", {}),
+            }
+
+            # Append and save
+            existing_videos.append(youtube_entry)
+            logger.info(f"[SAVE_S3] Saving {len(existing_videos)} YouTube videos to S3")
+            save_yaml_to_s3(existing_videos, user_id, "scraped_youtube.yaml")
+            logger.info(f"[SAVE_S3] ✅ Successfully saved YouTube video {url} to S3")
+        else:
+            # Load existing websites
+            website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
+            logger.info(
+                f"[SAVE_S3] Loading existing websites from {website_metadata_path}"
+            )
+            existing_websites = load_yaml_from_s3(website_metadata_path) or []
+            logger.info(f"[SAVE_S3] Found {len(existing_websites)} existing websites")
+
+            # Create website entry
+            website_entry = {
+                "url": url,
+                "title": scraped_data.get("title", "Website"),
+                "summary": summary_text[:500],
+                "pages_count": scraped_data["metadata"]["total_pages"],
+                "scraping_time": scraped_data["metadata"]["total_time_seconds"],
+                "timestamp": timestamp,
+                "status": "active",
+                "pages_by_level": scraped_data["pages_by_level"],
+            }
+
+            # Append and save
+            existing_websites.append(website_entry)
+            logger.info(f"[SAVE_S3] Saving {len(existing_websites)} websites to S3")
+            save_yaml_to_s3(existing_websites, user_id, "scraped_websites.yaml")
+            logger.info(f"[SAVE_S3] ✅ Successfully saved {url} to S3")
+
+    except Exception as e:
+        logger.error(f"[SAVE_S3] Error saving to S3: {e}", exc_info=True)
+
+
+@agent_bps.route("/scrape-website-page", methods=["POST"])
+def scrape_website_page_endpoint():
+    """
+    Get detailed summary for a specific scraped page
+
+    This endpoint is called when user clicks on a scraped link
+    It returns the full content/summary for that specific page
+    """
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        page_url = data.get("page_url")
+
+        if not api_key or not page_url:
+            return jsonify({"error": "api_key and page_url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        if not check_userid_valid(user_id):
+            return jsonify({"error": "Invalid access"}), 404
+
+        logger.info(f"[PAGE_DETAIL] Getting details for {page_url}")
+
+        # Quick scrape of just this page
+        from agent_route.fast_multilevel_scraper import FastMultilevelScraper
+
+        scraper = FastMultilevelScraper(user_id=user_id, max_workers=1)
+        page_data = scraper._scrape_page(page_url, depth=0)
+
+        if not page_data:
+            return jsonify({"error": "Failed to scrape page"}), 500
+
+        response_data = {
+            "status": "success",
+            "url": page_data["url"],
+            "title": page_data["title"],
+            "content": page_data["content"],
+            "word_count": page_data["word_count"],
+            "sublinks": page_data.get("links", []),
+        }
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        logger.error(f"[PAGE_DETAIL] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@agent_bps.route("/scrape-and-summarize-fast", methods=["POST"])
+def scrape_and_summarize_fast_endpoint():
+    """
+    Updated /scrape-and-summarize that uses the fast multi-level scraper for websites
+    Keeps YouTube scraping as-is
+
+    This is the main entry point - it detects if URL is YouTube or website
+    """
+    try:
+        data = request.get_json()
+        api_key = data.get("api_key")
+        url_to_scrape = data.get("url")
+
+        if not api_key or not url_to_scrape:
+            return jsonify({"error": "api_key and url are required"}), 400
+
+        user_id = fetch_userid_from_launch(api_key)
+        if not user_id:
+            return jsonify({"error": "Invalid API Key"}), 401
+
+        if not check_userid_valid(user_id):
+            return jsonify({"error": "Invalid access"}), 404
+
+        is_youtube = is_youtube_video_url(url_to_scrape)
+
+        if is_youtube:
+            # Route to YouTube scraping
+            logger.info(f"[FAST_SUMMARY] YouTube detected, using YouTube scraper")
+            from threading import Thread
+
+            processing_thread = Thread(
+                target=_scrape_youtube_async, args=(user_id, url_to_scrape), daemon=True
+            )
+            processing_thread.start()
+        else:
+            # Route to website scraping with fast multi-level
+            logger.info(f"[FAST_SUMMARY] Website detected, using fast scraper")
+            from threading import Thread
+
+            processing_thread = Thread(
+                target=_scrape_website_fast_async,
+                args=(user_id, url_to_scrape),
+                daemon=True,
+            )
+            processing_thread.start()
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        return (
+            jsonify(
+                {
+                    "status": "processing",
+                    "message": "Content is being scraped and processed",
+                    "url": url_to_scrape,
+                    "type": "youtube" if is_youtube else "website",
+                    "timestamp": timestamp,
+                }
+            ),
+            202,
+        )
+
+    except Exception as e:
+        logger.error(f"[FAST_SUMMARY] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+def _scrape_website_fast_async(user_id: str, url: str):
+    """
+    Background async function for fast website scraping
+    """
+    try:
+        logger.info(f"[ASYNC_FAST] Starting fast scrape for {url}")
+
+        scraped_data = scrape_website_fast(url, user_id)
+        if not scraped_data:
+            logger.error(f"[ASYNC_FAST] Scraping failed for {url}")
+            return
+
+        # Generate comprehensive summary from all pages
+        summary_text = _compile_fast_scrape_summary(scraped_data)
+
+        if not summary_text:
+            logger.warning(f"[ASYNC_FAST] Failed to generate summary for {url}")
+            return
+
+        # Create embeddings and save to LanceDB
+        embedding_client = WebScrapingLanceClient(user_id=user_id)
+        embedding_vector = embedding_client.embeddings.embed_query(summary_text)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        lancedb_payload = {
+            "user_id": user_id,
+            "url": url,
+            "title": scraped_data.get("title", "Website"),
+            "content": summary_text,
+            "timestamp": timestamp,
+            "metadata": {
+                "pages_count": scraped_data["metadata"]["total_pages"],
+                "levels": (
+                    scraped_data["metadata"]["levels_scraped"]
+                    if "levels_scraped" in scraped_data["metadata"]
+                    else {}
+                ),
+                "scraping_time": scraped_data["metadata"]["total_time_seconds"],
+            },
+            "embedding": embedding_vector,
+        }
+
+        # Save to LanceDB
+        lancedb_server_url = os.getenv("LANCE_DB_IP")
+        if lancedb_server_url:
+            try:
+                response = requests.post(
+                    f"{lancedb_server_url}/insert_scraped_data",
+                    json=lancedb_payload,
+                    timeout=30,
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        f"[ASYNC_FAST] LanceDB returned {response.status_code}"
+                    )
+            except Exception as e:
+                logger.error(f"[ASYNC_FAST] LanceDB error: {e}")
+
+        # Save website metadata
+        website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
+        logger.info(
+            f"[ASYNC_FAST] Loading existing websites from {website_metadata_path}"
+        )
+        existing_websites = load_yaml_from_s3(website_metadata_path) or []
+        logger.info(f"[ASYNC_FAST] Found {len(existing_websites)} existing websites")
+
+        website_entry = {
+            "url": url,
+            "title": scraped_data.get("title", "Website"),
+            "summary": summary_text[:500],  # Store first 500 chars
+            "pages_count": scraped_data["metadata"]["total_pages"],
+            "scraping_time": scraped_data["metadata"]["total_time_seconds"],
+            "timestamp": timestamp,
+            "status": "active",
+            "pages_by_level": scraped_data[
+                "pages_by_level"
+            ],  # Store full structure for click-to-expand
+        }
+
+        existing_websites.append(website_entry)
+        logger.info(f"[ASYNC_FAST] Saving {len(existing_websites)} websites to S3")
+        save_yaml_to_s3(existing_websites, user_id, "scraped_websites.yaml")
+        logger.info(f"[ASYNC_FAST] ✅ Completed scraping and saving for {url}")
+
+    except Exception as e:
+        logger.error(f"[ASYNC_FAST] Error: {e}", exc_info=True)
+        traceback.print_exc()
+
+
+def _scrape_youtube_async(user_id: str, url: str):
+    """
+    Background async function for YouTube scraping (existing method)
+    """
+    try:
+        logger.info(f"[ASYNC_YT] Starting YouTube scrape for {url}")
+
+        yt_scraper = YouTubeScrapingClient(user_id=user_id)
+        scraped_data = yt_scraper.scrape_youtube_single_video_only(url)
+
+        if not scraped_data:
+            logger.error(f"[ASYNC_YT] YouTube scraping failed for {url}")
+            return
+
+        summary_text = summarize_youtube_data_advanced(scraped_data)
+        if not summary_text or summary_text == "UNSUITABLE_CONTENT":
+            logger.warning(f"[ASYNC_YT] Summarization failed for {url}")
+            return
+
+        # Continue with rest of YouTube processing (embeddings, LanceDB, etc.)
+        # ... (existing code from _scrape_and_process_async)
+
+    except Exception as e:
+        logger.error(f"[ASYNC_YT] Error: {e}")
+        traceback.print_exc()
+
+
+def _compile_fast_scrape_summary(scraped_data: Dict) -> str:
+    """
+    Compile comprehensive summary from fast multi-level scraping
+    """
+    try:
+        lines = []
+        lines.append(f"**Website: {scraped_data['title']}**\n")
+        lines.append(f"**URL:** {scraped_data['url']}\n")
+        lines.append(f"\n**Overview:**")
+        lines.append(
+            f"This comprehensive analysis covers {scraped_data['metadata']['total_pages']} pages "
+        )
+        lines.append(
+            f"across different levels of the website, scraped in {scraped_data['metadata']['total_time_seconds']} seconds.\n\n"
+        )
+
+        # Add content from each level
+        for level in range(3):
+            pages = scraped_data["pages_by_level"][level]
+            if not pages:
+                continue
+
+            level_name = "Homepage" if level == 0 else f"Level {level} Pages"
+            lines.append(f"**{level_name} ({len(pages)} pages):**\n")
+
+            for page in pages:
+                lines.append(f"- **{page['title']}**\n")
+                lines.append(f"  Content Preview: {page['content'][:200]}...\n")
+                if page.get("links"):
+                    lines.append(f"  Contains {len(page['links'])} sub-links\n")
+
+            lines.append("\n")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Error compiling summary: {e}")
+        return None

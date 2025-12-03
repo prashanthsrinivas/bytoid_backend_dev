@@ -21,6 +21,8 @@ from typing import Optional, Tuple, List
 import re
 from bs4 import BeautifulSoup
 import email
+from lxml import html as lxml_html
+
 
 logger = get_logger(__name__)
 
@@ -135,9 +137,9 @@ class GmailService:
         self.user_email = profile["emailAddress"]
 
     def get_contacts(self):
-        print("🔍 Starting get_contacts method...")
+        # print("🔍 Starting get_contacts method...")
         try:
-            print("📮 Fetching message list from Gmail API...")
+            # print("📮 Fetching message list from Gmail API...")
             results = (
                 self.service.users()
                 .messages()
@@ -152,42 +154,53 @@ class GmailService:
             failed_messages = 0
 
             for i, msg in enumerate(messages):
-                try:
-                    print(f"🔄 Processing message {i+1}/{len(messages)}: {msg['id']}")
-                    msg_detail = (
-                        self.service.users()
-                        .messages()
-                        .get(
-                            userId="me",
-                            id=msg["id"],
-                            format="metadata",
-                            metadataHeaders=["From", "To"],
-                        )
-                        .execute()
-                    )
-
-                    headers = msg_detail.get("payload", {}).get("headers", [])
-                    for header in headers:
-                        if header["name"] in ["From", "To"]:
-                            email_set.add(header["value"])
-                            print(f"📧 Added email: {header['value']}")
-
-                    successful_messages += 1
-
-                except HttpError as e:
-                    failed_messages += 1
-                    if e.resp.status in [400, 404]:
+                for attempt in range(5):  # Retry up to 5 times
+                    try:
                         print(
-                            f"⏭️ Skipping inaccessible message {msg['id']}: HTTP {e.resp.status}"
+                            f"🔄 Processing message {i+1}/{len(messages)}: {msg['id']}"
                         )
-                        continue
-                    else:
-                        print(f"❌ HTTP Error for message {msg['id']}: {e}")
-                        raise e
-                except Exception as e:
-                    failed_messages += 1
-                    print(f"❌ Error processing message {msg['id']}: {e}")
-                    continue
+                        msg_detail = (
+                            self.service.users()
+                            .messages()
+                            .get(
+                                userId="me",
+                                id=msg["id"],
+                                format="metadata",
+                                metadataHeaders=["From", "To"],
+                            )
+                            .execute()
+                        )
+
+                        headers = msg_detail.get("payload", {}).get("headers", [])
+                        for header in headers:
+                            if header["name"] in ["From", "To"]:
+                                email_set.add(header["value"])
+                                print(f"📧 Added email: {header['value']}")
+
+                        successful_messages += 1
+                        break  # Success, exit retry loop
+
+                    except HttpError as e:
+                        if e.resp.status in [403, 429]:  # Quota exceeded or Rate limit
+                            wait_time = (2**attempt) + random.random()
+                            print(
+                                f"⏳ Quota/Rate limit hit. Retrying in {wait_time:.2f}s..."
+                            )
+                            time.sleep(wait_time)
+                        elif e.resp.status in [400, 404]:
+                            failed_messages += 1
+                            print(
+                                f"⏭️ Skipping inaccessible message {msg['id']}: HTTP {e.resp.status}"
+                            )
+                            break  # Don't retry client errors
+                        else:
+                            failed_messages += 1
+                            print(f"❌ HTTP Error for message {msg['id']}: {e}")
+                            break  # Don't retry other errors
+                    except Exception as e:
+                        failed_messages += 1
+                        print(f"❌ Error processing message {msg['id']}: {e}")
+                        break  # Don't retry unexpected errors
 
             final_emails = list(email_set)
             print(
@@ -303,7 +316,7 @@ class GmailService:
                     print(f"📬 Retrieved {len(threads)} threads in this batch")
 
                     if not threads:
-                        print("📭 No more threads found")
+                        # print("📭 No more threads found")
                         break
 
                     # Process threads concurrently
@@ -358,7 +371,7 @@ class GmailService:
                     # Check if there are more pages
                     next_page_token = response.get("nextPageToken")
                     if not next_page_token:
-                        print("🏁 No more pages available")
+                        # print("🏁 No more pages available")
                         return all_threads, None  # No more pages
 
                     print(f"➡️ Moving to next page (token: {next_page_token[:20]}...)")
@@ -400,10 +413,10 @@ class GmailService:
                 )
                 messages = thread_detail.get("messages", [])
                 # for i in messages:
-                #     print("id",i.get("id"))
-                #     print("labelIds",i.get("labelIds"))
-                #     print("snippet",i.get("snippet"))
-                #     print("--------------------------------------")
+                #    #print("id",i.get("id"))
+                #    #print("labelIds",i.get("labelIds"))
+                #    #print("snippet",i.get("snippet"))
+                #    #print("--------------------------------------")
 
                 # break
                 if not messages:
@@ -524,7 +537,7 @@ class GmailService:
         return []  # This should never be reached, but just in case
 
     def build_batch_request(self, thread_ids, results):
-        print("batch build started", len(thread_ids))
+        # print("batch build started", len(thread_ids))
 
         def callback(request_id, response, exception):
             if exception is not None:
@@ -545,7 +558,7 @@ class GmailService:
                 .get(userId="me", id=thread_id, format="full"),
                 request_id=thread_id,
             )
-        print("returning from batch", len(thread_ids))
+        # print("returning from batch", len(thread_ids))
         return batch
 
     async def fetch_threads_batch(self, thread_ids, batch_count, max_retries=5):
@@ -636,7 +649,7 @@ class GmailService:
             print(f"🕒 All {len(chunks)} chunks processed. Cooling down {cooldown}s...")
             await asyncio.sleep(cooldown)
 
-            print("retuening results from fetch_threads_batch", len(results))
+            # print("retuening results from fetch_threads_batch", len(results))
             return results
 
         finally:
@@ -644,6 +657,69 @@ class GmailService:
             print(f"current batch fetched {batch_count}")
 
     # ============ ATTACHMENT S3 UPLOAD LOGIC ============
+
+    async def get_thread_last_message_direction(self, thread_id: str):
+        """
+        Return ONLY:
+        - thread_id
+        - message_id   (from Message-ID header, not Gmail API id)
+        - message_text
+        - direction ("inbound" / "outbound")
+        """
+
+        result = await self.fetch_threads_batch([thread_id], batch_count=1)
+        user_email = self.user_email
+
+        # Error or missing thread
+        if thread_id not in result or "error" in result.get(thread_id, {}):
+            return {
+                "thread_id": thread_id,
+                "message_id": None,
+                "direction": None,
+            }
+
+        thread_data = result[thread_id]
+        messages = thread_data.get("messages", [])
+
+        # No messages in thread
+        if not messages:
+            return {
+                "thread_id": thread_id,
+                "message_id": None,
+                "direction": None,
+            }
+
+        # Sort chronologically
+        messages = sorted(messages, key=lambda m: int(m["internalDate"]))
+        last_msg = messages[-1]
+        # -----------------------------------------------------------
+        # Extract Message-ID (real email Message-ID header)
+        # -----------------------------------------------------------
+        headers = last_msg.get("payload", {}).get("headers", [])
+        message_id = next(
+            (h["value"] for h in headers if h["name"].lower() == "message-id"),
+            None,
+        )
+
+        # -----------------------------------------------------------
+        # Determine inbound/outbound
+        # -----------------------------------------------------------
+        from_email = next(
+            (h["value"] for h in headers if h["name"].lower() == "from"),
+            None,
+        )
+
+        is_inbound = user_email.lower() not in (from_email or "").lower()
+        direction = "inbound" if is_inbound else "outbound"
+
+        # -----------------------------------------------------------
+        # FINAL RETURN
+        # -----------------------------------------------------------
+        return {
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "direction": direction,
+        }
 
     @staticmethod
     def process_and_upload_attachments(
@@ -728,7 +804,7 @@ class GmailService:
         processed_attachments = []
 
         if not attachments_list:
-            print("⚠️ No attachments to process")
+            # print("⚠️ No attachments to process")
             return processed_attachments
 
         import os
@@ -853,7 +929,7 @@ class GmailService:
         return processed_attachments
 
     @staticmethod
-    def get_message_body_via_mime(
+    def get_message_body_via_mime_og(
         msg, service=None, user_id=None, s3_config_key_prefix=None
     ):
         """
@@ -874,38 +950,32 @@ class GmailService:
 
         try:
             if not service:
-                print("⚠️ [MIME] Service not provided for MIME fetch, falling back")
+                # print("⚠️ [MIME] Service not provided for MIME fetch, falling back")
                 return "", []
 
             message_id = msg.get("id")
             if not message_id:
-                print("⚠️ [MIME] No message ID found")
+                # print("⚠️ [MIME] No message ID found")
                 return "", []
 
             # Step 1: Fetch raw message using Gmail API
-            print(f"\n✅ [MIME START] Processing message: {message_id}")
-            print(f"📨 [MIME] Fetching raw MIME message: {message_id}")
             raw_msg = (
                 service.users()
                 .messages()
                 .get(userId="me", id=message_id, format="raw")
                 .execute()
             )
-            print(f"✅ [MIME] Raw message received from Gmail API")
 
             # Step 2: Extract and decode the base64 raw data
             raw_data = raw_msg.get("raw")
             if not raw_data:
-                print(f"⚠️ [MIME] No raw data in response for message {message_id}")
                 return "", []
 
             # Decode base64 to get email bytes
             msg_bytes = base64.urlsafe_b64decode(raw_data)
-            print(f"✅ [MIME] Decoded {len(msg_bytes)} bytes from base64")
 
             # Step 3: Parse as email message using Python's email library
             mime_msg = email.message_from_bytes(msg_bytes)
-            print(f"✅ [MIME] Parsed MIME message: {mime_msg.get_content_type()}")
 
             # Step 4: Extract body and attachments from MIME structure
             # Dictionary to store cid references -> data for later processing
@@ -917,10 +987,6 @@ class GmailService:
                 content_type = msg_part.get_content_type()
                 content_disposition = msg_part.get("Content-Disposition", "")
                 content_id = msg_part.get("Content-ID", "").strip("<>")
-
-                print(
-                    f"🔍 [MIME] Found MIME part: type={content_type}, disposition={content_disposition}, cid={content_id}"
-                )
 
                 # Priority: Check for inline images (embedded in email body via Content-ID)
                 # Images with Content-ID are always inline, regardless of disposition
@@ -936,7 +1002,6 @@ class GmailService:
                 is_attachment = content_disposition.startswith("attachment")
 
                 if is_inline_image:
-                    print(f"➡️ [MIME] Detected as INLINE IMAGE (has cid and image type)")
                     # Handle inline/embedded images
                     filename = msg_part.get_filename()
                     if not filename:
@@ -944,9 +1009,6 @@ class GmailService:
 
                     payload = msg_part.get_payload(decode=True)
                     if payload and content_id:
-                        print(
-                            f"🖼️ [MIME] Found inline image: {filename} (cid: {content_id})"
-                        )
                         # Store inline image for later S3 upload
                         inline_images[content_id] = {
                             "filename": filename,
@@ -954,23 +1016,14 @@ class GmailService:
                             "data": payload,
                             "cid": content_id,
                         }
-                        print(
-                            f"✅ [MIME] Inline image registered for S3 upload: {len(inline_images)} total"
-                        )
 
                 elif is_attachment:
-                    print(f"➡️ [MIME] Detected as ATTACHMENT (no cid)")
                     # Handle attachments
                     filename = msg_part.get_filename()
                     if filename:
-                        print(
-                            f"📎 [MIME] Found attachment: {filename} (type: {content_type})"
-                        )
-
                         payload = msg_part.get_payload(decode=True)
                         if payload:
-                            # 📝 Extract attachment_id from Gmail API if available
-                            # This is used for on-demand downloads later
+                            # Extract attachment_id from Gmail API if available
                             attachment_id = None
                             if hasattr(msg_part, "_msg") and msg_part._msg:
                                 attachment_id = msg_part._msg.get("id")
@@ -979,8 +1032,8 @@ class GmailService:
                                 "filename": filename,
                                 "mimeType": content_type,
                                 "size": len(payload),
-                                "data": payload,  # Store the actual file bytes
-                                "attachment_id": attachment_id,  # 📝 For on-demand download via Gmail API
+                                "data": payload,
+                                "attachment_id": attachment_id,
                             }
 
                             # Mark calendar invites for special handling
@@ -989,12 +1042,8 @@ class GmailService:
                                 "application/ics",
                             ]:
                                 attachment_entry["type"] = "calendar"
-                                print(f"📅 [MIME] Calendar invite found: {filename}")
 
                             attachments.append(attachment_entry)
-                            print(
-                                f"✅ [MIME] Attachment added to list: {len(attachments)} total"
-                            )
 
                 # Handle text content - HTML is PREFERRED over plain text
                 elif content_type == "text/html":
@@ -1002,37 +1051,10 @@ class GmailService:
                     payload = msg_part.get_payload(decode=True)
                     if payload:
                         html_content = payload.decode("utf-8", errors="ignore")
-                        print(
-                            f"✅ [MIME] Extracted HTML content ({len(html_content)} chars)"
-                        )
-                        print(
-                            f"🔍 [DEBUG] HTML preview (first 300 chars): {repr(html_content[:300])}"
-                        )
-
-                        # DEBUG: Check for cid: references BEFORE BeautifulSoup processing
-                        cid_count_raw = html_content.count("cid:")
-                        print(
-                            f"🔍 [DEBUG] RAW HTML cid: count BEFORE BeautifulSoup: {cid_count_raw}"
-                        )
-                        if cid_count_raw > 0:
-                            # Find first 3 cid references
-                            import re as regex_module
-
-                            cid_refs = regex_module.findall(
-                                r'cid:[^\s"\'>\)]*', html_content
-                            )
-                            if cid_refs:
-                                print(
-                                    f"🔍 [DEBUG] Sample cid: references found: {cid_refs[:3]}"
-                                )
 
                         try:
                             # Clean up HTML but preserve images and formatting
                             soup = BeautifulSoup(html_content, "html.parser")
-                            img_count_before = len(soup.find_all("img"))
-                            print(
-                                f"🔍 [DEBUG] BeautifulSoup parsed, found {img_count_before} img tags"
-                            )
 
                             # Remove tracking pixels and problematic tags
                             for tag in soup.find_all(["script", "style", "meta"]):
@@ -1042,121 +1064,56 @@ class GmailService:
                                 except:
                                     pass
 
-                            # IMPORTANT: Do NOT remove gmail_quote or gmail_extra divs!
-                            # They may contain embedded images with cid: references that are critical
-                            # for displaying inline images in the email body.
-                            # For emails with inline images, we want to preserve the full HTML structure.
-
-                            img_count_after_cleanup = len(soup.find_all("img"))
-                            print(
-                                f"🔍 [DEBUG] After cleanup (preserving gmail_quote/gmail_extra): {img_count_after_cleanup} img tags remain (was {img_count_before})"
-                            )
-
-                            # SIMPLIFIED: Only remove images with display:none (hidden tracking pixels)
-                            # Keep ALL other images - let frontend handle rendering
-                            hidden_count = 0
+                            # Only remove images with display:none (hidden tracking pixels)
                             for img in soup.find_all("img"):
                                 try:
                                     style = img.get("style", "")
-                                    # Only remove if explicitly hidden
                                     if (
                                         "display: none" in style
                                         or "display:none" in style
                                     ):
                                         img.decompose()
-                                        hidden_count += 1
-                                        print(
-                                            f"🗑️ [MIME] Removed hidden image (display:none)"
-                                        )
                                 except:
                                     pass
 
-                            if hidden_count > 0:
-                                print(
-                                    f"� [DEBUG] Removed {hidden_count} hidden tracking images"
-                                )
-
-                            # Don't remove empty tags - they might contain images!
-                            # Empty tags can have img children that make them non-empty
-                            # Just leave HTML as-is after removing quoted replies and scripts
-
                             # Get cleaned HTML - preserves images, links, formatting
                             body = str(soup)
-                            print(f"✅ [MIME] Kept HTML format with images/formatting")
-                            print(
-                                f"🔍 [DEBUG] After BeautifulSoup str(): body length={len(body)}, starts_with_<={body.startswith('<')}"
-                            )
-                            if len(body) < 1000:
-                                print(f"🔍 [DEBUG] Full body (small): {repr(body)}")
-                            else:
-                                print(
-                                    f"🔍 [DEBUG] Body preview: {repr(body[:500])}...{repr(body[-300:])}"
-                                )
 
                         except Exception as e:
-                            print(f"⚠️ [MIME] Error cleaning HTML: {str(e)}")
                             # If cleanup fails, use the raw HTML anyway
                             body = html_content
+
+                        try:
+                            plain_text = (
+                                lxml_html.fromstring(body).text_content().strip()
+                            )
+                        except:
+                            plain_text = ""
 
                 elif content_type == "text/plain" and body is None:
                     # Plain text only if we don't have HTML yet
                     payload = msg_part.get_payload(decode=True)
                     if payload:
                         plain_content = payload.decode("utf-8", errors="ignore")
-                        print(
-                            f"✅ [MIME] Extracted plain text ({len(plain_content)} chars) - will be replaced by HTML if found"
-                        )
                         body = plain_content.strip()
+                        plain_text = body
 
                 elif msg_part.is_multipart():
                     # Recursively handle multipart messages
-                    print(f"🔍 [MIME] Recursing into multipart: {content_type}")
                     for sub_part in msg_part.get_payload():
                         extract_mime_parts(sub_part)
 
             # Step 5: Start parsing
-            print(f"🔍 [MIME] Starting MIME part extraction")
             if mime_msg.is_multipart():
-                print(f"🔍 [MIME] Message is multipart, processing parts")
                 for part in mime_msg.get_payload():
                     extract_mime_parts(part)
             else:
-                print(f"🔍 [MIME] Message is single-part")
                 extract_mime_parts(mime_msg)
 
-            print(
-                f"🔍 [MIME] Extraction complete: body={len(body) if body else 0} chars, attachments={len(attachments)}, inline_images={len(inline_images)}"
-            )
-            print(
-                f"🔍 [DEBUG IMMEDIATE AFTER] Body still: {len(body) if body else 0} chars, preview: {repr(body[:80]) if body else 'None'}"
-            )
-
-            # Step 6: Convert inline images to Base64 data: URLs and replace cid: in HTML
-            print(
-                f"🔍 [DEBUG] Checking conversion conditions: inline_images={bool(inline_images)}, body={bool(body)}, starts_with_<={body.startswith('<') if body else False}"
-            )
-            print(
-                f"🔍 [DEBUG] Body type: {type(body)}, repr: {repr(body[:100]) if body else 'None'}"
-            )
-
-            # Step 6: SIMPLIFIED - Keep HTML as-is with direct HTTPS image links
-            # No complex Base64 embedding. Gmail already provides direct image URLs.
-            print(
-                f"✅ [MIME SIMPLIFIED] Preserving HTML with direct image links (no Base64 conversion)"
-            )
-            if inline_images:
-                print(
-                    f"⏭️ [MIME] Inline images found: {len(inline_images)}, but keeping HTML as-is with direct links"
-                )
-
             # Step 7: Clean up body content (but preserve HTML tags and images)
-            # Keep the simple HTML format with direct links
             body = body or ""
 
-            if body.startswith("<"):
-                # HTML format - keep it simple, remove only problematic elements
-                print(f"✅ [MIME] Keeping HTML format with images")
-            else:
+            if not body.startswith("<"):
                 # Plain text format - apply basic cleanup only
                 # Remove quoted replies/forwards
                 reply_patterns = [
@@ -1172,28 +1129,198 @@ class GmailService:
 
                 body = body.strip()
 
-            print(
-                f"🔍 [DEBUG] Final body before return: {len(body)} chars, type: {type(body)}, starts_with_<: {body.startswith('<') if body else False}"
-            )
-            if body:
-                print(f"🔍 [DEBUG] Final body preview (first 200): {repr(body[:200])}")
-            print(
-                f"✅ [MIME END] MIME extraction complete: body={len(body)} chars, attachments={len(attachments)}"
-            )
-            print(f"✅ [MIME] Returning to process_threads_batch\n")
             return body, attachments
 
         except HttpError as e:
-            print(f"❌ [MIME ERROR] Gmail API error during MIME fetch: {e}")
-            print(f"   Error details: {e.resp.status}")
+            print(f"❌ [MIME] Gmail API error: {e}")
             return "", []
         except Exception as e:
-            print(f"❌ [MIME ERROR] Error during MIME extraction: {e}")
-            print(f"📋 Traceback: {traceback.format_exc()}")
+            print(f"❌ [MIME] Extraction error: {e}")
             return "", []
 
     @staticmethod
-    def get_message_body(msg, service=None, user_id=None, s3_config_key_prefix=None):
+    def get_message_body_via_mime(
+        msg, service=None, user_id=None, s3_config_key_prefix=None
+    ):
+        """
+        Extracts message body and attachments using MIME format fetching.
+        Now ALSO returns plain_text.
+        """
+
+        body = None
+        plain_text = ""
+        attachments = []
+
+        try:
+            if not service:
+                # print("⚠️ [MIME] Service not provided for MIME fetch, falling back")
+                return "", "", []
+
+            message_id = msg.get("id")
+            if not message_id:
+                # print("⚠️ [MIME] No message ID found")
+                return "", "", []
+
+            raw_msg = (
+                service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="raw")
+                .execute()
+            )
+
+            raw_data = raw_msg.get("raw")
+            if not raw_data:
+                return "", "", []
+
+            msg_bytes = base64.urlsafe_b64decode(raw_data)
+            mime_msg = email.message_from_bytes(msg_bytes)
+
+            inline_images = {}
+
+            def extract_mime_parts(msg_part):
+                nonlocal body, attachments, inline_images, plain_text
+
+                content_type = msg_part.get_content_type()
+                content_disposition = msg_part.get("Content-Disposition", "")
+                content_id = msg_part.get("Content-ID", "").strip("<>")
+
+                is_inline_image = content_type.startswith("image/") and content_id
+                is_inline_other = (
+                    "inline" in content_disposition
+                    and not content_type.startswith("image/")
+                )
+                is_attachment = content_disposition.startswith("attachment")
+
+                if is_inline_image:
+                    filename = msg_part.get_filename()
+                    if not filename:
+                        filename = f"image_{content_id}.{content_type.split('/')[-1]}"
+
+                    payload = msg_part.get_payload(decode=True)
+                    if payload and content_id:
+                        inline_images[content_id] = {
+                            "filename": filename,
+                            "mimeType": content_type,
+                            "data": payload,
+                            "cid": content_id,
+                        }
+
+                elif is_attachment:
+                    filename = msg_part.get_filename()
+                    if filename:
+                        payload = msg_part.get_payload(decode=True)
+                        if payload:
+                            attachment_id = None
+                            if hasattr(msg_part, "_msg") and msg_part._msg:
+                                attachment_id = msg_part._msg.get("id")
+
+                            attachment_entry = {
+                                "filename": filename,
+                                "mimeType": content_type,
+                                "size": len(payload),
+                                "data": payload,
+                                "attachment_id": attachment_id,
+                            }
+
+                            if filename.lower().endswith(".ics") or content_type in [
+                                "text/calendar",
+                                "application/ics",
+                            ]:
+                                attachment_entry["type"] = "calendar"
+
+                            attachments.append(attachment_entry)
+
+                elif content_type == "text/html":
+                    payload = msg_part.get_payload(decode=True)
+                    if payload:
+                        html_content = payload.decode("utf-8", errors="ignore")
+
+                        try:
+                            soup = BeautifulSoup(html_content, "html.parser")
+
+                            for tag in soup.find_all(["script", "style", "meta"]):
+                                try:
+                                    tag.decompose()
+                                except:
+                                    pass
+
+                            for img in soup.find_all("img"):
+                                try:
+                                    style = img.get("style", "")
+                                    if (
+                                        "display: none" in style
+                                        or "display:none" in style
+                                    ):
+                                        img.decompose()
+                                except:
+                                    pass
+
+                            body = str(soup)
+
+                        except:
+                            body = html_content
+
+                        try:
+                            plain_text = (
+                                lxml_html.fromstring(body).text_content().strip()
+                            )
+                        except:
+                            plain_text = ""
+
+                        # Normalize whitespace: removes newlines, tabs, multiple spaces
+                        plain_text = " ".join(plain_text.split())
+
+                elif content_type == "text/plain" and body is None:
+                    payload = msg_part.get_payload(decode=True)
+                    if payload:
+                        plain = payload.decode("utf-8", errors="ignore")
+                        body = plain.strip()
+                        plain_text = body
+
+                        # Normalize whitespace: removes newlines, tabs, multiple spaces
+                        plain_text = " ".join(plain_text.split())
+
+                elif msg_part.is_multipart():
+                    for sub_part in msg_part.get_payload():
+                        extract_mime_parts(sub_part)
+
+            if mime_msg.is_multipart():
+                for part in mime_msg.get_payload():
+                    extract_mime_parts(part)
+            else:
+                extract_mime_parts(mime_msg)
+
+            body = body or ""
+
+            if not body.startswith("<"):
+                reply_patterns = [
+                    r"\nOn .* wrote:",
+                    r"\n>.*",
+                    r"\nFrom: .*",
+                    r"\nSent: .*",
+                    r"\nTo: .*",
+                    r"\nSubject: .*",
+                ]
+                for pattern in reply_patterns:
+                    body = re.split(pattern, body, maxsplit=1)[0]
+
+                body = body.strip()
+                plain_text = body  # ensure plain text is filled for plain emails
+
+                # Normalize whitespace: removes newlines, tabs, multiple spaces
+                plain_text = " ".join(plain_text.split())
+
+            return body, attachments, plain_text
+
+        except HttpError as e:
+            print(f"❌ [MIME] Gmail API error: {e}")
+            return "", "", []
+        except Exception as e:
+            print(f"❌ [MIME] Extraction error: {e}")
+            return "", "", []
+
+    @staticmethod
+    def get_message_body_og(msg, service=None, user_id=None, s3_config_key_prefix=None):
         """
         Extracts a clean Gmail/Outlook-like message body and attachments with clickable S3 links.
         FALLBACK METHOD: Uses the standard API format parsing.
@@ -1405,6 +1532,189 @@ class GmailService:
 
         return body, attachments
 
+    @staticmethod
+    def get_message_body(msg, service=None, user_id=None, s3_config_key_prefix=None):
+        """
+        Extracts a clean Gmail/Outlook-like message body and attachments.
+        Now returns BOTH html body and plain text body.
+
+        Returns: (body_html, body_text, attachments)
+        """
+        payload = msg.get("payload", {})
+        body = None  # HTML (preferred)
+        plain_text = ""  # NEW: always capture plaintext
+        attachments = []
+
+        def parse_part(part):
+            nonlocal body, attachments, plain_text
+            mime_type = part.get("mimeType", "")
+            part_body = part.get("body", {})
+            data = part_body.get("data")
+
+            # -------------------------------
+            # HTML PARTS (PREFERRED)
+            # -------------------------------
+            if mime_type == "text/html" and data and body is None:
+                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
+                    "utf-8", errors="ignore"
+                )
+                soup = BeautifulSoup(decoded, "html.parser")
+
+                # List/formatting preservation (your existing logic)
+                for ul in soup.find_all("ul"):
+                    for li in ul.find_all("li"):
+                        li.insert_before("- ")
+                    ul.unwrap()
+                for ol in soup.find_all("ol"):
+                    for idx, li in enumerate(ol.find_all("li"), start=1):
+                        li.insert_before(f"{idx}. ")
+                    ol.unwrap()
+
+                for pre in soup.find_all("pre"):
+                    pre.insert_before("\n")
+                    pre.insert_after("\n")
+
+                for tag in soup.find_all(["br", "p", "div"]):
+                    tag.insert_before("\n")
+
+                # HTML body (unchanged)
+                body = str(soup).strip()
+
+                # NEW: also extract plain text from HTML
+                plain_text = soup.get_text("\n", strip=True)
+                plain_text = " ".join(plain_text.split())
+
+            # -------------------------------
+            # PLAIN TEXT PARTS (fallback)
+            # -------------------------------
+            elif mime_type == "text/plain" and data:
+                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
+                    "utf-8", errors="ignore"
+                )
+
+                # If HTML not set yet, use as body
+                if body is None:
+                    body = decoded.strip()
+
+                # Always preserve plain-text separately
+                if not plain_text:
+                    plain_text = decoded.strip()
+                    plain_text = " ".join(plain_text.split())
+
+            # -------------------------------
+            # Calendar invites
+            # -------------------------------
+            elif mime_type in ["text/calendar", "application/ics"] and data:
+                decoded = base64.urlsafe_b64decode(data.encode("ASCII")).decode(
+                    "utf-8", errors="ignore"
+                )
+                attachments.append({"type": "calendar", "content": decoded})
+
+            # -------------------------------
+            # Recurse nested parts
+            # -------------------------------
+            for sub_part in part.get("parts", []):
+                parse_part(sub_part)
+
+            # Nested message/rfc822
+            if mime_type == "message/rfc822":
+                for npart in part.get("parts", []):
+                    parse_part(npart)
+
+        # Start parsing
+        if "parts" in payload:
+            for part in payload["parts"]:
+                parse_part(part)
+        else:
+            parse_part(payload)
+
+        body = body or ""
+
+        # -------------------------------
+        # Quoted reply cleanup (unchanged)
+        # -------------------------------
+        reply_patterns = [
+            r"\nOn .* wrote:",
+            r"\n>.*",
+            r"\nFrom: .*",
+            r"\nSent: .*",
+            r"\nTo: .*",
+            r"\nSubject: .*",
+        ]
+        for pattern in reply_patterns:
+            body = re.split(pattern, body, maxsplit=1)[0]
+
+        # Signature cleanup
+        signature_patterns = [
+            r"\n--\s*\n.*",
+            r"\n__\s*\n.*",
+            r"\nThanks[,\n].*",
+            r"\nBest[,\n].*",
+        ]
+        for pattern in signature_patterns:
+            body = re.sub(pattern, "", body, flags=re.IGNORECASE | re.DOTALL)
+
+        # Whitespace normalization
+        body = re.sub(r"\n\s*\n+", "\n\n", body)
+        body = re.sub(r"[ \t]+", " ", body)
+        body = body.strip()
+
+        # Remove duplicate lines
+        lines = body.splitlines()
+        clean_lines = []
+        prev_line = None
+        for line in lines:
+            if line.strip() != prev_line:
+                clean_lines.append(line.strip())
+                prev_line = line.strip()
+        body = "\n".join(clean_lines)
+
+        # -------------------------------
+        # RAW fallback if empty (unchanged)
+        # -------------------------------
+        if not body and service is not None:
+            try:
+                raw_msg = (
+                    service.users()
+                    .messages()
+                    .get(userId="me", id=msg["id"], format="raw")
+                    .execute()
+                )
+                msg_bytes = base64.urlsafe_b64decode(raw_msg["raw"])
+                mime_msg = email.message_from_bytes(msg_bytes)
+
+                fallback_body = ""
+                if mime_msg.is_multipart():
+                    for part in mime_msg.walk():
+                        if part.get_content_type() in ["text/plain", "text/html"]:
+                            part_payload = part.get_payload(decode=True)
+                            if part_payload:
+                                fallback_body += (
+                                    part_payload.decode("utf-8", errors="ignore") + "\n"
+                                )
+                else:
+                    fallback_body = mime_msg.get_payload(decode=True).decode(
+                        "utf-8", errors="ignore"
+                    )
+                body = fallback_body.strip()
+            except Exception as e:
+                print(f"⚠️ Retry failed for message {msg.get('id')}: {e}")
+
+        # -------------------------------
+        # Final plain-text fallback if still empty
+        # -------------------------------
+        if not plain_text:
+            try:
+                soup_for_text = BeautifulSoup(body, "html.parser")
+                plain_text = soup_for_text.get_text("\n", strip=True)
+
+            except:
+                plain_text = body.strip()
+
+            plain_text = " ".join(plain_text.split())
+
+        return body, attachments, plain_text
+
     async def process_threads_batch(
         self, thread_ids, my_email, batch_count, global_retries=3
     ):
@@ -1465,6 +1775,8 @@ class GmailService:
                         message_id = headers.get("message-id")
                         from_header = headers.get("from", "Unknown Sender")
                         to_header = headers.get("to", "")
+                        cc_header = headers.get("cc", "")
+                        bcc_header = headers.get("bcc", "")
 
                         from_email = (
                             from_header.split()[-1].strip("<>")
@@ -1482,44 +1794,45 @@ class GmailService:
                         )
 
                         # Try MIME format first (new method), fallback to old method if it fails
-                        print(
-                            f"\n🔍 [MIME DEBUG] Starting MIME extraction for message {message_id}"
-                        )
-                        body, attachments = self.get_message_body_via_mime(
+                        # print(
+                        #     f"\n🔍 [MIME DEBUG] Starting MIME extraction for message {message_id}"
+                        # )
+                        body, attachments, plain_text = self.get_message_body_via_mime(
                             msg,
                             service=self.service,
                             user_id=self.user_id,
                             s3_config_key_prefix=f"{self.user_id}/messages/files",
                         )
-                        print(
-                            f"🔍 [MIME DEBUG] Result: body_len={len(body) if body else 0}, attachments={len(attachments) if attachments else 0}"
-                        )
+                        # print(
+                        #     f"🔍 [MIME DEBUG] Result: body_len={len(body) if body else 0}, plain_text_len={len(plain_text if plain_text else 0)}, attachments={len(attachments) if attachments else 0}"
+                        # )
+                        ##print("body data", body)
 
                         # If MIME extraction yielded empty body, fallback to old method
                         if not body:
-                            print(
-                                f"⚠️ MIME extraction empty for {message_id}, using fallback method"
-                            )
-                            body, attachments = self.get_message_body(
+                            # print(
+                            #     f"⚠️ MIME extraction empty for {message_id}, using fallback method"
+                            # )
+                            body, attachments, plain_text = self.get_message_body(
                                 msg,
                                 service=self.service,
                                 user_id=self.user_id,
                                 s3_config_key_prefix=f"{self.user_id}/messages/files",
                             )
-                            print(
-                                f"🔍 [FALLBACK DEBUG] Fallback result: body_len={len(body) if body else 0}, attachments={len(attachments) if attachments else 0}"
-                            )
+                            # print(
+                            #     f"🔍 [FALLBACK DEBUG] Fallback result: body_len={len(body) if body else 0}, plain_text_len={len(plain_text if plain_text else 0)}, attachments={len(attachments) if attachments else 0}"
+                            # )
 
                         # Step 2: Process and upload valid attachments to S3
                         # This happens immediately after extraction
                         processed_attachments = []
-                        print(
-                            f"🔍 [ATTACHMENT DEBUG] Before processing: attachments={len(attachments) if attachments else 0}, type={type(attachments)}"
-                        )
+                        # print(
+                        #     f"🔍 [ATTACHMENT DEBUG] Before processing: attachments={len(attachments) if attachments else 0}, type={type(attachments)}"
+                        # )
                         if attachments:
-                            print(
-                                f"📎 Processing {len(attachments)} attachments for message {message_id}"
-                            )
+                            # print(
+                            #     f"📎 Processing {len(attachments)} attachments for message {message_id}"
+                            # )
                             for att in attachments:
                                 print(
                                     f"   - {att.get('filename', '?')} ({att.get('mimeType', '?')})"
@@ -1530,22 +1843,22 @@ class GmailService:
                                 thread_id=thread_id,
                                 message_id=msg.get("id", "unknown"),
                             )
-                            print(
-                                f"✅ Attachment processing complete: {len(processed_attachments)} uploaded/processed"
-                            )
+                            # print(
+                            #     f"✅ Attachment processing complete: {len(processed_attachments)} uploaded/processed"
+                            # )
                             if processed_attachments:
                                 for att in processed_attachments:
                                     print(
                                         f"   ✅ {att.get('filename', '?')}: {att.get('status', '?')} - URL: {att.get('url', 'NO URL')}"
                                     )
-                            else:
-                                print(
-                                    f"⚠️ WARNING: No attachments were processed/uploaded!"
-                                )
-                        else:
-                            print(
-                                f"🔍 [MIME DEBUG] No attachments found for message {message_id}"
-                            )
+                        #     else:
+                        #         print(
+                        #             f"⚠️ WARNING: No attachments were processed/uploaded!"
+                        #         )
+                        # else:
+                        #     print(
+                        #         f"🔍 [MIME DEBUG] No attachments found for message {message_id}"
+                        #     )
 
                         thread_data.append(
                             {
@@ -1553,10 +1866,12 @@ class GmailService:
                                 "messageId": message_id,
                                 "from": from_header,
                                 "to": to_header,
+                                "cc": cc_header,
                                 "email": from_email,  # sender’s email
                                 "subject": headers.get("subject", "No Subject"),
                                 "snippet": resp.get("snippet", ""),
                                 "body": body,
+                                "plain_text": plain_text,
                                 "direction": direction,
                                 "date": headers.get("date", ""),
                                 "isRead": "UNREAD" not in labelids,
@@ -1566,12 +1881,12 @@ class GmailService:
                                 "isSentByMe": my_email.lower() in from_header.lower(),
                             }
                         )
-                        print(
-                            f"📊 [MESSAGE DEBUG] Message added to thread_data: {message_id}"
-                        )
-                        print(
-                            f"   - Attachments in message object: {len(processed_attachments) if processed_attachments else 0}"
-                        )
+                        # print(
+                        #     f"📊 [MESSAGE DEBUG] Message added to thread_data: {message_id}"
+                        # )
+                        # print(
+                        #     f"   - Attachments in message object: {len(processed_attachments) if processed_attachments else 0}"
+                        # )
                         if processed_attachments:
                             for att in processed_attachments:
                                 print(
@@ -1599,7 +1914,7 @@ class GmailService:
             # for tid in remaining:
             #     print(f"   - Thread {tid}: {final_results[tid][1]}")
 
-        print("✅ Returning results from batch", len(final_results))
+        # print("✅ Returning results from batch", len(final_results))
         return final_results
 
     def _extract_message_body(self, payload):
@@ -1659,7 +1974,7 @@ class GmailService:
                 )
                 .execute()
             )
-            # print("-->", response)
+            ##print("-->", response)
             count += len(response.get("messages", []))
             mess.extend(response.get("messages", []))
             page_token = response.get("nextPageToken")
@@ -1685,7 +2000,7 @@ class GmailService:
                 )
                 .execute()
             )
-            # print("-->", response)
+            ##print("-->", response)
             count += len(response.get("threads", []))
             page_token = response.get("nextPageToken")
             if not page_token:
@@ -1831,7 +2146,7 @@ class GmailService:
         """
         Fetch Gmail threads dynamically for a large date range with rate-limit handling.
         """
-        print("fetching date wise data", start_date, end_date)
+        # print("fetching date wise data", start_date, end_date)
         try:
             allthreads = await self.get_real_date_thread_count_dynamic(
                 start_date, end_date, min_days
@@ -2055,7 +2370,7 @@ class GmailService:
 
         except Exception as e:
             # HistoryId expired or other error
-            print("Error fetching history:", e)
+            # print("Error fetching history:", e)
             return None
 
         return changes
@@ -2150,16 +2465,23 @@ class GmailService:
         )
         return draft
 
-    def send_email(self, receipent_emails, subject, body_text, bcc_list=None):
+    def send_email(
+        self, receipent_emails, subject, body_text, bcc_list=None, attachments=None
+    ):
         """
         Sends an email via Gmail API.
         Automatically detects HTML content and includes both text + HTML versions.
+        Supports file attachments.
 
         Args:
             receipent_emails (str | list): One or more recipient addresses.
             subject (str): Email subject.
             body_text (str): Email body (plain or HTML).
             bcc_list (list[str], optional): Optional BCC recipients.
+            attachments (list[dict], optional): List of attachments. Each dict should have:
+                - 's3_key': str - S3 path to the file
+                - 'filename': str - Original filename
+                - 'mime_type': str - MIME type (e.g., 'application/pdf')
 
         Returns:
             dict: {
@@ -2171,10 +2493,13 @@ class GmailService:
         """
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
+        from email.mime.base import MIMEBase
+        from email import encoders
         import base64
         import re
 
         try:
+            # print("emails for send_email", receipent_emails, type(receipent_emails))
             # Normalize recipients
             if isinstance(receipent_emails, (list, tuple)):
                 receipent_emails = ", ".join(receipent_emails)
@@ -2182,21 +2507,80 @@ class GmailService:
             if bcc_list is None:
                 bcc_list = []
 
+            if attachments is None:
+                attachments = []
+
             # Detect if the body is HTML and prepare a plain-text fallback
             is_html = bool("<" in body_text and ">" in body_text)
             plain_text = re.sub(r"<[^>]+>", "", body_text) if is_html else body_text
 
-            # Create a multipart email supporting both plain and HTML
-            message = MIMEMultipart("alternative")
+            # Create a multipart email supporting both plain and HTML and attachments
+            message = MIMEMultipart("mixed")
             message["To"] = receipent_emails
             if bcc_list:
                 message["Bcc"] = ", ".join(bcc_list)
             message["Subject"] = subject
 
-            # Attach both versions
-            message.attach(MIMEText(plain_text, "plain"))
+            # Create message body as multipart/alternative for text + HTML
+            msg_alternative = MIMEMultipart("alternative")
+            msg_alternative.attach(MIMEText(plain_text, "plain"))
             if is_html:
-                message.attach(MIMEText(body_text, "html"))
+                msg_alternative.attach(MIMEText(body_text, "html"))
+
+            # Attach the message body to the main message
+            message.attach(msg_alternative)
+
+            # Process and attach files if provided
+            if attachments:
+                from utils.s3_utils import read_binary_from_s3
+                from email.mime.base import MIMEBase
+                from email import encoders
+
+                print(f"📎 Attaching {len(attachments)} file(s) to email...")
+                for att in attachments:
+                    try:
+                        s3_key = att.get("s3_key")
+                        # Use original_filename if available (from upload handler), otherwise use filename
+                        filename = att.get("original_filename") or att.get("filename")
+                        mime_type = att.get("mime_type", "application/octet-stream")
+
+                        if not s3_key or not filename:
+                            print(
+                                f"⚠️ Skipping attachment - missing s3_key or filename: {att}"
+                            )
+                            continue
+
+                        # Read file from S3
+                        file_data = read_binary_from_s3(s3_key)
+                        if not file_data:
+                            print(f"⚠️ Failed to read attachment from S3: {s3_key}")
+                            continue
+
+                        # Parse MIME type
+                        maintype, subtype = (
+                            mime_type.split("/", 1)
+                            if "/" in mime_type
+                            else (mime_type, "octet-stream")
+                        )
+
+                        # Create attachment part
+                        attachment = MIMEBase(maintype, subtype)
+                        attachment.set_payload(file_data)
+                        encoders.encode_base64(attachment)
+                        # Use proper Content-Disposition header with filename parameter for best compatibility
+                        attachment.add_header(
+                            "Content-Disposition", "attachment", filename=filename
+                        )
+
+                        # Add to message
+                        message.attach(attachment)
+                        print(f"✅ Attached: {filename} ({len(file_data)} bytes)")
+
+                    except Exception as e:
+                        print(
+                            f"❌ Error attaching file {att.get('filename')}: {str(e)}"
+                        )
+                        continue
 
             # Encode message for Gmail API
             raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
@@ -2254,7 +2638,7 @@ class GmailService:
             }
 
     def send_Meeting_invite_mail(
-        self, to_email, bcc_list: list[str], subject: str, body_html: str
+        self, receipent_emails, bcc_list: list[str], subject: str, body_html: str
     ):
         """
         Send an email via Gmail API.
@@ -2279,10 +2663,10 @@ class GmailService:
 
         try:
             # Convert to_email to comma-separated string if it's a list
-            if isinstance(to_email, list):
-                to_email_str = ", ".join(to_email)
+            if isinstance(receipent_emails, list):
+                to_email_str = ", ".join(receipent_emails)
             else:
-                to_email_str = to_email
+                to_email_str = receipent_emails
 
             # Create plain-text fallback by stripping HTML tags
             plain_text = re.sub(r"<[^>]+>", "", body_html)
@@ -2326,8 +2710,7 @@ class GmailService:
 
     def send_invite_mail(
         self,
-        inviter: str,  # inviter email
-        invitee: str,  # invitee email
+        receipent_emails: str,  # invitee email
         role: dict,  # role details (dict from DB)
         invite_link: str,  # generated invite link
         business_info: Optional[dict] = None,  # optional business info
@@ -2359,6 +2742,7 @@ class GmailService:
         # build optional extra info
         extra_html = ""
         extra_text = ""
+        inviter = self.user_email
 
         if business_info:
             if "BusinessName" in business_info:
@@ -2425,7 +2809,12 @@ class GmailService:
 
         # multipart/alternative ensures the client picks the best format
         message = MIMEMultipart("alternative")
-        message["to"] = invitee
+        if isinstance(receipent_emails, list):
+            to_email_str = ", ".join(receipent_emails)
+        else:
+            to_email_str = receipent_emails
+
+        message["to"] = to_email_str
         message["subject"] = f"Invitation to join as {role_name}"
 
         # Attach plain and HTML versions
@@ -2440,20 +2829,160 @@ class GmailService:
         sent = self.service.users().messages().send(userId="me", body=msg).execute()
         return sent
 
-    def send_reply(self, to, subject, thread_id, in_reply_to, body_text):
-        # ... (Your initial validation checks here) ...
+    def send_reply(
+        self,
+        receipent_emails,
+        subject,
+        thread_id,
+        in_reply_to,
+        body_text,
+        attachments=None,
+        cc=None,
+        bcc=None,
+        reply_type="reply",
+    ):
+        """
+        Send a reply to an existing Gmail thread (safe version).
+        """
 
-        message = EmailMessage()
-        message["To"] = to
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.base import MIMEBase
+        from email import encoders
+        import base64
+        import json
+        import re
+
+        if attachments is None:
+            attachments = []
+
+        # ================
+        # 1) Normalize body_text (CRITICAL FIX)
+        # ================
+        if isinstance(body_text, dict):
+            # Try common fields used in your system
+            body_text = (
+                body_text.get("message")
+                or body_text.get("text")
+                or body_text.get("body")
+                or json.dumps(body_text, ensure_ascii=False)
+            )
+
+        if body_text is None:
+            body_text = ""
+
+        if not isinstance(body_text, str):
+            body_text = str(body_text)
+
+        body_text = body_text.strip()
+
+        # ================
+        # 2) Build email message
+        # ================
+        message = MIMEMultipart("mixed")
+
+        # Recipients
+        if isinstance(receipent_emails, list):
+            to_email_str = ", ".join(receipent_emails)
+        else:
+            to_email_str = receipent_emails
+
+        message["To"] = to_email_str
+
+        # Subject (ensure Re:)
         message["Subject"] = (
-            f"Re: {subject}" if not subject.lower().startswith("re:") else subject
+            subject if subject.lower().startswith("re:") else f"Re: {subject}"
         )
+
+        # Required reply headers
         message["In-Reply-To"] = in_reply_to
         message["References"] = in_reply_to
-        message.set_content(body_text)
-        # print("message", message)
 
+        # CC
+        if cc:
+            if isinstance(cc, list):
+                message["Cc"] = ", ".join(cc)
+            else:
+                message["Cc"] = cc
+
+        # BCC
+        if bcc:
+            if isinstance(bcc, list):
+                message["Bcc"] = ", ".join(bcc)
+            else:
+                message["Bcc"] = bcc
+
+        # ================
+        # 3) Detect HTML
+        # ================
+        is_html = body_text.lower().startswith(
+            ("<html", "<div", "<p", "<!doctype", "<body")
+        )
+
+        # multipart/alternative for body
+        msg_alternative = MIMEMultipart("alternative")
+
+        if is_html:
+            # Plain text version (strip tags)
+            plain_text = re.sub("<[^<]+?>", "", body_text)
+            plain_text = re.sub(r"\s+", " ", plain_text).strip()
+
+            msg_alternative.attach(MIMEText(plain_text, "plain"))
+            msg_alternative.attach(MIMEText(body_text, "html"))
+        else:
+            msg_alternative.attach(MIMEText(body_text, "plain"))
+
+        message.attach(msg_alternative)
+
+        # ================
+        # 4) Attachments
+        # ================
+        if attachments:
+            from utils.s3_utils import read_binary_from_s3
+
+            for att in attachments:
+                try:
+                    s3_key = att.get("s3_key")
+                    filename = att.get("original_filename") or att.get("filename")
+                    mime_type = att.get("mime_type", "application/octet-stream")
+
+                    if not s3_key or not filename:
+                        print(f"⚠️ Skipping invalid attachment: {att}")
+                        continue
+
+                    file_data = read_binary_from_s3(s3_key)
+                    if not file_data:
+                        print(f"⚠️ Failed to load attachment from S3: {s3_key}")
+                        continue
+
+                    # Parse MIME
+                    maintype, subtype = (
+                        mime_type.split("/", 1)
+                        if "/" in mime_type
+                        else (mime_type, "octet-stream")
+                    )
+
+                    part = MIMEBase(maintype, subtype)
+                    part.set_payload(file_data)
+                    encoders.encode_base64(part)
+
+                    part.add_header(
+                        "Content-Disposition",
+                        "attachment",
+                        filename=filename,
+                    )
+
+                    message.attach(part)
+
+                except Exception as e:
+                    print(f"❌ Error attaching file: {e}")
+                    continue
+
+        # ================
+        # 5) Encode & send
+        # ================
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
         message_body = {"raw": raw, "threadId": thread_id}
 
         try:
@@ -2463,24 +2992,51 @@ class GmailService:
                 .send(userId="me", body=message_body)
                 .execute()
             )
-            print("values ", sent)
             return sent
-        except HttpError as error:
-            # Print the detailed error from the API
-            print(f"An error occurred: {error}")
-            # Reraise or handle the error as needed
-            raise ValueError(f"Gmail reply failed with API error: {error}") from error
-        except Exception as e:
-            # Catch other potential exceptions (e.g., connection issues)
-            print(f"An unexpected error occurred: {e}")
-            raise ValueError(f"Gmail reply failed with unexpected error: {e}") from e
 
-    def send_forward(self, to, subject, body_text, cc=None, bcc=None):
+        except Exception as e:
+            raise ValueError(f"Gmail reply failed: {e}") from e
+
+    def send_forward(
+        self, receipent_emails, subject, body_text, cc=None, bcc=None, attachments=None
+    ):
+        """
+        Forward an email to recipients.
+
+        Args:
+            receipent_emails (str|list): Recipient email(s)
+            subject (str): Email subject
+            body_text (str): Email body
+            cc (str|list, optional): CC recipients
+            bcc (str|list, optional): BCC recipients
+            attachments (list[dict], optional): List of attachments with keys:
+                - 's3_key': S3 path to file
+                - 'filename': Original filename
+                - 'mime_type': MIME type
+
+        Returns:
+            dict: Gmail API response with message and thread IDs
+        """
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
+        from email.mime.base import MIMEBase
+        from email import encoders
+        import base64
 
-        message = MIMEMultipart("alternative")
-        message["To"] = to
+        if attachments is None:
+            attachments = []
+
+        # Use multipart/mixed for attachments, multipart/alternative otherwise
+        if attachments:
+            message = MIMEMultipart("mixed")
+        else:
+            message = MIMEMultipart("alternative")
+
+        if isinstance(receipent_emails, list):
+            to_email_str = ", ".join(receipent_emails)
+        else:
+            to_email_str = receipent_emails
+        message["To"] = to_email_str
         if cc:
             message["Cc"] = cc
         if bcc:
@@ -2494,14 +3050,87 @@ class GmailService:
             body_text.strip().lower().startswith(("<html", "<div", "<p", "<!doctype"))
         )
 
-        if is_html:
-            # If HTML, attach as HTML (Gmail will render it)
-            part = MIMEText(body_text, "html")
-            message.attach(part)
+        if attachments:
+            # Create multipart/alternative for the body content
+            msg_alternative = MIMEMultipart("alternative")
+            if is_html:
+                # For HTML, add plain text first, then HTML (RFC 2046 specifies most featured last)
+                # Extract plain text from HTML by removing tags
+                import re
+
+                plain_text = re.sub("<[^<]+?>", "", body_text)
+                plain_text = re.sub(r"\s+", " ", plain_text).strip()
+
+                plain_part = MIMEText(plain_text, "plain")
+                msg_alternative.attach(plain_part)
+
+                # Then add HTML version (most featured)
+                html_part = MIMEText(body_text, "html")
+                msg_alternative.attach(html_part)
+            else:
+                # If plain text, just attach as text
+                part = MIMEText(body_text, "plain")
+                msg_alternative.attach(part)
+
+            # Add body to main message
+            message.attach(msg_alternative)
+
+            # Process and attach files
+            from utils.s3_utils import read_binary_from_s3
+
+            print(f"📎 Attaching {len(attachments)} file(s) to forward...")
+            for att in attachments:
+                try:
+                    s3_key = att.get("s3_key")
+                    # Use original_filename if available (from upload handler), otherwise use filename
+                    filename = att.get("original_filename") or att.get("filename")
+                    mime_type = att.get("mime_type", "application/octet-stream")
+
+                    if not s3_key or not filename:
+                        print(
+                            f"⚠️ Skipping attachment - missing s3_key or filename: {att}"
+                        )
+                        continue
+
+                    # Read file from S3
+                    file_data = read_binary_from_s3(s3_key)
+                    if not file_data:
+                        print(f"⚠️ Failed to read attachment from S3: {s3_key}")
+                        continue
+
+                    # Parse MIME type
+                    maintype, subtype = (
+                        mime_type.split("/", 1)
+                        if "/" in mime_type
+                        else (mime_type, "octet-stream")
+                    )
+
+                    # Create attachment part
+                    attachment = MIMEBase(maintype, subtype)
+                    attachment.set_payload(file_data)
+                    encoders.encode_base64(attachment)
+                    # Use proper Content-Disposition header with filename parameter for best compatibility
+                    attachment.add_header(
+                        "Content-Disposition", "attachment", filename=filename
+                    )
+
+                    # Add to message
+                    message.attach(attachment)
+                    print(f"✅ Attached: {filename} ({len(file_data)} bytes)")
+
+                except Exception as e:
+                    print(f"❌ Error attaching file {att.get('filename')}: {str(e)}")
+                    continue
         else:
-            # If plain text, just attach as text
-            part = MIMEText(body_text, "plain")
-            message.attach(part)
+            # No attachments - use simpler structure
+            if is_html:
+                # If HTML, attach as HTML (Gmail will render it)
+                part = MIMEText(body_text, "html")
+                message.attach(part)
+            else:
+                # If plain text, just attach as text
+                part = MIMEText(body_text, "plain")
+                message.attach(part)
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         message_body = {"raw": raw}

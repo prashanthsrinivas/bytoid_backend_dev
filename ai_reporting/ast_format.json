@@ -1,0 +1,114 @@
+ {
+   "query_intent": {
+    "type": "ranking|aggregation|trend|comparison",
+    "properties": {
+      "type": { "type": "string" },                    
+      "description": { "type": "string" }              
+    }
+  },
+  "sql_ast": {
+    "type": "object",
+    "title": "SQL_AST",
+    "properties": {
+      "select": {
+        "type": "array",
+        "description": "List of columns or expressions to select",
+        "items": {
+          "oneOf": [
+            { "type": "string" },
+            { "$ref": "#" }    
+          ]
+        }
+      },
+      "from": {
+        "description": "Main table or subquery source",
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "subquery": { "$ref": "#" },
+              "alias": { "type": "string" }
+            },
+            "required": ["subquery", "alias"]
+          }
+        ]
+      },
+      "join": {
+        "type": "array",
+        "description": "Join clauses applied to the FROM source",
+        "items": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["INNER", "LEFT", "RIGHT", "FULL", "CROSS"]
+            },
+            "table": {
+              "oneOf": [
+                { "type": "string" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "subquery": { "$ref": "#" },
+                    "alias": { "type": "string" }
+                  },
+                  "required": ["subquery", "alias"]
+                }
+              ]
+            },
+            "on": { "type": "string" }
+          },
+          "required": ["type", "table", "on"]
+        }
+      },
+      "where": {
+        "type": "array",
+        "description": "Conditions for filtering rows",
+        "items": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": {
+                "subquery": { "$ref": "#" },
+                "operator": { "type": "string" },
+                "column": { "type": "string" }
+              },
+              "required": ["subquery", "operator", "column"]
+            }
+          ]
+        }
+      },
+      "group_by": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "having": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "order_by": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "column": { "type": "string" },
+            "direction": {
+              "type": "string",
+              "enum": ["ASC", "DESC"]
+            }
+          },
+          "required": ["column"]
+        }
+      },
+      "limit": {
+        "type": ["integer", "null"]
+      },
+      "offset": {
+        "type": ["integer", "null"]
+      }
+    },
+    "required": ["select", "from"]
+  }
+  }

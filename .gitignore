@@ -39,6 +39,8 @@ logs/
 *.swp
 *~
 cust_helpers/messages/*
+cust_helpers/messages_backup/*
+
 cust_helpers/test/*
 # Testing
 .pytest_cache/

@@ -299,60 +299,47 @@ clean_transcription_prompt: |
   "{input_text}"
 
 scrape_summary_prompt_template: |
-  You are an expert website analyst. Your task is to analyze the provided website content that has been scraped from multiple levels (up to 3 depths) and generate a comprehensive structured analysis.
+  You are an expert content analyst. Create a SHORT, CONCISE summary of website content.
 
-  ## ANALYSIS GUIDELINES:
-  - Your analysis must be based ONLY on the multi-level content provided.
-  - The content includes the main page and up to 2 additional levels of subpages.
-  - For the structured data, you must:
-    - Identify the website's main purpose and core business model.
-    - List key products, services, or content categories found across all pages.
-    - Describe the target audience and user personas.
-    - Extract the company's mission, values, or unique selling proposition.
-    - Document the site structure and navigation patterns observed.
-    - Identify key subpages and their purposes.
-
-  - For the display summary, you must:
-    - Write a comprehensive paragraph (4–6 sentences) that synthesizes information from all scraped levels.
-    - Include insights about the website's depth and content organization.
-    - Highlight any unique features or standout content found in subpages.
-
-  - For site structure analysis:
-    - Map out the key sections and their relationships.
-    - Note any specialized pages or unique functionalities.
-    - Identify content patterns across different levels.
+  ## CRITICAL RULES:
+  1. **CONCISE ONLY** - Keep total response to ~150-200 words max
+  2. **Extract SPECIFIC facts** - Product names, features, key details only
+  3. **NO generic filler** - No "provides services", "company that offers", etc.
+  4. **Use exact details** - Real names, specifications, actual information
+  5. **Accurate information only** - From the provided content ONLY
 
   ## INPUT:
   - url: {url}
   - website_content: {website_content}
-  - scraping_metadata: Includes information about pages scraped, depth reached, and navigation structure
 
-  ## OUTPUT FORMAT:
-  Provide your output as a single YAML object.
-  yaml
-  website_analysis:
-    summary: "A comprehensive paragraph combining insights from all scraped levels, highlighting the website's purpose, key offerings, and organizational structure."
-    main_purpose: "Detailed description of the website's primary function and business model."
-    key_offerings:
-      - "Primary product/service with brief description"
-      - "Secondary offering with context"
-      - "Additional services or content categories"
-    target_audience: "Detailed description of primary and secondary user groups."
-    company_mission: "The organization's stated mission, values, or philosophy."
-    site_structure:
-      main_sections:
-        - "Homepage focus and key elements"
-        - "Primary navigation categories"
-        - "Special features or unique pages"
-      subpage_insights:
-        - "Notable subpage content or functionality"
-        - "Content patterns observed across levels"
-        - "User journey or conversion paths identified"
-    content_depth: "Assessment of content richness and information architecture."
-    unique_features:
-      - "Standout functionalities or content"
-      - "Competitive advantages identified"
-    pages_analyzed: "Brief summary of the scope of content analyzed (e.g., '15 pages across 3 levels covering main site, product pages, and support sections')"
+  ## OUTPUT FORMAT (SHORT & CLEAN):
+  **What is this?**
+  1-2 sentences: Specific description with actual product/service names
+
+  **Key Information**
+  - [Specific item with brief detail - max 1 line each]
+  - [Specific item with brief detail]
+  - [Specific item with brief detail]
+
+  **Related Sections**
+  - [Section name and what it covers - brief]
+  - [Section name and what it covers - brief]
+
+  ## CRITICAL REMINDERS:
+  - CONCISE: 1-2 lines per bullet point, NOT paragraphs
+  - SPECIFIC: Use exact product/service names from content
+  - NO fluff: Skip generic descriptions
+  - Keep it clean: No formatting artifacts or extra text
+
+  ## CRITICAL REMINDERS:
+  - Extract REAL details from content, NOT generic descriptions
+  - If content mentions a product, include the exact product name
+  - If specifications are mentioned, include them with context
+  - Do NOT write "a website that provides..." or "an online platform that offers..."
+  - DO write "IRFR5305TRPBF Infineon MOSFET with 55V rating and 13A current capacity" (with actual specs from content)
+  - Keep language professional but direct
+  - Balance detail and conciseness in each section (not too short, not too long)
+  - Use only information from the provided content
 
 extract_scraping_clarifications_prompt: |
   Analyze the following multi-level scraped website content and extract questions that need clarification. 
@@ -420,3 +407,42 @@ scraping_response_validator_batch: |
       "improvement_suggestions": "Could include the contact information found on the support subpage for follow-up questions."
     }
   ]
+
+youtube_summary_prompt_template: |
+  You are an expert video content analyzer. Analyze the YouTube video transcript and provide a structured summary.
+
+  ## TASK:
+  Extract and organize key information from the video transcript into the following sections:
+  1. Summary: A 2-3 sentence overview of the video
+  2. Main Purpose: What is the video primarily about?
+  3. Key Topics: List the main topics or segments covered
+  4. Target Audience: Who would find this video most valuable?
+  5. Key Takeaways: 2-3 important points from the video
+
+  ## INPUT:
+  - url: {url}
+  - video_transcript: {website_content}
+
+  ## OUTPUT FORMAT:
+  Return the response in this exact YAML format (plain text, not code blocks):
+
+  Summary
+  One or two sentences summarizing the main content and purpose of the video.
+
+  Main Purpose
+  A concise statement of what the video is designed to accomplish or communicate.
+
+  Key Topics
+  - Topic or segment 1
+  - Topic or segment 2
+  - Topic or segment 3
+
+  Target Audience
+  A description of who would benefit most from watching this video.
+
+  Key Takeaways
+  - Important point or lesson 1
+  - Important point or lesson 2
+  - Important point or lesson 3
+
+  Do NOT include code blocks, markdown formatting, or extra explanation. Just provide the structured content exactly as shown above.

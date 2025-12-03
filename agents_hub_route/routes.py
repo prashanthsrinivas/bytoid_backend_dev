@@ -65,12 +65,15 @@ def get_all_user_agents(userid):
                 conn.rollback()
                 return jsonify({"error": "Unauthorized access"}), 403
 
-            # Parse permissions JSON safely
-            owner_permissions = (
-                json.loads(admin_row["permissions"])
-                if admin_row and admin_row["permissions"]
-                else {"invites": [], "shared": [], "agents_hub": []}
-            )
+            # Parse permissions JSON safely - handle null/empty permissions
+            permissions_json = admin_row.get("permissions")
+            if permissions_json:
+                try:
+                    owner_permissions = json.loads(permissions_json)
+                except (json.JSONDecodeError, TypeError):
+                    owner_permissions = {"invites": [], "shared": [], "agents_hub": []}
+            else:
+                owner_permissions = {"invites": [], "shared": [], "agents_hub": []}
 
             # Normalize permissions structure
             if "agents_hub" not in owner_permissions:
@@ -103,7 +106,7 @@ def get_all_user_agents(userid):
             base_user_agents = cursor.fetchall()
 
             invited_rows = []
-            # 🔹 Fetch shared users’ agents (only if they exist)
+            # 🔹 Fetch shared users' agents (only if they exist)
             if affected_emails:
                 email_tuple = tuple(affected_emails)
                 if len(email_tuple) == 1:
@@ -130,7 +133,9 @@ def get_all_user_agents(userid):
                 )
                 invited_rows = cursor.fetchall()
 
-            # Merge base + invited agents
+            # Merge base + invited agents (ensure both are lists)
+            base_user_agents = list(base_user_agents) if base_user_agents else []
+            invited_rows = list(invited_rows) if invited_rows else []
             all_agents = base_user_agents + invited_rows
 
             # Add `shared_hub_users` field
@@ -182,7 +187,13 @@ def get_all_user_agents(userid):
         )
 
     except Exception as e:
-        conn.rollback()
+        print(f"❌ [ERROR] agents_hub route: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        try:
+            conn.rollback()
+        except:
+            pass
         return jsonify({"error": str(e)}), 500
 
     finally:

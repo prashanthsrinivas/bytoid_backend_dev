@@ -34,8 +34,6 @@ VERIFY_TOKEN = "bytoidtoken"
 all_messages = {}
 
 
-
-
 # @twilio_bp.route('/twilio_webhook/send_whatsapp', methods=['POST'])
 def send_whatsapp(from_number, to_number, body, conversation_id, subject):
 
@@ -48,7 +46,6 @@ def send_whatsapp(from_number, to_number, body, conversation_id, subject):
     if not to_number.startswith("whatsapp:"):
         print("Recipient number must start with 'whatsapp:'")
 
-   
     message = client.messages.create(
         from_=from_number,
         to=to_number,
@@ -72,12 +69,12 @@ def send_whatsapp(from_number, to_number, body, conversation_id, subject):
         "subject": subject,
         "sender_name": "You",
     }
-    
+
     print(f"messages are: {MESSAGES}")
 
     return {"sid": message.sid, "status": "sent", "channel": "whatsapp"}
 
-    
+
 # @twilio_bp.route('/twilio_webhook/send-sms', methods=['POST'])
 def send_sms(from_number, to_number, body, conversation_id, subject):
     print(
@@ -89,7 +86,6 @@ def send_sms(from_number, to_number, body, conversation_id, subject):
     if to_number.startswith("whatsapp:"):
         print("Recipient number cannot start with 'whatsapp:'")
 
-   
     try:
 
         message = client.messages.create(
@@ -202,7 +198,7 @@ def handle_twilio_sms_webhook():
 def handle_twilio_webhook():
     payload = request.form.to_dict() or request.get_json()
     print(f"payload is: {payload}")
-    # print("helloooo")
+    ##print("helloooo")
 
     # print(f"Received payload from Twilio: {payload}")
     to = payload.get("To")
@@ -342,7 +338,6 @@ def handle_slack_events():
             print(f"Unsupported channel type: {channel}")
             return "Unsupported channel type", 400
 
-
         my_user_id = "U094N4DTVSL"  # Replace later with your actual Slack user ID
 
         message_id = str(uuid.uuid4())
@@ -398,7 +393,7 @@ def get_user_profile(sender_id, page_access_token):
         profile = response.json()
         return f"{profile.get('first_name', '')} {profile.get('last_name', '')}".strip()
     else:
-        print("Error fetching profile:", response.text)
+        # print("Error fetching profile:", response.text)
         return None
 
 
@@ -413,7 +408,7 @@ def webhook():
 
     elif request.method == "POST":
         data = request.get_json()
-        print("Webhook received data:", data)
+        # print("Webhook received data:", data)
 
         if data["object"] == "page":
             for entry in data["entry"]:
@@ -453,7 +448,7 @@ def webhook():
                                 "timestamp": iso_timestamp,
                             }
 
-                            print("Stored message:", MESSAGES[key])
+                            # print("Stored message:", MESSAGES[key])
 
                             # Respond to user
                             send_message(
@@ -472,7 +467,7 @@ def send_slack_message(
     print(f"Sending Slack message to {channel_id} with body: {text}")
 
     if not channel_id or not text:
-        print("Missing channel_id or text fields")
+        # print("Missing channel_id or text fields")
         return None
 
     try:
@@ -515,12 +510,5 @@ def send_slack_message(
         return response
 
     except Exception as e:
-        print("Error sending Slack message:", str(e))
+        # print("Error sending Slack message:", str(e))
         raise
-
-
-
-
-            
-
-

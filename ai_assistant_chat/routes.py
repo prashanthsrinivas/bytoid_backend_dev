@@ -27,7 +27,6 @@ from functools import partial
 from utils.celery_base import enqueue_user_task
 
 
-
 ai_assistant_chat_bp = Blueprint("ai_assistant_chat", __name__)
 
 
@@ -57,9 +56,10 @@ COMMON_MAIL_PROVIDERS = {
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-     handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
+
 
 @ai_assistant_chat_bp.route("/verify_domain", methods=["POST"])
 def verify_domain():
@@ -535,7 +535,7 @@ def table_insertion(status, conn, client_id, user_id, input_data):
     except Exception as e:
         if conn:
             conn.rollback()
-        print("⚠️ Error while adding entries into table:", e)
+        # print("⚠️ Error while adding entries into table:", e)
         raise
     finally:
         if cursor:
@@ -600,11 +600,13 @@ def update_config_file(client_id, parsed_timestamp, status, input_data):
         config_data.setdefault("conversations", []).append(config_entry)
 
     if not config_data.get("ai_assistant_convid"):
-        config_data["ai_assistant_convid"] = conversation_id    
+        config_data["ai_assistant_convid"] = conversation_id
 
     # Save locally
     with open(config_filepath, "w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
 
     # Upload to S3
     upload_any_file(
@@ -656,21 +658,21 @@ async def process_website_msg():
             user_id, client_id, conv_id, email, query, bot_response
         )
         status = "existing"
-        print("existing")
+    # print("existing")
     else:
         input_data = await create_new_conv(
             user_id, client_id, email, query, bot_response
         )
         status = "new"
-        print("new")
+    # print("new")
     if not input_data:
-            return jsonify({"error": "Failed to prepare conversation data"}), 500
+        return jsonify({"error": "Failed to prepare conversation data"}), 500
 
-    # insert into tables in db    
+    # insert into tables in db
     conversation_id = table_insertion(status, conn, client_id, user_id, input_data)
     if not conversation_id:
         return jsonify({"error": "Failed to insert into tables"}), 500
-    
+
     # update config file
     config_data = update_config_file(client_id, parsed_timestamp, status, input_data)
     if not config_data:
@@ -681,7 +683,7 @@ async def process_website_msg():
         "user_id": user_id,
         "client_id": client_id,
         "conversation_id": conversation_id,
-        "input_data": input_data
+        "input_data": input_data,
     }
 
     enqueue_user_task(user_id, payload)
@@ -700,12 +702,17 @@ def get_website_msg():
     conversation_id = ""
 
     conversation_id = check_for_conv_file(user_id, client_id)
-    print(f"conversation_id: {conversation_id}")
     if conversation_id:
-        print(f"inside if")
         client = UmailLanceClient(user_id)
         results = client.get_conv_from_lance(conversation_id, user_id, client_id)
-        return jsonify(results)
+
+        s3_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
+        s3_data = read_json_from_s3(s3_key)
+        conversation_summary = s3_data.get("conversation_summary", "")
+
+        return jsonify(
+            {"results": results, "conversation_summary": conversation_summary}
+        )
 
     return jsonify([])
 
@@ -749,5 +756,47 @@ def close_ticket_for_assistant():
     user_id = data.get("user_id")
     client_id = data.get("client_id")
 
-
     return jsonify({"message": "ticket not found"}), 404
+
+
+@ai_assistant_chat_bp.route("/update_summary", methods=["POST"])
+def update_summary():
+
+    try:
+
+        data = request.json
+        print(f"📥 [DEBUG] Request data: {data}")
+
+        user_id = data.get("user_id")
+        client_id = data.get("client_id")
+        conversation_summary = data.get("conversation_summary")
+
+        conversation_id = check_for_conv_file(user_id, client_id)
+        s3_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
+        s3_data = read_json_from_s3(s3_key)
+
+        conv_folder = os.path.join(pathconfig.basepath, "messages", user_id, client_id)
+        ensure_dir(conv_folder)
+        conv_file_name = f"{conversation_id}.json"
+        conv_filepath = os.path.join(conv_folder, conv_file_name)
+        s3_config_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
+
+        s3_data["conversation_summary"] = conversation_summary
+
+        # Save locally
+        with open(conv_filepath, "w", encoding="utf-8") as f:
+            json.dump(s3_data, f, indent=2)
+
+        # Upload to S3
+        upload_any_file(
+            conv_filepath,
+            user_id,
+            type="messages",
+            s3_key_C=s3_config_key,
+        )
+
+        return jsonify({"message": "conversation_summary update successful"}), 200
+
+    except Exception as e:
+        print(f"Error in update summary: {e}")
+        return jsonify({"error": "Something went wrong", "details": e}), 500

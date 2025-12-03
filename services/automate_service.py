@@ -21,10 +21,16 @@ class AutoMateService:
     def __init__(self, userid, testing=False, workflow=None, wf_id=None):
         self.userid = userid
         self.connection = connect_to_rds()
+
         self.autopilot_data = None
         self.testing = testing
-        self.workflow = workflow
+
+        # FIX — ensure workflow is always a dict
+        self.workflow = workflow or {}
+
+        # Safe get
         self.inputdata = self.workflow.get("input_data", {})
+
         self.current_wf_id = wf_id
 
     def create_custom_email_body(self, user_input: str, **args):
@@ -40,12 +46,13 @@ class AutoMateService:
 
         # Format dynamic args for prompt readability
         dynamic_info = ""
-        for key, value in args.items():
-            if isinstance(value, list):
-                value_str = ", ".join(map(str, value))
-            else:
-                value_str = str(value)
-            dynamic_info += f"{key.replace('_', ' ').title()}: {value_str}\n"
+        if args:
+            for key, value in args.items():
+                if isinstance(value, list):
+                    value_str = ", ".join(map(str, value))
+                else:
+                    value_str = str(value)
+                dynamic_info += f"{key.replace('_', ' ').title()}: {value_str}\n"
 
         business_name = business_info.get("BusinessName", "")
         billing_address = business_info.get("BillingAddress", "")
@@ -54,7 +61,7 @@ class AutoMateService:
 
         # Strictly enforce modern HTML email design
         prompt = f"""
-    You are a professional email designer and marketer.
+    You are a professional email designer and marketer as per User Request.
 
     Create a **modern, elegant, mobile-responsive HTML email** with inline CSS.
 
@@ -75,7 +82,6 @@ class AutoMateService:
     - The layout should be **max-width: 600px** and center-aligned.
     - Do **not** include any explanation or text outside the HTML.
     - Make sure the output is well-formatted HTML.
-    - if timings or dates present make them into natural like 23 november 2025 or 12 am or 12:30 am
 
     ---
 
@@ -125,7 +131,7 @@ class AutoMateService:
         json_match = re.search(r"\{[\s\S]*\}", ai_content)
         if json_match:
             ai_content = json_match.group(0).strip()
-        print("ai content received", ai_content)
+        # print("ai content received", ai_content)
 
         # 2. Ask AI to suggest filename and file type
         filename_and_type_prompt = (
@@ -141,7 +147,7 @@ class AutoMateService:
         # 3. Fallback if AI returns invalid
         if not suggested_file or "." not in suggested_file:
             suggested_file = f"{uuid.uuid4()}.txt"
-        # print("filename created", suggested_file)
+        ##print("filename created", suggested_file)
 
         # 4. Ensure output directory exists
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -233,9 +239,9 @@ class AutoMateService:
 
             # 🔁 Retry with manual fallback if JSON is invalid or no slides
             if slide_data is None or not slide_data.get("slides"):
-                print("Attempting to parse raw AI content for PPTX...")
+                # print("Attempting to parse raw AI content for PPTX...")
                 slide_data = parse_pptx_content_to_json(ai_content)
-                print("the pptx structured final", slide_data)
+            # print("the pptx structured final", slide_data)
 
             if slide_data is None or not slide_data.get("slides"):
                 return {"error": "Cannot create the file"}

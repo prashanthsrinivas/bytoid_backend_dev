@@ -27,8 +27,14 @@ email_summary_generator: |
   user_input : {user_query}
   entity_groups: {entity_groups}
 
-  ## OUTPUT FORMAT:
-  Provide your output as a YAML object with the summary in natural language, maximum 5 lines.
+  ## OUTPUT FORMAT (JSON):
+  {
+    output_query: "your email summary here"
+  }
+
+  ## Output Rules
+  - Output strictly in JSON — no markdown, no commentary, no extra text.
+  -Provide your output as a Json object with the summary in natural language, maximum 5 lines.
 
   ## EXAMPLES:
   

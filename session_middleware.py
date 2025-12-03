@@ -30,6 +30,9 @@ EXEMPT_PATHS = [
     "/get-training-settings",
     "/get-usersDocs",
     "/get_all_instructions",
+    "/microsoft/login",
+    "/microsoft/callback",
+    "/microsoft/login/debug",
 ]
 
 

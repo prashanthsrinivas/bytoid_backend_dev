@@ -167,12 +167,12 @@ class WorkflowRunner:
         # 👉 Route to appropriate handlers
         if "calendar_type" in step and step["calendar_type"] == "Google Calendar":
             # Call your Google Meet creation handler
-            print("calling befor meet method")
+            # print("calling befor meet method")
             return self._handleGoogleMeet(step)
 
         elif "Gmail" in channels:
             # Call your Gmail invitation handler
-            print("calling befor Gmail method")
+            # print("calling befor Gmail method")
             return self._handleGoogleMeetMail(step)
 
         # If it's a decision point, handle separately
@@ -381,7 +381,7 @@ class WorkflowRunner:
             attendees = [item["email"] for item in self.contacts if "email" in item]
 
             # Init service
-            service = GoogleMeetService(access_token=token, user_email=email)
+            service = GoogleMeetService(userid=self.userid)
 
             # Create event
             # --- FIX: Convert datetime objects to ISO format strings for JSON serialization ---
@@ -411,7 +411,7 @@ class WorkflowRunner:
     def _handleGoogleMeetMail(self, step):
         from .helperzz import generate_meeting_email_body
 
-        print("called meet mail thing")
+        # print("called meet mail thing")
 
         details = self.meetingDetails
         user_email = self.userdetails["email"]
@@ -471,7 +471,7 @@ class WorkflowRunner:
         preferred_date = start_date or datetime.now().strftime("%Y-%m-%d")
 
         # Initialize service
-        service = GoogleMeetService(access_token=token, user_email=email)
+        service = GoogleMeetService(userid=self.userid)
 
         # Call to get available slot
         available_slot = service.get_first_available_slot(

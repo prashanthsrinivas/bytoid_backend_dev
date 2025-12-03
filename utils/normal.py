@@ -329,7 +329,7 @@ def save_docx_from_json(doc_data, file_path):
     file_path = Path(file_path)
     if file_path.exists():
         file_path.unlink()  # Delete existing file
-    print("doc data", doc_data)
+    # print("doc data", doc_data)
 
     doc = Document()
     doc.add_heading(doc_data.get("title", ""), level=0)
@@ -346,7 +346,7 @@ def save_pptx_from_json(slide_data, file_path):
     file_path = Path(file_path)
     if file_path.exists():
         file_path.unlink()  # Delete existing file
-    print("slide data", slide_data)
+    # print("slide data", slide_data)
 
     prs = Presentation()
     for slide_info in slide_data.get("slides", []):

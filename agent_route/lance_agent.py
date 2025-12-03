@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 import requests
@@ -18,6 +19,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_fireworks import ChatFireworks
 from langchain.prompts import ChatPromptTemplate
 from utils.fireworkzz import get_firework_embedding
+from db.lance_db_service import LanceDBServer
 
 # ────────────────────────
 # Setup Logging
@@ -57,6 +59,7 @@ class LanceClient:
         self.lancedb_url = os.getenv("LANCE_DB_IP")
         self.user_id = user_id
         self.dimension = 2880
+        self.service = LanceDBServer()
         #     embeddings = OpenAIEmbeddings(
         # #     model="text-embedding-3-large",
         # #     openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -201,9 +204,9 @@ class LanceClient:
         # splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         # Estimate dynamic chunk size
         doc_lengths = [len(doc.page_content) for doc in all_documents]
-        # print("the docs lengths", doc_lengths)
+        ##print("the docs lengths", doc_lengths)
         avg_length = sum(doc_lengths) // len(doc_lengths) if doc_lengths else 1000
-        # print("the average length is ", avg_length)
+        ##print("the average length is ", avg_length)
 
         # Heuristic: Clamp between 500 and 1500 characters
         dynamic_chunk_size = max(500, min(800, avg_length))
@@ -218,7 +221,7 @@ class LanceClient:
         )
         return docs
 
-    def process_document(self, file_path: str, filename: str):
+    async def process_document(self, file_path: str, filename: str):
         documents = self.langchainprocessDocs(file_path)
         vector_batch = []
 
@@ -241,76 +244,62 @@ class LanceClient:
                 logger.error(f"[!] Embedding failed: {e}")
 
         if vector_batch:
-            self.send_batch_to_lancedb(vector_batch)
-            return {"vectors_made": len(vector_batch), "docs_processed": len(documents)}
-        else:
-            return {"vectors_made": 0, "docs_processed": len(documents)}
+            await self.send_batch_to_lancedb(vector_batch)
 
-    def send_batch_to_lancedb(self, vector_batch: List[VectorData]):
-        payload = [vec.dict() for vec in vector_batch]
+        return {
+            "vectors_made": len(vector_batch),
+            "docs_processed": len(documents),
+        }
 
+    # ------------------------------------------
+    # PURE ASYNC INSERT
+    # ------------------------------------------
+    async def send_batch_to_lancedb(self, vector_batch: List[VectorData]):
         try:
-            response = requests.post(f"{self.lancedb_url}/insert_batch", json=payload)
-            if response.status_code == 200:
-                logger.info(f"[✔] Inserted {len(payload)} vectors.")
-            else:
-                logger.error(
-                    f"[✘] Batch insert failed: {response.status_code} - {response.text}"
-                )
+            await self.service.insert_batch(vector_batch)
         except Exception as e:
             logger.error(f"[!] Exception during batch insert: {str(e)}")
 
-    def query_vector(self, query_input: QueryInput):
+    # ------------------------------------------
+    # MAKE QUERY VECTOR ASYNC
+    # ------------------------------------------
+    async def query_vector(self, query_input: QueryInput):
         try:
-            query_text = query_input.query_text
-            top_k = query_input.top_k
-            user_id = query_input.user_id
-
-            # Create embedding
-            # embedding = np.array(self.embeddings.embed_query(query_text), dtype=np.float32).tolist()
-            vector = self.embeddings.embed_query(query_text)
-
-            # Now construct valid QueryData
-            query_payload = QueryData(user_id=user_id, embedding=vector, top_k=top_k)
-            response = requests.post(
-                f"{self.lancedb_url}/query", json=query_payload.dict()
+            vector = self.embeddings.embed_query(query_input.query_text)
+            payload = QueryData(
+                user_id=query_input.user_id,
+                embedding=vector,
+                top_k=query_input.top_k,
             )
-            response.raise_for_status()
-            results = response.json().get("results")
+
+            results = await self.service.query_vector(payload.dict())
             logger.info(f"[🔍] Retrieved {len(results)} results.")
+
             return results
 
         except Exception as e:
             logger.error(f"[!] Query failed: {str(e)}")
-            raise e
+            raise
 
+    # ------------------------------------------
+    # FRIENDLY LLM EXTRACTOR (sync, OK)
+    # ------------------------------------------
     def extract_relevant_text(self, query: str, context: str) -> str:
-        # For RunnableSequence, 'invoke' returns a message object, so we extract content.
-        # print("context from the lancedb", context)
         response = self.relevance_chain.invoke({"query": query, "context": context})
-        # print(
-        #     "response from extraction", response
-        # )  # This will print the AIMessage object
-        # You need to access .content from the AIMessage object
         return response.content.strip()
 
-    def delete_file_Data(self, foldername: str):
+    # ------------------------------------------
+    # MAKE DELETE ASYNC
+    # ------------------------------------------
+    async def delete_file_Data(self, foldername: str):
         try:
-            response = requests.post(
-                f"{self.lancedb_url}/delete_folder",
-                json={"user_id": self.user_id, "foldername": foldername},
+            val = await self.service.delete_folder_async(
+                user_id=self.user_id, foldername=foldername
             )
-            if response.status_code == 200:
-                logger.info(f"[✔] Successfully deleted file with ID: {foldername}")
+            if val:
                 return {"status": "success", "message": f"File {foldername} deleted."}
-            else:
-                logger.error(
-                    f"[✘] Failed to delete file {foldername}: {response.status_code} - {response.text}"
-                )
-                return {
-                    "status": "error",
-                    "message": f"Failed to delete file {foldername}.",
-                }
+            return {"status": "error", "message": f"Failed to delete {foldername}."}
+
         except Exception as e:
             logger.error(f"[!] Exception during file deletion: {str(e)}")
             return {"status": "error", "message": str(e)}

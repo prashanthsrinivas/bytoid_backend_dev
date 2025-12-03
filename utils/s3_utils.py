@@ -85,33 +85,48 @@ def save_yaml_to_s3(data, user_id, filename):
 # upload_any_file(file_path="cust_helpers/test/Daily_Email_Lead_Follow-up_2025-07-21_10-33-54.json",user_id="1234")
 def read_json_from_s3(filepath):
     s3 = s3bucket()  # Full path in bucket
-    # print("path for reading is", filepath)
+    ##print("path for reading is", filepath)
 
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)
         content = response["Body"].read().decode("utf-8")
         data = json.loads(content)
-        # print("✅ JSON content loaded successfully", filepath)
+        ##print("✅ JSON content loaded successfully", filepath)
         return data
     except Exception as e:
         print(f"❌ Error reading JSON file: {e}")
         return None
 
 
+def read_binary_from_s3(filepath):
+    """Read binary file from S3 and return the bytes content."""
+    s3 = s3bucket()
+
+    try:
+        response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)
+        content = response["Body"].read()
+        return content
+    except Exception as e:
+        print(f"❌ Error reading binary file from S3: {e}")
+        return None
+
+
 def load_yaml_from_s3(filepath):
     s3 = s3bucket()  # Full path in bucket
-    print("path loaded s3", filepath)
+    # print("path loaded s3", filepath)
 
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)
         content = response["Body"].read().decode("utf-8")
         data = yaml.safe_load(content)
-        print("✅ YAML content loaded successfully", filepath)
+        # print("✅ YAML content loaded successfully", filepath)
         return data
     except ClientError as e:
-        error_code = e.response['Error']['Code']
-        if error_code == 'NoSuchKey':
-            print(f"📝 YAML file does not exist yet: {filepath} (this is normal for new files)")
+        error_code = e.response["Error"]["Code"]
+        if error_code == "NoSuchKey":
+            print(
+                f"📝 YAML file does not exist yet: {filepath} (this is normal for new files)"
+            )
             return None
         else:
             print(f"❌ S3 ClientError reading YAML file: {e}")
@@ -123,11 +138,11 @@ def load_yaml_from_s3(filepath):
 
 def delete_file_from_s3(filepath):
     s3 = s3bucket()
-    print("🗑️ Deleting file from path:", filepath)
+    # print("🗑️ Deleting file from path:", filepath)
 
     try:
         s3.delete_object(Bucket=S3_BUCKET, Key=filepath)
-        print("✅ File deleted successfully")
+        # print("✅ File deleted successfully")
         return True
     except Exception as e:
         print(f"❌ Error deleting file: {e}")
@@ -142,7 +157,7 @@ def delete_folder_from_s3(folder_prefix: str) -> None:
     response = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=folder_prefix)
 
     if "Contents" not in response:
-        print("⚠️ No files found in this folder.")
+        # print("⚠️ No files found in this folder.")
         return
 
     for obj in response["Contents"]:
@@ -161,7 +176,7 @@ def generate_presigned_url(s3_key, expiration=3600):
         )
         return response
     except ClientError as e:
-        print("❌ Error generating signed URL:", e)
+        # print("❌ Error generating signed URL:", e)
         return None
 
 

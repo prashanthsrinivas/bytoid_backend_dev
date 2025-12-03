@@ -13,7 +13,7 @@ calenders_bp = Blueprint("calender", __name__)
 def get_all_user_events():
     try:
         body = request.json or {}
-        print("body", body)
+        # print("body", body)
 
         userid = body.get("userid")
         holidays_param = body.get("holidays", False)
@@ -49,13 +49,13 @@ def get_all_user_events():
         print(type(userid), userid)
 
         val = fetch_user_Social(user_id=userid)
-        print("val receved", val)
+        # print("val receved", val)
         # Initialize service
         if val == "google":
-            print("into google service")
+            # print("into google service")
             service = GoogleMeetService(userid=userid)
         elif val == "microsoft":
-            print("into microsoft")
+            # print("into microsoft")
             service = MicrosoftGraphCalendarService(userid=userid)
 
         # Fetch events
@@ -68,7 +68,7 @@ def get_all_user_events():
         return result, 200
 
     except Exception as e:
-        print("Error in get_all_user_events:", e)
+        # print("Error in get_all_user_events:", e)
         return {"success": False, "error": str(e)}, 500
 
 
@@ -108,7 +108,6 @@ def create_user_event():
             service = MicrosoftGraphCalendarService(userid=userid)
             organizer_tz = pytz.timezone(service.user_timezone)
 
-
         # Time parsing
         def parse_time(dt):
             # "2025-11-30T18:30:00.000Z" → convert to organizer TZ
@@ -141,7 +140,7 @@ def create_user_event():
         return {"success": True, "event": result}, 200
 
     except Exception as e:
-        print("Error in create_user_event:", e)
+        # print("Error in create_user_event:", e)
         return {"success": False, "error": str(e)}, 500
 
 
@@ -176,7 +175,6 @@ def update_user_event():
             service = MicrosoftGraphCalendarService(userid=userid)
             organizer_tz = pytz.timezone(service.user_timezone)
 
-
         # Parse timestamps only if provided
         def parse_dt(dt):
             if not dt:
@@ -208,7 +206,7 @@ def update_user_event():
         return {"success": True, "event": updated_event}, 200
 
     except Exception as e:
-        print("Error in update_user_event:", e)
+        # print("Error in update_user_event:", e)
         return {"success": False, "error": str(e)}, 500
 
 
@@ -235,5 +233,5 @@ def delete_user_event():
         return {"success": True, "result": result}, 200
 
     except Exception as e:
-        print("Error in delete_user_event:", e)
+        # print("Error in delete_user_event:", e)
         return {"success": False, "error": str(e)}, 500

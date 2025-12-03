@@ -47,7 +47,7 @@ def login():
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/facebook/callback",
+        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
     # google_bp.logger.info(f"{flow}")
 
@@ -56,7 +56,7 @@ def login():
     )
     session["state"] = state
     # print(auth_url)
-    # print("login",session['state'])
+    ##print("login",session['state'])
     return jsonify(auth_url=auth_url)
 
 
@@ -83,7 +83,7 @@ def oauth2callback(url, state):
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/facebook/callback",
+        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
 
     try:
@@ -101,7 +101,7 @@ def oauth2callback(url, state):
 
         # Correct way to access the token
         access_token = credentials.token
-        print("access : ", access_token)
+        # print("access : ", access_token)
         userinfo_response = requests.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {credentials.token}"},
@@ -132,8 +132,8 @@ def oauth2callback(url, state):
                 cursor.execute(
                     """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
                 client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s)
+                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
                                """,
                     (
                         user_id,
@@ -157,6 +157,7 @@ def oauth2callback(url, state):
                         None,
                         None,
                         None,
+                        True,
                     ),
                 )
 
@@ -261,7 +262,7 @@ def receive_browser_url():
         # This function should return the user ID (e.g., Google account ID)
         user_id, newuser = oauth2callback(browser_url, state)
         session_id, access_token, refresh_token = session_login(user_id)
-        print("sdaas", user_id, newuser)
+        # print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
         service = GmailService(user_id=user_id)
         service.create_watch_req()
@@ -275,10 +276,11 @@ def receive_browser_url():
                     "userid": user_id,
                     "user_onboarded": newuser,
                     "api_key": apikey or "",
+                    "service": "google",
                 }
             )
         )
-        print("response from browser_url", response)
+        # print("response from browser_url", response)
 
         # Set secure session cookie (HttpOnly, Secure)
         response.set_cookie(
@@ -472,13 +474,16 @@ def get_token(inuser=None, value=None, in_connection=None):
     making sure if the token expired and making a new one
     if not redirects to login
     """
-    data = request.json
-    user_id = (
-        session.get("user_id")
-        or session.get("userState_id")
-        or inuser
-        or data["userid"]
-    )
+    if inuser:
+        user_id = inuser
+    else:
+        data = request.json
+        user_id = (
+            session.get("user_id")
+            or session.get("userState_id")
+            or inuser
+            or data["userid"]
+        )
     if not in_connection:
         connection = connect_to_rds()
     else:
@@ -505,12 +510,12 @@ def get_token(inuser=None, value=None, in_connection=None):
                 expiry = datetime.fromisoformat(expiry)
 
             time_to_expiry = expiry - datetime.now()
-            # print("expiry from db",expiry)
-            # print("current time", datetime.now())
+            ##print("expiry from db",expiry)
+            ##print("current time", datetime.now())
 
             # Refresh only if token is close to expiring
             if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
-                # print("token time expired")
+                ##print("token time expired")
                 try:
                     creds = Credentials(
                         token=token,
@@ -534,7 +539,7 @@ def get_token(inuser=None, value=None, in_connection=None):
                     )
 
                     creds.refresh(g_request())
-                    print("refresh started")
+                    # print("refresh started")
 
                     # Save refreshed token and new expiry time
                     cursor.execute(
@@ -556,10 +561,11 @@ def get_token(inuser=None, value=None, in_connection=None):
             # Return existing token if not refreshed
             cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))
             user_row = cursor.fetchone()
-            # print("token not expired")
+            ##print("token not expired")
 
             if user_row is None:
                 return jsonify({"error": "Token missing after fallback"}), 400
+            ##print("returning token", user_row[0])
             if value:
                 return user_row[0]
             return jsonify({"token": user_row[0]})
@@ -665,7 +671,7 @@ def check_user():
 
             social = row[0]
             if social == "google":
-                print("google based account")
+                # print("google based account")
                 get_token(userid)
                 return {"message": "user found"}, 200
             return {"message": "user found"}, 200

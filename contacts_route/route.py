@@ -29,7 +29,16 @@ def save_contact():
         instagram_id = data.get("instagramId") or None
         slack_id = data.get("slackId") or None
         slack_workspace = data.get("slackWorkspace") or None
-        type =data.get("type")
+        isLead = data.get("isLead")
+        type = "Lead" if isLead else "Customer"
+        company = data.get("company") or None
+        subject = data.get("subject") or None
+        status = data.get("status") or None
+        source = data.get("source") or None
+
+        status_val = status.lower() if status and status.strip() else None
+        source_val = source.lower() if source and source.strip() else None
+
 
         if not user_id:
             return jsonify({"error": "User not logged in"}), 400
@@ -37,8 +46,7 @@ def save_contact():
             return jsonify({"error": "First name is required"}), 400
         if not type:
             return jsonify({"error": "Type is required"}), 400
-        
-        
+
         if not any(
             [
                 phone_number,
@@ -100,13 +108,12 @@ def save_contact():
                     slack_id,
                     slack_workspace,
                     slack_workspace,
-                  
                 ),
             )
             exists = cursor.fetchone()
 
             if not exists:
-                print("creating new user client and communication table")
+                # print("creating new user client and communication table")
                 communication_id = str(uuid.uuid4())
                 users_clients_id = str(uuid.uuid4())
 
@@ -136,10 +143,14 @@ def save_contact():
                         type,
                         created_in,
                         updated_in,
-                        snooze
+                        snooze,
+                        company,
+                        subject,
+                        status,
+                        source
                         
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,%s,%s,%s,%s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """
                 cursor.execute(
                     insert_sql,
@@ -159,6 +170,11 @@ def save_contact():
                         created_date,
                         updated_date,
                         False,
+                        company.lower() if company else None,
+                        subject.lower() if subject else None,
+                        status_val,
+                        source_val
+
                     ),
                 )
 
@@ -168,9 +184,137 @@ def save_contact():
                     WHERE communication_id = %s
                 """
                 cursor.execute(link_sql, (users_clients_id, communication_id))
+                connection.commit()
+
 
             else:
-                print("updating existing communiaction and users_clients")
+                return jsonify({
+                "error": "This contact is already saved"
+            }), 409
+            return jsonify(
+                {
+                    "status": "success",
+                    
+                }
+            )
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if connection:
+            connection.close()
+
+
+@contacts_bp.route("/contacts/save_edit", methods=["POST"])
+def save_edit_contact():
+
+    connection = None
+    try:
+        data = request.get_json() or {}
+
+        user_id = data.get("user_id")
+        print(f"user is is:{user_id}")
+        first_name = data.get("firstName")
+        last_name = data.get("lastName") or None
+        phone_number = data.get("phone") or None
+        whatsapp_number = data.get("whatsappNumber") or None
+        email_id = data.get("email") or None
+        facebook_id = data.get("facebookId") or None
+        instagram_id = data.get("instagramId") or None
+        slack_id = data.get("slackId") or None
+        slack_workspace = data.get("slackWorkspace") or None
+        isLead = data.get("isLead")
+        type = "Lead" if isLead else "Customer"
+        print(f"type : {type}")
+        company = data.get("company") or None
+        subject = data.get("subject") or None
+        status = data.get("status") or None
+        source = data.get("source") or None
+
+        status_val = status.lower() if status and status.strip() else None
+        source_val = source.lower() if source and source.strip() else None
+
+
+        if not user_id:
+            return jsonify({"error": "User not logged in"}), 400
+        if not first_name:
+            return jsonify({"error": "First name is required"}), 400
+        if not type:
+            return jsonify({"error": "Type is required"}), 400
+
+        if not any(
+            [
+                phone_number,
+                whatsapp_number,
+                email_id,
+                facebook_id,
+                instagram_id,
+                slack_id,
+                slack_workspace,
+            ]
+        ):
+            return (
+                jsonify(
+                    {
+                        "error": "At least one contact identifier is required (phone, email, or social handle)."
+                    }
+                ),
+                400,
+            )
+
+        dt_utc = datetime.now(timezone.utc)
+        created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
+        updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
+
+        connection = connect_to_rds()
+
+        with connection.cursor() as cursor:
+            check_contact_sql = """
+                SELECT uc.users_clients_id, c.communication_id
+                FROM users_clients uc
+                JOIN communication c ON c.users_clients_id_fk = uc.users_clients_id
+                WHERE c.user_id_fk = %s AND (
+                    (%s IS NOT NULL AND uc.phone_number = %s) OR
+                    (%s IS NOT NULL AND uc.whatsapp_number = %s) OR
+                    (%s IS NOT NULL AND uc.email_id = %s) OR
+                    (%s IS NOT NULL AND uc.facebook_id = %s) OR
+                    (%s IS NOT NULL AND uc.instagram_id = %s) OR
+                    (%s IS NOT NULL AND uc.slack_id = %s) OR
+                    (%s IS NOT NULL AND uc.slack_workspace = %s) 
+                
+                )
+                LIMIT 1;
+            """
+            cursor.execute(
+                check_contact_sql,
+                (
+                    user_id,
+                    phone_number,
+                    phone_number,
+                    whatsapp_number,
+                    whatsapp_number,
+                    email_id,
+                    email_id,
+                    facebook_id,
+                    facebook_id,
+                    instagram_id,
+                    instagram_id,
+                    slack_id,
+                    slack_id,
+                    slack_workspace,
+                    slack_workspace,
+                ),
+            )
+            exists = cursor.fetchone()
+
+            if not exists:
+                # print("creating new user client and communication table")
+                return jsonify({"error": "The contact was not found"}),404
+
+
+            else:
+                # print("updating existing communiaction and users_clients")
                 users_clients_id, communication_id = exists
                 fields = {
                     "first_name": first_name,
@@ -183,7 +327,11 @@ def save_contact():
                     "slack_id": slack_id,
                     "slack_workspace": slack_workspace,
                     "updated_in": updated_date,
-                    "type":type,
+                    "type": type,
+                    "company": company,
+                    "subject": subject,
+                    "status": status_val,
+                    "source": source_val
                 }
                 set_clauses = []
                 values = []
@@ -200,7 +348,7 @@ def save_contact():
                     values.append(users_clients_id)
                     cursor.execute(update_query, tuple(values))
 
-                 # clear company, subject, status, source if the lead is changed to a customer
+                # clear company, subject, status, source if the lead is changed to a customer
                 if type == "Customer":
                     clear_query = """
                         UPDATE users_clients
@@ -212,13 +360,11 @@ def save_contact():
                     """
                     clear_values = ("", "", "", "", users_clients_id)
                     cursor.execute(clear_query, clear_values)
-
-            connection.commit()
+                connection.commit()
             return jsonify(
                 {
-                    "status": "success",
-                    "communication_id": communication_id,
-                    "users_clients_id": users_clients_id,
+                    "status": "successfully updated",
+             
                 }
             )
 
@@ -229,9 +375,183 @@ def save_contact():
         if connection:
             connection.close()
 
+
+@contacts_bp.route("/users/delete_contacts", methods=["POST"])
+def delete_contacts():
+        connection = None
+        try:
+            data = request.get_json() or {}
+
+            user_id = data.get("user_id")
+            client_ids = data.get("contact_ids")  # list
+
+            if not user_id:
+                return jsonify({"error": "user_id is required"}), 400
+            if not client_ids or not isinstance(client_ids, list):
+                return jsonify({"error": "client_ids must be a list"}), 400
+
+            connection = connect_to_rds()
+            client_placeholders = ",".join(["%s"] * len(client_ids))
+            client_params = client_ids 
+
+            with connection.cursor() as cursor:
+                # -------------------------------
+                # STEP 1. Get ticket IDs assigned to the user
+                # -------------------------------
+                ticket_ids =[]
+                get_ticket_ids = f"""
+                SELECT ticket_id_fk FROM assigned 
+                WHERE users_clients_id_fk IN ({client_placeholders})
+                """
+                cursor.execute(get_ticket_ids, client_params)
+                ticket_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+                if ticket_ids:
+                    tickets_placeholders = ",".join(["%s"] * len(ticket_ids)) 
+                    ticket_params = ticket_ids 
+
+
+                # -------------------------------
+                # STEP 2 : Get conversation IDs from those tickets
+                # -------------------------------    
+                conv_ids = []
+                if ticket_ids:
+                    get_conv_ids = f"""
+                    SELECT conversation_id_fk FROM tickets 
+                    WHERE tickets_id IN ({tickets_placeholders})
+                    """
+                    cursor.execute(get_conv_ids, ticket_params)
+                    conv_ids = [row[0] for row in cursor.fetchall() if row[0]]
+
+                if conv_ids:
+                    conv_placeholders = ",".join(["%s"] * len(conv_ids)) 
+                    conv_params = conv_ids 
+
+                # -------------------------------
+                # STEP 3: Remove from messages table
+                # -------------------------------
+
+                if conv_ids:
+
+                    delete_sql = f"""
+                        DELETE FROM messages
+                        WHERE conversation_id_fk IN ({conv_placeholders})
+                    """
+                    cursor.execute(delete_sql, conv_params)
+
+                # -------------------------------
+                # STEP 4: Remove from assigned table
+                # -------------------------------
+                if ticket_ids:
+
+                    delete_sql = f"""
+                        DELETE FROM assigned
+                        WHERE ticket_id_fk IN ({tickets_placeholders})
+                    """
+                    params = ticket_ids 
+                    cursor.execute(delete_sql, ticket_params)
+
+                # -------------------------------
+                # STEP 5: Remove from tickets table
+                # -------------------------------
+                if ticket_ids:
+
+                    delete_sql = f"""
+                        DELETE FROM tickets
+                        WHERE tickets_id IN ({tickets_placeholders})
+                    """
+                    cursor.execute(delete_sql, ticket_params)
+
+                # -------------------------------
+                # STEP 6: Remove from conversation table
+                # -------------------------------
+                if conv_ids:                
+
+                    delete_sql = f"""
+                        DELETE FROM threads
+                        WHERE conversation_id IN ({conv_placeholders})
+                    """
+                    cursor.execute(delete_sql, conv_params)
+
+                
+                # -------------------------------
+                # STEP 7: Remove from communication table
+                # -------------------------------
+
+                delete_sql = f"""
+                    DELETE FROM communication
+                    WHERE users_clients_id_fk IN ({client_placeholders})
+                """
+                cursor.execute(delete_sql, client_params)
+
+                # -------------------------------
+                # STEP 8: Remove from users_clients table
+                # -------------------------------
+
+                delete_sql = f"""
+                    DELETE FROM users_clients
+                    WHERE users_clients_id IN ({client_placeholders})
+                """
+                cursor.execute(delete_sql, client_params)
+
+
+                # -------------------------------
+                # STEP 9: Remove from groups JSON
+                # -------------------------------
+                cursor.execute("SELECT groups_json FROM users WHERE user_id = %s", (user_id,))
+                row = cursor.fetchone()
+
+                if row and row[0]:
+                    try:
+                        groups_json = json.loads(row[0])
+                    except:
+                        groups_json = {}
+                else:
+                    groups_json = {}
+
+                updated = False
+                now = datetime.utcnow().isoformat()
+
+                for gid, gdata in groups_json.items():
+                    old_list = gdata.get("client_ids", [])
+                    new_list = [cid for cid in old_list if cid not in client_ids]
+
+                    if len(old_list) != len(new_list):
+                        updated = True
+                        gdata["client_ids"] = new_list
+                        gdata["count"] = len(new_list)
+                        gdata["updated_at"] = now
+
+                if updated:
+                    cursor.execute(
+                        "UPDATE users SET groups_json = %s WHERE user_id = %s",
+                        (json.dumps(groups_json), user_id)
+                    )
+
+                # -------------------------------
+                # STEP 10: Commit all changes
+                # -------------------------------
+                connection.commit()
+
+            return jsonify({
+                "message": "Contacts deleted successfully",
+                "deleted_ids": client_ids
+            }), 200
+
+        except Exception as e:
+            traceback.print_exc()
+            print(f"error: {str(e)}")
+            return jsonify({"error : unable to delete contact"}), 500
+
+        finally:
+            if connection:
+                connection.close()
+
+
+
 def add_synced_contact(user_id, cursor, participant, first_name, last_name):
 
-    print("creating new user client and communication table")
+    # print("creating new user client and communication table")
     communication_id = str(uuid.uuid4())
     users_clients_id = str(uuid.uuid4())
 
@@ -342,3 +662,383 @@ def get_contacts_by_user(userid=None):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@contacts_bp.route("/contacts/basic_info", methods=["POST"])
+def get_basic_info():
+    connection = None
+    try:
+        data = request.get_json() or {}
+        id = data.get("id")
+
+        if not id:
+            return jsonify({"error": "id needed"}), 400
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            sql = """
+                SELECT first_name, last_name, phone_number, whatsapp_number, email_id,
+                    facebook_id, instagram_id, slack_id, slack_workspace, type
+                FROM users_clients
+                WHERE users_clients_id = %s
+            """
+            cursor.execute(sql, (id,))
+            row = cursor.fetchone()
+
+        if not row:
+            return jsonify({"error": "Contact not found"}), 404
+
+        else:
+                (
+                    first_name,
+                    last_name,
+                    phone_number,
+                    whatsapp_number,
+                    email_id,
+                    facebook_id,
+                    instagram_id,
+                    slack_id,
+                    slack_workspace,
+                    contact_type
+                ) = row
+
+                full_name = f"{(first_name or '').strip()} {(last_name or '').strip()}".strip()
+
+                basic_info = {
+                    "id": id,
+                    "name": full_name,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "phone_number": phone_number,
+                    "whatsapp_number": whatsapp_number,
+                    "email_id": email_id,
+                    "facebook_id": facebook_id,
+                    "instagram_id": instagram_id,
+                    "slack_id": slack_id,
+                    "slack_workspace": slack_workspace,
+                    "type": contact_type,
+                }
+                return basic_info                
+
+                    
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if connection:
+            connection.close()
+
+
+# ------------------- GROUPS ---------------------# 
+
+@contacts_bp.route("/users/save_group", methods=["POST"])
+def save_group():
+    connection = None
+    try:
+        data = request.get_json() or {}
+
+        user_id = data.get("user_id")
+        group_name = data.get("group_name")
+        client_ids = data.get("client_ids")  # list
+
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+        if not group_name:
+            return jsonify({"error": "group_name is required"}), 400
+        if not client_ids or not isinstance(client_ids, list):
+            return jsonify({"error": "client_ids must be a list"}), 400
+
+        now = datetime.utcnow().isoformat()  # timestamp
+
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+
+            # Fetch existing JSON
+            cursor.execute("SELECT groups_json FROM users WHERE user_id = %s", (user_id,))
+            existing = cursor.fetchone()
+
+            if existing and existing[0]:
+                try:
+                    existing_json = json.loads(existing[0])
+                except:
+                    existing_json = {}
+            else:
+                existing_json = {}
+
+            group_id =str(uuid.uuid4())
+
+            # Build new/updated group entry
+            existing_json[group_id] = {
+                "group_name": group_name,
+                "client_ids": client_ids,
+                "count": len(client_ids),
+                "created_at": now,
+                "updated_at": now
+            }
+
+            # Save to DB
+            cursor.execute(
+                "UPDATE users SET groups_json = %s WHERE user_id = %s",
+                (json.dumps(existing_json), user_id)
+            )
+            connection.commit()
+
+        return jsonify({
+            "message": "Group saved successfully",
+            "group_id": group_id
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if connection:
+            connection.close()
+
+
+@contacts_bp.route("/users/edit_group", methods=["POST"])
+def edit_group():
+    connection = None
+    try:
+        data = request.get_json() or {}
+
+        user_id = data.get("user_id")
+        group_name = data.get("group_name")
+        client_ids = data.get("client_ids")
+        group_id = data.get("group_id")
+
+
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+        if not group_name:
+            return jsonify({"error": "group_name is required"}), 400
+        if not client_ids or not isinstance(client_ids, list):
+            return jsonify({"error": "client_ids must be a list"}), 400
+
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+
+            # Fetch data
+            cursor.execute("SELECT groups_json FROM users WHERE user_id = %s", (user_id,))
+            existing = cursor.fetchone()
+
+            if existing and existing[0]:
+                try:
+                    existing_json = json.loads(existing[0])
+                except:
+                    existing_json = {}
+            else:
+                existing_json = {}
+
+            # ❌ Group does not exist
+            if group_id not in existing_json:
+                return jsonify({"error": "group not found"}), 404
+
+            # Update group
+            now = datetime.utcnow().isoformat()
+            existing_json[group_id]["client_ids"] = client_ids
+            existing_json[group_id]["group_name"] = group_name
+            existing_json[group_id]["count"] = len(client_ids)
+            existing_json[group_id]["updated_at"] = now
+
+            cursor.execute(
+                "UPDATE users SET groups_json = %s WHERE user_id = %s",
+                (json.dumps(existing_json), user_id)
+            )
+            connection.commit()
+
+        return jsonify({
+            "message": "Group updated successfully",
+            "groups": existing_json
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if connection:
+            connection.close()
+
+
+@contacts_bp.route("/users/get_group", methods=["POST"])
+def get_group():
+    connection = None
+    try:
+        data = request.get_json() or {}
+
+        user_id = data.get("user_id")
+        group_id = data.get("group_id")
+
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+        if not group_id:
+            return jsonify({"error": "group_id is required"}), 400
+
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT groups_json FROM users WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+
+            if not row or not row[0]:
+                return jsonify({"error": "no groups found for this user"}), 404
+
+            try:
+                groups_json = json.loads(row[0])
+            except:
+                return jsonify({"error": "invalid groups JSON"}), 500
+
+            # Check if group exists
+            if group_id not in groups_json:
+                return jsonify({"error": "group not found"}), 404
+
+            group_data = groups_json[group_id]
+            client_ids = group_data.get("client_ids", [])
+            member_list = []
+
+            for cid in client_ids:
+                query = """
+                SELECT  first_name, last_name, email_id, type
+                FROM users_clients 
+                WHERE users_clients_id = %s
+                """
+                cursor.execute(query, (cid,))
+                rows = cursor.fetchall()
+
+                for (
+                    first_name,
+                    last_name,
+                    email,
+                    type,
+                ) in rows:
+                    full_name = (
+                        f"{(first_name or '').strip()} {(last_name or '').strip()}".strip()
+                    )
+                    member_list.append(
+                            {
+                                "name": full_name,
+                                "email": email,
+                                "type": type,
+                            }
+                        )
+                
+            
+
+        return jsonify({
+            "group_name": group_data.get("group_name",""),
+            "created_at": group_data.get("created_at",""),
+            "updated_at": group_data.get("updated_at",""),
+            "member_count":group_data.get("count",""),
+            "member_details": member_list
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if connection:
+            connection.close()
+
+
+@contacts_bp.route("/users/delete_group", methods=["POST"])
+def delete_group():
+    connection = None
+    try:
+        data = request.get_json() or {}
+
+        user_id = data.get("user_id")
+        group_id = data.get("group_ids")
+
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+        if not group_id:
+            return jsonify({"error": "group_id is required"}), 400
+
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+
+            # Fetch existing groups JSON
+            cursor.execute("SELECT groups_json FROM users WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+
+            if not row or not row[0]:
+                return jsonify({"error": "no groups found for this user"}), 404
+
+            try:
+                groups_json = json.loads(row[0])
+            except:
+                return jsonify({"error": "invalid groups JSON"}), 500
+
+            # Check if group exists
+            for g_id in group_id:
+                if g_id not in groups_json:
+                    return jsonify({"error": "group not found"}), 404
+
+                # Delete the group
+                del groups_json[g_id]
+
+                # Save updated JSON back to DB
+                cursor.execute(
+                    "UPDATE users SET groups_json = %s WHERE user_id = %s",
+                    (json.dumps(groups_json), user_id)
+                )
+                connection.commit()
+
+        return jsonify({
+            "message": "Group deleted successfully",
+            "groups": groups_json
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if connection:
+            connection.close()
+
+
+@contacts_bp.route("/users/get_all_groups", methods=["POST"])
+def get_all_groups():
+    connection = None
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+
+        connection = connect_to_rds()
+        with connection.cursor() as cursor:
+
+            cursor.execute("SELECT groups_json FROM users WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+
+            if not row or not row[0]:
+                return jsonify({"groups": []}), 200  # return empty list, not error
+
+            try:
+                groups_json = json.loads(row[0])
+            except:
+                return jsonify({"error": "invalid groups JSON"}), 500
+
+            response = []
+
+            for group_id, info in groups_json.items():
+                response.append({
+                    "group_id": group_id,
+                    "group_name": info.get("group_name"),
+                    "count": info.get("count", 0)
+                })
+
+        return jsonify({"groups": response}), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if connection:
+            connection.close()
