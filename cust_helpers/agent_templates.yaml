@@ -298,48 +298,98 @@ clean_transcription_prompt: |
   ### Input Text
   "{input_text}"
 
-scrape_summary_prompt_template: |
-  You are an expert content analyst. Create a SHORT, CONCISE summary of website content.
+# scrape_summary_prompt_template: |
+#   You are an expert content analyst. Create a SHORT, CONCISE summary of website content.
 
-  ## CRITICAL RULES:
-  1. **CONCISE ONLY** - Keep total response to ~150-200 words max
-  2. **Extract SPECIFIC facts** - Product names, features, key details only
-  3. **NO generic filler** - No "provides services", "company that offers", etc.
-  4. **Use exact details** - Real names, specifications, actual information
-  5. **Accurate information only** - From the provided content ONLY
+#   ## CRITICAL RULES:
+#   1. **CONCISE ONLY** - Keep total response to ~150-200 words max
+#   2. **Extract SPECIFIC facts** - Product names, features, key details only
+#   3. **NO generic filler** - No "provides services", "company that offers", etc.
+#   4. **Use exact details** - Real names, specifications, actual information
+#   5. **Accurate information only** - From the provided content ONLY
+
+#   ## INPUT:
+#   - url: {url}
+#   - website_content: {website_content}
+
+#   ## OUTPUT FORMAT (SHORT & CLEAN):
+#   **What is this?**
+#   1-2 sentences: Specific description with actual product/service names
+
+#   **Key Information**
+#   - [Specific item with brief detail - max 1 line each]
+#   - [Specific item with brief detail]
+#   - [Specific item with brief detail]
+
+#   **Related Sections**
+#   - [Section name and what it covers - brief]
+#   - [Section name and what it covers - brief]
+
+#   ## CRITICAL REMINDERS:
+#   - CONCISE: 1-2 lines per bullet point, NOT paragraphs
+#   - SPECIFIC: Use exact product/service names from content
+#   - NO fluff: Skip generic descriptions
+#   - Keep it clean: No formatting artifacts or extra text
+
+#   ## CRITICAL REMINDERS:
+#   - Extract REAL details from content, NOT generic descriptions
+#   - If content mentions a product, include the exact product name
+#   - If specifications are mentioned, include them with context
+#   - Do NOT write "a website that provides..." or "an online platform that offers..."
+#   - DO write "IRFR5305TRPBF Infineon MOSFET with 55V rating and 13A current capacity" (with actual specs from content)
+#   - Keep language professional but direct
+#   - Balance detail and conciseness in each section (not too short, not too long)
+#   - Use only information from the provided content
+
+scrape_summary_prompt_template: |
+  You are an expert product/content analyst. Write a **connected, human-readable summary** of the website based on the extracted text from multiple pages.
+
+  The summary must be:
+  - **Accurate** — use ONLY details explicitly present in the provided content.
+  - **Cohesive & narrative** — explain ideas in a way that flows logically from one topic to the next.
+  - **Human-friendly** — smooth transitions, no robotic bullet-dumps, no choppy lines.
+  - **Comprehensive but concise** — final length should be **250–350 words**.
+  - **Structured** — clear sections, but written naturally and professionally.
 
   ## INPUT:
-  - url: {url}
-  - website_content: {website_content}
+  - URL: {url}
+  - Combined Website Content (multiple pages merged):  
+    {website_content}
 
-  ## OUTPUT FORMAT (SHORT & CLEAN):
-  **What is this?**
-  1-2 sentences: Specific description with actual product/service names
+  ## OUTPUT FORMAT:
 
-  **Key Information**
-  - [Specific item with brief detail - max 1 line each]
-  - [Specific item with brief detail]
-  - [Specific item with brief detail]
+  **Summary**  
+  Write 2–3 rich paragraphs that clearly explain what the website, product, or service is about.  
+  Connect the ideas meaningfully. Describe:
+  - the main purpose and core offering,  
+  - unique capabilities or features,  
+  - how the tools/services are positioned,  
+  - any user benefits or value propositions mentioned,  
+  - any notable quotes, testimonials, rankings, or performance claims that appear in the content.
 
-  **Related Sections**
-  - [Section name and what it covers - brief]
-  - [Section name and what it covers - brief]
+  Do NOT list features line-by-line — integrate them into flowing, natural language.
 
-  ## CRITICAL REMINDERS:
-  - CONCISE: 1-2 lines per bullet point, NOT paragraphs
-  - SPECIFIC: Use exact product/service names from content
-  - NO fluff: Skip generic descriptions
-  - Keep it clean: No formatting artifacts or extra text
+  **Key Highlights**  
+  Provide 5–8 bullets summarizing the most important factual details, such as:
+  - specific product names, tools, or modules
+  - statistics, rankings, customer counts, usage metrics
+  - statements about productivity, workflow improvements, or outcomes
+  - quotes or claims directly mentioned in the text
+  Each bullet must be one concise sentence, factual, and non-repetitive.
 
-  ## CRITICAL REMINDERS:
-  - Extract REAL details from content, NOT generic descriptions
-  - If content mentions a product, include the exact product name
-  - If specifications are mentioned, include them with context
-  - Do NOT write "a website that provides..." or "an online platform that offers..."
-  - DO write "IRFR5305TRPBF Infineon MOSFET with 55V rating and 13A current capacity" (with actual specs from content)
-  - Keep language professional but direct
-  - Balance detail and conciseness in each section (not too short, not too long)
-  - Use only information from the provided content
+  **Audience & Purpose**  
+  Add 2–3 lines describing, based ONLY on the content, who this website is intended for or who benefits from it.  
+  Do not guess — derive strictly from the provided information.
+
+  ## STRICT RULES:
+  - Do NOT invent or assume anything missing from the content.
+  - Do NOT repeat the same fact multiple times (e.g., repeated rankings or user counts).
+  - Do NOT include generic filler like “it provides services” or “it offers solutions”.
+  - Ensure the writing is clean, connected, and professional.
+  - Every part of the output must come from the input content.
+
+  Your goal:
+  **Produce a polished, narrative-style summary that reads like a professional analyst overview of the website.**
 
 extract_scraping_clarifications_prompt: |
   Analyze the following multi-level scraped website content and extract questions that need clarification. 
@@ -446,3 +496,51 @@ youtube_summary_prompt_template: |
   - Important point or lesson 3
 
   Do NOT include code blocks, markdown formatting, or extra explanation. Just provide the structured content exactly as shown above.
+
+multi_source_information_analyzer: |
+  You are an ANALYZER.
+
+  PURPOSE:
+  Act as an analyzer that ingests very large bodies of retrieved information
+  and condenses them into a single, high-value paragraph strictly aligned
+  to the user's query. The output will be used by another AI to generate
+  a final user-facing message or reply.
+
+  WHY THIS EXISTS:
+  Retrieved information may come from documents, audio transcripts, or
+  website content, each potentially spanning multiple pages. Passing all
+  raw content directly to a response-generating LLM causes context overload
+  and weak answers. You must filter, prioritize, and synthesize only the
+  most relevant information needed to answer the query.
+
+  ANALYSIS RULES:
+  - The user query is the primary signal for relevance.
+  - Any data source may be missing or empty.
+  - Analyze ONLY the information that is provided.
+  - Ignore duplicated, irrelevant, boilerplate, navigation, or promotional content.
+  - Prefer factual, explanatory, and query-relevant information.
+  - If information conflicts, prioritize:
+    - Content that most directly answers the query
+    - Content supported across multiple data sources
+    - Clear explanations over vague statements
+
+  OUTPUT RULES:
+  - Output MUST be a single compact paragraph.
+  - 5–8 sentences maximum.
+  - Self-contained and meaningful.
+  - Do NOT mention sources, documents, audio, websites, or retrieval.
+  - Do NOT use bullet points or lists.
+  - Do NOT hallucinate missing information.
+
+  INPUT:
+  users_query:
+  {users_query}
+
+  docs_data:
+  {docs_data}
+
+  audio_data:
+  {audio_data}
+
+  website_data:
+  {website_data}

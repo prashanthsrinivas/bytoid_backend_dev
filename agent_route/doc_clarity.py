@@ -11,7 +11,6 @@ import difflib
 import re
 from cust_helpers import pathconfig
 from utils.fireworkzz import evaluator_batch_llama, get_firework_embedding
-import requests
 from utils.chatopenzz import (
     generate_usecases_questions,
     generate_usecases_questions_batch,
@@ -218,14 +217,17 @@ async def fetch_usecases_with_docs(
     return usecases_with_docs
 
 
-def remove_entries_for_files(filepath, filenames):
+def remove_entries_for_files(existing, filenames):
     """Remove all entries matching any of the given filenames."""
-    if not os.path.exists(filepath):
-        return []
-    existing = load_yaml_file(filepath) or []
+    # print(f"----filepath : {filepath}")
+    # if not os.path.exists(filepath):
+    #     return []
+    # existing = load_yaml_file(filepath) or []
 
     flat_existing = flatten_list(existing)
     filenames_norm = [os.path.splitext(f.strip().lower())[0] for f in filenames]
+
+    print(f"-----filenames_norm : {filenames_norm}")
 
     filtered = []
     for entry in flat_existing:
@@ -327,8 +329,12 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
     all_new = all(is_new_file(fn, passed_data, failed_data) for fn in filenames)
     # print("all new data", all_new)
 
+    print(f"---------after all_new")
+
     if not all_new:
         failed_data = remove_entries_for_files(failed_data, filenames)
+
+    print(f"---------after failed_data")
 
     # Step 1: Fetch docs & generate questions
     usecases_with_docs = asyncio.run(

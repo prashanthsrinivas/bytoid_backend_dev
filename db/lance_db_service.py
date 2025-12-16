@@ -7,6 +7,7 @@ import numpy as np
 import pyarrow as pa
 import json, random, asyncio, time
 from datetime import datetime, timedelta, timezone
+
 from utils.base_logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,9 +29,11 @@ class ScrapedData(BaseModel):
     url: str
     title: str
     content: str
+    contacts: Union[str, List[str]]  # ← FIXED
     timestamp: str
     metadata: dict
-    embedding: List[float]
+    embedding: List[float]  # primary vector
+    pages_by_level: Dict[str, List[Any]]
 
 
 class VectorData(BaseModel):
@@ -196,38 +199,6 @@ class LanceDBServer:
         self.metrics = MetricsClient()
         self.error_hook = report_exception  # <-- FIXED (no parentheses)
 
-        # try:
-        #     # Synchronous connect (recommended)
-        #     self.db = lancedb.connect(
-        #         uri=self.db_uri,
-        #         api_key=self.db_key,
-        #         region=self.region,
-        #     )
-
-        #     logger.info("Connected to LanceDB (%s)", self.db_uri)
-
-        #     # metrics
-        #     try:
-        #         self.metrics.increment("lancedb.connect.success")
-        #     except Exception:
-        #         logger.debug("metrics client increment failed on connect")
-
-        # except Exception as e:
-        #     logger.exception("Failed to connect to LanceDB: %s", e)
-
-        #     try:
-        #         self.metrics.increment("lancedb.connect.failure")
-        #     except Exception:
-        #         logger.debug("metrics client increment failed on connect failure")
-
-        #     if self.error_hook:
-        #         try:
-        #             self.error_hook(e, {"action": "connect"})
-        #         except Exception:
-        #             logger.debug("error_hook raised an exception")
-
-        #     raise
-
     # -------------------------
     # Internal helpers
     # -------------------------
@@ -327,9 +298,44 @@ class LanceDBServer:
             logger.info("Created table %s for user %s", table_name, user_id)
             return table
 
+    async def delete_user_table(self, user_id: str):
+        """
+        Delete the vector table for a given user_id.
+        Fails quietly if the table does not exist.
+        """
+        table_name = f"u_{user_id}"
+        self.db = self._connect_if_needed()
+
+        def _drop():
+            return self.db.drop_table(table_name)
+
+        try:
+            await asyncio.to_thread(_drop)
+            logger.info("Deleted table %s for user %s", table_name, user_id)
+            return True
+
+        except Exception as e:
+            # Most common case: table does not exist
+            logger.warning("Failed to delete table %s: %s", table_name, e)
+
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e, {"action": "delete_table", "table_name": table_name}
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+
+            return False
+
     # -------------------------
     # Public API
     # -------------------------
+    # @retry_async("/delete_from_lance/<user_id>", methods=["GET"])
+    # async def delete_from_lance(self, user_id):
+    #     await self.delete_user_table(user_id)
+    #     return {"status": "ok"}
+
     @retry_async(attempts=4, initial_delay=0.5, factor=2.0, max_delay=8.0, jitter=0.15)
     async def insert_vector(self, data: "VectorData"):
         """
@@ -735,7 +741,7 @@ class LanceDBServer:
             deleted_count = await asyncio.to_thread(
                 lambda: table.delete(f"foldername == '{foldername}'")
             )
-            await asyncio.to_thread(lambda: table.optimize())
+            # await asyncio.to_thread(lambda: table.optimize())
 
             logger.info(f"Deleted {deleted_count} rows from folder '{foldername}'")
             return deleted_count
@@ -852,7 +858,9 @@ class LanceDBServer:
             return {"inserted_count": 0}
 
         user_id = vectors[0].user_id
+        print(f"********user id inside lance: {user_id}")
         folder_name = vectors[0].folder_name
+        print(f"********folder_name inside lance: {folder_name}")
 
         table = self._get_umail_table(user_id)
         print("table", table)
@@ -912,13 +920,15 @@ class LanceDBServer:
             )
 
         table.add(records)
-        table.optimize()
+        # table.optimize()
 
         return {"user_id": user_id, "inserted_count": len(records)}
 
     def serverless_get_umail_page(self, user_id: str, next_cursor=None, page_size=1000):
         table = self._get_umail_table(user_id)
         print(f"[SERVERLESS] user_id:{user_id} next_cursor:{next_cursor}")
+
+        print("----------------------------")
 
         # Normalize timestamp cursor
         current_dt = (
@@ -955,6 +965,12 @@ class LanceDBServer:
 
             if day_messages:
                 collected.extend(day_messages)
+            
+            print(f"text:")
+            for msg in collected:
+                text = msg.get("text")
+                print(f"{text}")
+            
 
             else:
                 if not checked_timestamps:
@@ -996,6 +1012,7 @@ class LanceDBServer:
         #        PICK **LATEST MESSAGE PER FOLDER**
         # -----------------------------------------------------
         latest_per_folder = {}
+        # print(f"collected: {collected}")
         for msg in collected:
             folder = msg.get("folder_name") or "_no_folder_"
             ts = parse_ts(msg["timestamp"])
@@ -1018,6 +1035,40 @@ class LanceDBServer:
         )
         return records, next_cursor
 
+    # def serverless_get_umail_page(self, user_id: str, next_cursor=None, page_size=1000):
+    #     table = self._get_umail_table(user_id)
+
+    #     rows = table.search().select(["folder_name"]).to_list()
+
+    #     folder_names = {
+    #         r["folder_names"] for r in rows if r.get("folder_name")
+    #     }
+
+    #     for folder_name in folder_names:
+    #         rows = (
+    #             table.search()
+    #             .where(
+    #                 f"user_id = '{user_id}' and folder_name = '{folder_name}'"
+    #             )
+    #             .select(["text", "timestamp"])
+    #             .to_list()
+    #         )
+
+    #         latest_row = None
+    #         latest_ts = None
+
+    #         for row in rows:
+    #             ts = parse_ts(row["timestamp"])
+    #             if not ts:
+    #                 continue
+
+    #             if latest_ts is None or ts > latest_ts:
+    #                 latest_ts = ts
+    #                 latest_row = row
+
+    #         return latest_row["text"] if latest_row else None
+
+
     # -------------------SCRAPE FUNCTIONALITY-------------------------------#
 
     def _get_scrape_table(self, user_id: str):
@@ -1034,9 +1085,11 @@ class LanceDBServer:
                     pa.field("url", pa.string()),
                     pa.field("title", pa.string()),
                     pa.field("content", pa.string()),
+                    pa.field("contacts", pa.string()),
                     pa.field("timestamp", pa.string()),
                     pa.field("metadata", pa.string()),  # JSON serialized
                     pa.field("embedding", pa.list_(pa.float32(), EMBEDDING_DIM)),
+                    pa.field("pages_by_level", pa.string()),
                 ]
             )
 
@@ -1047,9 +1100,11 @@ class LanceDBServer:
                     "url": "init",
                     "title": "init",
                     "content": "init",
+                    "contacts": "{}",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "metadata": "{}",
                     "embedding": np.zeros(EMBEDDING_DIM, dtype=np.float32),
+                    "pages_by_level": "{}",
                 }
             ]
 
@@ -1058,6 +1113,124 @@ class LanceDBServer:
             )
 
         return self.db.open_table(table_name)
+
+    def _update_summary_scrape(self, user_id, url, content):
+        table = self._get_scrape_table(user_id=user_id)
+        # Find row first
+        matches = table.search().where(f"url == '{url}'").limit(1).to_list()
+        if not matches:
+            return False
+
+        # Correct update call (NO keyword args!)
+        # table.update({"contacts": contacts_value}, f"url == {url}")
+        table.update(
+            values={"content": content},
+            where=f"url == '{url}'",
+        )
+
+        return True
+
+    def _update_status_scrape(self, user_id, url, status):
+        table = self._get_scrape_table(user_id=user_id)
+
+        # ✅ NO search(), ONLY where()
+        rows = table.search().where(f"url == '{url}'").limit(1).to_list()
+        if not rows:
+            return False
+
+        row = rows[0]
+        metadata = row.get("metadata") or {}
+
+        # ✅ Handle string metadata
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+
+        metadata["status"] = status
+
+        table.update(
+            values={"metadata": json.dumps(metadata)},  # keep schema consistent
+            where=f"url == '{url}'",
+        )
+
+        return True
+
+    def _update_innerscrape_scrape(self, user_id, url, innerurl, content):
+        table = self._get_scrape_table(user_id=user_id)
+
+        # Fetch parent row
+        matches = (
+            table.search("pages_by_level").where(f"url == '{url}'").limit(1).to_list()
+        )
+
+        if not matches:
+            return False
+
+        row = matches[0]
+        pages_by_level = row.get("pages_by_level", {})
+
+        updated = False
+
+        for level, pages in pages_by_level.items():
+            if not isinstance(pages, list):
+                continue
+
+            for page in pages:
+                if page.get("url") == innerurl:
+                    page["content"] = content
+                    updated = True
+                    break
+
+            if updated:
+                break
+
+        if not updated:
+            return False  # inner URL not found
+
+        # Persist update
+        table.update(
+            values={"pages_by_level": pages_by_level},
+            where=f"url == '{url}'",
+        )
+
+        return True
+
+    def _delete_innerscrape_scrape(self, user_id, url, innerurl):
+        table = self._get_scrape_table(user_id=user_id)
+
+        matches = (
+            table.search("pages_by_level").where(f"url == '{url}'").limit(1).to_list()
+        )
+
+        if not matches:
+            return False
+
+        row = matches[0]
+        pages_by_level = row.get("pages_by_level", {})
+        deleted = False
+
+        for level in list(pages_by_level.keys()):
+            pages = pages_by_level.get(level, [])
+            if not isinstance(pages, list):
+                continue
+
+            original_len = len(pages)
+            pages_by_level[level] = [p for p in pages if p.get("url") != innerurl]
+
+            if len(pages_by_level[level]) != original_len:
+                deleted = True
+
+            if not pages_by_level[level]:
+                del pages_by_level[level]
+
+        if not deleted:
+            return False
+
+        table.update(
+            values={"pages_by_level": pages_by_level},
+            where=f"url == '{url}'",
+        )
+
+        return True
 
     def insert_scraped_data(self, data: ScrapedData):
         """Insert a single scraped data entry"""
@@ -1077,19 +1250,152 @@ class LanceDBServer:
                     "url": data.url,
                     "title": data.title,
                     "content": data.content,
+                    "contacts": data.contacts,
                     "timestamp": data.timestamp,
                     "metadata": json.dumps(data.metadata),
                     "embedding": np.array(data.embedding, dtype=np.float32),
+                    "pages_by_level": json.dumps(data.pages_by_level),
                 }
             ]
 
             table.add(record)
-            table.optimize()
+            # table.optimize()
 
             return {"status": "success", "url": data.url}
 
         except Exception as e:
             print(f"Error inserting scraped data: {e}")
+            raise e
+
+    def delete_scraped_data(self, user_id, url):
+        """Insert a single scraped data entry"""
+        try:
+            table = self._get_scrape_table(user_id)
+
+            # Remove dummy and existing URL data
+            table.delete("url == 'init'")
+            table.delete(f"url == '{url}'")
+
+            return {"status": "success", "url": url}
+
+        except Exception as e:
+            print(f"Error inserting scraped data: {e}")
+            raise e
+
+    def update_scraped_contacts(self, user_id, url, contacts):
+        table = self._get_scrape_table(user_id)
+
+        # Find row first
+        matches = table.search().where(f"url == '{url}'").limit(1).to_list()
+        if not matches:
+            return False
+
+        # print("matches found scrape", matches)
+        # Normalize contacts
+        if isinstance(contacts, list):
+            contacts_value = json.dumps(contacts)
+        else:
+            contacts_value = str(contacts)
+
+        # Correct update call (NO keyword args!)
+        # table.update({"contacts": contacts_value}, f"url == {url}")
+        table.update(
+            values={"contacts": contacts_value},
+            where=f"url == '{url}'",
+        )
+
+        return True
+
+    def search_scraped_data(self, query: "QueryData", sender_email="All"):
+        from training.scrape.helper import generate_level_context
+
+        if isinstance(query, dict):
+            query = QueryData(**query)
+
+        try:
+            if len(query.embedding) > EMBEDDING_DIM:
+                raise ValueError(f"Embedding must be {EMBEDDING_DIM} dimensions")
+
+            table = self._get_scrape_table(query.user_id)
+            query_vector = np.array(query.embedding, dtype=np.float32)
+
+            # Perform vector search
+            base_results = (
+                table.search(query_vector)
+                .metric("cosine")
+                .limit(query.top_k)  # fetch few candidates first
+                .to_list()
+            )
+            results = []
+            for result in base_results:
+                contacts = result.get("contacts", [])
+
+                metadata = result.get("metadata") or {}
+
+                # ✅ Normalize metadata
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except json.JSONDecodeError:
+                        continue  # bad metadata → skip safely
+
+                metadata_status = metadata.get("status")
+
+                # ✅ Only active records
+                if metadata_status != "active":
+                    continue
+
+                # ✅ Contact filtering
+                if (sender_email and sender_email in contacts) or "All" in contacts:
+                    results.append(result)
+            if not results:
+                print("no results found in base search")
+                return None
+            # for i in results:
+            #     print("title", i["title"])
+            #     print("distance", i["_distance"])
+            # Pick the BEST (lowest cosine distance)
+            best = min(results, key=lambda x: x.get("_distance", 999999))
+            best_distance = best.get("_distance", 1)
+            if len(results) >= 1 and best_distance > 0.8:
+                print("result found and score > 0.8 → rejecting")
+                return None
+            pages_by_level = best.get("pages_by_level")
+            main_content = best.get("content", "")
+            print("len of main content", len(main_content))
+
+            # Try to generate from pages_by_level
+            full_context = None
+            if pages_by_level and isinstance(pages_by_level, (list, dict)):
+                print("checking the internal pages of the site")
+                full_context = generate_level_context(pages_by_level)
+
+            # If invalid or empty, fallback to 'content'
+            if not full_context:
+                logger.warning(
+                    "[FAST] pages_by_level invalid or empty; falling back to best.content"
+                )
+                print("--", type(main_content))
+                if isinstance(main_content, str):
+                    print("1111")
+                    full_context = main_content.strip()
+                else:
+                    print("2222")
+                    full_context = str(main_content)
+            print("len of retun text length", len(full_context))
+            # Format output
+            result = {
+                "url": best.get("url"),
+                "title": best.get("title"),
+                "text": full_context,
+                "contacts": best.get("contacts"),
+                "score": best.get("_distance"),
+            }
+
+            return result
+
+        except Exception as e:
+            print(f"Error searching scraped data: {e}")
             raise e
 
     # -----------------SEARCH EMAIL-------------------------#
@@ -1154,3 +1460,298 @@ class LanceDBServer:
         text_results = results["text"]
 
         return text_results
+
+    async def _open_recording_create(self, user_id: str):
+        """
+        Open existing table or create it with an 'init' dummy row.
+        Removes dummy row once and attempts to create an index (quietly).
+        """
+        table_name = f"aud_{user_id}"
+        self.db = self._connect_if_needed()
+
+        def _open():
+            return self.db.open_table(table_name)
+
+        try:
+            table = await asyncio.to_thread(_open)
+            return table
+
+        except Exception:
+            # Table does not exist — create it
+            schema = await self._create_schema_dummy()
+            dummy = [
+                {
+                    "id": "init",
+                    "text": "init row",
+                    "embedding": np.zeros(self.EMBEDDING_DIM, dtype=np.float32),
+                    "foldername": "init",
+                }
+            ]
+
+            def _create():
+                return self.db.create_table(
+                    table_name, data=dummy, schema=schema, mode="create"
+                )
+
+            try:
+                table = await asyncio.to_thread(_create)
+            except Exception as e:
+                logger.exception("Failed to create table %s: %s", table_name, e)
+                if self.error_hook:
+                    try:
+                        self.error_hook(
+                            e, {"action": "create_table", "table_name": table_name}
+                        )
+                    except Exception:
+                        logger.debug("error_hook raised an exception")
+                raise
+
+            # Remove dummy row once (use double quotes)
+            try:
+                await asyncio.to_thread(lambda: table.delete('id == "init"'))
+            except Exception as e:
+                logger.warning("Failed to delete dummy row for %s: %s", table_name, e)
+
+            # Try to create index quietly (may be no-op or fail)
+            try:
+                await asyncio.to_thread(lambda: table.create_index("embedding"))
+            except Exception as e:
+                logger.debug("Index creation warning for %s: %s", table_name, e)
+
+            logger.info("Created table %s for user %s", table_name, user_id)
+            return table
+
+    @retry_async(attempts=4, initial_delay=0.5, factor=2.0, max_delay=8.0, jitter=0.15)
+    async def rec_insert_vector(self, data: "VectorData"):
+        """
+        Insert a single vector record (async).
+        Expects `VectorData`-like object/dict with fields: user_id, id, text, embedding, foldername.
+        """
+        start = time.time()
+        try:
+            if len(data.embedding) != self.EMBEDDING_DIM:
+                raise ValueError(f"Embedding must be {self.EMBEDDING_DIM} floats long")
+
+            table = await self._open_recording_create(data.user_id)
+
+            embedding = np.array(data.embedding, dtype=np.float32)
+
+            # Delete existing record with same id+folder (double quotes)
+            def _delete_existing():
+                return table.delete(
+                    f'id == "{data.id}" AND foldername == "{data.foldername}"'
+                )
+
+            await asyncio.to_thread(_delete_existing)
+
+            payload = {
+                "id": data.id,
+                "text": data.text,
+                "embedding": embedding,
+                "foldername": data.foldername,
+            }
+
+            # add (append=True recommended)
+            await asyncio.to_thread(table.add, [payload])
+
+            latency = time.time() - start
+            logger.debug(
+                "Inserted vector id=%s user=%s latency=%.3fs",
+                data.id,
+                data.user_id,
+                latency,
+            )
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.insert.success")
+                    self.metrics.timing("lancedb.insert.latency", latency)
+                except Exception:
+                    logger.debug("metrics client call failed on insert_vector")
+        except Exception as e:
+            logger.exception(
+                "insert_vector failed for user=%s id=%s: %s",
+                getattr(data, "user_id", None),
+                getattr(data, "id", None),
+                e,
+            )
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.insert.failure")
+                except Exception:
+                    logger.debug("metrics client increment failed on insert failure")
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e,
+                        {
+                            "action": "insert_vector",
+                            "user_id": getattr(data, "user_id", None),
+                            "id": getattr(data, "id", None),
+                        },
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+            raise
+
+    @retry_async(attempts=3, initial_delay=0.2, factor=2.0, max_delay=4.0, jitter=0.1)
+    async def rec_query_vector(self, query: "QueryData") -> List[Dict[str, Any]]:
+        """
+        Single-vector query. Returns list of result dicts as produced by LanceDB `.to_list()`.
+        """
+        if isinstance(query, dict):
+            query = QueryData(**query)
+        start = time.time()
+        print("len values", len(query.embedding))
+        try:
+            if len(query.embedding) > self.EMBEDDING_DIM:
+                raise ValueError(
+                    f"Query embedding must be {self.EMBEDDING_DIM} floats long"
+                )
+            table = await self._open_recording_create(query.user_id)
+            query_embedding = np.array(query.embedding, dtype=np.float32)
+
+            def _search():
+                return (
+                    table.search(query_embedding, vector_column_name="embedding")
+                    .limit(query.top_k)
+                    .to_list()
+                )
+
+            results = await asyncio.to_thread(_search)
+            latency = time.time() - start
+            logger.debug(
+                "query_vector user=%s top_k=%d results=%d latency=%.3fs",
+                query.user_id,
+                query.top_k,
+                len(results),
+                latency,
+            )
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.query.success")
+                    self.metrics.timing("lancedb.query.latency", latency)
+                except Exception:
+                    logger.debug("metrics client call failed on query_vector")
+
+            return results
+        except Exception as e:
+            logger.exception(
+                "query_vector failed for user=%s: %s",
+                getattr(query, "user_id", None),
+                e,
+            )
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.query.failure")
+                except Exception:
+                    logger.debug("metrics client increment failed on query failure")
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e,
+                        {
+                            "action": "query_vector",
+                            "user_id": getattr(query, "user_id", None),
+                        },
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+            raise
+
+    @retry_async(attempts=3, initial_delay=0.2, factor=2.0, max_delay=4.0, jitter=0.1)
+    async def rec_delete_vector(self, data: "DeleteData"):
+        """
+        Delete a single vector by id for a user.
+        """
+        try:
+            table = await self._open_recording_create(data.user_id)
+            await asyncio.to_thread(lambda: table.delete(f'id == "{data.id}"'))
+            logger.debug("Deleted vector id=%s user=%s", data.id, data.user_id)
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.delete.success")
+                except Exception:
+                    logger.debug("metrics client call failed on delete_vector")
+            return True
+        except Exception as e:
+            logger.exception(
+                "delete_vector failed for user=%s id=%s: %s",
+                getattr(data, "user_id", None),
+                getattr(data, "id", None),
+                e,
+            )
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.delete.failure")
+                except Exception:
+                    logger.debug("metrics client increment failed on delete failure")
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e,
+                        {
+                            "action": "delete_vector",
+                            "user_id": getattr(data, "user_id", None),
+                            "id": getattr(data, "id", None),
+                        },
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+            return False
+
+    async def update_contacts_for_audio(
+        self, user_id: str, filename: str, contacts: str
+    ):
+        table = await self._open_recording_create(user_id=user_id)
+
+        # Search for row using foldername mapped to filename
+        matches = table.search().where(f"foldername = '{filename}'").limit(1).to_list()
+
+        if not matches:
+            return False
+
+        row = matches[0]
+        row_id = row["id"]
+
+        # Load stored JSON
+        data = json.loads(row["text"])
+        data["contacts"] = contacts
+
+        # Remote-table compatible update
+        table.update(
+            values={"text": json.dumps(data, ensure_ascii=False)},
+            where=f"id = '{row_id}'",
+        )
+
+        return True
+
+    async def delete_all_user_Data(self, user_id: str) -> int:
+        """
+        Deletes ALL vector rows for a user from LanceDB.
+        Returns number of rows deleted.
+        """
+        try:
+            table = await asyncio.to_thread(lambda: self._get_table(user_id))
+            logger.info(f"Deleting ALL vector rows for user '{user_id}'")
+
+            deleted_count = await asyncio.to_thread(lambda: table.delete("True"))
+
+            logger.info(f"Deleted {deleted_count} total rows for user '{user_id}'")
+            return deleted_count
+
+        except Exception as e:
+            logger.exception(f"Failed to delete ALL data for user '{user_id}': {e}")
+
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e,
+                        {
+                            "action": "delete_all_user_data",
+                            "user_id": user_id,
+                        },
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+
+            raise

@@ -1,7 +1,7 @@
-import asyncio
+import json
 import os
 import uuid
-import requests
+from cust_helpers import pathconfig
 from dotenv import load_dotenv
 from typing import List
 from pydantic import BaseModel
@@ -18,8 +18,9 @@ from langchain_community.document_loaders import (
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_fireworks import ChatFireworks
 from langchain.prompts import ChatPromptTemplate
-from utils.fireworkzz import get_firework_embedding
+from utils.fireworkzz import get_firework_embedding, get_fireworks_response
 from db.lance_db_service import LanceDBServer
+from utils.normal import load_yaml_file
 
 # ────────────────────────
 # Setup Logging
@@ -56,7 +57,6 @@ class QueryData(BaseModel):
 class LanceClient:
     def __init__(self, user_id: str):
         load_dotenv()
-        self.lancedb_url = os.getenv("LANCE_DB_IP")
         self.user_id = user_id
         self.dimension = 2880
         self.service = LanceDBServer()
@@ -100,24 +100,6 @@ class LanceClient:
 
         # 🔹 Combine the template with the LLM
         self.relevance_chain = self.prompt_template | self.llm
-
-    def check_user(self):
-        """
-        Check if the user exists in the LanceDB.
-        """
-        try:
-            user_id = self.user_id
-            response = requests.get(f"{self.lancedb_url}/check_user/{user_id}")
-            if response.status_code == 200:
-                return response.json().get("exists", False)
-            else:
-                logger.error(
-                    f"[✘] Failed to check user {user_id}: {response.status_code} - {response.text}"
-                )
-                return False
-        except Exception as e:
-            logger.error(f"[!] Exception during user check: {str(e)}")
-            return False
 
     def langchainprocessDocs(self, file_path: str):
         all_documents = []
@@ -263,9 +245,10 @@ class LanceClient:
     # ------------------------------------------
     # MAKE QUERY VECTOR ASYNC
     # ------------------------------------------
-    async def query_vector(self, query_input: QueryInput):
+    async def query_vector(self, query_input: QueryInput, vector=None):
         try:
-            vector = self.embeddings.embed_query(query_input.query_text)
+            if not vector:
+                vector = self.embeddings.embed_query(query_input.query_text)
             payload = QueryData(
                 user_id=query_input.user_id,
                 embedding=vector,
@@ -273,9 +256,142 @@ class LanceClient:
             )
 
             results = await self.service.query_vector(payload.dict())
-            logger.info(f"[🔍] Retrieved {len(results)} results.")
+            logger.info(f"[🔍] Retrieved doc {len(results)} results.")
 
             return results
+
+        except Exception as e:
+            logger.error(f"[!] Query failed: {str(e)}")
+            raise
+
+    async def audio_query_vector(
+        self,
+        query_input: QueryInput,
+        vector=None,
+        sender_email=None,
+    ):
+        try:
+            if not vector:
+                vector = self.embeddings.embed_query(query_input.query_text)
+
+            payload = QueryData(
+                user_id=query_input.user_id,
+                embedding=vector,
+                top_k=query_input.top_k,
+            )
+
+            results = await self.service.rec_query_vector(payload.dict())
+            logger.info(f"[🔍] Retrieved audio {len(results)} results.")
+
+            need_to_return = []
+
+            for br in results:
+                # print("the keys", br.keys())
+
+                # br["text"] is a JSON string, decode it
+                if "text" in br:
+                    try:
+                        r = json.loads(br["text"])
+                    except Exception:
+                        logger.error("Invalid JSON in audio record text")
+                        continue
+
+                    contacts = r.get("contacts", [])
+
+                    # print("contacts appended", contacts)
+                    if (sender_email and sender_email in contacts) or "All" in contacts:
+                        # print("appended here")
+                        if "text" in r:
+                            br["text"] = r["text"]
+
+                        need_to_return.append(br)
+
+            return need_to_return
+
+        except Exception as e:
+            logger.error(f"[!] Query failed: {str(e)}")
+            raise
+
+    def scrape_query_vector(
+        self,
+        query_input: QueryInput,
+        vector=None,
+        sender_email=None,
+    ):
+        try:
+            if not vector:
+                vector = self.embeddings.embed_query(query_input.query_text)
+
+            payload = QueryData(
+                user_id=query_input.user_id,
+                embedding=vector,
+                top_k=query_input.top_k,
+            )
+
+            result = self.service.search_scraped_data(
+                payload.dict(), sender_email=sender_email
+            )
+            # logger.info(f"[🔍] Retrieved scrape {len(result)} results.")
+            return result
+
+        except Exception as e:
+            logger.error(f"[!] Query failed: {str(e)}")
+            raise
+
+    def extract_text(self, results):
+        if not results:
+            return ""
+        if isinstance(results, list):
+            return "\n".join(r.get("text", "") for r in results if isinstance(r, dict))
+        if isinstance(results, dict):
+            return results.get("text", "")
+        return str(results)
+
+    async def mixed_query_vector(self, query_input, sender_email=None):
+        try:
+            print("started mixed query")
+
+            vector = self.embeddings.embed_query(query_input.query_text)
+
+            docs_results = await self.query_vector(query_input, vector=vector)
+            aud_results = await self.audio_query_vector(
+                sender_email=sender_email, query_input=query_input, vector=vector
+            )
+            scrape_results = self.scrape_query_vector(
+                sender_email=sender_email, query_input=query_input, vector=vector
+            )
+
+            # ---- normalize to text ----
+            docs_data = self.extract_text(docs_results)
+            audio_data = self.extract_text(aud_results)
+            website_data = self.extract_text(scrape_results)
+
+            prompts = load_yaml_file(path=pathconfig.agent_template)
+            base_prompt = prompts.get("multi_source_information_analyzer")
+
+            full_prompt = base_prompt.format(
+                users_query=query_input.query_text,
+                docs_data=docs_data,
+                audio_data=audio_data,
+                website_data=website_data,
+            )
+
+            ai_response = get_fireworks_response(full_prompt,role="system")
+
+            if ai_response:
+                print("the ai extracted information", len(ai_response))
+                return ai_response.strip()
+
+            # fallback (raw data)
+            mixed_ans = []
+            if docs_results:
+                mixed_ans.extend(docs_results)
+            if aud_results:
+                mixed_ans.extend(aud_results)
+            if scrape_results:
+                mixed_ans.append(scrape_results)
+
+            return mixed_ans
 
         except Exception as e:
             logger.error(f"[!] Query failed: {str(e)}")
@@ -299,6 +415,20 @@ class LanceClient:
             if val:
                 return {"status": "success", "message": f"File {foldername} deleted."}
             return {"status": "error", "message": f"Failed to delete {foldername}."}
+
+        except Exception as e:
+            logger.error(f"[!] Exception during file deletion: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
+    async def delete_all_file_Data(self):
+        try:
+            val = await self.service.delete_all_user_Data(self.user_id)
+
+            # val is the deleted count (0, 1, or more)
+            return {
+                "status": "success",
+                "message": f"Deleted vector data for user {self.user_id}.",
+            }
 
         except Exception as e:
             logger.error(f"[!] Exception during file deletion: {str(e)}")

@@ -3,7 +3,6 @@ import json
 import os
 import re
 import shutil
-import yaml
 from agent_route.doc_clarity import (
     find_matching_industry,
     get_industry_names_from_yaml,
@@ -14,7 +13,7 @@ from agent_route.task_manager import run_background_task
 from cust_helpers import pathconfig
 from db.rds_db import connect_to_rds
 from utils.base_logger import get_logger
-from utils.normal import ensure_dir, load_yaml_file
+from utils.normal import load_yaml_file
 from flask import jsonify
 import requests
 from urllib.parse import urljoin, urlparse
@@ -236,10 +235,20 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     yaml_path = f"{userid}/yaml/users_fileData.yaml"
 
     # Load existing YAML or initialize structure
-    if os.path.exists(yaml_path):
-        existing_data = load_yaml_from_s3(yaml_path) or {}
-    else:
+    # # if os.path.exists(yaml_path):
+    #     existing_data = load_yaml_from_s3(yaml_path) or {}
+    # else:
+    #     existing_data = {}
+
+    existing_data = load_yaml_from_s3(yaml_path)
+    if existing_data is None:
         existing_data = {}
+
+    print("------------------------")
+    print(f"yaml_path: {yaml_path}")
+    print(f"existing_data: {existing_data}")
+    print("------------------------")
+
 
     if provider not in existing_data:
         existing_data[provider] = []
@@ -269,6 +278,10 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     # Write back to YAML
     # with open(yaml_path, "w") as f:
     #     yaml.safe_dump(existing_data, f, sort_keys=False)
+    print("------------------------")
+    print(f"processed_filenames:{processed_filenames}")
+    print("------------------------")
+
     save_yaml_to_s3(existing_data, userid, "users_fileData.yaml")
     logger.info(
         f"[✅] Updated YAML for provider '{provider}' with {len(processed_filenames)} files."

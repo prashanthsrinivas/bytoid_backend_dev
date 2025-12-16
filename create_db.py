@@ -35,7 +35,7 @@ def connect_to_rds():
         ##print("\u2705 Connection successful!")
         return connection
     except pymysql.MySQLError as e:
-       #print("\u274c Error connecting to RDS:", e)
+        # print("\u274c Error connecting to RDS:", e)
         return None
 
 
@@ -210,10 +210,10 @@ def create_tables():
             cursor.execute(query)
 
         connection.commit()
-       #print("\u2705 All tables created successfully!")
+    # print("\u2705 All tables created successfully!")
 
     except pymysql.MySQLError as e:
-       print("\u274c Error while creating tables:", e)
+        print("\u274c Error while creating tables:", e)
     finally:
         cursor.close()
         connection.close()
@@ -242,7 +242,7 @@ def alter_tokens():
 
 
 def alter_subagents():
-   #print("Altering subagents table...")
+    # print("Altering subagents table...")
     connection = connect_to_rds()
     if connection is None:
         return
@@ -330,7 +330,7 @@ def create_clients():
 def rename_columns_in_communication():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -350,7 +350,7 @@ def rename_columns_in_communication():
         cursor.execute(alter_users_clients_id)
 
         connection.commit()
-       #print("✅ Columns renamed successfully!")
+    # print("✅ Columns renamed successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -363,7 +363,7 @@ def rename_columns_in_communication():
 def rename_columns_in_users_clients():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -376,7 +376,7 @@ def rename_columns_in_users_clients():
         cursor.execute(alter_user_id)
 
         connection.commit()
-       #print("✅ Columns renamed successfully!")
+    # print("✅ Columns renamed successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -389,7 +389,7 @@ def rename_columns_in_users_clients():
 def renameConnectandcreatePlaybook():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -411,7 +411,7 @@ def renameConnectandcreatePlaybook():
         cursor.execute(newtable)
 
         connection.commit()
-       #print("✅ Columns renamed successfully!")
+    # print("✅ Columns renamed successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -424,7 +424,7 @@ def renameConnectandcreatePlaybook():
 def updatethreadstoticket():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -436,7 +436,7 @@ def updatethreadstoticket():
         cursor.execute(alter_theads)
 
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -449,7 +449,7 @@ def updatethreadstoticket():
 def createticketstable():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -467,7 +467,7 @@ def createticketstable():
         """
         cursor.execute(create_table_sql)
         connection.commit()
-       #print("✅ Created 'tickets' table successfully!")
+    # print("✅ Created 'tickets' table successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error (tickets): {e}")
@@ -480,7 +480,7 @@ def createticketstable():
 def createTableAssigned():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -498,7 +498,7 @@ def createTableAssigned():
         """
         cursor.execute(create_table_sql)
         connection.commit()
-       #print("✅ Created 'assigned' table successfully!")
+    # print("✅ Created 'assigned' table successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error (assigned): {e}")
@@ -511,7 +511,7 @@ def createTableAssigned():
 def rename_columns_in_tickets():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -524,7 +524,7 @@ def rename_columns_in_tickets():
         cursor.execute(alter_user_id)
 
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -537,7 +537,7 @@ def rename_columns_in_tickets():
 def updateticket():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -549,7 +549,7 @@ def updateticket():
         cursor.execute(alter_theads)
 
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -585,7 +585,7 @@ def create_new_threads():
         """
         cursor.execute(create_table_query)
         connection.commit()
-       #print("✅ Created 'threads' table successfully!")
+    # print("✅ Created 'threads' table successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -616,7 +616,7 @@ def create_new_messages():
         """
         cursor.execute(create_table_query)
         connection.commit()
-       #print("✅ Created 'messages' table successfully!")
+    # print("✅ Created 'messages' table successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -657,7 +657,7 @@ def create_plans():
         """
         cursor.execute(create_table_query)
         connection.commit()
-       #print("✅ Created 'Plans' table successfully!")
+    # print("✅ Created 'Plans' table successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -684,7 +684,7 @@ def create_subscribe():
         """
         cursor.execute(create_table_query)
         connection.commit()
-       #print("✅ Created 'Subscibe' table successfully! and updated users table")
+    # print("✅ Created 'Subscibe' table successfully! and updated users table")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -712,7 +712,7 @@ def alter_tables_users_subscribe():
             FOREIGN KEY (subscribe_id) REFERENCES subscribe(subscribe_id);
         """
         cursor.execute(alter_table_add_fk)
-       #print("✅ updated 'users-Subscibe' table successfully!")
+    # print("✅ updated 'users-Subscibe' table successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -724,7 +724,7 @@ def alter_tables_users_subscribe():
 def updateticketsla():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -736,7 +736,7 @@ def updateticketsla():
         cursor.execute(alter_theads)
 
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -749,7 +749,7 @@ def updateticketsla():
 def update_users_clients():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -761,7 +761,7 @@ def update_users_clients():
         cursor.execute(alter_theads)
 
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -774,7 +774,7 @@ def update_users_clients():
 def update_users():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -786,7 +786,7 @@ def update_users():
         """
         cursor.execute(alter_stmt)
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -813,7 +813,7 @@ def session_table():
         """
         cursor.execute(create_table_query)
         connection.commit()
-       #print("✅ Created 'session' table successfully! ")
+    # print("✅ Created 'session' table successfully! ")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -847,9 +847,9 @@ def update_users_msg_json():
             """
             cursor.execute(alter_table_query)
             connection.commit()
-           #print("✅ Added 'umail_json' column to 'users' table.")
+        # print("✅ Added 'umail_json' column to 'users' table.")
         else:
-           print("ℹ️ Column 'umail_json' already exists in 'users' table.")
+            print("ℹ️ Column 'umail_json' already exists in 'users' table.")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -862,7 +862,7 @@ def update_users_msg_json():
 def updateUsersClients():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -874,7 +874,7 @@ def updateUsersClients():
         cursor.execute(alter_uc)
 
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -887,7 +887,7 @@ def updateUsersClients():
 def addAssigneColumn():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -898,9 +898,9 @@ def addAssigneColumn():
         """
         cursor.execute(alter_table_sql)
         connection.commit()
-       #print("✅ Column 'assignee' added successfully!")
+    # print("✅ Column 'assignee' added successfully!")
     except Exception as e:
-       print("⚠️ Error while adding column:", e)
+        print("⚠️ Error while adding column:", e)
     finally:
         cursor.close()
         connection.close()
@@ -909,7 +909,7 @@ def addAssigneColumn():
 def update_users_auto_reply():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -920,7 +920,7 @@ def update_users_auto_reply():
         """
         cursor.execute(alter_stmt)
         connection.commit()
-       #print("✅ Columns added successfully!")
+    # print("✅ Columns added successfully!")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -942,7 +942,7 @@ def expand_communication_columns():
             cursor.execute(
                 "ALTER TABLE users_clients DROP FOREIGN KEY fk_communication;"
             )
-           #print("✅ Dropped foreign key fk_communication")
+            # print("✅ Dropped foreign key fk_communication")
 
             # 2. Alter parent table
             cursor.execute(
@@ -954,13 +954,13 @@ def expand_communication_columns():
             cursor.execute(
                 "ALTER TABLE communication MODIFY COLUMN users_clients_id_fk VARCHAR(128) NULL;"
             )
-           #print("✅ Updated communication table columns to VARCHAR(128)")
+            # print("✅ Updated communication table columns to VARCHAR(128)")
 
             # 3. Alter child table
             cursor.execute(
                 "ALTER TABLE users_clients MODIFY COLUMN communication_id_fk VARCHAR(128) NULL;"
             )
-           #print("✅ Updated users_clients.communication_id_fk to VARCHAR(128)")
+            # print("✅ Updated users_clients.communication_id_fk to VARCHAR(128)")
 
             # 4. Recreate foreign key
             cursor.execute(
@@ -973,10 +973,10 @@ def expand_communication_columns():
                 ON UPDATE CASCADE;
             """
             )
-           #print("✅ Recreated foreign key fk_communication")
+            # print("✅ Recreated foreign key fk_communication")
 
             connection.commit()
-           #print("✅ All changes committed successfully!")
+        # print("✅ All changes committed successfully!")
 
     except Exception as e:
         if connection:
@@ -1082,7 +1082,7 @@ def expand_threads_columns_v2():
             )
 
             connection.commit()
-           #print("✅ threads and tickets columns updated successfully!")
+        # print("✅ threads and tickets columns updated successfully!")
 
     except Exception as e:
         if connection:
@@ -1161,7 +1161,7 @@ def expand_assigned_columns():
             )
 
             connection.commit()
-           #print("✅ assigned table columns updated successfully!")
+        # print("✅ assigned table columns updated successfully!")
 
     except Exception as e:
         if connection:
@@ -1175,7 +1175,7 @@ def expand_assigned_columns():
 def modify_messages():
     connection = connect_to_rds()
     if connection is None:
-       #print("DB connection failed.")
+        # print("DB connection failed.")
         return
 
     cursor = connection.cursor()
@@ -1189,9 +1189,9 @@ def modify_messages():
         """
         cursor.execute(alter_table_sql)
         connection.commit()
-       #print("✅ messages table altered successfully!")
+    # print("✅ messages table altered successfully!")
     except Exception as e:
-       print("⚠️ Error while adding column:", e)
+        print("⚠️ Error while adding column:", e)
     finally:
         cursor.close()
         connection.close()
@@ -1247,7 +1247,7 @@ def expand_messages_columns():
             )
 
             connection.commit()
-           #print("✅ messages table columns updated successfully!")
+        # print("✅ messages table columns updated successfully!")
 
     except Exception as e:
         if connection:
@@ -1283,9 +1283,9 @@ def update_users_reports():
             """
             cursor.execute(alter_table_query)
             connection.commit()
-           #print("✅ Added 'reports' column to 'users' table.")
+        # print("✅ Added 'reports' column to 'users' table.")
         else:
-           print("ℹ️ Column 'reports' already exists in 'users' table.")
+            print("ℹ️ Column 'reports' already exists in 'users' table.")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -1309,7 +1309,7 @@ def update_users_special_access():
             """
         cursor.execute(alter_table_query)
         connection.commit()
-       #print("✅ Added 'special_access' column to 'users' table.")
+    # print("✅ Added 'special_access' column to 'users' table.")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -1339,7 +1339,7 @@ def add_column_workflow():
 
         cursor.execute(create_table_query)
         connection.commit()
-       #print("✅ Created 'user_workflows' table (if not exists).")
+    # print("✅ Created 'user_workflows' table (if not exists).")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -1360,9 +1360,12 @@ def create_scraped_websites_table():
         create_table_query = """
         CREATE TABLE IF NOT EXISTS scraped_websites (
             scrape_id VARCHAR(36) PRIMARY KEY,
-            user_id_fk VARCHAR(36) NOT NULL,
+            user_id_fk VARCHAR(64) NOT NULL,
             url VARCHAR(2048) NOT NULL,
             normalized_url VARCHAR(2048) NOT NULL,
+
+            normalized_url_hash CHAR(64) GENERATED ALWAYS AS (SHA2(normalized_url, 256)) STORED,
+
             title VARCHAR(512),
             original_summary LONGTEXT,
             edited_summary LONGTEXT,
@@ -1373,17 +1376,19 @@ def create_scraped_websites_table():
             is_edited BOOLEAN DEFAULT FALSE,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
             FOREIGN KEY (user_id_fk) REFERENCES users(user_id),
-            UNIQUE KEY unique_user_url (user_id_fk, normalized_url),
+
+            UNIQUE KEY unique_user_url (user_id_fk, normalized_url_hash),
+
             INDEX idx_user_id (user_id_fk),
             INDEX idx_created_at (created_at),
             INDEX idx_is_edited (is_edited)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ) ENGINE=InnoDB;
         """
         cursor.execute(create_table_query)
         connection.commit()
-       #print("✅ Created 'scraped_websites' table successfully!")
-    
+
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
     finally:
@@ -1445,7 +1450,7 @@ def update_users_groups_json():
             connection.commit()
             print("✅ Added 'groups' column to 'users' table.")
         else:
-           print("ℹ️ Column 'groups' already exists in 'users' table.")
+            print("ℹ️ Column 'groups' already exists in 'users' table.")
 
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
@@ -1455,13 +1460,92 @@ def update_users_groups_json():
         connection.close()
 
 
+def update_integrations():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+
+        alter_table_query = """
+        ALTER TABLE integrations
+        ADD COLUMN user_id VARCHAR(64) NOT NULL,
+        ADD COLUMN refresh_token VARCHAR(255) DEFAULT NULL,
+        ADD COLUMN platform ENUM(
+            'facebook','instagram','whatsapp','teams','slack','google','microsoft','sms'
+        ) DEFAULT NULL,
+        ADD COLUMN scopes VARCHAR(64) DEFAULT NULL,
+        ADD COLUMN updated_at DATETIME,
+        ADD COLUMN primary_user_id_fk VARCHAR(64),
+        ADD CONSTRAINT fk_primary_user
+            FOREIGN KEY (primary_user_id_fk) REFERENCES users(user_id);
+            
+            """
+        cursor.execute(alter_table_query)
+        connection.commit()
+        print("✅ Added  columns to 'integrations' table.")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
 
 
+def add_type_integrations():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+
+        alter_table_query = """
+        ALTER TABLE integrations
+        ADD COLUMN type ENUM(
+            'mails','drive') NOT NULL
+            """
+        cursor.execute(alter_table_query)
+        connection.commit()
+        print("✅ Added  type to 'integrations' table.")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def add_expiry_integrations():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+
+        alter_table_query = """
+        ALTER TABLE integrations
+        ADD COLUMN expiry DATETIME NOT NULL
+            """
+        cursor.execute(alter_table_query)
+        connection.commit()
+        print("✅ Added  type to 'integrations' table.")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
 
 
 # Run this when ready to create tables
 if __name__ == "__main__":
-   #print("HHSS")
+    # print("HHSS")
     # create_tables()
     # alter_tokens()
     # alter_subagents()
@@ -1498,4 +1582,8 @@ if __name__ == "__main__":
     # add_column_workflow()
     # update_users_clients()
     # update_users_groups_json()
+    # update_integrations()
+    # add_type_integrations()
+    # add_type_integrations()
+    # create_scraped_websites_table()
     print("ok")

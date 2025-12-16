@@ -50,7 +50,7 @@ def get_cutoff_ts(days_back: int) -> int:
 
 class GmailService:
     def __init__(
-        self, user_id, connection=None, testing=False, workflow=None, wf_id=None
+        self, user_id, connection=None, testing=False, workflow=None, wf_id=None, integration = None
     ):
         # Use provided connection or get a new one
         self.conn = connection or connect_to_rds()
@@ -61,16 +61,26 @@ class GmailService:
 
         if not self.conn:
             raise ConnectionError("❌ Failed to connect to RDS (too many connections?)")
-
+        print(f"user_id : {str(user_id)}")
         with get_cursor(self.conn) as cursor:
-            cursor.execute(
+            if integration:
+                cursor.execute(
                 """
-                SELECT client_id, client_secret, token, refresh_token, expiry
-                FROM users
+                SELECT client_id, client_secret, access_token, refresh_token, expiry
+                FROM integrations
                 WHERE user_id = %s
                 """,
-                (str(user_id),),
+                (str(user_id)),
             )
+            else:
+                cursor.execute(
+                    """
+                    SELECT client_id, client_secret, token, refresh_token, expiry
+                    FROM users
+                    WHERE user_id = %s
+                    """,
+                    (str(user_id),),
+                )
             row = cursor.fetchone()
 
             if not row:
@@ -237,6 +247,7 @@ class GmailService:
         else:
             logger.info("watch log creation failed %s", self.user_email)
         return response
+    
 
     def check_hisdata(self, stored_history_id):
         response = (
@@ -1773,6 +1784,7 @@ class GmailService:
                         }
 
                         message_id = headers.get("message-id")
+                        print(f" *********** messages_id : {message_id}")
                         from_header = headers.get("from", "Unknown Sender")
                         to_header = headers.get("to", "")
                         cc_header = headers.get("cc", "")

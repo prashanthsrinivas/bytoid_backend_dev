@@ -20,7 +20,7 @@ fw = Fireworks(api_key=FIREWORKS_KEY)
 
 def get_fireworks_response(user_message: str, role: str) -> str:
     chat = fw.chat.completions.create(
-        model=FIREWORKS_MODEL,
+        model=EVAL_FIREWORKS,
         messages=[{"role": role, "content": user_message}],
         temperature=0.7,
     )
@@ -215,7 +215,7 @@ def evaluate_transcript(prompt_template_str, text):
 
 # def get_firework_embedding2():
 #     embeddings = FireworksEmbeddings(
-#         model="accounts/fireworks/models/qwen3-embedding-8b",
+#         model="accounts/fireworks/models/qwen3-embedding-4b",
 #         api_key=FIREWORKS_KEY,
 #         dimensions=3072,
 #     )

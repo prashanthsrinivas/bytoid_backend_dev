@@ -24,6 +24,10 @@ from onboarding.routes import onboarding_bps
 from ai_reporting.routes import ai_reporting_bp
 from umail_helper.forwarding_rules_route import forwarding_bp
 from calenders.routes import calenders_bp
+from integrations.routes import integrations_bp
+from training.docs_train.docs_base import docs_agent_bps
+from training.scrape.scrape_base import scrape_agent_bps
+from training.voice.audio_base import audio_agent_bps
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -169,6 +173,27 @@ CORS(
     origins=BASE_ORGINS,
 )
 
+CORS(
+    integrations_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    audio_agent_bps,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    docs_agent_bps,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    scrape_agent_bps,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
 
@@ -200,7 +225,10 @@ app.register_blueprint(onboarding_bps)
 app.register_blueprint(ai_reporting_bp)
 app.register_blueprint(forwarding_bp)
 app.register_blueprint(calenders_bp)
-
+app.register_blueprint(integrations_bp)
+app.register_blueprint(docs_agent_bps)
+app.register_blueprint(scrape_agent_bps)
+app.register_blueprint(audio_agent_bps)
 
 import argparse
 

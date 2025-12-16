@@ -8,9 +8,15 @@ from dotenv import load_dotenv
 from celery import Celery
 from celery.utils.log import get_task_logger
 import asyncio
+from services.redis_service import RedisService
+
 from umail_helper.asyn_functions import fetchnextmonthmails, v2all_continuous
 import json
 from umail_lance.umail_lance_agent import UmailLanceClient
+from utils.async_check import run_async
+from microsoft_route.get_microsoft_emails import v2all_continuous_outlook
+from create_db import connect_to_rds
+
 
 # from umail_helper.auto_rep import autoReplyhelper
 
@@ -21,7 +27,8 @@ import redis
 
 base_ip = os.getenv("CELERY_BROKER_URL")
 
-lock_client = redis.StrictRedis.from_url(base_ip)  # or your broker Redis
+# lock_client = redis.StrictRedis.from_url(base_ip)  # or your broker Redis
+lock_client = RedisService()
 
 LOCK_TTL = 600  # 10 minutes
 
@@ -30,11 +37,24 @@ QUEUE_PREFIX = "user_embed_queue:"
 
 def acquire_user_lock(user_id):
     # returns True if we got the lock, False otherwise
-    return lock_client.set(f"umail_lock:{user_id}", "1", nx=True, ex=LOCK_TTL)
+    return run_async(lock_client.set(f"umail_lock:{user_id}", "1", ex=LOCK_TTL))
 
 
 def release_user_lock(user_id):
-    lock_client.delete(f"umail_lock:{user_id}")
+    run_async(lock_client.delete(f"umail_lock:{user_id}"))
+
+
+def acquire_scrape_lock(user_id, url):
+    # returns True if we got the lock, False otherwise
+    return run_async(lock_client.set(f"scrape_lock:{user_id}", str(url), ex=LOCK_TTL))
+
+
+def get_scrape_lock(user_id):
+    return run_async(lock_client.get(f"scrape_lock:{user_id}"))
+
+
+def release_scrape_lock(user_id):
+    run_async(lock_client.delete(f"scrape_lock:{user_id}"))
 
 
 def make_celery(app_name=__name__):
@@ -46,6 +66,16 @@ def make_celery(app_name=__name__):
         backend=base_ip,
     )
 
+    # celery.conf.update(
+    #     task_serializer="json",
+    #     result_serializer="json",
+    #     accept_content=["json"],
+    #     task_acks_late=True,
+    #     task_reject_on_worker_lost=True,
+    #     worker_prefetch_multiplier=1,
+    #     broker_transport_options={"visibility_timeout": 3600},
+    #     worker_hijack_root_logger=False,
+    # )
     celery.conf.update(
         task_serializer="json",
         result_serializer="json",
@@ -54,6 +84,8 @@ def make_celery(app_name=__name__):
         task_reject_on_worker_lost=True,
         worker_prefetch_multiplier=1,
         broker_transport_options={"visibility_timeout": 3600},
+        broker_use_ssl={"ssl_cert_reqs": "none"},  # required for AWS ElastiCache TLS
+        redis_backend_use_ssl={"ssl_cert_reqs": "none"},
         worker_hijack_root_logger=False,
     )
 
@@ -72,8 +104,41 @@ def backoff(retries):
 def umail_sync(self, user_id):
 
     try:
-        result = asyncio.run(v2all_continuous(user_id))
-        return {"status": "completed", "user_id": user_id, "result": result}
+        connection = connect_to_rds()
+        cursor = connection.cursor()
+
+        integration = None
+
+        print("inside umail sync")
+
+        cursor.execute(
+            "SELECT social FROM users WHERE user_id = %s",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            social = row[0]
+        else:
+            # try getting it from the integration table
+            cursor.execute(
+                "SELECT platform FROM integrations WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                social = row[0]
+                integration = True
+
+        print(f"integration inside umail_sync : {integration}")
+
+        if social == "google":
+            result = asyncio.run(v2all_continuous(user_id, integration=integration))
+            return {"status": "completed", "user_id": user_id, "result": result}
+        else:
+            result = asyncio.run(
+                v2all_continuous_outlook(user_id, integration=integration)
+            )
+            return {"status": "completed", "user_id": user_id, "result": result}
     except Exception as exc:
         countdown = backoff(self.request.retries)
         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
@@ -83,11 +148,24 @@ def umail_sync(self, user_id):
 
 
 @new_celery.task(bind=True, name="webhook.umailSync")
-def web_umail_sync(self, user_id):
+def web_umail_sync(self, user_id, channel=None, integration=None):
 
     try:
-        result = asyncio.run(v2all_continuous(user_id))
-        return {"status": "completed", "user_id": user_id, "result": result}
+        print(f"integration inside web_umail_sync : {integration}")
+        print(f"channel inside web_umail_sync : {channel}")
+        if channel == "google":
+            result = asyncio.run(v2all_continuous(user_id, integration=integration))
+            return {"status": "completed", "user_id": user_id, "result": result}
+        elif channel == "microsoft":
+            result = asyncio.run(
+                v2all_continuous_outlook(user_id, integration=integration)
+            )
+            print(f"results")
+            return {"status": "completed", "user_id": user_id, "result": result}
+        else:
+            result = asyncio.run(v2all_continuous(user_id))
+            return {"status": "completed", "user_id": user_id, "result": result}
+
     except Exception as exc:
         countdown = backoff(self.request.retries)
         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
@@ -97,13 +175,15 @@ def web_umail_sync(self, user_id):
 
 
 @new_celery.task(bind=True, name="umail_helper.delayed_trigger")
-def delayed_trigger(self, user_email, history_id):
+def delayed_trigger(self, user_email, history_id, channel=None, integration=None):
     import time
     from utils.delay_mails import DelayTrigger
 
+    print(f"inside delayed_trigger, cahnnel : {channel}")
+
     lock_key = f"umail_delayed_lock:{user_email}"
     # Try to acquire lock for 10 minutes
-    acquired = lock_client.set(lock_key, "1", nx=True, ex=LOCK_TTL)
+    acquired = lock_client.set(lock_key, "1", ex=LOCK_TTL)
     if not acquired:
         # Another task is already running or recently completed
         logger.info(
@@ -121,7 +201,9 @@ def delayed_trigger(self, user_email, history_id):
 
     try:
         trigger = DelayTrigger(wait_seconds=30)
-        trigger.trigger(user_email, history_id)
+        trigger.trigger(
+            user_email, history_id, channel=channel, integration=integration
+        )
         return {"status": "completed", "user_email": user_email}
     except Exception as exc:
         countdown = backoff(self.request.retries)
@@ -163,7 +245,7 @@ def process_user_queue(self, user_id):
     lock_key = f"{key}:lock"
 
     # Acquire a distributed lock per user (avoid two workers running the same queue)
-    got_lock = lock_client.set(lock_key, "1", nx=True, ex=LOCK_TTL)
+    got_lock = lock_client.set(lock_key, "1", ex=LOCK_TTL)
     if not got_lock:
         logger.info(f"⏸ Queue for user {user_id} already being processed.")
         return
@@ -341,3 +423,23 @@ def next_monthemails(self, user_id, lastmsgdate):
     finally:
         # always release lock at end so new task can start
         release_user_lock(user_id)
+
+
+@new_celery.task(bind=True, name="tasks.run_scrape_links")
+def run_back_scrape(self, url, user_id, level):
+    from training.scrape.fast_multilevel_scraper import run_scrapper_links
+
+    try:
+        if not acquire_scrape_lock(user_id, url):
+            logger.info("scrape Task already running for %s", user_id)
+            return {"message": "Task already running", "user_id": user_id}
+
+        result = run_scrapper_links(url=url, user_id=user_id, level=level)
+        return result
+
+    except Exception as exc:
+        countdown = backoff(self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+
+    finally:
+        release_scrape_lock(user_id)

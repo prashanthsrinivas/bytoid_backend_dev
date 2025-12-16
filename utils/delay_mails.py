@@ -45,8 +45,9 @@ class DelayTrigger:
         self.wait_seconds = wait_seconds
         self.status_file = "data/internal_user_sync.json"
 
-    def trigger(self, email, history_id):
+    def trigger(self, email, history_id, channel = None, integration = None):
         """Queue a per-user delayed trigger."""
+        print(f"inside trigger for email : {email} : integration - {integration} : channel : {channel}")
         user_id = None
         status_data = read_status_file()
 
@@ -81,12 +82,14 @@ class DelayTrigger:
 
         # Start background thread for delayed trigger
         threading.Thread(
-            target=self._delayed_trigger, args=(user_id,), daemon=True
+            target=self._delayed_trigger, args=(user_id,channel, integration), daemon=True
         ).start()
 
-    def _delayed_trigger(self, user_id):
+    def _delayed_trigger(self, user_id, channel, integration):
         user_lock = get_user_lock(user_id)
         MAX_STARTED_AGE = 60  # 1 minutes in seconds
+
+        print(f"_delayed_trigger for userid: {user_id} , channel : {channel}")
 
         while True:
             with user_lock:
@@ -169,7 +172,8 @@ class DelayTrigger:
             print(
                 f"[INFO] Triggering umail_sync for user {user_id} ({user_info.get('email')})"
             )
-            web_umail_sync.delay(user_id)
+            
+            web_umail_sync.delay(user_id, channel = channel, integration = integration)
 
             # Mark as complete immediately (your logic)
             with user_lock:
