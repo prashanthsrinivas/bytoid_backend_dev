@@ -3,12 +3,13 @@ import uuid
 from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
+    fetch_contacts_by_user,
     get_subagent_by_userid,
     save_or_update_workflow_schedule,
 )
 from db.rds_db import connect_to_rds, get_cursor
 from flask import Blueprint, request, jsonify, Response, stream_with_context
-import json, queue, time
+import json, queue, time, uuid
 from cust_helpers import pathconfig
 from services.scheduler_service import SchedulerService
 from services.workflow_service import WorkflowRunnerV2
@@ -16,39 +17,72 @@ from services.meet_service import GoogleMeetService
 from utils.fireworkzz import get_fireworks_response2
 from .helperzz import *
 from utils.pb_config_utils import *
-from utils.normal import load_yaml_file, read_function_jsons2
+from utils.normal import load_yaml_file, read_function_jsons2, remove_not_found_entities
+from request_context import current_user_id
 
 playbook_bp = Blueprint("playbook", __name__)
+PLAY_TEMPLATE = load_yaml_file(path=pathconfig.play_template)
+MINOR_PROMPTS = load_yaml_file(path=pathconfig.minor_prompts)
+ALL_FUNCTIONS = read_function_jsons2(Full=True)
+
+from concurrent.futures import ThreadPoolExecutor
+
+
+executor = ThreadPoolExecutor(max_workers=4)
 
 
 @playbook_bp.route("/create_instruction", methods=["POST"])
 def create_new_instruction():
     data = request.json
     userid = data["user_id"]
-    # print("data input", data)
+
     playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+
     if not playbook_id:
         config_s3_path = create_empty_playbook_config(userid)
-        # print("created new empty playbook")
-
         playb_id = str(uuid.uuid4())
 
         playbook_id, config_path = create_subagent_to_playbook(
             playb_id, subagent_id, config_s3_path
         )
-    # config_path = "107642411636394027005/workflow/config_playbook_0195b8dd.json"
-    # print("found the play", config_path)
-    full_output, npath = create_playbook(data)
-    # print("made the new instruction", npath)
-    update_playbook_config(
-        configpath=config_path,
-        user_id=userid,
-        name=full_output["filename"],
-        filepath=npath,
-        title=full_output["workflow"]["name"],
-        description=full_output["workflow"]["description"],
-        num_steps=len(full_output["workflow"]["steps"]),
-    )
+
+    # ---- Worker function (thread-safe) ----
+    def _create_and_update():
+        full_output, npath = create_playbook(
+            data=data,
+            template_data=PLAY_TEMPLATE,
+            minor_data=MINOR_PROMPTS,
+            functions_ds=ALL_FUNCTIONS,
+        )
+
+        update_playbook_config(
+            configpath=config_path,
+            user_id=userid,
+            name=full_output["filename"],
+            filepath=npath,
+            title=full_output["workflow"]["name"],
+            description=full_output["workflow"]["description"],
+            num_steps=len(full_output["workflow"]["steps"]),
+        )
+
+        return full_output
+
+    # ---- Execute in thread pool ----
+    future = executor.submit(_create_and_update)
+
+    try:
+        full_output = future.result(timeout=60)  # adjust timeout if needed
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Failed to create instruction",
+                    "error": str(e),
+                }
+            ),
+            500,
+        )
 
     return jsonify({"status": "success", "data": full_output})
 
@@ -60,17 +94,45 @@ def updateInstruction():
     filename = data["filename"]
     playbook_id, config_path, subagent_id = returnconfigandpath(userid)
 
-    full_output, npath = create_playbook(data, filename)
-    # print("made the new instruction", npath)
-    update_playbook_config(
-        configpath=config_path,
-        user_id=userid,
-        name=full_output["filename"],
-        filepath=npath,
-        title=full_output["workflow"]["name"],
-        description=full_output["workflow"]["description"],
-        num_steps=len(full_output["workflow"]["steps"]),
-    )
+    # full_output, npath = create_playbook(data, filename)
+    # ---- Worker function (thread-safe) ----
+    def _create_and_update():
+        full_output, npath = create_playbook(
+            data=data,
+            template_data=PLAY_TEMPLATE,
+            minor_data=MINOR_PROMPTS,
+            functions_ds=ALL_FUNCTIONS,
+            nfilename=filename,
+        )
+
+        update_playbook_config(
+            configpath=config_path,
+            user_id=userid,
+            name=full_output["filename"],
+            filepath=npath,
+            title=full_output["workflow"]["name"],
+            description=full_output["workflow"]["description"],
+            num_steps=len(full_output["workflow"]["steps"]),
+        )
+
+        return full_output
+
+    # ---- Execute in thread pool ----
+    future = executor.submit(_create_and_update)
+
+    try:
+        full_output = future.result(timeout=60)  # adjust timeout if needed
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Failed to create instruction",
+                    "error": str(e),
+                }
+            ),
+            500,
+        )
 
     return jsonify({"status": "success", "data": full_output})
 
@@ -519,6 +581,9 @@ def delete_a_step():
 @playbook_bp.route("/modify_instruction", methods=["POST"])
 def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None):
     try:
+        # -----------------------------
+        # 1. INPUT HANDLING
+        # -----------------------------
         if all(arg is None for arg in [ud_inst, user_id, filename]):
             body = request.json
             if not body:
@@ -526,6 +591,7 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
                     jsonify({"status": "error", "message": "Empty request body"}),
                     400,
                 )
+
             update_instruction = body.get("modify_instructions")
             additional_data = body.get("additional_data") or ""
             user_id = body.get("user_id")
@@ -541,7 +607,7 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
                 jsonify(
                     {
                         "status": "error",
-                        "message": "Missing required fields: 'modify_instructions', 'user_id', or 'filename'.",
+                        "message": "Missing required fields: modify_instructions, user_id, filename",
                     }
                 ),
                 400,
@@ -558,32 +624,27 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
                 400,
             )
 
-        # Load YAML template
-        yaml_data = load_yaml_file(path=pathconfig.play_template)
-        if not yaml_data:
+        # -----------------------------
+        # 2. LOAD PROMPTS
+        # -----------------------------
+        yaml_data = PLAY_TEMPLATE
+        modify_prompt = yaml_data.get("modify_instruction")
+        eval_prompt = yaml_data.get("evaluate_modified_workflow_execution_validity")
+
+        if not modify_prompt or not eval_prompt:
             return (
                 jsonify(
                     {
                         "status": "error",
-                        "message": "modify_instruction YAML file not found.",
+                        "message": "Required modify/evaluator prompt missing in YAML.",
                     }
                 ),
                 500,
             )
 
-        update_prompt_template = yaml_data.get("modify_instruction")
-        if not update_prompt_template:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "modify_instruction key missing in YAML template.",
-                    }
-                ),
-                500,
-            )
-
-        # Load original workflow
+        # -----------------------------
+        # 3. LOAD EXISTING WORKFLOW
+        # -----------------------------
         original_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
         if not original_json or "workflow" not in original_json:
             return (
@@ -598,127 +659,192 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
 
         # Prepare prompt
         workflow_json_str = json.dumps(original_json["workflow"], indent=2)
+        contacts_pr = original_json["input_data"]["contacts"] or "All"
         services_functions = read_function_jsons()
+
+        # -----------------------------
+        # 4. BUILD MODIFY PROMPT
+        # -----------------------------
         full_prompt = (
-            update_prompt_template.replace("{existing_workflow}", workflow_json_str)
+            modify_prompt.replace("{existing_workflow}", workflow_json_str)
             .replace("{update_instruction}", update_instruction)
             .replace("{services_section}", services_functions)
             .replace("{additional_data}", additional_data)
-            .replace("{todays_date}", datetime.now().strftime("%A, %d %B %Y"))
+            .replace("{existing_contacts}", contacts_pr)
+            .replace("{todays_date}", datetime.now().strftime("%Y-%m-%d"))
         )
 
-        # Call LLM
-        # llm_response = get_fireworks_response(full_prompt, role="system")
+        # -----------------------------
+        # 5. MEETING INTENT DETECTION
+        # -----------------------------
+        def detect_meeting_intent(text: str) -> bool:
+            return any(
+                k in text.lower()
+                for k in [
+                    "meeting",
+                    "schedule",
+                    "reschedule",
+                    "cancel",
+                    "call",
+                    "appointment",
+                    "interview",
+                ]
+            )
+
+        def detect_platform(text: str):
+            text = text.lower()
+            return {
+                "google": any(k in text for k in ["google", "google meet", "meet"]),
+                "microsoft": any(k in text for k in ["microsoft", "teams", "ms teams"]),
+            }
+
+        has_meeting_intent = detect_meeting_intent(update_instruction)
+        checker_dict = detect_platform(update_instruction)
+
+        if has_meeting_intent and not any(checker_dict.values()):
+            actual_social = fetch_user_Social(user_id=user_id)
+            if actual_social in checker_dict:
+                checker_dict[actual_social] = True
+
+        # -----------------------------
+        # 6. INJECT MEETING RULES
+        # -----------------------------
+        if has_meeting_intent:
+            meeting_rules = []
+
+            if checker_dict.get("google"):
+                rule = MINOR_PROMPTS.get("google_meet_rules")
+                if rule:
+                    meeting_rules.append(rule.strip())
+
+            if checker_dict.get("microsoft"):
+                rule = MINOR_PROMPTS.get("microsoft_meet_rules")
+                if rule:
+                    meeting_rules.append(rule.strip())
+
+            if meeting_rules:
+                full_prompt = replace_section(
+                    prompt=full_prompt,
+                    section_title="MEETING FUNCTION LINKING RULES",
+                    replacement="\n\n".join(meeting_rules),
+                )
+
+        # -----------------------------
+        # 7. CALL MODIFY LLM
+        # -----------------------------
         llm_response = get_fireworks_response2(full_prompt, role="system", temp=0.5)
+        cleaned_response = extract_json_from_llm_output(llm_response)
+        modified_json = json.loads(cleaned_response)
 
-        try:
-            cleaned_response = extract_json_from_llm_output(llm_response)
-
-            # Now parse
-            parsed_json = json.loads(cleaned_response)
-
-            if (
-                isinstance(parsed_json, dict)
-                and "unrelated_instruction_message" in parsed_json
-            ):
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": parsed_json["unrelated_instruction_message"],
-                        }
-                    ),
-                    400,
-                )
-
-            if not parsed_json or "steps" not in parsed_json:
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": "Modified JSON is missing 'steps' section.",
-                        }
-                    ),
-                    500,
-                )
-
-            # Sync top-level fields
-            fields_to_sync = [
-                "name",
-                "description",
-                "ai_mode",
-                "trigger_mode",
-                "trigger_input",
-            ]
-            for field in fields_to_sync:
-                new_value = parsed_json.get(field)
-                if new_value is not None:
-                    original_json["workflow"][field] = new_value
-                    if field in original_json["workflow"].get("input_data", {}):
-                        original_json["input_data"][field] = new_value
-                    elif field == "name":
-                        original_json["input_data"]["title"] = new_value
-                    elif field == "description":
-                        original_json["input_data"]["description"] = new_value
-
-            # Optional context section
-            if "context_section" in parsed_json:
-                original_json["context_section"] = parsed_json["context_section"]
-
-            # Always update steps
-            original_json["workflow"]["steps"] = parsed_json["steps"]
-            original_json["WorkflowDate"] = datetime.now().isoformat()
-
-            message = parsed_json.get(
-                "modified_message", "Workflow updated successfully."
-            )
-            result = returnconfigandpath(user_id)
-            if isinstance(result, tuple) and len(result) == 3:
-                _, config_path, _ = result
-            else:
-                return result
-            update_playbook_config(
-                configpath=config_path,
-                user_id=user_id,
-                name=original_json["filename"],
-                filepath=f"{user_id}/workflow/{filename}",
-                title=original_json["workflow"]["name"],
-                description=original_json["workflow"]["description"],
-                num_steps=len(original_json["workflow"]["steps"]),
-            )
-
-            return save_playbook_to_s3(original_json, user_id, message, filename)
-
-        except json.JSONDecodeError as jerr:
-            print(f"⚠️ JSON parsing failed: {jerr}")
+        if "unrelated_instruction_message" in modified_json:
             return (
                 jsonify(
                     {
                         "status": "error",
-                        "message": "Invalid JSON returned from LLM.",
-                        "raw_output": llm_response,
+                        "message": modified_json["unrelated_instruction_message"],
                     }
                 ),
-                500,
+                400,
             )
 
-        except Exception as inner_e:
-            print(f"⚠️ Unexpected error during parsing: {inner_e}")
+        if "steps" not in modified_json:
             return (
                 jsonify(
                     {
                         "status": "error",
-                        "message": f"Unexpected error during JSON processing: {inner_e}",
+                        "message": "Modified workflow missing steps.",
                     }
                 ),
                 500,
             )
+        # print("modified json", modified_json)
+        # # -----------------------------
+        # # 8. RUN EVALUATOR (POST-MODIFY)
+        # # -----------------------------
+        # evaluator_prompt = eval_prompt
+        # evaluator_prompt = evaluator_prompt.replace(
+        #     "{instruction_input}",
+        #     json.dumps(
+        #         {
+        #             "update_instruction": update_instruction,
+        #             "todays_date": datetime.now().strftime("%Y-%m-%d"),
+        #         },
+        #         separators=(",", ":"),
+        #     ),
+        # )
 
-    except Exception as outer_e:
-        print(f"❌ modify_instruction fatal error: {outer_e}")
+        # evaluator_prompt = evaluator_prompt.replace(
+        #     "{workflow_json}", json.dumps(modified_json, separators=(",", ":"))
+        # )
+
+        # evaluator_prompt = evaluator_prompt.replace(
+        #     "{functions_data}", services_functions
+        # )
+
+        # # print("evaluator prompt", evaluator_prompt)
+
+        # eval_response = get_evaluator_fireworks(evaluator_prompt, role="system")
+
+        # # print("🔎 Evaluator RAW response:", repr(eval_response))
+
+        # if not eval_response or not eval_response.strip():
+        #     raise ValueError("Evaluator returned EMPTY response")
+
+        # eval_cleaned = clean_json_block(eval_response)
+
+        # # print("🔎 Evaluator CLEANED response:", repr(eval_cleaned))
+
+        # if not eval_cleaned or not eval_cleaned.strip():
+        #     raise ValueError("Evaluator returned NON-JSON or empty output")
+
+        # eval_result = json.loads(eval_cleaned)
+
+        # if "workflow" not in eval_result:
+        #     raise ValueError("Evaluator JSON missing 'workflow' key")
+
+        # final_workflow = eval_result["workflow"]
+        final_workflow = modified_json
+
+        # -----------------------------
+        # 9. SYNC BACK TO ORIGINAL JSON
+        # -----------------------------
+        for key in ["name", "description", "ai_mode", "trigger_mode", "trigger_input"]:
+            if key in final_workflow:
+                original_json["workflow"][key] = final_workflow[key]
+
+        if "context_section" in final_workflow:
+            original_json["context_section"] = final_workflow["context_section"]
+
+        original_json["workflow"]["steps"] = final_workflow["steps"]
+        original_json["WorkflowDate"] = datetime.now().isoformat()
+        result = returnconfigandpath(user_id)
+        if isinstance(result, tuple) and len(result) == 3:
+            _, config_path, _ = result
+
+        # return original_json
+        update_playbook_config(
+            configpath=config_path,
+            user_id=user_id,
+            name=original_json["filename"],
+            filepath=f"{user_id}/workflow/{filename}",
+            title=original_json["workflow"]["name"],
+            description=original_json["workflow"]["description"],
+            num_steps=len(original_json["workflow"]["steps"]),
+        )
+        message = original_json.get(
+            "modified_message", "Workflow updated successfully."
+        )
+
+        return save_playbook_to_s3(original_json, user_id, message, filename)
+
+    except Exception as e:
+        print(f"❌ modify_instruction fatal error: {e}")
         return (
             jsonify(
-                {"status": "error", "message": f"Internal server error: {outer_e}"}
+                {
+                    "status": "error",
+                    "message": f"Internal server error: {e}",
+                }
             ),
             500,
         )
@@ -745,7 +871,7 @@ def generate_clarification_questions():
             return result  # Early return if returnconfigandpath() returned an error response
 
         # Load prompt + workflow JSON
-        yaml_data = load_yaml_file(path=pathconfig.play_template)
+        yaml_data = PLAY_TEMPLATE
         workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
 
         if workflow_json and workflow_json.get("clarification_questions"):
@@ -967,7 +1093,7 @@ def answer_clarification_question():
         _, config_path, _ = result
 
         # Load validation prompt
-        promptfile = load_yaml_file(path=pathconfig.play_template)
+        promptfile = PLAY_TEMPLATE
         validation_prompt = promptfile.get("evaluate_clarification_answer")
 
         if not validation_prompt:
@@ -1090,7 +1216,7 @@ def workflow_ai_suggest():
             )
 
         # Load prompt template from YAML
-        promptfile = load_yaml_file(path=pathconfig.play_template)
+        promptfile = PLAY_TEMPLATE
         workflow_json = read_json_from_s3(filepath=f"{user_id}/workflow/{filename}")
         validation_prompt = promptfile.get("ai_suggest_workflow_ans")
 
@@ -1168,7 +1294,7 @@ def workflow_clarifications_reset():
 
 
 @playbook_bp.route("/run_workflow", methods=["POST"])
-def runWorkflow():
+async def runWorkflow():
     data = request.json
     userid = data.get("user_id")
     filename = data.get("filename")
@@ -1200,7 +1326,7 @@ def runWorkflow():
             workflowJson=workflow_json,
             testing=testing,
         ) as runner:
-            runner.execute()
+            await runner.execute()
             result = runner.get_execution_log()
             return jsonify({"status": "success", "execution_log": result})
     except Exception as e:
@@ -1298,7 +1424,11 @@ def testworkflowbyinput_stream():
                 workflowJson=workflow_json,
                 testing=True,
             ) as service:
-                result = service.check_input_tone(user_input=userinput)
+                token = current_user_id.set(userid)
+                try:
+                    result = service.check_input_tone(user_input=userinput)
+                finally:
+                    current_user_id.reset(token)
 
             # print("result from back", result)
 
@@ -1444,20 +1574,33 @@ def generate_workflow_input():
             return {"error": "need input"}
         if not inp_description:
             return jsonify({"error": "Missing 'description' field"}), 400
+        connection = connect_to_rds()
+        main_user_account_type = fetch_user_Social(
+            user_id=userid, connection=connection
+        )
+        print("maiun user logged in", main_user_account_type)
 
         # ✅ Available communication modes
-        available_modes = ["auto", "gmail", "google_meet", "outlook", "calendar"]
+        available_modes = [
+            "auto",
+            "gmail",
+            "google_meet",
+            "microsoft_calendar",
+            "outlook",
+            "calendar",
+        ]
 
         # ✅ Load all available service functions
         services_section = read_function_jsons2()
 
         # ✅ Load the YAML prompt
-        prompt_yaml = load_yaml_file(path=pathconfig.play_template)
+        prompt_yaml = PLAY_TEMPLATE
         prompt_template = prompt_yaml.get("create_workflow_context")
         prompt_text = yaml.dump(prompt_template, sort_keys=False)
         # ✅ Inject dynamic values
         formatted_prompt = (
             prompt_text.replace("{{inp_description}}", inp_description)
+            .replace("{{main_user_account_type}}", main_user_account_type)
             .replace("{{available_communication_modes}}", json.dumps(available_modes))
             .replace("{{services_section}}", json.dumps(services_section))
         )
@@ -1471,8 +1614,6 @@ def generate_workflow_input():
         llm_output = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", llm_output, flags=re.MULTILINE
         ).strip()
-        # print("input by user ->", inp_description)
-        # print("Raw llm output", llm_output)
 
         # ✅ Parse JSON safely
         try:
@@ -1487,7 +1628,108 @@ def generate_workflow_input():
                 ),
                 500,
             )
-        # ✅ Return structured response
+        need_contacts = workflow_data.get("need_contacts") or {}
+
+        resolved_report = {"found": {}, "not_found": [], "new": []}
+
+        final_contacts = set()
+
+        with connection.cursor() as cursor:
+
+            # =====================================================
+            # 1️⃣ RESOLVE NAMES
+            # =====================================================
+            names = need_contacts.get("names", [])
+
+            for name in names:
+                key = name.strip()
+                if not key:
+                    continue
+
+                query = """
+                    SELECT DISTINCT uc.email_id
+                    FROM users_clients uc
+                    JOIN communication c
+                    ON uc.communication_id_fk = c.communication_id
+                    WHERE c.user_id_fk = %s
+                    AND (
+                            LOWER(uc.first_name) LIKE %s
+                        OR LOWER(uc.last_name) LIKE %s
+                        OR LOWER(uc.email_id) LIKE %s
+                    )
+                """
+
+                like = f"%{key.lower()}%"
+                cursor.execute(query, (userid, like, like, like))
+                rows = [r[0] for r in cursor.fetchall()]
+
+                if rows:
+                    resolved_report["found"][key] = rows
+                    final_contacts.update(rows)
+                else:
+                    resolved_report["not_found"].append(key)
+
+            # =====================================================
+            # 2️⃣ RESOLVE EXPLICIT EMAILS
+            # =====================================================
+            emails = need_contacts.get("emails", [])
+
+            for email in emails:
+                key = email.strip().lower()
+                if not key:
+                    continue
+
+                query = """
+                    SELECT uc.email_id
+                    FROM users_clients uc
+                    JOIN communication c
+                    ON uc.communication_id_fk = c.communication_id
+                    WHERE c.user_id_fk = %s
+                    AND LOWER(uc.email_id) = %s
+                """
+
+                cursor.execute(query, (userid, key))
+                row = cursor.fetchone()
+
+                if row:
+                    resolved_report["found"][email] = [row[0]]
+                    final_contacts.add(row[0])
+                else:
+                    resolved_report["new"].append(email)
+
+            # =====================================================
+            # 3️⃣ HANDLE GROUPS (NO SILENT DROP)
+            # =====================================================
+            # groups = need_contacts.get("groups", [])
+
+            # for group in groups:
+            #     key = group.strip()
+            #     if not key:
+            #         continue
+
+            #     # Groups are acknowledged but unresolved for now
+            #     resolved_report["not_found"].append(key)
+
+        # =====================================================
+        # 4️⃣ FINAL WORKFLOW MUTATION
+        # =====================================================
+        workflow_data["contacts"] = list(final_contacts)
+
+        workflow_data["need_contacts"] = resolved_report
+        not_found = resolved_report.get("not_found", [])
+
+        wfname = workflow_data.get("name", "")
+        wfdescription = workflow_data.get("description", "")
+
+        workflow_data["name"] = remove_not_found_entities(wfname, not_found)
+        workflow_data["description"] = remove_not_found_entities(
+            wfdescription, not_found
+        )
+
+        workflow_data["need_caution"] = bool(
+            resolved_report["not_found"] or resolved_report["new"]
+        )
+        connection.close()
         return jsonify(workflow_data)
 
     except Exception as e:
@@ -1566,10 +1808,11 @@ def test_email_checks():
     """
     # emails = request.args.get("emails", type=int)
     try:
-       from db.lance_db_service import LanceDBServer
-       ser=LanceDBServer()
-       val=ser.check_lance_db_Connection()
-       return jsonify(
+        from db.lance_db_service import LanceDBServer
+
+        ser = LanceDBServer()
+        val = ser.check_lance_db_Connection()
+        return jsonify(
             {
                 "status": val,
                 # # "task_id": tasks,
@@ -1580,53 +1823,6 @@ def test_email_checks():
     except Exception as e:
         # print("❌ Error in /test-email_checks:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# @playbook_bp.route("/schedule-workflow", methods=["POST"])
-# def schedule_workflow():
-#     body = request.json
-
-#     schedule_type = body["type"]
-#     userid = body["userid"]
-#     contacts = body["contacts"] #
-#     filename = body["filename"]
-#     timezone = body.get("timezone", "UTC")  # default UTC if not provided
-#     wf_loc = f"{userid}/workflow/{filename}"
-#     workflow_json = read_json_from_s3(wf_loc)
-#     if not workflow_json:
-#         return (
-#             jsonify(
-#                 {
-#                     "message": f"Workflow file '{filename}' not found ",
-#                     "status": "error",
-#                 }
-#             ),
-#             404,
-#         )
-
-#     if schedule_type == "one_time":
-#         dt = datetime.fromisoformat(body["datetime"])
-#         result = SchedulerService.schedule_one_time(dt, userid, filename, timezone)
-#         return {"status": "success", "result": result}
-
-#     if schedule_type == "daily":
-#         hour = body["hour"]
-#         minute = body["minute"]
-#         result = SchedulerService.schedule_daily(
-#             hour, minute, userid, filename, timezone
-#         )
-#         return {"status": "success", "result": result}
-
-#     if schedule_type == "weekly":
-#         weekday = body["weekday"]
-#         hour = body["hour"]
-#         minute = body["minute"]
-#         result = SchedulerService.schedule_weekly(
-#             weekday, hour, minute, userid, filename, timezone
-#         )
-#         return {"status": "success", "result": result}
-
-#     return {"status": "error", "message": "Invalid schedule type"}, 400
 
 
 @playbook_bp.route("/schedule-workflow", methods=["POST"])

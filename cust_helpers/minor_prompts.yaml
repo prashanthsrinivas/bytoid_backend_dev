@@ -1,0 +1,198 @@
+google_meet_rules: |
+  ## GOOGLE CALENDAR & MEETING FUNCTION RULES (CRITICAL)
+
+  - Determine event type first (MUTUALLY EXCLUSIVE):
+
+      - NORMAL EVENT:
+          - Use ONLY google_calendar.* functions
+          - Do NOT use google_meet.* functions
+          - Explicit start_dt and end_dt required
+
+          - REQUIRED LIFECYCLE STEPS (PARALLEL, INDEPENDENT):
+              - google_calendar.create_calendar_event
+              - google_calendar.update_calendar_event
+              - google_calendar.delete_calendar_event
+        - FLOW RULES (normal but if user mentions to not then dont include):
+            - create_calendar_event -> automate.create_custom_email_body -> gmail.send_Meeting_invite_mail -> END
+            - update_calendar_event -> automate.create_custom_email_body -> gmail.send_Meeting_invite_mail -> END
+            - delete_calendar_event -> END
+
+      - MEETING EVENT:
+          - Use ONLY google_meet.* functions
+
+          - REQUIRED LIFECYCLE STEPS (PARALLEL, INDEPENDENT):
+              - google_meet.schedule_meeting_on_first_available
+              - google_meet.update_meeting
+              - google_meet.delete_meeting
+        - FLOW RULES:
+            - schedule_meeting_on_first_available -> automate.create_custom_email_body -> gmail.send_Meeting_invite_mail -> END
+            - update_meeting -> automate.create_custom_email_body -> gmail.send_Meeting_invite_mail -> END
+            - delete_meeting -> automate.create_custom_email_body -> gmail.send_Meeting_invite_mail -> END
+
+  - LIFECYCLE COMPLETENESS RULE (CRITICAL):
+    - If a meeting workflow is detected:
+        - ALL lifecycle steps (create, update, delete) MUST be generated
+        - Even if the user intent mentions only one action
+    - Update and delete steps are considered DORMANT PATHS:
+        - They must exist as independent steps
+        - They are not auto-triggered
+        - They do not require user intent to be mentioned
+
+  - HARD SEPARATION RULE (NON-NEGOTIABLE):
+      - Create / update / delete are PARALLEL ENTRY POINTS
+      - They MUST NOT link to each other
+      - They MUST NEVER chain sequentially
+
+  - ALLOWED FLOW (ONLY):
+      - Any lifecycle step -> automate.create_custom_email_body
+      - automate.create_custom_email_body -> gmail.send_Meeting_invite_mail
+      - gmail.send_Meeting_invite_mail -> END
+
+  - FORBIDDEN FLOW:
+      - create -> update
+      - update -> delete
+      - send -> update
+      - send -> delete
+
+  - next_step RULE:
+      - Lifecycle steps (create/update/delete):
+          - next_step MUST be "Generate Meeting Invitation Body"
+      - Communication steps:
+          - next_step MUST be null (END)
+
+  - STEP ORDERING OVERRIDE:
+      - Step array order does NOT define execution
+      - Execution depends ONLY on next_step
+
+  - FAILURE HANDLING:
+      - Every lifecycle step MUST define on_failure fallback
+
+microsoft_meet_rules: |
+  ## MICROSOFT OUTLOOK CALENDAR & TEAMS MEETING RULES (CRITICAL)
+
+  - Microsoft uses a single calendar API for all events:
+      - microsoft_calendar.create_calendar_event
+      - microsoft_calendar.update_calendar_event
+      - microsoft_calendar.delete_calendar_event
+    - FLOW RULES:
+        - create_calendar_event -> automate.create_custom_email_body -> microsoft_email.send_email
+        - update_calendar_event -> automate.create_custom_email_body -> microsoft_email.send_email
+        - delete_calendar_event -> automate.create_custom_email_body -> microsoft_email.send_email
+        - Steps must NOT link to each other
+
+  - LIFECYCLE COMPLETENESS RULE (CRITICAL):
+    - If a meeting workflow is detected:
+        - ALL lifecycle steps (create, update, delete) MUST be generated
+        - Even if the user intent mentions only one action
+    - Update and delete steps are considered DORMANT PATHS:
+        - They must exist as independent steps
+        - They are not auto-triggered
+        - They do not require user intent to be mentioned
+
+  - Determine event type by meet flag:
+      - NORMAL EVENT (todo / reminder / scheduled task):
+          - meet = false
+          - Explicit start_dt and end_dt provided by user
+          - No Teams meeting link
+
+      - TEAMS MEETING:
+          - meet = true
+          - Create or update event with Microsoft Teams enabled
+
+  - For TEAMS MEETING workflows:
+      - Create / update / delete must be independent steps
+      - All must route to the same communication flow:
+          - automate.create_custom_email_body
+          - microsoft_email.send_email
+      - next_step for ALL lifecycle steps (create/update/delete) MUST be "Generate Meeting Invitation Body"
+      - Never link create/update/delete to each other
+      - Every meeting-related step must define on_failure fallback
+
+requirements_prompt: |
+  ## REQUIREMENTS_NEEDED (STRICT, DYNAMIC RULES)
+
+  - `requirements_needed` must contain ONLY inputs that are not already known.
+
+  - Treat the following as known data:
+      - Outputs from all previous steps (detected via each step’s service `returns`)
+      - Current or previous `function_call.arguments`
+      - `input_data`
+      - `context_section`
+      - `additional_data`
+
+  - Before determining requirements, internally build a unified set of all known data.
+
+  - For each argument required by the current step:
+      - If it exists in known data → DO NOT include it
+      - Otherwise → include it in `requirements_needed`
+
+  - If the current step consumes ANY output from a previous step,
+  then set `"requirements_needed": []`.
+
+  - For update or delete operations,
+  always set `"requirements_needed": []`.
+
+  - Never request the same requirement more than once across the workflow.
+
+  - Request only genuinely external, unknown inputs
+  (for example: participants, timing preferences, or recipient addresses).
+
+communication_prompt: |
+  - The `services_section` is the single source of truth.
+  - A step is a **communication step ONLY if** the selected function definition
+  in `services_section` declares:
+      - `channels`
+      - and/or `communication_mode`
+
+  - When such a function is used:
+      - Copy `channels` EXACTLY as defined in the service.
+      - Copy `communication_mode` EXACTLY as defined in the service.
+      - Do NOT infer, rename, or invent values.
+
+  - If a function in `services_section` does NOT define communication fields:
+      - The step MUST NOT include `channels` or `communication_mode`.
+
+  - Communication steps without valid service-defined channels
+  or communication_mode are INVALID.
+
+  ### MULTI-SERVICE RULE
+  - If multiple communication functions exist for the same intent:
+      - Create one independent step per function.
+      - Each step uses ONLY its own service-defined channel.
+
+  ### FINAL ENFORCEMENT
+  - Never assign communication fields unless they exist
+  in the selected service definition.
+  """
+  contacts_prompt = """
+  ## SELECTED_CONTACTS ENFORCEMENT (STRICT & FINAL)
+
+  - `selected_contacts` is the ONLY permitted source of truth for:
+      - emails
+      - contacts
+      - recipients
+      - attendees
+      - invitees
+      - message targets
+
+  - Any step that sends, invites, notifies, messages, or contacts users
+  MUST use `selected_contacts` directly.
+
+  - NEVER:
+      - invent email addresses
+      - infer recipients from context
+      - reuse contacts from previous steps
+      - hardcode emails or contact IDs
+      - pull recipients from any field other than `selected_contacts`
+
+DateTime: |
+  ## DATE & TIME HANDLING (ISO 8601):
+  - Always convert `date`, `start_time`, `end_time`, `preferred_date`, or `deadline` into ISO 8601 format (`%Y-%m-%dT%H:%M`).
+  - Use `todays_date` as reference for relative terms like "tomorrow", "next week", etc.
+  - Leave the value empty in `function_call.arguments` if it cannot be inferred, and list it under `requirements_needed`.
+Dependency_ordering: |
+  ## DEPENDENCY-AWARE ORDERING:
+  - Steps that rely on outputs from others must appear **after** those providers.
+  - Example1: `create_meeting` → `generate_email_body` → `send_invitation`.
+  - Example2: `generate_email_body` → `send_email`
+  - Maintain logical and executable order.
