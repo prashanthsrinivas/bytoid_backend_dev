@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 from datetime import datetime
 import json
@@ -24,6 +25,8 @@ from dotenv import load_dotenv
 import copy, uuid
 
 load_dotenv()
+
+PLAY_TEMPLATE = load_yaml_file(path=pathconfig.play_template)
 
 
 class WorkflowRunnerV2:
@@ -110,7 +113,10 @@ class WorkflowRunnerV2:
                 return uid
 
     def prompt_template_load(self):
-        return load_yaml_file(path=pathconfig.play_template)
+        if not PLAY_TEMPLATE:
+            return load_yaml_file(path=pathconfig.play_template)
+        else:
+            return PLAY_TEMPLATE
 
     def send_update(self, event, data):
         if self.on_update:
@@ -141,8 +147,8 @@ class WorkflowRunnerV2:
 
         return is_affirmative(user_input=userinput)
 
-    def get_chat_summarization(self, chats_obj=None):
-        template_data = self.prompt_template_load()
+    async def get_chat_summarization(self, chats_obj=None):
+        template_data = PLAY_TEMPLATE
 
         chat_block = template_data.get("chat_summarization", {})
         prompt_instructions = chat_block.get("instructions")
@@ -178,7 +184,7 @@ class WorkflowRunnerV2:
             .strip()
         )
 
-        result = self.get_parsed_fireworks_response(prompt_text)
+        result = await self.get_parsed_fireworks_response(prompt_text)
         # print("res chat summarize", result)
 
         if result and "summary" in result:
@@ -262,13 +268,14 @@ class WorkflowRunnerV2:
         self.saveworkflowtos3()
         return result
 
-    def ai_input_intent_classifier(self, userinput):
+    async def ai_input_intent_classifier(self, userinput):
         """
         Classifies user input into one of: workflow, explanation, resetStep, or normal_conversation.
         Includes workflow-level context from input_data to improve domain awareness.
         """
-        template_data = self.prompt_template_load()
+        template_data = PLAY_TEMPLATE
         prompt_instructions = template_data.get("input_intent_classifier", {})
+        print("prompt inst 273", type(prompt_instructions))
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
@@ -312,12 +319,13 @@ class WorkflowRunnerV2:
         )
 
         # Get parsed result from Fireworks
-        result = self.get_parsed_fireworks_response(prompt_text)
+        result = await self.get_parsed_fireworks_response(prompt_text)
         return result
 
-    def ai_conversation_handler(self, userinput):
-        template_data = self.prompt_template_load()
+    async def ai_conversation_handler(self, userinput):
+        template_data = PLAY_TEMPLATE
         prompt_instructions = template_data.get("workflow_conversation_handler", {})
+        print("prompt inst 323", type(prompt_instructions))
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
@@ -335,14 +343,15 @@ class WorkflowRunnerV2:
             .replace("{{chat_summarization}}", previous_summary or "")
             .strip()
         )
-        result = self.get_parsed_fireworks_response(prompt_text)
+        result = await self.get_parsed_fireworks_response(prompt_text)
         if result and "reply" in result:
             return result["reply"]
         return result
 
-    def ai_detect_trigger_type(self, userinput):
-        template_data = self.prompt_template_load()
+    async def ai_detect_trigger_type(self, userinput):
+        template_data = PLAY_TEMPLATE
         prompt_instructions = template_data.get("detect_trigger_type", {})
+        print("prompt vals 349", type(prompt_instructions))
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
@@ -419,13 +428,14 @@ class WorkflowRunnerV2:
             .replace("{{todays_datetime}}", ", ".join(str(todays_date)))
         ).strip()
 
-        newresultds = self.get_parsed_fireworks_response(prompt_text)
-        # print("res workflow detector", newresultds)
+        newresultds = await self.get_parsed_fireworks_response(prompt_text)
+        print("res workflow detector", newresultds)
         return newresultds
 
-    def ai_detect_current_step(self, userinput):
-        template_data = self.prompt_template_load()
+    async def ai_detect_current_step(self, userinput):
+        template_data = PLAY_TEMPLATE
         prompt_instructions = template_data.get("detect_current_step", {})
+        print("prompt vals 438", type(prompt_instructions))
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
@@ -445,14 +455,15 @@ class WorkflowRunnerV2:
             )
             .strip()
         )
-        result = self.get_parsed_fireworks_response(prompt_text)
+        result = await self.get_parsed_fireworks_response(prompt_text)
         if result and "step_id" in result:
             return result["step_id"]
         return result
 
-    def ai_detect_and_route_input(self, userinput, extracted_id=None):
-        template_data = self.prompt_template_load()
-        prompt_instructions = template_data.get("detect_and_route_input", {})
+    async def ai_detect_and_route_input(self, userinput, extracted_id=None):
+        template_data = PLAY_TEMPLATE
+        prompt_instructions = template_data.get("detect_and_route_input")
+        print("prompt vals 466", type(prompt_instructions))
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
@@ -527,12 +538,12 @@ class WorkflowRunnerV2:
         # 2️⃣ Initial AI call with raw input
         # -----------------------------
         # print("user input", modinput)
-        ai_result = self.get_parsed_fireworks_response(build_prompt(modinput))
-        # print("ai detect initial", ai_result)
+        ai_result = await self.get_parsed_fireworks_response(build_prompt(modinput))
+        print("ai detect initial", ai_result)
 
         # If AI already returned wf_single_runner=True, no need for further steps
         if ai_result.get("wf_single_runner") == True:
-            # print("runner single", ai_result.get("wf_single_runner"))
+            print("runner single", ai_result.get("wf_single_runner"))
             return ai_result
 
         def build_second_stage_prompt(u_input, ai_result):
@@ -564,10 +575,10 @@ class WorkflowRunnerV2:
                 "second_stage_confirmation_handler", {}
             )
 
-            ai_result_confirm = self.get_parsed_fireworks_response(
+            ai_result_confirm = await self.get_parsed_fireworks_response(
                 build_second_stage_prompt(userinput, ai_result)
             )
-            # print("second AI attempt:", ai_result_confirm)
+            print("second AI attempt:", ai_result_confirm)
 
             if ai_result_confirm.get("wf_single_runner"):
                 if ai_result_confirm.get("response_message") == "":
@@ -577,18 +588,18 @@ class WorkflowRunnerV2:
                 if ai_result_confirm.get("step_id") == "" or None:
                     ai_result_confirm["step_id"] = ai_result["step_id"]
                 if ai_result_confirm["step_id"] == extracted_id:
-                    # print("not skipping making second return")
+                    print("not skipping making second return")
                     return ai_result_confirm
 
         # -----------------------------
         # 5️⃣ Return AI result as fallback
         # -----------------------------
-        # print("going into fallbacks")
+        print("going into fallbacks")
         return ai_result
 
-    def ai_decision_Check(self, userinput, extracted_id=None):
+    async def ai_decision_Check(self, userinput, extracted_id=None):
         # Load template
-        template_data = self.prompt_template_load()
+        template_data = PLAY_TEMPLATE
         prompt_instructions = template_data.get("decision_type_check", {})
         if not isinstance(prompt_instructions, str):
             raise TypeError(
@@ -631,14 +642,14 @@ class WorkflowRunnerV2:
         # -----------------------
         # LLM EXECUTION
         # -----------------------
-        ai_result = self.get_parsed_fireworks_response(build_prompt(userinput))
+        ai_result = await self.get_parsed_fireworks_response(build_prompt(userinput))
         # print("AI Decision Result:", ai_result)
 
         # Default: return AI evaluation
         return ai_result
 
-    def ai_explain_workflow_steps(self, userinput):
-        template_data = self.prompt_template_load()
+    async def ai_explain_workflow_steps(self, userinput):
+        template_data = PLAY_TEMPLATE
         prompt_section = template_data.get("explain_workflow", {})
         prompt_instructions = prompt_section.get("instructions", "")
 
@@ -665,12 +676,12 @@ class WorkflowRunnerV2:
         ).strip()
         ##print("final prompt", prompt_text)
 
-        newresultds = self.get_parsed_fireworks_response(prompt_text)
+        newresultds = await self.get_parsed_fireworks_response(prompt_text)
         # print("res explanation", newresultds)
         return newresultds
 
-    def ai_reset_intent_handler(self, userinput):
-        template_data = self.prompt_template_load()
+    async def ai_reset_intent_handler(self, userinput):
+        template_data = PLAY_TEMPLATE
         custeps = self.steps
 
         # Map id -> title
@@ -705,12 +716,12 @@ class WorkflowRunnerV2:
             )
         ).strip()
 
-        newresultds = self.get_parsed_fireworks_response(prompt_text)
+        newresultds = await self.get_parsed_fireworks_response(prompt_text)
         # print("res reset", newresultds)
         return newresultds
 
-    def ai_pre_gather_details(self, userinput):
-        template_data = self.prompt_template_load()
+    async def ai_pre_gather_details(self, userinput):
+        template_data = PLAY_TEMPLATE
         chats_obj = self.get_current_chats()
         new_chat = chats_obj.get("chat", [])
         previous_data = self.previous_data
@@ -744,7 +755,7 @@ class WorkflowRunnerV2:
         ).strip()
 
         # Get AI results
-        newresultds = self.get_parsed_fireworks_response(prompt_text)
+        newresultds = await self.get_parsed_fireworks_response(prompt_text)
         # print("res", newresultds)
 
         founded = newresultds.get("founded", {}) or {}
@@ -782,8 +793,10 @@ class WorkflowRunnerV2:
 
         return message
 
-    def ai_execute_helper(self, all_step_results, arguments_needed, ai_instructions):
-        template_data = self.prompt_template_load()
+    async def ai_execute_helper(
+        self, all_step_results, arguments_needed, ai_instructions
+    ):
+        template_data = PLAY_TEMPLATE
         prompt_instructions = template_data.get("execution_helper", {})
 
         if not isinstance(prompt_instructions, str):
@@ -806,44 +819,48 @@ class WorkflowRunnerV2:
             .strip()
         )
 
-        result = self.get_parsed_fireworks_response(formatted_prompt)
+        result = await self.get_parsed_fireworks_response(formatted_prompt)
         # print("res ai_execute_helper", result)
         return result
 
-    def get_parsed_fireworks_response(self, prompt_text, role="system"):
+    async def get_parsed_fireworks_response(self, prompt_text, role="system"):
         """
         Get and parse Fireworks response.
         Retries once if the response is empty, invalid, or {}.
         """
-        for attempt in range(2):  # attempt 0 = first, attempt 1 = retry once
-            response_text = get_fireworks_response2(
+        for attempt in range(2):
+            response_text = await get_fireworks_response2(
                 prompt_text, role=role, temp=0.3
-            ).strip()
+            )
+
+            if not response_text:
+                print(f"[Retry {attempt+1}] Empty response from Fireworks. ")
+                await asyncio.sleep(0.3)
+                continue
+
+            response_text = response_text.strip()
             response_text = re.sub(
                 r"^```(?:json)?\s*|\s*```$", "", response_text, flags=re.MULTILINE
             ).strip()
 
-            if not response_text:
-                print(f"[Retry {attempt+1}] Empty response from Fireworks.")
-                time.sleep(0.3)
-                continue
-            ##print("res text", response_text)
-
             try:
                 ai_result = json.loads(response_text)
-                if not ai_result:  # empty dict {}
+                if not ai_result:
                     print(f"[Retry {attempt+1}] Empty JSON object from Fireworks.")
-                    time.sleep(0.3)
+                    await asyncio.sleep(0.3)
                     continue
-                return ai_result  # ✅ Valid response received
+
+                return ai_result  # ✅ Valid response
 
             except json.JSONDecodeError:
-                print(f"[Retry {attempt+1}] Failed to parse JSON response.")
-                time.sleep(0.3)
+                print(
+                    f"[Retry {attempt+1}] Failed to parse JSON response.{response_text}"
+                )
+
+                await asyncio.sleep(0.3)
+
                 continue
 
-        # After one retry
-        # print("[Error] Fireworks response invalid after one retry.")
         return {}
 
     def __enter__(self):
@@ -952,14 +969,15 @@ class WorkflowRunnerV2:
                 original_json[key] = value  # update or add new key
 
         # Save updated workflow back to S3
-        return save_playbook_to_s3(
-            original_json,
-            self.userid,
-            "workflow updated successfully",
-            self.filename,
-        )
+        # return save_playbook_to_s3(
+        #     original_json,
+        #     self.userid,
+        #     "workflow updated successfully",
+        #     self.filename,
+        # )
+        return original_json
 
-    def execute(self, userinput=None):
+    async def execute(self, userinput=None):
         current_step_id = self._get_first_step()
         if not current_step_id:
             self.logger.error("No valid start step found.")
@@ -1030,7 +1048,7 @@ class WorkflowRunnerV2:
                         arguments_needed = list(function_args.keys())
                         # print("current step arguments", arguments_needed)
 
-                        ai_result = self.ai_execute_helper(
+                        ai_result = await self.ai_execute_helper(
                             all_step_results=all_step_results,
                             arguments_needed=arguments_needed,
                             ai_instructions=cu_step.get("ai_instructions"),
@@ -1038,12 +1056,12 @@ class WorkflowRunnerV2:
 
                         # print("res value to main execute", ai_result)
 
-                        result = self._execute_step(
+                        result = await self._execute_step(
                             step_id=step["id"], ai_result=ai_result, compl=True
                         )
                 else:
                     # print("normal execute")
-                    result = self._execute_step(step_id=step["id"], compl=True)
+                    result = await self._execute_step(step_id=step["id"], compl=True)
 
                 # ensure next_step exists
                 if "next_step" not in result or not result["next_step"]:
@@ -1086,7 +1104,7 @@ class WorkflowRunnerV2:
         }
 
         self.workflow_json["chat"].append(chat_entry)
-        new_summary = self.get_chat_summarization()
+        new_summary = await self.get_chat_summarization()
         # ✅ Correct chat_log handling
         chat_log = self.workflow_json.setdefault("chat_log", {})
         chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
@@ -1285,7 +1303,9 @@ class WorkflowRunnerV2:
             # print("Error updating pre_user_data:", upd_exc)
             return None
 
-    def _execute_step(self, step_id, ai_result=None, compl=False) -> Dict[str, Any]:
+    async def _execute_step(
+        self, step_id, ai_result=None, compl=False
+    ) -> Dict[str, Any]:
         step = self.steps[step_id]
         self.current_wf_id = step_id
         function_args = None
@@ -1310,10 +1330,13 @@ class WorkflowRunnerV2:
 
                 # Execute function
                 try:
-                    execution_result = self._trigger_function(func_name, nfunction_args)
+                    execution_result = await self._trigger_function(
+                        func_name, nfunction_args
+                    )
                 except Exception as e:
                     execution_result = {"success": False, "error": str(e)}
 
+                # print("execution result", execution_result)
                 # Normalize execution result dict
                 if not isinstance(execution_result, dict):
                     execution_result = {
@@ -1380,7 +1403,7 @@ class WorkflowRunnerV2:
             # SELF LEARN STEP PATH
             # ==========================================================
             else:
-                self._handle_self_learn(step)
+                await self._handle_self_learn(step)
                 execution_status = "success"
                 execution_details = {"type": "self_learn"}
                 message = default_message
@@ -1476,10 +1499,10 @@ class WorkflowRunnerV2:
 
         return {"output": ai_output, "next_step": step.get("next_step")}
 
-    def _handle_self_learn(self, step: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_self_learn(self, step: Dict[str, Any]) -> Dict[str, Any]:
         # Here, you could trigger AI generation / LLM response
         self.logger.info(f"[SELF-LEARN] {step['ai_instructions']}")
-        result = get_fireworks_response(step["ai_instructions"], role="system")
+        result = await get_fireworks_response(step["ai_instructions"], role="system")
         self.ai_made_output[step["id"]] = result
         return {"output": result, "next_step": step.get("next_step")}
 
@@ -1500,7 +1523,7 @@ class WorkflowRunnerV2:
                 return fb
         return None
 
-    def _trigger_function(self, func_name: str, args: dict) -> Any:
+    async def _trigger_function(self, func_name: str, args: dict) -> Any:
         """
         Dynamically calls a service function with given arguments.
 
@@ -1606,24 +1629,32 @@ class WorkflowRunnerV2:
                 elif isinstance(v, str) and v.strip().lower() == "all":
                     args[k] = self.get_attendees("all")
 
-        # print("method name", method_name)
-        # print("instance", instance)
-        # print("arguments", args)
+        print("method name", method_name)
+        print("instance", instance)
+        print("arguments", args)
 
         # Call the function
-        return func(**args)
+        import inspect
+
+        result = func(**args)
+
+        if inspect.isawaitable(result):
+            result = await result
+
+        return result
+
         # return "ok"
 
-    def check_input_tone(self, user_input: str):
-        result = self.ai_input_intent_classifier(userinput=user_input)
+    async def check_input_tone(self, user_input: str):
+        result = await self.ai_input_intent_classifier(userinput=user_input)
         ai_result = {}
-        # print("result by input checker", result)
+        print("result by input checker", result)
 
         if result and "intent" in result:
             intent = result["intent"]
 
             if intent == "normal_conversation":
-                convo = self.ai_conversation_handler(userinput=user_input)
+                convo = await self.ai_conversation_handler(userinput=user_input)
                 ai_result = {
                     "response_message": convo,
                     "wf_single_runner": False,
@@ -1634,7 +1665,7 @@ class WorkflowRunnerV2:
             # print("convo ai_result", ai_result)
 
             elif intent == "workflow":
-                ma_res = self.ai_detect_trigger_type(userinput=user_input)
+                ma_res = await self.ai_detect_trigger_type(userinput=user_input)
                 if "bs_wf_single_runner" in ma_res and ma_res["bs_wf_single_runner"]:
                     extracted_id = None
                     if "step_id" in ma_res:
@@ -1649,7 +1680,7 @@ class WorkflowRunnerV2:
                                 user_input = f"{valres} where {user_input}"
                                 extracted_id = val["next_step_id"]
 
-                    route = self.ai_detect_and_route_input(
+                    route = await self.ai_detect_and_route_input(
                         userinput=user_input, extracted_id=extracted_id
                     )
                     # print("base route workflow", route)
@@ -1661,23 +1692,34 @@ class WorkflowRunnerV2:
                         "log_status": "workflow",
                         "trigger_step": route.get("trigger_step", {}),
                     }
+
                     # ✅ Workflow text execute
                     if "wf_single_runner" in ai_result and ai_result.get(
                         "wf_single_runner"
                     ):
-                        # print("running execute from text input")
-                        return self.execute_from_text_input(
-                            user_input=ai_result["response_message"],
+                        exec_input = (
+                            ai_result.get("trigger_step", {})
+                            .get("arguments", {})
+                            .get("user_input")
+                        )
+
+                        if not exec_input:
+                            exec_input = user_input or ai_result.get(
+                                "response_message", ""
+                            )
+
+                        return await self.execute_from_text_input(
+                            user_input=exec_input,
                             base_input=user_input,
                             step_id=ai_result.get("step_id"),
                         )
                 elif "bs_workflow_runner" in ma_res and ma_res.get(
                     "bs_workflow_runner"
                 ):
-                    val = self.ai_pre_gather_details(userinput=user_input)
+                    val = await self.ai_pre_gather_details(userinput=user_input)
                     if val is False:
                         # print("running self.execute")
-                        return self.execute()
+                        return await self.execute()
                     else:
                         ai_result = {
                             "response_message": val,
@@ -1697,7 +1739,7 @@ class WorkflowRunnerV2:
                     ai_result["log_status"] = "improv"
 
             elif intent == "resetStep":
-                reset = self.ai_reset_intent_handler(userinput=user_input)
+                reset = await self.ai_reset_intent_handler(userinput=user_input)
 
                 res = {
                     "response_message": reset.get("message", ""),
@@ -1713,7 +1755,7 @@ class WorkflowRunnerV2:
                 if res.get("reset_needed"):
                     ai_result = self.handle_workflow_reset(res, user_input)
             elif intent == "explanation":
-                route = self.ai_explain_workflow_steps(userinput=user_input)
+                route = await self.ai_explain_workflow_steps(userinput=user_input)
                 ai_result = {
                     "response_message": route.get("reply", ""),
                     "step_id": route.get("step_id"),
@@ -1749,7 +1791,7 @@ class WorkflowRunnerV2:
                     self.workflow_json["last_ai_discovered"] = {}
 
                 self.workflow_json["chat"].append(chat_entry)
-                new_summary = self.get_chat_summarization()
+                new_summary = await self.get_chat_summarization()
                 if "trigger_step" in ai_result:
                     self.workflow_json["last_ai_discovered"] = ai_result["trigger_step"]
 
@@ -1765,7 +1807,7 @@ class WorkflowRunnerV2:
         # print("returning result", ai_result)
         return ai_result
 
-    def execute_from_text_input(self, user_input: str, step_id, base_input=None):
+    async def execute_from_text_input(self, user_input: str, step_id, base_input=None):
         """
         Executes a workflow step or handles human conversation dynamically.
         Tracks chat history, testing/online logs, execution logs, and saves workflow to S3.
@@ -1780,6 +1822,7 @@ class WorkflowRunnerV2:
         prompt_instructions = template_data.get("select_and_prepare_step", {}).get(
             "instructions", ""
         )
+        print("prompt inst 1791", type(prompt_instructions))
         if not isinstance(prompt_instructions, str):
             raise TypeError(
                 "Invalid template structure: expected string for 'instructions'."
@@ -1858,7 +1901,7 @@ class WorkflowRunnerV2:
         already_done = False
         workflow_intent = False
 
-        ai_result = self.get_parsed_fireworks_response(prompt_text=prompt_text)
+        ai_result = await self.get_parsed_fireworks_response(prompt_text=prompt_text)
 
         # --- Process AI response ---
         if ai_result:
@@ -1873,13 +1916,15 @@ class WorkflowRunnerV2:
                 step_id = None
             if main_id_toexecute and step_id and step_id != main_id_toexecute:
                 # print("retrying until i got correct one")
-                ai_result = self.get_parsed_fireworks_response(prompt_text=prompt_text)
+                ai_result = await self.get_parsed_fireworks_response(
+                    prompt_text=prompt_text
+                )
                 step_id = ai_result.get("step_id")
                 workflow_intent = ai_result.get("workflow_intent", False)
                 message = ai_result.get("message", "")
 
             if workflow_intent and step_id and self.check_step_exists(step_id):
-                result = self._execute_step(step_id=step_id, ai_result=ai_result)
+                result = await self._execute_step(step_id=step_id, ai_result=ai_result)
             else:
                 execution_status = "success"
                 message = (
@@ -1906,7 +1951,7 @@ class WorkflowRunnerV2:
             "step_id": result.get("step_id") or step_id,
         }
         self.workflow_json["chat"].append(chat_entry)
-        new_summary = self.get_chat_summarization()
+        new_summary = await self.get_chat_summarization()
         # ✅ Correct chat_log handling
         chat_log = self.workflow_json.setdefault("chat_log", {})
         chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
