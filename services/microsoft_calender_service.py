@@ -1,7 +1,10 @@
 import requests
 import pytz, json, re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from db.rds_db import connect_to_rds, get_cursor
+from utils.base_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def remove_teams_block(html_content):
@@ -28,9 +31,10 @@ def format_dt(dt, tz):
 class MicrosoftGraphCalendarService:
     GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
-    def __init__(self, userid: str):
+    def __init__(self, userid: str, wf_check=False):
         self.userid = userid
         self.conn = connect_to_rds()
+        self.in_workflow = wf_check
 
         # Fetch Microsoft tokens from DB
         with get_cursor(self.conn) as cursor:
@@ -61,6 +65,10 @@ class MicrosoftGraphCalendarService:
         self.refresh_token = refresh_token
         self.expiry = self.safe_parse(expiry)
         self.user_timezone = "UTC"
+        self.HTML_REGEX = re.compile(
+            r"<(html|body|p|br|div|span|a|table|tr|td|ul|ol|li|strong|em)[\s>]",
+            re.IGNORECASE,
+        )
 
         # Refresh if needed
         self.ensure_fresh_token()
@@ -85,6 +93,9 @@ class MicrosoftGraphCalendarService:
         except:
             return None
 
+    def get_user_timezone(self):
+        return self.user_timezone
+
     def get_all_available_slots(
         self,
         attendees: list,
@@ -99,8 +110,6 @@ class MicrosoftGraphCalendarService:
         Same rules, same return format.
         Uses MS Graph getSchedule() (15-min free/busy).
         """
-        import pytz
-        from datetime import datetime, timedelta, time
 
         tz = pytz.timezone(self.user_timezone)
         now_local = datetime.now(tz)
@@ -391,6 +400,29 @@ class MicrosoftGraphCalendarService:
             "events": all_events,
         }
 
+    def _format_event_time(self, start, end):
+        """
+        Convert Graph start/end objects or ISO strings into readable text.
+        """
+        try:
+            if isinstance(start, dict):
+                start_dt = datetime.fromisoformat(start["dateTime"])
+                end_dt = datetime.fromisoformat(end["dateTime"])
+            else:
+                start_dt = datetime.fromisoformat(start)
+                end_dt = datetime.fromisoformat(end)
+
+            start_local = start_dt.astimezone(pytz.timezone(self.user_timezone))
+            end_local = end_dt.astimezone(pytz.timezone(self.user_timezone))
+
+            date_str = start_local.strftime("%d %b %Y")
+            time_str = (
+                f"{start_local.strftime('%I:%M %p')} – {end_local.strftime('%I:%M %p')}"
+            )
+            return date_str, time_str
+        except Exception:
+            return None, None
+
     # -------------------------------------------
     # CREATE EVENT
     # -------------------------------------------
@@ -431,6 +463,15 @@ class MicrosoftGraphCalendarService:
 
         updated = resp.json()
 
+        date_str, time_str = self._format_event_time(
+            updated.get("start"), updated.get("end")
+        )
+
+        attendee_list = ", ".join(
+            a.get("emailAddress", {}).get("address", "")
+            for a in updated.get("attendees", [])
+        )
+
         return {
             "event_id": updated.get("id"),
             "summary": updated.get("subject"),
@@ -449,6 +490,15 @@ class MicrosoftGraphCalendarService:
                 if updated.get("isCancelled")
                 else (
                     "tentative" if updated.get("showAs") == "tentative" else "confirmed"
+                )
+            ),
+            "return_str": (
+                f"Meeting '{updated.get('subject')}' created on {date_str} "
+                f"from {time_str} with attendees: {attendee_list}."
+                + (
+                    " A Microsoft Teams meeting link has been added."
+                    if updated.get("isOnlineMeeting")
+                    else ""
                 )
             ),
         }
@@ -568,6 +618,15 @@ class MicrosoftGraphCalendarService:
         # ---------------------------------------
         # STEP 5: Normalize response
         # ---------------------------------------
+        date_str, time_str = self._format_event_time(
+            updated.get("start"), updated.get("end")
+        )
+
+        attendee_list = ", ".join(
+            a.get("emailAddress", {}).get("address", "")
+            for a in updated.get("attendees", [])
+        )
+
         return {
             "success": True,
             "event_id": updated.get("id"),
@@ -589,6 +648,20 @@ class MicrosoftGraphCalendarService:
                     "tentative" if updated.get("showAs") == "tentative" else "confirmed"
                 )
             ),
+            "return_str": (
+                f"Meeting '{updated.get('subject')}' was updated"
+                + (
+                    f" and is now scheduled on {date_str} from {time_str}."
+                    if date_str
+                    else "."
+                )
+                + (f" Attendees: {attendee_list}." if attendee_list else "")
+                + (
+                    " Microsoft Teams meeting is enabled."
+                    if updated.get("isOnlineMeeting")
+                    else " Microsoft Teams meeting is disabled."
+                )
+            ),
         }
 
     # -------------------------------------------
@@ -602,4 +675,132 @@ class MicrosoftGraphCalendarService:
         if resp.status_code not in (204,):
             return {"success": False, "error": resp.text}
 
-        return {"success": True}
+        return {
+            "success": True,
+            "return_str": "The calendar event has been successfully deleted.",
+        }
+
+
+class MicrosoftService:
+    GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+    def __init__(self, userid: str, wf_check=False):
+        self.userid = userid
+        self.conn = connect_to_rds()
+        self.in_workflow = wf_check
+
+        # Fetch Microsoft tokens from DB
+        with get_cursor(self.conn) as cursor:
+            cursor.execute(
+                """
+                SELECT client_id, client_secret,
+                       token, refresh_token,
+                       expiry, email
+                FROM users WHERE user_id=%s
+                """,
+                (str(userid),),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            raise ValueError("Microsoft OAuth not connected")
+
+        (
+            self.client_id,
+            self.client_secret,
+            access_token,
+            refresh_token,
+            expiry,
+            self.user_email,
+        ) = row
+
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.expiry = self.safe_parse(expiry)
+        self.user_timezone = "UTC"
+        self.HTML_REGEX = re.compile(
+            r"<(html|body|p|br|div|span|a|table|tr|td|ul|ol|li|strong|em)[\s>]",
+            re.IGNORECASE,
+        )
+
+        # Refresh if needed
+        self.ensure_fresh_token()
+
+        self.headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+        # Load user timezone
+        tz_resp = requests.get(
+            f"{self.GRAPH_BASE}/me/mailboxSettings", headers=self.headers
+        ).json()
+        self.user_timezone = tz_resp.get("timeZone", "UTC")
+
+    def is_html(self, content: str) -> bool:
+        return bool(content and self.HTML_REGEX.search(content))
+
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        conversation_id: str = None,
+    ):
+        """Send an email using Microsoft Graph API (auto Text / HTML)"""
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+            }
+
+            content_type = "HTML" if self.is_html(body) else "Text"
+
+            message = {
+                "subject": subject,
+                "body": {
+                    "contentType": content_type,
+                    "content": body,
+                },
+                "toRecipients": [{"emailAddress": {"address": to_email}}],
+            }
+
+            # Optional threading support
+            if conversation_id:
+                message["conversationId"] = conversation_id
+
+            payload = {
+                "message": message,
+                "saveToSentItems": True,
+            }
+
+            url = f"{self.GRAPH_BASE}/me/sendMail"
+            response = requests.post(url, headers=headers, json=payload)
+
+            if response.status_code == 202:
+                logger.info(f"✅ Email sent successfully to {to_email}")
+                return {
+                    "status": "success",
+                    "contentType": content_type,
+                    "message": "Email sent",
+                    "return_str": (
+                        f"Email with subject '{subject}' was sent to {to_email} "
+                        f"using {content_type} format."
+                    ),
+                }
+
+            logger.error(f"❌ Failed to send email: {response.text}")
+            return {
+                "status": "error",
+                "error": response.text,
+                "return_str": "Failed to send the email.",
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Exception sending email: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "return_str": "Failed to send the email.",
+            }

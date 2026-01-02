@@ -19,6 +19,13 @@ from google.auth.transport.requests import Request as g_request
 from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch
 from utils.base_logger import get_logger
 from session_manager_route.routes import session_login
+from integrations.integrations_helpers import get_all_integrations
+from umail_helper.helper import store_integrations_in_redis
+from microsoft_route.microsoft_helpers import (
+    OutlookSubscriptionManager,
+    refresh_expired_microsoft_tokens,
+    check_microsoft_token_expiry,
+)
 
 load_dotenv()  # Load from .env into environment variables
 google_bp = Blueprint("auth", __name__)
@@ -31,6 +38,25 @@ def login():
     session.pop("state", None)  # Optional, but clean
     ga = GoogleAuth()
 
+    #EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
+    #WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
+    
+    #use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
+    #redirect_uri = EXPO_REDIRECT_URI if use_expo else WEB_REDIRECT_URI
+
+    # Get the mobile app's redirect URI from query params
+    mobile_redirect_uri = request.args.get('redirect_uri')
+    platform = request.args.get('platform')
+
+    # Store the mobile redirect URI in session for later use
+    if mobile_redirect_uri and platform == 'mobile':
+        session['mobile_redirect_uri'] = mobile_redirect_uri
+        print(f"Stored mobile redirect URI: {mobile_redirect_uri}")
+
+    ga = GoogleAuth()
+
+    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
+
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
         scopes=(
@@ -47,7 +73,9 @@ def login():
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
+
+        redirect_uri=WEB_REDIRECT_URI,
+        #redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
     # google_bp.logger.info(f"{flow}")
 
@@ -57,8 +85,9 @@ def login():
     session["state"] = state
     # print(auth_url)
     ##print("login",session['state'])
+    if platform == "mobile":
+        return redirect(auth_url)
     return jsonify(auth_url=auth_url)
-
 
 @google_bp.route("/oauth2callback")
 def oauth2callback(url, state):
@@ -66,6 +95,12 @@ def oauth2callback(url, state):
         return "Missing state in URL", 400
 
     unique_id = str(uuid.uuid4())
+
+    EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
+    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
+    
+    use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
+    redirect_uri = WEB_REDIRECT_URI
 
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
@@ -83,7 +118,8 @@ def oauth2callback(url, state):
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-        redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
+        redirect_uri=redirect_uri,
+        #redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
 
     try:
@@ -230,6 +266,17 @@ def oauth2callback(url, state):
             conn.commit()
             conn.close()
 
+            # CHANGED: If mobile flow initiated /login and stored mobile_redirect_uri, redirect to Expo after DB commit
+            mobile_redirect_uri = session.pop("mobile_redirect_uri", None)  # ADDED
+            if mobile_redirect_uri:  # ADDED
+                # Optional strictness: force it to be the expected Expo redirect URI
+                #if mobile_redirect_uri != EXPO_REDIRECT_URI:  # ADDED
+                    #return "Invalid mobile redirect URI", 400  # ADDED
+
+                # IMPORTANT: keep it minimal; you can swap unique_id for your own exchange code
+                return redirect(f"{mobile_redirect_uri}?code={unique_id}")  # ADDED
+
+
             # generate_session()
         # invited user special case
         if user_exists:
@@ -253,7 +300,7 @@ def oauth2callback(url, state):
 
 
 @google_bp.route("/browser_url", methods=["POST"])
-def receive_browser_url():
+async def receive_browser_url():
     try:
         data = request.get_json()
         browser_url = data.get("url")
@@ -261,11 +308,79 @@ def receive_browser_url():
 
         # This function should return the user ID (e.g., Google account ID)
         user_id, newuser = oauth2callback(browser_url, state)
-        session_id, access_token, refresh_token = session_login(user_id)
+        session_id, access_token, refresh_token = await session_login(user_id)
         # print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
         service = GmailService(user_id=user_id)
         service.create_watch_req()
+
+        # get all integrations for this user and store it in redis
+        integrations_data, status_code = get_all_integrations(user_id)
+        # integrations = integrations_data.get("integrations")
+
+        print(f"integrations_data : {integrations_data}")
+        if integrations_data:
+            redis_response = await store_integrations_in_redis(
+                user_id, integrations_data
+            )
+            if redis_response:
+                print(f"integrations stored in redis")
+            else:
+                print(f"integrations not stored in redis")
+
+            exists = any(
+                item["platform"] == "microsoft"
+                for item in integrations_data.get("integrations", [])
+            )
+            if exists:
+                print(f"microsoft in integratiosn")
+                connection = connect_to_rds()
+                cursor = connection.cursor()
+                cursor.execute(
+                    """
+                    SELECT email,access_token, refresh_token, user_id
+                    FROM integrations
+                    WHERE primary_user_id_fk = %s AND platform = 'microsoft'
+                """,
+                    (str(user_id),),
+                )
+                row = cursor.fetchone()
+
+                if not row:
+                    print(f"cannot find microsoft integration email")
+
+                (
+                    microsoft_email,
+                    microsoft_access_token,
+                    microsoft_refresh_token,
+                    microsoft_user_id,
+                ) = row
+
+                expired = check_microsoft_token_expiry(cursor, user_id)
+                if expired:
+                    resp = refresh_expired_microsoft_tokens_for_integrations(
+                        microsoft_refresh_token,
+                        cursor,
+                        connection,
+                        None,
+                        microsoft_user_id,
+                    )
+                    data = resp.get_json()
+                    microsoft_access_token = data["token"]
+                    if microsoft_access_token:
+                        print(f"new token created")
+
+                cursor.close()
+                connection.close()
+
+                print(f"microsoft_access_token : {microsoft_access_token}")
+
+                manager = OutlookSubscriptionManager()
+
+                print(f"creating subscription for {microsoft_email}")
+                future = manager.create_subscription_async(
+                    microsoft_access_token, microsoft_email
+                )
 
         # Prepare response
         response = make_response(
@@ -579,6 +694,202 @@ def get_token(inuser=None, value=None, in_connection=None):
             connection.close()
 
 
+@google_bp.route("/token/update-and-check", methods=["POST"])
+def token_update_and_check():
+    """
+    Universal token validator + refresher
+    Supports Google & Microsoft
+    Returns success=true if user stays logged in
+    """
+    data = request.json or {}
+
+    user_id = (
+        session.get("user_id") or session.get("userState_id") or data.get("user_id")
+    )
+
+    if not user_id:
+        return jsonify({"login_required": True}), 401
+
+    connection = connect_to_rds()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT social, client_id, client_secret, token, refresh_token, expiry
+                FROM users
+                WHERE user_id = %s
+                """,
+                (str(user_id),),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return jsonify({"login_required": True}), 401
+
+            social, client_id, client_secret, token, refresh_token, expiry = row
+
+            if isinstance(expiry, str):
+                expiry = datetime.fromisoformat(expiry)
+
+            # 🔹 Google
+            if social == "google":
+                return refresh_google_if_needed(
+                    cursor,
+                    connection,
+                    user_id,
+                    client_id,
+                    client_secret,
+                    token,
+                    refresh_token,
+                    expiry,
+                )
+
+            # 🔹 Microsoft
+            if social == "microsoft":
+                return refresh_microsoft_if_needed(
+                    cursor,
+                    connection,
+                    user_id,
+                    refresh_token,
+                    expiry,
+                )
+
+            return jsonify({"login_required": True}), 401
+
+    except Exception as e:
+        print("Token update error:", e)
+        return jsonify({"login_required": True}), 401
+
+    finally:
+        connection.close()
+
+
+def refresh_google_if_needed(
+    cursor,
+    connection,
+    user_id,
+    client_id,
+    client_secret,
+    token,
+    refresh_token,
+    expiry,
+):
+    time_to_expiry = expiry - datetime.utcnow()
+
+    if expiry <= datetime.utcnow() or time_to_expiry <= timedelta(minutes=10):
+        try:
+            creds = Credentials(
+                token=token,
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=client_id,
+                client_secret=client_secret,
+                scopes=[
+                    "https://www.googleapis.com/auth/userinfo.profile",
+                    "https://www.googleapis.com/auth/userinfo.email",
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                    "https://www.googleapis.com/auth/gmail.send",
+                    "https://www.googleapis.com/auth/gmail.modify",
+                    "https://www.googleapis.com/auth/gmail.compose",
+                    "https://www.googleapis.com/auth/drive.metadata.readonly",
+                    "https://www.googleapis.com/auth/drive",
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/contacts",
+                    "openid",
+                ],
+            )
+
+            creds.refresh(g_request())
+
+            # 🔥 Google may rotate refresh token — ALWAYS save it
+            cursor.execute(
+                """
+                UPDATE users
+                SET token = %s,
+                    refresh_token = %s,
+                    expiry = %s
+                WHERE user_id = %s
+                """,
+                (
+                    creds.token,
+                    creds.refresh_token,
+                    creds.expiry.isoformat(),
+                    user_id,
+                ),
+            )
+            connection.commit()
+
+            return jsonify({"success": True})
+
+        except Exception as e:
+            print("Google refresh failed:", e)
+            return jsonify({"login_required": True}), 401
+
+    return jsonify({"success": True})
+
+
+def refresh_microsoft_if_needed(
+    cursor,
+    connection,
+    user_id,
+    refresh_token,
+    expiry,
+):
+    time_to_expiry = expiry - datetime.utcnow()
+
+    if expiry <= datetime.utcnow() or time_to_expiry <= timedelta(minutes=10):
+        client_id = os.environ.get("MICROSOFT_CLIENT_ID")
+        client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET")
+        try:
+            response = requests.post(
+                "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "scope": "offline_access https://graph.microsoft.com/.default",
+                },
+            )
+
+            data = response.json()
+
+            if "access_token" not in data:
+                raise Exception(data)
+
+            new_access_token = data["access_token"]
+            new_refresh_token = data["refresh_token"]  # ALWAYS rotated
+            expires_in = int(data["expires_in"])
+
+            new_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET token = %s,
+                    refresh_token = %s,
+                    expiry = %s
+                WHERE user_id = %s
+                """,
+                (
+                    new_access_token,
+                    new_refresh_token,
+                    new_expiry.isoformat(),
+                    user_id,
+                ),
+            )
+            connection.commit()
+
+            return jsonify({"success": True})
+
+        except Exception as e:
+            print("Microsoft refresh failed:", e)
+            return jsonify({"login_required": True}), 401
+
+    return jsonify({"success": True})
+
+
 def xor_encrypt(data, key):
     encrypted = bytes([b ^ ord(key[i % len(key)]) for i, b in enumerate(data.encode())])
     return base64.b64encode(encrypted).decode()
@@ -680,3 +991,63 @@ def check_user():
         return jsonify({"error": f"Failed to check user: {e}"}), 500
     finally:
         connection.close()
+
+
+def refresh_expired_microsoft_tokens_for_integrations(
+    refresh_token, cursor, connection, value, user_id
+):
+    client_id = os.environ.get("MICROSOFT_CLIENT_ID")
+    client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET")
+    SCOPES = [
+        "User.Read",
+        "Mail.Send",
+        "Mail.ReadWrite",
+        "Calendars.ReadWrite",
+        "OnlineMeetings.ReadWrite",
+        "Chat.ReadWrite",
+        "Files.Read.All",
+    ]
+    try:
+        # Microsoft Graph OAuth refresh URL
+        token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+        payload = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+            "scope": " ".join(SCOPES + ["offline_access"]),
+        }
+
+        response = requests.post(token_url, data=payload)
+        if response.status_code != 200:
+            print("Refresh failed:", response.text)
+            return redirect("https://bytoid.ai/login")
+
+        new_data = response.json()
+
+        new_token = new_data.get("access_token")
+        new_refresh = new_data.get("refresh_token", refresh_token)
+        expires_in = new_data.get("expires_in", 3600)
+
+        new_expiry = datetime.now() + timedelta(seconds=expires_in)
+
+        # Store updated token
+        cursor.execute(
+            """
+                        UPDATE integrations
+                        SET access_token = %s, refresh_token = %s, expiry = %s
+                        WHERE user_id = %s
+                        """,
+            (new_token, new_refresh, new_expiry.isoformat(), user_id),
+        )
+        connection.commit()
+
+        if value:
+            return new_token
+
+        return jsonify({"token": new_token})
+
+    except Exception as e:
+        print(f"Microsoft token refresh failed: {e}")
+        return redirect("https://bytoid.ai/login")

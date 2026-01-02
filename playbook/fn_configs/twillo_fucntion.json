@@ -4,6 +4,7 @@
             "category": "Twilio",
             "name": "twilio.send_whatsapp_message",
             "description": "Send a WhatsApp text message to a recipient.",
+            "status": "upcoming",
             "args": {
                 "to": "Recipient WhatsApp number (string, in international format, e.g., +1234567890)",
                 "body": "Message text to send (string)"
@@ -23,6 +24,7 @@
             "category": "Twilio",
             "name": "twilio.send_whatsapp_media",
             "description": "Send a WhatsApp message with a media attachment.",
+            "status": "upcoming",
             "args": {
                 "to": "Recipient WhatsApp number (string, international format)",
                 "media_url": "URL of the media to send (string)",
@@ -44,6 +46,7 @@
             "category": "Twilio",
             "name": "twilio.send_sms",
             "description": "Send a standard SMS message to a recipient.",
+            "status": "upcoming",
             "args": {
                 "to": "Recipient phone number (string, international format)",
                 "body": "SMS message text (string)"
@@ -63,6 +66,7 @@
             "category": "Twilio",
             "name": "twilio.make_call",
             "description": "Make a voice call to a recipient using Twilio. You can provide TwiML or a simple message to speak.",
+            "status": "upcoming",
             "args": {
                 "to": "Recipient phone number (string, international format)",
                 "twiml": "Optional TwiML XML string for call instructions (string, optional)",
@@ -81,6 +85,7 @@
             "category": "Twilio",
             "name": "twilio.get_message_status",
             "description": "Retrieve the delivery status of a sent message.",
+            "status": "upcoming",
             "args": {
                 "message_sid": "Message SID (string)"
             },
@@ -97,6 +102,7 @@
             "category": "Twilio",
             "name": "twilio.get_call_status",
             "description": "Retrieve the status of a voice call.",
+            "status": "upcoming",
             "args": {
                 "call_sid": "Call SID (string)"
             },

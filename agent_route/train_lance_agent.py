@@ -10,6 +10,8 @@ from langchain.schema import Document
 import time
 from utils.fireworkzz import get_firework_embedding
 from db.lance_db_service import LanceDBServer
+from credits_route.route import Credits
+
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -32,7 +34,8 @@ class TrainLanceAgent:
     def __init__(self, user_id: str):
         self.user_id = user_id
         self.dimension = 4096
-        self.embeddings = get_firework_embedding()
+        self.embeddings = None
+        # asyncio.create_task(self._load_embeddings())
         self.lance_service = LanceDBServer()
         self.json_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1200,
@@ -47,6 +50,13 @@ class TrainLanceAgent:
             length_function=len,
             separators=["\n\n", "\n", " ", ""],
         )
+
+    async def _load_embeddings(self):
+        self.embeddings = await get_firework_embedding()
+
+    async def _ensure_embeddings(self):
+        if self.embeddings is None:
+            await self._load_embeddings()
 
     def process_single_audio_json(self, file_path, filename):
         """
@@ -77,6 +87,7 @@ class TrainLanceAgent:
         """
         Embeds a single transcript JSON created by /process_audio.
         """
+        await self._ensure_embeddings()
         record = self.process_single_audio_json(file_path, filename)
         if not record:
             return {"vectors_made": 0, "docs_processed": 0}
@@ -104,6 +115,9 @@ class TrainLanceAgent:
 
         vector_batch = []
 
+        total_input_chars = 0
+        total_output_chars = 0
+
         for c in chunks:
             ctext = c.page_content.strip()
             if not ctext:
@@ -121,9 +135,21 @@ class TrainLanceAgent:
 
             vector_batch.append(vector_obj)
 
+            total_input_chars += len(ctext)
+            total_output_chars += 4096
+
         if vector_batch:
             logger.info(f"[AUDIO] Sending {len(vector_batch)} vectors to LanceDB")
             await self.send_json_batch_to_lancedb(vector_batch)
+
+        # ---------- calculate credits -------------------------
+        total_chars = total_input_chars + total_output_chars
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            credit_type="embedding", total_chars=total_chars, user_id=user_id
+        )
+        # ------------------------------------------------------
 
         return {"vectors_made": len(vector_batch), "docs_processed": 1}
 

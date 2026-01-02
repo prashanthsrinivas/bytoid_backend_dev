@@ -16,6 +16,7 @@ from umail_lance.umail_lance_agent import UmailLanceClient
 from utils.async_check import run_async
 from microsoft_route.get_microsoft_emails import v2all_continuous_outlook
 from create_db import connect_to_rds
+from request_context import current_user_id
 
 
 # from umail_helper.auto_rep import autoReplyhelper
@@ -183,7 +184,7 @@ def delayed_trigger(self, user_email, history_id, channel=None, integration=None
 
     lock_key = f"umail_delayed_lock:{user_email}"
     # Try to acquire lock for 10 minutes
-    acquired = lock_client.set(lock_key, "1", ex=LOCK_TTL)
+    acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
     if not acquired:
         # Another task is already running or recently completed
         logger.info(
@@ -210,21 +211,21 @@ def delayed_trigger(self, user_email, history_id, channel=None, integration=None
         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
     finally:
         # Always release lock at the end so new task can start
-        lock_client.delete(lock_key)
+        asyncio.run(lock_client.delete(lock_key))
 
 
 # ------------ REPLY EMBEDDING TASK FOR AI ASSISTANT --------------#
 
 
-def enqueue_user_task(user_id, payload):
+async def enqueue_user_task(user_id, payload):
     """
     Add a new embedding task for a user to their Redis queue.
     """
     key = f"{QUEUE_PREFIX}{user_id}"
-    lock_client.rpush(key, json.dumps(payload))
-    logger.info(
-        f"📩 Queued embedding for user {user_id} (queue size: {lock_client.llen(key)})"
-    )
+    await lock_client.rpush(key, json.dumps(payload))
+    # logger.info(
+    #     f"📩 Queued embedding for user {user_id} (queue size: {lock_client.llen(key)})"
+    # )
 
     # Trigger worker to process if not already running
     process_user_queue.delay(user_id)
@@ -236,7 +237,7 @@ def exponential_backoff(retries, base=2, cap=300):
 
 
 @new_celery.task(bind=True, name="embedding.process_user_queue")
-def process_user_queue(self, user_id):
+async def process_user_queue(self, user_id):
     """
     Process all embedding tasks for a user sequentially (FIFO).
     Automatically retries failed tasks and keeps strict ordering.
@@ -245,14 +246,14 @@ def process_user_queue(self, user_id):
     lock_key = f"{key}:lock"
 
     # Acquire a distributed lock per user (avoid two workers running the same queue)
-    got_lock = lock_client.set(lock_key, "1", ex=LOCK_TTL)
+    got_lock = await lock_client.set(lock_key, "1", ex=LOCK_TTL)
     if not got_lock:
         logger.info(f"⏸ Queue for user {user_id} already being processed.")
         return
 
     try:
         while True:
-            raw_task = lock_client.lpop(key)
+            raw_task = await lock_client.lpop(key)
             if not raw_task:
                 logger.info(f"✅ Queue empty for user {user_id}. Done.")
                 break
@@ -272,7 +273,7 @@ def process_user_queue(self, user_id):
             try:
 
                 client = UmailLanceClient(user_id)
-                client.embed_json_file_for_reply(
+                await client.embed_json_file_for_reply(
                     input_data, user_id, client_id, conversation_id
                 )
 
@@ -290,18 +291,18 @@ def process_user_queue(self, user_id):
                     )
                     time.sleep(delay)
                     # Requeue task to the *front* so it retries before the next new task
-                    lock_client.lpush(key, json.dumps(payload))
+                    await lock_client.lpush(key, json.dumps(payload))
                 else:
                     logger.error(
                         f"💀 Max retries reached for conv_id: {conversation_id}"
                     )
     finally:
-        lock_client.delete(lock_key)
+        await lock_client.delete(lock_key)
         logger.info(f"🔓 Released lock for user {user_id}")
 
 
 @celery.task(bind=True, name="tasks.send_bulk_emails")
-def send_bulk_emails(self, user_id: str, email_count: int, receiver_email: str):
+async def send_bulk_emails(self, user_id: str, email_count: int, receiver_email: str):
     """
     Send multiple AI-generated emails for a specific user.
     """
@@ -330,8 +331,9 @@ def send_bulk_emails(self, user_id: str, email_count: int, receiver_email: str):
             rand_title = random.choice(EMAIL_TITLES)
 
             # Generate email body (HTML)
-            email_body_html = ai.create_custom_email_body(
-                user_input=f"Write a short memo/news update about {rand_title} with 200 - 300 words and it must have a title included in <title> tag "
+            email_body_html = await ai.create_custom_email_body(
+                user_id,
+                user_input=f"Write a short memo/news update about {rand_title} with 200 - 300 words and it must have a title included in <title> tag ",
             )
             # print("emmail_body_html", type(email_body_html))
 
@@ -369,12 +371,12 @@ def send_bulk_emails(self, user_id: str, email_count: int, receiver_email: str):
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.workflow_scheduler")
-def run_scheduled_job(self, userid, filename):
+async def run_scheduled_job(self, userid, filename):
     try:
         from services.workflow_service import WorkflowRunnerV2
 
         service = WorkflowRunnerV2(userid=userid, filename=filename)
-        message = service.execute()
+        message = await service.execute()
         return {"status": "done", "message": message}
 
     except Exception as exc:
@@ -383,18 +385,24 @@ def run_scheduled_job(self, userid, filename):
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.lance_embedding")
-def run_lance_embedding(self, user_id, batch_count, lance_folder):
+async def run_lance_embedding(self, user_id, batch_count, lance_folder):
     try:
 
         client = UmailLanceClient(user_id)
-        client.embed_both_json_and_plain(lance_folder)
-        folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
-        if os.path.exists(folder_path):
-            shutil.rmtree(folder_path)
-            print(f"🗑️ Deleted folder and contents: {folder_path}")
-        else:
-            print(f"⚠️ Folder not found: {folder_path}")
-        return {"status": "done", "batch": batch_count, "folder": lance_folder}
+        token = current_user_id.set(user_id)
+
+        try:
+            await client.embed_both_json_and_plain(lance_folder)
+            folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
+                print(f"🗑️ Deleted folder and contents: {folder_path}")
+            else:
+                print(f"⚠️ Folder not found: {folder_path}")
+            return {"status": "done", "batch": batch_count, "folder": lance_folder}
+
+        finally:
+            current_user_id.reset(token)
 
     except Exception as exc:
         countdown = 2**self.request.retries
@@ -425,21 +433,49 @@ def next_monthemails(self, user_id, lastmsgdate):
         release_user_lock(user_id)
 
 
+# @new_celery.task(bind=True, name="tasks.run_scrape_links")
+# def run_back_scrape(self, url, user_id, level):
+#     from training.scrape.fast_multilevel_scraper import run_scrapper_links
+
+#     try:
+#         if not acquire_scrape_lock(user_id, url):
+#             logger.info("scrape Task already running for %s", user_id)
+#             return {"message": "Task already running", "user_id": user_id}
+
+#         result = run_async(run_scrapper_links(url=url, user_id=user_id, level=level))
+#         return result
+
+#     except Exception as exc:
+#         countdown = backoff(self.request.retries)
+#         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+
+#     finally:
+#         release_scrape_lock(user_id)
+
+
 @new_celery.task(bind=True, name="tasks.run_scrape_links")
 def run_back_scrape(self, url, user_id, level):
     from training.scrape.fast_multilevel_scraper import run_scrapper_links
 
     try:
         if not acquire_scrape_lock(user_id, url):
-            logger.info("scrape Task already running for %s", user_id)
-            return {"message": "Task already running", "user_id": user_id}
+            return {
+                "status": "already_running",
+                "user_id": user_id,
+                "url": url,
+            }
 
-        result = run_scrapper_links(url=url, user_id=user_id, level=level)
+        result = run_async(run_scrapper_links(url=url, user_id=user_id, level=level))
+
+        # MUST be JSON serializable
         return result
 
     except Exception as exc:
-        countdown = backoff(self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+        raise self.retry(
+            exc=exc,
+            countdown=backoff(self.request.retries),
+            max_retries=5,
+        )
 
     finally:
         release_scrape_lock(user_id)

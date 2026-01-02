@@ -1542,6 +1542,42 @@ def add_expiry_integrations():
         cursor.close()
         connection.close()
 
+def create_credits_table():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS credits(
+        credits_id VARCHAR(36) PRIMARY KEY,
+        text_to_audio INT,
+        audio_to_text INT,
+        embedding INT,
+        normal INT,
+        evaluator INT,
+        ai_suggest INT,
+        total INT,
+        timestamp DATETIME,
+        user_id_fk VARCHAR(130),
+        CONSTRAINT fk_credit_usage_user
+            FOREIGN KEY (user_id_fk)
+            REFERENCES users(user_id)
+    );
+            """
+        cursor.execute(create_table_query)
+        connection.commit()
+        print("✅ Added  credits' table.")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
 
 # Run this when ready to create tables
 if __name__ == "__main__":
@@ -1586,4 +1622,5 @@ if __name__ == "__main__":
     # add_type_integrations()
     # add_type_integrations()
     # create_scraped_websites_table()
+    create_credits_table()
     print("ok")

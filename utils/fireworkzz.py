@@ -7,6 +7,9 @@ from langchain_fireworks import FireworksEmbeddings
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 import json
 import requests
+from credits_route.route import Credits
+from request_context import current_user_id
+
 
 load_dotenv()
 
@@ -18,31 +21,78 @@ EVAL_FIREWORKS = os.getenv("FIREWORKS_MODEL_EVAL")
 fw = Fireworks(api_key=FIREWORKS_KEY)
 
 
-def get_fireworks_response(user_message: str, role: str) -> str:
+async def get_fireworks_response(user_message: str, role: str, user_id) -> str:
+
+    total_input_chars = len(user_message)
+
     chat = fw.chat.completions.create(
         model=EVAL_FIREWORKS,
         messages=[{"role": role, "content": user_message}],
         temperature=0.7,
     )
-    return chat.choices[0].message.content.strip()
+
+    response_text = chat.choices[0].message.content.strip()
+
+    total_output_chars = len(response_text)
+
+    total_chars = total_input_chars + total_output_chars
+
+    credits = Credits()
+    await credits.update_ai_credits_redis(
+        credit_type="normal", total_chars=total_chars, user_id=user_id
+    )
+
+    return response_text
 
 
-def get_fireworks_response2(user_message: str, role: str, temp: float = 0.7) -> str:
+async def get_fireworks_response2(
+    user_id: str, user_message: str, role: str, temp: float = 0.7
+) -> str:
+
+    total_input_chars = len(user_message)
+
     chat = fw.chat.completions.create(
         model=FIREWORKS_MODEL,
         messages=[{"role": role, "content": user_message}],
         temperature=temp,
     )
-    return chat.choices[0].message.content.strip()
+    content = chat.choices[0].message.content
+
+    if isinstance(content, dict):
+        # Fireworks structured response
+        response_text = content.get("text", "")
+    elif isinstance(content, list):
+        # Rare but possible
+        response_text = " ".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    else:
+        response_text = str(content)
+
+    response_text = response_text.strip()
+
+    total_output_chars = len(response_text)
+
+    total_chars = total_input_chars + total_output_chars
+
+    credits = Credits()
+    await credits.update_ai_credits_redis(
+        user_id=user_id,
+        credit_type="normal",
+        total_chars=total_chars,
+    )
+
+    return response_text
 
 
-def get_firework_embedding():
+async def get_firework_embedding():
 
     embeddings = FireworksEmbeddings(
         model=EMBEDMODEL,
         api_key=FIREWORKS_KEY,
         dimensions=4096,
     )
+
     # embeddings = OpenAIEmbeddings(
     #     model="text-embedding-3-large",
     #     openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -70,12 +120,22 @@ def get_firework_embedding():
 #         val = chat.choices[0].message.content.strip()
 #        #print("using alternate gpt oss")
 #     return val
-def get_evaluator_fireworks(user_message: str, role: str) -> str:
+
+
+async def get_evaluator_fireworks(
+    user_message: str,
+    role: str,
+    user_id: str,
+    temp=0.7,
+) -> str:
+
+    total_input_chars = len(user_message)
+
     url = "https://api.fireworks.ai/inference/v1/chat/completions"
 
     payload = {
         "model": EVAL_FIREWORKS,
-        "temperature": 0.7,
+        "temperature": temp,
         "messages": [{"role": role, "content": user_message}],
     }
 
@@ -92,7 +152,20 @@ def get_evaluator_fireworks(user_message: str, role: str) -> str:
         data = response.json()
 
         # Return the LLM text response
-        return data["choices"][0]["message"]["content"]
+        output = data["choices"][0]["message"]["content"]
+
+        total_output_chars = len(output)
+
+        total_chars = total_input_chars + total_output_chars
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            user_id=user_id,
+            credit_type="evaluator",
+            total_chars=total_chars,
+        )
+
+        return output
 
     except requests.exceptions.RequestException as e:
         # print("❌ Fireworks API error:", e)
@@ -102,14 +175,16 @@ def get_evaluator_fireworks(user_message: str, role: str) -> str:
         return None
 
 
-def evaluator_llama(prompt_template_str, query, context, industry):
+async def evaluator_llama(prompt_template_str, query, context, industry, userid):
     # 🔧 Format prompt
     full_prompt = prompt_template_str.format(
         user=query, response=context, industry=industry
     )
 
     try:
-        llama_response = get_fireworks_response(full_prompt, role="user")
+        llama_response = await get_fireworks_response(
+            full_prompt, role="user", user_id=userid
+        )
         print(f"🔥 Raw LLaMA Evaluator Response:\n{llama_response}\n")
 
         # 🔍 Parse the returned JSON from the model's output
@@ -129,7 +204,7 @@ def evaluator_llama(prompt_template_str, query, context, industry):
         }
 
 
-def evaluator_batch_llama(prompt_template_str, qa_list, industry):
+async def evaluator_batch_llama(prompt_template_str, qa_list, industry, userid):
     qa_input_block = "\n".join(
         [
             f"{i+1}.\nUser Question: {item['query']}\nAI Response: {item['response_text']}"
@@ -140,7 +215,9 @@ def evaluator_batch_llama(prompt_template_str, qa_list, industry):
     full_prompt = prompt_template_str.format(qa_list=qa_input_block, industry=industry)
 
     try:
-        llama_response = get_fireworks_response(full_prompt, role="user")
+        llama_response = await get_fireworks_response(
+            full_prompt, role="user", user_id=userid
+        )
 
         # return yaml.safe_load(llama_response)
         return llama_response
@@ -149,7 +226,7 @@ def evaluator_batch_llama(prompt_template_str, qa_list, industry):
         return []
 
 
-def evaluator_context_llama(prompt_template_str, qa_list):
+async def evaluator_context_llama(prompt_template_str, qa_list, userid):
     if not prompt_template_str:
         # print("❌ Error: Prompt template is missing.")
         return []
@@ -163,7 +240,9 @@ def evaluator_context_llama(prompt_template_str, qa_list):
     full_prompt = prompt_template_str.format(qa_list=qa_input_block)
 
     try:
-        llama_response = get_evaluator_fireworks(full_prompt, role="system")
+        llama_response = await get_evaluator_fireworks(
+            full_prompt, role="system", user_id=userid
+        )
 
         # return yaml.safe_load(llama_response)
         return llama_response
@@ -183,9 +262,11 @@ def enforce_json_keys(data: dict) -> dict:
     }
 
 
-def evaluate_transcript(prompt_template_str, text):
+async def evaluate_transcript(prompt_template_str, text, userid):
     full_prompt = prompt_template_str.format(input_text=text)
-    llama_response = get_evaluator_fireworks(full_prompt, role="system")
+    llama_response = await get_evaluator_fireworks(
+        full_prompt, role="system", user_id=userid
+    )
 
     cleaned = llama_response.strip()
     if cleaned.startswith("```"):

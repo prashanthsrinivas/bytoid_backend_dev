@@ -22,6 +22,8 @@ from utils.s3_utils import (
     load_yaml_from_s3,
     save_yaml_to_s3,
 )
+from credits_route.route import Credits
+from request_context import current_user_id
 
 logger = get_logger(__name__)
 
@@ -131,7 +133,7 @@ def is_youtube_video_url(url: str) -> bool:
     return False
 
 
-def summarize_youtube_data_advanced(youtube_data):
+async def summarize_youtube_data_advanced(youtube_data, user_id):
     """
     Summarize YouTube video content similar to web scraping summarization
     """
@@ -229,8 +231,15 @@ Please provide a comprehensive summary that captures:
 Format the summary to be informative and well-structured.
 """
 
-        # Get AI response
-        ai_response = get_fireworks_response(full_prompt, role="system")
+        token = current_user_id.set(user_id)
+        try:
+            # Get AI response
+            ai_response = await get_fireworks_response(
+                full_prompt, role="system", user_id=user_id
+            )
+
+        finally:
+            current_user_id.reset(token)
 
         if ai_response and isinstance(ai_response, str) and ai_response.strip():
             return ai_response.strip()
@@ -244,7 +253,9 @@ Format the summary to be informative and well-structured.
         return None
 
 
-def evaluate_youtube_content(clarification_prompt, youtube_data, summary_text):
+async def evaluate_youtube_content(
+    clarification_prompt, youtube_data, summary_text, userid
+):
     """
     Evaluate YouTube content to extract clarifications
     """
@@ -264,7 +275,9 @@ def evaluate_youtube_content(clarification_prompt, youtube_data, summary_text):
         )
 
         # Get AI response
-        ai_response = get_evaluator_fireworks(filled_prompt, "system")
+        ai_response = await get_evaluator_fireworks(
+            filled_prompt, "system", user_id=userid
+        )
 
         # Parse response
         try:
@@ -332,7 +345,7 @@ def clarific_youtube(user_id, val, video_url, title):
     return clarification_responses
 
 
-def validate_youtube_clarifications(user_id):
+async def validate_youtube_clarifications(user_id):
     """
     Validate clarifications from YouTube videos
     """
@@ -365,12 +378,13 @@ def validate_youtube_clarifications(user_id):
 
         for i in range(0, len(content), batch_size):
             batch = content[i : i + batch_size]
-            res_raw = evaluator_batch_llama_youtube(
+            res_raw = await evaluator_batch_llama_youtube(
                 prompts.get(
                     "youtube_response_validator_batch",
                     prompts.get("scraping_response_validator_batch"),
                 ),
                 batch,
+                userid=user_id,
             )
 
             # Parse and process results (similar to scraping validation)
@@ -508,7 +522,7 @@ def fetch_youtube_ques_with_docs(clarification_list, user_id):
     return content
 
 
-def evaluator_batch_llama_youtube(prompt_template_str, qa_list):
+async def evaluator_batch_llama_youtube(prompt_template_str, qa_list, userid):
     """
     Evaluate YouTube-based questions and answers using LLaMA
     """
@@ -522,7 +536,9 @@ def evaluator_batch_llama_youtube(prompt_template_str, qa_list):
     full_prompt = prompt_template_str.replace("{qa_list}", qa_input_block)
 
     try:
-        llama_response = get_fireworks_response(full_prompt, role="user")
+        llama_response = await get_fireworks_response(
+            full_prompt, role="user", user_id=userid
+        )
         return llama_response
     except Exception as e:
         print(f"🔥 LLaMA Evaluator batch Error for YouTube: {e}")
@@ -566,7 +582,7 @@ def append_passed_with_ai_diff(existing, new_entries):
     return existing
 
 
-def summarize_scraped_data_advanced(scraped_json_data):
+async def summarize_scraped_data_advanced(scraped_json_data, user_id):
     """
     Takes scraped data, validates it, injects it into a prompt, and returns
     a natural language summary from the AI model.
@@ -616,9 +632,15 @@ def summarize_scraped_data_advanced(scraped_json_data):
         full_prompt = summary_prompt_template.replace("{url}", str(url)).replace(
             "{website_content}", content
         )
+        token = current_user_id.set(user_id)
+        try:
+            # Get the formatted text summary from the AI
+            ai_response = await get_fireworks_response(
+                full_prompt, role="system", user_id=user_id
+            )
 
-        # Get the formatted text summary from the AI
-        ai_response = get_fireworks_response(full_prompt, role="system")
+        finally:
+            current_user_id.reset(token)
 
         # Check if the AI response is valid
         if ai_response and isinstance(ai_response, str) and ai_response.strip():
@@ -635,7 +657,7 @@ def summarize_scraped_data_advanced(scraped_json_data):
         return None
 
 
-def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
+async def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
     """
     Background thread function that does all the heavy processing:
     - Scraping
@@ -672,7 +694,7 @@ def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
         logger.info(f"[ASYNC] Content scraped, generating summary...")
 
         # STEP 2: Summarize
-        summary_text = summarize_scraped_data_advanced(scraped_data)
+        summary_text = summarize_scraped_data_advanced(scraped_data, user_id)
 
         if not summary_text or summary_text == "UNSUITABLE_CONTENT":
             logger.warning(f"[ASYNC] Summarization failed for: {url_to_scrape}")
@@ -682,7 +704,9 @@ def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
         prompts = load_yaml_file(path=pathconfig.agent_template)
         clarification_prompt = prompts.get("extract_scraping_clarifications_prompt")
 
-        val = evaluate_scraped_content(clarification_prompt, scraped_data, summary_text)
+        val = await evaluate_scraped_content(
+            clarification_prompt, scraped_data, summary_text, user_id=user_id
+        )
         if not val:
             logger.warning(f"[ASYNC] Failed to evaluate content for: {url_to_scrape}")
             val = {"clarifications": []}
@@ -701,6 +725,19 @@ def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
             logger.info(f"[ASYNC] Creating embeddings and saving to LanceDB...")
             embedding_client = WebScrapingLanceClient(user_id=user_id)
             embedding_vector = embedding_client.embeddings.embed_query(summary_text)
+
+            # ---------- calculate credits --------------
+            total_input_chars = len(summary_text)
+            # total_output_chars = 0
+            # total_output_chars += sum(len(vec) for vec in embedding_vector)
+            total_output_chars = len(embedding_vector)
+
+            total_chars = total_input_chars + total_output_chars
+            credits = Credits()
+            await credits.update_ai_credits_redis(
+                credit_type="embedding", total_chars=total_chars, user_id=user_id
+            )
+            # ----------------------------
 
             timestamp = datetime.now(timezone.utc).isoformat()
             lancedb_payload = {
@@ -768,7 +805,7 @@ def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
             # STEP 7: Validate clarifications using AI (in background)
             if val.get("clarifications"):
                 try:
-                    validate_scraping_clarifications(user_id)
+                    await validate_scraping_clarifications(user_id)
                     logger.info(f"[ASYNC] Clarifications validated: {url_to_scrape}")
                 except Exception as e:
                     logger.warning(f"[ASYNC] Clarification validation error: {e}")
@@ -906,6 +943,7 @@ def _save_scrape_to_lancedb(user_id: str, scraped_data: dict):
         embed_client = WebScrapingLanceClient(user_id=user_id)
 
         chunk_embeddings = []
+
         for idx, chunk in enumerate(chunks):
             emb = embed_client.embeddings.embed_query(chunk)
             chunk_embeddings.append(emb)
@@ -953,7 +991,7 @@ def _save_scrape_to_lancedb(user_id: str, scraped_data: dict):
         logger.error(f"[LANCEDB] Failed to save: {e}")
 
 
-def evaluate_scraped_content(clarification_prompt, scraped_data, summary_text):
+async def evaluate_scraped_content(clarification_prompt, scraped_data, summary_text):
     """
     Evaluate scraped content to extract clarifications using AI.
     Similar to evaluate_transcript but for web scraping.
@@ -973,7 +1011,9 @@ def evaluate_scraped_content(clarification_prompt, scraped_data, summary_text):
         )
 
         # Get AI response
-        ai_response = get_evaluator_fireworks(filled_prompt, "system")
+        ai_response = await get_evaluator_fireworks(
+            filled_prompt, "system", user_id=userid
+        )
 
         # Parse the response (assuming it returns JSON with clarifications)
         try:
@@ -1042,7 +1082,7 @@ def clarific_scraping(user_id, val, url, title):
     return clarification_responses
 
 
-def validate_scraping_clarifications(user_id):
+async def validate_scraping_clarifications(user_id):
     """
     Validate clarifications from failed_ques.yaml by getting answers and evaluating them.
     Similar to the document processing validation but for scraping clarifications.
@@ -1078,8 +1118,8 @@ def validate_scraping_clarifications(user_id):
 
         for i in range(0, len(content), batch_size):
             batch = content[i : i + batch_size]
-            res_raw = evaluator_batch_llama_scraping(
-                prompts.get("scraping_response_validator_batch"), batch
+            res_raw = await evaluator_batch_llama_scraping(
+                prompts.get("scraping_response_validator_batch"), batch, userid=user_id
             )
 
             # Parse evaluator response
@@ -1230,7 +1270,7 @@ def fetch_scraping_ques_with_docs(clarification_list, user_id):
     return content
 
 
-def evaluator_batch_llama_scraping(prompt_template_str, qa_list):
+async def evaluator_batch_llama_scraping(prompt_template_str, qa_list, userid):
     """
     Evaluate scraping-based questions and answers using LLaMA.
     Similar to evaluator_batch_llama but specifically for scraping content.
@@ -1246,7 +1286,9 @@ def evaluator_batch_llama_scraping(prompt_template_str, qa_list):
     full_prompt = prompt_template_str.replace("{qa_list}", qa_input_block)
 
     try:
-        llama_response = get_fireworks_response(full_prompt, role="user")
+        llama_response = await get_fireworks_response(
+            full_prompt, role="user", user_id=userid
+        )
         return llama_response
     except Exception as e:
         print(f"🔥 LLaMA Evaluator batch Error for scraping: {e}")
@@ -1712,7 +1754,7 @@ def _scrape_website_fast_async(user_id: str, url: str):
         traceback.print_exc()
 
 
-def _scrape_youtube_async(user_id: str, url: str):
+async def _scrape_youtube_async(user_id: str, url: str):
     """
     Background async function for YouTube scraping (existing method)
     """
@@ -1726,7 +1768,7 @@ def _scrape_youtube_async(user_id: str, url: str):
             logger.error(f"[ASYNC_YT] YouTube scraping failed for {url}")
             return
 
-        summary_text = summarize_youtube_data_advanced(scraped_data)
+        summary_text = await summarize_youtube_data_advanced(scraped_data)
         if not summary_text or summary_text == "UNSUITABLE_CONTENT":
             logger.warning(f"[ASYNC_YT] Summarization failed for {url}")
             return

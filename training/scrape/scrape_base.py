@@ -37,6 +37,8 @@ from db.db_checkers import (
     check_userid_valid,
 )
 from datetime import datetime
+from credits_route.route import Credits
+
 
 logger = get_logger(__name__)
 
@@ -44,7 +46,7 @@ scrape_agent_bps = Blueprint("agents_scrape", __name__)
 
 
 @scrape_agent_bps.route("/scrape-youtube", methods=["POST"])
-def scrape_youtube_route():
+async def scrape_youtube_route():
     """
     Scrape YouTube video, get transcript, summarize, and extract clarifications
     """
@@ -99,7 +101,7 @@ def scrape_youtube_route():
             )
 
         # Step 2: Summarize
-        summary_text = summarize_youtube_data_advanced(scraped_data)
+        summary_text = await summarize_youtube_data_advanced(scraped_data, user_id)
 
         if summary_text == "UNSUITABLE_CONTENT":
             return (
@@ -122,7 +124,9 @@ def scrape_youtube_route():
             "extract_youtube_clarifications_prompt"
         ) or prompts.get("extract_scraping_clarifications_prompt")
 
-        val = evaluate_youtube_content(clarification_prompt, scraped_data, summary_text)
+        val = await evaluate_youtube_content(
+            clarification_prompt, scraped_data, summary_text, userid=user_id
+        )
         if not val:
             return (
                 jsonify(
@@ -151,6 +155,24 @@ def scrape_youtube_route():
             "metadata": scraped_data.get("metadata", {}),
             "embedding": embedding_vector,
         }
+
+        # ---------- calculate credits -------------------
+
+        total_input_chars = len(summary_text)
+        # total_output_chars = 0
+        # total_output_chars += sum(len(vec) for vec in embedding_vector)
+        total_output_chars = len(embedding_vector)
+
+        total_chars = total_input_chars + total_output_chars
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            credit_type="embedding",
+            total_chars=total_chars,
+            user_id=user_id
+        )
+
+        # ---------------------------------------------------
 
         # # Step 6: Save to LanceDB
         # lancedb_server_url = os.getenv("LANCE_DB_IP")
@@ -189,7 +211,7 @@ def scrape_youtube_route():
 
         # Step 8: Validate clarifications if any
         if val.get("clarifications"):
-            validate_youtube_clarifications(user_id)
+            await validate_youtube_clarifications(user_id)
 
         return (
             jsonify(
@@ -418,7 +440,7 @@ async def delete_youtube_summary():
 
 
 @scrape_agent_bps.route("/scrape", methods=["POST"])
-def scrape_website_route():
+async def scrape_website_route():
     """This function handles the web request, scrapes data, and saves it."""
     try:
         data = request.get_json()
@@ -439,7 +461,7 @@ def scrape_website_route():
 
         # --- Step 2: NEW - AI Summarization of scraped content ---
         logger.info(f"Summarizing scraped content for: {scraped_data['url']}")
-        summary_text = summarize_scraped_data_advanced(scraped_data)
+        summary_text = await summarize_scraped_data_advanced(scraped_data, user_id)
 
         if not summary_text or summary_text == "UNSUITABLE_CONTENT":
             logger.warning(f"Summarization failed, using original content")
@@ -450,6 +472,24 @@ def scrape_website_route():
 
         full_content = f"{scraped_data['title']}\n\n{summary_text}"
         embedding_vector = embedding_client.embeddings.embed_query(full_content)
+
+        # -------- calculate credits ---------------
+
+        total_input_chars = len(full_content)
+        # total_output_chars = 0
+        # total_output_chars += sum(len(vec) for vec in embedding_vector)
+        total_output_chars = len(embedding_vector)
+
+        total_chars = total_input_chars + total_output_chars
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            credit_type="embedding",
+            total_chars=total_chars,
+            user_id=user_id
+        )
+
+        # -----------------------------------------
 
         # --- Step 4: NEW - Prepare the payload for the LanceDB server (using summary) ---
         lancedb_payload = {
@@ -1508,14 +1548,33 @@ def update_contacts_scraped():
 
 
 @scrape_agent_bps.route("/check-scrape-check", methods=["POST"])
-def check_scrape_base():
+async def check_scrape_base():
     data = request.json
     userid = data.get("user_id")
     question = data.get("query")
     service = LanceClient(user_id=userid)
     query_input = QueryInput(user_id=userid, query_text=question, top_k=3)
     vector = service.embeddings.embed_query(question)
-    scrape_results = service.scrape_query_vector(
+
+    # ---------- calculate credits ----------
+
+    total_input_chars = len(question)
+    total_output_chars = 0
+    # total_output_chars += sum(len(vec) for vec in vector)
+    total_output_chars = len(vector)
+
+    total_chars = total_input_chars + total_output_chars
+
+    credits = Credits()
+    await credits.update_ai_credits_redis(
+        credit_type="embedding",
+        total_chars=total_chars,
+        user_id=userid
+    )
+
+    # -----------------------------------------
+
+    scrape_results = await service.scrape_query_vector(
         sender_email="All", query_input=query_input, vector=vector
     )
     return jsonify(scrape_results)

@@ -48,6 +48,7 @@ import pymysql
 from dotenv import load_dotenv
 from collections import defaultdict
 from datetime import datetime, timedelta
+from request_context import current_user_id
 
 # # Keep youtube_transcript_api as fallback
 # try:
@@ -537,7 +538,7 @@ def parse_llm_response(response_text):
     raise ValueError(error_msg)
 
 
-def generate_fallback_response(user_id, query, previous_query, previous_response):
+async def generate_fallback_response(user_id, query, previous_query, previous_response):
 
     fallback_response = ""
     is_repeated = False
@@ -573,7 +574,9 @@ def generate_fallback_response(user_id, query, previous_query, previous_response
             .replace("{{previous_response}}", str(previous_response))
         )
 
-        modified_yaml = get_fireworks_response(filled_prompt, "system")
+        modified_yaml = await get_fireworks_response(
+            filled_prompt, "system", user_id=user_id
+        )
 
         try:
             parsed_yaml = parse_llm_response(modified_yaml)
@@ -601,7 +604,9 @@ def generate_fallback_response(user_id, query, previous_query, previous_response
     return {"fallback_response": fallback_response, "is_repeated": is_repeated}
 
 
-def semantically_repeated_response(user_id, query, previous_query, previous_response):
+async def semantically_repeated_response(
+    user_id, query, previous_query, previous_response
+):
 
     fallback_response = ""
     is_repeated = False
@@ -621,7 +626,9 @@ def semantically_repeated_response(user_id, query, previous_query, previous_resp
         .replace("{{previous_response}}", str(previous_response))
     )
 
-    modified_yaml = get_fireworks_response(filled_prompt, "system")
+    modified_yaml = await get_fireworks_response(
+        filled_prompt, "system", user_id=user_id
+    )
 
     try:
         parsed_yaml = parse_llm_response(modified_yaml)
@@ -635,7 +642,7 @@ def semantically_repeated_response(user_id, query, previous_query, previous_resp
 
 
 @agent_bps.route("/process-query-key", methods=["POST"])
-def checkquerywithApiKey():
+async def checkquerywithApiKey():
     try:
         # print("Query made by:", session.get("user", {}))
         response_data = []
@@ -678,265 +685,289 @@ def checkquerywithApiKey():
             if not check_userid_valid(userid):
                 return jsonify({"error": "Invalid access"}), 404
 
-        # check for repitative user queries
-        repeated_check_ans = generate_fallback_response(
-            userid, querytext, previous_query, previous_response
-        )
-        repeated_fallback_response = repeated_check_ans["fallback_response"]
-        is_repeated = repeated_check_ans["is_repeated"]
-
-        if is_repeated:
-            response_data.append(
-                {
-                    "id": "",
-                    "match_score": "",
-                    "extracted_answer": repeated_fallback_response,
-                    "full_text": "",
-                    "conversation_summary": conversation_summary,
-                }
-            )
-            return jsonify(response_data), 200
-
-        # validate the input query
-        validated_respone = load_yaml_file(path=pathconfig.query_validation)
-        template = validated_respone.get("query_validation")
-        filled_prompt = (
-            template.replace("{{message_text}}", str(querytext))
-            .replace("{{previous_query}}", str(previous_query))
-            .replace("{{previous_response}}", str(previous_response))
-            .replace("{{conversation_summary}}", str(conversation_summary))
-        )
-        modified_yaml = get_fireworks_response(filled_prompt, role="system")
-
         try:
-            result = parse_llm_response(modified_yaml)
-        except ValueError as e:
-            print(f"🔥 Query validation parsing failed: {e}")
-            return jsonify({"error": "Failed to parse query validation response"}), 500
-        validated_query = result.get("question")
-        type = result.get("type")
-        summary_generated = result.get("summary_generated")
-        print(f"type : {type}")
-        print(f"summary : {summary_generated}")
-
-        if (
-            type == "general"
-            or type == "gratitude"
-            or type == "emotional"
-            or type == "unknown"
-            or type == "abuse"
-        ):
-            response_data.append(
-                {
-                    "id": "",
-                    "match_score": "",
-                    "extracted_answer": validated_query,
-                    "full_text": "",
-                    "conversation_summary": summary_generated,
-                }
-            )
-            return jsonify(response_data), 200
-
-        elif type == "repetition":
-            response = semantically_repeated_response(
+            # check for repitative user queries
+            repeated_check_ans = await generate_fallback_response(
                 userid, querytext, previous_query, previous_response
             )
-            response_data.append(
-                {
-                    "id": "",
-                    "match_score": "",
-                    "extracted_answer": response,
-                    "full_text": "",
-                    "conversation_summary": summary_generated,
-                }
-            )
-            return jsonify(response_data), 200
+            repeated_fallback_response = repeated_check_ans["fallback_response"]
+            is_repeated = repeated_check_ans["is_repeated"]
 
-        else:
-
-            # Check for exact match in passed_ques.yaml
-            passed_yaml_path = f"{userid}/yaml/passed_ques.yaml"
-            valid_ones = load_yaml_from_s3(passed_yaml_path)
-            if valid_ones and isinstance(valid_ones[0], list):
-                valid_ones = [item for sublist in valid_ones for item in sublist]
-
-            if valid_ones:
-                for each in valid_ones:
-                    user_query = each.get("User", "").strip().lower()
-                    if user_query == querytext.lower():
-                        response_data.append(
-                            {
-                                "id": "",
-                                "match_score": "",
-                                "extracted_answer": each.get("Ai Response", ""),
-                                "full_text": "",
-                                "conversation_summary": summary_generated,
-                            }
-                        )
-                        return jsonify(response_data), 200
-
-            # If no exact match, perform vector search
-            base_doc_ans = []
-            if validated_query:
-                top_k = 3
-                query_input = QueryInput(
-                    user_id=userid, query_text=validated_query, top_k=top_k
+            if is_repeated:
+                response_data.append(
+                    {
+                        "id": "",
+                        "match_score": "",
+                        "extracted_answer": repeated_fallback_response,
+                        "full_text": "",
+                        "conversation_summary": conversation_summary,
+                    }
                 )
-                lance_client = LanceClient(user_id=userid)
-                # results = run_async(lance_client.mixed_query_vector(query_input))
-                results = run_async(lance_client.query_vector(query_input))
-                for r in results:
-                    clean_text = r.get("text", "").encode().decode("unicode_escape")
-                    base_doc_ans.append(clean_text)
+                return jsonify(response_data), 200
 
-            # Fetch business info
-            businessdata = get_business_info(connection=connection, userid=userid)
-
-            business_name = (
-                businessdata.get("BusinessName") if businessdata else "Our Organization"
-            )
-            business_address = (
-                businessdata.get("BillingAddress") if businessdata else ""
-            )
-            business_website = (
-                businessdata.get("WebsiteUrl") if businessdata else ""
-            ) or ""
-
-            # Build final prompt for AI reply
-            prompt_template = validated_respone.get("base_eval_response")
+            # validate the input query
+            validated_respone = load_yaml_file(path=pathconfig.query_validation)
+            template = validated_respone.get("query_validation")
             filled_prompt = (
-                prompt_template.replace(
-                    "{{user_query}}",
-                    json.dumps(querytext, ensure_ascii=False, indent=2),
-                )
-                .replace(
-                    "{{base_doc_ans}}",
-                    json.dumps(base_doc_ans, ensure_ascii=False, indent=2),
-                )
-                .replace("{{business_name}}", business_name)
-                .replace("{{business_address}}", business_address)
-                .replace("{{business_website}}", business_website)
+                template.replace("{{message_text}}", str(querytext))
+                .replace("{{previous_query}}", str(previous_query))
+                .replace("{{previous_response}}", str(previous_response))
+                .replace("{{conversation_summary}}", str(conversation_summary))
             )
-
-            modified_yaml = get_fireworks_response(filled_prompt, "system")
+            modified_yaml = await get_fireworks_response(
+                filled_prompt, role="system", user_id=userid
+            )
 
             try:
                 result = parse_llm_response(modified_yaml)
             except ValueError as e:
-                print(f"🔥 Base evaluation parsing failed: {e}")
+                print(f"🔥 Query validation parsing failed: {e}")
                 return (
-                    jsonify({"error": "Failed to parse base evaluation response"}),
+                    jsonify({"error": "Failed to parse query validation response"}),
                     500,
                 )
+            validated_query = result.get("question")
+            type = result.get("type")
+            summary_generated = result.get("summary_generated")
+            print(f"type : {type}")
+            print(f"summary : {summary_generated}")
 
-            base_response = result.get("response")
-            no_answer_found = result.get("no_answer_found")
-            if isinstance(no_answer_found, str):
-                val = no_answer_found.strip().lower()
-            else:
-                val = str(no_answer_found).lower()
-
-            if val in ["true", "yes", "1"]:
-                no_answer_found = True
-            elif val == "partial":
-                no_answer_found = "Partial"
-            else:
-                no_answer_found = False
-            print(f"base_response : {base_response}")
-            print(f"no_answer_found : {no_answer_found}")
-
-            if not no_answer_found:
+            if (
+                type == "general"
+                or type == "gratitude"
+                or type == "emotional"
+                or type == "unknown"
+                or type == "abuse"
+            ):
                 response_data.append(
                     {
                         "id": "",
                         "match_score": "",
-                        "extracted_answer": base_response,
+                        "extracted_answer": validated_query,
                         "full_text": "",
                         "conversation_summary": summary_generated,
                     }
                 )
                 return jsonify(response_data), 200
 
-            elif no_answer_found == "Partial":
-                # genereate fall back response when no_answer_found is true or partial
-                print(f"inside partial part")
+            elif type == "repetition":
+                response = await semantically_repeated_response(
+                    userid, querytext, previous_query, previous_response
+                )
+                response_data.append(
+                    {
+                        "id": "",
+                        "match_score": "",
+                        "extracted_answer": response,
+                        "full_text": "",
+                        "conversation_summary": summary_generated,
+                    }
+                )
+                return jsonify(response_data), 200
 
-                website_urls = get_website_url(api_key)
-                youtube_urls = get_youtube_url(api_key)
+            else:
 
-                print(f"website_urls: {website_urls}")
-                print(f"youtube_urls: {youtube_urls}")
+                # Check for exact match in passed_ques.yaml
+                passed_yaml_path = f"{userid}/yaml/passed_ques.yaml"
+                valid_ones = load_yaml_from_s3(passed_yaml_path)
+                if valid_ones and isinstance(valid_ones[0], list):
+                    valid_ones = [item for sublist in valid_ones for item in sublist]
 
-                fallback_respone = load_yaml_file(path=pathconfig.query_validation)
-                template = fallback_respone.get("fallback_partial_answer")
+                if valid_ones:
+                    for each in valid_ones:
+                        user_query = each.get("User", "").strip().lower()
+                        if user_query == querytext.lower():
+                            response_data.append(
+                                {
+                                    "id": "",
+                                    "match_score": "",
+                                    "extracted_answer": each.get("Ai Response", ""),
+                                    "full_text": "",
+                                    "conversation_summary": summary_generated,
+                                }
+                            )
+                            return jsonify(response_data), 200
+
+                # If no exact match, perform vector search
+                base_doc_ans = []
+                if validated_query:
+                    top_k = 3
+                    query_input = QueryInput(
+                        user_id=userid, query_text=validated_query, top_k=top_k
+                    )
+                    lance_client = LanceClient(user_id=userid)
+                    # results = run_async(lance_client.mixed_query_vector(query_input))
+                    print("***** before calling query_vector")
+                    results = await lance_client.query_vector(query_input)
+                    for r in results:
+                        clean_text = r.get("text", "").encode().decode("unicode_escape")
+                        base_doc_ans.append(clean_text)
+                    print("***** after calling query_vector")
+
+                # Fetch business info
+                businessdata = get_business_info(connection=connection, userid=userid)
+
+                business_name = (
+                    businessdata.get("BusinessName")
+                    if businessdata
+                    else "Our Organization"
+                )
+                business_address = (
+                    businessdata.get("BillingAddress") if businessdata else ""
+                )
+                business_website = (
+                    businessdata.get("WebsiteUrl") if businessdata else ""
+                ) or ""
+
+                # Build final prompt for AI reply
+                prompt_template = validated_respone.get("base_eval_response")
                 filled_prompt = (
-                    template.replace(
-                        "{{website_urls}}",
-                        ", ".join(website_urls) if website_urls else "",
+                    prompt_template.replace(
+                        "{{user_query}}",
+                        json.dumps(querytext, ensure_ascii=False, indent=2),
                     )
                     .replace(
-                        "{{youtube_urls}}",
-                        ", ".join(youtube_urls) if youtube_urls else "",
+                        "{{base_doc_ans}}",
+                        json.dumps(base_doc_ans, ensure_ascii=False, indent=2),
                     )
-                    .replace("{{base_response}}", base_response)
-                    .replace("{{previous_query}}", str(previous_query))
-                    .replace("{{previous_response}}", str(previous_response))
+                    .replace("{{business_name}}", business_name)
+                    .replace("{{business_address}}", business_address)
+                    .replace("{{business_website}}", business_website)
                 )
-                modified_yaml = get_fireworks_response(filled_prompt, role="system")
+
+                modified_yaml = await get_fireworks_response(
+                    filled_prompt, "system", user_id=userid
+                )
 
                 try:
-                    parsed_yaml = parse_llm_response(modified_yaml)
+                    result = parse_llm_response(modified_yaml)
                 except ValueError as e:
-                    print(f"🔥 Fallback response parsing failed: {e}")
-                    return jsonify({"error": "Failed to parse fallback response"}), 500
+                    print(f"🔥 Base evaluation parsing failed: {e}")
+                    return (
+                        jsonify({"error": "Failed to parse base evaluation response"}),
+                        500,
+                    )
 
-                fallback_response = parsed_yaml.get("response")
+                base_response = result.get("response")
+                no_answer_found = result.get("no_answer_found")
+                if isinstance(no_answer_found, str):
+                    val = no_answer_found.strip().lower()
+                else:
+                    val = str(no_answer_found).lower()
 
-                print(f"fallback response: {fallback_response}")
+                if val in ["true", "yes", "1"]:
+                    no_answer_found = True
+                elif val == "partial":
+                    no_answer_found = "Partial"
+                else:
+                    no_answer_found = False
+                print(f"base_response : {base_response}")
+                print(f"no_answer_found : {no_answer_found}")
 
-                response_data.append(
-                    {
-                        "id": "",
-                        "match_score": "",
-                        "extracted_answer": fallback_response,
-                        "full_text": "",
-                        "conversation_summary": summary_generated,
-                    }
-                )
-                return jsonify(response_data), 200
+                if not no_answer_found:
+                    response_data.append(
+                        {
+                            "id": "",
+                            "match_score": "",
+                            "extracted_answer": base_response,
+                            "full_text": "",
+                            "conversation_summary": summary_generated,
+                        }
+                    )
+                    return jsonify(response_data), 200
 
-            else:
-                print(f"inside true part")
-                fallback_respone = load_yaml_file(path=pathconfig.query_validation)
-                prompt = fallback_respone.get("fallback_no_answer")
-                print(f"str(querytext) : {str(querytext)}")
-                filled_prompt = (
-                    prompt.replace("{{user_query}}", str(querytext))
-                    .replace("{{previous_query}}", str(previous_query))
-                    .replace("{{previous_response}}", str(previous_response))
-                )
-                modified_yaml = get_fireworks_response(filled_prompt, role="system")
+                elif no_answer_found == "Partial":
+                    # genereate fall back response when no_answer_found is true or partial
+                    print(f"inside partial part")
 
-                try:
-                    parsed_yaml = parse_llm_response(modified_yaml)
-                except ValueError as e:
-                    print(f"🔥 Fallback response parsing failed: {e}")
-                    return jsonify({"error": "Failed to parse fallback response"}), 500
+                    website_urls = get_website_url(api_key)
+                    youtube_urls = get_youtube_url(api_key)
 
-                fallback_response = parsed_yaml.get("response")
+                    print(f"website_urls: {website_urls}")
+                    print(f"youtube_urls: {youtube_urls}")
 
-                print(f"summary_generated send : {summary_generated}")
+                    fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+                    template = fallback_respone.get("fallback_partial_answer")
+                    filled_prompt = (
+                        template.replace(
+                            "{{website_urls}}",
+                            ", ".join(website_urls) if website_urls else "",
+                        )
+                        .replace(
+                            "{{youtube_urls}}",
+                            ", ".join(youtube_urls) if youtube_urls else "",
+                        )
+                        .replace("{{base_response}}", base_response)
+                        .replace("{{previous_query}}", str(previous_query))
+                        .replace("{{previous_response}}", str(previous_response))
+                    )
+                    modified_yaml = await get_fireworks_response(
+                        filled_prompt, role="system", user_id=userid
+                    )
 
-                response_data.append(
-                    {
-                        "id": "",
-                        "match_score": "",
-                        "extracted_answer": fallback_response,
-                        "full_text": "",
-                        "conversation_summary": summary_generated,
-                    }
-                )
-                return jsonify(response_data), 200
+                    try:
+                        parsed_yaml = parse_llm_response(modified_yaml)
+                    except ValueError as e:
+                        print(f"🔥 Fallback response parsing failed: {e}")
+                        return (
+                            jsonify({"error": "Failed to parse fallback response"}),
+                            500,
+                        )
+
+                    fallback_response = parsed_yaml.get("response")
+
+                    print(f"fallback response: {fallback_response}")
+
+                    response_data.append(
+                        {
+                            "id": "",
+                            "match_score": "",
+                            "extracted_answer": fallback_response,
+                            "full_text": "",
+                            "conversation_summary": summary_generated,
+                        }
+                    )
+                    return jsonify(response_data), 200
+
+                else:
+                    print(f"inside true part")
+                    fallback_respone = load_yaml_file(path=pathconfig.query_validation)
+                    prompt = fallback_respone.get("fallback_no_answer")
+                    print(f"str(querytext) : {str(querytext)}")
+                    filled_prompt = (
+                        prompt.replace("{{user_query}}", str(querytext))
+                        .replace("{{previous_query}}", str(previous_query))
+                        .replace("{{previous_response}}", str(previous_response))
+                    )
+                    modified_yaml = await get_fireworks_response(
+                        filled_prompt, role="system", user_id=userid
+                    )
+
+                    try:
+                        parsed_yaml = parse_llm_response(modified_yaml)
+                    except ValueError as e:
+                        print(f"🔥 Fallback response parsing failed: {e}")
+                        return (
+                            jsonify({"error": "Failed to parse fallback response"}),
+                            500,
+                        )
+
+                    fallback_response = parsed_yaml.get("response")
+
+                    print(f"summary_generated send : {summary_generated}")
+
+                    response_data.append(
+                        {
+                            "id": "",
+                            "match_score": "",
+                            "extracted_answer": fallback_response,
+                            "full_text": "",
+                            "conversation_summary": summary_generated,
+                        }
+                    )
+                    return jsonify(response_data), 200
+        except Exception as e:
+            print(f"error in cehckquerywithApiKey:{e} ")
 
     except Exception as e:
         # print("❌ Error during query processing:", e)
@@ -1015,12 +1046,17 @@ def makeuserDocClarifications(userid=None, industry=None):
                 404,
             )
 
+        def pre_process_wrapper(**kwargs):
+            import asyncio
+
+            return asyncio.run(preProcessDocWithUsecases(**kwargs))
+
         # Trigger background QA generation
         result = run_background_task(
             userid=fetched_userid,
             industry=fetched_industry,
             filenames=present_files,
-            func=preProcessDocWithUsecases,
+            func=pre_process_wrapper,
         )
         print(f"[DEBUG] Background task queued: {result}")
         return (
@@ -1050,7 +1086,7 @@ def makeuserDocClarifications(userid=None, industry=None):
 
 
 @agent_bps.route("/clarification_update", methods=["POST"])
-def updateClarifications(userid=None, industry=None):
+async def updateClarifications(userid=None, industry=None):
     data = request.json
     fetched_userid = data.get("userid") or userid
     if not fetched_userid:
@@ -1079,95 +1115,112 @@ def updateClarifications(userid=None, industry=None):
         entry.get("Rephrased Question", "").strip(): entry.get("User", "").strip()
         for entry in failed_entries
     }
-    for query in fetched_queries:
-        rephrased = query.get("usecase", "").strip()
-        reply = query.get("reply", "").strip()
-        usecase = rephrased_to_user_map.get(rephrased, "").strip()
+    token = current_user_id.set(fetched_userid)
+    try:
+        for query in fetched_queries:
+            rephrased = query.get("usecase", "").strip()
+            reply = query.get("reply", "").strip()
+            usecase = rephrased_to_user_map.get(rephrased, "").strip()
 
-        if not usecase:
-            continue  # Skip blank entries
+            if not usecase:
+                continue  # Skip blank entries
 
-        res = evaluator_llama(
-            prompts.get("customer_response_checker"),
-            usecase,
-            reply,
-            industry,
-        )
+            res = await evaluator_llama(
+                prompts.get("customer_response_checker"),
+                usecase,
+                reply,
+                industry,
+                userid=fetched_userid,
+            )
 
-        # If the LLaMA result is a string, extract JSON
-        if isinstance(res, str):
-            match = re.search(r"\{.*\}", res, re.DOTALL)
-            if match:
-                try:
-                    parsed_output = yaml.safe_load(match.group(0))
-                except Exception as e:
-                    # print("❌ Failed to parse LLaMA JSON:", e)
+            # If the LLaMA result is a string, extract JSON
+            if isinstance(res, str):
+                match = re.search(r"\{.*\}", res, re.DOTALL)
+                if match:
+                    try:
+                        parsed_output = yaml.safe_load(match.group(0))
+                    except Exception as e:
+                        # print("❌ Failed to parse LLaMA JSON:", e)
+                        parsed_output = {}
+                else:
+                    # print("❌ Could not extract JSON from LLaMA response")
                     parsed_output = {}
             else:
-                # print("❌ Could not extract JSON from LLaMA response")
-                parsed_output = {}
-        else:
-            parsed_output = res  # already a dict
+                parsed_output = res  # already a dict
 
-        is_valid = parsed_output.get("is_valid", False)
-        refined_response = parsed_output.get("refined_response", "").strip()
+            is_valid = parsed_output.get("is_valid", False)
+            refined_response = parsed_output.get("refined_response", "").strip()
 
-        failed_entries_backup = failed_entries[:]
-        if is_valid:
-            failed_entries = [e for e in failed_entries if e.get("User", "") != usecase]
+            failed_entries_backup = failed_entries[:]
+            if is_valid:
+                failed_entries = [
+                    e for e in failed_entries if e.get("User", "") != usecase
+                ]
 
-            # Avoid duplicates in passed
-            if not any(e.get("User", "") == usecase for e in passed_entries):
-                # Find the corresponding failed entry to get rephrased
-                matching_entry = next(
-                    (e for e in failed_entries_backup if e.get("User", "") == usecase),
-                    {},
-                )
-                quote = matching_entry.get("quote", "").strip()
-                filename = matching_entry.get("filename", "").strip()
-                passed_entries.append(
-                    {
-                        "User": usecase,
-                        "rephrased_response": matching_entry.get(
-                            "Rephrased Question", ""
-                        ).strip(),
-                        "Ai Response": refined_response,
-                        "quote": quote,
-                        "filename": filename,
-                        "date_processed": datetime.now().isoformat(timespec="seconds"),
-                        "doc_value": matching_entry.get("doc_value", ""),
-                    }
-                )
-                if matching_entry.get("is_audio"):
-                    logger.info(
-                        f"Removing transcript clarifications for {matching_entry['is_audio']}"
+                # Avoid duplicates in passed
+                if not any(e.get("User", "") == usecase for e in passed_entries):
+                    # Find the corresponding failed entry to get rephrased
+                    matching_entry = next(
+                        (
+                            e
+                            for e in failed_entries_backup
+                            if e.get("User", "") == usecase
+                        ),
+                        {},
                     )
-                    passed_entries[-1]["is_audio"] = matching_entry["is_audio"]
-                    passed_entries[-1]["rec_id"] = matching_entry.get("rec_id", "")
-                    remove_transcript_clarifications(
-                        userid=fetched_userid,
-                        config_path=matching_entry["is_audio"],
-                        rec_id=matching_entry.get("rec_id", ""),
+                    quote = matching_entry.get("quote", "").strip()
+                    filename = matching_entry.get("filename", "").strip()
+                    passed_entries.append(
+                        {
+                            "User": usecase,
+                            "rephrased_response": matching_entry.get(
+                                "Rephrased Question", ""
+                            ).strip(),
+                            "Ai Response": refined_response,
+                            "quote": quote,
+                            "filename": filename,
+                            "date_processed": datetime.now().isoformat(
+                                timespec="seconds"
+                            ),
+                            "doc_value": matching_entry.get("doc_value", ""),
+                        }
                     )
+                    if matching_entry.get("is_audio"):
+                        logger.info(
+                            f"Removing transcript clarifications for {matching_entry['is_audio']}"
+                        )
+                        passed_entries[-1]["is_audio"] = matching_entry["is_audio"]
+                        passed_entries[-1]["rec_id"] = matching_entry.get("rec_id", "")
+                        remove_transcript_clarifications(
+                            userid=fetched_userid,
+                            config_path=matching_entry["is_audio"],
+                            rec_id=matching_entry.get("rec_id", ""),
+                        )
 
-        else:
-            # If it's not valid, move it to failed entries (if not already there)
-            if not any(e.get("User", "") == usecase for e in failed_entries):
-                matching_entry = next(
-                    (e for e in failed_entries_backup if e.get("User", "") == usecase),
-                    {},
-                )
-                failed_entries.append(
-                    {
-                        "User": usecase,
-                        "rephrased_response": matching_entry.get(
-                            "Rephrased Question", ""
-                        ).strip(),
-                        "Ai Response": reply,
-                        "quote": quote,
-                        "filename": filename,
-                    }
-                )
+            else:
+                # If it's not valid, move it to failed entries (if not already there)
+                if not any(e.get("User", "") == usecase for e in failed_entries):
+                    matching_entry = next(
+                        (
+                            e
+                            for e in failed_entries_backup
+                            if e.get("User", "") == usecase
+                        ),
+                        {},
+                    )
+                    failed_entries.append(
+                        {
+                            "User": usecase,
+                            "rephrased_response": matching_entry.get(
+                                "Rephrased Question", ""
+                            ).strip(),
+                            "Ai Response": reply,
+                            "quote": quote,
+                            "filename": filename,
+                        }
+                    )
+    finally:
+        current_user_id.reset(token)
 
     # ✅ Save YAML files
     # with open(passed_path, "w", encoding="utf-8") as pf:
@@ -1229,7 +1282,7 @@ def updateClarifications(userid=None, industry=None):
 
 # --- Main endpoint (updated) ---
 @agent_bps.route("/get-ai-suggestion", methods=["POST"])
-def get_ai_suggestion():
+async def get_ai_suggestion():
     try:
         data = request.json
         if not data or "usecase" not in data or "url" not in data:
@@ -1292,7 +1345,12 @@ def get_ai_suggestion():
         # full_prompt += f"\n\nHere is additional context from the company's website:\n{context_text}"
 
         # --- Get AI response ---
-        ai_suggestion = get_fireworks_response(full_prompt, role="user")
+        try:
+            ai_suggestion = await get_fireworks_response(
+                full_prompt, role="user", user_id=userid
+            )
+        except Exception as e:
+            print(f"error in get_ai_suggestion:{e} ")
 
         # return jsonify({"suggestion": ai_suggestion, "scraped_file": json_path}), 200
         return jsonify({"suggestion": ai_suggestion}), 200

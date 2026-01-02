@@ -16,6 +16,9 @@ import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 import time
+from functools import lru_cache
+from credits_route.route import Credits
+from request_context import current_user_id
 
 # from sentence_transformers import SentenceTransformer
 
@@ -45,8 +48,122 @@ class UmailLanceClient:
         self.lancedb_url = lancedb_url
         self.user_id = user_id
         self.dimension = 4096
-        self.embeddings = get_firework_embedding()
+        self.embeddings = None
+
         self.lance_service = LanceDBServer()
+        # Optimal chunk sizes (tuned for cost + accuracy)
+        self.json_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1200,
+            chunk_overlap=200,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""],
+        )
+
+        self.plain_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=100,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""],
+        )
+
+    async def _load_embeddings(self):
+        self.embeddings = await get_firework_embedding()
+
+    async def _ensure_embeddings(self):
+        if self.embeddings is None:
+            await self._load_embeddings()
+
+    # --------------------------
+    # Cache repeated text pieces
+    # --------------------------
+    @lru_cache(maxsize=5000)
+    def cached_embed(self, text: str):
+        return self.embeddings.embed_query(text)
+
+    def safe_embed_chunks_og(self, chunks, max_batch_size=50):
+        """
+        Embed a list of text chunks safely, handling token limits and batch sizes.
+        Returns a list of embeddings in the same order.
+        """
+        asyncio.run(self._ensure_embeddings())
+        all_vectors = []
+
+        for i in range(0, len(chunks), max_batch_size):
+            batch = chunks[i : i + max_batch_size]
+            try:
+                # try batch embedding
+                vectors = self.embeddings.embed_documents(batch)
+                all_vectors.extend(vectors)
+            except Exception as e:
+                # fallback: maybe chunk too long → embed individually
+                print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
+                for chunk in batch:
+                    try:
+                        vec = self.embeddings.embed_query(chunk)
+                        all_vectors.append(vec)
+                    except Exception as ee:
+                        print(f"❌ Failed to embed chunk: {ee}")
+                        all_vectors.append([])  # empty vector if fails
+        return all_vectors
+
+    async def safe_embed_chunks(self, chunks, max_batch_size=50, user_id=None):
+        """
+        Embed a list of text chunks safely.
+        Runs sync embedding calls in a thread so asyncio is not blocked.
+        Returns embeddings in the same order.
+        """
+        await self._ensure_embeddings()
+        all_vectors = []
+        total_input_chars = 0
+        total_output_tokens = 0  # more accurate name
+
+        for i in range(0, len(chunks), max_batch_size):
+            batch = chunks[i : i + max_batch_size]
+
+            total_input_chars += sum(len(chunk) for chunk in batch)
+
+            try:
+                # run sync batch embedding in thread
+                vectors = await asyncio.to_thread(
+                    self.embeddings.embed_documents, batch
+                )
+                all_vectors.extend(vectors)
+
+                total_output_tokens += sum(len(v) for v in vectors)
+
+            except Exception as e:
+                print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
+
+                for chunk in batch:
+                    try:
+                        vec = await asyncio.to_thread(
+                            self.embeddings.embed_query, chunk
+                        )
+                        all_vectors.append(vec)
+                        total_output_tokens += len(vec)
+
+                    except Exception as ee:
+                        print(f"❌ Failed to embed chunk: {ee}")
+                        all_vectors.append([])
+
+        total_chars = total_input_chars + total_output_tokens
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            credit_type="embedding",
+            total_chars=total_chars,
+            user_id=self.user_id
+        )
+
+        return all_vectors
+
+    # ---------------------------------
+    # Optimized mean pooling
+    # ---------------------------------
+    def mean_pool(self, vectors):
+        if not vectors:
+            return []
+        return np.mean(vectors, axis=0).tolist()
 
     def get_records_from_lance(self, user_id: str, client_id: str):
         """
@@ -89,6 +206,16 @@ class UmailLanceClient:
 
             # raise HTTPException(status_code=400, detail=str(e))
 
+    def latest_messages_from_lance_test(
+        self, user_id, next_cursor
+    ):  # used for getting recent messages
+        print(f"latest_messages_from_lance_test")
+
+        response = self.lance_service.serverless_get_umail_page_test_test(
+            user_id=user_id, next_cursor=next_cursor
+        )
+        return response
+
     def latest_messages_from_lance(
         self, user_id, next_cursor
     ):  # used for getting recent messages
@@ -102,7 +229,7 @@ class UmailLanceClient:
         #     raise Exception(
         #         f"API call failed: {response.status_code} - {response.text}"
         #     )
-        response = self.lance_service.serverless_get_umail_page(
+        response = self.lance_service.serverless_get_umail_page_test(
             user_id=user_id, next_cursor=next_cursor
         )
 
@@ -286,6 +413,7 @@ class UmailLanceClient:
 
         for filename in os.listdir(folder_path):
             if not filename.lower().endswith(".json"):
+                print(f"no filename")
                 continue
 
             file_path = os.path.join(folder_path, filename)
@@ -301,6 +429,12 @@ class UmailLanceClient:
             user_id = parts[0]
             client_id = parts[1]
             conv_id = os.path.splitext(parts[2])[0]
+
+            print(f"---------")
+            print(f"user_id : {user_id}")
+            print(f"client_id : {client_id}")
+            print(f"conv_id : {conv_id}")
+            print(f"---------")
 
             def make_row(d):
                 flattened_texts = self.flatten_json(d)
@@ -348,8 +482,9 @@ class UmailLanceClient:
 
     # first fucntion
 
-    def embed_json_files(self, folder_path):
+    async def embed_json_files(self, folder_path):
         data = self.process_json_files(folder_path)
+        await self._ensure_embeddings()
 
         vector_batch = []
         all_text_lengths = []
@@ -442,27 +577,28 @@ class UmailLanceClient:
         else:
             return {"vectors_made": 0, "docs_processed": len(data)}
 
-    def embed_both_json_and_plain(self, folder_path, batch_size=100):
+    def _safe_mean_embedding(self, vectors):
+        """
+        Returns a fixed-size embedding even if vectors are empty or bad.
+        """
+        valid = [
+            v
+            for v in vectors
+            if isinstance(v, (list, np.ndarray)) and len(v) == self.dimension
+        ]
+
+        if not valid:
+            return np.zeros(self.dimension, dtype=np.float32).tolist()
+
+        return np.mean(np.array(valid), axis=0).astype(np.float32).tolist()
+
+    async def embed_both_json_and_plain(self, folder_path, batch_size=100):
         print(f"inside embed_both_json_and_plain")
+        print(f"folder_path : {folder_path}")
         data = self.process_json_files(folder_path)
 
         vector_batch = []
         batch_index = 1
-
-        dynamic_chunk_size = 4000
-        json_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=dynamic_chunk_size,
-            chunk_overlap=int(dynamic_chunk_size * 0.2),  # 20% overlap
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""],  # Try these separators in order
-        )
-
-        plain_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,
-            chunk_overlap=150,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""],
-        )
 
         for f in data:
             user_id = f["user_id"]
@@ -473,29 +609,36 @@ class UmailLanceClient:
             timestamp = f["timestamp"]
             plain_text = f.get("plain_text", "")
 
-            # ---- JSON embedding ----
-            json_chunks = json_splitter.split_text(flattened) if flattened else []
-            json_vectors = (
-                [self.embeddings.embed_query(c) for c in json_chunks]
-                if json_chunks
-                else []
-            )
-            merged_json_embedding = (
-                np.mean(json_vectors, axis=0).tolist() if json_vectors else []
-            )
+            print(f"user_id : {user_id}")
+            # -------------------------------
+            # JSON embedding
+            # -------------------------------
+            json_chunks = self.json_splitter.split_text(flattened) if flattened else []
+            # json_vectors = [self.embeddings.embed_query(c) for c in json_chunks] if json_chunks else []
+            json_vectors = await self.safe_embed_chunks(json_chunks, user_id=user_id)
+            merged_json_embedding = self._safe_mean_embedding(json_vectors)
 
-            # ---- Plain embedding ----
-            plain_chunks = plain_splitter.split_text(plain_text) if plain_text else []
-            plain_vectors = (
-                [self.embeddings.embed_query(c) for c in plain_chunks]
-                if plain_chunks
-                else []
+            # -------------------------------
+            # Plain text embedding
+            # -------------------------------
+            plain_chunks = (
+                self.plain_splitter.split_text(plain_text) if plain_text else []
             )
-            merged_plain_embedding = (
-                np.mean(plain_vectors, axis=0).tolist() if plain_vectors else []
-            )
+            # plain_vectors = (
+            #     [self.embeddings.embed_query(c) for c in plain_chunks]
+            #     if plain_chunks
+            #     else []
+            # )
+            plain_vectors = await self.safe_embed_chunks(plain_chunks, user_id=user_id)
+            merged_plain_embedding = self._safe_mean_embedding(plain_vectors)
 
-            # ---- Build row ----
+            # -------------------------------
+            # Build record for LanceDB
+            # -------------------------------
+            print("----------------------")
+            print(f"inside embed_bith_json_and_plain : {conv_id}")
+            print("----------------------")
+
             row = UmailData(
                 id=conv_id,
                 user_id=user_id,
@@ -508,30 +651,30 @@ class UmailLanceClient:
 
             vector_batch.append(row)
 
-            # ---- When batch is full → insert ----
+            # -------------------------------
+            # Insert batch
+            # -------------------------------
             if len(vector_batch) >= batch_size:
                 print(
                     f"🟦 Inserting batch #{batch_index} ({len(vector_batch)} vectors)"
                 )
-                self.send_json_batch_to_lancedb(vector_batch)  # your batched insert
-                vector_batch = []  # clear batch
+                self.send_json_batch_to_lancedb(vector_batch)
+                vector_batch = []
                 batch_index += 1
 
-        # Insert remaining items (if < batch_size)
+        # final batch
         if vector_batch:
             print(
                 f"🟩 Inserting final batch #{batch_index} ({len(vector_batch)} vectors)"
             )
             self.send_json_batch_to_lancedb(vector_batch)
 
-        return {
-            "total_rows": len(data),
-            "batches_inserted": batch_index,
-        }
+        return {"total_rows": len(data), "batches_inserted": batch_index}
 
-    def embed_json_file_for_reply(
+    async def embed_json_file_for_reply(
         self, lance_data, user_id, client_id, conversation_id
     ):
+
         file = self.process_json_files_for_reply(
             lance_data, user_id, client_id, conversation_id
         )
@@ -543,72 +686,41 @@ class UmailLanceClient:
         print(f"   input_data type: {type(lance_data)}")
 
         # Extract data
-        flattened = file.get("flattened_texts", "").strip()
+        flattened = (file.get("flattened_texts") or "").strip()
         plain_text = file.get("plain_text", "")
         original_data = file.get("original_data")
         timestamp = file.get("timestamp")
         conv_id = file.get("conv_id")
-        user_id = file.get("user_id")
-        client_id = file.get("client_id")
+
+        token = current_user_id.set(user_id)
+        try:
+            # -------------------------------
+            # JSON embedding
+            # -------------------------------
+            json_chunks = self.json_splitter.split_text(flattened) if flattened else []
+            # json_vectors = (
+            #     [self.embeddings.embed_query(c) for c in json_chunks] if json_chunks else []
+            # )
+            json_vectors = await self.safe_embed_chunks(json_chunks, user_id=user_id)
+            merged_json_embedding = self._safe_mean_embedding(json_chunks)
+
+            # -------------------------------
+            # Plain text embedding
+            # -------------------------------
+            plain_chunks = self.plain_splitter.split_text(plain_text) if plain_text else []
+            # plain_vectors = (
+            #     [self.embeddings.embed_query(c) for c in plain_chunks]
+            #     if plain_chunks
+            #     else []
+            # )
+            plain_vectors = await self.safe_embed_chunks(plain_chunks, user_id=user_id)
+            merged_plain_embedding = self._safe_mean_embedding(plain_vectors)
+        finally:
+          current_user_id.reset(token)
+
 
         # -------------------------------
-        # Dynamic chunk sizing
-        # -------------------------------
-        if flattened:
-            avg_length = len(flattened)
-            dynamic_chunk_size = max(2000, min(self.dimension, avg_length))
-        else:
-            dynamic_chunk_size = 4000
-
-        logger.info(
-            f"[📄 reply-embed] Using dynamic chunk size: {dynamic_chunk_size} "
-            f"with overlap: {int(dynamic_chunk_size * 0.2)}"
-        )
-
-        # JSON splitter
-        json_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=dynamic_chunk_size,
-            chunk_overlap=int(dynamic_chunk_size * 0.2),
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""],
-        )
-
-        # Plain text splitter
-        plain_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,
-            chunk_overlap=150,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""],
-        )
-
-        # -------------------------------
-        # JSON embedding (flattened)
-        # -------------------------------
-        json_chunks = json_splitter.split_text(flattened) if flattened else []
-        json_vectors = (
-            [self.embeddings.embed_query(c) for c in json_chunks] if json_chunks else []
-        )
-
-        merged_json_embedding = (
-            np.mean(json_vectors, axis=0).tolist() if json_vectors else []
-        )
-
-        # -------------------------------
-        # Plain text embedding
-        # -------------------------------
-        plain_chunks = plain_splitter.split_text(plain_text) if plain_text else []
-        plain_vectors = (
-            [self.embeddings.embed_query(c) for c in plain_chunks]
-            if plain_chunks
-            else []
-        )
-
-        merged_plain_embedding = (
-            np.mean(plain_vectors, axis=0).tolist() if plain_vectors else []
-        )
-
-        # -------------------------------
-        # Build row (ONE row per conversation)
+        # Build LanceDB row
         # -------------------------------
         row = UmailData(
             id=conv_id,
@@ -620,18 +732,118 @@ class UmailLanceClient:
             plain_text_embedding=merged_plain_embedding,
         )
 
-        # -------------------------------
         # Insert to LanceDB
-        # -------------------------------
         try:
             self.send_json_batch_to_lancedb_for_reply([row])
-            logger.info(
-                f"✅ reply embedding inserted into LanceDB for conv_id={conv_id}"
-            )
+            logger.info(f"✅ reply embedding inserted for conv_id={conv_id}")
             return {"status": "success", "conv_id": conv_id}
         except Exception as e:
             logger.error(f"❌ Failed inserting reply embedding for {conv_id}: {e}")
             return {"status": "failed", "error": str(e)}
+
+    # def embed_json_file_for_reply(
+    #     self, lance_data, user_id, client_id, conversation_id
+    # ):
+    #     file = self.process_json_files_for_reply(
+    #         lance_data, user_id, client_id, conversation_id
+    #     )
+
+    #     print("🔍 embed_json_file_for_reply called:")
+    #     print(f"   user_id: {user_id}")
+    #     print(f"   client_id: {client_id}")
+    #     print(f"   conversation_id: {conversation_id}")
+    #     print(f"   input_data type: {type(lance_data)}")
+
+    #     # Extract data
+    #     flattened = file.get("flattened_texts", "").strip()
+    #     plain_text = file.get("plain_text", "")
+    #     original_data = file.get("original_data")
+    #     timestamp = file.get("timestamp")
+    #     conv_id = file.get("conv_id")
+    #     user_id = file.get("user_id")
+    #     client_id = file.get("client_id")
+
+    #     # -------------------------------
+    #     # Dynamic chunk sizing
+    #     # -------------------------------
+    #     if flattened:
+    #         avg_length = len(flattened)
+    #         dynamic_chunk_size = max(2000, min(self.dimension, avg_length))
+    #     else:
+    #         dynamic_chunk_size = 4000
+
+    #     logger.info(
+    #         f"[📄 reply-embed] Using dynamic chunk size: {dynamic_chunk_size} "
+    #         f"with overlap: {int(dynamic_chunk_size * 0.2)}"
+    #     )
+
+    #     # JSON splitter
+    #     json_splitter = RecursiveCharacterTextSplitter(
+    #         chunk_size=dynamic_chunk_size,
+    #         chunk_overlap=int(dynamic_chunk_size * 0.2),
+    #         length_function=len,
+    #         separators=["\n\n", "\n", " ", ""],
+    #     )
+
+    #     # Plain text splitter
+    #     plain_splitter = RecursiveCharacterTextSplitter(
+    #         chunk_size=1500,
+    #         chunk_overlap=150,
+    #         length_function=len,
+    #         separators=["\n\n", "\n", " ", ""],
+    #     )
+
+    #     # -------------------------------
+    #     # JSON embedding (flattened)
+    #     # -------------------------------
+    #     json_chunks = json_splitter.split_text(flattened) if flattened else []
+    #     json_vectors = (
+    #         [self.embeddings.embed_query(c) for c in json_chunks] if json_chunks else []
+    #     )
+
+    #     merged_json_embedding = (
+    #         np.mean(json_vectors, axis=0).tolist() if json_vectors else []
+    #     )
+
+    #     # -------------------------------
+    #     # Plain text embedding
+    #     # -------------------------------
+    #     plain_chunks = plain_splitter.split_text(plain_text) if plain_text else []
+    #     plain_vectors = (
+    #         [self.embeddings.embed_query(c) for c in plain_chunks]
+    #         if plain_chunks
+    #         else []
+    #     )
+
+    #     merged_plain_embedding = (
+    #         np.mean(plain_vectors, axis=0).tolist() if plain_vectors else []
+    #     )
+
+    #     # -------------------------------
+    #     # Build row (ONE row per conversation)
+    #     # -------------------------------
+    #     row = UmailData(
+    #         id=conv_id,
+    #         user_id=user_id,
+    #         text=json.dumps(original_data, ensure_ascii=False),
+    #         embedding=merged_json_embedding,
+    #         folder_name=client_id,
+    #         timestamp=timestamp,
+    #         plain_text_embedding=merged_plain_embedding,
+    #     )
+
+    #     # -------------------------------
+    #     # Insert to LanceDB
+    #     # -------------------------------
+    #     try:
+    #         self.send_json_batch_to_lancedb_for_reply([row])
+    #         logger.info(
+    #             f"✅ reply embedding inserted into LanceDB for conv_id={conv_id}"
+    #         )
+    #         return {"status": "success", "conv_id": conv_id}
+    #     except Exception as e:
+    #         logger.error(f"❌ Failed inserting reply embedding for {conv_id}: {e}")
+    #         return {"status": "failed", "error": str(e)}
 
     def send_json_batch_to_lancedb_for_reply(self, vector_batch):
         """
@@ -735,11 +947,28 @@ class UmailLanceClient:
         except requests.exceptions.RequestException as e:
             print(f"Request failed: {e}")
 
-    def search_email_from_lance(
+    async def search_email_from_lance(
         self, folder_names, user_id, text_input, semantic_condition=None
     ):
         try:
+            await self._ensure_embeddings()
             embeddings = self.embeddings.embed_query(text_input)
+
+            # ---------- calculate credits --------------
+            total_input_chars = len(text_input)
+            # total_output_chars = 0
+            # total_output_chars += sum(len(vec) for vec in embeddings)
+            total_output_chars = len(embeddings)
+
+            total_chars = total_input_chars + total_output_chars
+
+            credits = Credits()
+            await credits.update_ai_credits_redis(
+                credit_type="embedding",
+                total_chars=total_chars,
+                user_id=user_id
+            )
+
             payload = {
                 "user_id": user_id,
                 "folder_names": folder_names,
@@ -769,14 +998,14 @@ class UmailLanceClient:
 
     def get_conv_from_lance(self, id, user_id, folder_name):
         try:
-            # print("inside  get_conv_from_lance")
+            print("inside  get_conv_from_lance")
 
             payload = {
                 "id": id,
                 "user_id": user_id,
                 "folder_name": folder_name,
             }
-            # print("payload", payload)
+            print("payload", payload)
             response = requests.post(
                 f"{self.lancedb_url}/fetch_conv_file",
                 params=payload,

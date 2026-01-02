@@ -20,8 +20,9 @@ join_graph = JoinGraph(IDENTITY_MAP)
 
 class ASTGenerator:
 
-    def __init__(self):
+    def __init__(self, user_id):
         base_dir = os.path.dirname(os.path.dirname(__file__))
+        self.userid = user_id
 
         # Load schema once
         with open(os.path.join(base_dir, "table_details.json"), "r") as f:
@@ -248,7 +249,7 @@ class ASTGenerator:
     # -------------------------------------------------------------
     # TIME RANGE FILTER
     # -------------------------------------------------------------
-    def extract_time_range(self, decomposed_query, reporting_yaml, data):
+    async def extract_time_range(self, decomposed_query, reporting_yaml, data):
         time_range = decomposed_query.get("time_range")
         time_column = self.get_time_column(decomposed_query)
 
@@ -263,7 +264,9 @@ class ASTGenerator:
             .replace("{{time_column}}", str(time_column))
             .replace("{{current_date}}", str(current_date))
         )
-        llm_response = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        llm_response = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
 
         try:
             parsed = parse_llm_response(llm_response)
@@ -466,7 +469,7 @@ class ASTGenerator:
 
         return ast
 
-    def retrieval_ast(
+    async def retrieval_ast(
         self,
         decomposed_query,
         database_schema,
@@ -520,7 +523,9 @@ class ASTGenerator:
                 json.dumps(database_schema, ensure_ascii=False, indent=2),
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -552,7 +557,9 @@ class ASTGenerator:
                 "{{aggregation}}", json.dumps(aggregation or "", ensure_ascii=False)
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -574,7 +581,9 @@ class ASTGenerator:
         filled_prompt = from_join_template.replace(
             "{{entity_table}}", json.dumps(entity_table, ensure_ascii=False)
         ).replace("{{joins}}", json.dumps(joins, ensure_ascii=False))
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -632,8 +641,8 @@ class ASTGenerator:
                 )
                 .replace("{{limit}}", json.dumps(limit))
             )
-            modified_yaml = get_fireworks_response2(
-                filled_prompt, role="system", temp=0.2
+            modified_yaml = await get_fireworks_response2(
+                user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
             )
             try:
                 group_order_result = parse_llm_response(modified_yaml)
@@ -670,7 +679,7 @@ class ASTGenerator:
 
         return ast, variable_column
 
-    def aggregation_ast(
+    async def aggregation_ast(
         self,
         decomposed_query,
         database_schema,
@@ -724,7 +733,9 @@ class ASTGenerator:
                 json.dumps(database_schema, ensure_ascii=False, indent=2),
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -760,7 +771,9 @@ class ASTGenerator:
                 "{{aggregation}}", json.dumps(aggregation, ensure_ascii=False, indent=2)
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -792,7 +805,9 @@ class ASTGenerator:
             .replace("{{metric_table}}", json.dumps(metric_table, ensure_ascii=False))
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -811,7 +826,7 @@ class ASTGenerator:
         #     .replace("{{time_column}}", json.dumps(time_column, ensure_ascii=False))
         #     .replace("{{time_range}}", str(time_range))
         # )
-        # modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        # modified_yaml = get_fireworks_response2( user_message=filled_prompt, role="system", temp=0.2,user_id=self.userid)
         # try:
         #     where_result = parse_llm_response(modified_yaml)
         # except ValueError as e:
@@ -862,7 +877,9 @@ class ASTGenerator:
             )
             .replace("{{limit}}", json.dumps(limit))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -956,7 +973,9 @@ class ASTGenerator:
                 json.dumps(database_schema, ensure_ascii=False, indent=2),
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1018,7 +1037,9 @@ class ASTGenerator:
                 )
             )
 
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1045,7 +1066,9 @@ class ASTGenerator:
             .replace("{{metric_table}}", json.dumps(metric_table, ensure_ascii=False))
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1091,7 +1114,9 @@ class ASTGenerator:
         filled_prompt = group_order_template.replace(
             "{{limit}}", json.dumps(limit)
         ).replace("{{time_bucket_column}}", json.dumps(time_bucket_column))
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1124,7 +1149,7 @@ class ASTGenerator:
         }
         return ast, variable_column
 
-    def ranking_ast(
+    async def ranking_ast(
         self,
         decomposed_query,
         database_schema,
@@ -1178,7 +1203,9 @@ class ASTGenerator:
                 json.dumps(database_schema, ensure_ascii=False, indent=2),
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1214,7 +1241,9 @@ class ASTGenerator:
                 "{{aggregation}}", json.dumps(aggregation, ensure_ascii=False, indent=2)
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1240,7 +1269,9 @@ class ASTGenerator:
             .replace("{{metric_table}}", json.dumps(metric_table, ensure_ascii=False))
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1298,7 +1329,9 @@ class ASTGenerator:
             .replace("{{limit}}", json.dumps(limit))
             .replace("{{ranking_direction}}", json.dumps(ranking_direction))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1333,7 +1366,7 @@ class ASTGenerator:
 
         return ast, variable_column
 
-    def ranking_ast_temporal(
+    async def ranking_ast_temporal(
         self,
         decomposed_query,
         database_schema,
@@ -1387,7 +1420,9 @@ class ASTGenerator:
                 json.dumps(database_schema, ensure_ascii=False, indent=2),
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1423,7 +1458,9 @@ class ASTGenerator:
                 "{{aggregation}}", json.dumps(aggregation, ensure_ascii=False, indent=2)
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1449,7 +1486,9 @@ class ASTGenerator:
             .replace("{{metric_table}}", json.dumps(metric_table, ensure_ascii=False))
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1510,7 +1549,9 @@ class ASTGenerator:
             .replace("{{limit}}", json.dumps(limit))
             .replace("{{ranking_direction}}", json.dumps(ranking_direction))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1545,7 +1586,7 @@ class ASTGenerator:
 
         return ast, variable_column
 
-    def ranking_ast_no_aggregate(
+    async def ranking_ast_no_aggregate(
         self,
         decomposed_query,
         database_schema,
@@ -1601,7 +1642,9 @@ class ASTGenerator:
                 json.dumps(database_schema, ensure_ascii=False, indent=2),
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1631,7 +1674,9 @@ class ASTGenerator:
                 json.dumps(metric_column, ensure_ascii=False, indent=2),
             )
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1657,7 +1702,9 @@ class ASTGenerator:
             .replace("{{metric_table}}", json.dumps(metric_table, ensure_ascii=False))
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1717,7 +1764,9 @@ class ASTGenerator:
             .replace("{{limit}}", json.dumps(limit))
             .replace("{{ranking_direction}}", json.dumps(ranking_direction))
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+        )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -1804,7 +1853,7 @@ class ASTGenerator:
         )
 
         # Time range
-        time_sql, time_params = self.extract_time_range(
+        time_sql, time_params = await self.extract_time_range(
             decomposed_query, reporting_yaml, data
         )
 
@@ -1814,7 +1863,7 @@ class ASTGenerator:
         # RANKING
         if sql_intent.lower() == "ranking":
             if temporal_flag:
-                ast, variable_columns = self.ranking_ast_temporal(
+                ast, variable_columns = await self.ranking_ast_temporal(
                     decomposed_query,
                     self.database_schema,
                     self.table_relationships,
@@ -1834,7 +1883,7 @@ class ASTGenerator:
                 )
             else:
                 if aggregation_flag:
-                    ast, variable_columns = self.ranking_ast(
+                    ast, variable_columns = await self.ranking_ast(
                         decomposed_query,
                         self.database_schema,
                         self.table_relationships,
@@ -1853,7 +1902,7 @@ class ASTGenerator:
                         select_columns,
                     )
                 else:
-                    ast, variable_columns = self.ranking_ast_no_aggregate(
+                    ast, variable_columns = await self.ranking_ast_no_aggregate(
                         decomposed_query,
                         self.database_schema,
                         self.table_relationships,
@@ -1904,7 +1953,7 @@ class ASTGenerator:
 
         # AGGREGATION
         elif sql_intent.lower() == "aggregation":
-            ast, variable_columns = self.aggregation_ast(
+            ast, variable_columns = await self.aggregation_ast(
                 decomposed_query,
                 self.database_schema,
                 self.table_relationships,
@@ -1928,7 +1977,7 @@ class ASTGenerator:
 
         # RETRIEVAL
         elif sql_intent.lower() == "retrieval":
-            ast, variable_columns = self.retrieval_ast(
+            ast, variable_columns = await self.retrieval_ast(
                 decomposed_query,
                 self.database_schema,
                 self.table_relationships,

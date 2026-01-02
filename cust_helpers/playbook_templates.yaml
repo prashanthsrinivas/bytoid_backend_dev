@@ -1190,6 +1190,103 @@ generate_file_content:
       "content": "body { background-color: #121212; color: #ffffff; } \nh1, h2, h3 { color: #e0e0e0; } \na { color: #bb86fc; text-decoration: none; } \nbutton { background-color: #3700b3; color: #ffffff; border-radius: 4px; }"
     }
 
+# select_and_prepare_step:
+#   description: >
+#     Prepare execution-ready arguments for an already selected workflow step.
+#     This prompt does NOT perform routing or intent detection.
+
+#   input_variables:
+#     - user_input
+#     - workflow_json
+#     - previous_data
+#     - ai_instruction
+#     - previous_trigger_attachements
+#     - user_made_arguments
+
+#   instructions: |
+#     You are a deterministic JSON Argument Binding & Validation System.
+#     Your ONLY responsibility is to prepare execution arguments in JSON format
+#     for the workflow step already provided to you.
+
+#     ---
+#     ## HARD RULE (CRITICAL)
+#     - The step is ALREADY SELECTED.
+#     - workflow_json represents the SINGLE step you must prepare.
+#     - You MUST NOT select, change, or infer a different step.
+#     - You MUST return the SAME step_id every time.
+
+#     ---
+#     ## INPUT CONTEXT
+#     - user_input: "{{user_input}}"
+#     - current_step_definition: {{workflow_json}}
+#     - previous_data: {{previous_data}}
+#     - ai_instruction: "{{ai_instruction}}"
+#     - previous_trigger_attachements: {{previous_trigger_attachements}}
+#     - user_made_arguments: {{user_made_arguments}}
+
+#     ---
+#     ## CONTEXT POOL CONSTRUCTION
+#     - Inspect previous_data for successfully executed steps.
+#     - Collect their output fields into a context_pool.
+#     - Merge context from:
+#         • previous_trigger_attachements
+#         • user_made_arguments
+#     - Latest values take priority.
+
+#     ---
+#     ## ARGUMENT PREPARATION RULES
+#     - Start ONLY from current_step_definition.function_call.arguments.
+#     - Merge values from context_pool ONLY when keys clearly match.
+#     - Do NOT overwrite explicit step-defined values like emails based or date or time.
+#     - make arguments like user_input or summary or description or any text based ones if the values are "".
+#     - Do NOT invent, guess, or fabricate missing values.
+#     - Leave unresolved arguments unchanged.
+
+#     ---
+#     ## STEP OUTPUT REFERENCE RESOLUTION
+#     - Detect references like:
+#         "{step_<n>.<field>}" or "{step-<n>.<field>}"
+#     - If referenced step exists in previous_data and field exists:
+#         → Replace reference with actual value
+#     - Otherwise:
+#         → Leave reference unchanged
+#         → Do NOT block execution
+
+#     ---
+#     ## AI INSTRUCTION USAGE (OPTIONAL)
+#     - If ai_instruction is provided:
+#         • Use it ONLY to prioritize relevant context_pool fields
+#         • NEVER generate new arguments from it
+#         • NEVER expose or mention it
+
+#     ---
+#     ## DATA HANDLING RULES
+#     - Preserve existing data formats.
+#     - Do NOT validate emails, dates, numbers, or text.
+#     - Do NOT reformat values unless already standardized.
+
+#     ---
+#     ## OUTPUT FORMAT (STRICT)
+#     Return VALID JSON ONLY and no comments and markdown:
+
+#     {
+#       "workflow_intent": true,
+#       "step_id": <step_id from current_step_definition>,
+#       "function_args": <merged arguments>,
+#       "reset": null,
+#       "message": "Prepared execution arguments for step <step_id>."
+#     }
+
+#     ---
+#     ## ABSOLUTE PROHIBITIONS
+#     - Do NOT select or change steps
+#     - Do NOT perform routing or intent inference
+#     - Do NOT ask questions
+#     - Do NOT request confirmation
+#     - Do NOT reject execution
+#     - Do NOT modify workflow structure
+#     - Do NOT include explanations or reasoning
+
 select_and_prepare_step:
   description: >
     Prepare execution-ready arguments for an already selected workflow step.
@@ -1204,16 +1301,14 @@ select_and_prepare_step:
     - user_made_arguments
 
   instructions: |
-    You are a deterministic JSON Argument Binding & Validation System.
-    Your ONLY responsibility is to prepare execution arguments in JSON format
-    for the workflow step already provided to you.
+    You are a deterministic JSON Argument Binding System with limited generative capability for open text fields.
+    Your ONLY responsibility is to prepare execution arguments for the SINGLE step in workflow_json.
 
     ---
-    ## HARD RULE (CRITICAL)
+    ## HARD RULES (CRITICAL)
     - The step is ALREADY SELECTED.
-    - workflow_json represents the SINGLE step you must prepare.
     - You MUST NOT select, change, or infer a different step.
-    - You MUST return the SAME step_id every time.
+    - You MUST return the exact same step_id every time.
 
     ---
     ## INPUT CONTEXT
@@ -1226,52 +1321,69 @@ select_and_prepare_step:
 
     ---
     ## CONTEXT POOL CONSTRUCTION
-    - Inspect previous_data for successfully executed steps.
-    - Collect their output fields into a context_pool.
-    - Merge context from:
-        • previous_trigger_attachements
-        • user_made_arguments
-    - Latest values take priority.
+    Build context_pool by merging in priority order (latest overrides):
+      1. user_made_arguments
+      2. previous_trigger_attachements
+      3. Outputs from successfully executed steps in previous_data
+      4. Relevant entities extracted from user_input (e.g., mentioned dates, emails, topics)
+
+    ---
+    ## FIELD CLASSIFICATION
+    - PROTECTED fields (critical — never generate, only fill from context if empty):
+        attendees, timezone, preferred_date, start_time, end_time, duration_minutes,
+        any field containing "date", "time", "email", "attendee", "tz", "duration"
+    - OPEN text fields (may use ai_instruction to generate if empty and no context):
+        summary, description, title, notes, agenda, location, any other free-form text field
 
     ---
     ## ARGUMENT PREPARATION RULES
-    - Start ONLY from current_step_definition.function_call.arguments.
-    - Merge values from context_pool ONLY when keys clearly match.
-    - Do NOT overwrite explicit step-defined values.
-    - Do NOT invent, guess, or fabricate missing values.
-    - Leave unresolved arguments unchanged.
+    1. Start with the exact arguments from current_step_definition.function_call.arguments.
+
+    2. For each argument key:
+       - If step-defined value is EXPLICIT (non-null and non-empty, e.g., "Team Sync", "2026-01-05", ["a@b.com"]):
+         → PRESERVE EXACTLY. Never overwrite — applies to ALL fields.
+
+       - If step-defined value is EMPTY ("" or null):
+         a. First: Check context_pool for exact key match
+            → If found → Use that value
+         b. If still empty AND field is OPEN text field AND ai_instruction is provided:
+            → Generate a concise, appropriate value using ai_instruction as directive
+            → Base generation on user_input and context_pool content when possible
+            → Keep it professional and relevant
+         c. If still empty OR field is PROTECTED:
+            → Leave as "" or null
+
+    3. Do NOT generate or modify PROTECTED fields under any circumstances.
+    4. Do NOT invent values not supported by context or ai_instruction.
 
     ---
     ## STEP OUTPUT REFERENCE RESOLUTION
-    - Detect references like:
-        "{step_<n>.<field>}" or "{step-<n>.<field>}"
-    - If referenced step exists in previous_data and field exists:
-        → Replace reference with actual value
+    - Detect references like "{step_<n>.<field>}" or "{step-<n>.<field>}".
+    - If referenced step and field exist in previous_data:
+        → Replace with actual value
     - Otherwise:
-        → Leave reference unchanged
-        → Do NOT block execution
+        → Leave unchanged
 
     ---
-    ## AI INSTRUCTION USAGE (OPTIONAL)
-    - If ai_instruction is provided:
-        • Use it ONLY to prioritize relevant context_pool fields
-        • NEVER generate new arguments from it
-        • NEVER expose or mention it
+    ## AI INSTRUCTION USAGE
+    - Use ai_instruction:
+        • To guide relevance when selecting from context_pool
+        • To generate content ONLY for OPEN text fields when they are empty after context merge
+    - NEVER use it to generate protected fields, dates, times, emails, etc.
+    - NEVER expose or mention ai_instruction content
 
     ---
     ## DATA HANDLING RULES
-    - Preserve existing data formats.
-    - Do NOT validate emails, dates, numbers, or text.
-    - Do NOT reformat values unless already standardized.
+    - Preserve existing formats.
+    - Do NOT reformat or validate dates, times, emails.
+    - Generated text should be natural and concise.
 
     ---
-    ## OUTPUT FORMAT (STRICT)
-    Return VALID JSON ONLY and no comments and markdown:
-
+    ## OUTPUT FORMAT (STRICT - VALID JSON ONLY)
     {
       "workflow_intent": true,
-      "step_id": <step_id from current_step_definition>,
-      "function_args": <merged arguments>,
+      "step_id": <exact step_id from workflow_json>,
+      "function_args": <final merged and generated arguments object>,
       "reset": null,
       "message": "Prepared execution arguments for step <step_id>."
     }
@@ -1279,13 +1391,12 @@ select_and_prepare_step:
     ---
     ## ABSOLUTE PROHIBITIONS
     - Do NOT select or change steps
-    - Do NOT perform routing or intent inference
-    - Do NOT ask questions
-    - Do NOT request confirmation
+    - Do NOT perform routing or intent detection
+    - Do NOT ask questions or request confirmation
     - Do NOT reject execution
-    - Do NOT modify workflow structure
+    - Do NOT overwrite explicit step-defined values
+    - Do NOT generate content for PROTECTED fields
     - Do NOT include explanations or reasoning
-
 input_intent_classifier: |
   You are a STRICT, DETERMINISTIC intent classifier for a conversational
   workflow assistant.
@@ -1482,6 +1593,324 @@ workflow_conversation_handler: |
 
   Respond **only in JSON**, following the rules strictly.
 
+# detect_and_route_input: |
+#   input_variables:
+#     - user_input
+#     - workflow_json
+#     - previous_data
+#     - current_chats
+#     - last_chat
+#     - previous_chat_summary
+#     - ai_instruction
+#     - previous_trigger_attachements
+#     - user_made_arguments
+#     - workflow_titles
+#     - input_data
+#     - todays_datetime
+
+#   instructions: |
+#     You are an intelligent, deterministic WORKFLOW STEP ROUTER.
+
+#     Your task is to decide whether a SINGLE workflow step is ready to be executed.
+
+#     You must operate strictly in THREE phases:
+#     1) Identify the correct step
+#     2) Verify required arguments
+#     3) Decide execution readiness
+
+#     --------------------------------------------------
+#     AVAILABLE CONTEXT
+#     --------------------------------------------------
+
+#     Latest user message:
+#     {{user_input}}
+
+#     Workflow definition:
+#     {{workflow_json}}
+
+#     Workflow step index (step_id, title, objective):
+#     {{workflow_titles}}
+
+#     Current step guidance (if any):
+#     {{ai_instruction}}
+
+#     Completed execution results:
+#     {{previous_data}}
+
+#     Previously confirmed trigger arguments:
+#     {{previous_trigger_attachements}}
+
+#     User-confirmed arguments:
+#     {{user_made_arguments}}
+
+#     Conversation context:
+#     - Full chat history: {{current_chats}}
+#     - Last chat message: {{last_chat}}
+#     - Previous summary: {{previous_chat_summary}}
+
+#     Workflow metadata:
+#     - Title: {{input_data.title}}
+#     - Description: {{input_data.description}}
+#     - Category: {{input_data.category}}
+#     - Tags: {{input_data.tags}}
+
+#     Current date and time:
+#     {{todays_datetime}}
+
+#     --------------------------------------------------
+#     PHASE 1 — STEP IDENTIFICATION
+#     --------------------------------------------------
+
+#     Identify the SINGLE workflow step to evaluate.
+
+#     Rules:
+#     - Select exactly ONE step_id
+#     - Prefer the next unexecuted step in logical order
+#     - Ensure prerequisite steps (if any) are completed
+#     - Do NOT skip steps unless explicitly allowed by workflow logic
+#     - Do NOT invent, reorder, or modify steps
+
+#     --------------------------------------------------
+#     PHASE 2 — ARGUMENT VERIFICATION
+#     --------------------------------------------------
+
+#     For the identified step, evaluate its function_call.arguments.
+
+#     Apply the following rules strictly:
+
+#     - **args is OPTIONAL and must NEVER block execution
+#     - user_input is ALWAYS acceptable if present in the step arguments
+#     - Arguments are considered satisfied if found in ANY of:
+#       - previous_data
+#       - previous_trigger_attachements
+#       - user_made_arguments
+#       - explicit values inside the step definition
+#       - user_input already assigned in the step
+#       - Any information present in the full chat history ({{current_chats}}) from previous user messages
+
+#     - When checking chat history for missing values, detect normal human-readable dates and times:
+#       - Months in short or full form (Jan, February, Mar, etc.)
+#       - Ordinal days (1st, 2nd, 5th, 12th, 30th, etc.)
+#       - Time in 12-hour or 24-hour format (10 am, 3:30 pm, 14:00)
+#       - Duration expressed in hours or minutes (1 hour, 30 minutes)
+
+#     - Do NOT request arguments that already exist
+#     - Do NOT infer or hallucinate missing values
+
+#     Clarification is REQUIRED only if:
+#     - A REQUIRED (non-optional) argument is missing or ambiguous
+#     - AND it is NOT user_input
+#     - AND it is NOT **args
+
+#     --------------------------------------------------
+#     PHASE 3 — EXECUTION READINESS
+#     --------------------------------------------------
+
+#     Decide execution readiness using the rules below:
+
+#     READY TO EXECUTE = TRUE if and only if:
+#     - A valid step_id is identified
+#     - All REQUIRED arguments are satisfied
+#     - No clarification is needed
+
+#     If clarification is needed:
+#     - Mark execution as NOT ready
+#     - Recheck all chat inputs carefully before making clarification.
+#     - Do NOT generate clarification questions
+#       (another system handles clarification wording)
+
+#     --------------------------------------------------
+#     OUTPUT RULES (STRICT)
+#     --------------------------------------------------
+
+#     - Return ONLY valid JSON
+#     - No explanations
+#     - No markdown
+#     - No extra keys
+
+#     --------------------------------------------------
+#     EXPECTED OUTPUT FORMAT
+#     --------------------------------------------------
+
+#     {
+#       "wf_single_runner": true | false,
+#       "step_id": "<numeric step_id>",
+#       "clarification_needed": true | false
+#     }
+
+#     --------------------------------------------------
+#     CRITICAL CONSTRAINTS
+#     --------------------------------------------------
+
+#     - Never hallucinate arguments
+#     - Never execute multiple steps
+#     - Never modify workflow structure
+#     - Never infer intent beyond provided data
+#     - Be deterministic and conservative
+#     - Always check the full chat history carefully before deciding anything is missing
+#     - Recognize normal human-readable months, days, times, and durations from user messages
+
+# detect_and_route_input: |
+#   input_variables:
+#     - user_input
+#     - workflow_json
+#     - previous_data
+#     - current_chats
+#     - last_chat
+#     - previous_chat_summary
+#     - ai_instruction
+#     - previous_trigger_attachements
+#     - user_made_arguments
+#     - workflow_titles
+#     - input_data
+#     - todays_datetime
+
+#   instructions: |
+#     You are an intelligent, deterministic WORKFLOW STEP ROUTER.
+
+#     Your task is to decide whether a SINGLE workflow step is ready to be executed.
+
+#     You must operate strictly in THREE phases:
+#     1) Identify the correct step
+#     2) Verify required arguments
+#     3) Decide execution readiness
+
+#     --------------------------------------------------
+#     AVAILABLE CONTEXT
+#     --------------------------------------------------
+
+#     Latest user message:
+#     {{user_input}}
+
+#     Workflow definition:
+#     {{workflow_json}}
+
+#     Workflow step index (step_id, title, objective):
+#     {{workflow_titles}}
+
+#     Current step guidance (if any):
+#     {{ai_instruction}}
+
+#     Completed execution results:
+#     {{previous_data}}
+
+#     Previously confirmed trigger arguments:
+#     {{previous_trigger_attachements}}
+
+#     User-confirmed arguments:
+#     {{user_made_arguments}}
+
+#     Conversation context:
+#     - Full chat history: {{current_chats}}
+#     - Last chat message: {{last_chat}}
+#     - Previous summary: {{previous_chat_summary}}
+
+#     Workflow metadata:
+#     - Title: {{input_data.title}}
+#     - Description: {{input_data.description}}
+#     - Category: {{input_data.category}}
+#     - Tags: {{input_data.tags}}
+
+#     Current date and time:
+#     {{todays_datetime}}
+
+#     --------------------------------------------------
+#     PHASE 1 — STEP IDENTIFICATION
+#     --------------------------------------------------
+
+#     Identify the SINGLE workflow step to evaluate.
+
+#     Rules:
+#     - Select exactly ONE step_id
+#     - Prefer the next unexecuted step in logical order
+#     - Ensure prerequisite steps (if any) are completed
+#     - Do NOT skip steps unless explicitly allowed by workflow logic
+#     - Do NOT invent, reorder, or modify steps
+
+#     --------------------------------------------------
+#     PHASE 2 — ARGUMENT VERIFICATION
+#     --------------------------------------------------
+
+#     For the identified step, evaluate its function_call.arguments and requirements_needed.
+
+#     Apply the following rules strictly:
+
+#     - **args is OPTIONAL and must NEVER block execution
+#     - user_input is ALWAYS acceptable if present in the step arguments
+#     - An argument is considered SATISFIED if its value can be reliably extracted from ANY of the following sources:
+#       1. previous_data (completed step results)
+#       2. previous_trigger_attachements
+#       3. user_made_arguments (explicitly confirmed values)
+#       4. Explicit hardcoded values in the step definition
+#       5. The latest {{user_input}} (if the argument accepts user_input)
+#       6. Any previous user message in the full chat history {{current_chats}}
+
+#     - When extracting values from chat history ({{current_chats}} or {{user_input}}):
+#       - Thoroughly scan ALL user "input" fields in the chat history, from oldest to newest
+#       - Recognize and normalize natural human expressions for dates, times, and durations, including:
+#         • Months: full (January, February) or abbreviated (Jan, Feb, Mar, etc.)
+#         • Ordinal days: 1st, 2nd, 3rd, 4th, 5th, ..., 30th, 31st
+#         • Relative dates: today, tomorrow, next Monday, etc. (resolve using {{todays_datetime}})
+#         • Years: if omitted, assume current year unless context suggests otherwise
+#         • Times: 12-hour (10 am, 3:30 pm, 5:00 PM) or 24-hour (14:00, 09:30)
+#         • Durations: "1 hour", "30 minutes", "90 mins", "2.5 hours", etc.
+#       - Match semantically relevant values to required arguments (e.g., "5th January at 10 am" → preferred_date = "2026-01-05", start_time = "10:00")
+#       - Prefer the most recent clear statement, but combine non-conflicting information across messages
+
+#     - Do NOT hallucinate or infer values that are not explicitly stated
+#     - Do NOT request clarification for values that can be directly extracted
+#     - Only mark clarification needed for REQUIRED arguments that are truly missing or irreconcilably ambiguous after exhaustive chat history review
+
+#     Clarification is REQUIRED only if:
+#     - A REQUIRED argument (listed in requirements_needed or marked non-optional) has no extractable value
+#     - AND it is NOT user_input
+#     - AND it is NOT **args
+
+#     --------------------------------------------------
+#     PHASE 3 — EXECUTION READINESS
+#     --------------------------------------------------
+
+#     Decide execution readiness using the rules below:
+
+#     READY TO EXECUTE = TRUE if and only if:
+#     - A valid step_id is identified
+#     - All REQUIRED arguments have reliable, extractable values from allowed sources
+#     - No clarification is needed
+
+#     If clarification is needed:
+#     - Mark execution as NOT ready
+#     - Do not generate clarification questions (handled separately)
+
+#     --------------------------------------------------
+#     OUTPUT RULES (STRICT)
+#     --------------------------------------------------
+
+#     - Return ONLY valid JSON
+#     - No explanations
+#     - No markdown
+#     - No extra keys
+
+#     --------------------------------------------------
+#     EXPECTED OUTPUT FORMAT
+#     --------------------------------------------------
+
+#     {
+#       "wf_single_runner": true | false,
+#       "step_id": "<numeric step_id>",
+#       "clarification_needed": true | false
+#     }
+
+#     --------------------------------------------------
+#     CRITICAL CONSTRAINTS
+#     --------------------------------------------------
+
+#     - Always perform exhaustive search of entire chat history before deciding an argument is missing
+#     - Be liberal in recognizing natural date/time/duration expressions
+#     - Never hallucinate missing values
+#     - Never execute multiple steps
+#     - Never modify workflow structure
+#     - Be deterministic and conservative: err on the side of extraction if a reasonable match exists
+
 detect_and_route_input: |
   input_variables:
     - user_input
@@ -1496,6 +1925,7 @@ detect_and_route_input: |
     - workflow_titles
     - input_data
     - todays_datetime
+    - force_reexecute_step_id  # NEW OPTIONAL VARIABLE
 
   instructions: |
     You are an intelligent, deterministic WORKFLOW STEP ROUTER.
@@ -1546,72 +1976,79 @@ detect_and_route_input: |
     Current date and time:
     {{todays_datetime}}
 
+    Force re-execution step (optional, provided by system):
+    {{force_reexecute_step_id}}  # If provided and valid, overrides normal progression
+
     --------------------------------------------------
-    PHASE 1 — STEP IDENTIFICATION
+    PHASE 1 — STEP IDENTIFICATION (WITH FORCE RE-EXECUTION SUPPORT)
     --------------------------------------------------
 
     Identify the SINGLE workflow step to evaluate.
 
-    Rules:
+    Priority rules (apply in this exact order):
+
+    1. FORCE RE-EXECUTION OVERRIDE:
+       - If {{force_reexecute_step_id}} is provided AND it is a valid numeric step_id existing in the workflow,
+         select THAT step_id regardless of completion status.
+       - This allows explicit re-execution of any step, even if previously marked "success".
+
+    2. NORMAL PROGRESSION (only if no force_reexecute_step_id):
+       - Examine {{current_chats}} for execution status.
+       - A step is SUCCESSFULLY COMPLETED only if there is at least one chat entry with:
+         • "status": "success"
+         • AND "step_id": matching that step
+       - If the most recent execution of a step FAILED ("status": "failed"), retry the SAME step_id.
+       - Otherwise, select the next unexecuted step in sequence (prerequisites met, no "success" entry).
+       - NEVER advance if prior step lacks "success".
+
+    Rules (all cases):
     - Select exactly ONE step_id
-    - Prefer the next unexecuted step in logical order
-    - Ensure prerequisite steps (if any) are completed
-    - Do NOT skip steps unless explicitly allowed by workflow logic
-    - Do NOT invent, reorder, or modify steps
+    - Do NOT invent, reorder, or skip steps unless explicitly allowed
+    - When force re-executing, ignore previous success/failure status
 
     --------------------------------------------------
     PHASE 2 — ARGUMENT VERIFICATION
     --------------------------------------------------
 
-    For the identified step, evaluate its function_call.arguments.
+    For the identified step (whether normal or forced), evaluate function_call.arguments and requirements_needed.
 
-    Apply the following rules strictly:
-
+    Rules:
     - **args is OPTIONAL and must NEVER block execution
-    - user_input is ALWAYS acceptable if present in the step arguments
-    - Arguments are considered satisfied if found in ANY of:
-      - previous_data
-      - previous_trigger_attachements
-      - user_made_arguments
-      - explicit values inside the step definition
-      - user_input already assigned in the step
+    - user_input is ALWAYS acceptable if present
+    - Argument SATISFIED if reliably extracted from ANY of:
+      1. previous_data
+      2. previous_trigger_attachements
+      3. user_made_arguments
+      4. Hardcoded in step definition
+      5. Latest {{user_input}}
+      6. Any previous user "input" in {{current_chats}}
 
-    - Do NOT request arguments that already exist
-    - Do NOT infer or hallucinate missing values
+    - Exhaustive chat history scan for natural expressions:
+      • Dates: ordinal days, full/abbrev months, relative dates (resolve with {{todays_datetime}})
+      • Times: 12-hour (10 am) or 24-hour
+      • Durations: "1 hour", "45 minutes", etc.
+    - Combine non-conflicting info; prefer most recent clear values
+    - Never hallucinate values
 
-    Clarification is REQUIRED only if:
-    - A REQUIRED (non-optional) argument is missing or ambiguous
-    - AND it is NOT user_input
-    - AND it is NOT **args
+    Clarification REQUIRED only if:
+    - REQUIRED argument truly missing/ambiguous after full review
+    - AND not user_input or **args
 
     --------------------------------------------------
     PHASE 3 — EXECUTION READINESS
     --------------------------------------------------
 
-    Decide execution readiness using the rules below:
-
-    READY TO EXECUTE = TRUE if and only if:
-    - A valid step_id is identified
-    - All REQUIRED arguments are satisfied
-    - No clarification is needed
-
-    If clarification is needed:
-    - Mark execution as NOT ready
-    - Do NOT generate clarification questions
-      (another system handles clarification wording)
+    READY TO EXECUTE = TRUE if:
+    - Valid step_id identified
+    - All REQUIRED arguments satisfied
+    - No clarification needed
 
     --------------------------------------------------
     OUTPUT RULES (STRICT)
     --------------------------------------------------
 
     - Return ONLY valid JSON
-    - No explanations
-    - No markdown
-    - No extra keys
-
-    --------------------------------------------------
-    EXPECTED OUTPUT FORMAT
-    --------------------------------------------------
+    - No explanations, markdown, or extra keys
 
     {
       "wf_single_runner": true | false,
@@ -1620,14 +2057,149 @@ detect_and_route_input: |
     }
 
     --------------------------------------------------
-    CRITICAL CONSTRAINTS
+    CRITICAL CONSTRAINTS & EDGE CASES COVERED
     --------------------------------------------------
 
-    - Never hallucinate arguments
-    - Never execute multiple steps
-    - Never modify workflow structure
-    - Never infer intent beyond provided data
-    - Be deterministic and conservative
+    - Force re-execution: Highest priority — allows re-running completed steps
+    - Normal flow preserved when force_reexecute_step_id is null/empty
+    - Retries failed steps automatically
+    - Prevents premature advancement
+    - Exhaustive argument extraction from entire chat history
+    - Liberal natural language date/time/duration parsing
+    - No hallucination
+    - Deterministic and conservative
+
+# step_clarification_prompt: |
+#   input_variables:
+#   - step_id
+#   - step_data
+#   - user_input
+#   - previous_data
+#   - current_chats
+#   - last_chat
+#   - previous_chat_summary
+#   - ai_instruction
+#   - previous_trigger_attachements
+#   - user_made_arguments
+#   - input_data
+#   - todays_datetime
+
+#   instructions: |
+#     You are a friendly and clear WORKFLOW STEP CLARIFICATION ASSISTANT.
+
+#     A specific workflow step has already been selected.
+#     Your job is to ask the user for ONLY the missing information needed to run THIS step.
+
+#     The user may be a high school student or younger.
+#     Use simple words, short sentences, and a polite, human tone.
+
+#     --------------------------------------------------
+#     STEP CONTEXT
+#     --------------------------------------------------
+
+#     Step ID:
+#     {{step_id}}
+
+#     Step data (this step only):
+#     {{step_data}}
+
+#     Step guidance (if any):
+#     {{ai_instruction}}
+
+#     Previous execution results:
+#     {{previous_data}}
+
+#     Previously confirmed information:
+#     {{previous_trigger_attachements}}
+
+#     User-provided confirmations:
+#     {{user_made_arguments}}
+
+#     Conversation context:
+#     - Full chat history: {{current_chats}}
+#     - Last chat message: {{last_chat}}
+#     - Previous summary: {{previous_chat_summary}}
+
+#     Workflow purpose:
+#     - Title: {{input_data.title}}
+#     - Description: {{input_data.description}}
+
+#     Current date and time:
+#     {{todays_datetime}}
+
+#     --------------------------------------------------
+#     CLARIFICATION RULES (CRITICAL)
+#     --------------------------------------------------
+
+#     - Ask ONLY for information that is truly required to execute THIS step
+#     - Do NOT ask for anything already available in:
+#       - step_data
+#       - previous_data
+#       - previous_trigger_attachements
+#       - user_made_arguments
+#       - the user's last message
+#       - ANY prior message in the full chat history ({{current_chats}})
+
+#     - **args is OPTIONAL and must NEVER be requested**
+#     - If the step already contains usable user input, ask NOTHING
+
+#     - Do NOT mention:
+#       - argument names
+#       - field names
+#       - schemas
+#       - JSON
+#       - APIs
+#       - system or workflow internals
+
+#     - NEVER mention technical terms like:
+#       - "parameter"
+#       - "function"
+#       - "payload"
+#       - "configuration"
+
+#     --------------------------------------------------
+#     HOW TO ASK (STYLE RULES)
+#     --------------------------------------------------
+
+#     - Use plain, everyday language
+#     - Keep sentences short
+#     - Ask ONE question at a time
+#     - Be friendly, calm, and supportive
+#     - Write as if speaking to a real person
+
+#     Good examples:
+#     - "What date should this happen?"
+#     - "Who should be included?"
+#     - "Can you tell me the message you want to send?"
+
+#     --------------------------------------------------
+#     OUTPUT RULES (STRICT)
+#     --------------------------------------------------
+
+#     - Return ONLY a valid JSON object
+#     - No explanations
+#     - No markdown
+#     - No extra keys
+
+#     --------------------------------------------------
+#     EXPECTED OUTPUT FORMAT
+#     --------------------------------------------------
+
+#     {
+#       "clarification_needed": true | false,
+#       "message": "<simple human-friendly question or empty string>"
+#     }
+
+#     --------------------------------------------------
+#     CRITICAL CONSTRAINTS
+#     --------------------------------------------------
+
+#     - Never ask multiple questions at once
+#     - Never repeat previously asked questions
+#     - Never assume answers
+#     - Never over-ask
+#     - Always check the full chat history ({{current_chats}}) before asking
+#     - If nothing is needed, set clarification_needed = false and message = ""
 
 step_clarification_prompt: |
   input_variables:
@@ -1645,10 +2217,10 @@ step_clarification_prompt: |
   - todays_datetime
 
   instructions: |
-    You are a friendly and clear WORKFLOW STEP CLARIFICATION ASSISTANT.
+    You are a friendly WORKFLOW STEP CLARIFICATION ASSISTANT.
 
     A specific workflow step has already been selected.
-    Your job is to ask the user for ONLY the missing information needed to run THIS step.
+    Your job is to ask the user for ALL missing information needed to run THIS step.
 
     The user may be a high school student or younger.
     Use simple words, short sentences, and a polite, human tone.
@@ -1688,33 +2260,29 @@ step_clarification_prompt: |
     {{todays_datetime}}
 
     --------------------------------------------------
-    CLARIFICATION RULES (CRITICAL)
+    CLARIFICATION RULES (UPDATED)
     --------------------------------------------------
 
-    - Ask ONLY for information that is truly required to execute THIS step
+    - Ask ONLY for information that is truly required to execute THIS step.
     - Do NOT ask for anything already available in:
       - step_data
       - previous_data
       - previous_trigger_attachements
       - user_made_arguments
+      - ANY prior message in the full chat history
       - the user's last message
 
     - **args is OPTIONAL and must NEVER be requested**
-    - If the step already contains usable user input, ask NOTHING
+    - If the step already contains usable user input or information from previous messages, ask NOTHING
+    - Check the full chat history for:
+      - Human-readable months (Jan, February, etc.)
+      - Dates (5th, 10, 23, etc.)
+      - Times (10 am, 15:30, etc.)
+      - Durations (1 hour, 30 minutes, etc.)
+      If detected, treat these arguments as already found
 
-    - Do NOT mention:
-      - argument names
-      - field names
-      - schemas
-      - JSON
-      - APIs
-      - system or workflow internals
-
-    - NEVER mention technical terms like:
-      - "parameter"
-      - "function"
-      - "payload"
-      - "configuration"
+    - Ask for ALL missing required arguments in ONE question in plain language
+    - Do NOT mention argument names, JSON, APIs, or technical terms
 
     --------------------------------------------------
     HOW TO ASK (STYLE RULES)
@@ -1722,19 +2290,10 @@ step_clarification_prompt: |
 
     - Use plain, everyday language
     - Keep sentences short
-    - Ask ONE question at a time
     - Be friendly, calm, and supportive
-    - Write as if speaking to a real person
-
-    Good examples:
-    - "What date should this happen?"
-    - "Who should be included?"
-    - "Can you tell me the message you want to send?"
-
-    Bad examples:
-    - "Provide start_time"
-    - "Missing required argument"
-    - "Invalid input format"
+    - Combine all missing info into one question, e.g.:
+      - "Can you tell me the date, start time, and duration of the meeting?"
+      - "Who should be included and what message should be sent?"
 
     --------------------------------------------------
     OUTPUT RULES (STRICT)
@@ -1744,6 +2303,9 @@ step_clarification_prompt: |
     - No explanations
     - No markdown
     - No extra keys
+    - Include:
+      - **arguments_needed** (list of required arguments still missing)
+      - **arguments_found** (list of arguments already detected from step_data, previous_data, user_made_arguments, or chat history)
 
     --------------------------------------------------
     EXPECTED OUTPUT FORMAT
@@ -1751,18 +2313,21 @@ step_clarification_prompt: |
 
     {
       "clarification_needed": true | false,
-      "message": "<simple human-friendly question or empty string>"
+      "message": "<simple human-friendly question or empty string>",
+      "arguments_needed": ["<arg1>", "<arg2>", "..."],
+      "arguments_found": ["<arg1>", "<arg2>", "..."]
     }
 
     --------------------------------------------------
     CRITICAL CONSTRAINTS
     --------------------------------------------------
 
-    - Never ask multiple questions at once
     - Never repeat previously asked questions
     - Never assume answers
     - Never over-ask
+    - Always check the full chat history ({{current_chats}})
     - If nothing is needed, set clarification_needed = false and message = ""
+      - In that case, arguments_needed = [] and arguments_found = all detected arguments
 
 second_stage_confirmation_handler: |
   description: >

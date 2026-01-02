@@ -1,6 +1,9 @@
 import re
 from create_db import connect_to_rds
-
+from services.redis_service import RedisService
+import json
+from datetime import datetime
+import asyncio
 
 IDENTITY_MAP = {}
 CONTACTS = {}
@@ -245,3 +248,218 @@ def get_users_client_id(participant, user_id, cursor):
     else:
         # print(f"cannot find any users_clients with {participant}")
         return None, None
+
+
+def deep_merge_grouped(old: dict, new: dict) -> dict:
+    """
+    Deep-merges grouped_messages with deduplication by message['id'].
+    Structure:
+    {
+        client_id: {
+            "gmail": [ {...}, {...} ]
+        }
+    }
+    """
+    if not old:
+        old = {}
+
+    for client_id, sources in new.items():
+
+        # Ensure client bucket exists
+        if client_id not in old:
+            old[client_id] = {}
+
+        for source, new_messages in sources.items():
+
+            # ensure source bucket exists
+            if source not in old[client_id]:
+                old[client_id][source] = []
+
+            existing_msgs = old[client_id][source]
+
+            # Build fast lookup set
+            existing_ids = {msg["id"] for msg in existing_msgs if "id" in msg}
+
+            # Append only unique messages
+            for msg in new_messages:
+                if msg["id"] not in existing_ids:
+                    existing_msgs.append(msg)
+
+    return old
+
+
+TTL_90_DAYS = 60 * 60 * 24 * 90
+
+
+async def update_user_message_cache(
+    redis_service: RedisService, user_id: str, batch_results: list, newly_creation: bool
+):
+    cache_key = f"umail_{user_id}"
+
+    # 1. load old
+    existing = await redis_service.get(cache_key) or {}
+
+    old_grouped = existing.get("grouped_messages", {})
+    old_next_page = existing.get("next_page_token")
+    old_total_new = existing.get("total_new_messages", 0)
+
+    merged_grouped = dict(old_grouped)
+    next_page_token = old_next_page
+    total_new_messages = old_total_new
+
+    # 2. deep merge each batch
+    for result in batch_results:
+        if not isinstance(result, dict):
+            continue
+
+        grouped = result.get("grouped_messages", {})
+        if grouped and isinstance(grouped, dict):
+            merged_grouped = deep_merge_grouped(merged_grouped, grouped)
+
+        total_new_messages += result.get("new_messages", 0)
+
+        if result.get("next_page_token"):
+            next_page_token = result["next_page_token"]
+
+    # 3. final object
+    cache_payload = {
+        "status": "success",
+        "total_new_messages": total_new_messages,
+        "next_page_token": next_page_token,
+        "grouped_messages": merged_grouped,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    # 4. save
+    await redis_service.set(cache_key, cache_payload, ex=TTL_90_DAYS)
+
+    return cache_payload
+
+
+async def store_integrations_in_redis(
+    user_id: str, value: list, ttl: int = 600
+) -> bool:
+    try:
+        # client = await GlideClusterClient.create(redis_config_glide)
+        client = RedisService()
+        key = f"{user_id}_integrations"
+
+        await client.set(key, json.dumps(value))
+        await client.expire(key, ttl)  # Set expiration separately (Glide API)
+        print(f"✅ Stored integrations in Redis for user id: {user_id}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to store integrations in Redis: {str(e)}")
+        return False
+    finally:
+        if client:
+            await client.close()
+
+
+async def get_integrations_from_redis(user_id: str):
+    client = None
+    try:
+        client = RedisService()
+        key = f"{user_id}_integrations"
+
+        data = await client.get(key)
+        if not data:
+            print(f"ℹ️ No integrations found in Redis for user id: {user_id}")
+            return None
+
+        return json.loads(data)
+
+    except Exception as e:
+        print(f"⚠️ Failed to fetch integrations from Redis: {str(e)}")
+        return None
+
+    finally:
+        if client:
+            await client.close()
+
+
+import os
+ # status_data = read_status_file()
+OUTLOOK_SYNC_LOG_DIR = "data"
+OUTLOOK_SYNC_LOG_FILE = os.path.join(OUTLOOK_SYNC_LOG_DIR, "outlook_mail_sync_log.json")
+os.makedirs(OUTLOOK_SYNC_LOG_DIR, exist_ok=True)
+
+
+def get_last_sync_time(user_id):
+    """
+    Return the sync time for the given user_id only if the file exists.
+    If the file does not exist OR the user_id is not found, return None.
+    """
+    if not os.path.exists(OUTLOOK_SYNC_LOG_FILE):
+        return None  # file not present
+    
+    try:
+        with open(OUTLOOK_SYNC_LOG_FILE, "r") as f:
+            data = json.load(f)
+            return data.get(user_id)  # may return None if user not found
+    except Exception:
+        return None
+
+
+def set_user_sync_time(user_id, time_value):
+    """
+    Update or insert sync time for the given user_id.
+    If file does not exist, create it.
+    """
+    # Load existing data OR create empty dict
+    if os.path.exists(OUTLOOK_SYNC_LOG_FILE):
+        try:
+            with open(OUTLOOK_SYNC_LOG_FILE, "r") as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}
+    else:
+        data = {}
+
+    # Set / update the value
+    data[user_id] = time_value
+
+    # Save back to file
+    with open(OUTLOOK_SYNC_LOG_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+    return True
+
+
+
+def delete_user_sync_time(user_id):
+    """
+    Delete the sync time entry for the given user_id.
+    If the file does not exist, return False.
+    If user_id does not exist inside file, do nothing.
+    """
+    # File missing → cannot delete
+    if not os.path.exists(OUTLOOK_SYNC_LOG_FILE):
+        return False
+
+    # Load file
+    try:
+        with open(OUTLOOK_SYNC_LOG_FILE, "r") as f:
+            data = json.load(f) or {}
+    except Exception:
+        # If file is unreadable, treat as missing
+        return False
+
+    # Remove the user_id if present
+    if user_id in data:
+        del data[user_id]
+
+    # Save the updated data
+    with open(OUTLOOK_SYNC_LOG_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+    return True
+
+
+def delete_from_cache_sync(user_id):
+    async def _inner():
+        print("deleting from cache")
+        client = RedisService()
+        return await client.delete(f"umail_{user_id}")
+
+    return asyncio.run(_inner())

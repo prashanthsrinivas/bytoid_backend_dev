@@ -11,12 +11,13 @@ from umail_helper.mails_process import update_config_file
 from umail_lance.umail_lance_agent import UmailLanceClient
 from utils.async_check import run_async
 from utils.base_logger import get_logger
-from utils.fireworkzz import get_fireworks_response
+from utils.fireworkzz import get_fireworks_response, get_fireworks_response2
 from utils.normal import can_reply_to_email, ensure_dir, load_yaml_file
 import json
 
 from utils.s3_utils import read_json_from_s3, upload_any_file
 from zoho_routes.routes import send_zoho_email
+from request_context import current_user_id
 
 logger = get_logger(__name__)
 
@@ -133,7 +134,10 @@ def getselectedconv(conv_id, userid):
             connection.close()
     client = UmailLanceClient(userid)
     recent_msg = client.get_selected_conv_from_lance(userid, client_id)
-    return recent_msg[conv_id] or []
+    if recent_msg:
+        return recent_msg[conv_id] or []
+    else:
+        return []
 
 
 def normalize_ai_response(resp):
@@ -144,7 +148,7 @@ def normalize_ai_response(resp):
     return str(resp).strip()
 
 
-def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
+async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
     # Extract sender email
     try:
         sender_email = None
@@ -181,69 +185,88 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
         business_name = businessdata.get("BusinessName") if businessdata else ""
         business_address = businessdata.get("BillingAddress") if businessdata else ""
         business_website = businessdata.get("WebsiteUrl") if businessdata else ""
-
-        # Call model to generate retrieval question
-        base_query = get_fireworks_response(filled_prompt, "system")
-        ##print("basequery",type(base_query), base_query)
-
-        # Parse retrieval question safely
+        print("before ai check on suggest")
         try:
-            question_data = json.loads(base_query)
-            ##print("json loads")
-        except json.JSONDecodeError:
-            import re
 
-            json_text = re.search(r"\{.*\}", base_query, re.DOTALL)
-            question_data = json.loads(json_text.group(0)) if json_text else {}
-            ##print("re loads")
-        ##print("type of questiondata", type(question_data), question_data)
-        question_text = (
-            question_data.get("question", "").strip() if question_data else ""
-        )
-        # print("queston text", question_text)
-        # print("len of question", len(question_text))
-        base_doc_ans = []
-        if question_text:
-            top_k = 3
-            query_input = QueryInput(
-                user_id=userid, query_text=question_text, top_k=top_k
+            # Call model to generate retrieval question
+            base_query = await get_fireworks_response(
+                filled_prompt, "system", user_id=userid
             )
-            lance_client = LanceClient(user_id=userid)
-            results = run_async(lance_client.query_vector(query_input))
-            for r in results:
-                clean_text = r.get("text", "").encode().decode("unicode_escape")
-                base_doc_ans.append(clean_text)
+            print("basequery", type(base_query), base_query)
 
-        # Build final prompt for AI reply
-        prompt_template = pr_file.get("ai_reply_suggest")
-        filled_prompt = (
-            (prompt_template or "")
-            .replace("{{email_msg}}", str(email_msg or ""))
-            .replace(
-                "{{umail_conversations}}",
-                json.dumps(umail_bodies or [], ensure_ascii=False, indent=2),
+            # Parse retrieval question safely
+            try:
+                question_data = json.loads(base_query)
+                ##print("json loads")
+            except json.JSONDecodeError:
+                import re
+
+                json_text = re.search(r"\{.*\}", base_query, re.DOTALL)
+                question_data = json.loads(json_text.group(0)) if json_text else {}
+                ##print("re loads")
+            ##print("type of questiondata", type(question_data), question_data)
+            question_text = (
+                question_data.get("question", "").strip() if question_data else ""
             )
-            .replace(
-                "{{base_doc_ans}}",
-                json.dumps(base_doc_ans or [], ensure_ascii=False, indent=2),
+            # print("queston text", question_text)
+            print("len of question", len(question_text))
+            base_doc_ans = []
+            if question_text:
+                top_k = 3
+                query_input = QueryInput(
+                    user_id=userid, query_text=question_text, top_k=top_k
+                )
+                lance_client = LanceClient(user_id=userid)
+                print("lanceclient", lance_client)
+                # results = run_async(lance_client.query_vector(query_input))
+                results = await lance_client.mixed_query_vector(
+                    query_input=query_input, sender_email=sender_email
+                )
+
+                if isinstance(results, list):
+                    for r in results:
+                        clean_text = r.get("text", "").encode().decode("unicode_escape")
+                        base_doc_ans.append(clean_text)
+                elif isinstance(results, str):
+                    base_doc_ans = results
+
+            # Build final prompt for AI reply
+            prompt_template = pr_file.get("ai_reply_suggest")
+            filled_prompt = (
+                (prompt_template or "")
+                .replace("{{email_msg}}", str(email_msg or ""))
+                .replace(
+                    "{{umail_conversations}}",
+                    json.dumps(umail_bodies or [], ensure_ascii=False, indent=2),
+                )
+                .replace(
+                    "{{base_doc_ans}}",
+                    json.dumps(base_doc_ans or [], ensure_ascii=False, indent=2),
+                )
+                .replace("{{business_name}}", str(business_name or ""))
+                .replace("{{business_address}}", str(business_address or ""))
+                .replace("{{business_website}}", str(business_website or ""))
+                .replace("{{sender_name}}", str(sender_name or ""))
             )
-            .replace("{{business_name}}", str(business_name or ""))
-            .replace("{{business_address}}", str(business_address or ""))
-            .replace("{{business_website}}", str(business_website or ""))
-            .replace("{{sender_name}}", str(sender_name or ""))
-        )
 
-        ##print("base docs ans", base_doc_ans)
+            print("base docs ans", base_doc_ans)
 
-        # ai_reply = get_fireworks_response(filled_prompt, "system")
-        ##print("print filled prompt",filled_prompt)
-        ai_reply = normalize_ai_response(
-            get_fireworks_response(filled_prompt, "system")
-        )
-        # print("AOI RTEPLy", ai_reply)
+            # ai_reply = get_fireworks_response(filled_prompt, "system")
+            ##print("print filled prompt",filled_prompt)
+            ai_reply = normalize_ai_response(
+                await get_fireworks_response2(
+                    user_id=userid, user_message=filled_prompt, role="system"
+                )
+            )
+
+        except Exception as e:
+            print(f"error in suggest_helper_base:{e} ")
+
+        print("AOI RTEPLy", ai_reply)
         if not ai_reply or ai_reply.lower() in ["none", "null", ""]:
             return None
         return ai_reply
+        # return base_doc_ans
     except Exception as e:
         return {"error": f"suggest ai {e}"}
     finally:
@@ -251,10 +274,11 @@ def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodies):
             connection.close()
 
 
-def ai_suggest_helper(userid, currentmsg, conversation_id):
+async def ai_suggest_helper(userid, currentmsg, conversation_id):
     umail_conversations = getselectedconv(conv_id=conversation_id, userid=userid)
+    print("umial", len(umail_conversations))
     umail_bodies = [item.get("body", "") for item in umail_conversations]
-    ai_reply = suggest_helper_base(
+    ai_reply = await suggest_helper_base(
         userid=userid,
         email_msg=currentmsg,
         umail_conversations=umail_conversations,
@@ -266,7 +290,7 @@ def ai_suggest_helper(userid, currentmsg, conversation_id):
         return None
 
 
-def send_pilot_messages(
+async def send_pilot_messages(
     user_id=None,
     channel=None,
     text=None,
@@ -522,7 +546,8 @@ def send_pilot_messages(
         # updating lancedb
         lance_data = conversation_data.get("input_data", [])
         client = UmailLanceClient(user_id)
-        client.embed_json_file_for_reply(
+
+        await client.embed_json_file_for_reply(
             lance_data, user_id, client_id, conversation_id
         )
 
@@ -619,7 +644,7 @@ def send_pilot_messages(
             connection.close()
 
 
-def helper_make_reply_email(userid=None, from_email=None, n_connection=None):
+async def helper_make_reply_email(userid=None, from_email=None, n_connection=None):
     connection = None  # always defined
     try:
         userid = userid
@@ -676,7 +701,7 @@ def helper_make_reply_email(userid=None, from_email=None, n_connection=None):
 
             # Re-sort after filtering
             msgs_same_thread = sorted(msgs_same_thread, key=lambda x: x["timestamp"])
-            ai_reply = suggest_helper_base(
+            ai_reply = await suggest_helper_base(
                 userid=userid,
                 email_msg=latest_msg["body"],
                 umail_conversations=msgs_same_thread,

@@ -4,6 +4,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.helper_make_reply_email",
             "description": "Automatically compose and send an AI-generated reply to the latest inbound email in a conversation.",
+            "status": "stopped",
             "args": {
                 "userid": "User ID of the agent (string or integer)",
                 "from_email": "Agent's email address used for sending (string)",
@@ -19,6 +20,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.fetch_autopilot",
             "description": "Fetch the current AutoPilot configuration and metadata for a specific user.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID whose AutoPilot configuration should be fetched (string or integer)"
             },
@@ -31,6 +33,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.persist_autopilot",
             "description": "Persist or update AutoPilot configuration data for a user.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID of the current user (string or integer)",
                 "autopilot_data": "JSON object containing the AutoPilot configuration details"
@@ -44,6 +47,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.suggest_umail_reply",
             "description": "Generate a suggested AI reply for an ongoing conversation, without sending it.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID of the agent (string or integer)",
                 "conversation_id": "Unique identifier for the conversation (string)",
@@ -58,6 +62,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.auto_reply_umail_email",
             "description": "Automatically send an AI-generated email reply using AutoPilot mode.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID of the agent (string or integer)",
                 "conversation_id": "Unique conversation ID (string)",
@@ -75,6 +80,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.activate_autopilot",
             "description": "Activate AutoPilot for the current user, enabling automated email replies and workflows.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID to activate AutoPilot for (string or integer)"
             },
@@ -87,6 +93,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.revoke_autopilot",
             "description": "Revoke or disable AutoPilot mode for a user, halting all automation actions.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID to disable AutoPilot for (string or integer)"
             },
@@ -99,6 +106,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.change_autopilot_mode",
             "description": "Switch AutoPilot mode (e.g., from manual to auto or semi-auto) for the user.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID (string or integer)",
                 "mode": "New mode to set, such as 'auto', 'manual', or 'semi-auto' (string)"
@@ -112,6 +120,7 @@
             "category": "UmailAutoService",
             "name": "umail_automate.reset_autopilot",
             "description": "Reset AutoPilot configuration to default settings for a specific user.",
+            "status": "stopped",
             "args": {
                 "user_id": "User ID whose AutoPilot configuration should be reset (string or integer)"
             },

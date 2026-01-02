@@ -1,0 +1,120 @@
+{
+    "functions": [
+        {
+            "category": "Microsoft Calendar",
+            "name": "microsoft_calendar.get_all_available_slots",
+            "description": "Retrieve all available meeting time slots across multiple attendees using Microsoft Graph getSchedule (15-minute free/busy).",
+            "channels": "microsoft_calender",
+            "communication_mode": "calender",
+            "status": "active",
+            "args": {
+                "attendees": "list of attendee email addresses",
+                "preferred_date": "string (YYYY-MM-DD)",
+                "start_time": "string (ISO 8601 or YYYY-MM-DD HH:MM)",
+                "end_time": "string (ISO 8601 or YYYY-MM-DD HH:MM)",
+                "duration_minutes": "integer (meeting duration in minutes)",
+                "days_to_check": "optional integer (default: 3, number of days to scan)"
+            },
+            "returns": {
+                "slots": "list of dicts with { start, end, startDate }",
+                "return_str": "string (human-readable summary of available time slots)"
+            }
+        },
+        {
+            "category": "Microsoft Calendar",
+            "name": "microsoft_calendar.create_calendar_event",
+            "description": "Create a Microsoft Outlook calendar event with optional Microsoft Teams meeting.",
+            "channels": "microsoft_calender",
+            "communication_mode": "calender",
+            "status": "active",
+            "args": {
+                "title": "string (event title)",
+                "start_dt": "string or datetime (ISO 8601 start datetime)",
+                "end_dt": "string or datetime (ISO 8601 end datetime)",
+                "attendees": "list of attendee email addresses",
+                "description": "string (HTML or plain text description)",
+                "location": "string (event location)",
+                "meet": "boolean (create Microsoft Teams meeting)"
+            },
+            "returns": {
+                "event_id": "string",
+                "summary": "string",
+                "start": "dict { dateTime, timeZone }",
+                "end": "dict { dateTime, timeZone }",
+                "attendees": "list",
+                "hangoutLink": "string (Teams join URL if online meeting)",
+                "location": "string",
+                "description": "string",
+                "status": "string (confirmed | tentative | cancelled)",
+                "return_str": "string (e.g. 'Meeting \"Demo Call\" created on 22 Sep 2025 from 10:00 AM – 10:30 AM with attendees: a@x.com, b@y.com. Microsoft Teams link added.')"
+            }
+        },
+        {
+            "category": "Microsoft Calendar",
+            "name": "microsoft_calendar.update_calendar_event",
+            "description": "Update an existing Microsoft Outlook calendar event, including Teams meeting enable/disable.",
+            "channels": "microsoft_calender",
+            "communication_mode": "calender",
+            "status": "active",
+            "args": {
+                "event_id": "string (Microsoft event ID)",
+                "title": "optional string",
+                "start_dt": "optional string or datetime (ISO 8601)",
+                "end_dt": "optional string or datetime (ISO 8601)",
+                "attendees": "optional list of attendee email addresses",
+                "description": "optional string (HTML or plain text)",
+                "location": "optional string",
+                "googlemeet": "boolean (true = enable Teams, false = disable Teams)"
+            },
+            "returns": {
+                "success": "boolean",
+                "event_id": "string",
+                "summary": "string",
+                "start": "dict",
+                "end": "dict",
+                "attendees": "list",
+                "hangoutLink": "string (Teams join URL if enabled)",
+                "location": "string",
+                "description": "string",
+                "status": "string (confirmed | tentative | cancelled)",
+                "return_str": "string (e.g. 'Meeting \"Demo Call\" was updated and is now scheduled on 23 Sep 2025 from 11:00 AM – 11:30 AM. Teams meeting enabled.')"
+            }
+        },
+        {
+            "category": "Microsoft Calendar",
+            "name": "microsoft_calendar.delete_calendar_event",
+            "description": "Delete a Microsoft Outlook calendar event.",
+            "channels": "microsoft_calender",
+            "communication_mode": "calender",
+            "status": "active",
+            "args": {
+                "event_id": "string (Microsoft event ID)"
+            },
+            "returns": {
+                "success": "boolean",
+                "return_str": "string (e.g. 'The calendar event has been successfully deleted.')"
+            }
+        },
+        {
+            "category": "Microsoft Email",
+            "name": "microsoft_service.send_email",
+            "description": "Send an email using Microsoft Graph. Automatically detects and sends Text or HTML body.",
+            "channels": "outlook",
+            "communication_mode": "email",
+            "status": "active",
+            "args": {
+                "to_email": "string (recipient email address)",
+                "subject": "string (email subject)",
+                "body": "string (plain text or HTML content)",
+                "conversation_id": "optional string (for email threading)"
+            },
+            "returns": {
+                "status": "string (success | error)",
+                "contentType": "string (Text | HTML)",
+                "message": "string",
+                "error": "string (if status = error)",
+                "return_str": "string (e.g. 'Email with subject \"Meeting Confirmation\" was sent to user@example.com using HTML format.')"
+            }
+        }
+    ]
+}

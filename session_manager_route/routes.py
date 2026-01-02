@@ -15,13 +15,13 @@ session_bp = Blueprint("session", __name__)
 logger = get_logger(__name__)
 
 
-def session_login(user_id):
+async def session_login(user_id):
 
     request_data = {
         "remote_addr": request.remote_addr,
         "user_agent": request.headers.get("User-Agent"),
     }
-    result = asyncio.run(session_login_redis(user_id, request_data ))
+    result = await session_login_redis(user_id, request_data )
     session_id = result.get("session_id")
     access_token = result.get("access_token")
     refresh_token = result.get("refresh_token")

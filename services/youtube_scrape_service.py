@@ -49,7 +49,8 @@ class YouTubeScrapingClient:
         #     openai_api_key=os.getenv("OPENAI_API_KEY"),
         #     dimensions=self.dimension,
         # )
-        self.embeddings = get_firework_embedding()
+        self.embeddings = None
+        # asyncio.create_task(self._load_embeddings())
         self.speech_service = Speech2TextService(user_id)
 
         # Proxy list for rotation (add your proxy servers here)
@@ -59,6 +60,13 @@ class YouTubeScrapingClient:
             # "http://proxy2:port",
         ]
         self.driver_pool = Queue()
+
+    async def _load_embeddings(self):
+        self.embeddings = await get_firework_embedding()
+
+    async def _ensure_embeddings(self):
+        if self.embeddings is None:
+            await self._load_embeddings()
 
     def get_rotating_proxy(self):
         """Get a rotating proxy from available proxies"""
@@ -711,7 +719,7 @@ class YouTubeScrapingClient:
             "url": youtube_url,
             "video_id": video_id,
             "title": "YouTube Video",
-            "status":"failed",
+            "status": "failed",
             "content": "Unable to access this video - Failed to extract transcript",
             "error": "extraction_failed",
             "metadata": {
@@ -788,7 +796,7 @@ class YouTubeScrapingClient:
                 "title": "YouTube Video (Selenium)",
                 "content": f"**Transcript:**\n{transcript}",
                 "transcript_raw": transcript,
-                "status":"active",
+                "status": "active",
                 "metadata": {
                     "scraped_at": datetime.now(timezone.utc).isoformat(),
                     "scraping_method": "selenium_browser_automation",

@@ -347,7 +347,7 @@ async def create_new_conv(user_id, client_id, email, query, bot_response):
         json.dump({"new_messages": [initial_message]}, f, indent=2)
 
     # Generate subject using AI
-    subject = generate_subject(user_id, conv_filepath, "browser")
+    subject = await generate_subject(user_id, conv_filepath, "browser")
     ticket_name = subject[0]["summary"]
 
     s3_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
@@ -686,7 +686,7 @@ async def process_website_msg():
         "input_data": input_data,
     }
 
-    enqueue_user_task(user_id, payload)
+    await enqueue_user_task(user_id, payload)
 
     return jsonify({"message": "success", "conversation_id": conversation_id})
 

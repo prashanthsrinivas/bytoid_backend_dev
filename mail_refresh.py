@@ -29,9 +29,6 @@ def clear_cache(user_id):
     """Clear Redis cache for user"""
     print(f"\n🗑️  Clearing Redis cache...")
     try:
-        from glide import GlideClusterClient
-        from cust_helpers.pathconfig import redis_config_glide
-
         # This would need to be async, so we'll note it
         print(f"   ⚠️  Redis cache clear requires async context")
         print(f"   → Will be automatically cleared on next mail fetch")

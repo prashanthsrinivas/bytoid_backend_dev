@@ -132,6 +132,7 @@ def read_function_jsons():
         "playbook/fn_configs/gmail_functions.json",
         "playbook/fn_configs/google_meet_functions.json",
         "playbook/fn_configs/umail_auto_functions.json",
+        "playbook/fn_configs/outlook_functions.json",
         # "playbook/fn_configs/twillo_fucntion.json",
     ]
     all_functions_details = []
@@ -193,6 +194,7 @@ def read_function_jsons2(Full=False):
         "playbook/fn_configs/gmail_functions.json",
         "playbook/fn_configs/google_meet_functions.json",
         "playbook/fn_configs/umail_auto_functions.json",
+        "playbook/fn_configs/outlook_functions.json",
         # "playbook/fn_configs/twillo_fucntion.json",
     ]
 
@@ -361,54 +363,102 @@ def save_pptx_from_json(slide_data, file_path):
 
 def convert_human_date(value, base_date=None, tz_str="Asia/Kolkata"):
     """
-    Convert human-readable dates or ISO YYYY-MM-DD to a tz-aware datetime (default time 09:00)
+    Convert human-readable dates or ISO YYYY-MM-DD to a tz-aware datetime
+    Default time: 09:00
+    Rules:
+    - If year is missing, infer next valid future date
+    - Never return past dates
     """
     tz = pytz.timezone(tz_str)
     if base_date is None:
         base_date = datetime.now(tz)
 
     value = str(value).strip().lower()
-    dt = base_date
+    dt = None
 
-    # Handle known human-readable forms
+    # ----------------------------
+    # 1. Simple keywords
+    # ----------------------------
     if value in ["today", ""]:
         dt = base_date
     elif value == "tomorrow":
         dt = base_date + timedelta(days=1)
-    elif re.match(r"\d{4}-\d{2}-\d{2}", value):  # YYYY-MM-DD
+
+    # ----------------------------
+    # 2. ISO date
+    # ----------------------------
+    elif re.match(r"\d{4}-\d{2}-\d{2}$", value):
         try:
             dt = datetime.strptime(value, "%Y-%m-%d")
         except Exception:
             return None
-    elif re.match(r"\d{1,2}-\d{1,2}", value):  # 12-10
+
+    # ----------------------------
+    # 3. Numeric month-day (12-10)
+    # ----------------------------
+    elif re.match(r"\d{1,2}-\d{1,2}$", value):
         month, day = map(int, value.split("-"))
         dt = base_date.replace(month=month, day=day)
-    elif re.match(r"\d{1,2}-[a-z]{3}", value):  # 12-jan
-        day, month_str = value.split("-")
-        month = datetime.strptime(month_str.capitalize(), "%b").month
-        dt = base_date.replace(month=month, day=int(day))
-    elif match := re.match(r"(\d+) days from now", value):
+
+    # ----------------------------
+    # 4. Day-month (12-jan / 12-january / 12th january)
+    # ----------------------------
+    elif match := re.match(r"(\d{1,2})(st|nd|rd|th)?[\s\-]+([a-z]+)", value):
+        day = int(match.group(1))
+        month_str = match.group(3).capitalize()
+
+        try:
+            month = datetime.strptime(month_str[:3], "%b").month
+        except ValueError:
+            return None
+
+        dt = base_date.replace(month=month, day=day)
+
+    # ----------------------------
+    # 5. Relative days
+    # ----------------------------
+    elif match := re.match(r"(\d+)\s+days\s+from\s+now", value):
         dt = base_date + timedelta(days=int(match.group(1)))
-    elif match := re.match(r"next (\w+)", value):
+
+    # ----------------------------
+    # 6. Next weekday
+    # ----------------------------
+    elif match := re.match(r"next\s+(\w+)", value):
         weekdays = [
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-            "Sunday",
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
         ]
-        target_wd = weekdays.index(match.group(1).capitalize())
-        delta = (target_wd - base_date.weekday() + 7) % 7 or 7
+        day_name = match.group(1).lower()
+        if day_name not in weekdays:
+            return None
+
+        target_wd = weekdays.index(day_name)
+        delta = (target_wd - base_date.weekday() + 7) or 7
         dt = base_date + timedelta(days=delta)
+
     else:
         return None
 
-    # Default time 09:00
+    # ----------------------------
+    # 7. Infer year (never backward)
+    # ----------------------------
+    if dt.year == base_date.year:
+        if dt.date() < base_date.date():
+            dt = dt.replace(year=base_date.year + 1)
+
+    # ----------------------------
+    # 8. Default time 09:00
+    # ----------------------------
     dt = dt.replace(hour=9, minute=0, second=0, microsecond=0)
 
-    # Ensure tz-aware
+    # ----------------------------
+    # 9. Ensure tz-aware
+    # ----------------------------
     if dt.tzinfo is None:
         dt = tz.localize(dt)
     else:
@@ -422,62 +472,132 @@ def convert_human_date(value, base_date=None, tz_str="Asia/Kolkata"):
 # ------------------------
 def convert_human_time(value, base_date=None, tz_str="Asia/Kolkata"):
     """
-    Convert human-readable times to a tz-aware datetime
+    Convert human-readable time expressions to a tz-aware datetime.
+
+    Supported:
+    - 10, 10am, 10 am, 10:30, 10:30 pm
+    - 10-11 / 10 to 11 (returns start time)
+    - quarter past 10, half past 10, quarter to 11
+    - now, in 30 minutes, after 1 hour
+    - morning, afternoon, evening, night
+    - noon, midnight
     """
     tz = pytz.timezone(tz_str)
     if base_date is None:
         base_date = datetime.now(tz)
-    value = str(value).strip().lower()
-    hour, minute = 9, 0  # default
 
-    # Numeric / AM-PM
-    if m := re.match(r"(\d{1,2}):(\d{2}) ?(am|pm)?", value):
+    value = str(value).strip().lower()
+    hour, minute = None, None
+
+    # ----------------------------
+    # 1. Immediate keywords
+    # ----------------------------
+    if value in ["now", "right now"]:
+        dt = base_date
+
+    elif m := re.match(r"in (\d+) minutes?", value):
+        dt = base_date + timedelta(minutes=int(m.group(1)))
+
+    elif m := re.match(r"(in|after) (\d+) hours?", value):
+        dt = base_date + timedelta(hours=int(m.group(2)))
+
+    # ----------------------------
+    # 2. Time ranges (10-11 / 10 to 11)
+    # ----------------------------
+    elif m := re.match(r"(\d{1,2})(:\d{2})?\s*(am|pm)?\s*(to|\-)\s*(\d{1,2})", value):
+        hour = int(m.group(1))
+        minute = int(m.group(2)[1:]) if m.group(2) else 0
+        ampm = m.group(3)
+
+        if ampm == "pm" and hour != 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+
+        dt = base_date.replace(hour=hour, minute=minute)
+
+    # ----------------------------
+    # 3. HH:MM AM/PM
+    # ----------------------------
+    elif m := re.match(r"(\d{1,2}):(\d{2})\s*(am|pm)?", value):
         hour, minute = int(m.group(1)), int(m.group(2))
         if m.group(3) == "pm" and hour != 12:
             hour += 12
         elif m.group(3) == "am" and hour == 12:
             hour = 0
-    elif m := re.match(r"(\d{1,2}) ?(am|pm)", value):
+        dt = base_date.replace(hour=hour, minute=minute)
+
+    # ----------------------------
+    # 4. 10 am / 10pm
+    # ----------------------------
+    elif m := re.match(r"(\d{1,2})\s*(am|pm)", value):
         hour = int(m.group(1))
         minute = 0
         if m.group(2) == "pm" and hour != 12:
             hour += 12
         elif m.group(2) == "am" and hour == 12:
             hour = 0
-    elif value.isdigit():
-        hour, minute = int(value), 0
+        dt = base_date.replace(hour=hour, minute=minute)
 
-    # Relative times
+    # ----------------------------
+    # 5. Plain number (10 → 10:00)
+    # ----------------------------
+    elif value.isdigit():
+        hour = int(value)
+        minute = 0
+        dt = base_date.replace(hour=hour, minute=minute)
+
+    # ----------------------------
+    # 6. Natural language clock phrases
+    # ----------------------------
     elif m := re.match(r"quarter to (\d+)", value):
-        hour, minute = int(m.group(1)) - 1, 45
+        hour = int(m.group(1)) - 1
+        minute = 45
+        dt = base_date.replace(hour=hour, minute=minute)
+
     elif m := re.match(r"quarter past (\d+)", value):
-        hour, minute = int(m.group(1)), 15
+        hour = int(m.group(1))
+        minute = 15
+        dt = base_date.replace(hour=hour, minute=minute)
+
     elif m := re.match(r"half past (\d+)", value):
-        hour, minute = int(m.group(1)), 30
+        hour = int(m.group(1))
+        minute = 30
+        dt = base_date.replace(hour=hour, minute=minute)
+
     elif m := re.match(r"(\d+) past (\d+)", value):
         minute, hour = int(m.group(1)), int(m.group(2))
-    elif m := re.match(r"(\d+) to (\d+)", value):
-        minute, hour = 60 - int(m.group(1)), int(m.group(2)) - 1
+        dt = base_date.replace(hour=hour, minute=minute)
 
-    # Named times
-    elif value in ["8am", "eight", "breakfast", "morning"]:
-        hour, minute = 8, 0
-    elif value in ["9am", "nine"]:
-        hour, minute = 9, 0
-    elif value in ["10am", "ten"]:
-        hour, minute = 10, 0
-    elif value in ["12pm", "lunch time", "noon"]:
-        hour, minute = 12, 0
-    elif value in ["6pm", "dinner", "evening"]:
-        hour, minute = 18, 0
+    elif m := re.match(r"(\d+) to (\d+)", value):
+        minute = 60 - int(m.group(1))
+        hour = int(m.group(2)) - 1
+        dt = base_date.replace(hour=hour, minute=minute)
+
+    # ----------------------------
+    # 7. Named time buckets
+    # ----------------------------
+    elif value in ["morning"]:
+        dt = base_date.replace(hour=9, minute=0)
+    elif value in ["afternoon"]:
+        dt = base_date.replace(hour=14, minute=0)
+    elif value in ["evening"]:
+        dt = base_date.replace(hour=18, minute=0)
+    elif value in ["night"]:
+        dt = base_date.replace(hour=21, minute=0)
+    elif value in ["noon", "lunch"]:
+        dt = base_date.replace(hour=12, minute=0)
     elif value in ["midnight"]:
-        hour, minute = 0, 0
+        dt = base_date.replace(hour=0, minute=0)
+
     else:
         return None
 
-    dt = base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # ----------------------------
+    # 8. Normalize seconds + tz
+    # ----------------------------
+    dt = dt.replace(second=0, microsecond=0)
 
-    # Safe tz handling
     if dt.tzinfo is None:
         dt = tz.localize(dt)
     else:
@@ -564,3 +684,40 @@ def extract_subject_from_html(html: str, fallback: str) -> str:
 
     # fallback
     return fallback
+
+
+import re
+
+
+def remove_not_found_entities(text: str, not_found: list[str]) -> str:
+    if not text or not not_found:
+        return text
+
+    cleaned = text
+
+    for name in not_found:
+        escaped = re.escape(name)
+
+        # remove patterns like:
+        # ", Josh"
+        # "and Josh"
+        # "& Josh"
+        # "Josh,"
+        patterns = [
+            rf"\s*,\s*{escaped}\b",
+            rf"\b{escaped}\s*,\s*",
+            rf"\s+(and|&)\s+{escaped}\b",
+            rf"\b{escaped}\s+(and|&)\s+",
+            rf"\b{escaped}\b",
+        ]
+
+        for pattern in patterns:
+            cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+
+    # normalize whitespace
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
+    # remove dangling "with", "and"
+    cleaned = re.sub(r"\b(with|and)\s*$", "", cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned

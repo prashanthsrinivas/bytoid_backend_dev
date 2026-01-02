@@ -20,6 +20,9 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import pymysql
 from utils.s3_utils import S3_BUCKET, load_yaml_from_s3, s3bucket, save_yaml_to_s3
+from request_context import current_user_id
+import asyncio
+
 
 logger = get_logger(__name__)
 
@@ -291,12 +294,23 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     if matched_industry:
         new_or_updated_files = [item["filename"] for item in processed_filenames]
         # need to make this queue process
-        result = run_background_task(
-            userid=userid,
-            industry=matched_industry,
-            filenames=new_or_updated_files,
-            func=preProcessDocWithUsecases,
-        )
+        # result = run_background_task(
+        #     userid=userid,
+        #     industry=matched_industry,
+        #     filenames=new_or_updated_files,
+        #     func=preProcessDocWithUsecases,
+        # )
+
+        async def background_runner():
+            
+            await preProcessDocWithUsecases(
+                    userid=userid,
+                    industry=matched_industry,
+                    filenames=new_or_updated_files
+                )
+           
+
+        asyncio.create_task(background_runner())
         print(f"[DEBUG] Background task queued: {result}")
     all_file_data = load_yaml_from_s3(yaml_path) or {}
     return all_file_data

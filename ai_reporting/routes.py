@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Blueprint, Response
+from flask import request, jsonify, Blueprint
 import logging
 from create_db import connect_to_rds
 import json
@@ -6,10 +6,9 @@ from utils.normal import load_yaml_file
 from cust_helpers import pathconfig
 from utils.fireworkzz import get_fireworks_response, get_fireworks_response2
 import re
-import yaml
 import os, json
 import pymysql
-import spacy
+
 from umail_lance.umail_lance_agent import UmailLanceClient
 from datetime import datetime, date
 
@@ -29,12 +28,17 @@ from ai_reporting.ast_generation.ast_generation_class import ASTGenerator
 from ai_reporting.parse_llm import parse_llm_response
 from .ast_component_extraction.intention_extraction import QueryIntentionExtractor
 from .reporting_helpers.redis_functions import *
-from collections import Counter
+from request_context import current_user_id
 
 
 ai_reporting_bp = Blueprint("ai_reporting", __name__)
 
-nlp = spacy.load("en_core_web_md")
+
+def get_spacy_nlp():
+    import spacy
+
+    nlp = spacy.load("en_core_web_md")
+    return nlp
 
 
 # Configure logging
@@ -45,8 +49,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 base_dir = os.path.dirname(__file__)
-
-ast_gen = ASTGenerator()
 
 
 def get_schema(cursor, database_name="bytoid_support_agent"):
@@ -217,7 +219,8 @@ async def save_draft_report(user_id, new_report):
     Save a draft report for a user in Redis.
     Each report is stored under its own key with a 1-hour TTL.
     """
-    client = await GlideClusterClient.create(redis_config_glide)
+    # client = await GlideClusterClient.create(redis_config_glide)
+    client = RedisService()
     report_id = new_report["report_id"]
     key = f"user:{user_id}:draft_report:{report_id}"
     await client.set(key, json.dumps(new_report))
@@ -479,12 +482,14 @@ def extract_names_from_emails(query):
     return names
 
 
-def ner_using_prompt(query):
+async def ner_using_prompt(query, user_id):
 
     ner_yaml = load_yaml_file(path=pathconfig.ner)
     ner_template = ner_yaml.get("name_recognition")
     filled_prompt = ner_template.replace("{{user_query}}", str(query))
-    modified_yaml = get_fireworks_response(filled_prompt, role="system")
+    modified_yaml = await get_fireworks_response(
+        filled_prompt, role="system", user_id=user_id
+    )
 
     try:
         ner_result = parse_llm_response(modified_yaml)
@@ -510,6 +515,7 @@ def ner_using_prompt(query):
 
 
 def identify_names(query):
+    nlp = get_spacy_nlp()
 
     # new_query = query.title()
     doc = nlp(query)
@@ -798,10 +804,12 @@ def prepare_for_lance(results):
     return folder_names, searched_user_id
 
 
-def determine_referenced_person(new_query, reporting_yaml):
+async def determine_referenced_person(new_query, reporting_yaml, userid):
     person_template = reporting_yaml.get("referenced_person_identifier")
     filled_prompt = person_template.replace("{{user_query}}", str(new_query))
-    modified_yaml = get_fireworks_response(filled_prompt, role="system")
+    modified_yaml = await get_fireworks_response(
+        filled_prompt, role="system", user_id=userid
+    )
 
     try:
         referneced_person_result = parse_llm_response(modified_yaml)
@@ -816,11 +824,13 @@ def determine_referenced_person(new_query, reporting_yaml):
     return referenced_person
 
 
-def get_referenced_person(ai_input_list, new_query):
+async def get_referenced_person(ai_input_list, new_query, userid):
     # determine whether the user is referncing another user or customer
     reporting_yaml = load_yaml_file(path=pathconfig.reporting)
     if not ai_input_list:
-        referenced_person = determine_referenced_person(new_query, reporting_yaml)
+        referenced_person = await determine_referenced_person(
+            new_query, reporting_yaml, userid=userid
+        )
     else:
         values = {list(d.values())[0] for d in ai_input_list}
         if values == {"customer"}:
@@ -833,7 +843,9 @@ def get_referenced_person(ai_input_list, new_query):
     return referenced_person
 
 
-def dummy_execute(corrected_query, corrected_params, database_schema, reporting_yaml):
+async def dummy_execute(
+    corrected_query, corrected_params, database_schema, reporting_yaml, userid
+):
     template = reporting_yaml.get("sql_execution_engine")
     filled_prompt = (
         template.replace("{{sql_query}}", str(corrected_query))
@@ -845,7 +857,9 @@ def dummy_execute(corrected_query, corrected_params, database_schema, reporting_
             json.dumps(database_schema, ensure_ascii=False, indent=2),
         )
     )
-    modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.1)
+    modified_yaml = await get_fireworks_response2(
+        userid, filled_prompt, role="system", temp=0.1
+    )
 
     try:
         dummy_executer_result = parse_llm_response(modified_yaml)
@@ -859,7 +873,7 @@ def dummy_execute(corrected_query, corrected_params, database_schema, reporting_
     return success, error
 
 
-def perform_sql_verification(
+async def perform_sql_verification(
     corrected_query,
     corrected_params,
     error,
@@ -885,7 +899,9 @@ def perform_sql_verification(
             json.dumps(database_schema, ensure_ascii=False, indent=2),
         )
     )
-    modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.1)
+    modified_yaml = await get_fireworks_response2(
+        current_user_id, filled_prompt, role="system", temp=0.1
+    )
 
     try:
         sql_verfication_result = parse_llm_response(modified_yaml)
@@ -903,8 +919,8 @@ def perform_sql_verification(
     return success, fixed_sql, query_params
 
 
-def parameterization_n_validation(
-    generated_query, query_params, reporting_yaml, current_date
+async def parameterization_n_validation(
+    generated_query, query_params, reporting_yaml, current_date, userid
 ):
 
     # parameterization_and_security_correction:
@@ -912,7 +928,9 @@ def parameterization_n_validation(
     filled_prompt = template.replace("{{sql_query}}", str(generated_query)).replace(
         "{{query_params}}", str(query_params)
     )
-    modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+    modified_yaml = await get_fireworks_response2(
+        userid, filled_prompt, role="system", temp=0.2
+    )
 
     try:
         parameterization_result = parse_llm_response(modified_yaml)
@@ -939,7 +957,9 @@ def parameterization_n_validation(
         )
         .replace("{{current_date}}", str(current_date))
     )
-    modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+    modified_yaml = await get_fireworks_response2(
+        userid, filled_prompt, role="system", temp=0.2
+    )
 
     try:
         validation_result = parse_llm_response(modified_yaml)
@@ -1075,14 +1095,18 @@ async def continue_report_generation(
 
     while not success and attempt < max_attempts:
         attempt += 1
-        success, error = dummy_execute(
-            generated_query, query_params, table_details_for_dummy, reporting_yaml
+        success, error = await dummy_execute(
+            generated_query,
+            query_params,
+            table_details_for_dummy,
+            reporting_yaml,
+            user_id,
         )
         print(f"Attempt {attempt} | success: {success} | error: {error}")
 
         if not success:
             # Try fixing SQL using verification
-            success, generated_query, query_params = perform_sql_verification(
+            success, generated_query, query_params = await perform_sql_verification(
                 generated_query,
                 query_params,
                 error,
@@ -1106,7 +1130,9 @@ async def continue_report_generation(
     # report title generation
     template = reporting_yaml.get("report_title_generator")
     filled_prompt = template.replace("{{user_query}}", str(actual_query))
-    modified_yaml = get_fireworks_response(filled_prompt, role="system")
+    modified_yaml = await get_fireworks_response(
+        filled_prompt, role="system", user_id=user_id
+    )
 
     try:
         title_result = parse_llm_response(modified_yaml)
@@ -1161,14 +1187,16 @@ async def continue_report_generation(
             logger.error("Database error: %s", e)
 
             # Always try to fix SQL via verification
-            dummy_success, generated_query, query_params = perform_sql_verification(
-                generated_query,
-                query_params,
-                str(e),
-                user_id,
-                table_details,
-                table_details_for_dummy,
-                reporting_yaml,
+            dummy_success, generated_query, query_params = (
+                await perform_sql_verification(
+                    generated_query,
+                    query_params,
+                    str(e),
+                    user_id,
+                    table_details,
+                    table_details_for_dummy,
+                    reporting_yaml,
+                )
             )
             # generated_query, corrected_params = parameterization_n_validation(generated_query, query_params, reporting_yaml, current_date )
 
@@ -1209,7 +1237,9 @@ async def continue_report_generation(
         )
         # .replace("{{variables}}", json.dumps(variables, ensure_ascii=False, indent=2))
     )
-    modified_yaml = get_fireworks_response(filled_prompt, role="system")
+    modified_yaml = await get_fireworks_response(
+        filled_prompt, role="system", user_id=user_id
+    )
 
     try:
         visualization_result = parse_llm_response(modified_yaml)
@@ -1340,10 +1370,12 @@ def get_enum_columns(table_names):
     return result
 
 
-def find_sql_intent(original_query, reporting_yaml):
+async def find_sql_intent(original_query, reporting_yaml, userid):
     intent_template = reporting_yaml.get("sql_intent_detection")
     filled_prompt = intent_template.replace("{{user_query}}", str(original_query))
-    modified_yaml = get_fireworks_response(filled_prompt, role="system")
+    modified_yaml = await get_fireworks_response(
+        filled_prompt, role="system", user_id=userid
+    )
     try:
         intent_result = parse_llm_response(modified_yaml)
     except ValueError as e:
@@ -1404,6 +1436,7 @@ async def perform_clarification(
     # print("----------------")
 
     if len(empty_string_fields) == 0:
+        ast_gen = ASTGenerator(user_id=user_id)
 
         if not query:
             query = data.get("actual_query")
@@ -1460,7 +1493,9 @@ async def perform_clarification(
             )
         )
 
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        modified_yaml = await get_fireworks_response2(
+            user_id, filled_prompt, role="system", temp=0.2
+        )
 
         try:
             clarification_result = parse_llm_response(modified_yaml)
@@ -1552,32 +1587,22 @@ async def generate_report():
     selected_id = []
     lance_flag = False
 
-    if not selected_entity_id:
+    token = current_user_id.set(user_id)
+    try:
 
-        # get the special_access and user type of the current user
-        special_access_status, user_type = check_user_type(user_id, conn)
-        logger.info(
-            f"user type : {user_type}, special_access_status: {special_access_status} "
-        )
+        if not selected_entity_id:
 
-        if special_access_status:
-            invited_users = get_invited_users(user_id, conn, user_type)
-
-        # check whether a name is present in the query and belongs to the current users' accessible list of users and clients
-        person_names = identify_names(query)
-        if person_names:
-            results, ambiguous, not_found = check_for_names(
-                conn,
-                special_access_status,
-                user_id,
-                user_type,
-                person_names,
-                ambiguous,
-                invited_users,
+            # get the special_access and user type of the current user
+            special_access_status, user_type = check_user_type(user_id, conn)
+            logger.info(
+                f"user type : {user_type}, special_access_status: {special_access_status} "
             )
 
-        if not results:
-            person_names = ner_using_prompt(query)
+            if special_access_status:
+                invited_users = get_invited_users(user_id, conn, user_type)
+
+            # check whether a name is present in the query and belongs to the current users' accessible list of users and clients
+            person_names = identify_names(query)
             if person_names:
                 results, ambiguous, not_found = check_for_names(
                     conn,
@@ -1589,179 +1614,205 @@ async def generate_report():
                     invited_users,
                 )
 
-        # logger.info(f"results from query : {results}")
-        # logger.info(f"ambiguous from query : {ambiguous}")
-        # logger.info(f"not_found from query : {not_found}")
+            if not results:
+                person_names = await ner_using_prompt(query, user_id=user_id)
+                if person_names:
+                    results, ambiguous, not_found = check_for_names(
+                        conn,
+                        special_access_status,
+                        user_id,
+                        user_type,
+                        person_names,
+                        ambiguous,
+                        invited_users,
+                    )
 
-        if ambiguous:
-            await save_ambiguous_report_to_redis(
-                user_id, results, ambiguous, query, special_access_status
-            )
-            return {"status": "ambiguous", "report_details": ambiguous}
+            # logger.info(f"results from query : {results}")
+            # logger.info(f"ambiguous from query : {ambiguous}")
+            # logger.info(f"not_found from query : {not_found}")
 
-        if not_found:
-            pass
+            if ambiguous:
+                await save_ambiguous_report_to_redis(
+                    user_id, results, ambiguous, query, special_access_status
+                )
+                return {"status": "ambiguous", "report_details": ambiguous}
 
-    else:
-        data = await get_ambiguous_report_from_redis(user_id)
-        results = data.get("results")
-        ambiguous = data.get("ambiguous")
-        query = data.get("query")
-        special_access_status = data.get("special_access_status")
+            if not_found:
+                pass
 
-        # find the selected entity from ambiguous and append it to results
-        for name, entries in ambiguous.items():
-            match = next((e for e in entries if e["id"] == selected_entity_id), None)
-            if match:
-                results.append(match)
-                break
+        else:
+            data = await get_ambiguous_report_from_redis(user_id)
+            results = data.get("results")
+            ambiguous = data.get("ambiguous")
+            query = data.get("query")
+            special_access_status = data.get("special_access_status")
 
-    # anonymization of the actual query
-    # ai_input_list is a list of anonymised persons mentioned in the querynthat will b sent to the prompt eg: [{'person1id': 'customer'}]
-    (
-        new_query,
-        person_map,
-        ai_input_list,
-        authorized_users_list,
-        actual_name_list,
-        new_person_param,
-    ) = replace_names_with_placeholders(
-        query,
-        results,
-        ai_input_list,
-        person_map,
-        invited_users,
-        authorized_users_list,
-        actual_name_list,
-    )
+            # find the selected entity from ambiguous and append it to results
+            for name, entries in ambiguous.items():
+                match = next(
+                    (e for e in entries if e["id"] == selected_entity_id), None
+                )
+                if match:
+                    results.append(match)
+                    break
 
-    if not results:
-        new_query = query
-
-    # logger.info(f"new_query : {new_query}")
-    # logger.info(f"person_map : {person_map}")
-    # logger.info(f"ai_input_list : {ai_input_list}")
-    # print("##------------------##")
-    logger.info(f"new_person_param : {new_person_param}")
-
-    # classify as db or lance search
-    reporting_yaml = load_yaml_file(path=pathconfig.reporting)
-    classification_template = reporting_yaml.get("query_classification")
-    filled_prompt = classification_template.replace("{{user_query}}", str(new_query))
-    modified_yaml = get_fireworks_response(filled_prompt, role="system")
-
-    try:
-        classification_result = parse_llm_response(modified_yaml)
-    except ValueError as e:
-        print(f"🔥 report_generation parsing failed: {e}")
-        return jsonify({"error": "Failed to parse report_generation response"}), 500
-
-    query_type = classification_result.get("query_type")
-    intent_query = classification_result.get("query", [])
-    print(f"---------------intent_query : {intent_query}")
-
-    if query_type == "semantic_query":
-        if results:
-            folder_names, searched_user_id = prepare_for_lance(results)
-        if not searched_user_id:
-            searched_user_id = user_id
-
-        client = UmailLanceClient(user_id)
-        lance_mails = client.search_email_from_lance(folder_names, user_id, query)
-        if lance_mails:
-            lance_flag = True
-            dates = []
-            for mail in lance_mails:
-                id = mail.get("id")
-                # plain_text = mail.get("plain_text", "")
-                timestamp = mail.get("timestamp", "")
-                # from_address = mail.get("from", "")
-
-                selected_id.append(id)
-                dates.append(timestamp)
-
-            print(f"%%%%%%  selected_id : {selected_id}")
-
-            print(f"no. of mails fetched: {len(selected_id)}")
-            print(f"no. of unique mails fetched: {len(set(selected_id))}")
-
-            # # Count occurrences of each ID
-            # id_counts = Counter(mail["id"] for mail in lance_mails)
-
-            # # Keep only repeated IDs
-            # repeated_ids = {mid for mid, count in id_counts.items() if count > 1}
-
-            # # Create list of dicts with id and plain_text for repeated IDs
-            # repeated_mails = [
-            #     {"id": mail["id"], "plain_text": mail["plain_text"]}
-            #     for mail in lance_mails if mail["id"] in repeated_ids
-            # ]
-
-            # print(repeated_mails)
-
-    # add the user id to person_map so that we can replace in the query params later
-    person_map[user_id] = "current_user_id"
-
-    # get referenced person
-    referenced_person = get_referenced_person(ai_input_list, new_query)
-
-    # data collection from raw user input
-    decomposed_query, enum_results, sql_intent, primary_search_table = (
-        await post_calrify_with_user(
+        # anonymization of the actual query
+        # ai_input_list is a list of anonymised persons mentioned in the querynthat will b sent to the prompt eg: [{'person1id': 'customer'}]
+        (
+            new_query,
+            person_map,
+            ai_input_list,
+            authorized_users_list,
+            actual_name_list,
+            new_person_param,
+        ) = replace_names_with_placeholders(
             query,
-            user_id,
-            user_satisfied=None,
-            clarifications=None,
-            user_edit=None,
-            system_query=None,
-            referenced_person=referenced_person,
-            primary_search_table=intent_query,
+            results,
+            ai_input_list,
+            person_map,
+            invited_users,
+            authorized_users_list,
+            actual_name_list,
         )
-    )
 
-    # choose primary_search_table_context according to the primary_search_table
-    base_dir = os.path.dirname(__file__)
-    table_path = os.path.join(base_dir, "table_details.json")
-    with open(table_path, "r", encoding="utf-8") as f:
-        table_details = json.load(f)
-    primary_search_table_context = table_details.get(primary_search_table, {})
+        if not results:
+            new_query = query
 
-    id = str(uuid.uuid4())
-    report_id = f"{user_id}_report_{id}"
+        # logger.info(f"new_query : {new_query}")
+        # logger.info(f"person_map : {person_map}")
+        # logger.info(f"ai_input_list : {ai_input_list}")
+        # print("##------------------##")
+        logger.info(f"new_person_param : {new_person_param}")
 
-    data = {
-        "report_id": report_id,
-        "user_id": user_id,
-        "actual_query": query,
-        "new_query": new_query,
-        "ai_input_list": ai_input_list,
-        "person_map": person_map,
-        "authorized_users_list": authorized_users_list,
-        "primary_search_table": primary_search_table,
-        "special_access_status": special_access_status,
-        "primary_search_table_context": primary_search_table_context,
-        "contain_name_flag": True if results else False,
-        "referenced_person": referenced_person,
-        "sql_intent": sql_intent,
-        "new_person_param": new_person_param,
-        "lance_flag": lance_flag,
-        "selected_id": selected_id,
-    }
+        # classify as db or lance search
+        reporting_yaml = load_yaml_file(path=pathconfig.reporting)
+        classification_template = reporting_yaml.get("query_classification")
+        filled_prompt = classification_template.replace(
+            "{{user_query}}", str(new_query)
+        )
+        modified_yaml = await get_fireworks_response(
+            filled_prompt, role="system", user_id=user_id
+        )
 
-    # clarification step
-    return await perform_clarification(
-        data,
-        reporting_yaml,
-        new_query,
-        table_details,
-        primary_search_table,
-        user_id,
-        query,
-        decomposed_query,
-        enum_results,
-        sql_intent,
-        referenced_person,
-    )
+        try:
+            classification_result = parse_llm_response(modified_yaml)
+        except ValueError as e:
+            print(f"🔥 report_generation parsing failed: {e}")
+            return jsonify({"error": "Failed to parse report_generation response"}), 500
+
+        query_type = classification_result.get("query_type")
+        intent_query = classification_result.get("query", [])
+        print(f"---------------intent_query : {intent_query}")
+
+        if query_type == "semantic_query":
+            if results:
+                folder_names, searched_user_id = prepare_for_lance(results)
+            if not searched_user_id:
+                searched_user_id = user_id
+
+            client = UmailLanceClient(user_id)
+
+            lance_mails = await client.search_email_from_lance(
+                folder_names, user_id, query
+            )
+            if lance_mails:
+                lance_flag = True
+                dates = []
+                for mail in lance_mails:
+                    id = mail.get("id")
+                    # plain_text = mail.get("plain_text", "")
+                    timestamp = mail.get("timestamp", "")
+                    # from_address = mail.get("from", "")
+
+                    selected_id.append(id)
+                    dates.append(timestamp)
+
+                print(f"%%%%%%  selected_id : {selected_id}")
+
+                print(f"no. of mails fetched: {len(selected_id)}")
+                print(f"no. of unique mails fetched: {len(set(selected_id))}")
+
+                # # Count occurrences of each ID
+                # id_counts = Counter(mail["id"] for mail in lance_mails)
+
+                # # Keep only repeated IDs
+                # repeated_ids = {mid for mid, count in id_counts.items() if count > 1}
+
+                # # Create list of dicts with id and plain_text for repeated IDs
+                # repeated_mails = [
+                #     {"id": mail["id"], "plain_text": mail["plain_text"]}
+                #     for mail in lance_mails if mail["id"] in repeated_ids
+                # ]
+
+                # print(repeated_mails)
+
+        # add the user id to person_map so that we can replace in the query params later
+        person_map[user_id] = "current_user_id"
+
+        # get referenced person
+        referenced_person = await get_referenced_person(
+            ai_input_list, new_query, userid=user_id
+        )
+
+        # data collection from raw user input
+        decomposed_query, enum_results, sql_intent, primary_search_table = (
+            await post_calrify_with_user(
+                query,
+                user_id,
+                user_satisfied=None,
+                clarifications=None,
+                user_edit=None,
+                system_query=None,
+                referenced_person=referenced_person,
+                primary_search_table=intent_query,
+            )
+        )
+
+        # choose primary_search_table_context according to the primary_search_table
+        base_dir = os.path.dirname(__file__)
+        table_path = os.path.join(base_dir, "table_details.json")
+        with open(table_path, "r", encoding="utf-8") as f:
+            table_details = json.load(f)
+        primary_search_table_context = table_details.get(primary_search_table, {})
+
+        id = str(uuid.uuid4())
+        report_id = f"{user_id}_report_{id}"
+
+        data = {
+            "report_id": report_id,
+            "user_id": user_id,
+            "actual_query": query,
+            "new_query": new_query,
+            "ai_input_list": ai_input_list,
+            "person_map": person_map,
+            "authorized_users_list": authorized_users_list,
+            "primary_search_table": primary_search_table,
+            "special_access_status": special_access_status,
+            "primary_search_table_context": primary_search_table_context,
+            "contain_name_flag": True if results else False,
+            "referenced_person": referenced_person,
+            "sql_intent": sql_intent,
+            "new_person_param": new_person_param,
+            "lance_flag": lance_flag,
+            "selected_id": selected_id,
+        }
+
+        # clarification step
+        return await perform_clarification(
+            data,
+            reporting_yaml,
+            new_query,
+            table_details,
+            primary_search_table,
+            user_id,
+            query,
+            decomposed_query,
+            enum_results,
+            sql_intent,
+            referenced_person,
+        )
+    finally:
+        current_user_id.reset(token)
 
 
 def get_primary_search_table(entity):
@@ -1872,7 +1923,9 @@ async def post_calrify_with_user(
             "{{clarification_question_answers}}",
             json.dumps(clarifications, ensure_ascii=False, indent=2),
         )
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.5)
+        modified_yaml = await get_fireworks_response2(
+            user_id, filled_prompt, role="system", temp=0.5
+        )
         try:
             data_from_qa_result = parse_llm_response(modified_yaml)
             print(f"data_from_qa_result : {data_from_qa_result}")
@@ -1920,6 +1973,7 @@ async def post_calrify_with_user(
             # print("removed aggregation and grouping_dimension from empty string fields in post clarify")
 
         if len(empty_string_fields) == 0:
+            ast_gen = ASTGenerator(user_id=user_id)
             query = clarification_state.get("actual_query")
             referenced_person = clarification_state.get("referenced_person")
             ast, variable_columns, pivot_values_map = await ast_gen.generate_ast(
@@ -1966,15 +2020,24 @@ async def post_calrify_with_user(
         # if it gets here, it means this is the first iteration
 
         # find the sql intent
-        sql_intent = find_sql_intent(original_query, reporting_yaml)
+        sql_intent = await find_sql_intent(
+            original_query, reporting_yaml, userid=user_id
+        )
         print(f"sql_intent : {sql_intent}")
 
         # get entity, grouping_dimension, metric, filters, temporal flag to understand the tables and columns
-        q_intent_extrt = QueryIntentionExtractor(reporting_yaml, base_dir)
-
-        entity, grouping_dimension, metric, aggregation, filters, temporal_flag = (
-            q_intent_extrt.extract_all(original_query, sql_intent)
+        q_intent_extrt = QueryIntentionExtractor(
+            reporting_yaml, base_dir, userid=user_id
         )
+
+        (
+            entity,
+            grouping_dimension,
+            metric,
+            aggregation,
+            filters,
+            temporal_flag,
+        ) = await q_intent_extrt.extract_all(original_query, sql_intent, userid=user_id)
         print(
             f"entity : {entity} | grouping_dimension : {grouping_dimension} |  metric : {metric} | aggregation : {aggregation} | filters : {filters}"
         )
@@ -2008,7 +2071,9 @@ async def post_calrify_with_user(
         #         "{{grouping_dimension}}", json.dumps(grouping_dimension, ensure_ascii=False, indent=2)
         #     )
 
-        modified_yaml = get_fireworks_response2(filled_prompt, role="system", temp=0.5)
+        modified_yaml = await get_fireworks_response2(
+            user_id, filled_prompt, role="system", temp=0.5, user_id=user_id
+        )
         try:
             data_extraction_result = parse_llm_response(modified_yaml)
         except ValueError as e:
@@ -2039,8 +2104,8 @@ async def post_calrify_with_user(
             filled_prompt = direction_limit_template.replace(
                 "{{user_query}}", str(original_query)
             )
-            modified_yaml = get_fireworks_response2(
-                filled_prompt, role="system", temp=0.5
+            modified_yaml = await get_fireworks_response2(
+                user_id, filled_prompt, role="system", temp=0.5, user_id=user_id
             )
             try:
                 direction_limit_result = parse_llm_response(modified_yaml)
@@ -2110,9 +2175,18 @@ async def post_clarifications():
     print(f"user_id : {user_id}")
     print(f"system_query: {system_query}")
 
-    return await post_calrify_with_user(
-        original_query, user_id, user_satisfied, clarifications, user_edit, system_query
-    )
+    token = current_user_id.set(user_id)
+    try:
+        return await post_calrify_with_user(
+            original_query,
+            user_id,
+            user_satisfied,
+            clarifications,
+            user_edit,
+            system_query,
+        )
+    finally:
+        current_user_id.reset(token)
 
 
 @ai_reporting_bp.route("/finalize_report", methods=["POST"])
@@ -2121,7 +2195,8 @@ async def finalize_report():
     report_id = data.get("report_id", "").strip()
     user_id = data.get("user_id", "").strip()
 
-    client = await GlideClusterClient.create(redis_config_glide)
+    # client = await GlideClusterClient.create(redis_config_glide)
+    client = RedisService()
     report_data = await get_draft_report(client, user_id, report_id)
     if report_data:
         try:
@@ -2164,7 +2239,8 @@ async def change_name():
     report_id = data.get("report_id", "").strip()
     user_id = data.get("user_id", "").strip()
 
-    client = await GlideClusterClient.create(redis_config_glide)
+    # client = await GlideClusterClient.create(redis_config_glide)
+    client = RedisService()
     report_data = await get_draft_report(client, user_id, report_id)
 
     if report_data:

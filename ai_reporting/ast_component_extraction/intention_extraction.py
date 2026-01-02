@@ -10,10 +10,11 @@ from ai_reporting.validation.validation import Validator
 
 class QueryIntentionExtractor:
 
-    def __init__(self, reporting_yaml, base_dir):
+    def __init__(self, reporting_yaml, base_dir, userid):
         self.reporting_yaml = reporting_yaml
         self.base_dir = base_dir
         self.database_schema = self.load_database_schema()
+        self.userid = userid
 
     def load_database_schema(self, schema_file="table_details.json"):
         schema_path = os.path.join(self.base_dir, schema_file)
@@ -23,17 +24,19 @@ class QueryIntentionExtractor:
     validator = Validator()
 
     # ------------- Helper --------------------------------
-    def run_entity_detection(self, original_query, reporting_yaml):
+    async def run_entity_detection(self, original_query, reporting_yaml):
         entity_template = reporting_yaml.get("sql_entity_detection")
         filled_prompt = entity_template.replace("{{user_query}}", str(original_query))
 
-        llm_output = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        llm_output = await get_fireworks_response2(
+           filled_prompt, role="system", temp=0.2, user_id = self.user_id
+        )
         return parse_llm_response(llm_output)
 
     # ---------------- Entity Detection ----------------
-    def detect_entity(self, query):
+    async def detect_entity(self, query):
         try:
-            result = self.run_entity_detection(query, self.reporting_yaml)
+            result = await self.run_entity_detection(query, self.reporting_yaml)
             entity = result.get("entity")
         except Exception as e:
             raise RuntimeError(f"Entity detection failed: {e}")
@@ -57,12 +60,14 @@ class QueryIntentionExtractor:
 
     # ---------------- Filters -----------------------------
 
-    def get_filters(self, query):
+    async def get_filters(self, query):
 
         template = self.reporting_yaml.get("get_filter_common")
         filled_prompt = template.replace("{{user_query}}", query)
 
-        response = get_fireworks_response(filled_prompt, role="system")
+        response = await get_fireworks_response(
+            filled_prompt, role="system", user_id=self.userid
+        )
         try:
             result = parse_llm_response(response)
             filter = result.get("filter")
@@ -74,7 +79,7 @@ class QueryIntentionExtractor:
         return filter
 
     # ---------------- Grouping Dimension ----------------
-    def get_grouping_dimension(self, query, sql_intent_lower, entity):
+    async def get_grouping_dimension(self, query, sql_intent_lower, entity):
         grouping_dimension = None
         temporal_flag = False
         template_key_map = {
@@ -98,7 +103,9 @@ class QueryIntentionExtractor:
             .replace("{{entity}}", entity)
         )
 
-        response = get_fireworks_response(filled_prompt, role="system")
+        response = await get_fireworks_response(
+            filled_prompt, role="system", user_id=self.userid
+        )
         try:
             result = parse_llm_response(response)
             grouping_dimension = result.get("grouping_dimension")
@@ -116,7 +123,9 @@ class QueryIntentionExtractor:
                 .replace("{{entity}}", entity)
             )
 
-            response = get_fireworks_response(filled_prompt, role="system")
+            response = await get_fireworks_response(
+                filled_prompt, role="system", user_id=self.userid
+            )
             try:
                 result = parse_llm_response(response)
                 grouping_dimension = result.get("grouping_dimension")
@@ -131,7 +140,7 @@ class QueryIntentionExtractor:
         return grouping_dimension, temporal_flag
 
     # ---------------- Metric & Aggregation ----------------
-    def get_metric_and_aggregation(self, query, sql_intent_lower, entity):
+    async def get_metric_and_aggregation(self, query, sql_intent_lower, entity):
         template_key_map = {
             "trend": "aggregation_and_metric_extraction_trend",
             "aggregation": "aggregation_and_metric_extraction",
@@ -139,7 +148,8 @@ class QueryIntentionExtractor:
         }
         template_key = template_key_map.get(sql_intent_lower)
         if not template_key:
-            return None
+            print(f"no template_key found for sql_intent_lower: {sql_intent_lower}")
+            return None, None
 
         template = self.reporting_yaml.get(template_key)
         filled_prompt = (
@@ -152,14 +162,18 @@ class QueryIntentionExtractor:
         )
 
         # --- First LLM call ---
-        raw1 = get_fireworks_response2(filled_prompt, role="system", temp=0.2)
+        raw1 = await get_fireworks_response2(
+            filled_prompt, role="system", temp=0.2, user_id = self.user_id
+        )
         try:
             result1 = parse_llm_response(raw1)
         except ValueError as e:
             raise RuntimeError(f"First parse failed: {e}")
 
         # --- Second LLM call ---
-        raw2 = get_fireworks_response(filled_prompt, role="system")
+        raw2 = await get_fireworks_response(
+            filled_prompt, role="system", user_id=self.userid
+        )
         try:
             result2 = parse_llm_response(raw2)
         except ValueError as e:
@@ -168,7 +182,9 @@ class QueryIntentionExtractor:
         # --- Compare results and retry if mismatch ---
         if result1 != result2:
             # print("⚠️ Mismatch between LLM outputs — retrying once more")
-            raw3 = get_fireworks_response(filled_prompt, role="system")
+            raw3 = await get_fireworks_response(
+                filled_prompt, role="system", user_id=self.userid
+            )
             try:
                 final_result = parse_llm_response(raw3)
             except ValueError as e:
@@ -190,15 +206,15 @@ class QueryIntentionExtractor:
         return metric, aggregation
 
     # ---------------- Full Extraction ----------------
-    def extract_all(self, query, sql_intent):
-        entity = self.detect_entity(query)
+    async def extract_all(self, query, sql_intent):
+        entity = await self.detect_entity(query)
         sql_intent_lower = sql_intent.lower()
-        grouping_dimension, temporal_flag = self.get_grouping_dimension(
+        grouping_dimension, temporal_flag = await self.get_grouping_dimension(
             query, sql_intent_lower, entity
         )
         filters = self.get_filters(query)
         metric = aggregation = None
-        metric, aggregation = self.get_metric_and_aggregation(
+        metric, aggregation = await self.get_metric_and_aggregation(
             query, sql_intent_lower, entity
         )
 

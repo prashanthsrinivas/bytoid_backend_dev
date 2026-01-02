@@ -7,6 +7,8 @@ import numpy as np
 import pyarrow as pa
 import json, random, asyncio, time
 from datetime import datetime, timedelta, timezone
+from db.rds_db import connect_to_rds
+from flask import jsonify
 
 from utils.base_logger import get_logger
 
@@ -305,6 +307,7 @@ class LanceDBServer:
         """
         table_name = f"u_{user_id}"
         self.db = self._connect_if_needed()
+        print("deleting db tables started", table_name)
 
         def _drop():
             return self.db.drop_table(table_name)
@@ -859,14 +862,30 @@ class LanceDBServer:
 
         user_id = vectors[0].user_id
         print(f"********user id inside lance: {user_id}")
-        folder_name = vectors[0].folder_name
-        print(f"********folder_name inside lance: {folder_name}")
+        # folder_name = vectors[0].folder_name
+        id = vectors[0].id
+        print(f"********id inside lance: {id}")
 
         table = self._get_umail_table(user_id)
         print("table", table)
 
         # === DELETE once per folder (FAST, not per ID) ===
-        table.delete(f"folder_name == '{folder_name}'")
+        # table.delete(f"folder_name == '{folder_name}'")
+
+        rows = (
+            table.search()  # start query
+            .where(f"id == '{id}'")  # filter
+            .limit(10)  # safety
+            .to_list()  # EXECUTE
+        )
+        if rows:
+            for row in rows:
+                print(f"row already inside:")
+                # print(row["text"])
+        else:
+            print(f"no rows already")
+
+        table.delete(f"id == '{id}'")
 
         # Build all rows
         records = [
@@ -881,6 +900,10 @@ class LanceDBServer:
             }
             for v in vectors
         ]
+        for v in vectors:
+            text = v.text
+            # print(f"text inserted:")
+            # print(f"{text}")
 
         # Clean dummy only once
         table.delete("id == 'init'")
@@ -965,12 +988,6 @@ class LanceDBServer:
 
             if day_messages:
                 collected.extend(day_messages)
-            
-            print(f"text:")
-            for msg in collected:
-                text = msg.get("text")
-                print(f"{text}")
-            
 
             else:
                 if not checked_timestamps:
@@ -1035,39 +1052,185 @@ class LanceDBServer:
         )
         return records, next_cursor
 
-    # def serverless_get_umail_page(self, user_id: str, next_cursor=None, page_size=1000):
-    #     table = self._get_umail_table(user_id)
+    def serverless_get_umail_page_test(
+        self, user_id: str, next_cursor=None, page_size=1000
+    ):
 
-    #     rows = table.search().select(["folder_name"]).to_list()
+        connection = connect_to_rds()
+        table = self._get_umail_table(user_id)
 
-    #     folder_names = {
-    #         r["folder_names"] for r in rows if r.get("folder_name")
-    #     }
+        if next_cursor:
+            end_date = parse_ts(next_cursor)
+        else:
+            end_date = datetime.now(timezone.utc)
 
-    #     for folder_name in folder_names:
-    #         rows = (
-    #             table.search()
-    #             .where(
-    #                 f"user_id = '{user_id}' and folder_name = '{folder_name}'"
-    #             )
-    #             .select(["text", "timestamp"])
-    #             .to_list()
-    #         )
+        start_date = end_date - timedelta(days=5)
 
-    #         latest_row = None
-    #         latest_ts = None
+        query = """
+        SELECT m.conversation_id_fk, m.sender_id, m.created_at
+        FROM messages m
+        JOIN (
+            SELECT m2.sender_id,
+                MAX(m2.created_at) AS latest_created_at
+            FROM messages m2
+            JOIN communication c
+            ON m2.sender_id = c.users_clients_id_fk
+            WHERE m2.created_at >= %s
+            AND m2.created_at < %s            
+            AND c.user_id_fk = %s
+            GROUP BY m2.sender_id
+        ) latest
+        ON m.sender_id = latest.sender_id
+        AND m.created_at = latest.latest_created_at
+        JOIN communication c2
+        ON m.sender_id = c2.users_clients_id_fk
+        WHERE m.created_at < %s
+        AND c2.user_id_fk = %s
+        ORDER BY m.created_at DESC
+        LIMIT %s;
+        """
 
-    #         for row in rows:
-    #             ts = parse_ts(row["timestamp"])
-    #             if not ts:
-    #                 continue
+        params = (
+            start_date,  # window start
+            end_date,  # window end
+            user_id,
+            end_date,  # ✅ cursor
+            user_id,
+            page_size,
+        )
 
-    #             if latest_ts is None or ts > latest_ts:
-    #                 latest_ts = ts
-    #                 latest_row = row
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
 
-    #         return latest_row["text"] if latest_row else None
+        connection.close()
 
+        result = []
+        print(f"rows:")
+        print({rows})
+        collected = []
+        for row in rows:
+            conversation_id, client_id, timestamp = row
+            # text_row = table.search().where(f"id == '{conversation_id}' and folder_name == '{client_id}'").select(["text"]).to_list()
+            text_rows = (
+                table.search()
+                .where(f"id == '{conversation_id}' and folder_name == '{client_id}'")
+                .to_list()
+            )
+
+            if text_rows:
+                # Sort by timestamp in Python
+                text_rows.sort(key=lambda x: x["timestamp"], reverse=True)
+                collected.append(text_rows[0])
+                # latest_text = text_rows[0]["text"]
+                # latest_timestamp = text_rows[0]["timestamp"]
+
+        next_cursor = None
+
+        for item in reversed(collected):
+            ts = item.get("timestamp")
+            if ts:
+                next_cursor = ts
+                break
+        return collected, next_cursor
+
+    def serverless_get_umail_page_test_test(
+        self, user_id: str, next_cursor=None, page_size=1000
+    ):
+
+        connection = connect_to_rds()
+        table = self._get_umail_table(user_id)
+
+        if next_cursor:
+            end_date = parse_ts(next_cursor)
+        else:
+            end_date = datetime.now(timezone.utc)
+
+        start_date = end_date - timedelta(days=5)
+
+        query = """
+        SELECT m.conversation_id_fk, m.sender_id, m.created_at
+        FROM messages m
+        JOIN (
+            SELECT m2.sender_id,
+                MAX(m2.created_at) AS latest_created_at
+            FROM messages m2
+            JOIN communication c
+            ON m2.sender_id = c.users_clients_id_fk
+            WHERE m2.created_at >= %s
+            AND m2.created_at < %s            
+            AND c.user_id_fk = %s
+            GROUP BY m2.sender_id
+        ) latest
+        ON m.sender_id = latest.sender_id
+        AND m.created_at = latest.latest_created_at
+        JOIN communication c2
+        ON m.sender_id = c2.users_clients_id_fk
+        WHERE m.created_at < %s
+        AND c2.user_id_fk = %s
+        ORDER BY m.created_at DESC
+        LIMIT %s;
+        """
+
+        params = (
+            start_date,  # window start
+            end_date,  # window end
+            user_id,
+            end_date,  # ✅ cursor
+            user_id,
+            page_size,
+        )
+
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+        connection.close()
+
+        result = []
+        print(f"rows:")
+        print({rows})
+        print(f"lenght : {len(rows)}")
+
+        collected = []
+        for row in rows:
+            conversation_id, client_id, timestamp = row
+            # text_row = table.search().where(f"id == '{conversation_id}' and folder_name == '{client_id}'").select(["text"]).to_list()
+            text_rows = (
+                table.search()
+                .where(f"id == '{conversation_id}' and folder_name == '{client_id}'")
+                .to_list()
+            )
+
+            if text_rows:
+                # Sort by timestamp in Python
+                text_rows.sort(key=lambda x: x["timestamp"], reverse=True)
+                collected.append(text_rows[0])
+                print(f"****** {text_rows[0]['folder_name']}  | {text_rows[0]['id']}")
+
+                # latest_text = text_rows[0]["text"]
+                # latest_timestamp = text_rows[0]["timestamp"]
+            else:
+                print(f"not found:")
+                print(f"client_id : {client_id} | conversation_id : {conversation_id}")
+
+        next_cursor = None
+
+        for item in reversed(collected):
+            ts = item.get("timestamp")
+            if ts:
+                next_cursor = ts
+                break
+        # next_cursor = collected[-1]["timestamp"]
+        # result.append({
+        #     "conversation_id": conversation_id,
+        #     "client_id": client_id,
+        #     "timestamp": latest_timestamp,
+        #     "text": latest_text
+        # })
+        print(f"lenght of collected: {len(collected)}")
+        print(f"next_cursor: {next_cursor}")
+        return collected, next_cursor
 
     # -------------------SCRAPE FUNCTIONALITY-------------------------------#
 
@@ -1346,7 +1509,12 @@ class LanceDBServer:
                     continue
 
                 # ✅ Contact filtering
-                if (sender_email and sender_email in contacts) or "All" in contacts:
+                if "All" in contacts:
+                    results.append(result)
+                elif isinstance(sender_email, list):
+                    if any(email in contacts for email in sender_email):
+                        results.append(result)
+                elif sender_email and sender_email in contacts:
                     results.append(result)
             if not results:
                 print("no results found in base search")

@@ -6,13 +6,15 @@ from flask import Blueprint, request, jsonify
 from services.uamil_auto_service import UmailAutoService
 from utils.base_logger import get_logger
 from utils.celery_base import delayed_trigger, lock_client
+from db.rds_db import connect_to_rds
+
 
 assist_suggest_bp = Blueprint("assistsuggest", __name__)
 logger = get_logger(__name__)
 
 
 @assist_suggest_bp.route("/gmail/webhook", methods=["POST", "GET"])
-def receive_gmail_notification():
+async def receive_gmail_notification():
     WEBHOOK_LOG_DIR = "data/test"
     WEBHOOK_LOG_FILE = os.path.join(WEBHOOK_LOG_DIR, "webhook_log.json")
     DEDUP_WINDOW = 30  # seconds
@@ -77,7 +79,7 @@ def receive_gmail_notification():
     dedup_key = f"webhook_dedup:{user_email}:{history_id}"
 
     # Check if THIS specific history_id was already processed recently
-    recent = lock_client.get(dedup_key)
+    recent = await lock_client.get(dedup_key)
     if recent:
         # This exact history_id was already processed; skip it
         logger.info(
@@ -87,11 +89,31 @@ def receive_gmail_notification():
 
     # Mark this specific history_id as processed for 5 minutes
     # (to avoid processing the exact same webhook multiple times)
-    lock_client.set(dedup_key, "1", ex=300)
+    await lock_client.set(dedup_key, "1", ex=300)
 
     # ✅ Trigger Celery for this webhook (even if same user, different history_id)
     logger.info(f"Processing webhook for {user_email}, historyId={history_id}")
-    delayed_trigger.delay(user_email, history_id)
+
+
+    # check if integration or not
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+    integration = False
+    email = ""
+    cursor.execute("SELECT 1 FROM integrations WHERE email=%s", (user_email,))
+    row = cursor.fetchone()
+    if row:
+        integration = True
+    else:
+        cursor.execute("SELECT 1 FROM users WHERE email=%s", (user_email,))
+        row = cursor.fetchone()
+        if not row:
+            return ("User not found", 404)
+
+    print(f"integratiosn passed to delayed_trigger : {integration}")
+
+    delayed_trigger.delay(user_email, history_id, integration = integration, channel = "google")
     return "OK", 200
 
 
@@ -189,7 +211,7 @@ def make_reply_email():
 
 
 @assist_suggest_bp.route("/ai_suggest", methods=["POST"])
-def triggersuggest():
+async def triggersuggest():
     data = request.json
     userid = data.get("user_id")
     msg_body = data.get("msg_body")
@@ -199,15 +221,15 @@ def triggersuggest():
         return jsonify({"error": "Missing required fields"}), 400
 
     with UmailAutoService(userid) as service:
-        return service.suggest_umail_reply(msg_body, conv_id)
+        return await service.suggest_umail_reply(msg_body, conv_id)
 
 
 @assist_suggest_bp.route("/test_functions", methods=["POST"])
-def messcheckgmail():
+async def messcheckgmail():
     data = request.json
     userid = data.get("user_id")
     userinput = data.get("userinput")
     ##print("userinp", userinput)
     # Connect to DB
     with UmailAutoService(userid) as service:
-        return service.generate_file_from_ai(user_input=userinput)
+        return await service.generate_file_from_ai(userid, user_input=userinput)

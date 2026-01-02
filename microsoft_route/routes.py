@@ -13,15 +13,58 @@ from agent_route.ag_helperzz import (
     process_and_update_yaml,
     remove_https_prefix,
 )
+from .microsoft_helpers import retrieve_auth_state_from_redis
+from integrations.integrations_helpers  import get_all_integrations
+from umail_helper.helper import store_integrations_in_redis
+from google_route.google_helpers import check_google_token_expiry
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request as g_request
+from services.gmail_service import GmailService
+import base64
+from google_route.routes import refresh_expired_microsoft_tokens_for_integrations
+from request_context import current_user_id
+
+
+
+
+
+
 
 # Third-party imports
-from flask import Blueprint, request, jsonify, session, redirect, make_response, stream_with_context, Response
+from flask import (
+    Blueprint,
+    request,
+    jsonify,
+    session,
+    redirect,
+    make_response,
+    stream_with_context,
+    Response,
+)
 from msal import ConfidentialClientApplication
 import requests
 import pymysql
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from glide import GlideClusterClient
+from services.redis_service import RedisService
+from integrations.google_integration import get_integration_access_token
+from umail_helper.ticketalloc import TicketAllocator
+
+import asyncio
+import aiohttp
+from .microsoft_helpers import (
+    check_microsoft_token_expiry,
+    refresh_expired_microsoft_tokens,
+    check_microsoft_token_expiry_normal,
+)
+from .microsoft_helpers import OutlookSubscriptionManager
+
+# import html2text
+import re
+from bs4 import BeautifulSoup
+from utils.celery_base import delayed_trigger, lock_client
+from utils.delay_mails import read_status_file, write_status_file
 
 
 # Load environment variables
@@ -162,10 +205,10 @@ except ImportError:
     # Initialize MESSAGES if not available
     MESSAGES = {}
 
-try:
-    from utils.redis_config import redis_config_glide
-except ImportError:
-    redis_config_glide = None
+# try:
+#
+# except ImportError:
+#     redis_config_glide = None
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -180,11 +223,8 @@ async def store_auth_state_in_redis(
     Uses state parameter as the key to associate login with callback.
     """
     try:
-        if not redis_config_glide:
-            logger.warning("⚠️ Redis not configured, falling back to session")
-            return False
-
-        client = await GlideClusterClient.create(redis_config_glide)
+        # client = await GlideClusterClient.create(redis_config_glide)
+        client = RedisService()
         key = f"microsoft_auth_state:{state_key}"
 
         # Store only the essential PKCE verifier as JSON
@@ -203,38 +243,6 @@ async def store_auth_state_in_redis(
         logger.warning(f"⚠️ Failed to store auth state in Redis: {str(e)}")
         return False
 
-
-async def retrieve_auth_state_from_redis(state_key: str) -> dict:
-    """
-    Retrieve the PKCE verifier and client_id from Redis using the state parameter.
-    """
-    try:
-        if not redis_config_glide:
-            logger.warning("⚠️ Redis not configured, state retrieval failed")
-            return None
-
-        client = await GlideClusterClient.create(redis_config_glide)
-        key = f"microsoft_auth_state:{state_key}"
-
-        # Retrieve state data from Redis
-        state_json = await client.get(key)
-
-        if state_json:
-            logger.info(
-                f"✅ Retrieved auth state from Redis for state: {state_key[:20]}..."
-            )
-            await client.delete(key)  # Delete after retrieval (one-time use)
-            await client.close()
-            return json.loads(state_json)
-        else:
-            logger.warning(
-                f"❌ No auth state found in Redis for state: {state_key[:20]}..."
-            )
-            await client.close()
-            return None
-    except Exception as e:
-        logger.error(f"❌ Failed to retrieve auth state from Redis: {str(e)}")
-        return None
 
 
 # Create Blueprint
@@ -256,10 +264,7 @@ SCOPES = [
     "OnlineMeetings.ReadWrite",
     "Chat.ReadWrite",
     "Files.Read.All",
-
 ]
-
-                        
 
 
 def get_microsoft_redirect_uri(request):
@@ -313,61 +318,672 @@ def is_microsoft_allowed_origin(origin):
 
 
 # Validate required environment variables
-if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID]):
-    logger.error("❌ Missing required Microsoft OAuth environment variables")
-    logger.error(f"CLIENT_ID: {'✓' if CLIENT_ID else '✗'}")
-    logger.error(f"CLIENT_SECRET: {'✓' if CLIENT_SECRET else '✗'}")
-    logger.error(f"TENANT_ID: {'✓' if TENANT_ID else '✗'}")
+# if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID]):
+#     logger.error("❌ Missing required Microsoft OAuth environment variables")
+#     logger.error(f"CLIENT_ID: {'✓' if CLIENT_ID else '✗'}")
+#     logger.error(f"CLIENT_SECRET: {'✓' if CLIENT_SECRET else '✗'}")
+#     logger.error(f"TENANT_ID: {'✓' if TENANT_ID else '✗'}")
 
-try:
-    msal_app = ConfidentialClientApplication(
-        client_id=CLIENT_ID,
-        client_credential=CLIENT_SECRET,
-        authority=AUTHORITY,
-        # Explicitly set token_cache to None for stateless operation
-        token_cache=None,
-    )
-    logger.info("✅ MSAL app initialized successfully")
-except Exception as e:
-    logger.error(f"❌ Failed to initialize MSAL app: {str(e)}")
-    msal_app = None
+# try:
+#     msal_app = ConfidentialClientApplication(
+#         client_id=CLIENT_ID,
+#         client_credential=CLIENT_SECRET,
+#         authority=AUTHORITY,
+#         # Explicitly set token_cache to None for stateless operation
+#         token_cache=None,
+#     )
+#     logger.info("✅ MSAL app initialized successfully")
+# except Exception as e:
+#     logger.error(f"❌ Failed to initialize MSAL app: {str(e)}")
+#     msal_app = None
 
 
 # Outlook Service Fallback (simplified version)
-class OutlookService:
-    def __init__(self, user_id):
-        self.user_id = user_id
 
-    async def get_total_message_count(self, months=3):
-        """Get approximate count of messages"""
+
+# ------ login related ------------#
+
+
+@microsoft_bp.route("/microsoft/login", methods=["GET", "OPTIONS"])
+def microsoft_login():
+    """Simple Microsoft login with global access like Gmail"""
+
+    # Handle CORS preflight for global access
+    if request.method == "OPTIONS":
+        response = make_response()
+        origin = request.headers.get("Origin")
+        if is_microsoft_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-Requested-With"
+        )
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response
+
+    logger.info("🚀 Starting Microsoft OAuth login (global access)")
+
+    msal_app = initialize_msal()
+    # Validate MSAL app is available
+    if not msal_app:
+        logger.error("❌ MSAL app not available")
+        return jsonify({"error": "Microsoft OAuth not properly configured"}), 500
+
+    try:
+        # Clear any existing auth state from session
+        session.pop("auth_flow", None)
+        session.pop("microsoft_state", None)
+
+        # Get dynamic redirect URI based on current request (like Gmail does)
+        # redirect_uri = get_microsoft_redirect_uri(request)
+        redirect_uri = redirect_uri = (
+            f"{os.getenv('BASE_FRNT_URL')}/auth/microsoft/callback"
+        )
+
+        logger.info(f"🌍 Using  redirect URI: {redirect_uri}")
+
+        # Create auth flow with dynamic redirect URI (like Google's approach)
+        flow = msal_app.initiate_auth_code_flow(
+            scopes=SCOPES, redirect_uri=redirect_uri
+        )
+
+        if not flow.get("auth_uri"):
+            logger.error("❌ Failed to generate auth URI")
+            return jsonify({"error": "Failed to generate auth URI"}), 500
+
+        # Extract state and code_verifier from flow for Redis storage
+        state_key = flow.get("state")
+        code_verifier = flow.get("code_verifier")
+
+        if not state_key:
+            logger.error("❌ No state parameter in auth flow")
+            return jsonify({"error": "Failed to generate state"}), 500
+
+        if not code_verifier:
+            logger.error("❌ No code_verifier (PKCE) in auth flow")
+            return jsonify({"error": "Failed to generate PKCE verifier"}), 500
+
+        # ✅ Store only the minimal OAuth state in Redis (code_verifier for PKCE)
+        # This ensures it's available regardless of which server handles the callback
+        asyncio.run(store_auth_state_in_redis(state_key, code_verifier, ttl=600))
+
+        logger.info("✅ Microsoft auth flow created and state stored in Redis")
+
+        # Create response with CORS headers for global access
+        response = jsonify({"auth_url": flow["auth_uri"], "status": "success"})
+
+        # Add CORS headers for global frontend access
+        origin = request.headers.get("Origin")
+        if is_microsoft_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-Requested-With"
+        )
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+
+        return response
+
+    except Exception as e:
+        logger.error(f"❌ Error in Microsoft login: {str(e)}")
+        return jsonify({"error": f"Login initiation failed: {str(e)}"}), 500
+
+
+@microsoft_bp.route("/auth/microsoft/callback", methods=["GET"])
+async def microsoft_callback():
+    """Simple Microsoft callback - like Google oauth2callback"""
+    print(f"********* microsoft_callback ************")
+
+    try:
+        # Get parameters
+        auth_code = request.args.get("code")
+        error = request.args.get("error")
+        state = request.args.get("state")
+        newuser = None
+        user_type = None
+
+        if error:
+            logger.error(f"❌ OAuth error: {error}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error={error}")
+
+        if not auth_code:
+            logger.error("❌ No authorization code")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=missing_code")
+
+        if not state:
+            logger.error("❌ No state parameter in callback")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=missing_state")
+
+        logger.info(f"✅ Callback received with state: {state[:20]}...")
+
+        # ✅ Retrieve the stored PKCE verifier from Redis using state
+        stored_state = await retrieve_auth_state_from_redis(state)
+
+        if not stored_state:
+            logger.error(f"❌ No auth state found in Redis for state: {state[:20]}...")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=no_flow")
+
+        code_verifier = stored_state.get("code_verifier")
+
+        if not code_verifier:
+            logger.error(f"❌ No code_verifier found in stored state")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=no_verifier")
+
+        # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
+        # redirect_uri = get_microsoft_redirect_uri(request)
+        redirect_uri = redirect_uri = (
+            f"{os.getenv('BASE_FRNT_URL')}/auth/microsoft/callback"
+        )
+        token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+
         try:
-            conn = connect_to_rds()
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT token FROM users WHERE user_id = %s", (self.user_id,)
-            )
-            row = cursor.fetchone()
+            token_data = {
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "code": auth_code,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+                "code_verifier": code_verifier,  # ✅ Send PKCE verifier directly
+                "scope": " ".join(SCOPES),
+            }
 
-            if not row:
-                return 0
+            token_response = requests.post(token_url, data=token_data, timeout=10)
 
-            access_token = row[0]
-            headers = {"Authorization": f"Bearer {access_token}"}
+            if token_response.status_code != 200:
+                logger.error(
+                    f"❌ Token exchange failed: {token_response.status_code} - {token_response.text}"
+                )
+                frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+                return redirect(f"{frontend_url}/login?error=token_failed")
 
-            # Simple count request
-            response = requests.get(
-                "https://graph.microsoft.com/v1.0/me/messages/$count", headers=headers
-            )
-
-            if response.status_code == 200:
-                return int(response.text)
-            return 0
+            result = token_response.json()
 
         except Exception as e:
-            logger.error(f"Error getting message count: {str(e)}")
-            return 0
+            logger.error(f"❌ Token acquisition failed: {str(e)}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=token_failed")
+
+        if not result or "access_token" not in result:
+            logger.error(f"❌ No access token in result: {result}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=no_token")
+
+        # Get user info (like Google does)
+        access_token = result["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        userinfo_response = requests.get(
+            "https://graph.microsoft.com/v1.0/me", headers=headers
+        )
+
+        if userinfo_response.status_code != 200:
+            logger.error(f"❌ Failed to get user info: {userinfo_response.status_code}")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            return redirect(f"{frontend_url}/login?error=userinfo_failed")
+
+        userinfo = userinfo_response.json()
+        email = userinfo.get("mail") or userinfo.get("userPrincipalName")
+        given_name = userinfo.get("givenName", "")
+        family_name = userinfo.get("surname", "")
+        user_id = userinfo.get("id")
+
+        # Store user in session (like Google does)
+        session["user"] = {
+            "id": user_id,
+            "name": f"{given_name} {family_name}".strip(),
+            "email": email,
+        }
+
+        # Save to database (simplified like Google)
+        try:
+            conn = connect_to_rds()
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+            cursor.execute(
+                "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
+            )
+            existing_user = cursor.fetchone()
+            # print("exising valus", existing_user)
+
+            if existing_user:
+                print(f"***** existing user")
+                # Update existing user
+                user_type = existing_user["user_type"]
+                # print("usertype", user_type)
+                cursor.execute(
+                    """
+                    UPDATE users SET 
+                        user_id = %s, first_name = %s, last_name = %s,
+                        token = %s, refresh_token = %s, social = %s,
+                        logged_in_at = NOW(), updated_in = NOW()
+                    WHERE email = %s
+                """,
+                    (
+                        user_id,
+                        given_name,
+                        family_name,
+                        access_token,
+                        result.get("refresh_token", ""),
+                        "microsoft",
+                        email,
+                    ),
+                )
+            else:
+                # Create new user - EXACTLY like Google does
+                cursor.execute(
+                    """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
+                    client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
+                    created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
+                """,
+                    (
+                        user_id,
+                        "admin",
+                        "",
+                        given_name,
+                        family_name,
+                        email,
+                        "",
+                        CLIENT_ID,
+                        CLIENT_SECRET,
+                        access_token,
+                        result.get("refresh_token", ""),
+                        None,
+                        "",
+                        "",
+                        "",
+                        "microsoft",
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        True,
+                    ),
+                )
+                print(f"******** created new user")
+
+                # Auto-generate API key for new Microsoft users (like we do in users/generate-website-api-key)
+                new_api_key = str(uuid.uuid4())
+                new_launch_id = str(uuid.uuid4())
+                new_sub_agent_id = str(uuid.uuid4())
+
+                # Create default subagent
+                cursor.execute(
+                    """
+                    INSERT INTO subagents (
+                        sub_agent_id, launch_id_fk, name, description, voice_type,
+                        documentation_link, model_version, created_at, updated_at
+                    ) VALUES (%s, %s, %s, NULL, NULL, NULL, NULL, NULL, NULL)
+                """,
+                    (new_sub_agent_id, None, "Default Agent"),
+                )
+
+                # Create launch with API key
+
+                cursor.execute(
+                    """
+                    INSERT INTO launch (launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name)
+                    VALUES (%s, %s, %s, %s, NULL)
+                """,
+                    (new_launch_id, new_sub_agent_id, user_id, new_api_key),
+                )
+
+                # Update subagent with correct launch_id
+                cursor.execute(
+                    """
+                    UPDATE subagents SET launch_id_fk = %s WHERE sub_agent_id = %s
+                """,
+                    (new_launch_id, new_sub_agent_id),
+                )
+
+                logger.info(
+                    f"✅ Auto-generated API key {str(new_api_key)[:20]}... for new Microsoft user {email}"
+                )
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+        except Exception as db_error:
+            logger.error(f"❌ Database error: {str(db_error)}")
+            # Continue anyway - don't fail login for DB issues
+
+        # Check if user needs onboarding
+        new_user = False
+        if user_type == "user":
+            newuser = True
+        else:
+            newuser = check_onboarding_user(user_id)
+
+        apikey = fetch_apikey_from_launch(user_id)
+        # service = OutlookService(user_id=user_id)
+        # service.create_subscription(access_token, email)
+
+        manager = OutlookSubscriptionManager()
+        future = manager.create_subscription_async(access_token, email)
+
+        # # get all integrations for this user and store it in redis
+        integrations_data, status_code = get_all_integrations(user_id)
+        integrations = integrations_data.get("integrations")
+
+        print(f"integrations_data : {integrations_data}")
+        if integrations_data:
+            redis_response = await store_integrations_in_redis(user_id,integrations_data)
+            if redis_response:
+                print(f"integrations stored in redis")
+            else:
+                print(f"integrations not stored in redis")
+
+            exists = any(
+                item["platform"] == "google"
+                for item in integrations_data.get("integrations", [])
+            )
+            if exists:
+                print(f"goole in integratiosn")
+                connection = connect_to_rds()
+                google_user_id = refresh_expired_google_tokens_for_integrations(user_id, connection)
+
+                cursor.close()
+                connection.close()
+
+                print(f"calling watch servoce using : {google_user_id}")
+                service = GmailService(user_id=google_user_id, integration = True)
+                service.create_watch_req()
+
+        # ---- SESSION LOGIN ----
+        session_id, access_token_session, refresh_token_session = await session_login(user_id)
+        
+
+        response = make_response(
+            jsonify(
+                {
+                    "status": "success",
+                    "userid": user_id,
+                    "user_onboarded": newuser,
+                    "api_key": apikey or "",
+                    "service": "microsoft",
+                }
+            )
+        )
+
+        # Set secure cookies
+        response.set_cookie(
+            "session_id",
+            session_id,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+        response.set_cookie(
+            "access_token",
+            access_token_session,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+        response.set_cookie(
+            "refresh_token",
+            refresh_token_session,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"❌ Microsoft callback error: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+        return redirect(f"{frontend_url}/login?error=callback_failed")
 
 
+# @microsoft_bp.route("/microsoft/login/debug", methods=["GET"])
+# def microsoft_login_debug():
+#     """Debug endpoint to test Microsoft login flow without frontend"""
+#     try:
+#         # Validate MSAL app
+#         if not msal_app:
+#             return "<h2>Error:</h2><p>MSAL app not configured</p>"
+
+#         # Get dynamic redirect URI for debug
+#         redirect_uri = get_microsoft_redirect_uri(request)
+
+#         flow = msal_app.initiate_auth_code_flow(
+#             scopes=SCOPES,
+#             redirect_uri=redirect_uri,
+#         )
+
+#         # Return HTML that redirects to Microsoft login
+#         auth_url = flow["auth_uri"]
+#         session["auth_flow"] = flow
+#         session.permanent = True
+
+#         # Debug info
+#         debug_info = f"""
+#         <h3>Debug Info:</h3>
+#         <ul>
+#             <li><strong>CLIENT_ID:</strong> {CLIENT_ID[:10]}...</li>
+#             <li><strong>TENANT_ID:</strong> {TENANT_ID}</li>
+#             <li><strong>REDIRECT_URI:</strong> {redirect_uri}</li>
+#             <li><strong>SCOPES:</strong> {', '.join(SCOPES)}</li>
+#             <li><strong>Flow Keys:</strong> {', '.join(flow.keys())}</li>
+#             <li><strong>Has PKCE:</strong> {'Yes' if 'code_verifier' in flow else 'No'}</li>
+#             <li><strong>Session ID:</strong> {session.get('_id', 'Not set')}</li>
+#         </ul>
+#         """
+
+#         html = f"""
+#         <html>
+#         <head><title>Microsoft Login Debug</title></head>
+#         <body>
+#             <h2>Microsoft OAuth Debug</h2>
+#             <p>Click the link below to test Microsoft login:</p>
+#             <a href="{auth_url}" target="_blank" style="
+#                 background: #0078d4;
+#                 color: white;
+#                 padding: 10px 20px;
+#                 text-decoration: none;
+#                 border-radius: 5px;
+#             ">Login with Microsoft</a>
+#             <br><br>
+#             {debug_info}
+#             <p><small>Auth URL: <code>{auth_url}</code></small></p>
+#         </body>
+#         </html>
+#         """
+#         return html
+
+#     except Exception as e:
+#         logger.error(f"Debug endpoint error: {str(e)}")
+#         return f"<h2>Error:</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre>"
+
+
+# @microsoft_bp.route("/browser_url_microsoft", methods=["POST"])
+# def receive_browser_url_microsoft():
+#     print(f"********* browser url ************")
+#     try:
+#         data = request.get_json()
+#         browser_url = data.get("url")
+#         state = session.get("state", data.get("state"))
+
+#         # This function should return the user ID (e.g., Microsoft account ID)
+#         user_id, newuser = microsoft_oauth_callback(browser_url, state)
+#         session_id, access_token, refresh_token = session_login(user_id)
+#         # print("Microsoft login:", user_id, newuser)
+#         apikey = fetch_apikey_from_launch(user_id)
+
+#         # Note: Microsoft doesn't have watch requests like Gmail, so we skip that
+
+#         # Prepare response
+#         response = make_response(
+#             jsonify(
+#                 {
+#                     "status": "success",
+#                     "url": browser_url,
+#                     "userid": user_id,
+#                     "user_onboarded": newuser,
+#                     "api_key": apikey or "",
+#                 }
+#             )
+#         )
+#         # print("response from browser_url_microsoft", response)
+
+#         # Set secure session cookie (HttpOnly, Secure)
+#         response.set_cookie(
+#             "session_id",
+#             session_id,
+#             max_age=30 * 24 * 60 * 60,  # 30 days
+#             httponly=True,
+#             secure=True,
+#             samesite="None",
+#         )
+
+#         response.set_cookie(
+#             "access_token",
+#             access_token,
+#             max_age=30 * 24 * 60 * 60,  # 30 days
+#             httponly=True,
+#             secure=True,
+#             samesite="None",
+#         )
+
+#         response.set_cookie(
+#             "refresh_token",
+#             refresh_token,
+#             max_age=30 * 24 * 60 * 60,  # 30 days
+#             httponly=True,
+#             secure=True,
+#             samesite="None",
+#         )
+
+#         return response
+
+#     except Exception as e:
+#         logger.error(f"Error in browser_url_microsoft: {str(e)}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @microsoft_bp.route("/microsoft_login", methods=["POST"])
+# def microsoft_login_post():
+#     """Microsoft login endpoint similar to Gmail's google_login"""
+#     print(f"******************* 2 ******************")
+
+#     try:
+#         data = request.json
+#         if not data or "access_token" not in data:
+#             return jsonify({"error": "Access token is required"}), 400
+
+#         access_token = data["access_token"]
+
+#         # Verify the token with Microsoft Graph
+#         headers = {"Authorization": f"Bearer {access_token}"}
+#         response = requests.get("https://graph.microsoft.com/v1.0/me", headers=headers)
+
+#         if response.status_code != 200:
+#             return jsonify({"error": "Invalid token"}), 403
+
+#         user_info = response.json()
+#         email = user_info.get("mail") or user_info.get("userPrincipalName")
+#         user_id = user_info.get("id")
+
+#         return jsonify({"success": True, "email": email, "user_id": user_id})
+
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/session-debug", methods=["GET"])
+def session_debug():
+    """Debug endpoint to check session status"""
+    try:
+        return jsonify(
+            {
+                "session_id": session.get("_id"),
+                "session_keys": list(session.keys()),
+                "has_auth_flow": "auth_flow" in session,
+                "auth_flow_keys": (
+                    list(session.get("auth_flow", {}).keys())
+                    if session.get("auth_flow")
+                    else []
+                ),
+                "user": session.get("user"),
+                "permanent": session.permanent,
+                "msal_available": msal_app is not None,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/test-cors", methods=["GET", "OPTIONS"])
+def test_cors():
+    """Simple endpoint to test CORS configuration"""
+    if request.method == "OPTIONS":
+        response = make_response()
+        origin = request.headers.get("Origin")
+        logger.info(f"🔍 CORS Preflight - Origin: {origin}")
+        if is_microsoft_allowed_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        return response
+
+    logger.info(f"🔍 CORS Test - Origin: {request.headers.get('Origin')}")
+    logger.info(f"🔍 CORS Test - Headers: {dict(request.headers)}")
+
+    response = make_response(
+        jsonify(
+            {
+                "status": "success",
+                "message": "CORS test successful",
+                "origin": request.headers.get("Origin"),
+                "headers": dict(request.headers),
+            }
+        )
+    )
+
+    origin = request.headers.get("Origin")
+    if is_microsoft_allowed_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+
+    return response
+
+
+def initialize_msal():
+    if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID]):
+        logger.error("❌ Missing required Microsoft OAuth environment variables")
+        logger.error(f"CLIENT_ID: {'✓' if CLIENT_ID else '✗'}")
+        logger.error(f"CLIENT_SECRET: {'✓' if CLIENT_SECRET else '✗'}")
+        logger.error(f"TENANT_ID: {'✓' if TENANT_ID else '✗'}")
+
+    try:
+        msal_app = ConfidentialClientApplication(
+            client_id=CLIENT_ID,
+            client_credential=CLIENT_SECRET,
+            authority=AUTHORITY,
+            # Explicitly set token_cache to None for stateless operation
+            token_cache=None,
+        )
+        logger.info("✅ MSAL app initialized successfully")
+        return msal_app
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize MSAL app: {str(e)}")
+        return None
+
+
+# --------- related to fetching to emails ----------------#
 async def fetch_outlook_emails_batch(
     user_id, page_token=None, batch_size=100, months=12
 ):  # ✅ Changed default from 3 to 12 months
@@ -530,892 +1146,6 @@ async def fetch_outlook_emails_batch(
     except Exception as e:
         logger.error(f"❌ Batch fetch error: {str(e)}")
         return {"status": "error", "error": str(e), "new_messages": 0}
-
-
-def store_outlook_emails_in_db(user_id: str, messages: list) -> dict:
-    """
-    Store Outlook emails in database with duplicate checking
-    Returns: {"status": "success"/"error", "stored_count": N, "skipped_count": N, "error": "..."}
-    """
-    logger.info(
-        f"🔄 Starting to store {len(messages)} Outlook messages for user {user_id}"
-    )
-
-    if not messages:
-        logger.warning("⚠️ No messages to store")
-        return {"status": "success", "stored_count": 0, "skipped_count": 0}
-
-    stored_count = 0
-    skipped_count = 0
-    error_count = 0
-
-    try:
-        conn = connect_to_rds()
-        cursor = conn.cursor(pymysql.cursors.DictCursor)
-
-        for message in messages:
-            try:
-                message_id = message.get("id")
-                internet_message_id = message.get("internet_message_id", "")
-
-                # Check if message already exists
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE message_id = %s OR internet_message_id = %s",
-                    (message_id, internet_message_id),
-                )
-                if cursor.fetchone():
-                    logger.debug(f"⏭️  Skipping duplicate message: {message_id}")
-                    skipped_count += 1
-                    continue
-
-                # Extract message data
-                conversation_id = message.get("conversation_id", str(uuid.uuid4()))
-                from_email = message.get("from_email", "")
-                to_email = message.get("to_email", "")
-                from_name = message.get("from_name", message.get("from", ""))
-                to_name = message.get("to_name", message.get("to", ""))
-                subject = message.get("subject", "")
-                body = message.get("body", "")
-                timestamp = message.get(
-                    "timestamp", datetime.now(timezone.utc).isoformat()
-                )
-                direction = message.get("direction", "inbound")
-                has_attachments = message.get("has_attachments", False)
-                importance = message.get("importance", "normal")
-
-                # Determine participant
-                if direction == "inbound":
-                    participant_email = from_email
-                    participant_name = from_name
-                else:
-                    participant_email = to_email
-                    participant_name = to_name
-
-                # Get or create user client
-                client_id = None
-                try:
-                    cursor.execute(
-                        "SELECT users_clients_id FROM users_clients WHERE email_id = %s AND user_id_fk = %s",
-                        (participant_email, user_id),
-                    )
-                    client_row = cursor.fetchone()
-                    if client_row:
-                        client_id = client_row["users_clients_id"]
-                    else:
-                        # Create new contact if not exists
-                        client_id = str(uuid.uuid4())
-                        cursor.execute(
-                            """
-                            INSERT INTO users_clients (users_clients_id, user_id_fk, first_name, last_name, email_id, created_in)
-                            VALUES (%s, %s, %s, %s, %s, NOW())
-                        """,
-                            (
-                                client_id,
-                                user_id,
-                                participant_name or "",
-                                "",
-                                participant_email,
-                            ),
-                        )
-                        logger.debug(f"✅ Created new contact: {participant_email}")
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ Could not get/create client for {participant_email}: {str(e)}"
-                    )
-                    client_id = str(uuid.uuid4())
-
-                # Insert message
-                cursor.execute(
-                    """
-                    INSERT INTO messages (
-                        message_id, user_id_fk, client_id_fk, from_address, to_address,
-                        from_name, to_name, subject, body, timestamp, direction,
-                        source, conversation_id, internet_message_id, has_attachments,
-                        importance, created_in
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                """,
-                    (
-                        message_id,
-                        user_id,
-                        client_id,
-                        from_email,
-                        to_email,
-                        from_name,
-                        to_name,
-                        subject,
-                        body,
-                        timestamp,
-                        direction,
-                        "outlook",
-                        conversation_id,
-                        internet_message_id,
-                        has_attachments,
-                        importance,
-                    ),
-                )
-
-                stored_count += 1
-                logger.debug(f"✅ Stored message: {message_id}")
-
-            except Exception as e:
-                logger.error(
-                    f"❌ Error storing message {message.get('id', 'unknown')}: {str(e)}"
-                )
-                error_count += 1
-                continue
-
-        conn.commit()
-        conn.close()
-
-        logger.info(
-            f"✅ Storage complete - Stored: {stored_count}, Skipped: {skipped_count}, Errors: {error_count}"
-        )
-        return {
-            "status": "success",
-            "stored_count": stored_count,
-            "skipped_count": skipped_count,
-            "error_count": error_count,
-        }
-
-    except Exception as e:
-        logger.error(f"❌ Database error in store_outlook_emails_in_db: {str(e)}")
-        return {"status": "error", "error": str(e), "stored_count": 0}
-
-
-@microsoft_bp.route("/microsoft/session-debug", methods=["GET"])
-def session_debug():
-    """Debug endpoint to check session status"""
-    try:
-        return jsonify(
-            {
-                "session_id": session.get("_id"),
-                "session_keys": list(session.keys()),
-                "has_auth_flow": "auth_flow" in session,
-                "auth_flow_keys": (
-                    list(session.get("auth_flow", {}).keys())
-                    if session.get("auth_flow")
-                    else []
-                ),
-                "user": session.get("user"),
-                "permanent": session.permanent,
-                "msal_available": msal_app is not None,
-            }
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/microsoft/test-cors", methods=["GET", "OPTIONS"])
-def test_cors():
-    """Simple endpoint to test CORS configuration"""
-    if request.method == "OPTIONS":
-        response = make_response()
-        origin = request.headers.get("Origin")
-        logger.info(f"🔍 CORS Preflight - Origin: {origin}")
-        if is_microsoft_allowed_origin(origin):
-            response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-        return response
-
-    logger.info(f"🔍 CORS Test - Origin: {request.headers.get('Origin')}")
-    logger.info(f"🔍 CORS Test - Headers: {dict(request.headers)}")
-
-    response = make_response(
-        jsonify(
-            {
-                "status": "success",
-                "message": "CORS test successful",
-                "origin": request.headers.get("Origin"),
-                "headers": dict(request.headers),
-            }
-        )
-    )
-
-    origin = request.headers.get("Origin")
-    if is_microsoft_allowed_origin(origin):
-        response.headers["Access-Control-Allow-Origin"] = origin
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-
-    return response
-
-
-@microsoft_bp.route("/microsoft/login", methods=["GET", "OPTIONS"])
-def microsoft_login():
-    """Simple Microsoft login with global access like Gmail"""
-
-    # Handle CORS preflight for global access
-    if request.method == "OPTIONS":
-        response = make_response()
-        origin = request.headers.get("Origin")
-        if is_microsoft_allowed_origin(origin):
-            response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, Authorization, X-Requested-With"
-        )
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        return response
-
-    logger.info("🚀 Starting Microsoft OAuth login (global access)")
-
-    # Validate MSAL app is available
-    if not msal_app:
-        logger.error("❌ MSAL app not available")
-        return jsonify({"error": "Microsoft OAuth not properly configured"}), 500
-
-    try:
-        # Clear any existing auth state from session
-        session.pop("auth_flow", None)
-        session.pop("microsoft_state", None)
-
-        # Get dynamic redirect URI based on current request (like Gmail does)
-        redirect_uri = get_microsoft_redirect_uri(request)
-        logger.info(f"🌍 Using dynamic redirect URI: {redirect_uri}")
-
-        # Create auth flow with dynamic redirect URI (like Google's approach)
-        flow = msal_app.initiate_auth_code_flow(
-            scopes=SCOPES, redirect_uri=redirect_uri
-        )
-
-        if not flow.get("auth_uri"):
-            logger.error("❌ Failed to generate auth URI")
-            return jsonify({"error": "Failed to generate auth URI"}), 500
-
-        # Extract state and code_verifier from flow for Redis storage
-        state_key = flow.get("state")
-        code_verifier = flow.get("code_verifier")
-
-        if not state_key:
-            logger.error("❌ No state parameter in auth flow")
-            return jsonify({"error": "Failed to generate state"}), 500
-
-        if not code_verifier:
-            logger.error("❌ No code_verifier (PKCE) in auth flow")
-            return jsonify({"error": "Failed to generate PKCE verifier"}), 500
-
-        # ✅ Store only the minimal OAuth state in Redis (code_verifier for PKCE)
-        # This ensures it's available regardless of which server handles the callback
-        asyncio.run(store_auth_state_in_redis(state_key, code_verifier, ttl=600))
-
-        logger.info("✅ Microsoft auth flow created and state stored in Redis")
-
-        # Create response with CORS headers for global access
-        response = jsonify({"auth_url": flow["auth_uri"], "status": "success"})
-
-        # Add CORS headers for global frontend access
-        origin = request.headers.get("Origin")
-        if is_microsoft_allowed_origin(origin):
-            response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, Authorization, X-Requested-With"
-        )
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-
-        return response
-
-    except Exception as e:
-        logger.error(f"❌ Error in Microsoft login: {str(e)}")
-        return jsonify({"error": f"Login initiation failed: {str(e)}"}), 500
-
-
-@microsoft_bp.route("/microsoft/login/debug", methods=["GET"])
-def microsoft_login_debug():
-    """Debug endpoint to test Microsoft login flow without frontend"""
-    try:
-        # Validate MSAL app
-        if not msal_app:
-            return "<h2>Error:</h2><p>MSAL app not configured</p>"
-
-        # Get dynamic redirect URI for debug
-        redirect_uri = get_microsoft_redirect_uri(request)
-
-        flow = msal_app.initiate_auth_code_flow(
-            scopes=SCOPES,
-            redirect_uri=redirect_uri,
-        )
-
-        # Return HTML that redirects to Microsoft login
-        auth_url = flow["auth_uri"]
-        session["auth_flow"] = flow
-        session.permanent = True
-
-        # Debug info
-        debug_info = f"""
-        <h3>Debug Info:</h3>
-        <ul>
-            <li><strong>CLIENT_ID:</strong> {CLIENT_ID[:10]}...</li>
-            <li><strong>TENANT_ID:</strong> {TENANT_ID}</li>
-            <li><strong>REDIRECT_URI:</strong> {redirect_uri}</li>
-            <li><strong>SCOPES:</strong> {', '.join(SCOPES)}</li>
-            <li><strong>Flow Keys:</strong> {', '.join(flow.keys())}</li>
-            <li><strong>Has PKCE:</strong> {'Yes' if 'code_verifier' in flow else 'No'}</li>
-            <li><strong>Session ID:</strong> {session.get('_id', 'Not set')}</li>
-        </ul>
-        """
-
-        html = f"""
-        <html>
-        <head><title>Microsoft Login Debug</title></head>
-        <body>
-            <h2>Microsoft OAuth Debug</h2>
-            <p>Click the link below to test Microsoft login:</p>
-            <a href="{auth_url}" target="_blank" style="
-                background: #0078d4; 
-                color: white; 
-                padding: 10px 20px; 
-                text-decoration: none; 
-                border-radius: 5px;
-            ">Login with Microsoft</a>
-            <br><br>
-            {debug_info}
-            <p><small>Auth URL: <code>{auth_url}</code></small></p>
-        </body>
-        </html>
-        """
-        return html
-
-    except Exception as e:
-        logger.error(f"Debug endpoint error: {str(e)}")
-        return f"<h2>Error:</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre>"
-
-
-def microsoft_oauth_callback(url, state):
-    """Simplified Microsoft OAuth callback - similar to Google's oauth2callback"""
-    try:
-        logger.info("🔄 Microsoft oauth callback processing (simplified)")
-
-        # Parse URL to get authorization code (like Google does)
-        from urllib.parse import parse_qs, urlparse
-
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-
-        auth_code = query_params.get("code", [None])[0]
-        url_state = query_params.get("state", [None])[0]
-
-        if not auth_code:
-            raise Exception("Authorization code not found")
-
-        # Skip state verification for reliability (like Google's approach)
-        logger.info("✅ Skipping state verification in helper function")
-
-        # Simple token acquisition (like Google's flow.fetch_token)
-        # Note: This uses a fallback redirect URI for global access
-        result = msal_app.acquire_token_by_authorization_code(
-            auth_code,
-            scopes=SCOPES,
-            redirect_uri=get_microsoft_redirect_uri(None),  # Use fallback redirect URI
-        )
-
-        if not result or "access_token" not in result:
-            raise Exception(f"Failed to obtain access token: {result}")
-
-        # Get user info (like Google does)
-        access_token = result["access_token"]
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        userinfo_response = requests.get(
-            "https://graph.microsoft.com/v1.0/me", headers=headers
-        )
-
-        if userinfo_response.status_code != 200:
-            raise Exception("Failed to get user info from Microsoft")
-
-        userinfo = userinfo_response.json()
-        email = userinfo.get("mail") or userinfo.get("userPrincipalName")
-        given_name = userinfo.get("givenName", "")
-        family_name = userinfo.get("surname", "")
-        user_id = userinfo.get("id")
-
-        # Save to database (simplified)
-        conn = connect_to_rds()
-        cursor = conn.cursor(pymysql.cursors.DictCursor)
-
-        cursor.execute(
-            "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
-        )
-        existing_user = cursor.fetchone()
-
-        if existing_user:
-            # Update existing user
-            cursor.execute(
-                """
-                UPDATE users SET 
-                    user_id = %s, first_name = %s, last_name = %s,
-                    token = %s, refresh_token = %s, social = %s,
-                    logged_in_at = NOW(), updated_in = NOW()
-                WHERE email = %s
-            """,
-                (
-                    user_id,
-                    given_name,
-                    family_name,
-                    access_token,
-                    result.get("refresh_token", ""),
-                    "microsoft",
-                    email,
-                ),
-            )
-        else:
-            # Create new user - EXACTLY like Google does
-            cursor.execute(
-                """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
-                client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
-            """,
-                (
-                    user_id,
-                    "admin",
-                    "",
-                    given_name,
-                    family_name,
-                    email,
-                    "",
-                    CLIENT_ID,
-                    CLIENT_SECRET,
-                    access_token,
-                    result.get("refresh_token", ""),
-                    None,
-                    "",
-                    "",
-                    "",
-                    "microsoft",
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    True,
-                ),
-            )
-
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        # Check onboarding status
-        if existing_user and existing_user.get("user_type") == "user":
-            return user_id, True
-
-        newuser = check_onboarding_user(user_id)
-        return user_id, newuser
-
-    except Exception as e:
-        logger.error(f"❌ Microsoft OAuth callback error: {str(e)}")
-        raise Exception(f"Microsoft OAuth failed: {str(e)}")
-
-
-# Add a new route that matches Gmail's browser_url pattern
-@microsoft_bp.route("/browser_url_microsoft", methods=["POST"])
-def receive_browser_url_microsoft():
-    try:
-        data = request.get_json()
-        browser_url = data.get("url")
-        state = session.get("state", data.get("state"))
-
-        # This function should return the user ID (e.g., Microsoft account ID)
-        user_id, newuser = microsoft_oauth_callback(browser_url, state)
-        session_id, access_token, refresh_token = session_login(user_id)
-        # print("Microsoft login:", user_id, newuser)
-        apikey = fetch_apikey_from_launch(user_id)
-
-        # Note: Microsoft doesn't have watch requests like Gmail, so we skip that
-
-        # Prepare response
-        response = make_response(
-            jsonify(
-                {
-                    "status": "success",
-                    "url": browser_url,
-                    "userid": user_id,
-                    "user_onboarded": newuser,
-                    "api_key": apikey or "",
-                }
-            )
-        )
-        # print("response from browser_url_microsoft", response)
-
-        # Set secure session cookie (HttpOnly, Secure)
-        response.set_cookie(
-            "session_id",
-            session_id,
-            max_age=30 * 24 * 60 * 60,  # 30 days
-            httponly=True,
-            secure=True,
-            samesite="None",
-        )
-
-        response.set_cookie(
-            "access_token",
-            access_token,
-            max_age=30 * 24 * 60 * 60,  # 30 days
-            httponly=True,
-            secure=True,
-            samesite="None",
-        )
-
-        response.set_cookie(
-            "refresh_token",
-            refresh_token,
-            max_age=30 * 24 * 60 * 60,  # 30 days
-            httponly=True,
-            secure=True,
-            samesite="None",
-        )
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Error in browser_url_microsoft: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-# Simplified Microsoft callback - similar to Google's approach
-@microsoft_bp.route("/microsoft/callback")
-@microsoft_bp.route("/microsoft/callback/")
-def microsoft_callback():
-    """Simple Microsoft callback - like Google oauth2callback"""
-    try:
-        logger.info("🔄 Microsoft callback (simplified)")
-
-        # Get parameters
-        auth_code = request.args.get("code")
-        error = request.args.get("error")
-        state = request.args.get("state")
-        newuser = None
-        user_type = None
-
-        if error:
-            logger.error(f"❌ OAuth error: {error}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error={error}")
-
-        if not auth_code:
-            logger.error("❌ No authorization code")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error=missing_code")
-
-        if not state:
-            logger.error("❌ No state parameter in callback")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error=missing_state")
-
-        logger.info(f"✅ Callback received with state: {state[:20]}...")
-
-        # ✅ Retrieve the stored PKCE verifier from Redis using state
-        stored_state = asyncio.run(retrieve_auth_state_from_redis(state))
-
-        if not stored_state:
-            logger.error(f"❌ No auth state found in Redis for state: {state[:20]}...")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error=no_flow")
-
-        code_verifier = stored_state.get("code_verifier")
-
-        if not code_verifier:
-            logger.error(f"❌ No code_verifier found in stored state")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error=no_verifier")
-
-        # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
-        # redirect_uri = get_microsoft_redirect_uri(request)
-        redirect_uri = "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/microsoft/callback"
-        token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-
-        try:
-            token_data = {
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "code": auth_code,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-                "code_verifier": code_verifier,  # ✅ Send PKCE verifier directly
-                "scope": " ".join(SCOPES),
-            }
-
-            token_response = requests.post(token_url, data=token_data, timeout=10)
-
-            if token_response.status_code != 200:
-                logger.error(
-                    f"❌ Token exchange failed: {token_response.status_code} - {token_response.text}"
-                )
-                frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-                return redirect(f"{frontend_url}/login?error=token_failed")
-
-            result = token_response.json()
-
-        except Exception as e:
-            logger.error(f"❌ Token acquisition failed: {str(e)}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error=token_failed")
-
-        if not result or "access_token" not in result:
-            logger.error(f"❌ No access token in result: {result}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error=no_token")
-
-        # Get user info (like Google does)
-        access_token = result["access_token"]
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        userinfo_response = requests.get(
-            "https://graph.microsoft.com/v1.0/me", headers=headers
-        )
-
-        if userinfo_response.status_code != 200:
-            logger.error(f"❌ Failed to get user info: {userinfo_response.status_code}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-            return redirect(f"{frontend_url}/login?error=userinfo_failed")
-
-        userinfo = userinfo_response.json()
-        email = userinfo.get("mail") or userinfo.get("userPrincipalName")
-        given_name = userinfo.get("givenName", "")
-        family_name = userinfo.get("surname", "")
-        user_id = userinfo.get("id")
-
-        # Store user in session (like Google does)
-        session["user"] = {
-            "id": user_id,
-            "name": f"{given_name} {family_name}".strip(),
-            "email": email,
-        }
-
-        # Save to database (simplified like Google)
-        try:
-            conn = connect_to_rds()
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
-
-            cursor.execute(
-                "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
-            )
-            existing_user = cursor.fetchone()
-            # print("exising valus", existing_user)
-
-            if existing_user:
-                print(f"***** existing user")
-                print(f"user_id : {user_id}")
-                print(f"token : {access_token}")
-                # Update existing user
-                user_type = existing_user["user_type"]
-                # print("usertype", user_type)
-                cursor.execute(
-                    """
-                    UPDATE users SET 
-                        user_id = %s, first_name = %s, last_name = %s,
-                        token = %s, refresh_token = %s, social = %s,
-                        logged_in_at = NOW(), updated_in = NOW()
-                    WHERE email = %s
-                """,
-                    (
-                        user_id,
-                        given_name,
-                        family_name,
-                        access_token,
-                        result.get("refresh_token", ""),
-                        "microsoft",
-                        email,
-                    ),
-                )
-            else:
-                # Create new user - EXACTLY like Google does
-                cursor.execute(
-                    """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
-                    client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                    created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
-                """,
-                    (
-                        user_id,
-                        "admin",
-                        "",
-                        given_name,
-                        family_name,
-                        email,
-                        "",
-                        CLIENT_ID,
-                        CLIENT_SECRET,
-                        access_token,
-                        result.get("refresh_token", ""),
-                        None,
-                        "",
-                        "",
-                        "",
-                        "microsoft",
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        True,
-                    ),
-                )
-                print(f"******** created new user")
-
-                # Auto-generate API key for new Microsoft users (like we do in users/generate-website-api-key)
-                new_api_key = str(uuid.uuid4())
-                new_launch_id = str(uuid.uuid4())
-                new_sub_agent_id = str(uuid.uuid4())
-
-                # Create default subagent
-                cursor.execute(
-                    """
-                    INSERT INTO subagents (
-                        sub_agent_id, launch_id_fk, name, description, voice_type,
-                        documentation_link, model_version, created_at, updated_at
-                    ) VALUES (%s, %s, %s, NULL, NULL, NULL, NULL, NULL, NULL)
-                """,
-                    (new_sub_agent_id, None, "Default Agent"),
-                )
-
-                # Create launch with API key
-                print(f"api key created : ")
-                print(f"new_api_key : {new_api_key}")
-                print(f"user_id : {user_id}")
-                cursor.execute(
-                    """
-                    INSERT INTO launch (launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name)
-                    VALUES (%s, %s, %s, %s, NULL)
-                """,
-                    (new_launch_id, new_sub_agent_id, user_id, new_api_key),
-                )
-
-                # Update subagent with correct launch_id
-                cursor.execute(
-                    """
-                    UPDATE subagents SET launch_id_fk = %s WHERE sub_agent_id = %s
-                """,
-                    (new_launch_id, new_sub_agent_id),
-                )
-
-                logger.info(
-                    f"✅ Auto-generated API key {str(new_api_key)[:20]}... for new Microsoft user {email}"
-                )
-
-            conn.commit()
-            cursor.close()
-            conn.close()
-
-        except Exception as db_error:
-            logger.error(f"❌ Database error: {str(db_error)}")
-            # Continue anyway - don't fail login for DB issues
-
-        # Check if user needs onboarding
-        if user_type == "user":
-            newuser = True
-        else:
-            newuser = check_onboarding_user(user_id)
-
-        # Create session and redirect (like Google does)
-        session_id, access_token_session, refresh_token_session = session_login(user_id)
-        frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-
-        # Build redirect URL with all required params
-        callback_url = f"{frontend_url}/auth/microsoft/callback?userid={user_id}&service=microsoft&user_onboarded={newuser}&session_id={session_id}&access_token={access_token_session}&refresh_token={refresh_token_session}"
-
-        response = make_response(redirect(callback_url))
-
-        # Set cookies (like Google does)
-        response.set_cookie(
-            "session_id",
-            session_id,
-            max_age=30 * 24 * 60 * 60,
-            httponly=True,
-            secure=True,
-            samesite="None",
-        )
-        response.set_cookie(
-            "access_token",
-            access_token_session,
-            max_age=30 * 24 * 60 * 60,
-            httponly=True,
-            secure=True,
-            samesite="None",
-        )
-        response.set_cookie(
-            "refresh_token",
-            refresh_token_session,
-            max_age=30 * 24 * 60 * 60,
-            httponly=True,
-            secure=True,
-            samesite="None",
-        )
-
-        logger.info(f"✅ Microsoft login successful for {email}")
-        return response, user_id
-
-    except Exception as e:
-        logger.error(f"❌ Microsoft callback error: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
-        return redirect(f"{frontend_url}/login?error=callback_failed")
-
-
-def save_outlook_message_to_db(
-    cursor,
-    user_id,
-    message_id,
-    from_address,
-    message_content,
-    subject,
-    timestamp,
-    direction,
-    conversation_id,
-):
-    """Save Outlook message to database in same format as Gmail"""
-    try:
-        from datetime import datetime, timezone
-        from utils.s3_utils import upload_any_file
-        import json
-        import os
-
-        # Create message data in same format as Gmail
-        message_data = {
-            "id": message_id,
-            "from_email": from_address,
-            "content": message_content,
-            "subject": subject,
-            "timestamp": timestamp,
-            "direction": direction,
-            "source": "outlook",
-            "conversation_id": conversation_id,
-        }
-
-        # Create S3 content reference (same pattern as Gmail)
-        timestamp_obj = datetime.now(timezone.utc)
-
-        # For now, store basic info - can be enhanced later to match Gmail's full S3 storage
-        content_ref = f"outlook/{message_id}.json"
-
-        # Insert into messages table (same as Gmail does)
-        cursor.execute(
-            """
-            INSERT INTO messages (
-                message_id, conversation_id_fk, sender_id, content_ref,
-                message_type, is_summary, created_at, update_at, sender_type
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE update_at = VALUES(update_at)
-        """,
-            (
-                message_id,
-                conversation_id,
-                from_address,  # Use email as sender_id for now
-                content_ref,
-                direction,
-                subject,
-                timestamp_obj,
-                timestamp_obj,
-                "outlook",
-            ),
-        )
-
-        logger.info(f"💾 Saved Outlook message {message_id} to database")
-
-    except Exception as e:
-        logger.error(f"❌ Error saving Outlook message to DB: {str(e)}")
 
 
 @microsoft_bp.route("/microsoft/get_emails_infinite", methods=["POST"])
@@ -2017,525 +1747,6 @@ def microsoft_get_email():
         return jsonify({"error": str(e)}), 500
 
 
-def send_outlook_email(to_email, subject, body_text, from_user_email, conversation_id):
-
-    # print("Sending Outlook email...")
-    print(f"To: {to_email}, Subject: {subject}, Body: {body_text}")
-
-    # email = session.get("user", {}).get("email")  # remove after session is working
-    email = from_user_email
-    if not email:
-        raise Exception("No user email found in session.")
-
-    # Fetch token
-    conn = connect_to_rds()
-    cursor = conn.cursor()
-    cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if not row:
-        raise Exception("Access token not found for user.")
-
-    access_token = row[0]
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "Text", "content": body_text},
-            "toRecipients": [{"emailAddress": {"address": to_email}}],
-        },
-        "saveToSentItems": "true",
-    }
-
-    if from_user_email:
-        url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/sendMail"
-        print(f"Using from_user_email: {from_user_email}")
-    else:
-        url = "https://graph.microsoft.com/v1.0/me/sendMail"
-    # print("Using current user's email for sending.")
-
-    # Send mail
-    response = requests.post(url, headers=headers, json=payload)
-
-    if not response.ok:
-        # print("Graph API returned an error!")
-        # print("Status:", response.status_code)
-        # print("Response text:", response.text)
-        response.raise_for_status()
-        response.raise_for_status()
-
-    # Fetch last sent message to get conversationId
-    if from_user_email:
-        sent_items_url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
-    else:
-        sent_items_url = "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
-    sent_response = requests.get(sent_items_url, headers=headers)
-    sent_response.raise_for_status()
-
-    sent_data = sent_response.json()
-    if sent_data.get("value"):
-        last_msg = sent_data["value"][0]
-
-        # conversation_id = last_msg.get("conversationId")
-        real_message_id = last_msg.get("id")
-        timestamp = last_msg.get("sentDateTime")
-        subject_saved = last_msg.get("subject", subject)
-        body_saved = last_msg.get("body", {}).get("content", body_text)
-        message_id = str(uuid.uuid4())
-
-        # Save the message to MESSAGES
-        MESSAGES[real_message_id] = {
-            "id": message_id,
-            "from": email,
-            "to": to_email,
-            "body": body_saved,
-            "subject": subject_saved,
-            "timestamp": timestamp,
-            "status": "sent",
-            "source": "outlook",
-            "direction": "outbound",
-            "user_id": email,
-            "conversation_id": conversation_id,
-        }
-
-        print(
-            f"✅ Saved Outlook message. Conversation ID: {conversation_id} messages:{MESSAGES[real_message_id]}"
-        )
-
-        return {"id": message_id, "conversation_id": conversation_id}
-
-    else:
-        # fallback if no message found
-        fallback_id = str(uuid.uuid4())
-        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-        MESSAGES[fallback_id] = {
-            "id": fallback_id,
-            "from": email,
-            "to": to_email,
-            "body": body_text,
-            "subject": subject,
-            "timestamp": timestamp,
-            "status": "sent",
-            "source": "outlook",
-            "direction": "outbound",
-            "user_id": email,
-            "conversation_id": None,
-            "message_id": fallback_id,
-        }
-
-        print(
-            f"⚠️ Could not find sent mail. Saved fallback message with no conversation ID."
-        )
-        return {"id": fallback_id}
-
-
-@microsoft_bp.route("/microsoft/send_mail", methods=["POST"])
-def send_mail_microsoft():
-
-    user = session.get("user", {})
-    email = user.get("email")
-
-    if not email:
-        return redirect("https://bytoid.ai/login")
-
-    #################################
-    # data = request.get_json()
-    # to = data.get("to")
-    # subject = data.get("subject")
-    # body = data.get("body")
-    #################################
-
-    to = "test@example.com"
-    subject = "subject"
-    body = "body"
-
-    if not to or not subject or not body:
-        return jsonify({"error": "Missing 'to', 'subject', or 'body'"}), 400
-
-    try:
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-
-        if not row:
-            return jsonify({"error": "Access token not found"}), 404
-
-        access_token = row[0]
-
-        send_payload = {
-            "message": {
-                "subject": subject,
-                "body": {"contentType": "Text", "content": body},
-                "toRecipients": [{"emailAddress": {"address": to}}],
-            },
-            "saveToSentItems": True,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
-        response = requests.post(
-            "https://graph.microsoft.com/v1.0/me/sendMail",
-            headers=headers,
-            json=send_payload,
-        )
-
-        if response.status_code == 202:
-            return jsonify({"message": "Email sent"}), 200
-        else:
-            return (
-                jsonify({"error": "Failed to send email", "details": response.text}),
-                response.status_code,
-            )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/microsoft/sent_items", methods=["GET"])
-def microsoft_sent_items():
-    try:
-        email = session.get("user", {}).get("email")
-        if not email:
-            return redirect("https://bytoid.ai/login")
-
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-
-        if not row:
-            return jsonify({"error": "Access token not found"}), 404
-
-        access_token = row[0]
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
-        drafts_url = (
-            "https://graph.microsoft.com/v1.0/me/mailFolders/SentItems/messages"
-        )
-        response = requests.get(drafts_url, headers=headers)
-
-        if response.status_code == 200:
-            emails = response.json().get("value", [])
-            for email_data in emails:
-                email_id = email_data.get("id")
-                from_name = (
-                    email_data.get("sender", {}).get("emailAddress", {}).get("name")
-                )
-                to_recipients = email_data.get("toRecipients", [])
-                to_name = (
-                    to_recipients[0]["emailAddress"]["name"] if to_recipients else None
-                )
-                body_content = email_data.get("body", {}).get("content")
-                subject = email_data.get("subject")
-                sent_time = email_data.get("sentDateTime")
-
-                message_id = str(uuid.uuid4())
-                MESSAGES[email_id] = {
-                    "id": message_id,
-                    "from": from_name,
-                    "to": to_name,
-                    "body": body_content,
-                    "subject": subject,
-                    "timestamp": sent_time,
-                    "status": "sent",
-                    "source": "outlook",
-                    "direction": "outbound",
-                }
-            return jsonify({"sent_items": emails}), 200
-        else:
-            return (
-                jsonify(
-                    {
-                        "error": "Failed to fetch sent items",
-                        "details": response.text,
-                    }
-                ),
-                response.status_code,
-            )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/microsoft/drafts", methods=["GET"])
-def microsoft_list_drafts():
-    try:
-        email = session.get("user", {}).get("email")
-        if not email:
-            return redirect("https://bytoid.ai/login")
-
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-
-        if not row:
-            return jsonify({"error": "Access token not found"}), 404
-
-        access_token = row[0]
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
-        drafts_url = "https://graph.microsoft.com/v1.0/me/mailFolders/drafts/messages"
-        response = requests.get(drafts_url, headers=headers)
-
-        if response.status_code == 200:
-            return jsonify({"drafts": response.json().get("value", [])}), 200
-        else:
-            return (
-                jsonify({"error": "Failed to fetch drafts", "details": response.text}),
-                response.status_code,
-            )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/microsoft/spam", methods=["GET"])
-def microsoft_list_spam():
-    try:
-        email = session.get("user", {}).get("email")
-        if not email:
-            return redirect("https://bytoid.ai/login")
-
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-
-        if not row:
-            return jsonify({"error": "Access token not found"}), 404
-
-        access_token = row[0]
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
-        drafts_url = (
-            "https://graph.microsoft.com/v1.0/me/mailFolders/JunkEmail/messages"
-        )
-        response = requests.get(drafts_url, headers=headers)
-
-        if response.status_code == 200:
-            return jsonify({"spam": response.json().get("value", [])}), 200
-        else:
-            return (
-                jsonify({"error": "Failed to fetch spam", "details": response.text}),
-                response.status_code,
-            )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/microsoft/trash", methods=["GET"])
-def microsoft_list_trash():
-    try:
-        email = session.get("user", {}).get("email")
-        if not email:
-            return redirect("https://bytoid.ai/login")
-
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-
-        if not row:
-            return jsonify({"error": "Access token not found"}), 404
-
-        access_token = row[0]
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
-        drafts_url = (
-            "https://graph.microsoft.com/v1.0/me/mailFolders/DeletedItems/messages"
-        )
-        response = requests.get(drafts_url, headers=headers)
-
-        if response.status_code == 200:
-            return jsonify({"trash": response.json().get("value", [])}), 200
-        else:
-            return (
-                jsonify({"error": "Failed to fetch trash", "details": response.text}),
-                response.status_code,
-            )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/process-outlook-og", methods=["POST"])
-def process_outlook_og():
-    try:
-        # Note: LanceDB and YAML processing functions need to be imported
-        # if this route is used. For now, return a simple response.
-        logger.info("📧 Outlook processing endpoint called")
-
-        data = request.get_json(force=True, silent=True)
-        if not data:
-            return jsonify({"error": "Invalid or missing JSON body"}), 400
-
-        apikey = data.get("api_key")
-        if not apikey:
-            return jsonify({"error": "Missing api_key"}), 400
-
-        # Note: This endpoint requires additional dependencies that may not be available
-        # in the current simplified Microsoft OAuth implementation
-        return (
-            jsonify(
-                {"message": "Outlook processing endpoint - additional setup required"}
-            ),
-            501,
-        )
-
-    except Exception as e:
-        return jsonify({"error": f"Unexpected server error: {str(e)}"}), 500
-
-
-def GetOutlookDriveService(access_token):
-    import requests
-
-    session = requests.Session()
-    session.headers.update({
-        "Authorization": f"Bearer {access_token}"
-    })
-
-    return session
-
-def download_onedrive_file(session, file_id, local_path):
-    url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_id}/content"
-
-    response = session.get(url, stream=True)
-    print(f"reponse code from url :{response.status_code}")
-    
-    if response.status_code != 200:
-        return False
-
-    with open(local_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=2048):
-            if chunk:
-                f.write(chunk)
-    return True
-
-@microsoft_bp.route("/process-outlook", methods=["POST"])
-def process_outlook():
-    try:
-        data = request.json
-        if not data or "files" not in data or not isinstance(data["files"], list):
-            return (
-                jsonify({"error": "Invalid payload. Expected JSON with 'files' array."}),
-                400,
-            )
-
-        if len(data["files"]) == 0:
-            return jsonify({"error": "No files picked"}), 400
-
-
-        apikey = data.get("api_key")
-        # userid = fetch_userid_from_launch(apikey)
-        userid = data.get("user_id")
-        access_token = get_outlook_token(userid)   
-
-        # ensure_dir("data")
-       
-
-
-        def event_stream():
-            yield "event: start\ndata: Starting Outlook file processing...\n\n"
-
-            graph_client = GetOutlookDriveService(access_token)
-            if not graph_client:
-                yield "event: error\ndata: Unable to initialize Microsoft Graph service\n\n"
-                return
-
-            # Step 1 — Download OneDrive/SharePoint files
-            downloaded_paths = []
-            total = len(data["files"])
-
-            for index, file in enumerate(data["files"], start=1):
-                try:
-                    file_id = file["id"]
-                    file_name = file.get("name", f"file_{index}")
-                    local_path = os.path.join("data", file_name)
-                    print(f"file_id:{file_id}")
-                    print(f"file_name:{file_name}")
-                    print(f"local_path:{local_path}")
-
-
-                    success = download_onedrive_file(graph_client, file_id, local_path)
-                    if not success:
-                        yield f"event: error\ndata: Failed to download {file_name}\n\n"
-                        return
-
-                    downloaded_paths.append(local_path)
-                    yield f"event: progress\ndata: Downloaded {index}/{total}: {file_name}\n\n"
-
-                except Exception as e:
-                    yield f"event: error\ndata: Error downloading file: {str(e)}\n\n"
-                    return
-
-            if not downloaded_paths:
-                yield "event: error\ndata: No files downloaded\n\n"
-                return
-
-            # Step 2 — Process files (your existing pipeline)
-            folderpath = os.path.commonpath(downloaded_paths)
-            all_file_data = asyncio.run(
-                process_and_update_yaml(
-                    all_downloaded_paths=downloaded_paths,
-                    userid=userid,
-                    provider="microsoft",
-                    folderpath=folderpath,
-                )
-            )
-
-            yield (
-                "event: complete\ndata: "
-                + json.dumps(
-                    {
-                        "message": "Successfully processed OneDrive files",
-                        "files": all_file_data,
-                    }
-                )
-                + "\n\n"
-            )
-
-        return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
-
-    except Exception as e:
-        return jsonify({"error": f"Unexpected Outlook processing error: {str(e)}"}), 500
-
-
 @microsoft_bp.route("/microsoft/get_emails_batch", methods=["POST"])
 def microsoft_get_emails_batch():
     """Fetch Outlook emails in batches with pagination support"""
@@ -2991,6 +2202,783 @@ async def trigger_email_fetch():
         return jsonify({"error": str(e)}), 500
 
 
+# async def list_messages(self, start_date=None, end_date=None):
+#     """
+#     Fetch messages for the user, optionally filtered by date range.
+#     Returns a list of message dicts from Outlook API.
+#     """
+
+#     headers = {"Authorization": f"Bearer {self.access_token}"}
+#     params = {"$top": 100}  # max messages per call
+
+#     if start_date or end_date:
+#         filters = []
+#         if start_date:
+#             filters.append(f"receivedDateTime ge {start_date}")
+#         if end_date:
+#             filters.append(f"receivedDateTime le {end_date}")
+#         params["$filter"] = " and ".join(filters)
+
+#     all_messages = []
+#     url = self.base_url
+
+#     while url:
+#         response = requests.get(url, headers=headers, params=params)
+#         if response.status_code != 200:
+#             raise Exception(
+#                 f"Outlook API error: {response.status_code} {response.text}"
+#             )
+#         data = response.json()
+#         all_messages.extend(data.get("value", []))
+#         url = data.get("@odata.nextLink")  # pagination
+#         params = {}  # nextLink already has query params
+
+#     return all_messages
+
+
+def clean_plain_text(text):
+    # remove zero-width characters, soft hyphens, etc.
+    raw = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff\u00ad]", "", text)
+
+    # remove markdown links: [text](url)
+    raw = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", raw)
+
+    # remove HTML links
+    raw = re.sub(r"<a\s+[^>]*>(.*?)<\/a>", r"\1", raw, flags=re.DOTALL)
+
+    # remove bare URLs
+    raw = re.sub(r"https?://\S+", "", raw)
+
+    # collapse multiple spaces/newlines
+    raw = re.sub(r"\s+\n", "\n", raw)
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
+
+    # remove bare URLs
+    raw = re.sub(r"https?://\S+", "", raw)
+
+    # collapse crazy spacing
+    raw = re.sub(r"[ \t]{2,}", " ", raw)
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
+
+    return raw.strip()
+
+
+# -------------- related to saving outlook messages ----------#
+
+
+def store_outlook_emails_in_db(user_id: str, messages: list) -> dict:
+    """
+    Store Outlook emails in database with duplicate checking
+    Returns: {"status": "success"/"error", "stored_count": N, "skipped_count": N, "error": "..."}
+    """
+    logger.info(
+        f"🔄 Starting to store {len(messages)} Outlook messages for user {user_id}"
+    )
+
+    if not messages:
+        logger.warning("⚠️ No messages to store")
+        return {"status": "success", "stored_count": 0, "skipped_count": 0}
+
+    stored_count = 0
+    skipped_count = 0
+    error_count = 0
+
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        for message in messages:
+            try:
+                message_id = message.get("id")
+                internet_message_id = message.get("internet_message_id", "")
+
+                # Check if message already exists
+                cursor.execute(
+                    "SELECT 1 FROM messages WHERE message_id = %s OR internet_message_id = %s",
+                    (message_id, internet_message_id),
+                )
+                if cursor.fetchone():
+                    logger.debug(f"⏭️  Skipping duplicate message: {message_id}")
+                    skipped_count += 1
+                    continue
+
+                # Extract message data
+                conversation_id = message.get("conversation_id", str(uuid.uuid4()))
+                from_email = message.get("from_email", "")
+                to_email = message.get("to_email", "")
+                from_name = message.get("from_name", message.get("from", ""))
+                to_name = message.get("to_name", message.get("to", ""))
+                subject = message.get("subject", "")
+                body = message.get("body", "")
+                timestamp = message.get(
+                    "timestamp", datetime.now(timezone.utc).isoformat()
+                )
+                direction = message.get("direction", "inbound")
+                has_attachments = message.get("has_attachments", False)
+                importance = message.get("importance", "normal")
+
+                # Determine participant
+                if direction == "inbound":
+                    participant_email = from_email
+                    participant_name = from_name
+                else:
+                    participant_email = to_email
+                    participant_name = to_name
+
+                # Get or create user client
+                client_id = None
+                try:
+                    cursor.execute(
+                        "SELECT users_clients_id FROM users_clients WHERE email_id = %s AND user_id_fk = %s",
+                        (participant_email, user_id),
+                    )
+                    client_row = cursor.fetchone()
+                    if client_row:
+                        client_id = client_row["users_clients_id"]
+                    else:
+                        # Create new contact if not exists
+                        client_id = str(uuid.uuid4())
+                        cursor.execute(
+                            """
+                            INSERT INTO users_clients (users_clients_id, user_id_fk, first_name, last_name, email_id, created_in)
+                            VALUES (%s, %s, %s, %s, %s, NOW())
+                        """,
+                            (
+                                client_id,
+                                user_id,
+                                participant_name or "",
+                                "",
+                                participant_email,
+                            ),
+                        )
+                        logger.debug(f"✅ Created new contact: {participant_email}")
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ Could not get/create client for {participant_email}: {str(e)}"
+                    )
+                    client_id = str(uuid.uuid4())
+
+                # Insert message
+                cursor.execute(
+                    """
+                    INSERT INTO messages (
+                        message_id, user_id_fk, client_id_fk, from_address, to_address,
+                        from_name, to_name, subject, body, timestamp, direction,
+                        source, conversation_id, internet_message_id, has_attachments,
+                        importance, created_in
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                """,
+                    (
+                        message_id,
+                        user_id,
+                        client_id,
+                        from_email,
+                        to_email,
+                        from_name,
+                        to_name,
+                        subject,
+                        body,
+                        timestamp,
+                        direction,
+                        "outlook",
+                        conversation_id,
+                        internet_message_id,
+                        has_attachments,
+                        importance,
+                    ),
+                )
+
+                stored_count += 1
+                logger.debug(f"✅ Stored message: {message_id}")
+
+            except Exception as e:
+                logger.error(
+                    f"❌ Error storing message {message.get('id', 'unknown')}: {str(e)}"
+                )
+                error_count += 1
+                continue
+
+        conn.commit()
+        conn.close()
+
+        logger.info(
+            f"✅ Storage complete - Stored: {stored_count}, Skipped: {skipped_count}, Errors: {error_count}"
+        )
+        return {
+            "status": "success",
+            "stored_count": stored_count,
+            "skipped_count": skipped_count,
+            "error_count": error_count,
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Database error in store_outlook_emails_in_db: {str(e)}")
+        return {"status": "error", "error": str(e), "stored_count": 0}
+
+
+def save_outlook_message_to_db(
+    cursor,
+    user_id,
+    message_id,
+    from_address,
+    message_content,
+    subject,
+    timestamp,
+    direction,
+    conversation_id,
+):
+    """Save Outlook message to database in same format as Gmail"""
+    try:
+        from datetime import datetime, timezone
+        from utils.s3_utils import upload_any_file
+        import json
+        import os
+
+        # Create message data in same format as Gmail
+        message_data = {
+            "id": message_id,
+            "from_email": from_address,
+            "content": message_content,
+            "subject": subject,
+            "timestamp": timestamp,
+            "direction": direction,
+            "source": "outlook",
+            "conversation_id": conversation_id,
+        }
+
+        # Create S3 content reference (same pattern as Gmail)
+        timestamp_obj = datetime.now(timezone.utc)
+
+        # For now, store basic info - can be enhanced later to match Gmail's full S3 storage
+        content_ref = f"outlook/{message_id}.json"
+
+        # Insert into messages table (same as Gmail does)
+        cursor.execute(
+            """
+            INSERT INTO messages (
+                message_id, conversation_id_fk, sender_id, content_ref,
+                message_type, is_summary, created_at, update_at, sender_type
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE update_at = VALUES(update_at)
+        """,
+            (
+                message_id,
+                conversation_id,
+                from_address,  # Use email as sender_id for now
+                content_ref,
+                direction,
+                subject,
+                timestamp_obj,
+                timestamp_obj,
+                "outlook",
+            ),
+        )
+
+        logger.info(f"💾 Saved Outlook message {message_id} to database")
+
+    except Exception as e:
+        logger.error(f"❌ Error saving Outlook message to DB: {str(e)}")
+
+
+# --------------- related to sending outlook mails ----------#
+
+
+def send_outlook_email(to_email, subject, body_text, from_user_email, conversation_id):
+
+    # print("Sending Outlook email...")
+    print(f"To: {to_email}, Subject: {subject}, Body: {body_text}")
+
+    # email = session.get("user", {}).get("email")  # remove after session is working
+    email = from_user_email
+    if not email:
+        raise Exception("No user email found in session.")
+
+    # Fetch token
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+    cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not row:
+        raise Exception("Access token not found for user.")
+
+    access_token = row[0]
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body_text},
+            "toRecipients": [{"emailAddress": {"address": to_email}}],
+        },
+        "saveToSentItems": "true",
+    }
+
+    if from_user_email:
+        url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/sendMail"
+        print(f"Using from_user_email: {from_user_email}")
+    else:
+        url = "https://graph.microsoft.com/v1.0/me/sendMail"
+    # print("Using current user's email for sending.")
+
+    # Send mail
+    response = requests.post(url, headers=headers, json=payload)
+
+    if not response.ok:
+        # print("Graph API returned an error!")
+        # print("Status:", response.status_code)
+        # print("Response text:", response.text)
+        response.raise_for_status()
+        response.raise_for_status()
+
+    # Fetch last sent message to get conversationId
+    if from_user_email:
+        sent_items_url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
+    else:
+        sent_items_url = "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$orderby=sentDateTime desc&$top=1"
+    sent_response = requests.get(sent_items_url, headers=headers)
+    sent_response.raise_for_status()
+
+    sent_data = sent_response.json()
+    if sent_data.get("value"):
+        last_msg = sent_data["value"][0]
+
+        # conversation_id = last_msg.get("conversationId")
+        real_message_id = last_msg.get("id")
+        timestamp = last_msg.get("sentDateTime")
+        subject_saved = last_msg.get("subject", subject)
+        body_saved = last_msg.get("body", {}).get("content", body_text)
+        message_id = str(uuid.uuid4())
+
+        # Save the message to MESSAGES
+        MESSAGES[real_message_id] = {
+            "id": message_id,
+            "from": email,
+            "to": to_email,
+            "body": body_saved,
+            "subject": subject_saved,
+            "timestamp": timestamp,
+            "status": "sent",
+            "source": "outlook",
+            "direction": "outbound",
+            "user_id": email,
+            "conversation_id": conversation_id,
+        }
+
+        print(
+            f"✅ Saved Outlook message. Conversation ID: {conversation_id} messages:{MESSAGES[real_message_id]}"
+        )
+
+        return {"id": message_id, "conversation_id": conversation_id}
+
+    else:
+        # fallback if no message found
+        fallback_id = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        MESSAGES[fallback_id] = {
+            "id": fallback_id,
+            "from": email,
+            "to": to_email,
+            "body": body_text,
+            "subject": subject,
+            "timestamp": timestamp,
+            "status": "sent",
+            "source": "outlook",
+            "direction": "outbound",
+            "user_id": email,
+            "conversation_id": None,
+            "message_id": fallback_id,
+        }
+
+        print(
+            f"⚠️ Could not find sent mail. Saved fallback message with no conversation ID."
+        )
+        return {"id": fallback_id}
+
+
+@microsoft_bp.route("/microsoft/send_mail", methods=["POST"])
+def send_mail_microsoft():
+
+    user = session.get("user", {})
+    email = user.get("email")
+
+    if not email:
+        return redirect("https://bytoid.ai/login")
+
+    #################################
+    # data = request.get_json()
+    # to = data.get("to")
+    # subject = data.get("subject")
+    # body = data.get("body")
+    #################################
+
+    to = "test@example.com"
+    subject = "subject"
+    body = "body"
+
+    if not to or not subject or not body:
+        return jsonify({"error": "Missing 'to', 'subject', or 'body'"}), 400
+
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "Access token not found"}), 404
+
+        access_token = row[0]
+
+        send_payload = {
+            "message": {
+                "subject": subject,
+                "body": {"contentType": "Text", "content": body},
+                "toRecipients": [{"emailAddress": {"address": to}}],
+            },
+            "saveToSentItems": True,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        response = requests.post(
+            "https://graph.microsoft.com/v1.0/me/sendMail",
+            headers=headers,
+            json=send_payload,
+        )
+
+        if response.status_code == 202:
+            return jsonify({"message": "Email sent"}), 200
+        else:
+            return (
+                jsonify({"error": "Failed to send email", "details": response.text}),
+                response.status_code,
+            )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def outlook_send_mail(
+    user_id,
+    to,
+    subject,
+    body_text,
+    thread_id=None,
+    in_reply_to=None,
+    attachments=None,
+    cc=None,
+    bcc=None,
+    integration = None,
+    outlook_integration = None
+
+):
+    """
+    Sends an Outlook email using Microsoft Graph.
+    Matches gmail_reply() signature and behavior.
+    """
+
+    # ---------------------------
+    # 1. Fetch OAuth Tokens From DB
+    # ---------------------------
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+    if integration:
+        if outlook_integration:
+            cursor.execute(
+                """
+                SELECT user_id,access_token, refresh_token, email
+                FROM integrations
+                WHERE primary_user_id_fk = %s
+                AND platform = 'microsoft'
+                AND status = 'active'
+                LIMIT 1;
+            """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise Exception("No active Microsoft integration found.")
+
+        else:
+            cursor.execute(
+                """
+                SELECT user_id,access_token, refresh_token, email
+                FROM integrations
+                WHERE user_id = %s
+                AND platform = 'microsoft'
+                AND status = 'active'
+                LIMIT 1;
+            """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise Exception("No active Microsoft integration found.")
+   
+        integration_user_id,access_token,refresh_token,mail = row
+
+    else:
+        cursor.execute(
+            """
+            SELECT token, refresh_token, email
+            FROM users
+            WHERE user_id = %s;
+        """,
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise Exception("No active Microsoft user found.")
+        access_token, refresh_token, mail = row
+
+
+    # sender_email = row["email"]  # Outlook email ID
+
+    # ---------------------------
+    # 2. Build Message Body
+    # ---------------------------
+    message = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body_text},
+            "toRecipients": [{"emailAddress": {"address": to}}],
+        },
+        "saveToSentItems": "true",
+    }
+
+    # CC
+    if cc:
+        message["message"]["ccRecipients"] = [
+            {"emailAddress": {"address": c}} for c in cc
+        ]
+
+    # BCC
+    if bcc:
+        message["message"]["bccRecipients"] = [
+            {"emailAddress": {"address": b}} for b in bcc
+        ]
+
+    # Threading / Reply
+    if in_reply_to:
+        message["message"]["internetMessageHeaders"] = [
+            {"name": "In-Reply-To", "value": in_reply_to},
+            {"name": "References", "value": in_reply_to},
+        ]
+
+    # Conversation (thread_id)
+    if thread_id:
+        message["message"]["conversationId"] = thread_id
+
+    # ---------------------------
+    # 3. Attachments
+    # ---------------------------
+    if attachments:
+        formatted = []
+        for file in attachments:
+            formatted.append(
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": file["filename"],
+                    "contentBytes": base64.b64encode(file["content"]).decode("utf-8"),
+                }
+            )
+        message["message"]["attachments"] = formatted
+
+    # ---------------------------
+    # 4. Hit Microsoft Send API
+    # ---------------------------
+
+    # check if tokens are expired. If expired, refresh them
+    if integration:
+        expired = check_microsoft_token_expiry(cursor, user_id)
+        if expired:
+            resp =  refresh_expired_microsoft_tokens_for_integrations(refresh_token, cursor, conn, None, integration_user_id)
+            data = resp.get_json()
+            access_token = data["token"]
+
+    else:
+        expired , access_token = check_microsoft_token_expiry_normal(cursor,conn, user_id)
+
+    cursor.close()
+    conn.close()
+
+    url = "https://graph.microsoft.com/v1.0/me/sendMail"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+
+    print(f"message at line 1729 :{message}")
+
+    res = requests.post(url, json=message, headers=headers)
+
+    if res.status_code not in [200, 202]:
+        print("Outlook send error:", res.text)
+        raise Exception("Failed to send Outlook message.")
+
+    # Outlook does NOT return message ID.
+    # You must fetch latest sent messages if you want ID.
+    print(f"----success :{res}")
+    return {"status": "sent", "conversation_id": thread_id}
+
+
+# ---------------- related to onedrive ----------------------- #
+
+
+def GetOutlookDriveService(access_token):
+    import requests
+
+    session = requests.Session()
+    session.headers.update({"Authorization": f"Bearer {access_token}"})
+
+    return session
+
+
+def download_onedrive_file(session, file_id, local_path):
+    url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_id}/content"
+
+    response = session.get(url, stream=True)
+    print(f"reponse code from url :{response.status_code}")
+
+    if response.status_code != 200:
+        return False
+
+    with open(local_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=2048):
+            if chunk:
+                f.write(chunk)
+    return True
+
+
+@microsoft_bp.route("/process-outlook", methods=["POST"])
+def process_outlook():
+    try:
+        data = request.json
+        if not data or "files" not in data or not isinstance(data["files"], list):
+            return (
+                jsonify(
+                    {"error": "Invalid payload. Expected JSON with 'files' array."}
+                ),
+                400,
+            )
+
+        if len(data["files"]) == 0:
+            return jsonify({"error": "No files picked"}), 400
+
+        apikey = data.get("api_key")
+        id = data.get("user_id")
+        primary_provider = data.get("primary_provider")
+
+        print("----------------------------")
+        print(f"primary_provider:{primary_provider}")
+        print(f"id: {id}")
+        print("----------------------------")
+
+        if primary_provider:
+            access_token = get_outlook_token(id)
+            userid = id
+        else:
+            # fetch from integrations table
+            access_token, userid = get_integration_access_token(id, "microsoft")
+
+        # if user signed in through microsoft and selected file from onedrive, userid = id
+        # if user signed in through google and selected file from onedrive, then -
+        #  - userid is microsoft userid,  id is google user id. (id of the primary user is "id")
+
+        print("--------------------------")
+        print(f"userid:{userid}")
+        print(f"id:{id}")
+        print("--------------------------")
+
+        def event_stream():
+            yield "event: start\ndata: Starting Outlook file processing...\n\n"
+
+            graph_client = GetOutlookDriveService(access_token)
+            if not graph_client:
+                yield "event: error\ndata: Unable to initialize Microsoft Graph service\n\n"
+                return
+
+            # Step 1 — Download OneDrive/SharePoint files
+            downloaded_paths = []
+            total = len(data["files"])
+
+            for index, file in enumerate(data["files"], start=1):
+                try:
+                    file_id = file["id"]
+                    file_name = file.get("name", f"file_{index}")
+                    local_path = os.path.join("data", file_name)
+                    print(f"file_id:{file_id}")
+                    print(f"file_name:{file_name}")
+                    print(f"local_path:{local_path}")
+
+                    success = download_onedrive_file(graph_client, file_id, local_path)
+                    if not success:
+                        yield f"event: error\ndata: Failed to download {file_name}\n\n"
+                        return
+
+                    downloaded_paths.append(local_path)
+                    yield f"event: progress\ndata: Downloaded {index}/{total}: {file_name}\n\n"
+
+                except Exception as e:
+                    yield f"event: error\ndata: Error downloading file: {str(e)}\n\n"
+                    return
+
+            if not downloaded_paths:
+                yield "event: error\ndata: No files downloaded\n\n"
+                return
+
+            # Step 2 — Process files (your existing pipeline)
+            folderpath = os.path.commonpath(downloaded_paths)
+            try:
+                all_file_data = asyncio.run(
+                    process_and_update_yaml(
+                        all_downloaded_paths=downloaded_paths,
+                        userid=id,
+                        provider="microsoft",
+                        folderpath=folderpath,
+                    )
+                )
+            except Exception as e:
+                print(f"error in process_outlook:{e} ")
+
+
+            yield (
+                "event: complete\ndata: "
+                + json.dumps(
+                    {
+                        "message": "Successfully processed OneDrive files",
+                        "files": all_file_data,
+                    }
+                )
+                + "\n\n"
+            )
+
+        return Response(
+            stream_with_context(event_stream()), mimetype="text/event-stream"
+        )
+
+    except Exception as e:
+        return jsonify({"error": f"Unexpected Outlook processing error: {str(e)}"}), 500
+
+
+# ---------------- logout related -------------------------- #
+
+
 @microsoft_bp.route("/logout")
 def microsoft_logout():
     user = session.get("user")
@@ -3005,109 +2993,197 @@ def microsoft_logout():
     return jsonify({"status": "User logged out", "user_id": user_id}), 200
 
 
-# Add routes that match Gmail's pattern
-@microsoft_bp.route("/get_microsoft_client_id", methods=["POST"])
-def get_microsoft_client_id():
-    """Get Microsoft client ID - similar to Gmail's get_google_client_id"""
+# ------------------- others -------------------------------- #
+
+
+@microsoft_bp.route("/microsoft/sent_items", methods=["GET"])
+def microsoft_sent_items():
     try:
-        data = request.get_json()
-        secretkey = data.get("secretkey", "")
+        email = session.get("user", {}).get("email")
+        if not email:
+            return redirect("https://bytoid.ai/login")
 
-        microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID")
-        microsoft_tenantid = os.getenv("MICROSOFT_TENANT_ID")
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
 
-        def xor_encrypt(data, key):
-            """XOR encryption function"""
-            return "".join(
-                chr(ord(c) ^ ord(k))
-                for c, k in zip(data, key * (len(data) // len(key) + 1))
-            )
+        if not row:
+            return jsonify({"error": "Access token not found"}), 404
 
-        if not microsoft_client_id:
-            return jsonify({"error": "Missing MICROSOFT_CLIENT_ID"}), 500
-
-        response_data = {
-            "status": "success",
-            "data": {
-                "value": xor_encrypt(microsoft_client_id, secretkey),
-                "tenant_id": microsoft_tenantid,
-            },
+        access_token = row[0]
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
         }
 
-        return jsonify(response_data), 200
-
-    except Exception as e:
-        logger.error(f"Error in get_microsoft_client_id: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/microsoft_login", methods=["POST"])
-def microsoft_login_post():
-    """Microsoft login endpoint similar to Gmail's google_login"""
-    try:
-        data = request.json
-        if not data or "access_token" not in data:
-            return jsonify({"error": "Access token is required"}), 400
-
-        access_token = data["access_token"]
-
-        # Verify the token with Microsoft Graph
-        headers = {"Authorization": f"Bearer {access_token}"}
-        response = requests.get("https://graph.microsoft.com/v1.0/me", headers=headers)
-
-        if response.status_code != 200:
-            return jsonify({"error": "Invalid token"}), 403
-
-        user_info = response.json()
-        email = user_info.get("mail") or user_info.get("userPrincipalName")
-        user_id = user_info.get("id")
-
-        return jsonify({"success": True, "email": email, "user_id": user_id})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@microsoft_bp.route("/auth/microsoft/token_og", methods=["POST"])
-def get_microsoft_token(inuser=None, value=None, in_connection=None):
-    """Microsoft token endpoint similar to Gmail's auth/google/token"""
-    try:
-        data = request.get_json()
-        user_email = data.get("email")
-
-        if not user_email:
-            return jsonify({"error": "Email is required"}), 400
-
-        conn = in_connection or connect_to_rds()
-        cursor = conn.cursor(pymysql.cursors.DictCursor)
-
-        cursor.execute(
-            "SELECT token, refresh_token, user_id FROM users WHERE email = %s AND social = 'microsoft'",
-            (user_email,),
+        drafts_url = (
+            "https://graph.microsoft.com/v1.0/me/mailFolders/SentItems/messages"
         )
-        user_data = cursor.fetchone()
+        response = requests.get(drafts_url, headers=headers)
 
-        if not user_data:
-            return jsonify({"error": "User not found"}), 404
+        if response.status_code == 200:
+            emails = response.json().get("value", [])
+            for email_data in emails:
+                email_id = email_data.get("id")
+                from_name = (
+                    email_data.get("sender", {}).get("emailAddress", {}).get("name")
+                )
+                to_recipients = email_data.get("toRecipients", [])
+                to_name = (
+                    to_recipients[0]["emailAddress"]["name"] if to_recipients else None
+                )
+                body_content = email_data.get("body", {}).get("content")
+                subject = email_data.get("subject")
+                sent_time = email_data.get("sentDateTime")
 
-        if not in_connection:
-            cursor.close()
-            conn.close()
-
-        return (
-            jsonify(
-                {
-                    "access_token": user_data.get("token"),
-                    "refresh_token": user_data.get("refresh_token"),
-                    "user_id": user_data.get("user_id"),
+                message_id = str(uuid.uuid4())
+                MESSAGES[email_id] = {
+                    "id": message_id,
+                    "from": from_name,
+                    "to": to_name,
+                    "body": body_content,
+                    "subject": subject,
+                    "timestamp": sent_time,
+                    "status": "sent",
+                    "source": "outlook",
+                    "direction": "outbound",
                 }
-            ),
-            200,
-        )
+            return jsonify({"sent_items": emails}), 200
+        else:
+            return (
+                jsonify(
+                    {
+                        "error": "Failed to fetch sent items",
+                        "details": response.text,
+                    }
+                ),
+                response.status_code,
+            )
 
     except Exception as e:
-        logger.error(f"Error in get_microsoft_token: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/drafts", methods=["GET"])
+def microsoft_list_drafts():
+    try:
+        email = session.get("user", {}).get("email")
+        if not email:
+            return redirect("https://bytoid.ai/login")
+
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "Access token not found"}), 404
+
+        access_token = row[0]
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        drafts_url = "https://graph.microsoft.com/v1.0/me/mailFolders/drafts/messages"
+        response = requests.get(drafts_url, headers=headers)
+
+        if response.status_code == 200:
+            return jsonify({"drafts": response.json().get("value", [])}), 200
+        else:
+            return (
+                jsonify({"error": "Failed to fetch drafts", "details": response.text}),
+                response.status_code,
+            )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/spam", methods=["GET"])
+def microsoft_list_spam():
+    try:
+        email = session.get("user", {}).get("email")
+        if not email:
+            return redirect("https://bytoid.ai/login")
+
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "Access token not found"}), 404
+
+        access_token = row[0]
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        drafts_url = (
+            "https://graph.microsoft.com/v1.0/me/mailFolders/JunkEmail/messages"
+        )
+        response = requests.get(drafts_url, headers=headers)
+
+        if response.status_code == 200:
+            return jsonify({"spam": response.json().get("value", [])}), 200
+        else:
+            return (
+                jsonify({"error": "Failed to fetch spam", "details": response.text}),
+                response.status_code,
+            )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@microsoft_bp.route("/microsoft/trash", methods=["GET"])
+def microsoft_list_trash():
+    try:
+        email = session.get("user", {}).get("email")
+        if not email:
+            return redirect("https://bytoid.ai/login")
+
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        cursor.execute("SELECT token FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "Access token not found"}), 404
+
+        access_token = row[0]
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        drafts_url = (
+            "https://graph.microsoft.com/v1.0/me/mailFolders/DeletedItems/messages"
+        )
+        response = requests.get(drafts_url, headers=headers)
+
+        if response.status_code == 200:
+            return jsonify({"trash": response.json().get("value", [])}), 200
+        else:
+            return (
+                jsonify({"error": "Failed to fetch trash", "details": response.text}),
+                response.status_code,
+            )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @microsoft_bp.route("/auth/microsoft/token", methods=["POST"])
 def get_outlook_token(inuser=None, value=None, in_connection=None):
@@ -3155,67 +3231,22 @@ def get_outlook_token(inuser=None, value=None, in_connection=None):
             # Refresh if expiring soon (same 10 min rule as Google)
             if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
                 print(f"** expired**")
-                try:
-                    # Microsoft Graph OAuth refresh URL
-                    token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+                # new_token = refresh_expired_microsoft_tokens(
+                #     client_id,
+                #     client_secret,
+                #     refresh_token,
+                #     cursor,
+                #     value,
+                #     user_id,
+                # )
+                new_token = refresh_expired_microsoft_tokens(
+                    refresh_token,
+                    cursor,
+                    value,
+                    user_id,
+                )
+                return new_token
 
-                    payload = {
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "refresh_token": refresh_token,
-                        "grant_type": "refresh_token",
-                        "scope": " ".join(SCOPES + ["offline_access"]),
-
-                    }
-
-                    response = requests.post(token_url, data=payload)
-                    if response.status_code != 200:
-                        print("Refresh failed:", response.text)
-                        return redirect("https://bytoid.ai/login")
-
-
-                    new_data = response.json()
-
-                    new_token = new_data.get("access_token")
-                    new_refresh = new_data.get("refresh_token", refresh_token)
-                    expires_in = new_data.get("expires_in", 3600)
-                  
-                    new_expiry = datetime.now() + timedelta(seconds=expires_in)
-
-                    # Store updated token
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET token = %s, refresh_token = %s, expiry = %s
-                        WHERE user_id = %s
-                        """,
-                        (new_token, new_refresh, new_expiry.isoformat(), user_id),
-                    )
-                    connection.commit()
-
-                    if value:
-                        return new_token
-
-                    return jsonify({"token": new_token})
-
-                except Exception as e:
-                    print(f"Microsoft token refresh failed: {e}")
-                    return redirect("https://bytoid.ai/login")
-
-            # Return existing token (not expired)
-            # cursor.execute(
-            #     "SELECT token FROM users WHERE user_id = %s AND social='microsoft'",
-            #     (user_id,),
-            # )
-            # user_row = cursor.fetchone()
-            # print(f"user_row:{user_row}")
-            # token =  user_row[0]
-
-            # if not user_row:
-            #     return jsonify({"error": "Token missing after fallback"}), 400
-
-            # if value:
-            #     return user_row["token"]
             return token
 
     except Exception as e:
@@ -3225,7 +3256,6 @@ def get_outlook_token(inuser=None, value=None, in_connection=None):
     finally:
         if not in_connection and connection:
             connection.close()
-
 
 
 @microsoft_bp.route("/check-microsoft-user", methods=["POST"])
@@ -3256,5 +3286,397 @@ def check_microsoft_user():
             return jsonify({"exists": False}), 200
 
     except Exception as e:
-        logger.error(f"Error in check_microsoft_user: {str(e)}")
+        print(f"Error in check_microsoft_user: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+# Add routes that match Gmail's pattern
+@microsoft_bp.route("/get_microsoft_client_id", methods=["POST"])
+def get_microsoft_client_id():
+    """Get Microsoft client ID - similar to Gmail's get_google_client_id"""
+    try:
+        data = request.get_json()
+        secretkey = data.get("secretkey", "")
+
+        microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID")
+        microsoft_tenantid = os.getenv("MICROSOFT_TENANT_ID")
+
+        def xor_encrypt(data, key):
+            """XOR encryption function"""
+            return "".join(
+                chr(ord(c) ^ ord(k))
+                for c, k in zip(data, key * (len(data) // len(key) + 1))
+            )
+
+        if not microsoft_client_id:
+            return jsonify({"error": "Missing MICROSOFT_CLIENT_ID"}), 500
+
+        response_data = {
+            "status": "success",
+            "data": {
+                "value": xor_encrypt(microsoft_client_id, secretkey),
+                "tenant_id": microsoft_tenantid,
+            },
+        }
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        print(f"Error in get_microsoft_client_id: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ------------------  webhook --------------------------------------#
+
+
+def check_and_refresh_token(user_id, cursor, conn):
+    print(f"[INFO] Checking Microsoft token for user_id: {user_id}")
+
+    cursor.execute(
+        """
+        SELECT expiry
+        FROM integrations
+        WHERE user_id = %s AND platform = 'microsoft'
+        """,
+        (str(user_id),),
+    )
+    row = cursor.fetchone()
+    print(f"[DEBUG] Fetched expiry row: {row}")
+
+    if not row:
+        print(f"[ERROR] Microsoft user not found for user_id: {user_id}")
+        return jsonify({"error": "Microsoft user not found"}), 404
+
+    expiry = row[0]
+    print(f"[DEBUG] Current expiry: {expiry}")
+
+    # Convert expiry from string if needed
+    if isinstance(expiry, str):
+        try:
+            expiry = datetime.fromisoformat(expiry)
+            print(f"[DEBUG] Converted expiry to datetime: {expiry}")
+        except Exception as e:
+            print(f"[ERROR] Failed to convert expiry string to datetime: {e}")
+            return False
+
+    time_to_expiry = expiry - datetime.now()
+    print(f"[DEBUG] Time to expiry: {time_to_expiry}")
+
+    # Refresh if expiring soon (10 min rule)
+    if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
+        print(f"[INFO] Token expired or about to expire, refreshing...")
+
+        # get refresh token
+        cursor.execute(
+            """
+            SELECT refresh_token
+            FROM integrations
+            WHERE user_id = %s AND platform = 'microsoft'
+            """,
+            (str(user_id),),
+        )
+        row = cursor.fetchone()
+        # print(f"[DEBUG] Fetched refresh token row: {row}")
+
+        refresh_token = row[0]
+        # print(f"[DEBUG] Current refresh token: {refresh_token}")
+
+        client_id = os.environ.get("MICROSOFT_CLIENT_ID")
+        client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET")
+        SCOPES = [
+            "User.Read",
+            "Mail.Send",
+            "Mail.ReadWrite",
+            "Calendars.ReadWrite",
+            "OnlineMeetings.ReadWrite",
+            "Chat.ReadWrite",
+            "Files.Read.All",
+        ]
+
+        try:
+            token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+            payload = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+                "scope": " ".join(SCOPES + ["offline_access"]),
+            }
+
+            # print(f"[DEBUG] Sending refresh request with payload: {payload}")
+            response = requests.post(token_url, data=payload)
+            # print(f"[DEBUG] Refresh response status: {response.status_code}")
+
+            if response.status_code != 200:
+                print(f"[ERROR] Refresh failed: {response.text}")
+                return redirect("https://bytoid.ai/login")
+
+            new_data = response.json()
+            # print(f"[DEBUG] Refresh response JSON: {new_data}")
+
+            new_token = new_data.get("access_token")
+            new_refresh = new_data.get("refresh_token", refresh_token)
+            expires_in = new_data.get("expires_in", 3600)
+            new_expiry = datetime.now() + timedelta(seconds=expires_in)
+
+            # print(f"[INFO] New access_token: {new_token}")
+            # print(f"[INFO] New refresh_token: {new_refresh}")
+            # print(f"[INFO] New expiry: {new_expiry}")
+
+            # Store updated token
+            cursor.execute(
+                """
+                UPDATE integrations
+                SET access_token = %s, refresh_token = %s, expiry = %s
+                WHERE user_id = %s
+                """,
+                (new_token, new_refresh, new_expiry.isoformat(), user_id),
+            )
+            conn.commit()
+            print("[INFO] Successfully refreshed Microsoft token")
+            return True
+
+        except Exception as e:
+            print(f"[ERROR] Microsoft token refresh failed: {e}")
+            return False
+
+    else:
+        print("[INFO] Microsoft token is valid, no refresh needed")
+        return True
+
+
+@microsoft_bp.route("/outlook/webhook", methods=["POST", "GET"])
+async def outlook_webhook():
+    validation_token = request.args.get("validationToken")
+    if validation_token:
+        return Response(validation_token, status=200, mimetype="text/plain")
+
+    # Handle notifications (POST)
+    notification = request.json
+    for change in notification.get("value", []):
+        if change.get("clientState") != "secretClientValue123":
+            print("Invalid clientState, ignoring notification")
+            continue
+
+    resource = change.get("resource", "")
+    user_id = resource.split("Users/")[1].split("/Messages")[0]
+    message_id = change.get("resourceData", {}).get("id")
+    received_at = datetime.now(timezone.utc).isoformat()
+
+    # -------------------------
+    # 1. Extract historyId from Outlook webhook (equivalent to Gmail historyId)
+    # -------------------------
+    # Outlook doesn't send historyId, so we emulate it using message_id + etag
+    history_id = change.get("resourceData", {}).get("@odata.etag")
+
+    if not history_id:
+        # fallback so dedupe still works
+        history_id = f"{user_id}:{message_id}"
+
+    # -------------------------
+    # 2. DEDUP using Redis (lock_client)
+    # -------------------------
+    dedup_key = f"webhook_dedup:{user_id}:{history_id}"
+
+    recent = await lock_client.get(dedup_key)
+    if recent:
+        logger.info(f"Duplicate webhook skipped for {user_id}, historyId={history_id}")
+        return "Duplicate webhook skipped", 200
+
+    await lock_client.set(dedup_key, "1", ex=300)  # 5-minute dedupe window
+
+    logger.info(f"Processing webhook for {user_id}, historyId={history_id}")
+
+    # -------------------------
+    # 3. Trigger Celery Worker
+    # -------------------------
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+
+    integration = False
+    email = ""
+    cursor.execute("SELECT email FROM integrations WHERE user_id=%s", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        email = row[0]
+        integration = True
+    else:
+        cursor.execute("SELECT email FROM users WHERE user_id=%s", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            email = row[0]
+        else:
+            return ("User not found", 404)
+
+    try:
+        # check if it is expired and refresh if expired
+        if integration:
+            check_result = check_and_refresh_token(user_id, cursor, conn)  # TODO ....
+            print(f"check_result : {check_result}")
+            if not check_result:
+                print("cannot refresh token")
+                return ("Token refresh failed", 400)
+
+        else:
+            check_result, token = check_microsoft_token_expiry_normal(cursor,conn, user_id)
+            if not check_result :
+                print("cannot refresh token")
+                return ("Could not refresh token ", 401)
+                
+        delayed_trigger.delay(
+                email, history_id, channel="microsoft", integration=integration
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to trigger delayed task for {email}: {e}")
+        cursor.close()
+        conn.close()
+
+        status_data = read_status_file()
+        user_info = status_data.get(user_id)
+        if user_info:
+            user_info["status"] = "complete"
+            user_info["timestamp"] = datetime.now(timezone.utc).isoformat()
+            status_data[user_id] = user_info
+            # print("complete made ok")
+            write_status_file(status_data)
+
+        return ("Internal Server Error", 500)
+
+    # -------------------------
+    # 4. Append to local JSON log (your original logic)
+    # -------------------------
+    WEBHOOK_LOG_DIR = "data/test"
+    WEBHOOK_LOG_FILE = os.path.join(WEBHOOK_LOG_DIR, "outlook_webhook_log.json")
+    os.makedirs(WEBHOOK_LOG_DIR, exist_ok=True)
+
+    # Load old logs
+    if os.path.isfile(WEBHOOK_LOG_FILE):
+        try:
+            with open(WEBHOOK_LOG_FILE, "r") as f:
+                log_data = json.load(f)
+            if not isinstance(log_data, dict):
+                log_data = {}
+        except json.JSONDecodeError:
+            log_data = {}
+    else:
+        log_data = {}
+
+    # Append new entry
+    new_entry = {"timestamp": received_at, "message_id": message_id}
+    log_data.setdefault(email, []).append(new_entry)
+
+    # Clean old entries > 2 days
+    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+    cleaned_log = {}
+
+    for email, entries in log_data.items():
+        valid_entries = []
+        for e in entries:
+            try:
+                ts = datetime.fromisoformat(e["timestamp"])
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+
+            if ts > cutoff:
+                valid_entries.append(e)
+
+        if valid_entries:
+            cleaned_log[email] = valid_entries
+
+    with open(WEBHOOK_LOG_FILE, "w") as f:
+        json.dump(cleaned_log, f, indent=2)
+
+    return "OK", 200
+
+
+def refresh_expired_google_tokens_for_integrations(user_id, connection):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, client_id, client_secret, access_token, refresh_token, expiry
+                FROM integrations
+                WHERE primary_user_id_fk = %s
+            """,
+                (str(user_id),),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+
+            google_user_id, client_id, client_secret, token, refresh_token, expiry = row
+          
+
+
+            # Ensure expiry is a datetime object
+            if isinstance(expiry, str):
+                expiry = datetime.fromisoformat(expiry)
+
+            time_to_expiry = expiry - datetime.now()
+            ##print("expiry from db",expiry)
+            ##print("current time", datetime.now())
+
+            # Refresh only if token is close to expiring
+            if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
+                ##print("token time expired")
+                try:
+                    creds = Credentials(
+                        token=token,
+                        refresh_token=refresh_token,
+                        token_uri="https://oauth2.googleapis.com/token",
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        scopes=[
+                            "https://www.googleapis.com/auth/userinfo.profile",
+                            "https://www.googleapis.com/auth/userinfo.email",
+                            "https://www.googleapis.com/auth/gmail.readonly",
+                            "https://www.googleapis.com/auth/gmail.send",
+                            "https://www.googleapis.com/auth/gmail.modify",
+                            "https://www.googleapis.com/auth/gmail.compose",
+                            "https://www.googleapis.com/auth/drive.metadata.readonly",
+                            "https://www.googleapis.com/auth/drive",
+                            "https://www.googleapis.com/auth/calendar",
+                            "https://www.googleapis.com/auth/contacts",
+                            "openid",
+                        ],
+                    )
+
+                    creds.refresh(g_request())
+                    # print("refresh started")
+
+                    # Save refreshed token and new expiry time
+                    cursor.execute(
+                        """
+                        UPDATE integrations SET access_token = %s, expiry = %s WHERE primary_user_id_fk = %s
+                    """,
+                        (creds.token, creds.expiry.isoformat(), user_id),
+                    )
+                    connection.commit()
+                    print(f"expired and refreshed")
+                    return google_user_id
+
+                except Exception as e:
+                    print(f"Token refresh failed: {e}")
+                    return redirect("https://bytoid.ai/login")
+
+            # Return existing token if not refreshed
+            cursor.execute("SELECT user_id FROM integrations WHERE primary_user_id_fk = %s", (user_id,))
+            user_row = cursor.fetchone()
+            print(f"google not expired")
+
+            if user_row is None:
+                return jsonify({"error": "Token missing after fallback"}), 400
+            ##print("returning token", user_row[0])
+           
+
+            return user_row[0]
+
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        return jsonify({"error": "Internal server error"}), 500

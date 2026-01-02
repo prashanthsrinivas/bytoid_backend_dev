@@ -89,19 +89,19 @@ class PollyService:
 
 
 # Example usage:
-if __name__ == "__main__":
-    # Initialize the service with your AWS credentials
-    polly = PollyService(
-        aws_access_key_id="your_access_key", aws_secret_access_key="your_secret_key"
-    )
+# if __name__ == "__main__":
+#     # Initialize the service with your AWS credentials
+#     polly = PollyService(
+#         aws_access_key_id="your_access_key", aws_secret_access_key="your_secret_key"
+#     )
 
-    # Convert text to speech
-    output_file = polly.synthesize_speech(
-        text="Hello, this is a test of Amazon Polly text to speech conversion.",
-        output_path="test_output.mp3",
-    )
+#     # Convert text to speech
+#     output_file = polly.synthesize_speech(
+#         text="Hello, this is a test of Amazon Polly text to speech conversion.",
+#         output_path="test_output.mp3",
+#     )
 
-    if output_file:
-        print(f"Audio file saved to: {output_file}")
-    else:
-        print("Failed to generate audio file")
+#     if output_file:
+#         print(f"Audio file saved to: {output_file}")
+#     else:
+#         print("Failed to generate audio file")

@@ -1,4 +1,5 @@
 import asyncio
+from db.lance_db_service import LanceDBServer
 from db.rds_db import get_cursor, safe_execute
 from flask import Blueprint, current_app, request, jsonify, session, send_file
 from services.gmail_service import GmailService
@@ -26,6 +27,8 @@ from collections import defaultdict
 import traceback
 import re
 import pymysql
+from services.redis_service import RedisService
+
 
 gmail_bp = Blueprint("gmail", __name__)
 
@@ -635,7 +638,7 @@ async def v2fetch_gmail_messages_batch_og(
 
 
 async def v2fetch_gmail_messages_batch(
-    user_id, threads, my_email, batch_count, connection
+    user_id, threads, my_email, batch_count, connection, integration = None
 ):
     """
     Fetch a single batch of Gmail messages
@@ -647,7 +650,8 @@ async def v2fetch_gmail_messages_batch(
         # Use cursor context for all DB operations
         cursor = connection.cursor()
         print(f"🚀 Starting Gmail batch {batch_count} fetch for user {user_id}")
-        gmail_service = GmailService(user_id, connection)
+        print(f"integration inside v2fetch_gmail_messages_batch : {integration} ")
+        gmail_service = GmailService(user_id, connection, integration = integration)
         # user_email = gmail_service.user_email
 
         # Fetch one batch of messages - THIS IS WHERE MIME EXTRACTION HAPPENS
@@ -657,28 +661,6 @@ async def v2fetch_gmail_messages_batch(
         results = await gmail_service.process_threads_batch(
             threads, my_email, batch_count
         )
-        # print(
-        #     f"GOT the data from results {batch_count} in v2 fetch gmail", len(results)
-        # )
-        # all_messages = []
-        # for idx, thread in enumerate(threads):
-        #     thread_id = thread["id"]
-        #     res = results.get(thread_id)
-
-        #     if not res:
-        #         print(f"⚠️ No response for thread {thread_id}")
-        #         continue
-
-        #     thread_data, err = res  # ✅ unpack tuple
-
-        #     if err:
-        #         print(f"⚠️ Thread {thread_id} error: {err}")
-        #         continue
-
-        #     if thread_data:
-        #         all_messages.append(thread_data)
-        # print("ALL mesages complete")
-
         if not results:
             # print("📭 No messages found in this batch")
             return {"status": "success", "new_messages": 0, "next_page_token": None}
@@ -766,15 +748,18 @@ async def v2fetch_gmail_messages_batch(
 
             if err:
                 print(f"⚠️ Thread {thread_id} error: {err}")
-                continue
+                continue    
 
             if not thread_data:
                 continue
-
+            # print(f"thread_data :")
+            # print(f"{thread_data}") 
             # directly iterate messages here
             for msg in thread_data:
+                
                 message_id = msg["messageId"]
                 row_id = f"{user_id}_{message_id}"
+                print(f"row_id : {row_id}")
                 # print({"message_id": row_id, "timestamp": msg["date"]})
                 # Skip if already exists in database
                 sql = """
@@ -792,7 +777,7 @@ async def v2fetch_gmail_messages_batch(
                 if row:
                     external_user_id = row[2]
                     ##print("GOT CURSOR RESULTS Line 389 v2 fetch", row)
-
+                    print(f"external_user_id : {external_user_id} | user_id: {user_id}")
                     if external_user_id == user_id:
                         print("message added already")
                         # skip/continue whatever you need
@@ -1799,6 +1784,8 @@ def delete_user_ticket_data(user_id):
         Thread(target=delete_folder_from_s3, args=(folder_path,)).start()
         client_ticket = TicketAllocator(user_id)
         client_ticket.update_ticket(value=0)
+        ls=LanceDBServer()
+        asyncio.run(ls.delete_user_table(user_id=user_id))
 
         # single return at the end
         return {
@@ -1813,6 +1800,61 @@ def delete_user_ticket_data(user_id):
     finally:
         if connection:
             connection.close()
+
+
+@gmail_bp.route("/delete_user_cache/<primary_user_id>", methods=["GET"])
+def delete_user_cache(primary_user_id):
+
+    if not primary_user_id:
+        return False
+
+    connection = connect_to_rds()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        # fetch integration user_ids
+        query = """
+            SELECT user_id
+            FROM integrations
+            WHERE primary_user_id_fk = %s
+              AND status = 'active'
+        """
+        cursor.execute(query, (primary_user_id,))
+        rows = cursor.fetchall()
+
+        # collect all user_ids (primary + integrations)
+        user_ids = {primary_user_id}
+        if rows:
+            user_ids.update(row["user_id"] for row in rows)
+
+        async def _inner():
+            results = []
+            for uid in user_ids:
+                print(f"deleting cache for user_id: {uid}")
+                results.append(await _delete_cache_async(uid))
+            return results
+
+        # run async safely
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_inner())
+        else:
+            return loop.run_until_complete(_inner())
+
+    except Exception as e:
+        print(f"Cache delete error: {e}")
+        return False
+
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+async def _delete_cache_async(user_id):
+    client = RedisService()
+    return await client.delete(f"umail_{user_id}")
 
 
 def delete_all_user_data(user_id):

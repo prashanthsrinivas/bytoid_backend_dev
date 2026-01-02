@@ -4,6 +4,9 @@
             "category": "Gmail",
             "name": "gmail.send_email",
             "description": "Send a plain text email to a recipient.",
+            "channels": "gmail",
+            "communication_mode": "email",
+            "status": "active",
             "args": {
                 "receipent_emails": "Recipient email address (list or string)",
                 "subject": "Email subject (string)",
@@ -20,6 +23,9 @@
             "category": "Gmail",
             "name": "gmail.send_Meeting_invite_mail",
             "description": "Send an HTML/Plain text email for a Google Meet or similar meeting.",
+            "channels": "gmail",
+            "communication_mode": "email",
+            "status": "active",
             "args": {
                 "receipent_emails": "Recipient email address (list or string)",
                 "bcc_list": "List of BCC email addresses (list of strings)",
@@ -35,6 +41,9 @@
             "category": "Gmail",
             "name": "gmail.send_invite_mail",
             "description": "Send an invitation email with optional business information. (not for meeting mail)",
+            "channels": "gmail",
+            "communication_mode": "email",
+            "status": "active",
             "args": {
                 "receipent_emails": "Invitee's email address (string)",
                 "role": "Role details as dictionary (must contain 'name', 'id')",
@@ -50,6 +59,9 @@
             "category": "Gmail",
             "name": "gmail.send_reply",
             "description": "Reply to an existing email thread.",
+            "channels": "gmail",
+            "communication_mode": "email",
+            "status": "active",
             "args": {
                 "receipent_emails": "Recipient email address (string)",
                 "subject": "Email subject (string)",
@@ -66,6 +78,9 @@
             "category": "Gmail",
             "name": "gmail.send_forward",
             "description": "Forward an email to a recipient.",
+            "channels": "gmail",
+            "communication_mode": "email",
+            "status": "active",
             "args": {
                 "receipent_emails": "Recipient email address (string)",
                 "subject": "Email subject (string)",

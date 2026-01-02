@@ -4,6 +4,13 @@ from flask import request, jsonify, session, Blueprint
 from db.rds_db import connect_to_rds
 import uuid
 from datetime import datetime, timezone
+from umail_helper.helper import delete_user_sync_time, delete_from_cache_sync
+from utils.s3_utils import (
+    delete_folder_from_s3,
+)
+from umail_helper.ticketalloc import TicketAllocator
+from threading import Thread
+
 
 # from session_middleware import session_check
 
@@ -66,6 +73,22 @@ def save_contact():
                 ),
                 400,
             )
+
+        cursor.execute(
+                "SELECT 1 FROM integration WHERE email = %s",
+                (email_id,),
+            )
+        row = cursor.fethcone()
+        if row:
+            return (
+                jsonify(
+                    {
+                        "error": "This email id is already registered as an integration account. Please use another mail id for creating a new user"
+                    }
+                ),
+                400,
+            )
+
 
         dt_utc = datetime.now(timezone.utc)
         created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
@@ -533,6 +556,26 @@ def delete_contacts():
                 # -------------------------------
                 connection.commit()
 
+
+            # Outside the cursor context: delete S3 folder + update ticket allocator
+            folder_path = f"{user_id}/messages"
+            Thread(target=delete_folder_from_s3, args=(folder_path,)).start()
+            client_ticket = TicketAllocator(user_id)
+            client_ticket.update_ticket(value=0)
+
+            # remove from outlook sync file
+            result = delete_user_sync_time(user_id)
+            if not result:
+                print(f"could not delete using delete_user_sync_time")
+                return jsonify({"error : unable to delete contact"}), 500
+
+            #remove the contact messages from redis 
+            result = delete_from_cache_sync(user_id)
+            if result == 1:
+                print("Cache deleted")
+            else:
+                print("No cache found")
+                        
             return jsonify({
                 "message": "Contacts deleted successfully",
                 "deleted_ids": client_ids

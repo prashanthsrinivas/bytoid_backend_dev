@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 import time
 import os
@@ -6,6 +7,7 @@ import requests
 from dotenv import load_dotenv
 from utils.fireworkzz import get_firework_embedding
 from bs4 import BeautifulSoup
+
 load_dotenv()
 
 # Keep youtube_transcript_api as fallback
@@ -37,7 +39,15 @@ class WebScrapingLanceClient:
         self.lancedb_url = os.getenv("LANCE_DB_IP")
         self.user_id = user_id
         self.dimension = 2880
-        self.embeddings = get_firework_embedding()
+        self.embeddings = None
+        # asyncio.create_task(self._load_embeddings())
+
+    async def _load_embeddings(self):
+        self.embeddings = await get_firework_embedding()
+
+    async def _ensure_embeddings(self):
+        if self.embeddings is None:
+            await self._load_embeddings()
 
     def _setup_selenium_driver(self):
         """Setup Chrome driver with appropriate options"""

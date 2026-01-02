@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, Blueprint, Response
 import re
-import spacy
+
 from create_db import connect_to_rds
 from umail_lance.umail_lance_agent import UmailLanceClient
 from cust_helpers import pathconfig
@@ -10,17 +10,23 @@ from utils.fireworkzz import get_fireworks_response
 import yaml
 from utils.s3_utils import read_json_from_s3
 from presidio_anonymizer import AnonymizerEngine
-from .setup_presidio import analyzer
 from datetime import datetime
 from utils.base_logger import get_logger
 import re
 from difflib import SequenceMatcher
 from ai_reporting.parse_llm import parse_llm_response
+from request_context import current_user_id
 
 
 search_bp = Blueprint("search", __name__)
 
-nlp = spacy.load("en_core_web_md")
+
+def get_nlp_emails():
+    import spacy
+
+    nlp = spacy.load("en_core_web_md")
+    return nlp
+
 
 logger = get_logger(__name__)
 
@@ -77,6 +83,7 @@ def get_entity(text_input, user_id, cursor):
 
     # 2. name search using spaCy
     text_title = text_input.title()
+    nlp = get_nlp_emails()
     doc = nlp(text_title)
     results = []
     person_names = []
@@ -260,7 +267,7 @@ def anonymizer(text_input, entities):
     return new_text, name_mapping
 
 
-def normalize_query(text_input):
+async def normalize_query(text_input, userid):
 
     try:
         print(f"inside normalize query")
@@ -279,7 +286,9 @@ def normalize_query(text_input):
         full_prompt = full_prompt.replace("{date}", todays_date)
 
         # Generate YAML output from model
-        modified_yaml = get_fireworks_response(full_prompt, role="system")
+        modified_yaml = await get_fireworks_response(
+            full_prompt, role="system", user_id=userid
+        )
 
         try:
             parsed_yaml = yaml.safe_load(modified_yaml.strip())
@@ -298,7 +307,7 @@ def normalize_query(text_input):
         return None
 
 
-def get_search_summary(text_input, anonymised_input, entity_groups):
+async def get_search_summary(text_input, anonymised_input, entity_groups, userid):
 
     try:
 
@@ -316,7 +325,9 @@ def get_search_summary(text_input, anonymised_input, entity_groups):
         full_prompt = full_prompt.replace("{entity_groups}", entity_groups_payload)
 
         # Generate YAML output from model
-        modified_yaml = get_fireworks_response(full_prompt, role="system")
+        modified_yaml = await get_fireworks_response(
+            full_prompt, role="system", user_id=userid
+        )
 
         try:
             parsed_yaml = parse_llm_response(modified_yaml)
@@ -470,6 +481,8 @@ def search_db(db_queries, user_id, cursor):
 
 
 def anonymize_before_summarisation(message_body, user_query):
+    from .setup_presidio import analyzer
+
     anonymizer = AnonymizerEngine()
     pii_mapping = {}  # Store mapping for de-anonymization
 
@@ -596,7 +609,7 @@ def generate_entity_groups(pii_mapping):
 
 
 @search_bp.route("/search-emails", methods=["POST"])
-def search_emails():
+async def search_emails(text_input=None, user_id=None):
     try:
 
         conn = connect_to_rds()
@@ -611,136 +624,146 @@ def search_emails():
         folder_names = None
         name_mapping = {}
 
-        entities = get_entity(text_input, user_id, cursor)
-        logger.info(f"entities :{entities}")
-        if entities:
-            spans = [(item["start_index"], item["end_index"]) for item in entities]
-            spans = merge_spans(
-                spans
-            )  # spans contain unique start and end index of enitities
-            # text_input = remove_multiple_entities(text_input,spans) # text_input is now free from enitites
-            name_resolved = True
+        token = current_user_id.set(user_id)
+        try:
 
-        logger.info(f"name_resolved :{name_resolved}")
-        if name_resolved:
-            folder_names = [
-                item["id"] for item in entities
-            ]  # folder_names contain client_id
-            text_input, name_mapping = anonymizer(
-                text_input, entities
-            )  # the names of entities are replaced by secret_name_1 ....
+            entities = get_entity(text_input, user_id, cursor)
+            logger.info(f"entities :{entities}")
+            if entities:
+                spans = [(item["start_index"], item["end_index"]) for item in entities]
+                spans = merge_spans(
+                    spans
+                )  # spans contain unique start and end index of enitities
+                # text_input = remove_multiple_entities(text_input,spans) # text_input is now free from enitites
+                name_resolved = True
 
-        # Initialize variables
-        semantic_query = None
-        db_queries = None
+            logger.info(f"name_resolved :{name_resolved}")
+            if name_resolved:
+                folder_names = [
+                    item["id"] for item in entities
+                ]  # folder_names contain client_id
+                text_input, name_mapping = anonymizer(
+                    text_input, entities
+                )  # the names of entities are replaced by secret_name_1 ....
 
-        normalized_input = normalize_query(text_input)
-        if normalized_input is not None:
-            for item in normalized_input:
-                if "semantic_search_query" in item:
-                    semantic_query = item["semantic_search_query"]
-                if "db_search_queries" in item:
-                    db_queries = item["db_search_queries"]
-        else:
-            logger.warning(
-                "normalize_query returned None - proceeding with empty search parameters"
-            )
+            # Initialize variables
+            semantic_query = None
+            db_queries = None
 
-        # To reverse the replacement
-        if name_mapping and semantic_query:
-            for original, secret in name_mapping.items():
-                semantic_query = semantic_query.replace(secret, original)
+            normalized_input = await normalize_query(text_input, userid=user_id)
+            if normalized_input is not None:
+                for item in normalized_input:
+                    if "semantic_search_query" in item:
+                        semantic_query = item["semantic_search_query"]
+                    if "db_search_queries" in item:
+                        db_queries = item["db_search_queries"]
+            else:
+                logger.warning(
+                    "normalize_query returned None - proceeding with empty search parameters"
+                )
 
-        logger.info(f"semantic_query : {semantic_query}")
-        logger.info(f"db_query : {db_queries}")
+            # To reverse the replacement
+            if name_mapping and semantic_query:
+                for original, secret in name_mapping.items():
+                    semantic_query = semantic_query.replace(secret, original)
 
-        # query the db
-        db_mails = []
-        if db_queries is not None and db_queries != "null":
-            db_mails = search_db(db_queries, user_id, cursor)
+            logger.info(f"semantic_query : {semantic_query}")
+            logger.info(f"db_query : {db_queries}")
 
-        # semantic search in the lance table
-        client = UmailLanceClient(user_id)
-        if semantic_query and semantic_query != "null":
-            lance_mails = client.search_email_from_lance(
-                folder_names, user_id, semantic_query
-            )
+            # query the db
+            db_mails = []
+            if db_queries is not None and db_queries != "null":
+                db_mails = search_db(db_queries, user_id, cursor)
 
-        # Determine which messages to process
-        if db_queries and db_queries != "null":
+            # semantic search in the lance table
+            client = UmailLanceClient(user_id)
             if semantic_query and semantic_query != "null":
-                if db_mails and lance_mails:
-                    # Find intersection when both sources have data
-                    db_conversation_ids = {mail["conversation_id"] for mail in db_mails}
-                    lance_conversation_ids = {
-                        mail["conversation_id"] for mail in lance_mails
-                    }
-                    common_conversation_ids = db_conversation_ids.intersection(
-                        lance_conversation_ids
-                    )
-                    messages_to_process = [
-                        mail
-                        for mail in db_mails + lance_mails
-                        if mail["conversation_id"] in common_conversation_ids
-                    ]
+                lance_mails = await client.search_email_from_lance(
+                    folder_names, user_id, semantic_query
+                )
+
+            # Determine which messages to process
+            if db_queries and db_queries != "null":
+                if semantic_query and semantic_query != "null":
+                    if db_mails and lance_mails:
+                        # Find intersection when both sources have data
+                        db_conversation_ids = {
+                            mail["conversation_id"] for mail in db_mails
+                        }
+                        lance_conversation_ids = {
+                            mail["conversation_id"] for mail in lance_mails
+                        }
+                        common_conversation_ids = db_conversation_ids.intersection(
+                            lance_conversation_ids
+                        )
+                        messages_to_process = [
+                            mail
+                            for mail in db_mails + lance_mails
+                            if mail["conversation_id"] in common_conversation_ids
+                        ]
+
+                    else:
+                        messages_to_process = db_mails or lance_mails or []
 
                 else:
-                    messages_to_process = db_mails or lance_mails or []
+                    messages_to_process = db_mails or []
+
+            elif semantic_query:
+                messages_to_process = lance_mails or []
 
             else:
-                messages_to_process = db_mails or []
+                messages_to_process = []
 
-        elif semantic_query:
-            messages_to_process = lance_mails or []
+            # Process messages
+            disp_results = []
+            message_body = []
 
-        else:
-            messages_to_process = []
+            for mail in messages_to_process:
+                plain_text = mail.get("plain_text", "")
+                timestamp = mail.get("timestamp", "")
+                from_address = mail.get("from", "")
 
-        # Process messages
-        disp_results = []
-        message_body = []
+                disp = {
+                    "id": mail.get("id"),
+                    "body": plain_text,
+                    "conversation_id": mail.get("conversation_id"),
+                    "from": from_address,
+                    "ticket_name": mail.get("ticket_name"),
+                    "ticket_id": mail.get("ticket_id"),
+                    "timestamp": timestamp,
+                }
+                disp_results.append(disp)
 
-        for mail in messages_to_process:
-            plain_text = mail.get("plain_text", "")
-            timestamp = mail.get("timestamp", "")
-            from_address = mail.get("from", "")
+                msg = {
+                    "body": plain_text,
+                    "timestamp": timestamp,
+                    "from_address": from_address,
+                }
+                message_body.append(msg)
+                print(
+                    f"id: {mail.get('id')} | conversation_id: {mail.get('conversation_id')}"
+                )
 
-            disp = {
-                "id": mail.get("id"),
-                "body": plain_text,
-                "conversation_id": mail.get("conversation_id"),
-                "from": from_address,
-                "ticket_name": mail.get("ticket_name"),
-                "ticket_id": mail.get("ticket_id"),
-                "timestamp": timestamp,
-            }
-            disp_results.append(disp)
-
-            msg = {
-                "body": plain_text,
-                "timestamp": timestamp,
-                "from_address": from_address,
-            }
-            message_body.append(msg)
-            print(
-                f"id: {mail.get('id')} | conversation_id: {mail.get('conversation_id')}"
+                # print(f"disp_results : {disp_results}")
+            # print(f"message_body before anonymization : {message_body}")
+            anonymised_text, anonymised_input, pii_mapping = (
+                anonymize_before_summarisation(message_body, user_query)
             )
 
-            # print(f"disp_results : {disp_results}")
-        # print(f"message_body before anonymization : {message_body}")
-        anonymised_text, anonymised_input, pii_mapping = anonymize_before_summarisation(
-            message_body, user_query
-        )
+            # logger.info(f"pii_mapping is : {pii_mapping}")
+            # logger.info(f"anonymised_text is : {anonymised_text}")
+            # logger.info(f"anonymised_input is : {anonymised_input}")
 
-        # logger.info(f"pii_mapping is : {pii_mapping}")
-        # logger.info(f"anonymised_text is : {anonymised_text}")
-        # logger.info(f"anonymised_input is : {anonymised_input}")
+            entity_groups = generate_entity_groups(pii_mapping)
+            # logger.info(f"entity_groups is : {entity_groups}")
 
-        entity_groups = generate_entity_groups(pii_mapping)
-        # logger.info(f"entity_groups is : {entity_groups}")
+            summary = await get_search_summary(
+                anonymised_text, anonymised_input, entity_groups, userid=user_id
+            )
+            # logger.info(f"summary before re anonymisation: {summary}")
 
-        summary = get_search_summary(anonymised_text, anonymised_input, entity_groups)
-        # logger.info(f"summary before re anonymisation: {summary}")
+        finally:
+            current_user_id.reset(token)
 
         # reverse the anonymisation of the summary
         if summary and pii_mapping:

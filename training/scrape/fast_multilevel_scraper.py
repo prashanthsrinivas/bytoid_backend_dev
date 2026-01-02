@@ -630,7 +630,7 @@ class FastMultilevelScraper:
             logger.warning(f"[FAST] Requests fallback also failed for {url}: {e}")
             return None
 
-    def scrape_multilevel(self, url: str, level) -> Dict:
+    async def scrape_multilevel(self, url: str, level) -> Dict:
         """
         Scrape website with multiple levels using concurrent processing
 
@@ -639,7 +639,7 @@ class FastMultilevelScraper:
         # Check if it's a YouTube URL and use old method if so
         if self._is_youtube_url(url):
             logger.info(f"[FAST] Detected YouTube URL, using legacy scraping method")
-            return self._scrape_youtube_legacy(url)
+            return await self._scrape_youtube_legacy(url)
 
         start_time = time.time()
         logger.info(f"[FAST] Starting multi-level scrape: {url}")
@@ -723,7 +723,7 @@ class FastMultilevelScraper:
         result["metadata"]["total_time_seconds"] = round(time.time() - start_time, 2)
 
         # Build AI-powered comprehensive summary
-        result["content"] = self._generate_ai_summary(result)
+        result["content"] = await self._generate_ai_summary(result)
         result["contacts"] = "All"
 
         logger.info(
@@ -767,7 +767,7 @@ class FastMultilevelScraper:
         url_lower = url.lower()
         return any(pattern in url_lower for pattern in youtube_patterns)
 
-    def _scrape_youtube_legacy(self, url: str) -> Dict:
+    async def _scrape_youtube_legacy(self, url: str) -> Dict:
         """Use legacy YouTube scraping method (from routes.py)"""
         try:
             # Import the YouTubeScrapingClient class from routes
@@ -780,7 +780,7 @@ class FastMultilevelScraper:
                 transcript = result.get("transcript_raw") or result.get("content", "")
 
                 # Generate AI summary from the transcript
-                ai_summary = self._generate_youtube_summary(
+                ai_summary = await self._generate_youtube_summary(
                     transcript, result.get("title", "YouTube Video")
                 )
 
@@ -827,7 +827,9 @@ class FastMultilevelScraper:
                 },
             }
 
-    def _generate_youtube_summary(self, transcript: str, title: str) -> Optional[str]:
+    async def _generate_youtube_summary(
+        self, transcript: str, title: str
+    ) -> Optional[str]:
         """Generate AI summary for YouTube video transcript"""
         try:
             # Limit transcript to avoid token limits
@@ -849,7 +851,9 @@ class FastMultilevelScraper:
 
             Keep the analysis concise, professional, and easy to understand. Format it nicely."""
 
-            ai_response = get_fireworks_response(prompt, role="system")
+            ai_response = await get_fireworks_response(
+                prompt, role="system", user_id=self.user_id
+            )
 
             if ai_response:
                 return ai_response.strip()
@@ -948,7 +952,7 @@ class FastMultilevelScraper:
     #         logger.debug(traceback.format_exc())
     #         return self._compile_content_summary(result)
 
-    def _generate_ai_summary(self, result: Dict) -> str:
+    async def _generate_ai_summary(self, result: Dict) -> str:
         """
         Robust AI summary generator. Defensive about input shapes to avoid
         'int' object is not iterable and similar errors.
@@ -1019,7 +1023,9 @@ class FastMultilevelScraper:
 
             # Send to AI (wrap call in try)
             try:
-                ai_summary = get_fireworks_response(full_prompt, role="system")
+                ai_summary = await get_fireworks_response(
+                    full_prompt, role="system", user_id=self.user_id
+                )
             except Exception as e:
                 logger.warning(f"[FAST] get_fireworks_response failed: {e}")
                 return self._compile_content_summary(result)
@@ -1133,7 +1139,7 @@ class FastMultilevelScraper:
         return summary.strip()
 
 
-def scrape_website_fast(url: str, user_id: str, level) -> Optional[Dict]:
+async def scrape_website_fast(url: str, user_id: str, level) -> Optional[Dict]:
     """
     Convenience function to scrape a website using fast multilevel scraper
 
@@ -1147,7 +1153,7 @@ def scrape_website_fast(url: str, user_id: str, level) -> Optional[Dict]:
     scraper = FastMultilevelScraper(user_id=user_id, max_workers=3)
 
     # Check for duplicate
-    duplicate = asyncio.run(scraper.check_duplicate_scrape(url))
+    duplicate = await scraper.check_duplicate_scrape(url)
     if duplicate:
         logger.info(f"[FAST] Returning cached result for duplicate URL: {url}")
         return {
@@ -1169,18 +1175,18 @@ def scrape_website_fast(url: str, user_id: str, level) -> Optional[Dict]:
             },
         }
 
-    return scraper.scrape_multilevel(url, level)
+    return await scraper.scrape_multilevel(url, level)
 
 
-def run_scrapper_links(url, user_id, level):
+async def run_scrapper_links(url, user_id, level):
     # ---------- Background Saves: S3 + MySQL + LanceDB ----------
     from threading import Thread
 
     # ---- Perform fast scrape ----
-    scraped_data = scrape_website_fast(url, user_id, level)
+    scraped_data = await scrape_website_fast(url, user_id, level)
 
     if not scraped_data:
-        return jsonify({"error": "Failed to scrape website"}), 500
+        return {"error": "Failed to scrape website"}
 
     scraping_failure = False
     if scraped_data and scraped_data.get("content") == "":
@@ -1210,7 +1216,7 @@ def run_scrapper_links(url, user_id, level):
                 "total_pages": 0,
                 "scraping_time": 0,
             }
-            return jsonify(response_data), 409
+            return response_data
 
         elif is_youtube:
             response_data = {

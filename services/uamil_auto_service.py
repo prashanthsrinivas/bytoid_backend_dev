@@ -67,12 +67,12 @@ class UmailAutoService:
             )
         self.connection.commit()
 
-    def suggest_umail_reply(self, email_msg, conv_id):
+    async def suggest_umail_reply(self, email_msg, conv_id):
         try:
             umail_conversations = getselectedconv(conv_id=conv_id, userid=self.userid)
             umail_bodies = [msg.get("body", "") for msg in umail_conversations]
             # print("umail conversations", umail_bodies)
-            ai_reply = suggest_helper_base(
+            ai_reply = await suggest_helper_base(
                 userid=self.userid,
                 email_msg=email_msg,
                 umail_conversations=umail_conversations,

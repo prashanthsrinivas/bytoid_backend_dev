@@ -307,25 +307,31 @@ TOUR_PAGE_ORDER = [
     "bytoid_agent",
 ]
 
+
 # Initialize AWS services using boto3.Session pattern
-try:
-    # Check for required environment variables
-    if missing_vars:
-        logger.warning(f"❌ Cannot initialize AWS services. Missing: {missing_vars}")
-        polly_client = None
-    else:
-        aws_session = boto3.Session(
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-            region_name=os.getenv("AWS_REGION", "us-east-1"),
-        )
+def get_polly_instance():
+    try:
+        # Check for required environment variables
+        if missing_vars:
+            logger.warning(
+                f"❌ Cannot initialize AWS services. Missing: {missing_vars}"
+            )
+            polly_client = None
+        else:
+            aws_session = boto3.Session(
+                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                region_name=os.getenv("AWS_REGION", "us-east-1"),
+            )
 
-        polly_client = aws_session.client("polly")
-        logger.info("✅ AWS Polly initialized")
+            polly_client = aws_session.client("polly")
+            logger.info("✅ AWS Polly initialized")
+            return polly_client
 
-except Exception as e:
-    logger.warning(f"❌ AWS services not initialized: {e}")
-    polly_client = None
+    except Exception as e:
+        logger.warning(f"❌ AWS services not initialized: {e}")
+        return None
+
 
 # Tour scripts for multiple pages with complete tour experience
 TOUR_SCRIPTS = {
@@ -1107,6 +1113,7 @@ def text_to_speech_polly(text, filename):
     """Convert text to speech using AWS Polly - only if audio doesn't exist"""
     try:
         logger.info(f"🎵 Checking audio for: {filename}")
+        polly_client = get_polly_instance()
 
         if not polly_client:
             logger.error("❌ Polly client not available")
@@ -1458,6 +1465,7 @@ def cleanup_old_audio_files(current_audio_keys):
 def get_tour_status():
     """Get tour system status"""
     try:
+        polly_client = get_polly_instance()
         # Check Polly
         polly_available = polly_client is not None
 
@@ -2233,6 +2241,7 @@ def update_user_faq_list(user_id, qa_entry):
 @onboarding_bps.route("/qa/voice-conversation", methods=["POST", "OPTIONS"])
 def qa_voice_conversation():
     """Handle Q&A voice conversation - simple voice-only version"""
+    polly_client = get_polly_instance()
     # Handle CORS preflight request
     if request.method == "OPTIONS":
         response = jsonify({"status": "ok"})

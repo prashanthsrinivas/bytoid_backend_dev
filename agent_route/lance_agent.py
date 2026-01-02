@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import uuid
@@ -21,6 +22,9 @@ from langchain.prompts import ChatPromptTemplate
 from utils.fireworkzz import get_firework_embedding, get_fireworks_response
 from db.lance_db_service import LanceDBServer
 from utils.normal import load_yaml_file
+from credits_route.route import Credits
+from request_context import current_user_id
+
 
 # ────────────────────────
 # Setup Logging
@@ -67,8 +71,8 @@ class LanceClient:
         # # )
 
         # 🔹 Embeddings (you can keep this or replace with nomic-embed-text-v1)
-        self.embeddings = get_firework_embedding()
-
+        self.embeddings = None
+        # asyncio.create_task(self._load_embeddings())
         # 🔹 Use Fireworks Llama 3.1 405B Instruct instead of GPT-4
         self.llm = ChatFireworks(
             model=os.getenv("FIREWORKS_MODEL_EVAL"),
@@ -100,6 +104,13 @@ class LanceClient:
 
         # 🔹 Combine the template with the LLM
         self.relevance_chain = self.prompt_template | self.llm
+
+    async def _load_embeddings(self):
+        self.embeddings = await get_firework_embedding()
+
+    async def _ensure_embeddings(self):
+        if self.embeddings is None:
+            await self._load_embeddings()
 
     def langchainprocessDocs(self, file_path: str):
         all_documents = []
@@ -204,16 +215,24 @@ class LanceClient:
         return docs
 
     async def process_document(self, file_path: str, filename: str):
+        await self._ensure_embeddings()
         documents = self.langchainprocessDocs(file_path)
         vector_batch = []
+
+        total_input_chars = 0
+        total_output_chars = 0
 
         for doc in documents:
             text = doc.page_content.strip()
             if not text:
                 continue
 
+            total_input_chars += len(text)
+
             try:
                 vector = self.embeddings.embed_query(text)
+                total_output_chars += 4096
+
                 vector_data = VectorData(
                     user_id=self.user_id,
                     id=str(uuid.uuid4()),
@@ -227,6 +246,19 @@ class LanceClient:
 
         if vector_batch:
             await self.send_batch_to_lancedb(vector_batch)
+
+        # --------- calculate credits -------------------
+
+        total_chars = total_input_chars + total_output_chars
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            credit_type="embedding",
+            total_chars=total_chars,
+            user_id = self.user_id
+        )
+
+        # ----------------------------------------------
 
         return {
             "vectors_made": len(vector_batch),
@@ -247,7 +279,10 @@ class LanceClient:
     # ------------------------------------------
     async def query_vector(self, query_input: QueryInput, vector=None):
         try:
+            await self._ensure_embeddings()
+
             if not vector:
+
                 vector = self.embeddings.embed_query(query_input.query_text)
             payload = QueryData(
                 user_id=query_input.user_id,
@@ -257,6 +292,24 @@ class LanceClient:
 
             results = await self.service.query_vector(payload.dict())
             logger.info(f"[🔍] Retrieved doc {len(results)} results.")
+
+            # --------- calculate credits -------------------
+
+            total_input_chars = len(query_input.query_text)
+            # total_output_chars = 0
+            # total_output_chars += sum(len(vec) for vec in vector)
+            total_output_chars = len(vector)
+
+            total_chars = total_input_chars + total_output_chars
+
+            credits = Credits()
+            await credits.update_ai_credits_redis(
+                credit_type="embedding",
+                total_chars=total_chars,
+                user_id = self.user_id
+            )
+
+            # ------------------------------------------------
 
             return results
 
@@ -271,6 +324,7 @@ class LanceClient:
         sender_email=None,
     ):
         try:
+            await self._ensure_embeddings()
             if not vector:
                 vector = self.embeddings.embed_query(query_input.query_text)
 
@@ -282,6 +336,23 @@ class LanceClient:
 
             results = await self.service.rec_query_vector(payload.dict())
             logger.info(f"[🔍] Retrieved audio {len(results)} results.")
+
+            # --------- calculate credits -------------------
+
+            total_input_chars = len(query_input.query_text)
+            # total_output_chars += sum(len(vec) for vec in vector)
+            total_output_chars = len(vector)
+
+            total_chars = total_input_chars + total_output_chars
+
+            user_id = query_input.user_id
+            credits = Credits()
+            await credits.update_ai_credits_redis(
+                credit_type="embedding",
+                total_chars=total_chars,
+                user_id = self.user_id
+            )
+            # ------------------------------------------------
 
             need_to_return = []
 
@@ -297,14 +368,24 @@ class LanceClient:
                         continue
 
                     contacts = r.get("contacts", [])
+                    if "text" in r:
+                        br["text"] = r["text"]
+
+                    if "All" in contacts:
+                        need_to_return.append(br)
+                    elif isinstance(sender_email, list):
+                        if any(email in contacts for email in sender_email):
+                            need_to_return.append(br)
+                    elif sender_email and sender_email in contacts:
+                        need_to_return.append(br)
 
                     # print("contacts appended", contacts)
-                    if (sender_email and sender_email in contacts) or "All" in contacts:
-                        # print("appended here")
-                        if "text" in r:
-                            br["text"] = r["text"]
+                    # if (sender_email and sender_email in contacts) or "All" in contacts:
+                    #     # print("appended here")
+                    #     if "text" in r:
+                    #         br["text"] = r["text"]
 
-                        need_to_return.append(br)
+                    #     need_to_return.append(br)
 
             return need_to_return
 
@@ -312,13 +393,14 @@ class LanceClient:
             logger.error(f"[!] Query failed: {str(e)}")
             raise
 
-    def scrape_query_vector(
+    async def scrape_query_vector(
         self,
         query_input: QueryInput,
         vector=None,
         sender_email=None,
     ):
         try:
+            await self._ensure_embeddings()
             if not vector:
                 vector = self.embeddings.embed_query(query_input.query_text)
 
@@ -331,7 +413,24 @@ class LanceClient:
             result = self.service.search_scraped_data(
                 payload.dict(), sender_email=sender_email
             )
-            # logger.info(f"[🔍] Retrieved scrape {len(result)} results.")
+            logger.info(f"[🔍] Retrieved scrape {len(result)} results.")
+
+            # --------- calculate credits -------------------
+
+            total_input_chars = len(query_input.query_text)
+            # total_output_chars += sum(len(vec) for vec in vector)
+            total_output_chars = len(vector)
+
+            total_chars = total_input_chars + total_output_chars
+
+            credits = Credits()
+            await credits.update_ai_credits_redis(
+                credit_type="embedding",
+                total_chars=total_chars,
+                user_id=self.user_id
+            )
+            # -------------------------------------------------
+
             return result
 
         except Exception as e:
@@ -347,17 +446,39 @@ class LanceClient:
             return results.get("text", "")
         return str(results)
 
-    async def mixed_query_vector(self, query_input, sender_email=None):
+    async def mixed_query_vector(
+        self, query_input, sender_email=None, vector=None, wfchecker=None
+    ):
         try:
-            print("started mixed query")
+            user_id = query_input.user_id or self.user_id
 
-            vector = self.embeddings.embed_query(query_input.query_text)
+            print("started mixed query")
+            if not vector:
+                await self._ensure_embeddings()
+                vector = self.embeddings.embed_query(query_input.query_text)
+
+            # --------- calculate credits -------------------
+            total_input_chars = len(query_input.query_text)
+            # total_output_chars = 0
+            # total_output_chars += sum(len(vec) for vec in vector)
+            total_output_chars = len(vector)
+
+            total_chars = total_input_chars + total_output_chars
+
+            credits = Credits()
+            await credits.update_ai_credits_redis(
+                    credit_type="embedding",
+                    total_chars=total_chars,
+                    user_id=user_id
+                )
+           
+            # ----------------------------------------------
 
             docs_results = await self.query_vector(query_input, vector=vector)
             aud_results = await self.audio_query_vector(
                 sender_email=sender_email, query_input=query_input, vector=vector
             )
-            scrape_results = self.scrape_query_vector(
+            scrape_results = await self.scrape_query_vector(
                 sender_email=sender_email, query_input=query_input, vector=vector
             )
 
@@ -367,7 +488,10 @@ class LanceClient:
             website_data = self.extract_text(scrape_results)
 
             prompts = load_yaml_file(path=pathconfig.agent_template)
-            base_prompt = prompts.get("multi_source_information_analyzer")
+            if wfchecker:
+                base_prompt = prompts.get("multi_source_workflow_context_analyzer")
+            else:
+                base_prompt = prompts.get("multi_source_information_analyzer")
 
             full_prompt = base_prompt.format(
                 users_query=query_input.query_text,
@@ -376,7 +500,9 @@ class LanceClient:
                 website_data=website_data,
             )
 
-            ai_response = get_fireworks_response(full_prompt,role="system")
+            ai_response = await get_fireworks_response(
+                full_prompt, role="system", user_id=user_id
+            )
 
             if ai_response:
                 print("the ai extracted information", len(ai_response))

@@ -4,6 +4,8 @@ import re
 import yaml
 from agent_route.doc_clarity import fetch_ques_with_docs
 from agent_route.routes import getFilenameData
+from services.meet_service import GoogleMeetService
+from services.microsoft_calender_service import MicrosoftGraphCalendarService
 from utils.async_check import run_async
 from utils.fireworkzz import (
     evaluator_context_llama,
@@ -27,6 +29,7 @@ from db.db_checkers import (
     get_subagent_by_userid,
 )
 from cust_helpers import pathconfig
+from request_context import current_user_id
 
 
 def clean_yaml_block(text: str) -> str:
@@ -69,7 +72,7 @@ def extract_questions(text):
     return questions
 
 
-def check_doc_context_needed(instruction_input, templatedata):
+async def check_doc_context_needed(instruction_input, templatedata, userid):
     template = templatedata.get("checklanceneeded")
 
     if not template or not isinstance(template, str):
@@ -89,7 +92,9 @@ def check_doc_context_needed(instruction_input, templatedata):
         raise ValueError(f"Template expects missing key: {e}")
 
     # response = get_fireworks_response(full_prompt, role="system")
-    response = get_fireworks_response2(full_prompt, role="system", temp=0.4)
+    response = await get_fireworks_response2(
+        full_prompt, role="system", temp=0.4, user_id=userid
+    )
 
     # print("len of respinse", len(response), response)
     try:
@@ -107,10 +112,10 @@ def check_doc_context_needed(instruction_input, templatedata):
     return extract_questions(response)
 
 
-def evallogic(templatedata, batch):
+async def evallogic(templatedata, batch, userid):
     valid_responses = []
-    res_raw = evaluator_context_llama(
-        templatedata.get("context_workflow_validator_batch"), batch
+    res_raw = await evaluator_context_llama(
+        templatedata.get("context_workflow_validator_batch"), batch, userid=userid
     )
     # Extract the JSON array block using regex
     if isinstance(res_raw, str):
@@ -148,9 +153,9 @@ def evallogic(templatedata, batch):
     return valid_responses
 
 
-def triggeraicontextfinder(instruction_input, userid, templatedata, contacts):
+async def triggeraicontextfinder(instruction_input, userid, templatedata, contacts):
     normalized = normalize_input(instruction_input)
-    ques = check_doc_context_needed(normalized, templatedata)
+    ques = await check_doc_context_needed(normalized, templatedata, userid=userid)
     print("len of the questions made", len(ques), ques)
     if len(ques) > 0:
         # filenames = getFilenameData(userid)
@@ -164,7 +169,9 @@ def triggeraicontextfinder(instruction_input, userid, templatedata, contacts):
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = [
-                executor.submit(evallogic, templatedata, content[i : i + batch_size])
+                executor.submit(
+                    evallogic, templatedata, content[i : i + batch_size], userid=userid
+                )
                 for i in range(0, len(content), batch_size)
             ]
 
@@ -242,6 +249,7 @@ def returninsructdata(data):
         "services_section": "",  # to be updated
         "additional_data": data.get("additional_data", ""),
         "main_user_account_type": "",
+        "user_timezone": "UTc",
         "todays_date": datetime.now().strftime(
             "%A, %d %B %Y"
         ),  # e.g., Monday, 21 October 2025
@@ -292,7 +300,7 @@ def cheap_internal_data_hint(instruction_input):
     return bool(INTERNAL_DATA_PATTERN.search(text))
 
 
-def needs_internal_data(instruction_input, template_data):
+async def needs_internal_data(instruction_input, template_data, user_id):
     """
     Determine whether the instruction requires internal data.
     Step 1: cheap regex check
@@ -307,7 +315,9 @@ def needs_internal_data(instruction_input, template_data):
     main_fnprompt = fn_temp_prompt.format(
         instruction_input_as_json=json.dumps(instruction_input, separators=(",", ":")),
     )
-    functions_res = get_fireworks_response2(main_fnprompt, role="system", temp=0)
+    functions_res = await get_fireworks_response2(
+        main_fnprompt, role="system", temp=0, user_id=user_id
+    )
 
     # Clean response
     cleaned = functions_res.strip()
@@ -322,10 +332,12 @@ def needs_internal_data(instruction_input, template_data):
             "reason": f"Invalid JSON returned by functions_checker: {str(e)}",
         }
 
-    return validated.get("needs_internal_data", False)
+    return validated.get("needs_internal_data", False, user_id=user_id)
 
 
-def minimize_functions(instruction_input, template_data, functions_ds, actual_social):
+async def minimize_functions(
+    instruction_input, template_data, functions_ds, actual_social, userid
+):
     # functions_datas = read_function_jsons2(Full=True)
     # print("the functions data", len(functions_datas))
 
@@ -336,7 +348,9 @@ def minimize_functions(instruction_input, template_data, functions_ds, actual_so
         all_function_details=json.dumps(functions_ds, separators=(",", ":")),
     )
 
-    functions_res = get_fireworks_response2(main_fnprompt, role="system", temp=0)
+    functions_res = await get_fireworks_response2(
+        main_fnprompt, role="system", temp=0, user_id=userid
+    )
 
     # ----------------------------
     # Clean LLM output
@@ -361,7 +375,7 @@ def minimize_functions(instruction_input, template_data, functions_ds, actual_so
 
     # ----------------------------
     required = validated.get("required_functions", [])
-    print("the required values", required)
+    # print("the required values", required)
     checker_dict = {
         "is_googlecalender": False,
         "is_microsoftcalender": False,
@@ -395,71 +409,6 @@ def minimize_functions(instruction_input, template_data, functions_ds, actual_so
         return functions_ds, None
 
 
-# def create_playbook(data, nfilename=None):
-#     """
-#     Creates a workflow JSON by sending a formatted prompt to the AI safely.
-#     """
-#     userid = data["user_id"]
-#     instruction_input = returninsructdata(data)
-
-#     # # Build context section
-#     template_data = load_yaml_file(path=pathconfig.play_template)
-#     ques = triggeraicontextfinder(instruction_input, userid, template_data)
-#     if ques:
-#         context_items = [
-#             f"- {item.get('Ai Response','').strip()}"
-#             for item in ques
-#             if item.get("Ai Response")
-#         ]
-#         instruction_input["context_section"] = yaml.dump(
-#             context_items, default_flow_style=False
-#         )
-#     else:
-#         instruction_input["context_section"] = "[]"
-#     functions_datas=minimize_functions(
-#         instruction_input=instruction_input, template_data=template_data
-#     )
-#     # Attach dynamic services section
-#     instruction_input["services_section"] = json.dumps(functions_datas, separators=(",", ":"))
-
-#     # Load template
-#     template = template_data.get("create_instruction")
-#     if not template:
-#         raise ValueError("Missing 'create_instruction' template in YAML file.")
-#     full_prompt = template.format(**instruction_input)
-
-#     raw_response = get_evaluator_fireworks(full_prompt, role="system")
-#     # print("raw response", raw_response)
-#     # Clean AI response
-#     cleaned_j = clean_json_block(raw_response)
-#     try:
-#         response_dict = json.loads(cleaned_j)
-#     except json.JSONDecodeError as e:
-#         raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
-
-#     # Save workflow JSON
-#     filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
-#     ensure_dir(f"{pathconfig.basepath}/test/")
-#     filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
-#     # print(response_dict)
-#     full_output = {
-#         "filename": filename,
-#         "input_data": data,  # original data from frontend
-#         "workflow": response_dict,  # AI-generated YAML parsed into dict
-#         "clarifications_generated": False,
-#         "WorkflowDate": datetime.now().isoformat(),
-#     }
-#     delete_file_from_s3(filepath=f"{userid}/workflow/{filename}")
-#     with open(filepath, "w", encoding="utf-8") as f:
-#         json.dump(full_output, f, separators=(",", ":"))
-#     res = upload_any_file(
-#         file_path=filepath, user_id=userid, file_name=filename, type="workflow"
-#     )
-#     os.remove(filepath)
-
-#     return full_output, res["s3_key"]
-
-
 import re
 
 
@@ -488,104 +437,131 @@ def replace_section(
     )
 
 
-def create_playbook(data, template_data, minor_data, functions_ds, nfilename=None):
+async def create_playbook(
+    data, template_data, minor_data, functions_ds, nfilename=None
+):
     userid = data["user_id"]
     actual_social = fetch_user_Social(user_id=userid)
 
-    instruction_input = returninsructdata(data)
-
-    if needs_internal_data(
-        template_data=template_data, instruction_input=instruction_input
-    ):
-        ques = triggeraicontextfinder(
-            instruction_input,
-            userid,
-            template_data,
-            contacts=instruction_input["selected_contacts"],
+    # token = current_user_id.set(userid)
+    try:
+        instruction_input = returninsructdata(data)
+        result = await needs_internal_data(
+            template_data=template_data, instruction_input=instruction_input
         )
-        if ques:
-            context_items = [
-                f"- {item.get('Ai Response','').strip()}"
-                for item in ques
-                if item.get("Ai Response")
-            ]
-            instruction_input["context_section"] = yaml.dump(
-                context_items, default_flow_style=False
+        print("result -->", result)
+
+        if result:
+            ques = await triggeraicontextfinder(
+                instruction_input,
+                userid,
+                template_data,
+                contacts=instruction_input["selected_contacts"],
             )
-        else:
-            instruction_input["context_section"] = "[]"
-    functions_datas, checker_dict = minimize_functions(
-        instruction_input=instruction_input,
-        template_data=template_data,
-        functions_ds=functions_ds,
-        actual_social=actual_social,
-    )
-    if not functions_datas:
-        return (
-            jsonify(
-                {"message": "cant able to generate the workflow as per requirements"}
-            ),
-            400,
+            if ques:
+                context_items = [
+                    f"- {item.get('Ai Response','').strip()}"
+                    for item in ques
+                    if item.get("Ai Response")
+                ]
+                instruction_input["context_section"] = yaml.dump(
+                    context_items, default_flow_style=False
+                )
+            else:
+                instruction_input["context_section"] = "[]"
+        functions_datas, checker_dict = await minimize_functions(
+            instruction_input=instruction_input,
+            template_data=template_data,
+            functions_ds=functions_ds,
+            actual_social=actual_social,
+            userid=userid,
         )
+        if not functions_datas:
+            print("NO functions present")
+            return (
+                jsonify(
+                    {
+                        "message": "cant able to generate the workflow as per requirements"
+                    }
+                ),
+                400,
+            )
 
-    # Attach dynamic services section
-    instruction_input["services_section"] = json.dumps(
-        functions_datas, separators=(",", ":")
-    )
-    template = template_data.get("create_instruction")
-    if not template:
-        raise ValueError("Missing 'create_instruction' template in YAML file.")
-    instruction_input["main_user_account_type"] = actual_social
-    base_prompt = template.format(**instruction_input)
-
-    full_prompt = base_prompt
-    # print("checkerdict", checker_dict)
-    if checker_dict:
-        meeting_rules = []
-
-        if checker_dict.get("is_googlecalender"):
-            rule = minor_data.get("google_meet_rules")
-            if rule:
-                meeting_rules.append(rule.strip())
-
-        if checker_dict.get("is_microsoftcalender"):
-            rule = minor_data.get("microsoft_meet_rules")
-            if rule:
-                meeting_rules.append(rule.strip())
-
-        replacement_text = "\n\n".join(meeting_rules) if meeting_rules else None
-        full_prompt = replace_section(
-            prompt=base_prompt,
-            section_title="MEETING FUNCTION LINKING RULES",
-            replacement=replacement_text,
+        # Attach dynamic services section
+        instruction_input["services_section"] = json.dumps(
+            functions_datas, separators=(",", ":")
         )
+        template = template_data.get("create_instruction")
+        if not template:
+            raise ValueError("Missing 'create_instruction' template in YAML file.")
+        instruction_input["main_user_account_type"] = actual_social
+        base_prompt = template.format(**instruction_input)
 
-    raw_response = get_fireworks_response2(full_prompt, role="system")
-    # print("raw response", raw_response)
-    # Clean AI response
-    cleaned_j = clean_json_block(raw_response)
-    try:
-        response_dict1 = json.loads(cleaned_j)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
-    # print("data from initial", response_dict1)
-    eval_pr = template_data.get("evaluate_workflow_execution_validity")
-    base_Eval_prompt = eval_pr.format(
-        instruction_input=json.dumps(instruction_input, separators=(",", ":")),
-        workflow_json=json.dumps(response_dict1, separators=(",", ":")),
-        functions_data=json.dumps(functions_datas, separators=(",", ":")),
-    )
-    raw_response = get_evaluator_fireworks(base_Eval_prompt, role="system")
-    # print("raw response", len(raw_response))
-    # Clean AI response
-    cleaned_j = clean_json_block(raw_response)
-    try:
-        response_dict = json.loads(cleaned_j)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
-    filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
-    ensure_dir(f"{pathconfig.basepath}/test/")
-    filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
+        full_prompt = base_prompt
+        # print("checkerdict", checker_dict)
+        if checker_dict:
+            meeting_rules = []
+
+            if checker_dict.get("is_googlecalender"):
+                rule = minor_data.get("google_meet_rules")
+                if rule:
+                    ser = GoogleMeetService(userid=userid)
+                    timez = ser.get_user_timezone()
+                    instruction_input["user_timezone"] = timez or "UTC"
+                    meeting_rules.append(rule.strip())
+
+            if checker_dict.get("is_microsoftcalender"):
+                rule = minor_data.get("microsoft_meet_rules")
+                if rule:
+                    ser = MicrosoftGraphCalendarService(userid=userid)
+                    timez = ser.get_user_timezone()
+                    instruction_input["user_timezone"] = timez or "UTC"
+                    meeting_rules.append(rule.strip())
+
+            base_prompt = template.format(**instruction_input)
+
+            replacement_text = "\n\n".join(meeting_rules) if meeting_rules else None
+            full_prompt = replace_section(
+                prompt=base_prompt,
+                section_title="MEETING FUNCTION LINKING RULES",
+                replacement=replacement_text,
+            )
+
+        raw_response = await get_fireworks_response2(
+            full_prompt, role="system", user_id=userid
+        )
+        # print("raw response", raw_response)
+        # Clean AI response
+        cleaned_j = clean_json_block(raw_response)
+        try:
+            response_dict1 = json.loads(cleaned_j)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
+        print("data from initial", response_dict1)
+        eval_pr = template_data.get("evaluate_workflow_execution_validity")
+        base_Eval_prompt = eval_pr.format(
+            instruction_input=json.dumps(instruction_input, separators=(",", ":")),
+            workflow_json=json.dumps(response_dict1, separators=(",", ":")),
+            functions_data=json.dumps(functions_datas, separators=(",", ":")),
+        )
+        raw_response = await get_evaluator_fireworks(
+            base_Eval_prompt, role="system", user_id=userid
+        )
+        print("raw response", len(raw_response))
+        # Clean AI response
+        cleaned_j = clean_json_block(raw_response)
+        try:
+            response_dict = json.loads(cleaned_j)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
+        filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
+        ensure_dir(f"{pathconfig.basepath}/test/")
+        filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
+
+    finally:
+        #   current_user_id.reset(token)
+        print("ss")
+
     full_output = {
         "filename": filename,
         "input_data": data,  # original data from frontend
@@ -731,34 +707,6 @@ def extract_json_from_llm_output(text):
     if text.startswith("```") and text.endswith("```"):
         return text[3:-3].strip()  # remove generic ```
     return text
-
-
-def answer_clarification_question_validate(prompt_template, question, answer):
-    try:
-        # Format the prompt with the question and answer
-        prompt_input = prompt_template.format(
-            question=question.strip(), answer=answer.strip()
-        )
-
-        # Get LLM response
-        # llm_output = get_fireworks_response(prompt_input, role="system")
-        llm_output = get_fireworks_response2(prompt_input, role="system", temp=0.3)
-
-        # Clean and parse JSON
-        cleaned = llm_output.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned.replace("```json", "").replace("```", "").strip()
-
-        validated = json.loads(cleaned)
-
-        # Ensure required keys exist
-        if not isinstance(validated, dict) or "status" not in validated:
-            return {"status": "no", "message": "Invalid response format from LLM."}
-
-        return validated
-
-    except Exception as e:
-        return {"status": "no", "message": f"Failed to parse LLM output: {e}"}
 
 
 def generate_meeting_email_body(details: dict, field_data: dict) -> str:

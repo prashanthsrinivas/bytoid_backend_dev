@@ -3,17 +3,15 @@ import uuid
 from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
-    fetch_contacts_by_user,
     get_subagent_by_userid,
     save_or_update_workflow_schedule,
 )
-from db.rds_db import connect_to_rds, get_cursor
+from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, Response, stream_with_context
-import json, queue, time, uuid
+import json, uuid
 from cust_helpers import pathconfig
 from services.scheduler_service import SchedulerService
 from services.workflow_service import WorkflowRunnerV2
-from services.meet_service import GoogleMeetService
 from utils.fireworkzz import get_fireworks_response2
 from .helperzz import *
 from utils.pb_config_utils import *
@@ -46,9 +44,8 @@ def create_new_instruction():
             playb_id, subagent_id, config_s3_path
         )
 
-    # ---- Worker function (thread-safe) ----
-    def _create_and_update():
-        full_output, npath = create_playbook(
+    async def _create_and_update():
+        full_output, npath = await create_playbook(
             data=data,
             template_data=PLAY_TEMPLATE,
             minor_data=MINOR_PROMPTS,
@@ -67,11 +64,13 @@ def create_new_instruction():
 
         return full_output
 
-    # ---- Execute in thread pool ----
-    future = executor.submit(_create_and_update)
+    def run_in_thread():
+        return asyncio.run(_create_and_update())
+
+    future = executor.submit(run_in_thread)
 
     try:
-        full_output = future.result(timeout=60)  # adjust timeout if needed
+        full_output = future.result(timeout=60)
     except Exception as e:
         return (
             jsonify(
@@ -92,12 +91,13 @@ def updateInstruction():
     data = request.json
     userid = data["user_id"]
     filename = data["filename"]
-    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
 
-    # full_output, npath = create_playbook(data, filename)
-    # ---- Worker function (thread-safe) ----
-    def _create_and_update():
-        full_output, npath = create_playbook(
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    async def _create_and_update():
+        full_output, npath = await create_playbook(
             data=data,
             template_data=PLAY_TEMPLATE,
             minor_data=MINOR_PROMPTS,
@@ -117,17 +117,19 @@ def updateInstruction():
 
         return full_output
 
-    # ---- Execute in thread pool ----
-    future = executor.submit(_create_and_update)
+    def run_in_thread():
+        return asyncio.run(_create_and_update())
+
+    future = executor.submit(run_in_thread)
 
     try:
-        full_output = future.result(timeout=60)  # adjust timeout if needed
+        full_output = future.result(timeout=60)
     except Exception as e:
         return (
             jsonify(
                 {
                     "status": "error",
-                    "message": "Failed to create instruction",
+                    "message": "Failed to update instruction",
                     "error": str(e),
                 }
             ),
@@ -169,7 +171,8 @@ def get_single_instruction():
 
     if not user_id or not filename:
         return jsonify({"error": "user_id and filename are required"}), 400
-
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
     s3_key = f"{user_id}/workflow/{filename}"
 
     try:
@@ -191,6 +194,8 @@ def delete_instruction():
         return jsonify({"error": "user_id and filename are required"}), 400
     if not user_id:
         return jsonify({"error": "userid is required"}), 400
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
     subagent_id = get_subagent_by_userid(user_id)
     if not subagent_id:
         return jsonify({"error": "no agent found"}), 400
@@ -220,7 +225,8 @@ def add_a_step():
 
     if not step_data or not user_id:
         return jsonify({"status": "error", "message": "Missing step or user_id"}), 400
-
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
     playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
     workflow = playbook.setdefault("workflow", {})
     steps = workflow.setdefault("steps", [])
@@ -283,6 +289,8 @@ def edit_a_step():
             jsonify({"status": "error", "message": "Missing step id or user_id"}),
             400,
         )
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
     # print(body)
     step_data = format_step_data(step_data)
 
@@ -324,7 +332,8 @@ def update_step_arguments():
                 ),
                 400,
             )
-
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
         # -----------------------------------------------------------
         # 1) Load playbook from S3
         # -----------------------------------------------------------
@@ -475,7 +484,8 @@ def delete_step_argument():
             ),
             400,
         )
-
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
     # Load playbook
     playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
     steps = playbook.get("workflow", {}).get("steps", [])
@@ -549,6 +559,8 @@ def delete_a_step():
             ),
             400,
         )
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
 
     playbook = read_json_from_s3(f"{user_id}/workflow/{filename}")
     steps = playbook.get("workflow", {}).get("steps", [])
@@ -579,7 +591,7 @@ def delete_a_step():
 
 
 @playbook_bp.route("/modify_instruction", methods=["POST"])
-def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None):
+async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None):
     try:
         # -----------------------------
         # 1. INPUT HANDLING
@@ -623,6 +635,8 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
                 ),
                 400,
             )
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
 
         # -----------------------------
         # 2. LOAD PROMPTS
@@ -732,7 +746,18 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
         # -----------------------------
         # 7. CALL MODIFY LLM
         # -----------------------------
-        llm_response = get_fireworks_response2(full_prompt, role="system", temp=0.5)
+
+        # token = current_user_id.set(user_id)
+        # try:
+        #     llm_response = await get_fireworks_response2(
+        #         full_prompt, role="system", temp=0.5
+        #     )
+        # finally:
+        #     current_user_id.reset(token)
+        llm_response = await get_fireworks_response2(
+            full_prompt, role="system", temp=0.5, user_id=user_id
+        )
+
         cleaned_response = extract_json_from_llm_output(llm_response)
         modified_json = json.loads(cleaned_response)
 
@@ -783,7 +808,7 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
 
         # # print("evaluator prompt", evaluator_prompt)
 
-        # eval_response = get_evaluator_fireworks(evaluator_prompt, role="system")
+        # eval_response = get_evaluator_fireworks(evaluator_prompt, role="system",user_id=user_id)
 
         # # print("🔎 Evaluator RAW response:", repr(eval_response))
 
@@ -850,359 +875,15 @@ def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None)
         )
 
 
-@playbook_bp.route("/workflow-clarifications", methods=["POST"])
-def generate_clarification_questions():
-    try:
-        body = request.json
-        user_id = body.get("user_id")
-        filename = body.get("filename")
-
-        if not user_id or not filename:
-            return (
-                jsonify({"status": "error", "message": "Missing user_id or filename"}),
-                400,
-            )
-
-        # ⛓ Get config path
-        result = returnconfigandpath(user_id)
-        if isinstance(result, tuple) and len(result) == 3:
-            _, config_path, _ = result
-        else:
-            return result  # Early return if returnconfigandpath() returned an error response
-
-        # Load prompt + workflow JSON
-        yaml_data = PLAY_TEMPLATE
-        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
-
-        if workflow_json and workflow_json.get("clarification_questions"):
-            return (
-                jsonify(
-                    {
-                        "status": "success",
-                        "message": "clarifications already made",
-                        "data": workflow_json,
-                    }
-                ),
-                200,
-            )
-
-        update_prompt_template = yaml_data.get(
-            "generate_workflow_clarification_questions"
-        )
-        if not update_prompt_template:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Prompt 'generate_workflow_clarification_questions' not found",
-                    }
-                ),
-                500,
-            )
-
-        workflow_json_str = json.dumps(workflow_json, indent=2)
-        full_prompt = update_prompt_template.replace(
-            "{workflow_json}", workflow_json_str
-        )
-
-        # 🔥 Get LLM output
-        # llm_output = get_fireworks_response(full_prompt, role="system")
-        llm_output = get_fireworks_response2(full_prompt, role="system", temp=0.6)
-
-        # 🧼 Extract valid JSON block (remove any ```json or ```yaml markdown)
-        json_match = re.search(r"```(?:json)?\n([\s\S]+?)```", llm_output)
-        if json_match:
-            cleaned_output = json_match.group(1).strip()
-        else:
-            cleaned_output = llm_output.strip()
-
-        # ✅ Parse JSON
-        try:
-            parsed_json = json.loads(cleaned_output)
-        except json.JSONDecodeError as je:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": f"Failed to parse JSON: {str(je)}",
-                        "raw_output": cleaned_output,
-                    }
-                ),
-                500,
-            )
-
-        if (
-            not isinstance(parsed_json, dict)
-            or "clarification_questions" not in parsed_json
-        ):
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "LLM output missing 'clarification_questions'",
-                        "raw_output": cleaned_output,
-                    }
-                ),
-                500,
-            )
-
-        # ✅ Store questions
-        questions = parsed_json["clarification_questions"]
-        workflow_json["clarifications_generated"] = True
-        workflow_json["clarification_questions"] = questions
-
-        # 🔄 Update clarification count in config
-        update_playbook_clarifications(
-            configpath=config_path,
-            user_id=user_id,
-            name=filename,
-            clarifications_required=len(questions),
-        )
-
-        # 💾 Save updated workflow
-        return save_playbook_to_s3(
-            workflow_json, user_id, "clarifications added", filename
-        )
-        # clarifications=True,
-
-    except Exception as e:
-        # print("⚠️ Error while generating workflow clarifications:", str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@playbook_bp.route("/workflow-clarifications/remove-question", methods=["POST"])
-def remove_clarification_question():
-    try:
-        body = request.json
-        user_id = body.get("user_id")
-        filename = body.get("filename")
-        quote = body.get("quote")  # Step title
-        target_question = body.get("question")  # Exact question string to remove
-
-        if not all([user_id, filename, quote, target_question]):
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Missing one or more required fields: user_id, filename, quote, question",
-                    }
-                ),
-                400,
-            )
-
-        # 🔍 Load the workflow
-        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
-        if not workflow_json:
-            return (
-                jsonify({"status": "error", "message": "Workflow file not found"}),
-                404,
-            )
-
-        clarification_data = workflow_json.get("clarification_questions", [])
-        updated_clarifications = []
-
-        quote_found = False
-        question_found = False
-
-        # 🔄 Process each quote entry
-        for entry in clarification_data:
-            if entry.get("quote") == quote:
-                quote_found = True
-                updated_questions = [
-                    q
-                    for q in entry.get("questions", [])
-                    if q.get("question") != target_question
-                ]
-
-                if len(updated_questions) < len(entry.get("questions", [])):
-                    question_found = True
-
-                if updated_questions:
-                    updated_clarifications.append(
-                        {"quote": quote, "questions": updated_questions}
-                    )
-                # else: this quote is removed entirely (0 questions left)
-            else:
-                updated_clarifications.append(entry)
-
-        if not quote_found:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": f"Quote '{quote}' not found in clarification questions",
-                    }
-                ),
-                404,
-            )
-
-        if not question_found:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": f"Question not found under quote '{quote}'",
-                    }
-                ),
-                404,
-            )
-
-        # 💾 Save updated clarifications
-        workflow_json["clarification_questions"] = updated_clarifications
-
-        return save_playbook_to_s3(
-            workflow_json,
-            user_id,
-            "clarification question removed",
-            filename,
-            clarifications=True,
-        )
-
-    except Exception as e:
-        # print("⚠️ Error while removing clarification question:", str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@playbook_bp.route("/workflow-clarifications-answer", methods=["POST"])
-def answer_clarification_question():
-    try:
-        body = request.json
-        user_id = body.get("user_id")
-        filename = body.get("filename")
-        quote = body.get("quote")
-        question_text = body.get("question")
-        answer_text = body.get("answer")
-
-        # Validate input
-        if not all([user_id, filename, quote, question_text, answer_text]):
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Missing one or more required fields",
-                    }
-                ),
-                400,
-            )
-
-        # Load paths
-        result = returnconfigandpath(user_id)
-        if not isinstance(result, tuple) or len(result) != 3:
-            return result  # Error returned from helper
-
-        _, config_path, _ = result
-
-        # Load validation prompt
-        promptfile = PLAY_TEMPLATE
-        validation_prompt = promptfile.get("evaluate_clarification_answer")
-
-        if not validation_prompt:
-            return (
-                jsonify({"status": "error", "message": "Prompt template not found"}),
-                500,
-            )
-
-        # Validate with LLM
-        validated = answer_clarification_question_validate(
-            validation_prompt, question_text, answer_text
-        )
-
-        if validated.get("status") != "yes":
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": validated.get(
-                            "message", "Answer not valid for this question."
-                        ),
-                    }
-                ),
-                400,
-            )
-
-        corrected_answer = validated.get("corrected_answer", answer_text)
-
-        # Load workflow
-        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
-        clarifications = workflow_json.get("clarification_questions", [])
-        clarification_answers = workflow_json.get("clarification_answers", [])
-
-        found = False
-        updated_clarifications = []
-
-        for entry in clarifications:
-            if entry.get("quote") == quote:
-                remaining_questions = []
-                for q in entry.get("questions", []):
-                    if q.get("question") == question_text:
-                        clarification_answers.append(
-                            {
-                                "quote": quote,
-                                "question": question_text,
-                                "answer": corrected_answer,
-                            }
-                        )
-                        found = True
-                    else:
-                        remaining_questions.append(q)
-
-                if remaining_questions:
-                    updated_clarifications.append(
-                        {"quote": quote, "questions": remaining_questions}
-                    )
-            else:
-                updated_clarifications.append(entry)
-
-        if not found:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Matching quote/question not found in clarification_questions.",
-                    }
-                ),
-                404,
-            )
-
-        # Update workflow with answers
-        workflow_json["clarification_questions"] = updated_clarifications
-        workflow_json["clarification_answers"] = clarification_answers
-
-        # Update config count
-        remaining_count = sum(
-            len(e.get("questions", [])) for e in updated_clarifications
-        )
-
-        update_playbook_clarifications(
-            configpath=config_path,
-            user_id=user_id,
-            name=filename,
-            clarifications_required=remaining_count,
-        )
-
-        # Save updated workflow
-        return save_playbook_to_s3(
-            workflow_json,
-            user_id,
-            "clarifications added",
-            filename,
-            clarifications=True,
-        )
-
-    except Exception as e:
-        # print("⚠️ Error while updating clarification answer:", str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
 @playbook_bp.route("/workflow-aisuggest", methods=["POST"])
-def workflow_ai_suggest():
+async def workflow_ai_suggest():
     try:
         body = request.json
         user_id = body.get("user_id")
         category = body.get("quote")  # "quote" is the category
         question = body.get("question")
         filename = body.get("filename")
-
+        # token = current_user_id.set(user_id)
         # Validate required fields
         if not all([user_id, category, question, filename]):
             return (
@@ -1214,6 +895,8 @@ def workflow_ai_suggest():
                 ),
                 400,
             )
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"  # try:
 
         # Load prompt template from YAML
         promptfile = PLAY_TEMPLATE
@@ -1240,12 +923,16 @@ def workflow_ai_suggest():
 
         # Call LLM
         # llm_output = get_fireworks_response(prompt_input, role="system")
-        llm_output = get_fireworks_response2(prompt_input, role="system", temp=0.7)
+        llm_output = await get_fireworks_response2(
+            prompt_input, role="system", temp=0.7, user_id=user_id
+        )
         ai_answer = llm_output.strip()
 
         # Clean markdown formatting if returned (optional safety)
         if ai_answer.startswith("```"):
             ai_answer = ai_answer.strip("` \n")
+        # finally:
+        #     current_user_id.reset(token)
 
         return (
             jsonify(
@@ -1274,25 +961,6 @@ def workflow_ai_suggest():
         )
 
 
-@playbook_bp.route("/clarifications-reset", methods=["POST"])
-def workflow_clarifications_reset():
-    try:
-        data = request.json
-        user_id = data.get("user_id")
-        filename = data.get("filename")
-        workflow_json = read_json_from_s3(f"{user_id}/workflow/{filename}")
-        workflow_json["clarifications_generated"] = False
-        if "clarification_questions" in workflow_json:
-            workflow_json.pop("clarification_questions")
-            return save_playbook_to_s3(
-                workflow_json, user_id, "clarifications reset", filename
-            )
-        else:
-            return {"message": "no clarifications present"}
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
 @playbook_bp.route("/run_workflow", methods=["POST"])
 async def runWorkflow():
     data = request.json
@@ -1304,33 +972,39 @@ async def runWorkflow():
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-
-    # ✅ Pre-validate workflow existence
-    wf_loc = f"{userid}/workflow/{filename}"
-    workflow_json = read_json_from_s3(wf_loc)
-    if not workflow_json:
-        return (
-            jsonify(
-                {
-                    "message": f"Workflow file '{filename}' not found ",
-                    "status": "error",
-                }
-            ),
-            404,
-        )
-
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+    # token = current_user_id.set(userid)
     try:
-        with WorkflowRunnerV2(
-            userid=userid,
-            filename=filename,
-            workflowJson=workflow_json,
-            testing=testing,
-        ) as runner:
-            await runner.execute()
-            result = runner.get_execution_log()
-            return jsonify({"status": "success", "execution_log": result})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        # ✅ Pre-validate workflow existence
+        wf_loc = f"{userid}/workflow/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+        if not workflow_json:
+            return (
+                jsonify(
+                    {
+                        "message": f"Workflow file '{filename}' not found ",
+                        "status": "error",
+                    }
+                ),
+                404,
+            )
+
+        try:
+            with WorkflowRunnerV2(
+                userid=userid,
+                filename=filename,
+                workflowJson=workflow_json,
+                testing=testing,
+            ) as runner:
+                await runner.execute()
+                result = runner.get_execution_log()
+                return jsonify({"status": "success", "execution_log": result})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        # current_user_id.reset(token)
+        print("ss")
 
 
 @playbook_bp.route("/run_workflow_step", methods=["POST"])
@@ -1346,58 +1020,70 @@ def run_workflow_step():
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
     if not step_id:
         return jsonify({"message": "Missing step_id", "status": "error"}), 400
-
-    # ✅ Pre-validate workflow existence
-    wf_loc = f"{userid}/workflow/{filename}"
-    workflow_json = read_json_from_s3(wf_loc)
-    if not workflow_json:
-        return (
-            jsonify(
-                {
-                    "message": f"Workflow file '{filename}' not found ",
-                    "status": "error",
-                }
-            ),
-            404,
-        )
-
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+    # token = current_user_id.set(userid)
     try:
-        with WorkflowRunnerV2(
-            userid=userid, filename=filename, workflowJson=workflow_json
-        ) as runner:
-            steps = runner.steps
-            selected_step = steps.get(step_id)
-
-            if not selected_step:
-                return (
-                    jsonify(
-                        {
-                            "message": f"Step '{step_id}' not found in workflow.",
-                            "status": "error",
-                        }
-                    ),
-                    404,
-                )
-
-            step_result = runner._execute_step(selected_step)
-            execution_log = runner.get_execution_log()
-
-            return jsonify(
-                {
-                    "status": "success",
-                    "workflow_step_result": step_result,
-                    "execution_log": execution_log,
-                }
+        # ✅ Pre-validate workflow existence
+        wf_loc = f"{userid}/workflow/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+        if not workflow_json:
+            return (
+                jsonify(
+                    {
+                        "message": f"Workflow file '{filename}' not found ",
+                        "status": "error",
+                    }
+                ),
+                404,
             )
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+
+        try:
+            with WorkflowRunnerV2(
+                userid=userid, filename=filename, workflowJson=workflow_json
+            ) as runner:
+                steps = runner.steps
+                selected_step = steps.get(step_id)
+
+                if not selected_step:
+                    return (
+                        jsonify(
+                            {
+                                "message": f"Step '{step_id}' not found in workflow.",
+                                "status": "error",
+                            }
+                        ),
+                        404,
+                    )
+
+                step_result = runner._execute_step(selected_step)
+                execution_log = runner.get_execution_log()
+
+                return jsonify(
+                    {
+                        "status": "success",
+                        "workflow_step_result": step_result,
+                        "execution_log": execution_log,
+                    }
+                )
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        # current_user_id.reset(token)
+        print("ss")
 
 
-@playbook_bp.route("/test-playground-step", methods=["GET"])
+@playbook_bp.route("/test-playground-step", methods=["GET", "POST"])
 def testworkflowbyinput_stream():
-    userid = request.args.get("user_id")
-    userinput = request.args.get("userinput")
-    filename = request.args.get("filename")
+    if request.method == "POST":
+        data = request.json
+        userid = data.get("user_id")
+        userinput = data.get("userinput")
+        filename = data.get("filename")
+    else:
+        userid = request.args.get("user_id")
+        userinput = request.args.get("userinput")
+        filename = request.args.get("filename")
     # print("details", userid, userinput, filename)
 
     if not userid:
@@ -1407,35 +1093,47 @@ def testworkflowbyinput_stream():
     if not userinput:
         return jsonify({"message": "Missing userinput", "status": "error"}), 400
 
-    wf_loc = f"{userid}/workflow/{filename}"
-    workflow_json = read_json_from_s3(wf_loc)
+    # token = current_user_id.set(userid)
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+    try:
 
-    if not workflow_json:
-        return (
-            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
-            404,
-        )
+        wf_loc = f"{userid}/workflow/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
 
-    def event_stream():
-        try:
-            with WorkflowRunnerV2(
-                userid=userid,
-                filename=filename,
-                workflowJson=workflow_json,
-                testing=True,
-            ) as service:
-                token = current_user_id.set(userid)
-                try:
-                    result = service.check_input_tone(user_input=userinput)
-                finally:
-                    current_user_id.reset(token)
+        if not workflow_json:
+            return (
+                jsonify(
+                    {"message": f"Workflow '{filename}' not found", "status": "error"}
+                ),
+                404,
+            )
 
-            # print("result from back", result)
+        def event_stream():
+            try:
+                with WorkflowRunnerV2(
+                    userid=userid,
+                    filename=filename,
+                    workflowJson=workflow_json,
+                    testing=True,
+                ) as service:
+                    # token = current_user_id.set(userid)
+                    # try:
+                    #     result = asyncio.run(service.check_input_tone(user_input=userinput))
+                    # finally:
+                    #     current_user_id.reset(token)
+                    result = asyncio.run(service.check_input_tone(user_input=userinput))
 
-            yield f"event: done\ndata: {json.dumps(result)}\n\n"
+                # print("result from back", result)
 
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                yield f"event: done\ndata: {json.dumps(result)}\n\n"
+
+            except Exception as e:
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    finally:
+        # current_user_id.reset(token)
+        print("ss")
 
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
@@ -1454,6 +1152,8 @@ def clear_playground_data():
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
 
     try:
         # 🔹 Load workflow JSON from S3
@@ -1492,7 +1192,7 @@ def clear_playground_data():
         )
 
     except Exception as e:
-        # logger.exception("Error clearing playground data: %s", e)
+        print("Error clearing playground data:", e)
         return (
             jsonify({"message": f"Error clearing data: {str(e)}", "status": "error"}),
             500,
@@ -1513,7 +1213,8 @@ def clear_testing_data():
         return jsonify({"message": "Not a valid userid", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
     try:
         # 🔹 Load workflow JSON from S3
         workflow_json = read_json_from_s3(f"{userid}/workflow/{filename}")
@@ -1553,7 +1254,7 @@ def clear_testing_data():
         )
 
     except Exception as e:
-        # logger.exception("Error clearing testing data: %s", e)
+        print("Error clearing testing data:", e)
         return (
             jsonify(
                 {"message": f"Error clearing testing data: {str(e)}", "status": "error"}
@@ -1563,7 +1264,7 @@ def clear_testing_data():
 
 
 @playbook_bp.route("/generate-workflow-input", methods=["POST"])
-def generate_workflow_input():
+async def generate_workflow_input():
     try:
         data = request.get_json(force=True)
         userid = data.get("user_id")
@@ -1590,6 +1291,9 @@ def generate_workflow_input():
             "calendar",
         ]
 
+        # token = current_user_id.set(userid)
+        # try:
+
         # ✅ Load all available service functions
         services_section = read_function_jsons2()
 
@@ -1607,9 +1311,9 @@ def generate_workflow_input():
         ##print("fomatted prompt", formatted_prompt)
 
         # ✅ Call the LLM
-        llm_output = get_fireworks_response2(
-            formatted_prompt, role="system", temp=0.3
-        ).strip()
+        llm_output = await get_fireworks_response2(
+            formatted_prompt, role="system", temp=0.3, user_id=userid
+        )
         # llm_output = get_evaluator_gpt4(formatted_prompt).strip()
         llm_output = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", llm_output, flags=re.MULTILINE
@@ -1730,6 +1434,9 @@ def generate_workflow_input():
             resolved_report["not_found"] or resolved_report["new"]
         )
         connection.close()
+        # finally:
+        #     current_user_id.reset(token)
+
         return jsonify(workflow_data)
 
     except Exception as e:
@@ -1737,65 +1444,24 @@ def generate_workflow_input():
 
 
 @playbook_bp.route("/test-mid", methods=["POST"])
-def testmidcheck():
-    from services.gmail_service import GmailService
+async def testmidcheck():
     from services.automate_service import AutoMateService
-    import random
+
+    body = request.get_json(force=True)
 
     # Lock user to avoid multiple parallel bulk sends
-    user_id = "100805564263044911738"
-    receiver_email = "service@bytoid.ca"  # FIXED: valid email
-    email_count = 2
+    user_id = body.get("user_id")
 
-    EMAIL_TITLES = [
-        "AI Automation",
-        "SaaS Growth Strategies",
-        "Developer Tools Evolution",
-        "Modern Cybersecurity",
-        "Cloud Computing Trends",
-        "Workflow Orchestration",
-    ]
+    user_input = body.get("userinput")
+    length = "5 questions"
+    tone = "professional"
 
     try:
         ai = AutoMateService(userid=user_id)
-        gmail = GmailService(user_id=user_id)
-
-        sent = 0
-        failed = 0
-
-        for i in range(email_count):
-
-            # Pick random title
-            rand_title = random.choice(EMAIL_TITLES)
-
-            # Generate email body (HTML)
-            email_body_html = ai.create_custom_email_body(
-                user_input=f"Write a short memo/news update about {rand_title} with 200 - 300 words and it must have a title included in <title> tag  "
-            )
-            # print("emmail_body_html", email_body_html)
-
-            # Extract subject from HTML (or fallback)
-
-            # Send the email
-            try:
-                gmail.send_email(
-                    receipent_emails=receiver_email,
-                    subject=f"Write a short memo/news update about {rand_title}. "
-                    f"Return a rich HTML email body.",
-                    body_text=email_body_html["email_body_html"],
-                )
-                sent += 1
-            except Exception as send_err:
-                failed += 1
-                print(f"Email send failed ({i}):", send_err)
-
-        return {
-            "status": "completed",
-            "user_id": user_id,
-            "total_requested": email_count,
-            "sent": sent,
-            "failed": failed,
-        }
+        val = await ai.generate_questions(
+            user_input=user_input, length=length, tone=tone
+        )
+        return jsonify({"data": val})
     except Exception as e:
         # print("❌ Error in /test-email_checks:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -1834,6 +1500,8 @@ def schedule_workflow():
     contacts = body["contacts"]
     filename = body["filename"]
     timezone = body.get("timezone", "UTC")
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
 
     wf_loc = f"{userid}/workflow/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
@@ -1891,3 +1559,119 @@ def schedule_workflow():
 @playbook_bp.route("/get-allfunctions")
 def get_all_fns():
     return jsonify(read_function_jsons2())
+
+
+@playbook_bp.route("/update-questions", methods=["POST"])
+def updatequestionsworkflow():
+    data = request.json
+    print("dadss", data)
+    userid = data.get("user_id")
+    answer = data.get("answer")
+    filename = data.get("filename")
+    chat_id = data.get("chat_id")
+    question_id = data.get("question_id")
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+    if not question_id:
+        return jsonify({"message": "Invalid question_id", "status": "error"}), 400
+    if not chat_id:
+        return jsonify({"message": "Invalid chat_id", "status": "error"}), 400
+    if answer is None:
+        return jsonify({"message": "Answer cannot be null", "status": "error"}), 400
+
+    # token = current_user_id.set(userid)
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        # current_user_id.reset(token)
+        return (
+            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
+            404,
+        )
+
+    with WorkflowRunnerV2(
+        userid=userid,
+        filename=filename,
+        workflowJson=workflow_json,
+        testing=True,
+    ) as service:
+        result = asyncio.run(
+            service.answer_questions(answer=answer, qid=question_id, chid=chat_id)
+        )
+
+    # current_user_id.reset(token)
+
+    status_code = 200 if result.get("status") == "success" else 400
+    return jsonify(result), status_code
+
+
+@playbook_bp.route("/update-questions-bulk", methods=["POST"])
+def updatequestionsbulkworkflow():
+    data = request.json or {}
+    userid = data.get("user_id")
+    filename = data.get("filename")
+    chat_id = data.get("chat_id")
+    answers = data.get("answers")  # 🔥 BULK answers
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    if not chat_id:
+        return jsonify({"message": "Invalid chat_id", "status": "error"}), 400
+
+    if not isinstance(answers, list) or not answers:
+        return (
+            jsonify({"message": "Answers must be a non-empty list", "status": "error"}),
+            400,
+        )
+
+    for item in answers:
+        if not item.get("question_id"):
+            return (
+                jsonify(
+                    {
+                        "message": "Each answer must include question_id",
+                        "status": "error",
+                    }
+                ),
+                400,
+            )
+        if item.get("answer") is None:
+            return jsonify({"message": "Answer cannot be null", "status": "error"}), 400
+
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        return (
+            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
+            404,
+        )
+
+    with WorkflowRunnerV2(
+        userid=userid,
+        filename=filename,
+        workflowJson=workflow_json,
+        testing=True,
+    ) as service:
+        result = asyncio.run(
+            service.answer_questions_bulk(answers=answers, chid=chat_id)
+        )
+
+    # current_user_id.reset(token)
+
+    status_code = 200 if result.get("status") == "success" else 400
+    return jsonify(result), status_code

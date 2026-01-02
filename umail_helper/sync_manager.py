@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from glide import GlideClusterClient
 from utils.base_logger import get_logger
-from utils.redis_config import redis_config_glide
+
 
 logger = get_logger(__name__)
 
@@ -27,7 +27,7 @@ class SyncManager:
     async def get_last_sync_time(user_id: str) -> dict:
         """
         Get the last sync time for a user from Redis cache.
-        
+
         Returns:
             dict with keys:
             - 'last_sync': ISO timestamp of last sync (or None)
@@ -36,21 +36,22 @@ class SyncManager:
             - 'time_until_next_sync': seconds until next sync allowed
         """
         try:
-            client = await GlideClusterClient.create(redis_config_glide)
+            # client = await GlideClusterClient.create(redis_config_glide)
+            client = RedisService()
             cache_key = f"sync_time:{user_id}"
             cached_data = await client.get(cache_key)
-            
+
             now = datetime.now(timezone.utc)
-            
+
             if cached_data:
                 sync_data = json.loads(cached_data)
                 last_sync_str = sync_data.get("last_sync")
                 last_sync = datetime.fromisoformat(last_sync_str)
                 next_allowed = last_sync + timedelta(seconds=SYNC_INTERVAL)
-                
+
                 should_sync = now >= next_allowed
                 time_diff = (next_allowed - now).total_seconds()
-                
+
                 return {
                     "last_sync": last_sync.isoformat(),
                     "next_allowed_sync": next_allowed.isoformat(),
@@ -81,24 +82,25 @@ class SyncManager:
         """
         Record the current time as the last sync for this user.
         Sets TTL to 2x the sync interval to clean up old entries.
-        
+
         Returns:
             bool indicating success
         """
         try:
-            client = await GlideClusterClient.create(redis_config_glide)
+            # client = await GlideClusterClient.create(redis_config_glide)
+            client = RedisService()
             cache_key = f"sync_time:{user_id}"
             now = datetime.now(timezone.utc)
-            
+
             sync_data = {
                 "last_sync": now.isoformat(),
                 "timestamp": int(now.timestamp()),
             }
-            
+
             # Set with TTL of 2x sync interval
             ttl = SYNC_INTERVAL * 2
             await client.set(cache_key, json.dumps(sync_data), {"EX": ttl})
-            
+
             logger.info(f"Recorded sync time for {user_id}")
             return True
         except Exception as e:
@@ -110,7 +112,7 @@ class SyncManager:
         """
         Check if a user should trigger a sync on login.
         ⭐ CHANGED: Login syncs now trigger IMMEDIATELY (no 30-minute interval)
-        
+
         Returns:
             dict with:
             - 'should_sync': always True (immediate trigger)
@@ -119,7 +121,7 @@ class SyncManager:
         """
         try:
             sync_info = await SyncManager.get_last_sync_time(user_id)
-            
+
             # ⭐ NEW: Always allow login sync (no 30-min check)
             return {
                 "should_sync": True,
@@ -146,7 +148,7 @@ class SyncManager:
         """
         Check if a user can manually trigger a sync (from button click or refresh).
         ⭐ CHANGED: Manual syncs now trigger IMMEDIATELY (no 30-minute interval)
-        
+
         Returns:
             dict with:
             - 'should_sync': always True for manual (immediate trigger)
@@ -177,12 +179,13 @@ class SyncManager:
     async def clear_sync_timer(user_id: str) -> bool:
         """
         Clear the sync timer for a user (useful for testing or forced resets).
-        
+
         Returns:
             bool indicating success
         """
         try:
-            client = await GlideClusterClient.create(redis_config_glide)
+            # client = await GlideClusterClient.create(redis_config_glide)
+            client = RedisService()
             cache_key = f"sync_time:{user_id}"
             result = await client.delete([cache_key])
             logger.info(f"Cleared sync timer for {user_id}")

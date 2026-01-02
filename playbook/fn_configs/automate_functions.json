@@ -4,6 +4,7 @@
             "category": "AutoMateService",
             "name": "automate.create_custom_email_body",
             "description": "Creates a professional and personalized email body based on user requirements and dynamic inputs from previous steps or additional context.",
+            "status": "active",
             "args": {
                 "user_input": "Base description of the email content (string).",
                 "dynamic_inputs": "Optional additional dynamic data (dict). These will be directly included in the email prompt."
@@ -17,8 +18,10 @@
             "category": "AutoMateService",
             "name": "automate.generate_file_from_ai",
             "description": "Generates a file (txt, md, css, html, docx, pptx) with content based on user input. Filename and file type are dynamically suggested by AI.",
+            "status": "upcoming",
             "args": {
-                "user_input": "The description or instructions for the file content (string). Can specify style, format, structure, or type of file."
+                "user_input": "The description or instructions for the file content (string). Can specify style, format, structure, or type of file.",
+                "**args": "Additional optional keyword arguments (dict)."
             },
             "returns": {
                 "file_path": "The path to the generated file on disk (string)."
@@ -29,8 +32,10 @@
             "category": "AutoMateService",
             "name": "automate.generate_email_reply",
             "description": "Generates a polite, professional, and context-aware email reply based on a given previous email message.",
+            "status": "active",
             "args": {
-                "previous_msg": "The content of the previous email message (string)."
+                "previous_msg": "The content of the previous email message (string).",
+                "**args": "Additional optional keyword arguments (dict)."
             },
             "returns": {
                 "email_reply": "The AI-generated email reply as a string."
@@ -41,9 +46,10 @@
             "category": "AutoMateService",
             "name": "automate.generate_chat_reply",
             "description": "Generates a friendly and conversational reply based on a previous chat message. Accepts any number of dynamic keyword arguments (**args) such as intent, workflow, tone, or chat history for enhanced contextual responses.",
+            "status": "active",
             "args": {
                 "previous_msg": "The content of the previous chat message (string).",
-                "**args": "Additional optional keyword arguments (dict). These can include dynamic_inputs, workflow data, chat context, intent, or other runtime variables that help generate the best chat message."
+                "**args": "Additional optional keyword arguments (dict). These can include dynamic_inputs,step data, workflow data, chat context, intent, or other runtime variables that help generate the best chat message."
             },
             "returns": {
                 "chat_reply": "The AI-generated chat reply as a string."
@@ -53,15 +59,72 @@
         {
             "category": "AutoMateService",
             "name": "automate.generate_ai_content",
-            "description": "Generates creative or informational content (stories, articles, ideas, summaries, or questions) based on user input. Accepts flexible keyword arguments (**args) for tone, length, workflow, or other contextual hints.",
+            "description": "Generates creative or informational content (stories,exam,prepare, articles, ideas, summaries) based on user input. Accepts flexible keyword arguments (**args) for tone, length, workflow, or other contextual hints.",
+            "status": "active",
             "args": {
-                "user_input": "User's request or topic description (string). Example: 'Write a short story about a robot learning emotions' or 'Generate 5 interview questions about marketing.'",
-                "**args": "Optional keyword arguments such as tone, length, workflow, dynamic_inputs, or other contextual hints that guide the generation style and content."
+                "user_input": "User's request or topic description (string).",
+                "**args": "Optional keyword arguments such as step data, tone, length, workflow, dynamic_inputs, or other contextual hints that guide the generation style and content."
             },
             "returns": {
                 "generated_content": "AI-generated text based on the user request (string)."
             },
             "notes": "Uses AI for balanced creativity. Automatically adapts tone, structure, and content based on **args. Suitable for dynamic AI content generation with flexible context injection."
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.generate_questions",
+            "description": "Generates structured questions for workflows. By default, creates normal (open-ended) questions. MCQ or Quiz questions are generated only when explicitly requested by the user.",
+            "status": "active",
+            "args": {
+                "user_input": "User's request describing the questions or quiz to generate. The requested format (normal, MCQ, or quiz) MUST be explicitly stated here if anything other than normal questions is required.",
+                "**args": "Optional keyword arguments used only as constraints such as count, tone, domain, difficulty, topic, or workflow context. These MUST NOT change the question format unless explicitly requested in user_input."
+            },
+            "returns": {
+                "questions": "A JSON array. By default, each item is a normal question object. If a quiz is explicitly requested, the array may contain a single quiz object grouping multiple questions."
+            },
+            "rules": [
+                "Normal (open-ended) questions are the DEFAULT output.",
+                "MCQ questions are generated ONLY if explicitly requested using terms such as 'MCQ', 'multiple choice', or 'choose one'.",
+                "Quiz generation is triggered ONLY if explicitly requested using terms such as 'quiz', 'test', or 'assessment'.",
+                "Each normal or MCQ question MUST contain 'question' and 'answer': null.",
+                "MCQ questions MUST additionally contain an 'options' object with keys A, B, C, and D.",
+                "If a quiz is generated, it MUST be returned as a grouped structure inside the questions array.",
+                "No answers, explanations, scoring, or metadata are generated unless explicitly requested.",
+                "Output MUST be execution-ready and suitable for workflow updates and later answer injection."
+            ],
+            "notes": [
+                "The **args field is constraint-only and never controls output format.",
+                "If multiple formats are mentioned, quiz takes precedence over MCQ.",
+                "If the request is ambiguous or unclear, default to normal questions.",
+                "This function is safe for automated workflow execution systems."
+            ]
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.review_content",
+            "description": "Reviews user-provided content against workflow AI instructions and context. Provides a professional evaluation indicating whether the content is acceptable, needs improvement, or is not acceptable, along with clear feedback and improvement guidance. This function never rewrites or generates content.",
+            "status": "active",
+            "args": {
+                "user_input": "The content to be reviewed.",
+                "**args": "Optional keyword arguments providing additional execution context such as workflow step data, expected tone, quality level, domain constraints, or review strictness. These arguments influence evaluation only and never change the content."
+            },
+            "returns": {
+                "review": {
+                    "overall_status": "One of: OK, NEEDS IMPROVEMENT, NOT OK.",
+                    "what_is_good": "A list describing aspects of the content that meet expectations.",
+                    "what_is_not_good": "A list describing gaps, issues, or weaknesses, if any.",
+                    "how_to_improve": "Actionable guidance explaining how the content can be improved without rewriting it."
+                }
+            },
+            "notes": [
+                "The function only reviews content; it never edits or regenerates it.",
+                "Professional tone is always used in the review output.",
+                "Medium-quality content is explicitly supported with balanced feedback.",
+                "Improvement guidance is descriptive, not prescriptive.",
+                "No examples, rewritten content, or answers are included.",
+                "Output is execution-safe and suitable for automated workflow decisions.",
+                "Designed for use in review, approval, and fallback decision steps."
+            ]
         }
     ]
 }

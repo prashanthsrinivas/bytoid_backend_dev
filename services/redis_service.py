@@ -117,11 +117,18 @@ class RedisService:
     async def incr(self, key: str, amount: int = 1) -> int:
         return await self._run(self.client.incr, key, amount)
 
+    async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
+        return await self._run(self.client.hincrby, name, key, amount)
+
+
     async def expire(self, key: str, seconds: int) -> bool:
         return bool(await self._run(self.client.expire, key, seconds))
 
     async def ttl(self, key: str) -> int:
         return await self._run(self.client.ttl, key)
+
+    async def rpush(self, key, value):
+        return await self._run(self.client.rpush, key, value)
 
     async def close(self):
         if self.client:

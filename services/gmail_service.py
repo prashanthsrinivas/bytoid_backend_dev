@@ -1249,6 +1249,14 @@ class GmailService:
                         try:
                             soup = BeautifulSoup(html_content, "html.parser")
 
+                            for quote in soup.select(
+                                ".gmail_quote, .gmail_quote_container, blockquote, div[id^='divRplyFwdMsg']"
+                            ):
+                                try:
+                                    quote.decompose()
+                                except:
+                                    pass
+
                             for tag in soup.find_all(["script", "style", "meta"]):
                                 try:
                                     tag.decompose()
@@ -1283,13 +1291,27 @@ class GmailService:
 
                 elif content_type == "text/plain" and body is None:
                     payload = msg_part.get_payload(decode=True)
-                    if payload:
-                        plain = payload.decode("utf-8", errors="ignore")
-                        body = plain.strip()
-                        plain_text = body
+                    if not payload:
+                        return
 
-                        # Normalize whitespace: removes newlines, tabs, multiple spaces
-                        plain_text = " ".join(plain_text.split())
+                    plain = payload.decode("utf-8", errors="ignore")
+
+                    # Strip quoted replies (plain text only)
+                    reply_patterns = [
+                        r"\nOn .* wrote:",
+                        r"\n>.*",
+                        r"\nFrom: .*",
+                        r"\nSent: .*",
+                        r"\nTo: .*",
+                        r"\nSubject: .*",
+                        r"\n-----Original Message-----",
+                    ]
+
+                    for pattern in reply_patterns:
+                        plain = re.split(pattern, plain, maxsplit=1, flags=re.IGNORECASE)[0]
+
+                    body = plain.strip()
+                    plain_text = " ".join(body.split())
 
                 elif msg_part.is_multipart():
                     for sub_part in msg_part.get_payload():
@@ -1303,23 +1325,23 @@ class GmailService:
 
             body = body or ""
 
-            if not body.startswith("<"):
-                reply_patterns = [
-                    r"\nOn .* wrote:",
-                    r"\n>.*",
-                    r"\nFrom: .*",
-                    r"\nSent: .*",
-                    r"\nTo: .*",
-                    r"\nSubject: .*",
-                ]
-                for pattern in reply_patterns:
-                    body = re.split(pattern, body, maxsplit=1)[0]
+            # if not body.startswith("<"):
+            #     reply_patterns = [
+            #         r"\nOn .* wrote:",
+            #         r"\n>.*",
+            #         r"\nFrom: .*",
+            #         r"\nSent: .*",
+            #         r"\nTo: .*",
+            #         r"\nSubject: .*",
+            #     ]
+            #     for pattern in reply_patterns:
+            #         body = re.split(pattern, body, maxsplit=1)[0]
 
-                body = body.strip()
-                plain_text = body  # ensure plain text is filled for plain emails
+            #     body = body.strip()
+            #     plain_text = body  # ensure plain text is filled for plain emails
 
-                # Normalize whitespace: removes newlines, tabs, multiple spaces
-                plain_text = " ".join(plain_text.split())
+            #     # Normalize whitespace: removes newlines, tabs, multiple spaces
+            #     plain_text = " ".join(plain_text.split())
 
             return body, attachments, plain_text
 

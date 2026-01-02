@@ -8,8 +8,9 @@ from glide import (
     GlideClusterClient,
     ClusterScanCursor,
 )
+from services.redis_service import RedisService
 from utils.base_logger import get_logger
-from utils.redis_config import redis_config_glide
+
 
 load_dotenv()
 
@@ -49,7 +50,8 @@ async def session_login_redis(user_id, request_data):  # during login
     access_expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
     refresh_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
 
-    client = await GlideClusterClient.create(redis_config_glide)
+    # client = await GlideClusterClient.create(redis_config_glide)
+    client = RedisService()
 
     await client.hset(
         f"session:{session_id}",
@@ -77,7 +79,8 @@ async def session_login_redis(user_id, request_data):  # during login
 
 async def get_session(session_hash, request):
 
-    client = await GlideClusterClient.create(redis_config_glide)
+    # client = await GlideClusterClient.create(redis_config_glide)
+    client = RedisService()
 
     session_keys = []
     try:
@@ -157,7 +160,8 @@ async def update_session_tokens(
 
 async def validate_and_refresh_tokens(session_hash, session, access_token, key_str):
 
-    client = await GlideClusterClient.create(redis_config_glide)
+    # client = await GlideClusterClient.create(redis_config_glide)
+    client = RedisService()
 
     previous_token_expiry_str = session.get("previous_token_expiry")
     if previous_token_expiry_str:
@@ -218,7 +222,8 @@ async def validate_and_refresh_tokens(session_hash, session, access_token, key_s
 
 async def delete_all_session_cookies(key_str):
     """Delete session from Redis"""
-    client = await GlideClusterClient.create(redis_config_glide)
+    # client = await GlideClusterClient.create(redis_config_glide)
+    client = RedisService()
     try:
         session_data = await client.hgetall(key_str)
         if session_data:

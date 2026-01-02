@@ -24,6 +24,7 @@ from integrations.google_integration import get_integration_access_token
 from utils.base_logger import get_logger
 from utils.normal import ensure_dir
 from utils.s3_utils import load_yaml_from_s3, save_yaml_to_s3
+from request_context import current_user_id
 
 logger = get_logger(__name__)
 
@@ -108,14 +109,18 @@ def download_files_stream():
 
         # Step 3: Process files (embedding, YAML update)
         folderpath = os.path.commonpath(all_downloaded_paths)
-        all_file_data = asyncio.run(
-            process_and_update_yaml(
-                all_downloaded_paths=all_downloaded_paths,
-                userid=id,
-                provider="google",
-                folderpath=folderpath,
+        all_file_data = None
+        try:
+            all_file_data = asyncio.run(
+                process_and_update_yaml(
+                    all_downloaded_paths=all_downloaded_paths,
+                    userid=id,
+                    provider="google",
+                    folderpath=folderpath,
+                )
             )
-        )
+        except Exception as e:
+            print(f"error in download_files_stream:{e} ")
 
         yield f"event: complete\ndata: {json.dumps({'message': 'Successfully processed files', 'files': all_file_data})}\n\n"
 

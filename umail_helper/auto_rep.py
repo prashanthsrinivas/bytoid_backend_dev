@@ -152,7 +152,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                 return time_diffs, revoked, reason
 
             # --- Process single email ---
-            def process_email(conv_id, from_email, msgs):
+            async def process_email(conv_id, from_email, msgs):
                 normalized_email = from_email.strip().lower()
                 ##print("normal", normalized_email)
                 existing_entry = logs_dict.get(normalized_email)
@@ -225,7 +225,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                         f"⚠️ {from_email} revoked due to AI-like fast inbound messages"
                     )
                 # # ✅ FIX: Send ONE reply for all the new messages (latest inbound message triggers reply)
-                send_val, rtmsg = helper_make_reply_email(
+                send_val, rtmsg = await helper_make_reply_email(
                     userid=user_id, from_email=from_email, n_connection=connection
                 )
 

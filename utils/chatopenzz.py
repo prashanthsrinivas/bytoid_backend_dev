@@ -9,6 +9,7 @@ from utils.normal import load_yaml_file
 from utils.s3_utils import read_json_from_s3
 import os
 import requests
+from credits_route.route import Credits
 
 load_dotenv()
 
@@ -79,8 +80,8 @@ def generate_usecases_questions(
     return questions
 
 
-def generate_usecases_questions_batch(
-    prompt_block, model, industry, usecases_with_docs
+async def generate_usecases_questions_batch(
+    prompt_block, model, industry, usecases_with_docs,userid
 ):
     prompt_text = prompt_block["instructions"]
 
@@ -95,6 +96,7 @@ def generate_usecases_questions_batch(
     response = chain.invoke(
         {"industry": industry, "usecases_with_docs": usecases_with_docs}
     )
+    
     # logger.info(f"[🔍] Model response: {response}")
     try:
         raw = response.content.strip()
@@ -106,6 +108,27 @@ def generate_usecases_questions_batch(
         # Clean invalid escape sequences like \e, \i, etc.
         raw = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", raw)
         questions_json = json.loads(raw)
+
+        # ------ calculate credits -----------
+
+        total_input_chars = sum(
+        len(v)
+        for d in usecases_with_docs
+        for v in d.values()
+        if isinstance(v, str)
+        )
+        total_output_chars = len(raw)
+
+        total_chars = total_input_chars + total_output_chars
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            credit_type="embedding",
+            total_chars=total_chars,
+            user_id=userid
+        )
+
+        # --------------------------------
         return questions_json
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse model response: {e}\nRaw content:\n{raw}")

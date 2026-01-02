@@ -62,7 +62,7 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
 
     try:
         s3.upload_file(file_path, S3_BUCKET, s3_key)
-        # print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
+        print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
         return {"status": "success", "s3_key": s3_key}
     except Exception as e:
         print(f"❌ Upload failed: {e}")
@@ -188,4 +188,8 @@ def attach_CLDFRNT_url(link):
 # print(list_all_files("112359636982080060072/messages"))
 # print(list_all_files())
 
-# print(read_json_from_s3(filepath="112359636982080060072/messages/2025-07-24.json"))
+# print(
+#     read_json_from_s3(
+#         filepath="109161866299858012556/aud_scripts/46d0f21a-8334-4c59-af4f-f25f75bf2912_transcript.json"
+#     )
+# )

@@ -13,9 +13,28 @@ import uuid
 
 
 async def vtooanalyze_and_collect_messages_for_batch(
-    user_id, grouped_messages, batch_count, cursor, ticket_allocator
+    user_id, grouped_messages, batch_count, cursor, ticket_allocator, integration=None
 ):
     # print("vtoo analyze")
+
+    # print("-----------------------------")
+    # print(f"grouped_messages inside vtooanalyze_and_collect_messages_for_batch : ")
+    # print(f"{grouped_messages}")
+    # print("-----------------------------")
+
+    if integration:
+        cursor.execute(
+            """
+                        SELECT primary_user_id_fk 
+                        FROM integrations
+                        WHERE user_id = %s
+                        """,
+            (user_id,),
+        )
+
+        row = cursor.fetchone()
+        primary_user_id = row[0]
+
     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
     ensure_dir(user_folder)
 
@@ -57,29 +76,58 @@ async def vtooanalyze_and_collect_messages_for_batch(
         merged_messages = new_msg_data.get("new_messages", [])
 
         new_msgs_local = []
-        for m in channel_msgs:
-            msg_id = m["id"]
-            if msg_id in existing_ids or m.get("type") == "Lead":
-                continue
-            new_msg = {
-                "msg_id": msg_id,
-                "body": m.get("body"),
-                "from": "client" if m.get("from") == client_email else "user",
-                "to": "client" if m.get("to") == client_email else "user",
-                "date": m.get("timestamp"),
-                "channel": channel,
-            }
-            merged_messages.append(new_msg)
-            new_msgs_local.append(new_msg)
+
+        # print(f"channel_msgs: {channel_msgs}")
+        new = []
+        if channel == "outlook":
+            for m in channel_msgs:
+                msg_id = m["id"]
+                if msg_id in existing_ids or m.get("type") == "Lead":
+                    continue
+
+                new_msg = {
+                    "msg_id": msg_id,
+                    "body": m.get("plain_text"),
+                    "from": "client" if m.get("from") == client_email else "user",
+                    "to": "client" if m.get("to") == client_email else "user",
+                    "date": m.get("timestamp"),
+                    "channel": channel,
+                }
+                merged_messages.append(new_msg)
+                new_msgs_local.append(new_msg)
+                new.append(m.get("plain_text"))
+
+        else:
+            for m in channel_msgs:
+                msg_id = m["id"]
+                if msg_id in existing_ids or m.get("type") == "Lead":
+                    continue
+
+                new_msg = {
+                    "msg_id": msg_id,
+                    "body": m.get("body"),
+                    "from": "client" if m.get("from") == client_email else "user",
+                    "to": "client" if m.get("to") == client_email else "user",
+                    "date": m.get("timestamp"),
+                    "channel": channel,
+                }
+                merged_messages.append(new_msg)
+                new_msgs_local.append(new_msg)
+
+        print(f"new_msgs_local : {new_msgs_local}")
 
         # Write updated file
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump({"new_messages": merged_messages}, f, indent=2)
 
+        print(f"channel : {channel}")
+        # print(f"merged_messages:{merged_messages}")
+        # print(f"new : {new}")
+
         # Heavier async tasks
-        subjects = await asyncio.to_thread(
-            generate_subject, user_id, output_path, channel
-        )
+        print(f"output_path : {output_path}")
+        subjects = await generate_subject(user_id, output_path, channel)
+        print(f"subjects : {subjects}")
         channel_grouped = {client_id: {channel: channel_msgs}}
 
         await asyncio.to_thread(
@@ -134,12 +182,13 @@ async def vtooanalyze_and_collect_messages_for_batch(
 
 
 # @umail_bp.route("/subject_summarisations/<user_id>", methods=["POST"])
-def generate_subject(user_id, output_path, channel):
+async def generate_subject(user_id, output_path, channel):
     try:
         if not user_id or not output_path:
             # print("❌ Missing user_id or filename")
             return None
 
+        print(f"output_path: {output_path}")
         with open(output_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -170,7 +219,10 @@ def generate_subject(user_id, output_path, channel):
         )
 
         # Generate YAML output from model
-        modified_yaml = get_fireworks_response(full_prompt, role="system")
+        print(f"going to generate subjects")
+        modified_yaml = await get_fireworks_response(
+            full_prompt, role="system", user_id=user_id
+        )
 
         try:
             parsed_yaml = yaml.safe_load(modified_yaml.strip())
@@ -361,6 +413,8 @@ def append_subject_to_messages(
                             None,
                         )
                     if matching_conv:
+                        print(f"inside if matching_conv line 410 ")
+                        print(f"channel :{channel}")
                         conversation_id = matching_conv.get("conv_id")
                         # print(
                         #     f"found matching thread-id:{thread_id}; conv_id :{conversation_id}"
@@ -403,7 +457,7 @@ def append_subject_to_messages(
                                         communication_id,
                                     ),
                                 )
-                                # lance_ticket_id += 1
+                                # lance_ticket_id += 1z
 
                                 assigned_id = str(uuid.uuid4())
                                 ##print("thread case insert to assigned")
@@ -507,6 +561,8 @@ def append_subject_to_messages(
                 # print("new conversation creating", direction)
                 msg["conversation_id"] = new_conversation_id
 
+                print(f"new_conversation_id in else part: {new_conversation_id}")
+
                 safe_execute(
                     cursor,
                     """
@@ -602,6 +658,7 @@ def append_subject_to_messages(
                         cont_ref = (
                             f"{user_id}/messages/{client_id}/{new_conversation_id}.json"
                         )
+                        print(f"msg_id: {msg_id}")
 
                         safe_execute(
                             cursor,
@@ -643,13 +700,13 @@ def append_subject_to_messages(
                         "updated_date": updated_date,
                         "parsed_timestamp": dt_utc.isoformat(),
                     }
-                    if channel == "gmail" and thread_id:
-                        updated_entry["thread_id"] = thread_id
+                    # if channel == "gmail" and thread_id:
+                    updated_entry["thread_id"] = thread_id
 
                     config_data.setdefault("userclients_id", client_id)
                     config_data.setdefault("conversations", []).append(updated_entry)
                     update_config_file(user_id, client_id, config_data)
-                    ##print("UPDATED CONFIG FILE 779")
+                    print("UPDATED CONFIG FILE 779")
                     connection.commit()
 
                 else:
@@ -659,7 +716,7 @@ def append_subject_to_messages(
                     msg["ticket_id"] = None
                     msg["ticket_name"] = None
                     msg["conversation_id"] = new_conversation_id
-                    ##print("OUTBOUND placed")
+                    print("OUTBOUND placed")
 
                     safe_execute(
                         cursor,
@@ -807,7 +864,8 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
         input_data.append(msg)
 
         # print(f"*****input_data :{input_data}")
-
+        print(f"conv_filepath : {conv_filepath}")
+        # print(f"input_data : {input_data}")
         with open(conv_filepath, "w", encoding="utf-8") as f:
             json.dump({"input_data": input_data}, f, indent=2)
             f.flush()
@@ -823,6 +881,10 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
 
     else:
         # print(f"conv not in existing_conversations", message_id)
+
+        print(f"conv_filepath in else : {conv_filepath}")
+        # print(f"input_data : {msg}")
+
         with open(conv_filepath, "w", encoding="utf-8") as f:
             json.dump({"input_data": [msg]}, f, indent=2)
             f.flush()

@@ -1,0 +1,187 @@
+{
+    "first": {
+        "name": "appointement fix",
+        "description": "schdule meeting with the incharge with store owner for laptop for eli",
+        "ai_mode": "normal",
+        "trigger_mode": "self-initiated",
+        "trigger_input": [],
+        "context_section": [],
+        "additional_data": {},
+        "steps": [
+            {
+                "id": 1,
+                "title": "Schedule Meeting",
+                "type": "communication",
+                "objective": "Schedule a meeting with the store owner and incharge for laptop discussion",
+                "decision_point": false,
+                "next_step": 2,
+                "ai_instructions": "Use Google Meet to schedule a meeting with the attendees",
+                "requirements_needed": [],
+                "communication_mode": "calender",
+                "channels": [
+                    "google_meet"
+                ],
+                "function_call": {
+                    "function_name": "google_meet.schedule_meeting_on_first_available",
+                    "arguments": {
+                        "summary": "Meeting with store owner and incharge for laptop discussion",
+                        "attendees": [
+                            "jon@gmail.com",
+                            "kaka@gmail.com"
+                        ],
+                        "preferred_date": "",
+                        "start_time": "",
+                        "end_time": "",
+                        "duration_minutes": 60,
+                        "description": "Discussion about laptop for Eli"
+                    }
+                }
+            },
+            {
+                "id": 2,
+                "title": "Generate Meeting Invitation Body",
+                "type": "self-learn",
+                "objective": "Create a personalized email body for the meeting invitation",
+                "decision_point": false,
+                "next_step": 3,
+                "ai_instructions": "Use AI to generate a professional email body based on the meeting details",
+                "requirements_needed": [],
+                "function_call": {
+                    "function_name": "automate.create_custom_email_body",
+                    "arguments": {
+                        "user_input": "Meeting invitation for discussion about laptop for Eli",
+                        "dynamic_inputs": {}
+                    }
+                }
+            },
+            {
+                "id": 3,
+                "title": "Send Meeting Invitation Email",
+                "type": "communication",
+                "objective": "Send the meeting invitation to the attendees",
+                "decision_point": false,
+                "next_step": null,
+                "ai_instructions": "Use Gmail to send the meeting invitation to the attendees",
+                "requirements_needed": [],
+                "communication_mode": "email",
+                "channels": [
+                    "gmail"
+                ],
+                "function_call": {
+                    "function_name": "gmail.send_Meeting_invite_mail",
+                    "arguments": {
+                        "receipent_emails": [
+                            "jon@gmail.com",
+                            "kaka@gmail.com"
+                        ],
+                        "bcc_list": [],
+                        "subject": "Meeting Invitation: Discussion about laptop for Eli",
+                        "body_html": ""
+                    }
+                }
+            }
+        ]
+    },
+    "eval": {
+        "status": "fixed",
+        "issues": [
+            {
+                "step_id": 1,
+                "problem": "preferred_date, start_time, and end_time are empty strings but required for scheduling; should either be filled or added to requirements_needed",
+                "fix_applied": "Removed preferred_date, start_time, and end_time from arguments since google_meet.schedule_meeting_on_first_available uses first available slot and does not require these fields"
+            },
+            {
+                "step_id": 2,
+                "problem": "dynamic_inputs is empty but could use output from step 1 (meeting details) to personalize email body",
+                "fix_applied": "Added dynamic_inputs to reference meeting details from step 1 output"
+            },
+            {
+                "step_id": 3,
+                "problem": "body_html is empty and should be populated with output from step 2",
+                "fix_applied": "Set body_html to {step_2.email_body to use generated email content"
+            }
+        ],
+        "workflow": {
+            "name": "appointement fix",
+            "description": "schdule meeting with the incharge with store owner for laptop for eli",
+            "ai_mode": "normal",
+            "trigger_mode": "self-initiated",
+            "trigger_input": [],
+            "context_section": [],
+            "additional_data": {},
+            "steps": [
+                {
+                    "id": 1,
+                    "title": "Schedule Meeting",
+                    "type": "communication",
+                    "objective": "Schedule a meeting with the store owner and incharge for laptop discussion",
+                    "decision_point": false,
+                    "next_step": 2,
+                    "ai_instructions": "Use Google Meet to schedule a meeting with the attendees",
+                    "requirements_needed": [],
+                    "communication_mode": "calender",
+                    "channels": [
+                        "google_meet"
+                    ],
+                    "function_call": {
+                        "function_name": "google_meet.schedule_meeting_on_first_available",
+                        "arguments": {
+                            "summary": "Meeting with store owner and incharge for laptop discussion",
+                            "attendees": [
+                                "jon@gmail.com",
+                                "kaka@gmail.com"
+                            ],
+                            "duration_minutes": 60,
+                            "description": "Discussion about laptop for Eli"
+                        }
+                    }
+                },
+                {
+                    "id": 2,
+                    "title": "Generate Meeting Invitation Body",
+                    "type": "self-learn",
+                    "objective": "Create a personalized email body for the meeting invitation",
+                    "decision_point": false,
+                    "next_step": 3,
+                    "ai_instructions": "Use AI to generate a professional email body based on the meeting details",
+                    "requirements_needed": [],
+                    "function_call": {
+                        "function_name": "automate.create_custom_email_body",
+                        "arguments": {
+                            "user_input": "Meeting invitation for discussion about laptop for Eli",
+                            "dynamic_inputs": {
+                                "meeting_details": "{step_1.meeting}"
+                            }
+                        }
+                    }
+                },
+                {
+                    "id": 3,
+                    "title": "Send Meeting Invitation Email",
+                    "type": "communication",
+                    "objective": "Send the meeting invitation to the attendees",
+                    "decision_point": false,
+                    "next_step": null,
+                    "ai_instructions": "Use Gmail to send the meeting invitation to the attendees",
+                    "requirements_needed": [],
+                    "communication_mode": "email",
+                    "channels": [
+                        "gmail"
+                    ],
+                    "function_call": {
+                        "function_name": "gmail.send_Meeting_invite_mail",
+                        "arguments": {
+                            "receipent_emails": [
+                                "jon@gmail.com",
+                                "kaka@gmail.com"
+                            ],
+                            "bcc_list": [],
+                            "subject": "Meeting Invitation: Discussion about laptop for Eli",
+                            "body_html": "{step_2.email_body}"
+                        }
+                    }
+                }
+            ]
+        }
+    }
+}

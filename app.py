@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, request
 from flask_compress import Compress
 from google_route.routes import google_bp
 from facebook_route.routes import facebook_bp
@@ -48,8 +48,60 @@ BASE_ORGINS = [
     "https://www.bytoid.ai",
     "https://bytoid.ai",
     "https://dev.bytoid.ai",
+    "http://localhost:8081",
+    'bytoid://',
+    'user-app://',
+    'http://localhost:19000',
+    'http://localhost:19006',
+    'https://auth.expo.io',
 ]
 # register_session_check(app)
+
+ALLOWED_ORIGINS = {o.rstrip("/") for o in BASE_ORGINS}
+
+ALLOWED_SCHEMES = ['bytoid', 'user-app', 'exp']
+
+def is_origin_allowed(origin):
+    """Check if origin is allowed"""
+    # No origin header = native mobile app making API request
+    if not origin:
+        return True
+    
+    # Check exact matches (web/development)
+    if origin in ALLOWED_ORIGINS:
+        return True
+    
+    # Check if origin starts with allowed scheme (mobile OAuth)
+    for scheme in ALLOWED_SCHEMES:
+        if origin.startswith(f'{scheme}://'):
+            return True
+    
+    # Allow any localhost port (development)
+    if origin.startswith('http://localhost:'):
+        return True
+    
+    return False
+
+@app.after_request
+def after_request(response):
+    origin = request.headers.get('Origin')
+
+    if is_origin_allowed(origin):
+        # If no origin (mobile app), use *
+        # If has origin, echo it back
+        response.headers['Access-Control-Allow-Origin'] = origin if origin else '*'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+        response.headers['Access-Control-Max-Age'] = '3600'
+
+    return response
+
+# Handle preflight OPTIONS requests
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_options(path):
+    return '', 204
+
 
 CORS(
     app,

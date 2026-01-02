@@ -23,6 +23,9 @@ from utils.s3_utils import (
     save_yaml_to_s3,
     upload_any_file,
 )
+from credits_route.route import Credits
+from request_context import current_user_id
+
 
 logger = get_logger(__name__)
 from dotenv import load_dotenv
@@ -116,12 +119,13 @@ def generate_yaml_ques(usecase, prompts, industry, response_text):
     return {"UseCase": usecase, "questions": question_list}
 
 
-def generate_yaml_ques_batch(usecases_with_docs, prompts, industry):
-    questions_json = generate_usecases_questions_batch(
+async def generate_yaml_ques_batch(usecases_with_docs, prompts, industry, userid):
+    questions_json = await generate_usecases_questions_batch(
         prompts.get("usecase_prompt_template"),
         "gpt-3.5-turbo",
         industry,
         usecases_with_docs,
+        userid=userid,
     )
     # logger.info(f"[🔍] Generated questions for {questions_json} industry.")
 
@@ -139,51 +143,76 @@ def generate_yaml_ques_batch(usecases_with_docs, prompts, industry):
 
 
 async def fetch_ques_with_docs(
-    usecases: list[str], userid: str, filenames: list[str]
+    usecases: list[str], userid: str, contacts: list[str]
 ) -> list[dict]:
-    # embeddings = OpenAIEmbeddings(
-    #     model="text-embedding-3-large",
-    #     openai_api_key=os.getenv("OPENAI_API_KEY"),
-    #     dimensions=3072,
-    # )
-    embeddings = get_firework_embedding()
-
-    vectors = embeddings.embed_documents(usecases)
-    payload = BatchQueryData(
-        user_id=userid,
-        embeddings=vectors,
-        top_k=1,
-        filenames=filenames,
-    )
+    from agent_route.lance_agent import LanceClient
 
     try:
-        res = LanceDBServer()
-        batch_results = await res.query_vector_batch(payload)
+        embeddings = get_firework_embedding()
+        vectors = embeddings.embed_documents(usecases)
+
+        total_input_chars = sum(len(u) for u in usecases)
+        # total_output_chars = 0
+        # total_output_chars += sum(len(vec) for vec in vectors)
+        total_output_chars = len(vectors)
+        total_chars = total_input_chars + total_output_chars
+
+        credits = Credits()
+        await credits.update_ai_credits_redis(
+            user_id=userid,
+            credit_type="embedding",
+            total_chars=total_chars,
+        )
     except Exception as e:
-        logger.error(f"[!] Batch query failed: {e}")
-        return []
+        print(f"error in fetch_ques_with_docs:{e} ")
 
-    usecases_with_docs = []
-    for usecase, results in zip(usecases, batch_results):
-        for r in results:
-            usecases_with_docs.append(
-                {
-                    "query": usecase,
-                    "response_text": r["text"].strip(),
-                    "filename": r.get("foldername", "").strip(),
-                    "doc_value": r.get("_distance", ""),
-                }
-            )
+    res = LanceClient(user_id=userid)
 
-    return usecases_with_docs
+    async def run_query(usecase: str, vec):
+        query_input = QueryInput(
+            user_id=userid,
+            query_text=usecase,
+            top_k=1,
+        )
+        value = await res.mixed_query_vector(
+            query_input=query_input, sender_email=contacts, vector=vec, wfchecker=True
+        )
+        if isinstance(value, str):
+            return {
+                "query": usecase,
+                "response_text": value,
+            }
+        return None
+
+    tasks = [run_query(usecase, vec) for usecase, vec in zip(usecases, vectors)]
+
+    results = await asyncio.gather(*tasks)
+
+    # remove None entries
+    return [r for r in results if r]
 
 
 async def fetch_usecases_with_docs(
     usecases: list[str], userid: str, filenames: list[str]
 ) -> list[dict]:
 
-    embeddings = get_firework_embedding()
+    total_input_chars = 0
+    total_output_chars = 0
+    embeddings = await get_firework_embedding()
     vectors = embeddings.embed_documents(usecases)
+
+    total_input_chars = sum(len(u) for u in usecases)
+    # total_output_chars += sum(len(vec) for vec in vectors)
+    total_output_chars = len(vectors)
+
+    total_chars = total_input_chars + total_output_chars
+
+    credits = Credits()
+    await credits.update_ai_credits_redis(
+        user_id=userid,
+        credit_type="embedding",
+        total_chars=total_chars,
+    )
 
     batch_payload = BatchQueryData(
         user_id=userid,
@@ -300,7 +329,7 @@ def append_to_failed_no_duplicates(failed_data, new_entries, passed_data):
     return failed_data
 
 
-def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
+async def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
     if not filenames or not isinstance(filenames, list):
         logger.warning("⚠ No filenames passed for QA processing.")
         return None
@@ -335,67 +364,77 @@ def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
         failed_data = remove_entries_for_files(failed_data, filenames)
 
     print(f"---------after failed_data")
-
-    # Step 1: Fetch docs & generate questions
-    usecases_with_docs = asyncio.run(
-        fetch_usecases_with_docs(usecases, userid, filenames=filenames)
-    )
-    all_entries = generate_yaml_ques_batch(usecases_with_docs, prompts, industry)
-    logger.info(f"✅ Generated {len(all_entries)} question entries for {industry}.")
-
-    # Step 2: Extract actual questions
-    all_ques, actual_to_rephrased, actual_to_quote = [], {}, {}
-    for entry in all_entries:
-        for q in entry.get("questions", []):
-            actual = q.get("actual_one", "").strip()
-            rephrased = q.get("rephrased", "").strip()
-            quote = q.get("quote", "").strip()
-            if actual:
-                all_ques.append(actual)
-                actual_to_rephrased[actual] = rephrased
-                actual_to_quote[actual] = quote
-
-    # Step 3: Get answers & evaluate
-    content = asyncio.run(fetch_ques_with_docs(all_ques, userid, filenames=filenames))
-    batch_size = 10
     valid_responses, clarification_responses = [], []
+    # Step 1: Fetch docs & generate questions
 
-    for i in range(0, len(content), batch_size):
-        batch = content[i : i + batch_size]
-        res_raw = evaluator_batch_llama(
-            prompts.get("new_response_validator_batch"), batch, industry
+    try:
+        usecases_with_docs = await fetch_usecases_with_docs(
+            usecases, userid, filenames=filenames
         )
 
-        match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)
-        try:
-            res_json = yaml.safe_load(match.group(0)) if match else []
-        except Exception as e:
-            logger.error(f"❌ Error parsing evaluator JSON: {e}")
-            res_json = []
+        all_entries = await generate_yaml_ques_batch(
+            usecases_with_docs, prompts, industry, userid=userid
+        )
+        logger.info(f"✅ Generated {len(all_entries)} question entries for {industry}.")
 
-        for original_item, eval_result in zip(batch, res_json):
-            actual_q = original_item["query"]
-            related_res = eval_result.get("related", False)
-            usecase_res = eval_result.get("has_usecase_details", False)
-            filename = original_item.get("filename", "").strip()
-            distvalue = original_item.get("doc_value", "")
+        # Step 2: Extract actual questions
+        all_ques, actual_to_rephrased, actual_to_quote = [], {}, {}
+        for entry in all_entries:
+            for q in entry.get("questions", []):
+                actual = q.get("actual_one", "").strip()
+                rephrased = q.get("rephrased", "").strip()
+                quote = q.get("quote", "").strip()
+                if actual:
+                    all_ques.append(actual)
+                    actual_to_rephrased[actual] = rephrased
+                    actual_to_quote[actual] = quote
 
-            entry_obj = {
-                "User": actual_q,
-                "Rephrased Question": actual_to_rephrased.get(actual_q, ""),
-                "Ai Response": eval_result.get("explanation", ""),
-                "quote": actual_to_quote.get(actual_q, ""),
-                "filename": filename,
-                "doc_value": distvalue,
-            }
+        # Step 3: Get answers & evaluate
+        content = await fetch_ques_with_docs(all_ques, userid, filenames=filenames)
+        batch_size = 10
 
-            if related_res and usecase_res:
-                entry_obj["date_processed"] = datetime.now().isoformat(
-                    timespec="seconds"
-                )
-                valid_responses.append(entry_obj)
-            else:
-                clarification_responses.append(entry_obj)
+        for i in range(0, len(content), batch_size):
+            batch = content[i : i + batch_size]
+            res_raw = await evaluator_batch_llama(
+                prompts.get("new_response_validator_batch"),
+                batch,
+                industry,
+                userid=userid,
+            )
+
+            match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)
+            try:
+                res_json = yaml.safe_load(match.group(0)) if match else []
+            except Exception as e:
+                logger.error(f"❌ Error parsing evaluator JSON: {e}")
+                res_json = []
+
+            for original_item, eval_result in zip(batch, res_json):
+                actual_q = original_item["query"]
+                related_res = eval_result.get("related", False)
+                usecase_res = eval_result.get("has_usecase_details", False)
+                filename = original_item.get("filename", "").strip()
+                distvalue = original_item.get("doc_value", "")
+
+                entry_obj = {
+                    "User": actual_q,
+                    "Rephrased Question": actual_to_rephrased.get(actual_q, ""),
+                    "Ai Response": eval_result.get("explanation", ""),
+                    "quote": actual_to_quote.get(actual_q, ""),
+                    "filename": filename,
+                    "doc_value": distvalue,
+                }
+
+                if related_res and usecase_res:
+                    entry_obj["date_processed"] = datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+                    valid_responses.append(entry_obj)
+                else:
+                    clarification_responses.append(entry_obj)
+
+    except Exception as e:
+        print(f"error in preProcessDocWithUsecases: {e} ")
 
     # Step 4–6: Update passed/failed
     npassed_data = append_passed_with_ai_diff(passed_data, valid_responses)
