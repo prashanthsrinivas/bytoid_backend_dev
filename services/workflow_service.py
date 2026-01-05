@@ -1294,9 +1294,9 @@ class WorkflowRunnerV2:
                     return
 
                 # # CONTACTS
-                # if k in CONTACT_KEYS:
-                #     add_to_contacts(v)
-                #     return
+                if k in CONTACT_KEYS:
+                    add_to_contacts(v)
+                    return
                 if is_placeholder_value(v):
                     return
 

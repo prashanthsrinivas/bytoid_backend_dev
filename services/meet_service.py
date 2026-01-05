@@ -775,7 +775,7 @@ class GoogleMeetService:
         preferred_date: str,
         start_time: str,
         end_time: str,
-        duration_minutes: int= 60,
+        duration_minutes: int = 60,
         days_to_check: int = 3,
         timezone: str = None,
     ) -> bool:

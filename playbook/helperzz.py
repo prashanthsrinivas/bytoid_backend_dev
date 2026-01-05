@@ -93,7 +93,7 @@ async def check_doc_context_needed(instruction_input, templatedata, userid):
 
     # response = get_fireworks_response(full_prompt, role="system")
     response = await get_fireworks_response2(
-        full_prompt, role="system", temp=0.4, user_id=userid
+        user_message=full_prompt, role="system", temp=0.4, user_id=userid
     )
 
     # print("len of respinse", len(response), response)
@@ -308,6 +308,7 @@ async def needs_internal_data(instruction_input, template_data, user_id):
     """
     # Step 1: Regex gate
     if not cheap_internal_data_hint(instruction_input):
+        print("no need for llm")
         return False  # no LLM call needed, safe shortcut
 
     # Step 2: LLM authoritative check
@@ -316,7 +317,7 @@ async def needs_internal_data(instruction_input, template_data, user_id):
         instruction_input_as_json=json.dumps(instruction_input, separators=(",", ":")),
     )
     functions_res = await get_fireworks_response2(
-        main_fnprompt, role="system", temp=0, user_id=user_id
+        user_message=main_fnprompt, role="system", temp=0, user_id=user_id
     )
 
     # Clean response
@@ -331,8 +332,8 @@ async def needs_internal_data(instruction_input, template_data, user_id):
             "status": "Not possible",
             "reason": f"Invalid JSON returned by functions_checker: {str(e)}",
         }
-
-    return validated.get("needs_internal_data", False, user_id=user_id)
+    # print("validated", validated)
+    return validated.get("needs_internal_data", False)
 
 
 async def minimize_functions(
@@ -346,10 +347,11 @@ async def minimize_functions(
     main_fnprompt = fn_temp_prompt.format(
         instruction_input_as_json=json.dumps(instruction_input, separators=(",", ":")),
         all_function_details=json.dumps(functions_ds, separators=(",", ":")),
+        Actucal_user_socaial=actual_social,
     )
 
     functions_res = await get_fireworks_response2(
-        main_fnprompt, role="system", temp=0, user_id=userid
+        user_message=main_fnprompt, role="system", temp=0, user_id=userid
     )
 
     # ----------------------------
@@ -444,10 +446,14 @@ async def create_playbook(
     actual_social = fetch_user_Social(user_id=userid)
 
     # token = current_user_id.set(userid)
+    # print("actuial social", actual_social)
     try:
         instruction_input = returninsructdata(data)
+        # print("instruction input", instruction_input)
         result = await needs_internal_data(
-            template_data=template_data, instruction_input=instruction_input
+            template_data=template_data,
+            instruction_input=instruction_input,
+            user_id=userid,
         )
         print("result -->", result)
 
@@ -528,7 +534,7 @@ async def create_playbook(
             )
 
         raw_response = await get_fireworks_response2(
-            full_prompt, role="system", user_id=userid
+            user_message=full_prompt, role="system", user_id=userid
         )
         # print("raw response", raw_response)
         # Clean AI response
@@ -545,7 +551,7 @@ async def create_playbook(
             functions_data=json.dumps(functions_datas, separators=(",", ":")),
         )
         raw_response = await get_evaluator_fireworks(
-            base_Eval_prompt, role="system", user_id=userid
+            user_message=base_Eval_prompt, role="system", user_id=userid
         )
         print("raw response", len(raw_response))
         # Clean AI response
@@ -557,7 +563,8 @@ async def create_playbook(
         filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
         ensure_dir(f"{pathconfig.basepath}/test/")
         filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
-
+    except Exception as e:
+        print("error on playbook creation", e)
     finally:
         #   current_user_id.reset(token)
         print("ss")

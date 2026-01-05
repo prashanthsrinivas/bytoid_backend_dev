@@ -1491,6 +1491,101 @@ def test_email_checks():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@playbook_bp.route("/schedule-workflow-checker", methods=["POST"])
+def schedule_workflow_checker():
+    body = request.json
+
+    schedule_type = body["type"]
+    userid = body["userid"]
+    contacts = body.get("contacts", [])
+    filename = body["filename"]
+    timezone = body.get("timezone", "UTC")
+
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{userid}/workflow/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        return (
+            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
+            404,
+        )
+
+    # --------------------------------------------------
+    # 1. RESOLVE SCHEDULE TIME → ISO 8601
+    # --------------------------------------------------
+    try:
+        if schedule_type == "one_time":
+            scheduled_dt = body["datetime"]
+
+        elif schedule_type == "daily":
+            scheduled_dt = SchedulerService.preview_next_daily_time(
+                body["hour"], body["minute"], timezone
+            )
+
+        elif schedule_type == "weekly":
+            scheduled_dt = SchedulerService.preview_next_weekly_time(
+                body["weekday"], body["hour"], body["minute"], timezone
+            )
+        else:
+            return jsonify({"error": "Invalid schedule type"}), 400
+
+    except Exception as e:
+        return jsonify({"error": f"Invalid schedule data: {str(e)}"}), 400
+
+    # --------------------------------------------------
+    # 2. BUILD PROMPT SAFELY
+    # --------------------------------------------------
+    template = PLAY_TEMPLATE
+    prompt = template.get("validate_schedule_workflow_problems")
+
+    base_workflow = {
+        "workflow": workflow_json.get("workflow"),
+        "input_data": workflow_json.get("input_data"),
+    }
+
+    full_prompt = (
+        prompt.replace("{workflow_json}", json.dumps(base_workflow, ensure_ascii=False))
+        .replace("{contacts}", json.dumps(contacts))
+        .replace("{schedule_time}", json.dumps(scheduled_dt))
+    )
+
+    # --------------------------------------------------
+    # 3. CALL LLM (SYNC SAFE)
+    # --------------------------------------------------
+    llm_output = asyncio.run(
+        get_fireworks_response2(
+            user_message=full_prompt,
+            role="system",
+            temp=0.3,
+            user_id=userid,
+        )
+    )
+
+    llm_output = re.sub(
+        r"^```(?:json)?\s*|\s*```$", "", llm_output, flags=re.MULTILINE
+    ).strip()
+
+    # --------------------------------------------------
+    # 4. STRICT JSON PARSE
+    # --------------------------------------------------
+    try:
+        response = json.loads(llm_output)
+        if not isinstance(response, list):
+            raise ValueError("Output must be a list")
+    except Exception:
+        return (
+            jsonify(
+                {"error": "Invalid JSON returned from LLM", "raw_output": llm_output}
+            ),
+            500,
+        )
+
+    return jsonify(response)
+
+
 @playbook_bp.route("/schedule-workflow", methods=["POST"])
 def schedule_workflow():
     body = request.json

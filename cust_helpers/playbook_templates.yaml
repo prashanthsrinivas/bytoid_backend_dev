@@ -39,6 +39,7 @@ functions_checker: |
   - instruction_input fields
   - each step implied by the instruction
   - function name, description, args, and returns
+  - Actucal_user_socaial is a variable which tells us that user logged in via google or microsoft. which be used if user not mentioned any platform.
 
   --------------------------------------------------
   WHAT COUNTS AS A REQUIRED FUNCTION
@@ -167,6 +168,9 @@ functions_checker: |
 
   AVAILABLE FUNCTIONS:
   {all_function_details}
+
+  Actucal_user_socaial:
+  {Actucal_user_socaial}
 
   --------------------------------------------------
   OUTPUT FORMAT (JSON ONLY)
@@ -3301,7 +3305,7 @@ validate_schedule_workflow_problems: |
   merging_rules:
   - If both email and time problems exist in the same step, include both
   - If only one problem exists, include only that field
-  - contacts must be [] if no email issue
+  - contacts must be `All` if no email issue
   - time must be null if no time issue
 
   empty_result_rule:
