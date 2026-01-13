@@ -1,15 +1,15 @@
 import asyncio
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import random
 import os, time
 from typing import *
 import re
 from cust_helpers import pathconfig
-from db.db_checkers import fetch_contacts_by_user, get_userinfo
+from db.db_checkers import fetch_contacts_by_user, fetch_user_Social, get_userinfo
 from db.rds_db import connect_to_rds
-from playbook.helperzz import save_playbook_to_s3
+from playbook.helperzz import save_execution_playbook_to_s3, save_playbook_to_s3
 from utils.base_logger import get_logger
 from utils.fireworkzz import (
     get_fireworks_response,
@@ -42,17 +42,23 @@ class WorkflowRunnerV2:
         contacts=None,
         testing=False,
         on_update=None,
+        execution_id=None,
+        execution_unique_key=None,
     ):
         self.userid = userid
         self.filename = filename
         self.connection = connect_to_rds()
-        self.wf_loc = f"{userid}/workflow/{filename}"
+        self.basename = os.path.splitext(filename)[0]
+        self.wf_loc = f"{userid}/workflow/{self.basename}/{filename}"
+        self.on_loc = f"{userid}/workflow/{self.basename}/{execution_id}.json"
         base_workflow = workflowJson or read_json_from_s3(self.wf_loc)
         self.workflow_json = copy.deepcopy(base_workflow)
         self.userdetails = get_userinfo(self.userid)
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
         self.testing = testing
         self.current_wf_id = None
+        self.execution_id = execution_id
+        self.execution_unique_key = execution_unique_key
         # Correctly load steps from workflow['steps'] instead of top-level steps
         workflow_steps = self.workflow_json.get("workflow", {}).get("steps", [])
         self.steps = {step["id"]: step for step in workflow_steps}
@@ -64,7 +70,11 @@ class WorkflowRunnerV2:
         self.logger = get_logger(__name__)
         self.ai_made_output = {}
         self.current_implemented_functions = read_function_jsons()
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.execution_date = self.started_at.split("T")[0]
         self.on_update = on_update
+        if not self.testing:
+            self.workflow_json["input_data"]["contacts"] = self.contacts
 
     def is_yes(self, text: str) -> bool:
         yes_words = {
@@ -90,10 +100,29 @@ class WorkflowRunnerV2:
     def get_current_execution_data(self):
         if "testing" in self.workflow_json and self.testing:
             return self.workflow_json["testing"]
-        elif "online" in self.workflow_json and not self.testing:
-            return self.workflow_json["online"]
         else:
-            return {}
+            exec_json = read_json_from_s3(self.on_loc) or {}
+            return exec_json
+        # return original_json
+
+    def fetchusersocialandtimezone(self):
+        main_user_account_type = fetch_user_Social(
+            user_id=self.userid, connection=self.connection
+        )
+        timezone = None
+        if main_user_account_type == "google":
+            from services.meet_service import GoogleMeetService
+
+            timezone = GoogleMeetService.get_user_timezone()
+        elif main_user_account_type == "microsoft":
+            from services.microsoft_calender_service import (
+                MicrosoftGraphCalendarService,
+            )
+
+            timezone = MicrosoftGraphCalendarService.get_user_timezone()
+        else:
+            timezone = "UTC"
+        return main_user_account_type, timezone
 
     def get_current_chats(self):
         allchats = self.workflow_json.get("chat", [])
@@ -125,6 +154,41 @@ class WorkflowRunnerV2:
     def send_update(self, event, data):
         if self.on_update:
             self.on_update(event, data)
+
+    def _get_next_uncompleted_step(self):
+        """
+        Environment-agnostic:
+        Supports both testing format:
+        { "1": {...}, "2": {...} }
+        and online format:
+        { "steps": { "1": {...}, "2": {...} } }
+        """
+        execution_data = self.previous_data or {}
+        # print("execution data", execution_data)
+
+        # 🔹 Normalize completed steps
+        if "steps" in execution_data and isinstance(execution_data["steps"], dict):
+            completed_steps = execution_data["steps"]  # online
+        else:
+            completed_steps = execution_data  # testing
+
+        completed_ids = {
+            int(k)
+            for k in completed_steps.keys()
+            if isinstance(k, (str, int)) and str(k).isdigit()
+        }
+        print("completed ids", completed_ids)
+
+        # 🔹 Always respect workflow order
+        ordered_steps = sorted(self.steps.values(), key=lambda s: int(s.get("id", 0)))
+        # print("ordered steps", ordered_steps)
+
+        for step in ordered_steps:
+            step_id = int(step.get("id"))
+            if step_id not in completed_ids:
+                return step_id
+
+        return None
 
     def check_affirmative(self, userinput):
         affirmative_words = [
@@ -438,6 +502,134 @@ class WorkflowRunnerV2:
         newresultds = await self.get_parsed_fireworks_response(prompt_text)
         print("res workflow detector", newresultds)
         return newresultds
+
+    def update_statuscount(self, count, status):
+        workflow_json = self.workflow_json or {}
+        autotest = workflow_json.get("autotest", {})
+
+        # ✅ use incoming values
+        if count is not None:
+            autotest["count"] = count
+
+        if status is not None:
+            autotest["status"] = status
+
+        workflow_json["autotest"] = autotest
+        self.workflow_json = workflow_json
+
+        return self.saveworkflowtos3()
+
+    async def autocheckerworkflow(self):
+        template_data = PLAY_TEMPLATE
+        prompt_instructions = template_data.get("autoworkflow_initiator")
+
+        if not isinstance(prompt_instructions, str):
+            raise TypeError(
+                "Invalid template structure: expected string for 'autoworkflow_initiator'."
+            )
+
+        # =========================
+        # Unified execution context
+        # =========================
+        execution_data = self.previous_data or {}
+        workflow_json = self.workflow_json or {}
+        workflow = workflow_json.get("workflow", {})
+        inputdata = self.input_data or {}
+        steps = self.steps or {}
+
+        # =========================
+        # Detect next uncompleted step
+        # =========================
+        next_step_id = self._get_next_uncompleted_step()
+        print("next step", next_step_id)
+
+        # =========================
+        # ✅ ALL STEPS COMPLETED
+        # =========================
+        if not next_step_id or next_step_id not in steps:
+            autotest = workflow_json.get("autotest", {})
+
+            count = autotest.get("count", 0)
+            status = autotest.get("status", False)
+
+            if status and count > 0:
+                val = count - 1
+                autotest["count"] = val
+                if val == 0:
+                    autotest["status"] = False
+
+                workflow_json["autotest"] = autotest
+
+                self.saveworkflowtos3()
+
+                if count > 1:
+                    return "clear all steps for retry"
+
+                return "All steps in the workflow have been completed successfully."
+
+            return "All steps in the workflow have been completed successfully."
+
+        # =========================
+        # Chat context (tone only)
+        # =========================
+        chats_obj = self.get_current_chats()
+        chats = chats_obj.get("chat", [])
+        last_chat = chats[-1] if chats else {}
+
+        # =========================
+        # Step titles for phrasing
+        # =========================
+        steptitles = [
+            {
+                str(step["id"]): {
+                    "title": step["title"],
+                    "description": step["objective"],
+                }
+            }
+            for _, step in steps.items()
+        ]
+
+        now = datetime.now().isoformat()
+
+        # =========================
+        # Prompt construction
+        # =========================
+        prompt_text = (
+            prompt_instructions.replace("{{step_id}}", str(next_step_id))
+            .replace(
+                "{{workflow_json}}",
+                json.dumps(workflow, ensure_ascii=False, indent=2),
+            )
+            .replace(
+                "{{previous_execution}}",
+                json.dumps(execution_data, ensure_ascii=False, indent=2),
+            )
+            .replace(
+                "{{current_chats}}",
+                json.dumps(chats, ensure_ascii=False, indent=2),
+            )
+            .replace(
+                "{{last_chat}}",
+                json.dumps(last_chat, ensure_ascii=False, indent=2),
+            )
+            .replace(
+                "{{workflow_titles}}",
+                json.dumps(steptitles, ensure_ascii=False, indent=2),
+            )
+            .replace("{{input_data.title}}", inputdata.get("title", ""))
+            .replace("{{input_data.description}}", inputdata.get("description", ""))
+            .replace("{{todays_datetime}}", now)
+        ).strip()
+
+        # =========================
+        # LLM → human-style request
+        # =========================
+        chat_response = await get_fireworks_response(prompt_text, "user", self.userid)
+
+        if isinstance(chat_response, dict):
+            chat_response = chat_response.get("text", "")
+
+        return chat_response.strip()
 
     async def ai_detect_current_step(self, userinput):
         template_data = PLAY_TEMPLATE
@@ -803,6 +995,68 @@ class WorkflowRunnerV2:
         # print("res ai_execute_helper", result)
         return result
 
+    async def ai_scheudle_step(self, stepid, step):
+        from services.scheduler_service import SchedulerService
+
+        cfg = step.get("is_scheduler")
+        if not cfg:
+            return None
+
+        # Prevent duplicate scheduling
+        if step.get("scheduler_meta", {}).get("scheduled"):
+            return None
+
+        days = cfg.get("days")
+        hours = cfg.get("hours")
+        time_str = cfg.get("time")
+
+        now = datetime.now()
+        social, user_timezone = self.fetchusersocialandtimezone()
+
+        # ---------------------------
+        # Resolve run datetime
+        # ---------------------------
+        if time_str:
+            hh, mm = map(int, time_str.split(":"))
+            run_at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if run_at <= now:
+                run_at += timedelta(days=1)
+        else:
+            run_at = now + timedelta(days=days or 0, hours=hours or 0)
+
+        # ---------------------------
+        # Schedule SINGLE step
+        # ---------------------------
+        result = SchedulerService.schedule_single_step(
+            run_at=run_at,
+            userid=self.userid,
+            filename=self.filename,
+            stepid=stepid,
+            timezone=user_timezone,
+        )
+
+        # ---------------------------
+        # Persist metadata
+        # ---------------------------
+        step.setdefault("scheduler_meta", {})
+        step["scheduler_meta"].update(
+            {
+                "scheduled": True,
+                "task_id": result["task_id"],
+                "run_at_local": run_at.isoformat(),
+                "run_at_utc": result["run_at_utc"],
+            }
+        )
+
+        # # {
+        # #   "days": <number | null>,
+        # #   "hours": <number | null>,
+        # #   "time": "<HH:MM | null>"
+        # # }
+        # pass
+        self.saveworkflowtos3()
+        return result
+
     async def get_parsed_fireworks_response(self, prompt_text, role="system", temp=0.3):
         """
         Get and parse Fireworks response.
@@ -974,30 +1228,53 @@ class WorkflowRunnerV2:
 
         return False
 
-    def saveworkflowtos3(self):
-        """
-        Saves workflow updates to S3 while protecting core sections like 'input_data' and 'workflow'.
-        All other keys can be added or updated freely.
-        """
-        # Keys that must NOT be modified
+    def saveworkflowtos3(self, finished=None):
         unallowed_keys = {"input_data", "workflow"}
 
-        # Read the original workflow JSON from S3
         original_json = read_json_from_s3(self.wf_loc)
-
-        # Update all keys except protected ones
+        # Update workflow metadata
         for key, value in self.workflow_json.items():
             if key not in unallowed_keys:
-                original_json[key] = value  # update or add new key
+                original_json[key] = value
 
-        # Save updated workflow back to S3
+        if self.execution_id and not self.testing:
+            original_json.setdefault("executions", {})
+            executions_for_day = original_json["executions"].setdefault(
+                self.execution_date, {}
+            )
+            # print("executions currently",executions_for_day)
+
+            clf = os.getenv("CLOUDFRNT")
+            basepathexec = f"{clf}/{self.on_loc}"
+
+            # 🔥 ALWAYS CREATE NEW EXECUTION
+            executions_for_day[self.execution_id] = {
+                "execution_id": self.execution_id,
+                "started_at": self.started_at,
+                "execution_path": basepathexec,
+                "execution_unique_key": self.execution_unique_key,
+                "status": "running",
+            }
+            # print("new executions or present",executions_for_day)
+
+            if finished:
+                print("executions are finished", finished)
+                executions_for_day[self.execution_id]["status"] = "completed"
+
+                current_schedule = original_json.get("current_schedule")
+                if current_schedule:
+                    original_json.setdefault("prev_schedules", []).append(
+                        current_schedule
+                    )
+
+                original_json["current_schedule"] = None
+
         return save_playbook_to_s3(
             original_json,
             self.userid,
             "workflow updated successfully",
             self.filename,
         )
-        # return original_json
 
     async def execute(self, userinput=None):
         current_step_id = self._get_first_step()
@@ -1116,27 +1393,46 @@ class WorkflowRunnerV2:
                     break
 
         now = datetime.now()
-        chat_entry = {
-            "id": self.generate_unique_id([e["id"] for e in self.chat_history]),
-            "date": now.isoformat(),
-            "input": userinput or "run workflow",
-            "output": "workflow executed successfully",
-            "status": "success",
-            "step_id": "All",
-        }
+        if self.testing:
+            chat_entry = {
+                "id": self.generate_unique_id([e["id"] for e in self.chat_history]),
+                "date": now.isoformat(),
+                "input": userinput or "Workflow execution initiated",
+                "output": "The process was executed successfully.",
+                "status": "success",
+                "step_id": "All",
+            }
 
-        self.workflow_json["chat"].append(chat_entry)
-        new_summary = await self.get_chat_summarization()
-        # ✅ Correct chat_log handling
-        chat_log = self.workflow_json.setdefault("chat_log", {})
-        chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
-        chat_log["chat_summarization"] = new_summary
-        # --- Save workflow ---
-        self.saveworkflowtos3()
+            self.workflow_json["chat"].append(chat_entry)
+            new_summary = await self.get_chat_summarization()
+            # ✅ Correct chat_log handling
+            chat_log = self.workflow_json.setdefault("chat_log", {})
+            chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
+            chat_log["chat_summarization"] = new_summary
+            # --- Save workflow ---
+            self.saveworkflowtos3()
+        else:
+            self.saveworkflowtos3(finished=True)
         return self.execution_log
 
     def get_execution_log(self) -> List[Dict[str, Any]]:
         return self.execution_log
+
+    def append_execution_step_log(self, step_id, log_entry):
+        if not self.execution_id or self.testing:
+            return
+
+        exec_json = read_json_from_s3(self.on_loc) or {}
+
+        exec_json.setdefault("steps", {})
+        exec_json["steps"][str(step_id)] = log_entry
+
+        save_execution_playbook_to_s3(
+            exec_json,
+            self.userid,
+            "execution step logged",
+            self.on_loc,
+        )
 
     def _get_first_step(self) -> Optional[str]:
         referenced = set()
@@ -1294,7 +1590,7 @@ class WorkflowRunnerV2:
                     return
 
                 # # CONTACTS
-                if k in CONTACT_KEYS:
+                if k in CONTACT_KEYS and not self.testing:
                     add_to_contacts(v)
                     return
                 if is_placeholder_value(v):
@@ -1507,30 +1803,71 @@ class WorkflowRunnerV2:
         # LOG RESULTS (TESTING / ONLINE)
         # ==========================================================
         if execution_status == "success" and compl:
-            now = datetime.now()
+            now = datetime.utcnow()
+            self.workflow_json.setdefault("chat", [])
+            self.workflow_json.setdefault("execution_logs", [])
+            self.workflow_json.setdefault("pre_user_data", {})
+
+            chats = self.workflow_json["chat"]
+
+            # Generate chat id
+            if chats:
+                existing_ids = {entry["id"] for entry in chats}
+                chid = self.generate_unique_id(existing_ids)
+            else:
+                chid = str(uuid.uuid4().int)[0:6]
 
             if result.get("step_id"):
                 step_id = int(result["step_id"])
-                key = str(step_id)
 
                 step = self.steps[step_id]
                 title = step.get("title")
+                if self.testing:
+                    log_entry = {
+                        "title": title,
+                        "date": now.isoformat(),
+                        "input": "complete execution",
+                        "output": result.get("message"),
+                        "status": execution_status,
+                        "details": execution_result or execution_details,
+                    }
+                else:
+                    log_entry = {
+                        "title": title,
+                        "date": now.isoformat(),
+                        "status": execution_status,
+                        "details": execution_result or execution_details,
+                    }
 
-                log_entry = {
-                    "title": title,
-                    "date": now.isoformat(),
-                    "input": "complete execution",
-                    "output": result.get("message"),
-                    "status": execution_status,
-                    "details": execution_result or execution_details,
-                }
-                # print("log entry", log_entry)
+                # ----------------------------------------
+                # TESTING → store inside workflow JSON
+                # ----------------------------------------
+                if self.testing:
+                    chat_entry = {
+                        "id": chid,
+                        "date": now.isoformat(),
+                        "input": f"running {title}",
+                        "output": result.get("message"),
+                        "status": execution_status,
+                        "step_id": result.get("step_id") or step_id,
+                    }
 
-                target_section = "testing" if self.testing else "online"
-                self.workflow_json.setdefault(target_section, {})
-                self.workflow_json[target_section][key] = log_entry
+                    self.workflow_json["chat"].append(chat_entry)
 
-            self.saveworkflowtos3()
+                    # Summarize chat
+                    new_summary = await self.get_chat_summarization()
+                    chat_log = self.workflow_json.setdefault("chat_log", {})
+                    chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
+                    chat_log["chat_summarization"] = new_summary
+                    self.workflow_json.setdefault("testing", {})
+                    self.workflow_json["testing"][str(step_id)] = log_entry
+                    self.saveworkflowtos3()
+
+                # ----------------------------------------
+                # ONLINE → store in execution file
+                # ----------------------------------------
+                else:
+                    self.append_execution_step_log(step_id, log_entry)
 
         return result
 
@@ -1631,12 +1968,13 @@ class WorkflowRunnerV2:
                 testing=self.testing,
                 workflow=self.workflow_json,
                 wf_id=self.current_wf_id,
+                connection=self.connection,
             )
         # print("triggering google service")
         elif service_prefix == "gmail":
             instance = service_class(
                 user_id=self.userid,
-                connection=None,
+                connection=self.connection,
                 testing=self.testing,
                 workflow=self.workflow_json,
                 wf_id=self.current_wf_id,
@@ -1705,6 +2043,44 @@ class WorkflowRunnerV2:
 
         # return "ok"
 
+    async def savechatcheck(self, ai_result, user_input):
+        try:
+            response_msg = ai_result.get("response_message") or ai_result.get(
+                "clarification_message", ""
+            )
+            if response_msg:
+                now = datetime.now()
+                chat_entry = {
+                    "id": self.generate_unique_id([e["id"] for e in self.chat_history]),
+                    "date": now.isoformat(),
+                    "input": user_input,
+                    "output": response_msg,
+                    "status": ai_result.get("log_status", "normal"),
+                    "step_id": ai_result.get("step_id"),
+                    "confirm_step": ai_result.get("confirm_step", False),
+                }
+
+                self.workflow_json.setdefault("chat", [])
+                self.workflow_json.setdefault("chat_log", {})
+                self.workflow_json.setdefault("last_ai_discovered", {})
+
+                self.workflow_json["chat"].append(chat_entry)
+
+                # Update last_ai_discovered if trigger_step exists
+                if ai_result.get("trigger_step"):
+                    self.workflow_json["last_ai_discovered"] = ai_result["trigger_step"]
+
+                # Update chat summary
+                new_summary = await self.get_chat_summarization()
+                chat_log = self.workflow_json["chat_log"]
+                chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
+                chat_log["chat_summarization"] = new_summary
+
+                self.saveworkflowtos3()
+
+        except Exception as e:
+            self.logger.warning(f"Failed to log chat entry: {e}")
+
     async def check_input_tone(self, user_input: str):
         result = await self.ai_input_intent_classifier(userinput=user_input)
         ai_result = {}
@@ -1739,6 +2115,28 @@ class WorkflowRunnerV2:
                                 valres = val["response_text"]
                                 user_input = f"{valres} where {user_input}"
                                 extracted_id = val["next_step_id"]
+                        if step.get("is_scheduler"):
+                            schedule_result = await self.ai_scheudle_step(
+                                extracted_id, step
+                            )
+
+                            ai_result = {
+                                "response_message": (
+                                    f"✅ Step **{step.get('title', extracted_id)}** has been scheduled.\n\n"
+                                    if schedule_result
+                                    else "⚠️ This step is already scheduled."
+                                ),
+                                "log_status": "workflow_scheduled",
+                                "step_id": extracted_id,
+                                "wf_single_runner": False,
+                                "confirm_step": False,
+                            }
+                            await self.savechatcheck(
+                                ai_result=ai_result, user_input=user_input
+                            )
+
+                            # IMPORTANT: hard stop downstream triggers
+                            return ai_result
 
                     route = await self.ai_detect_and_route_input(
                         userinput=user_input, extracted_id=extracted_id
@@ -1760,7 +2158,7 @@ class WorkflowRunnerV2:
                     # Decide execution vs clarification
                     # -------------------------------
                     if ai_result.get("wf_single_runner") and not ai_result.get(
-                        "clarification_needed"
+                        "clarification_message"
                     ):
                         print("ai result data", ai_result)
                         return await self.execute_from_text_input(
@@ -1823,42 +2221,7 @@ class WorkflowRunnerV2:
             return {"message": "problem with server."}
 
         # print("log chat check")
-        try:
-            response_msg = ai_result.get("response_message") or ai_result.get(
-                "clarification_message", ""
-            )
-            if response_msg:
-                now = datetime.now()
-                chat_entry = {
-                    "id": self.generate_unique_id([e["id"] for e in self.chat_history]),
-                    "date": now.isoformat(),
-                    "input": user_input,
-                    "output": response_msg,
-                    "status": ai_result.get("log_status", "normal"),
-                    "step_id": ai_result.get("step_id"),
-                    "confirm_step": ai_result.get("confirm_step", False),
-                }
-
-                self.workflow_json.setdefault("chat", [])
-                self.workflow_json.setdefault("chat_log", {})
-                self.workflow_json.setdefault("last_ai_discovered", {})
-
-                self.workflow_json["chat"].append(chat_entry)
-
-                # Update last_ai_discovered if trigger_step exists
-                if ai_result.get("trigger_step"):
-                    self.workflow_json["last_ai_discovered"] = ai_result["trigger_step"]
-
-                # Update chat summary
-                new_summary = await self.get_chat_summarization()
-                chat_log = self.workflow_json["chat_log"]
-                chat_log["last_chat_summarized"] = len(self.workflow_json["chat"])
-                chat_log["chat_summarization"] = new_summary
-
-                self.saveworkflowtos3()
-
-        except Exception as e:
-            self.logger.warning(f"Failed to log chat entry: {e}")
+        await self.savechatcheck(ai_result=ai_result, user_input=user_input)
 
         # Return AI result for frontend or further processing
         return ai_result
@@ -2085,8 +2448,18 @@ class WorkflowRunnerV2:
         # print(user_input)
         # return user_input
 
-    def _are_all_questions_answered(self):
+    def _question_answer_stats(self):
+        """
+        Returns:
+            {
+                "answered": int,
+                "total": int,
+                "all_answered": bool
+            }
+        """
         execution_data = self.previous_data
+        answered = 0
+        total = 0
 
         for step_data in execution_data.values():
             outputs = step_data.get("output", [])
@@ -2094,10 +2467,17 @@ class WorkflowRunnerV2:
                 continue
 
             for q in outputs:
-                if "answer" in q and q["answer"] is None:
-                    return False
+                # count only valid questions
+                if "answer" in q:
+                    total += 1
+                    if q.get("answer") is not None:
+                        answered += 1
 
-        return True
+        return {
+            "answered": answered,
+            "total": total,
+            "all_answered": total > 0 and answered == total,
+        }
 
     async def answer_questions(self, answer: str, qid: str, chid: str):
         execution_data = self.previous_data
@@ -2225,20 +2605,60 @@ class WorkflowRunnerV2:
         # -------------------------------------------------
         # 3. CHECK IF ALL QUESTIONS ANSWERED
         # -------------------------------------------------
-        all_answered = self._are_all_questions_answered()
+
+        stats = self._question_answer_stats()
+
+        all_answered = stats["all_answered"]
+        answered = stats["answered"]
+        total = stats["total"]
 
         message = (
-            "Answers saved successfully."
-            if not all_answered
-            else "All questions have been answered. Workflow can now proceed."
+            f"Responses have been saved successfully. "
+            f"{answered} of {total} questions have been completed."
         )
 
         if all_answered:
+            next_step_title = None
+
+            if last_step_id and last_step_id in self.steps:
+                current_step = self.steps[last_step_id]
+
+                # 1️⃣ Explicit next_step
+                next_step_id = current_step.get("next_step")
+
+                # 2️⃣ Fallback: implicit next step by ID
+                if not next_step_id:
+                    sorted_step_ids = sorted(self.steps.keys())
+                    try:
+                        current_index = sorted_step_ids.index(last_step_id)
+                        if current_index + 1 < len(sorted_step_ids):
+                            next_step_id = sorted_step_ids[current_index + 1]
+                    except ValueError:
+                        next_step_id = None
+
+                # 3️⃣ Resolve title
+                if next_step_id and next_step_id in self.steps:
+                    next_step_title = self.steps[next_step_id].get("title")
+
+            # -----------------------------
+            # Build user-facing message
+            # -----------------------------
+            if next_step_title:
+                message = (
+                    "All required questions have been answered successfully. "
+                    f"To continue, please initiate the next step: {next_step_title}."
+                )
+            else:
+                message = (
+                    "All required questions have been answered successfully. "
+                    "The process has now been completed."
+                )
+
             self.chat_history.append(
                 {
                     "id": uuid.uuid4().hex,
                     "date": now.isoformat(),
-                    "input": f"answering ....",
+                    "input": "Submitted responses to all pending questions",
                     "output": message,
                     "status": "success",
                     "step_id": last_step_id,

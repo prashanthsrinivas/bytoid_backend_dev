@@ -25,6 +25,10 @@ from utils.base_logger import get_logger
 from utils.normal import ensure_dir
 from utils.s3_utils import load_yaml_from_s3, save_yaml_to_s3
 from request_context import current_user_id
+from werkzeug.utils import secure_filename
+import uuid
+
+
 
 logger = get_logger(__name__)
 
@@ -126,6 +130,67 @@ def download_files_stream():
 
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
+
+@docs_agent_bps.route("/process-local", methods=["POST"])
+def process_local():
+
+
+    # 🔹 Get file
+    if "files" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files["files"]
+    print(f"file name : {file.filename}")
+
+    if file.filename == "":
+        return jsonify({"error": "No file selected"}), 400
+
+    # 🔹 Get form fields
+    user_id = request.form.get("user_id")
+    api_key = request.form.get("api_key")
+    source = request.form.get("source")
+
+    if not user_id or not api_key:
+        return jsonify({"error": "Missing user_id or api_key"}), 400
+
+    UPLOAD_FOLDER = f"uploads_{uuid.uuid4()}"
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+    # 🔹 Save file safely
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(file_path)
+
+    def event_stream():
+        yield "event: start\ndata: Starting processing...\n\n"
+
+        try:
+            all_file_data = asyncio.run(
+                process_and_update_yaml(
+                    all_downloaded_paths=[file_path],
+                    userid=user_id,          
+                    provider="local",
+                    folderpath=UPLOAD_FOLDER
+
+                )
+            )
+
+            yield (
+                "event: complete\n"
+                f"data: {json.dumps({'message': 'Successfully processed files', 'files': all_file_data})}\n\n"
+            )
+
+        except Exception as e:
+            yield (
+                "event: error\n"
+                f"data: {json.dumps({'error': str(e)})}\n\n"
+            )
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream"
+    )
 
 @docs_agent_bps.route("/get-usersDocs", methods=["Get"])
 def getUsersDocs():

@@ -148,7 +148,7 @@ async def fetch_ques_with_docs(
     from agent_route.lance_agent import LanceClient
 
     try:
-        embeddings = get_firework_embedding()
+        embeddings = await get_firework_embedding()
         vectors = embeddings.embed_documents(usecases)
 
         total_input_chars = sum(len(u) for u in usecases)

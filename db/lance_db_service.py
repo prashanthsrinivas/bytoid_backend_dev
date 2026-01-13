@@ -1066,6 +1066,42 @@ class LanceDBServer:
 
         start_date = end_date - timedelta(days=5)
 
+        print(
+        f"params -> "
+        f"start_date={start_date}, "
+        f"end_date={end_date}, "
+        f"user_id={user_id}, "
+        f"cursor={end_date}, "
+        f"user_id_again={user_id}, "
+        f"page_size={page_size}"
+    )
+
+
+        # query = """
+        # SELECT m.conversation_id_fk, m.sender_id, m.created_at
+        # FROM messages m
+        # JOIN (
+        #     SELECT m2.sender_id,
+        #         MAX(m2.created_at) AS latest_created_at
+        #     FROM messages m2
+        #     JOIN communication c
+        #     ON m2.sender_id = c.users_clients_id_fk
+        #     WHERE m2.created_at >= %s
+        #     AND m2.created_at < %s            
+        #     AND c.user_id_fk = %s
+        #     GROUP BY m2.sender_id
+        # ) latest
+        # ON m.sender_id = latest.sender_id
+        # AND m.created_at = latest.latest_created_at
+        # JOIN communication c2
+        # ON m.sender_id = c2.users_clients_id_fk
+        # WHERE m.created_at < %s
+        # AND c2.user_id_fk = %s
+        # ORDER BY m.created_at DESC
+        # LIMIT %s;
+        # """
+
+
         query = """
         SELECT m.conversation_id_fk, m.sender_id, m.created_at
         FROM messages m
@@ -1076,16 +1112,19 @@ class LanceDBServer:
             JOIN communication c
             ON m2.sender_id = c.users_clients_id_fk
             WHERE m2.created_at >= %s
-            AND m2.created_at < %s            
+            AND m2.created_at < %s
             AND c.user_id_fk = %s
             GROUP BY m2.sender_id
         ) latest
         ON m.sender_id = latest.sender_id
         AND m.created_at = latest.latest_created_at
-        JOIN communication c2
-        ON m.sender_id = c2.users_clients_id_fk
         WHERE m.created_at < %s
-        AND c2.user_id_fk = %s
+        AND EXISTS (
+            SELECT 1
+            FROM communication c2
+            WHERE c2.users_clients_id_fk = m.sender_id
+                AND c2.user_id_fk = %s
+        )
         ORDER BY m.created_at DESC
         LIMIT %s;
         """

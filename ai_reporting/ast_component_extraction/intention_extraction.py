@@ -29,7 +29,10 @@ class QueryIntentionExtractor:
         filled_prompt = entity_template.replace("{{user_query}}", str(original_query))
 
         llm_output = await get_fireworks_response2(
-           filled_prompt, role="system", temp=0.2, user_id = self.user_id
+            user_id=self.userid,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2
         )
         return parse_llm_response(llm_output)
 
@@ -163,7 +166,7 @@ class QueryIntentionExtractor:
 
         # --- First LLM call ---
         raw1 = await get_fireworks_response2(
-            filled_prompt, role="system", temp=0.2, user_id = self.user_id
+             user_id = self.userid, user_message = filled_prompt, role="system", temp=0.2
         )
         try:
             result1 = parse_llm_response(raw1)
@@ -172,7 +175,7 @@ class QueryIntentionExtractor:
 
         # --- Second LLM call ---
         raw2 = await get_fireworks_response(
-            filled_prompt, role="system", user_id=self.userid
+            user_message = filled_prompt, role="system", user_id=self.userid
         )
         try:
             result2 = parse_llm_response(raw2)
@@ -181,9 +184,9 @@ class QueryIntentionExtractor:
 
         # --- Compare results and retry if mismatch ---
         if result1 != result2:
-            # print("⚠️ Mismatch between LLM outputs — retrying once more")
+            print("⚠️ Mismatch between LLM outputs — retrying once more")
             raw3 = await get_fireworks_response(
-                filled_prompt, role="system", user_id=self.userid
+                user_message = filled_prompt, role="system", user_id=self.userid
             )
             try:
                 final_result = parse_llm_response(raw3)
@@ -198,11 +201,11 @@ class QueryIntentionExtractor:
             metric = self.validator.normalize_metric(metric)
         except ValueError as e:
             # You got an error
-            # print("Metric normalization failed:", str(e))
+            print("Metric normalization failed:", str(e))
             metric = None
 
         aggregation = final_result.get("aggregation")
-        # print("✔️ Metric & Aggregation:", metric, aggregation)
+        print("✔️ Metric & Aggregation:", metric, aggregation)
         return metric, aggregation
 
     # ---------------- Full Extraction ----------------
@@ -212,7 +215,7 @@ class QueryIntentionExtractor:
         grouping_dimension, temporal_flag = await self.get_grouping_dimension(
             query, sql_intent_lower, entity
         )
-        filters = self.get_filters(query)
+        filters = await self.get_filters(query)
         metric = aggregation = None
         metric, aggregation = await self.get_metric_and_aggregation(
             query, sql_intent_lower, entity

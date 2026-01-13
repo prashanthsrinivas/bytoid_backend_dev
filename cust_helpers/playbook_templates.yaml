@@ -29,140 +29,306 @@ checklanceneeded: |
   Return ONLY a raw JSON array of questions.
   Return `[]` if no mandatory information is missing.
 
+# functions_checker: |
+#   You are a STRICT FUNCTION VALIDATOR AND SELECTOR.
+
+#   Your task is to determine whether the given workflow instruction
+#   can be executed USING ONLY the provided functions.
+
+#   You must carefully analyze:
+#   - instruction_input fields
+#   - each step implied by the instruction
+#   - function name, description, args, and returns
+#   - Actucal_user_socaial is a variable which tells us that user logged in via google or microsoft. which be used if user not mentioned any platform.
+
+#   --------------------------------------------------
+#   WHAT COUNTS AS A REQUIRED FUNCTION
+#   --------------------------------------------------
+#   A function is REQUIRED if the instruction implies:
+#   - Creating content (email body, message text, reply text, notes, materials, etc.)
+#   - Sending or preparing a communication
+#   - Performing a concrete action described in the workflow
+
+#   ADDITIONAL REQUIRED FUNCTION RULES (DO NOT IGNORE):
+#   - A function is ALSO REQUIRED if it supports a dynamic state of another action
+#     (create → update → delete / cancel).
+#   - A function is ALSO REQUIRED if it acts as a fallback, failure handler,
+#     or recovery step for another required function.
+#   - If an action can logically fail, any available fallback function MUST be included.
+#   - If a helper function exists that supports content creation or communication
+#     (e.g., automate.create_custom_email_body), include it automatically.
+
+#   DO NOT assume that content exists unless a function explicitly produces it.
+
+#   --------------------------------------------------
+#   VARIABLE & FIELD INTERPRETATION RULES
+#   --------------------------------------------------
+#   The workflow instruction is provided as a JSON object with fields like:
+#   - name
+#   - description
+#   - trigger_mode / trigger_input
+#   - communication_mode
+#   - ai_mode
+#   - inp_steps
+#   - additional_data
+#   - todays_date
+
+#   You MUST infer required actions from:
+#   - description (analyze natural language for implied actions)
+#   - inp_steps
+#   - communication_mode
+#   - ai_mode
+
+#   For example:
+#   - If description mentions "generate notes", "prepare materials", "create email", "send message"
+#     → identify functions that can perform these tasks, including helpers like
+#       automate.create_custom_email_body or automate.generate_ai_content or any content generation function available.
+#   - Even if inp_steps is empty, required functions MUST be inferred from description and communication_mode.
+
+#   --------------------------------------------------
+#   FUNCTION MATCHING RULES
+#   --------------------------------------------------
+#   When evaluating a function:
+#   - Use function.name to identify intent
+#   - Use function.description to verify behavior
+#   - Use function.returns to verify required outputs exist
+
+#   A function can be selected ONLY IF:
+#   - Its description explicitly supports the required action
+#   - Its returns include the data required by the instruction
+#   - No hidden or assumed behavior is needed
+
+#   Example:
+#   - If instruction requires an email body
+#     → function MUST return something like `email_body`
+#   - If instruction requires sending email but no sending function exists
+#     → Not possible
+
+#   DYNAMIC STATE EXPANSION (MANDATORY):
+#   - For any email sending like invitation or normal emailing or sending reply,
+#     include the automate.create_custom_email_body before sending if available.
+#   - If a create_* or schedule_* function is required (e.g., scheduling a meeting),
+#     automatically include all available lifecycle functions for the same entity:
+#       - update_* functions
+#       - delete_* or cancel_* functions
+#   - If a send_* function is required, include any available helper or
+#     content-generation functions (e.g., automate.create_custom_email_body)
+#   - If a function represents a critical action, include its fallback or
+#     failure-handling function if available.
+#   - Always ensure the returned list of required_functions includes these lifecycle
+#     and fallback functions for completeness.
+
+#   - For google Meeting these must be must
+#    - "google_meet.schedule_meeting_on_first_available",
+#       "gmail.send_Meeting_invite_mail",
+#       "automate.create_custom_email_body",
+#       "google_meet.update_meeting",
+#       "google_meet.delete_meeting"
+#   - For outlook / Microsoft meeting these must be must
+#    - "microsoft_calendar.create_calendar_event",
+#       "automate.create_custom_email_body",
+#       "microsoft_calendar.update_calendar_event",
+#       "microsoft_calendar.delete_calendar_event",
+#       "microsoft_email.send_email",
+
+#   --------------------------------------------------
+#   ABSOLUTE CONSTRAINTS
+#   --------------------------------------------------
+#   You MUST NOT:
+#   - Invent new functions
+#   - Modify or extend function behavior
+#   - Assume external systems or side effects
+#   - Chain logic implicitly
+#   - Include optional or “nice to have” functions
+
+#   You MUST:
+#   - Select ONLY functions that are REQUIRED for a complete, dynamic,
+#     and executable workflow.
+#   - Include all lifecycle, dynamic, helper, and fallback functions
+#     that are strictly necessary.
+#   - Return a SHORT but COMPLETE list.
+#   - If ANY required step cannot be mapped, return "Not possible".
+
+#   --------------------------------------------------
+#   DECISION RULES
+#   --------------------------------------------------
+#   1. Every action or communication step MUST map to an available function.
+#   2. If even ONE required step cannot be mapped → "Not possible".
+#   3. Include all functions required for dynamic behavior, lifecycle handling,
+#      and fallback paths — exclude only unrelated functions.
+#   4. Do NOT assume hidden capabilities inside functions.
+#   5. If no functions are required, return an empty required_functions list.
+
+#   --------------------------------------------------
+#   INPUTS (AUTHORITATIVE)
+#   --------------------------------------------------
+#   WORKFLOW INSTRUCTION:
+#   {instruction_input_as_json}
+
+#   AVAILABLE FUNCTIONS:
+#   {all_function_details}
+
+#   Actucal_user_socaial:
+#   {Actucal_user_socaial}
+
+#   --------------------------------------------------
+#   OUTPUT FORMAT (JSON ONLY)
+#   --------------------------------------------------
+#   If possible:
+#   {{
+#     "required_functions": [
+#       <function_name1>,
+#       <function_name2>
+#     ]
+#   }}
+
+#   If not possible:
+#   {{
+#     "status": "Not possible",
+#     "reason": "<single clear missing capability>"
+#   }}
+
+#   Return JSON only.
+#   No markdown.
+#   No explanation.
+
 functions_checker: |
   You are a STRICT FUNCTION VALIDATOR AND SELECTOR.
 
   Your task is to determine whether the given workflow instruction
   can be executed USING ONLY the provided functions.
 
-  You must carefully analyze:
-  - instruction_input fields
-  - each step implied by the instruction
-  - function name, description, args, and returns
-  - Actucal_user_socaial is a variable which tells us that user logged in via google or microsoft. which be used if user not mentioned any platform.
+  You must NOT broaden user intent.
+  You must NOT assume communication.
+  You must NOT include functions the user did not explicitly require.
+
+  ==================================================
+  INTENT GATING (CRITICAL)
+  ==================================================
+  First, determine the PRIMARY USER INTENT from:
+  - instruction_input.description
+  - instruction_input.inp_steps
+
+  Classify intent as ONE of:
+  - "meeting"
+  - "email"
+  - "logic-only"
+  - "unsupported"
 
   --------------------------------------------------
-  WHAT COUNTS AS A REQUIRED FUNCTION
+  INTENT DEFINITIONS (STRICT)
   --------------------------------------------------
-  A function is REQUIRED if the instruction implies:
-  - Creating content (email body, message text, reply text, notes, materials, etc.)
-  - Sending or preparing a communication
-  - Performing a concrete action described in the workflow
+  meeting intent ONLY if user explicitly asks to:
+  - schedule a meeting
+  - create a calendar event
+  - book time
+  - set up a call / meet
 
-  ADDITIONAL REQUIRED FUNCTION RULES (DO NOT IGNORE):
-  - A function is ALSO REQUIRED if it supports a dynamic state of another action
-    (create → update → delete / cancel).
-  - A function is ALSO REQUIRED if it acts as a fallback, failure handler,
-    or recovery step for another required function.
-  - If an action can logically fail, any available fallback function MUST be included.
-  - If a helper function exists that supports content creation or communication
-    (e.g., automate.create_custom_email_body), include it automatically.
+  email intent ONLY if user explicitly asks to:
+  - send an email
+  - email someone
+  - mail / notify via email
 
-  DO NOT assume that content exists unless a function explicitly produces it.
+  logic-only intent if:
+  - no communication or service is requested
 
-  --------------------------------------------------
-  VARIABLE & FIELD INTERPRETATION RULES
-  --------------------------------------------------
-  The workflow instruction is provided as a JSON object with fields like:
-  - name
-  - description
-  - trigger_mode / trigger_input
-  - communication_mode
-  - ai_mode
-  - inp_steps
-  - additional_data
-  - todays_date
+  If intent is ambiguous or unsupported → Not possible.
 
-  You MUST infer required actions from:
-  - description (analyze natural language for implied actions)
-  - inp_steps
-  - communication_mode
-  - ai_mode
+  ==================================================
+  INTENT → FUNCTION PERMISSION MATRIX
+  ==================================================
 
-  For example:
-  - If description mentions "generate notes", "prepare materials", "create email", "send message"
-    → identify functions that can perform these tasks, including helpers like
-      automate.create_custom_email_body or automate.generate_ai_content or any content generation function available.
-  - Even if inp_steps is empty, required functions MUST be inferred from description and communication_mode.
+  IF intent == "logic-only":
+    - required_functions MUST be []
+    - DO NOT include any communication or service functions
 
-  --------------------------------------------------
-  FUNCTION MATCHING RULES
-  --------------------------------------------------
-  When evaluating a function:
-  - Use function.name to identify intent
-  - Use function.description to verify behavior
-  - Use function.returns to verify required outputs exist
+  IF intent == "email":
+    - ONLY gmail / microsoft_email functions are allowed
+    - MUST include automate.create_custom_email_body if available
+    - MUST NOT include meeting or calendar functions
 
-  A function can be selected ONLY IF:
-  - Its description explicitly supports the required action
-  - Its returns include the data required by the instruction
-  - No hidden or assumed behavior is needed
+  IF intent == "meeting":
+    - Meeting lifecycle functions are allowed
+    - Email functions are allowed ONLY if they are REQUIRED
+      to send meeting invitations
+    - MUST NOT include standalone email functions unrelated
+      to the meeting
 
-  Example:
-  - If instruction requires an email body
-    → function MUST return something like `email_body`
-  - If instruction requires sending email but no sending function exists
-    → Not possible
+  ==================================================
+  PLATFORM SELECTION RULES
+  ==================================================
+  Use platform ONLY when intent requires it.
 
-  DYNAMIC STATE EXPANSION (MANDATORY):
-  - For any email sending like invitation or normal emailing or sending reply,
-    include the automate.create_custom_email_body before sending if available.
-  - If a create_* or schedule_* function is required (e.g., scheduling a meeting),
-    automatically include all available lifecycle functions for the same entity:
-      - update_* functions
-      - delete_* or cancel_* functions
-  - If a send_* function is required, include any available helper or
-    content-generation functions (e.g., automate.create_custom_email_body)
-  - If a function represents a critical action, include its fallback or
-    failure-handling function if available.
-  - Always ensure the returned list of required_functions includes these lifecycle
-    and fallback functions for completeness.
+  Platform resolution priority:
+  1. Explicit platform in user instruction
+  2. Actucal_user_socaial
 
-  - For google Meeting these must be must
-   - "google_meet.schedule_meeting_on_first_available",
-      "gmail.send_Meeting_invite_mail",
-      "automate.create_custom_email_body",
-      "google_meet.update_meeting",
-      "google_meet.delete_meeting"
-  - For outlook / Microsoft meeting these must be must
-   - "microsoft_calendar.create_calendar_event",
-      "automate.create_custom_email_body",
-      "microsoft_calendar.update_calendar_event",
-      "microsoft_calendar.delete_calendar_event",
-      "microsoft_email.send_email",
+  NEVER mix platforms.
+  NEVER guess.
 
+  ==================================================
+  REQUIRED FUNCTION SELECTION
+  ==================================================
+  A function is REQUIRED ONLY if:
+  - It directly performs an action explicitly requested
+  - It is strictly necessary to complete that action
+  - It is part of the mandatory lifecycle of that action
 
   --------------------------------------------------
+  MEETING REQUIRED FUNCTIONS
+  --------------------------------------------------
+  If intent == "meeting":
+
+  Google platform:
+    - google_meet.schedule_meeting_on_first_available
+    - gmail.send_Meeting_invite_mail
+    - automate.create_custom_email_body
+    - google_meet.update_meeting
+    - google_meet.delete_meeting
+
+  Microsoft platform:
+    - microsoft_calendar.create_calendar_event
+    - automate.create_custom_email_body
+    - microsoft_calendar.update_calendar_event
+    - microsoft_calendar.delete_calendar_event
+    - microsoft_email.send_email
+
+  --------------------------------------------------
+  EMAIL REQUIRED FUNCTIONS
+  --------------------------------------------------
+  If intent == "email":
+
+    - automate.create_custom_email_body (if available)
+    - gmail.send_email OR microsoft_email.send_email
+
+  DO NOT include update/delete meeting functions.
+  DO NOT include calendar functions.
+
+  ==================================================
   ABSOLUTE CONSTRAINTS
-  --------------------------------------------------
+  ==================================================
   You MUST NOT:
-  - Invent new functions
-  - Modify or extend function behavior
-  - Assume external systems or side effects
-  - Chain logic implicitly
-  - Include optional or “nice to have” functions
+  - Include functions outside the intent category
+  - Add email functions when intent is logic-only
+  - Add meeting functions when intent is email-only
+  - Invent or assume hidden capabilities
 
   You MUST:
-  - Select ONLY functions that are REQUIRED for a complete, dynamic,
-    and executable workflow.
-  - Include all lifecycle, dynamic, helper, and fallback functions
-    that are strictly necessary.
-  - Return a SHORT but COMPLETE list.
-  - If ANY required step cannot be mapped, return "Not possible".
+  - Return the SHORTEST valid function list
+  - Include lifecycle functions ONLY for the selected intent
+  - Return empty list for logic-only workflows
 
-  --------------------------------------------------
-  DECISION RULES
-  --------------------------------------------------
-  1. Every action or communication step MUST map to an available function.
-  2. If even ONE required step cannot be mapped → "Not possible".
-  3. Include all functions required for dynamic behavior, lifecycle handling,
-     and fallback paths — exclude only unrelated functions.
-  4. Do NOT assume hidden capabilities inside functions.
-  5. If no functions are required, return an empty required_functions list.
+  ==================================================
+  FAILURE CONDITIONS
+  ==================================================
+  Return "Not possible" if:
+  - Required function for the intent is missing
+  - Platform cannot be resolved
+  - Instruction demands mixed intents
 
-  --------------------------------------------------
+  ==================================================
   INPUTS (AUTHORITATIVE)
-  --------------------------------------------------
+  ==================================================
   WORKFLOW INSTRUCTION:
   {instruction_input_as_json}
 
@@ -172,9 +338,9 @@ functions_checker: |
   Actucal_user_socaial:
   {Actucal_user_socaial}
 
-  --------------------------------------------------
+  ==================================================
   OUTPUT FORMAT (JSON ONLY)
-  --------------------------------------------------
+  ==================================================
   If possible:
   {{
     "required_functions": [
@@ -190,7 +356,6 @@ functions_checker: |
   }}
 
   Return JSON only.
-  No markdown.
   No explanation.
 
 detect_internal_data_dependency: |
@@ -246,141 +411,420 @@ detect_internal_data_dependency: |
     "reason": "<short reason>"
   }}
 
-create_instruction: |
-  You are an AI workflow generation assistant. Your task is to create a complete, dynamic, and logically connected workflow using the structured form inputs provided below.
+# create_instruction: |
+#   You are an AI workflow generation assistant. Your task is to create a complete, dynamic, and logically connected workflow using the structured form inputs provided below.
 
-  ## INPUT FIELDS:
+#   ## INPUT FIELDS:
+#   name: {name}
+#   description: {description}
+#   trigger_mode: {trigger_mode}
+#   trigger_input: {trigger_input}
+#   communication_mode: {communication_mode}
+#   selected_contacts: {selected_contacts}
+#   ai_mode: {ai_mode}
+#   input_steps: {inp_steps}
+#   context_section: {context_section}
+#   additional_data: {additional_data}
+#   services: {services_section}  # all available functions/services for workflow use
+#   todays_date: {todays_date}
+#   main_user_account_type: {main_user_account_type}
+#   user_timezone: {user_timezone}
+
+#   ## FUNCTION INTEGRATION:
+#   - Use the functions in `services_section` wherever applicable.
+#   - Create steps **only for functions that exist** in `services_section`, but include all **relevant and logically related functions**.
+#   - Each **action step** must have a `function_call` referencing the exact service function.
+#   - For any step involving emails we must and use the selected_contacts:
+#         - If the email goes to all clients, use `"emails": "all"` and `requirements_needed` is empty.
+#         - If the email goes to specific clients, use `"emails": []` and include the required email addresses in `requirements_needed`.
+#   - for the function_args never attach values like email_body or msg_body etc which are to be generated from  a step so make them empty or "".
+#   - for the function_args like date,time etc never make them on own . if user mentioned attach correctly.
+#   - for the inputs when its not mentioed any commuinicaton use the `main_user_account_type` which can be (ex: google,microsoft,zoho etc). use this for coordinate for email and calender based ones.
+#   - use the user_timezone for any timezone parameters.
+
+#   ## MEETING FUNCTION LINKING RULES
+
+#   ## DYNAMIC WORKFLOW GENERATION RULES:
+#   - Always include **logical variations** when supported by services:
+#       - If `create_` exists → add `update_` and `delete_/cancel_` as follow-up or fallback.
+#       - If `check_` exists → connect it before an action step for validation.
+#       - If `send_` exists → ensure any template/body generation happens beforehand.
+#   - Add **AI reasoning/self-learn** steps when context-based or adaptive behavior is needed (e.g., "decide best meeting time").
+#   - Ensure all steps form a dynamic, logically executable flow with no orphan steps.
+
+#   ## STEP GENERATION RULES:
+#   - Generate steps **only** for functions present in `services_section`.
+#   - Include **all executable steps** that have real functions — no placeholders.
+#   - Maintain dynamic numeric step IDs (1, 2, 3, …) and valid `next_step` mappings.
+#   - Include fallback steps for **each action** only if a corresponding function exists.
+#   - Split communication steps **per channel** if multiple channels are defined.
+#   - Ensure workflows are dynamic, executable, and dependency-aware.
+#   - If multiple meeting-related functions exist (`create_meeting`, `update_meeting`, `delete_meeting`):
+#       - Include **each** as a separate step in logical sequence.
+#       - Add conditional/fallback handling (e.g., if meeting creation fails → cancel meeting).
+#   - Never generate a speculative or empty step.
+#   - never add any placeholders or dummy values for emails, recepiants_emails, attendees until user asks for.
+
+#   ## HUMAN-FRIENDLY TITLES AND OBJECTIVES:
+#   - Step titles, objectives, and AI instructions must be **human-readable**.
+#   - Avoid including service or function names in the title/objective.
+#   - Example: use “Generate Meeting Invitation Body” instead of “Call automate.create_custom_email_body”.
+#   - Ensure objectives clearly describe what is achieved in plain terms.
+
+#   ## REQUIREMENTS LOGIC (FINALIZED)
+#     - `requirements_needed` must include **only inputs that cannot be auto-derived** from previous steps or existing context.
+
+#     - **Output-Aware Dependency Rule**
+#       If a step’s input depends on any value returned by a previous step’s function (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.),
+#       then that step **must have** `"requirements_needed": []`.
+#       These values are already available internally and should **not** be asked again from the user.
+
+#     - Use the `returns` section of each service (from `services_section`) to detect which outputs are produced by earlier steps.
+#       If an argument name in the current step matches (or closely resembles) any earlier step’s return key, do **not** include it in `requirements_needed`.
+
+#     - Example:
+#         - Step 1: `google_meet.create_meeting` → returns `event_id`, `meeting_link` which be used for update and delete meeting
+#         - Step 2: `automate.create_custom_email_body` → uses `meeting_link`
+#           ✅ Step 2 → `"requirements_needed": []`
+#         - Step 3: `gmail.send_meeting_invite_mail` → uses `event_id`, `body_html`
+#           ✅ Step 3 → `"requirements_needed": []`
+
+#     - If a field is already present in `function_call.arguments`, `context_section`, or `additional_data`,
+#       do **not** repeat it under `requirements_needed`.
+
+#     - Only include external inputs (the ones not known yet) such as:
+#       - `"attendees"` or `"client_emails"`
+#       - `"preferred_date"`, `"start_time"`, `"end_time"`
+#       - `"emails"` (only for communication steps when recipients are unknown)
+
+#     - If a step performs updating or deleting functionality, always set `"requirements_needed": []`.
+
+#     - Never include fields that:
+#       - Are outputs from previous steps (detected from `returns`)
+#       - Already exist in `function_call.arguments`
+#       - Exist in `additional_data`, `context_section`, or `input_data`
+
+#     - **Auto-Deduplication Rule:**
+#       If a requirement field was already asked in a previous step, do **not** repeat it again in later dependent steps.
+
+#     - ✅ **Summary Logic for Model:**
+#       1. Build a list of all previous step outputs using their `returns` keys.
+#       2. For each current step argument:
+#          - If argument ∈ previous outputs → skip adding to `requirements_needed`
+#          - If argument already provided or in context → skip
+#          - Otherwise → include it
+#       3. Remove duplicates across all steps.
+#   ## COMMUNICATION CHANNEL ENFORCEMENT (MANDATORY)
+#   - The `services_section` is the single source of truth.
+#   - A step is a **communication step ONLY if** the selected function definition
+#     in `services_section` declares:
+#       - `channels`
+#       - and/or `communication_mode`
+
+#   - When such a function is used:
+#       - Copy `channels` EXACTLY as defined in the service.
+#       - Copy `communication_mode` EXACTLY as defined in the service.
+#       - Do NOT infer, rename, or invent values.
+
+#   - If a function in `services_section` does NOT define communication fields:
+#       - The step MUST NOT include `channels` or `communication_mode`.
+
+#   - Communication steps without valid service-defined channels
+#     or communication_mode are INVALID.
+
+#   ## STEP SCHEDULER RULES (NEW)
+#     - Every step MUST include a field called `is_scheduler`.
+
+#     - Default behavior:
+#         - If the user has NOT explicitly mentioned any timing or delay for a step,
+#           set:
+#             "is_scheduler": null
+
+#     - Populate `is_scheduler` ONLY when the user explicitly specifies:
+#         - after certain days
+#         - after certain hours
+#         - at a specific time
+
+#     - Do NOT infer, guess, or auto-generate scheduling logic.
+
+#     - Valid `is_scheduler` structure:
+#         {{
+#           "days": <number | null>,
+#           "hours": <number | null>,
+#           "time": "<HH:MM | null>"
+#         }}
+
+#     - Use `user_timezone` when `time` is provided.
+
+#     - Never apply `is_scheduler` globally — it is step-specific only.
+
+#   ### MULTI-SERVICE RULE
+#   - If multiple communication functions exist for the same intent:
+#       - Create one independent step per function.
+#       - Each step uses ONLY its own service-defined channel.
+
+#   ### FINAL ENFORCEMENT
+#   - Never assign communication fields unless they exist
+#     in the selected service definition.
+
+#   ## DECISION POINT RULES:
+#   - Steps with `decision_point = true` must map each condition to an existing function or step.
+#   - `ai_instructions` must explain the monitored event and resulting action.
+
+#   ⚠ STRUCTURAL CONSTRAINT (MANDATORY):
+#   - `is_scheduler` is a STEP-LEVEL FIELD ONLY.
+#   - It MUST be a direct child of the step object.
+#   - It MUST NEVER appear inside:
+#       - `function_call`
+#       - `function_call.arguments`
+#       - `additional_data`
+#       - `context_section`
+#   - Any output placing `is_scheduler` outside the step root is INVALID.
+
+#   ## EACH STEP MUST CONTAIN:
+#   - id: dynamic numeric ID (1,2,3,…)
+#   - title: short, descriptive
+#   - type: communication | self-learn | navigation
+#   - objective: human-readable purpose
+#   - decision_point: true | false
+#   - next_step:
+#       - if false: a single ID or null
+#       - if true: multiple options, mapped under `condition`
+#   - ai_instructions: clear natural-language guide for AI behavior
+#   - requirements_needed: []  ( if the step is like updating or deleting functionality make `"requirements_needed": []`  )
+
+#   - Optional:
+#       - communication_mode (for communication steps)
+#       - channels (split per channel)
+#       - page_url (for navigation)
+#       - calendar_type (for scheduling; e.g., Google Calendar, Microsoft Calendar)
+#       - function_call:
+#           function_name: "<service.function_name>"
+#           arguments:
+#               contacts: "all"  # or [] if specific
+#               date: "ISO 8601 if applicable"
+#               start_time: "ISO 8601 if applicable"
+#               end_time: "ISO 8601 if applicable"
+
+#   ## OUTPUT RULES:
+#   - Single valid JSON object
+#   - All steps must be executable
+#   - Include all lifecycle steps and dependent communication steps for meetings (if applicable)
+#   - Step IDs numeric and correctly linked
+#   - No orphan steps
+#   - Titles/objectives human-readable
+#   - Requirements list only truly external inputs
+
+#   ## OUTPUT STRUCTURE:
+#   name: "<workflow name>"
+#   description: "<workflow description>"
+#   ai_mode: "<normal | advanced | custom>"
+#   trigger_mode: "<self-initiated | scheduled | follow-up>"
+#   trigger_input:
+#     - "<input1>"
+#   context_section:
+#     - "<fact 1>"
+#   additional_data:
+#     - "<extra info>"
+#   steps:
+#     - id: "<number>"
+#       title: "<step title>"
+#       type: "communication | self-learn | navigation"
+#       objective: "<step purpose>"
+#       decision_point: true | false
+#       decision_type: "<Ifthen | Conditional | MultipleChoice>"  # if applicable
+#       condition:
+#         - condition_text: "<description>"
+#           trigger_function: "<service.function_name>"
+#           next_step: "<step ID>"
+#       next_step: "<step ID | list>"
+#       ai_instructions: "<AI logic>"
+#       requirements_needed: []
+#       communication_mode: "<...>"
+#       is_scheduler: null or {{}}. by default null. add json data if user explicitily asks. it must be attached to all steps.
+#       channels:
+#         - "<channel>"
+#       page_url: "<optional>"
+#       calendar_type: "<Google Calendar | Microsoft Calendar>"
+#       function_call:
+#         function_name: "<service.function_name>"
+#         arguments:
+#           contacts: "all"
+#           date: "<ISO 8601>"
+#           start_time: "<ISO 8601>"
+#           end_time: "<ISO 8601>"
+
+#   ## VALIDATION CHECKLIST:
+#   - [x] Only create steps for functions that exist.
+#   - [x] Include all executable actions (create/update/delete/cancel).
+#   - [x] Every action/communication step has fallback if supported.
+#   - [x] Each channel gets a separate communication step.
+#   - [x] Workflow is dynamic, dependency-aware, and fully connected.
+#   - [x] Step titles/objectives are human-readable (no function names).
+#   - [x] Requirements list only truly external inputs.
+#   - [x] Step order follows logical dependencies.
+#   - [x] JSON is valid, executable, and complete.
+
+create_instruction: |
+  You are an AI WORKFLOW GENERATION ENGINE.
+
+  Your task is to generate a COMPLETE, DYNAMIC, and EXECUTABLE workflow
+  strictly based on the structured inputs below.
+
+  ❗ DO NOT ASSUME communication
+  ❗ DO NOT ASSUME meetings or email
+  ❗ DO NOT ASSUME contacts
+  ❗ Generate ONLY what the user intent explicitly requires
+
+  ==================================================
+  INPUT FIELDS (AUTHORITATIVE)
+  ==================================================
   name: {name}
   description: {description}
-  trigger_mode: {trigger_mode}
-  trigger_input: {trigger_input}
-  communication_mode: {communication_mode}
-  selected_contacts: {selected_contacts}
-  ai_mode: {ai_mode}
+
+  communication_mode: {communication_mode}     # may be null
+  selected_contacts: {selected_contacts}       # may be null
+
   input_steps: {inp_steps}
   context_section: {context_section}
   additional_data: {additional_data}
-  services: {services_section}  # all available functions/services for workflow use
+
+  services: {services_section}
   todays_date: {todays_date}
   main_user_account_type: {main_user_account_type}
   user_timezone: {user_timezone}
 
-  ## FUNCTION INTEGRATION:
-  - Use the functions in `services_section` wherever applicable.
-  - Create steps **only for functions that exist** in `services_section`, but include all **relevant and logically related functions**.
-  - Each **action step** must have a `function_call` referencing the exact service function.
-  - For any step involving emails we must and use the selected_contacts:
-        - If the email goes to all clients, use `"emails": "all"` and `requirements_needed` is empty.
-        - If the email goes to specific clients, use `"emails": []` and include the required email addresses in `requirements_needed`.
-  - for the function_args never attach values like email_body or msg_body etc which are to be generated from  a step so make them empty or "".
-  - for the function_args like date,time etc never make them on own . if user mentioned attach correctly.
-  - for the inputs when its not mentioed any commuinicaton use the `main_user_account_type` which can be (ex: google,microsoft,zoho etc). use this for coordinate for email and calender based ones.
-  - use the user_timezone for any timezone parameters.
+  ==================================================
+  CORE INTENT RESOLUTION (MANDATORY)
+  ==================================================
+  Determine the PRIMARY intent from description + input_steps.
 
+  Allowed intents (ONLY ONE):
+  - logic-only
+  - email
+  - meeting
+
+  Rules:
+  - If intent is logic-only → no communication or service steps
+  - If intent is email → email steps ONLY
+  - If intent is meeting → meeting lifecycle + invite email ONLY
+  - If mixed intent is detected → INVALID OUTPUT
+
+  ==================================================
+  FUNCTION INTEGRATION RULES
+  ==================================================
+  - Use ONLY functions defined in services_section
+  - NEVER invent or assume functions
+  - Every action step MUST map to a real function
+  - Helper functions (email body, AI generation) are included
+    ONLY if their outputs are required
+
+  PLATFORM SELECTION:
+  - Use platform ONLY when communication exists
+  - Resolution order:
+      1. Explicit user instruction
+      2. main_user_account_type
+  - NEVER guess or mix platforms
+
+  ==================================================
+  COMMUNICATION CHANNEL ENFORCEMENT (MANDATORY)
+  ==================================================
+  - A step is a communication step ONLY IF the chosen function
+    explicitly defines:
+      - channels
+      - and/or communication_mode
+
+  - Copy channels and communication_mode EXACTLY
+  - If the function does not define them → DO NOT add them
+  - Communication steps without service-defined channels are INVALID
+
+  ==================================================
+  CONTACT HANDLING RULES
+  ==================================================
+  - Contacts are used ONLY in communication steps
+  - Broadcast:
+      contacts: "all"
+      requirements_needed: []
+  - Unknown recipients:
+      contacts: []
+      requirements_needed: ["emails"]
+  - NEVER add placeholder emails or attendees
+
+  ==================================================
+  MEETING WORKFLOW RULES (ONLY IF INTENT = MEETING)
+  ==================================================
   ## MEETING FUNCTION LINKING RULES
 
-  ## DYNAMIC WORKFLOW GENERATION RULES:
-  - Always include **logical variations** when supported by services:
-      - If `create_` exists → add `update_` and `delete_/cancel_` as follow-up or fallback.
-      - If `check_` exists → connect it before an action step for validation.
-      - If `send_` exists → ensure any template/body generation happens beforehand.
-  - Add **AI reasoning/self-learn** steps when context-based or adaptive behavior is needed (e.g., "decide best meeting time").
-  - Ensure all steps form a dynamic, logically executable flow with no orphan steps.
+  ==================================================
+  EMAIL WORKFLOW RULES (ONLY IF INTENT = EMAIL)
+  ==================================================
+  - Include body-generation helper if available
+  - Include send email step
+  - Calendar / meeting functions are FORBIDDEN
 
+  ==================================================
+  REQUIREMENTS_NEEDED LOGIC (STRICT)
+  ==================================================
+  - Include ONLY truly external inputs
+  - NEVER include:
+      - outputs from previous steps (based on returns)
+      - values already in context_section or additional_data
+      - values already present in function_call.arguments
 
-  ## STEP GENERATION RULES:
-  - Generate steps **only** for functions present in `services_section`.
-  - Include **all executable steps** that have real functions — no placeholders.
-  - Maintain dynamic numeric step IDs (1, 2, 3, …) and valid `next_step` mappings.
-  - Include fallback steps for **each action** only if a corresponding function exists.
-  - Split communication steps **per channel** if multiple channels are defined.
-  - Ensure workflows are dynamic, executable, and dependency-aware.
-  - If multiple meeting-related functions exist (`create_meeting`, `update_meeting`, `delete_meeting`):
-      - Include **each** as a separate step in logical sequence.
-      - Add conditional/fallback handling (e.g., if meeting creation fails → cancel meeting).
-  - Never generate a speculative or empty step.
-  - never add any placeholders or dummy values for emails, recepiants_emails, attendees until user asks for. 
+  - Updating / deleting steps MUST have:
+      requirements_needed: []
 
-  ## HUMAN-FRIENDLY TITLES AND OBJECTIVES:
-  - Step titles, objectives, and AI instructions must be **human-readable**.
-  - Avoid including service or function names in the title/objective.
-  - Example: use “Generate Meeting Invitation Body” instead of “Call automate.create_custom_email_body”.
-  - Ensure objectives clearly describe what is achieved in plain terms.
+  Auto-deduplication:
+  - If a requirement is already requested once, NEVER repeat it
 
-  ## REQUIREMENTS LOGIC (FINALIZED)
-    - `requirements_needed` must include **only inputs that cannot be auto-derived** from previous steps or existing context.
+  ==================================================
+  STEP SCHEDULER RULES (STEP-LEVEL ONLY)
+  ==================================================
+  Every step MUST include is_scheduler.
 
-    - **Output-Aware Dependency Rule**
-      If a step’s input depends on any value returned by a previous step’s function (e.g., `event_id`, `meeting_link`, `body_html`, `summary`, etc.),
-      then that step **must have** `"requirements_needed": []`.
-      These values are already available internally and should **not** be asked again from the user.
+  Default:
+    is_scheduler: null
 
-    - Use the `returns` section of each service (from `services_section`) to detect which outputs are produced by earlier steps.
-      If an argument name in the current step matches (or closely resembles) any earlier step’s return key, do **not** include it in `requirements_needed`.
+  Populate ONLY if user explicitly mentions:
+    - after X days
+    - after X hours
+    - at a specific time
 
-    - Example:
-        - Step 1: `google_meet.create_meeting` → returns `event_id`, `meeting_link` which be used for update and delete meeting
-        - Step 2: `automate.create_custom_email_body` → uses `meeting_link`
-          ✅ Step 2 → `"requirements_needed": []`
-        - Step 3: `gmail.send_meeting_invite_mail` → uses `event_id`, `body_html`
-          ✅ Step 3 → `"requirements_needed": []`
+  Structure:
+    {{
+      "days": <number | null>,
+      "hours": <number | null>,
+      "time": "<HH:MM | null>"
+    }}
 
+  Use user_timezone if time is present.
+  NEVER infer scheduling.
 
-    - If a field is already present in `function_call.arguments`, `context_section`, or `additional_data`,
-      do **not** repeat it under `requirements_needed`.
+  ==================================================
+  STEP GENERATION RULES
+  ==================================================
+  - Generate ONLY executable steps
+  - NO placeholders
+  - NO speculative steps
+  - Numeric step IDs (1,2,3,…)
+  - No orphan steps
+  - Fallback steps ONLY if function exists
+  - Split per channel if multiple channels exist
 
-    - Only include external inputs (the ones not known yet) such as:
-      - `"attendees"` or `"client_emails"`
-      - `"preferred_date"`, `"start_time"`, `"end_time"`
-      - `"emails"` (only for communication steps when recipients are unknown)
+  ==================================================
+  HUMAN-READABLE REQUIREMENTS
+  ==================================================
+  - Titles and objectives must be plain English
+  - NEVER include function names in titles
+  - ai_instructions must clearly describe behavior
 
-    - If a step performs updating or deleting functionality, always set `"requirements_needed": []`.
+  ==================================================
+  DECISION POINT RULES
+  ==================================================
+  - decision_point = true ONLY when branching exists
+  - Each condition must map to a valid next_step
+  - ai_instructions must explain decision logic
 
-    - Never include fields that:
-      - Are outputs from previous steps (detected from `returns`)
-      - Already exist in `function_call.arguments`
-      - Exist in `additional_data`, `context_section`, or `input_data`
-
-    - **Auto-Deduplication Rule:**
-      If a requirement field was already asked in a previous step, do **not** repeat it again in later dependent steps.
-
-    - ✅ **Summary Logic for Model:**
-      1. Build a list of all previous step outputs using their `returns` keys.
-      2. For each current step argument:
-         - If argument ∈ previous outputs → skip adding to `requirements_needed`
-         - If argument already provided or in context → skip
-         - Otherwise → include it
-      3. Remove duplicates across all steps.
-  ## COMMUNICATION CHANNEL ENFORCEMENT (MANDATORY)
-  - The `services_section` is the single source of truth.
-  - A step is a **communication step ONLY if** the selected function definition
-    in `services_section` declares:
-      - `channels`
-      - and/or `communication_mode`
-
-  - When such a function is used:
-      - Copy `channels` EXACTLY as defined in the service.
-      - Copy `communication_mode` EXACTLY as defined in the service.
-      - Do NOT infer, rename, or invent values.
-
-  - If a function in `services_section` does NOT define communication fields:
-      - The step MUST NOT include `channels` or `communication_mode`.
-
-  - Communication steps without valid service-defined channels
-    or communication_mode are INVALID.
-
-  ### MULTI-SERVICE RULE
-  - If multiple communication functions exist for the same intent:
-      - Create one independent step per function.
-      - Each step uses ONLY its own service-defined channel.
-
-  ### FINAL ENFORCEMENT
-  - Never assign communication fields unless they exist
-    in the selected service definition.
-
-  ## DECISION POINT RULES:
-  - Steps with `decision_point = true` must map each condition to an existing function or step.
-  - `ai_instructions` must explain the monitored event and resulting action.
 
   ## EACH STEP MUST CONTAIN:
   - id: dynamic numeric ID (1,2,3,…)
@@ -442,6 +886,7 @@ create_instruction: |
       ai_instructions: "<AI logic>"
       requirements_needed: []
       communication_mode: "<...>"
+      is_scheduler: null or {{}}. by default null. add json data if user explicitily asks. it must be attached to all steps.
       channels:
         - "<channel>"
       page_url: "<optional>"
@@ -454,133 +899,106 @@ create_instruction: |
           start_time: "<ISO 8601>"
           end_time: "<ISO 8601>"
 
-  ## VALIDATION CHECKLIST:
-  - [x] Only create steps for functions that exist.
-  - [x] Include all executable actions (create/update/delete/cancel).
-  - [x] Every action/communication step has fallback if supported.
-  - [x] Each channel gets a separate communication step.
-  - [x] Workflow is dynamic, dependency-aware, and fully connected.
-  - [x] Step titles/objectives are human-readable (no function names).
-  - [x] Requirements list only truly external inputs.
-  - [x] Step order follows logical dependencies.
-  - [x] JSON is valid, executable, and complete.
+  ==================================================
+  VALIDATION CHECKLIST (MANDATORY)
+  ==================================================
+  - [x] Only functions from services_section are used
+  - [x] No implicit email or meeting steps
+  - [x] Logic-only workflows have NO function_call
+  - [x] Email workflows have NO meeting functions
+  - [x] Meeting workflows have standalone email
+  - [x] All lifecycle steps included when applicable
+  - [x] Scheduler only when user explicitly asks
+  - [x] No duplicate requirements
+  - [x] No orphan steps
+  - [x] Output is valid JSON
 
 evaluate_workflow_execution_validity: |
   You are a WORKFLOW EXECUTION EVALUATOR.
-
-  PURPOSE:
-  Validate and correct a generated workflow so it is:
-  - EXECUTION-READY
-  - DATA-FLOW-CORRECT
-  - DEPENDENCY-AWARE
-  - USER-FRIENDLY
-
-  You MUST NOT generate a new workflow.
-  You MUST ONLY validate and minimally fix the existing workflow.
-
-  INPUTS (ONLY THESE ARE AVAILABLE):
+  #   INPUTS (ONLY THESE ARE AVAILABLE):
   - workflow_json: {workflow_json}
   - instruction_input: {instruction_input}
   - functions_data: {functions_data}
 
-  --------------------------------------------------
-  GLOBAL ASSUMPTIONS:
-  --------------------------------------------------
-  - Outputs of each step are available to all subsequent steps.
-  - Outputs of previous steps are KNOWN DATA.
-  - Outputs of future steps are NOT accessible.
+  PURPOSE:
+  Minimally validate and fix the existing workflow to make it execution-ready, data-flow-correct, dependency-aware, and user-friendly (no unnecessary inputs).
 
-  --------------------------------------------------
-  REQUIREMENTS_NEEDED RULES:
-  --------------------------------------------------
-  - requirements_needed must contain ONLY genuinely external inputs.
-  - requirements_needed MUST use the exact argument key names from function_call.arguments.
-  - IDs produced by previous steps (e.g., event_id) are ALWAYS internal data and MUST NEVER be added.
-  - NEVER ask for:
-      - APIs, keys, secrets, tokens
-      - file paths or filenames
-      - generated content or email bodies
-      - emails, contacts, receipent_emails, cc, bcc
-      - event_id
-  - If a step uses ANY output from previous steps → requirements_needed MUST be []
-  - Do NOT duplicate requirements across steps.
+  RULES:
+  - NEVER create a new workflow — only fix the provided one with minimal changes.
+  - Inputs: workflow_json, instruction_input, functions_data.
 
-  --------------------------------------------------
-  ARGUMENT VALUE HANDLING:
-  --------------------------------------------------
-  - NEVER remove argument keys from function_call.arguments.
-  - Empty strings, nulls, and empty lists are valid placeholders.
-  - For MAIN STEPS (type = navigation, action, tool):
-      - If an argument (except bcc, cc, receipent_emails, event_id) is empty ("", null, []):
-          → Add the exact argument key to requirements_needed.
-          → Add or dynamically generate a value for:
-              - summary → derived from step objective and input_data
-              - description → derived from step objective and input_data
-              - user_input → placeholder guiding execution for empty fields
-  - For communication steps (email/SMS/etc.):
-      - Skip adding empty arguments to requirements_needed.
-      - Preserve empty email fields, body_html, subject, bcc, cc.
+  GLOBAL:
+  - Previous step outputs available as {{step_X.<return_field>}}.
+  - Future outputs inaccessible.
 
-  --------------------------------------------------
-  FUNCTIONS DATA RULES:
-  --------------------------------------------------
-  - Only reference return fields declared in functions_data[].returns.
-  - NEVER invent output field names.
-  - Dynamic references must follow:
-      {{step_X.<return_field>}}
-  - If no suitable return field exists → leave argument empty, do NOT add to requirements_needed.
+  REQUIREMENTS_NEEDED (STRICT):
+  - ONLY truly external inputs (no derivable values, no internals).
+  - Exact argument keys.
+  - NEVER include: event_id, emails/contacts, API keys, file paths, generated content, summaries/descriptions that can be auto-derived.
+  - If any previous step output used OR value derivable → requirements_needed = [].
 
-  --------------------------------------------------
-  DATE & EVENT SAFETY:
-  --------------------------------------------------
-  - Never invent or auto-fill dates, times, or event_id.
-  - Leave empty if missing.
-  - Add to requirements_needed ONLY if truly external input (dates/times only for main steps).
+  ARGUMENTS:
+  - Keep ALL argument keys — never remove.
+  - Preserve empty "", null, [] unless safe auto-fill.
+  - MAIN steps (navigation/tool/action):
+      - Auto-fill summary/description from workflow title/description/objective if empty.
+      - Only add dates/times to requirements_needed if truly required and undrivable.
+  - AI/SELF-LEARN steps:
+      - Auto-fill empty user_input with clear prompt from objective.
+  - COMMUNICATION steps:
+      - Never add fields to requirements_needed.
+      - Auto-fill empty subject with sensible default.
 
-  --------------------------------------------------
-  DATA FLOW & DEPENDENCIES:
-  --------------------------------------------------
-  - Steps may only reference outputs from earlier steps.
-  - NEVER reference future steps.
-  - Reorder steps only to fix broken dependencies.
-  - Preserve step IDs and structure as much as possible.
+  MEETING LIFECYCLE:
+  - FOR ALL MEETING CREATION STEPS:
+      - ALWAYS add "preferred_date" or any date variable to requirements_needed if the argument exists and is empty.
+      - Rationale: Every scheduling function needs a reference date to anchor or search from — prevents unbounded or failed searches.
+      - If "start_time" argument exists and is empty → auto-fill with "10:00".
+      - If "end_time" argument exists and is empty → auto-fill with "11:00".
+      - duration_minutes may remain as-is (fallback to function default if present).
+  - event_id ALWAYS internal → dynamic ref {{step_<create_id>.meeting.event_id}}, never in requirements_needed.
+  - CREATE: auto-fill summary/description; leave dates empty if function finds slot.
+  - UPDATE: dynamic event_id; empty fields = no change; requirements_needed = [].
+  - DELETE: dynamic event_id; requirements_needed = [].
 
-  --------------------------------------------------
-  MEETING LIFECYCLE EXCEPTIONS:
-  --------------------------------------------------
-  - Applies to google_meet.* and microsoft_calendar.* workflows.
-  - event_id is NEVER external input and MUST NOT appear in requirements_needed.
-  - Creation step exists → reference event_id dynamically:
-      {{step_<create_step_id>.meeting.event_id}}
-  - No creation step → leave event_id empty, do NOT invent or add to requirements_needed.
-  - Update/Delete steps must have their own fallback step and next_step → corresponding “Generate ... Body” step.
+  DATA FLOW:
+  - Fix malformed references (e.g., {{step_[2.email_body]}} → {{step_2.email_body}}).
+  - Use only declared return fields.
+  - No future references.
+  - Minimal reordering only if dependencies broken.
 
-  --------------------------------------------------
-  FIXING BEHAVIOR:
-  --------------------------------------------------
-  - Always fix execution-breaking issues.
-  - Modify ONLY incorrect or missing fields.
-  - Auto-fill summary, description, or user_input based on step objective and input_data when safe.
-  - Replace literals with correct dynamic references when safe.
-  - Never invent emails, dates, or event IDs.
-  - Never remove required structure or argument keys.
+  AUTO-FILL EXAMPLES:
+  - summary: workflow title or "Client Meeting"
+  - description: workflow description or objective-based
+  - subject: "Invitation: Client Meeting", "Updated: ...", "Cancelled: ..."
+  - user_input: clear instructive prompt
 
-  --------------------------------------------------
-  STATUS RULE:
-  --------------------------------------------------
-  - status = "fixed" if any fix applied, else "valid".
-  - NEVER return "invalid".
+  ⚠ STRUCTURAL CONSTRAINT (MANDATORY):
+  - `is_scheduler` is a STEP-LEVEL FIELD ONLY.
+  - It MUST be a direct child of the step object.
+  - It MUST NEVER appear inside:
+      - `function_call`
+      - `function_call.arguments`
+      - `additional_data`
+      - `context_section`
+  - Any output placing `is_scheduler` outside the step root is INVALID.
+  FIXES:
+  - Remove unnecessary requirements_needed.
+  - Auto-fill obvious defaults.
+  - Correct references.
+  - Never invent dates/times/emails/event_ids.
 
-  --------------------------------------------------
-  OUTPUT FORMAT (STRICT JSON ONLY) no markdown and explanation:
-  --------------------------------------------------
+  STATUS:
+  - "fixed" if changes made, else "valid".
+  - Never "invalid".
+
+  OUTPUT (STRICT JSON ONLY and  no markdown/explanations):
   {{
     "status": "valid" | "fixed",
-    "workflow": {{ <final workflow_json> }}
+    "workflow": {{ <complete corrected workflow JSON> }}
   }}
 
-  - No explanations outside JSON
-  - No markdown
+  - JSON only, no markdown/explanations.
 
 validate_instruction_capabilities: |
   You are a strict capability validator for workflow instructions.
@@ -700,6 +1118,189 @@ re_evaluate_instruction: |
   ```json
   {generated_workflow_json}
 
+# modify_instruction: |
+#   You are an AI workflow modification assistant.
+
+#   Your task is to APPLY a user's update instruction to an existing workflow
+#   by making the MINIMUM REQUIRED structural changes.
+
+#   You must NOT validate, normalize, or “fix” the workflow globally.
+#   A separate evaluator prompt will handle validation and correction.
+
+#   --------------------------------------------------
+#   CORE PRINCIPLE (CRITICAL)
+#   - MODIFY ONLY what the update_instruction explicitly asks for
+#     or what is logically REQUIRED for that change to work.
+#   - Preserve everything else EXACTLY as it is.
+
+#   --------------------------------------------------
+#   INPUTS
+#   existing_workflow_json: {existing_workflow}
+#   update_instruction: {update_instruction}
+#   services_section: {services_section}
+#   additional_data: {additional_data}
+#   todays_date: {todays_date}
+#   existing_contacts: {existing_contacts}
+
+#   --------------------------------------------------
+#   OUTPUT RULES (ABSOLUTE)
+#   - Output a SINGLE valid JSON object
+#   - NO markdown, NO explanations, NO comments
+#   - JSON must be directly parseable
+
+#   --------------------------------------------------
+#   MODIFICATION SCOPE (STRICT)
+#   - Do NOT regenerate the workflow
+#   - Do NOT reorder steps unless required for dependency correctness
+#   - Do NOT delete steps unless explicitly requested
+#   - Do NOT rename workflow fields unless requested
+#   - Preserve all unrelated steps and existing step IDs
+#   - Generate new step IDs ONLY when adding new steps
+
+#   --------------------------------------------------
+#   FUNCTION USAGE RULES
+#   - Use ONLY functions defined in services_section
+#   - Never invent or rename functions
+#   - Each step must contain ONLY ONE function_call
+#   - If a required function does not exist, do NOT simulate it
+
+#   --------------------------------------------------
+#   STEP MODIFICATION RULES
+
+#   When modifying or adding a step:
+#   - Update ONLY the fields affected by update_instruction
+#   - Preserve all other fields EXACTLY as they are
+
+#   ## MEETING FUNCTION LINKING RULES
+
+#   --------------------------------------------------
+#   COMMUNICATION DATA BINDING (CRITICAL & MANDATORY)
+
+#   If a step uses a communication function (email, message, invite, notify, etc.):
+
+#   - You MUST assign the value of `existing_contacts` DIRECTLY
+#     to the appropriate function argument.
+#   - NEVER use placeholders such as "{contacts}", "<contacts>", or variable keys.
+#   - NEVER introduce new contact-related inputs.
+
+#   Mapping rules:
+#   - email / receipent_emails / recipient_emails → existing_contacts
+#   - contacts / attendees / participants → existing_contacts
+#   - cc / bcc (if required) → existing_contacts ONLY if explicitly requested
+
+#   If `existing_contacts` is present:
+#   - requirements_needed MUST NOT include:
+#     - user_email
+#     - recipient_email
+#     - contacts
+#     - attendees
+#     - any email or contact-related field
+
+#   The value must be copied AS-IS:
+#   - If it is "All" or "all" → keep it unchanged
+#   - If it is a list of emails → assign the list directly
+
+#   --------------------------------------------------
+#   DATE & TIME HANDLING
+#   - Convert explicitly mentioned dates/times to ISO 8601
+#   - Use todays_date for relative expressions
+#   - If unclear:
+#     - Leave function_call.arguments empty
+#     - Add ONLY the missing field to requirements_needed
+#   --------------------------------------------------
+#     STEP SCHEDULER HANDLING (NEW)
+
+#     - Each step MAY contain a field called `is_scheduler`.
+
+#     - Do NOT add, remove, or modify `is_scheduler`
+#       UNLESS the update_instruction explicitly mentions:
+#         - delay
+#         - after X hours
+#         - after X days
+#         - at a specific time
+#         - scheduling a step
+
+#     - If the update_instruction does NOT reference scheduling:
+#         - Preserve `is_scheduler` EXACTLY as it exists
+#         - If missing, do NOT add it
+
+#     - If the update_instruction explicitly requests scheduling for a step:
+#         - Modify ONLY that step’s `is_scheduler` field
+#         - Do NOT touch other fields
+
+#     - Valid `is_scheduler` structure ONLY:
+#         {{
+#           "days": <number | null>,
+#           "hours": <number | null>,
+#           "time": "<HH:MM | null>"
+#         }}
+
+#     - Never infer scheduling values
+#     - Never apply scheduling globally
+#     - Use `todays_date` and user context ONLY when explicitly required
+
+#   ⚠ STRUCTURAL CONSTRAINT (MANDATORY):
+#   - `is_scheduler` is a STEP-LEVEL FIELD ONLY.
+#   - It MUST be a direct child of the step object.
+#   - It MUST NEVER appear inside:
+#       - `function_call`
+#       - `function_call.arguments`
+#       - `additional_data`
+#       - `context_section`
+#   - Any output placing `is_scheduler` outside the step root is INVALID.
+#   --------------------------------------------------
+#   REQUIREMENTS LOGIC (NO EVALUATION)
+#   - requirements_needed must include ONLY inputs
+#     NOT already available in:
+#       - previous step outputs
+#       - context_section
+#       - additional_data
+#       - existing_contacts
+#       - function_call.arguments
+#   - Do NOT deduplicate globally
+#   - Do NOT re-evaluate earlier steps
+
+#   --------------------------------------------------
+#   FALLBACK HANDLING
+#   - Do NOT add or restructure fallback logic
+#   - Preserve existing fallback definitions
+#   - Add fallback ONLY if explicitly asked
+
+#   --------------------------------------------------
+#   DECISION POINTS
+#   - Modify decision logic ONLY if explicitly requested
+#   - Ensure referenced step IDs exist
+#   - Do NOT auto-correct logic
+
+#   --------------------------------------------------
+#   UNRELATED INSTRUCTION HANDLING
+#   If update_instruction is unrelated to the workflow:
+#   {
+#     "unrelated_instruction_message": "<reason>"
+#   }
+
+#   --------------------------------------------------
+#   OUTPUT STRUCTURE
+#   Return a single JSON object containing:
+#   - name
+#   - description
+#   - ai_mode
+#   - trigger_mode
+#   - trigger_input
+#   - context_section (if present)
+#   - additional_data (if present)
+#   - steps (minimally modified, preserving existing is_scheduler values unless changed) is_scheduler must be present for all steps.
+#   - modified_message (brief summary of changes only)
+
+#   --------------------------------------------------
+#   FINAL GUARANTEES
+#   - No regeneration
+#   - No normalization
+#   - No validation
+#   - Only intent-driven modification
+#   - Communication steps MUST use existing_contacts value
+#   - No contact-related requirements when existing_contacts is present
+
 modify_instruction: |
   You are an AI workflow modification assistant.
 
@@ -731,6 +1332,43 @@ modify_instruction: |
   - JSON must be directly parseable
 
   --------------------------------------------------
+  INTENT PRESERVATION (CRITICAL — NEW)
+
+  Determine the modification intent STRICTLY from update_instruction.
+
+  Allowed modification intents:
+  - logic-only
+  - email
+  - meeting
+
+  RULES:
+  - NEVER upgrade or downgrade intent implicitly
+  - If existing workflow is logic-only:
+      - DO NOT introduce email or meeting steps unless explicitly requested
+  - If existing workflow is email:
+      - DO NOT introduce meeting/calendar functions
+  - If existing workflow is meeting:
+      - Email steps are allowed ONLY as part of meeting lifecycle
+
+  If update_instruction attempts cross-intent modification:
+    → return unrelated_instruction_message
+
+  --------------------------------------------------
+  FUNCTION USAGE RULES (FUNCTION CHECKER SAFE)
+
+  - Use ONLY functions defined in services_section
+  - Never invent, rename, or infer functions
+  - Each step must contain ONLY ONE function_call
+  - If a required function does not exist, do NOT simulate it
+
+  FUNCTION TYPE CONSTRAINT:
+  - Email intent → ONLY gmail/email-based functions
+  - Meeting intent → ONLY meeting functions + their invite email
+  - Logic-only intent → NO communication or calendar functions
+
+  Introducing a disallowed function type is INVALID.
+
+  --------------------------------------------------
   MODIFICATION SCOPE (STRICT)
   - Do NOT regenerate the workflow
   - Do NOT reorder steps unless required for dependency correctness
@@ -740,35 +1378,26 @@ modify_instruction: |
   - Generate new step IDs ONLY when adding new steps
 
   --------------------------------------------------
-  FUNCTION USAGE RULES
-  - Use ONLY functions defined in services_section
-  - Never invent or rename functions
-  - Each step must contain ONLY ONE function_call
-  - If a required function does not exist, do NOT simulate it
-
-  --------------------------------------------------
   STEP MODIFICATION RULES
 
   When modifying or adding a step:
   - Update ONLY the fields affected by update_instruction
   - Preserve all other fields EXACTLY as they are
 
-  ## MEETING FUNCTION LINKING RULES
-
   --------------------------------------------------
   COMMUNICATION DATA BINDING (CRITICAL & MANDATORY)
 
-  If a step uses a communication function (email, message, invite, notify, etc.):
+  If a step uses a communication function (email, message, invite, notify):
 
   - You MUST assign the value of `existing_contacts` DIRECTLY
     to the appropriate function argument.
-  - NEVER use placeholders such as "{contacts}", "<contacts>", or variable keys.
-  - NEVER introduce new contact-related inputs.
+  - NEVER use placeholders or variable references
+  - NEVER introduce new contact-related inputs
 
   Mapping rules:
-  - email / receipent_emails / recipient_emails → existing_contacts
+  - email / recipient_emails → existing_contacts
   - contacts / attendees / participants → existing_contacts
-  - cc / bcc (if required) → existing_contacts ONLY if explicitly requested
+  - cc / bcc → ONLY if explicitly requested
 
   If `existing_contacts` is present:
   - requirements_needed MUST NOT include:
@@ -776,29 +1405,47 @@ modify_instruction: |
     - recipient_email
     - contacts
     - attendees
-    - any email or contact-related field
+    - any email/contact-related field
 
   The value must be copied AS-IS:
-  - If it is "All" or "all" → keep it unchanged
-  - If it is a list of emails → assign the list directly
+  - "All" / "all" → preserve
+  - list → assign list directly
 
   --------------------------------------------------
   DATE & TIME HANDLING
   - Convert explicitly mentioned dates/times to ISO 8601
   - Use todays_date for relative expressions
   - If unclear:
-    - Leave function_call.arguments empty
-    - Add ONLY the missing field to requirements_needed
+      - Leave function_call.arguments empty
+      - Add ONLY the missing field to requirements_needed
+
+  --------------------------------------------------
+  STEP SCHEDULER HANDLING
+
+  - Each step MAY contain `is_scheduler`
+  - Do NOT add, remove, or modify it UNLESS explicitly requested
+
+  Valid structure ONLY:
+    {{
+      "days": <number | null>,
+      "hours": <number | null>,
+      "time": "<HH:MM | null>"
+    }}
+
+  STRUCTURAL CONSTRAINT:
+  - `is_scheduler` is STEP-LEVEL ONLY
+  - MUST NOT appear inside function_call or arguments
 
   --------------------------------------------------
   REQUIREMENTS LOGIC (NO EVALUATION)
   - requirements_needed must include ONLY inputs
-    NOT already available in:
+    NOT already present in:
       - previous step outputs
       - context_section
       - additional_data
       - existing_contacts
       - function_call.arguments
+
   - Do NOT deduplicate globally
   - Do NOT re-evaluate earlier steps
 
@@ -816,10 +1463,10 @@ modify_instruction: |
 
   --------------------------------------------------
   UNRELATED INSTRUCTION HANDLING
-  If update_instruction is unrelated to the workflow:
-  {
-    "unrelated_instruction_message": "<reason>"
-  }
+  If update_instruction violates intent or function constraints:
+  {{
+    "unrelated_instruction_message": "<clear reason>"
+  }}
 
   --------------------------------------------------
   OUTPUT STRUCTURE
@@ -831,7 +1478,7 @@ modify_instruction: |
   - trigger_input
   - context_section (if present)
   - additional_data (if present)
-  - steps (minimally modified)
+  - steps (minimally modified, preserving is_scheduler)
   - modified_message (brief summary of changes only)
 
   --------------------------------------------------
@@ -839,183 +1486,150 @@ modify_instruction: |
   - No regeneration
   - No normalization
   - No validation
-  - Only intent-driven modification
-  - Communication steps MUST use existing_contacts value
-  - No contact-related requirements when existing_contacts is present
+  - No implicit communication
+  - No intent escalation
+  - Function checker compliance guaranteed
 
 evaluate_modified_workflow_execution_validity: |
   You are a WORKFLOW MODIFICATION EXECUTION EVALUATOR.
 
   PURPOSE:
-  Validate and minimally correct a MODIFIED workflow so it is:
+  Validate and minimally correct a MODIFIED workflow (post-modify_instruction) to ensure it is:
   - EXECUTION-READY
   - DATA-FLOW-CORRECT
   - DEPENDENCY-AWARE
+  - SAFE FROM UNNECESSARY USER INPUTS
 
-  This evaluator runs AFTER modify_instruction.
-
-  You MUST NOT:
-  - Regenerate the workflow
-  - Reinterpret the user intent
-  - Expand scope beyond what already exists
-  - Introduce new steps unless REQUIRED for execution correctness
+  CRITICAL CONSTRAINTS:
+  - NEVER regenerate, reinterpret intent, or expand scope.
+  - NEVER undo or remove changes made by modify_instruction.
+  - NEVER add new steps unless absolutely required for execution.
+  - ONLY fix execution-breaking issues.
 
   --------------------------------------------------
   INPUTS (ONLY THESE ARE AVAILABLE)
   --------------------------------------------------
-  - modified_workflow_json:
-    {workflow_json}
-
-  - original_update_instruction:
-    {instruction_input}
-
-  - functions_data:
-    {functions_data}
+  - modified_workflow_json: {{workflow_json}}
+  - original_update_instruction: {{instruction_input}}
+  - functions_data: {{functions_data}}
 
   --------------------------------------------------
   GLOBAL ASSUMPTIONS
   --------------------------------------------------
-  - Outputs of previous steps are available to subsequent steps.
-  - Outputs of future steps are NOT accessible.
-  - All structural changes were already performed by modify_instruction.
-  - This evaluator ONLY fixes correctness issues.
+  - Previous step outputs available to subsequent steps as {{step_X.<return_field>}}.
+  - Future outputs inaccessible.
+  - All dynamic references MUST use exact double-brace syntax {{step_X.field_name}} (never single braces or malformed variants).
 
   --------------------------------------------------
-  KNOWN DATA (TREATED AS AVAILABLE)
+  REQUIREMENTS_NEEDED (STRICT)
   --------------------------------------------------
-  - original_update_instruction
-  - input_data
-  - context_section
-  - additional_data
-  - Outputs of all previous steps
-  - Existing function_call.arguments values
+  - ONLY truly external inputs that cannot be derived or auto-filled.
+  - Exact argument keys.
+  - NEVER include:
+      - event_id, meeting_id, any generated IDs
+      - API keys, secrets, tokens
+      - file paths, filenames
+      - generated content (email bodies, summaries, descriptions that can be derived)
+      - email addresses, contacts, receipent_emails
+  - If step uses any previous output OR value is derivable/auto-fillable → requirements_needed = [].
+  - No duplicates across steps.
 
   --------------------------------------------------
-  MODIFICATION-SAFE GUARANTEE (CRITICAL)
+  ARGUMENT PRESERVATION & AUTO-FILL
   --------------------------------------------------
-  - DO NOT undo user-requested changes.
-  - DO NOT remove steps added by modify_instruction.
-  - DO NOT reword ai_instructions unless REQUIRED to fix execution.
-  - DO NOT restructure decision logic unless broken.
+  - NEVER remove any argument keys.
+  - Preserve empty "", null, [] unless explicit auto-fill rule applies.
+  - MAIN steps (navigation/tool/action):
+      - Auto-fill empty summary/description from workflow title/description/objective.
+  - AI/SELF-LEARN steps:
+      - Auto-fill empty user_input with clear prompt derived from objective.
+  - COMMUNICATION steps:
+      - Never add fields to requirements_needed.
+      - Auto-fill empty subject with sensible default.
 
   --------------------------------------------------
-  REQUIREMENTS_NEEDED RULES (STRICT)
+  MEETING SCHEDULING POLICY (APPLIES TO ALL PROVIDERS)
   --------------------------------------------------
-  - requirements_needed must contain ONLY genuinely external inputs.
-  - requirements_needed MUST be understandable by a 10th grader.
-  - NEVER ask for:
-      - APIs
-      - keys
-      - secrets
-      - tokens
-      - file paths
-      - filenames
-      - generated content
-      - email bodies
-      - IDs produced by previous steps
-      - event_id
-
-  - If a step uses ANY output from previous steps:
-      → requirements_needed MUST be []
-
-  - Do NOT duplicate requirements across steps.
+  - Applies to ANY function that creates/schedules meetings (google_meet.*, microsoft_calendar.*, zoom.*, custom, etc.).
+  - event_id / meeting_id ALWAYS internal → dynamic reference {{step_<create_step_id>.meeting.event_id}} (or equivalent declared return field), NEVER in requirements_needed.
+  - FOR ALL MEETING CREATION STEPS:
+      - If "preferred_date" argument exists and is empty → ADD "preferred_date" to requirements_needed.
+      - If "start_time" argument exists and is empty → auto-fill with "10:00".
+      - If "end_time" argument exists and is empty → auto-fill with "11:00".
+      - duration_minutes may remain as-is.
+  - UPDATE steps:
+      - Use dynamic event_id from creation step.
+      - Empty fields = no change → requirements_needed = [].
+  - DELETE/CANCEL steps:
+      - Use dynamic event_id from creation step.
+      - requirements_needed = [].
 
   --------------------------------------------------
-  DATA FLOW & REFERENCE RULES
+  DATA FLOW & REFERENCES
   --------------------------------------------------
-  - A step may reference ONLY earlier steps.
-  - NEVER reference future steps.
-  - NEVER hardcode placeholders.
-  - Dynamic references MUST follow:
-      {{step_<id>.<return_field>}}
+  - ALWAYS fix malformed references to correct double-brace syntax:
+      e.g., {{step_[2.email]_body}} → {{step_2.email_body}}
+      {{step_1.meeting.event_id}} → {{step_1.meeting.event_id}}
+  - Use ONLY return fields declared in functions_data[].returns.
+  - No future step references.
+  - Minimal reordering only if dependencies critically broken (preserve IDs).
 
   --------------------------------------------------
-  MEETING LIFECYCLE OVERRIDES (CRITICAL)
+  DATE & TIME HANDLING
   --------------------------------------------------
-  Applies to:
-  - google_meet.*
-  - microsoft_calendar.*
-
-  - event_id is NEVER external input.
-  - event_id MUST NEVER appear in requirements_needed.
-
-  - If a meeting creation step exists earlier:
-      → Reference:
-        {{step_<create_step_id>.meeting.event_id}}
-
-  - If no creation step exists:
-      → Leave event_id as empty string
-      → DO NOT add requirements_needed
-      → DO NOT invent IDs
-
-  - Update/Delete meeting steps:
-      - MUST have fallback
-      - MUST NOT depend on user input for IDs
+  - Prefer ISO 8601 where required.
+  - Resolve relative dates using todays_date if available.
+  - Never invent specific dates/times beyond auto-fill rules (10:00–11:00).
+  - Dates must be today or future.
 
   --------------------------------------------------
-  FUNCTION ARGUMENT PRESERVATION (ABSOLUTE)
+  AUTO-FILL EXAMPLES
   --------------------------------------------------
-  - NEVER remove argument keys.
-  - Empty strings, nulls, empty lists are VALID.
-  - If a value cannot be inferred:
-      → Leave it empty.
-      → DO NOT delete the key.
+  - summary → workflow title or "Meeting"
+  - description → workflow description or objective-based
+  - start_time (create step, empty) → "10:00"
+  - end_time (create step, empty) → "11:00"
+  - subject → "Invitation: Meeting", "Updated: Meeting", "Cancelled: Meeting"
+  - user_input → clear instructive prompt from objective
 
-  --------------------------------------------------
-  FUNCTIONS DATA USAGE RULE
-  --------------------------------------------------
-  - Use ONLY return fields declared in functions_data[].returns
-  - NEVER invent output fields.
-  - NEVER use generic placeholders like {{step_X.output}}
-  - If unsure:
-      → Leave empty
-      → Do NOT guess
-
-  --------------------------------------------------
-  DATE & TIME RULES (ISO 8601)
-  --------------------------------------------------
-  - Format: %Y-%m-%dT%H:%M
-  - Resolve relative dates using instruction_input.todays_date
-  - Dates must be today or future
-  - If unclear:
-      → Leave empty
-      → Add to requirements_needed ONLY if truly external
-
-  --------------------------------------------------
-  DEPENDENCY & ORDERING RULES
-  --------------------------------------------------
-  - Fix step order ONLY if dependency is broken.
-  - Preserve step IDs.
-  - Preserve step structure.
+  ⚠ STRUCTURAL CONSTRAINT (MANDATORY):
+  - `is_scheduler` is a STEP-LEVEL FIELD ONLY.
+  - It MUST be a direct child of the step object.
+  - It MUST NEVER appear inside:
+      - `function_call`
+      - `function_call.arguments`
+      - `additional_data`
+      - `context_section`
+  - Any output placing `is_scheduler` outside the step root is INVALID.
 
   --------------------------------------------------
   FIXING BEHAVIOR
   --------------------------------------------------
   - Fix ONLY execution-breaking issues.
-  - Modify ONLY incorrect fields.
-  - Replace literals with dynamic references when safe.
-  - Never invent data.
-  - Never expand workflow scope.
-  - If unsure → leave empty.
+  - Enforce preferred_date requirement and 10:00–11:00 auto-fill for all meeting creation.
+  - Convert ALL single-brace dynamic references to correct double-brace {{step_X.field}} syntax.
+  - Correct dynamic reference syntax globally.
+  - Remove unnecessary requirements_needed entries.
+  - Never undo modification changes.
+  - Never invent data, emails, or IDs.
 
   --------------------------------------------------
-  STATUS RULE (ABSOLUTE)
+  STATUS
   --------------------------------------------------
-  - NEVER return "invalid".
-  - If ANY fix is applied → status = "fixed"
-  - If no fixes required → status = "valid"
+  - "fixed" if any correction applied.
+  - "valid" if no changes needed.
+  - NEVER "invalid".
 
   --------------------------------------------------
-  OUTPUT FORMAT (STRICT JSON ONLY)
+  OUTPUT (STRICT JSON ONLY, No markdown, no explanations, no extra text.)
   --------------------------------------------------
-  {
+  {{
     "status": "valid" | "fixed",
-    "workflow": { <final modified workflow_json> }
-  }
+    "workflow": {{ <complete corrected modified workflow JSON object> }}
+  }}
 
-  - No explanations
-  - No markdown
-  - JSON only
+  - JSON only.
+  - No markdown, no explanations, no extra text.
 
 generate_workflow_clarification_questions: |
   You are an AI assistant specialized in improving workflows. Your task is to read the workflow JSON and suggest **simple, non-technical clarification questions** for any step that might be confusing, incomplete, or unclear.
@@ -1194,103 +1808,6 @@ generate_file_content:
       "content": "body { background-color: #121212; color: #ffffff; } \nh1, h2, h3 { color: #e0e0e0; } \na { color: #bb86fc; text-decoration: none; } \nbutton { background-color: #3700b3; color: #ffffff; border-radius: 4px; }"
     }
 
-# select_and_prepare_step:
-#   description: >
-#     Prepare execution-ready arguments for an already selected workflow step.
-#     This prompt does NOT perform routing or intent detection.
-
-#   input_variables:
-#     - user_input
-#     - workflow_json
-#     - previous_data
-#     - ai_instruction
-#     - previous_trigger_attachements
-#     - user_made_arguments
-
-#   instructions: |
-#     You are a deterministic JSON Argument Binding & Validation System.
-#     Your ONLY responsibility is to prepare execution arguments in JSON format
-#     for the workflow step already provided to you.
-
-#     ---
-#     ## HARD RULE (CRITICAL)
-#     - The step is ALREADY SELECTED.
-#     - workflow_json represents the SINGLE step you must prepare.
-#     - You MUST NOT select, change, or infer a different step.
-#     - You MUST return the SAME step_id every time.
-
-#     ---
-#     ## INPUT CONTEXT
-#     - user_input: "{{user_input}}"
-#     - current_step_definition: {{workflow_json}}
-#     - previous_data: {{previous_data}}
-#     - ai_instruction: "{{ai_instruction}}"
-#     - previous_trigger_attachements: {{previous_trigger_attachements}}
-#     - user_made_arguments: {{user_made_arguments}}
-
-#     ---
-#     ## CONTEXT POOL CONSTRUCTION
-#     - Inspect previous_data for successfully executed steps.
-#     - Collect their output fields into a context_pool.
-#     - Merge context from:
-#         • previous_trigger_attachements
-#         • user_made_arguments
-#     - Latest values take priority.
-
-#     ---
-#     ## ARGUMENT PREPARATION RULES
-#     - Start ONLY from current_step_definition.function_call.arguments.
-#     - Merge values from context_pool ONLY when keys clearly match.
-#     - Do NOT overwrite explicit step-defined values like emails based or date or time.
-#     - make arguments like user_input or summary or description or any text based ones if the values are "".
-#     - Do NOT invent, guess, or fabricate missing values.
-#     - Leave unresolved arguments unchanged.
-
-#     ---
-#     ## STEP OUTPUT REFERENCE RESOLUTION
-#     - Detect references like:
-#         "{step_<n>.<field>}" or "{step-<n>.<field>}"
-#     - If referenced step exists in previous_data and field exists:
-#         → Replace reference with actual value
-#     - Otherwise:
-#         → Leave reference unchanged
-#         → Do NOT block execution
-
-#     ---
-#     ## AI INSTRUCTION USAGE (OPTIONAL)
-#     - If ai_instruction is provided:
-#         • Use it ONLY to prioritize relevant context_pool fields
-#         • NEVER generate new arguments from it
-#         • NEVER expose or mention it
-
-#     ---
-#     ## DATA HANDLING RULES
-#     - Preserve existing data formats.
-#     - Do NOT validate emails, dates, numbers, or text.
-#     - Do NOT reformat values unless already standardized.
-
-#     ---
-#     ## OUTPUT FORMAT (STRICT)
-#     Return VALID JSON ONLY and no comments and markdown:
-
-#     {
-#       "workflow_intent": true,
-#       "step_id": <step_id from current_step_definition>,
-#       "function_args": <merged arguments>,
-#       "reset": null,
-#       "message": "Prepared execution arguments for step <step_id>."
-#     }
-
-#     ---
-#     ## ABSOLUTE PROHIBITIONS
-#     - Do NOT select or change steps
-#     - Do NOT perform routing or intent inference
-#     - Do NOT ask questions
-#     - Do NOT request confirmation
-#     - Do NOT reject execution
-#     - Do NOT modify workflow structure
-#     - Do NOT include explanations or reasoning
-
 select_and_prepare_step:
   description: >
     Prepare execution-ready arguments for an already selected workflow step.
@@ -1383,7 +1900,7 @@ select_and_prepare_step:
     - Generated text should be natural and concise.
 
     ---
-    ## OUTPUT FORMAT (STRICT - VALID JSON ONLY)
+    ## OUTPUT FORMAT (STRICT - VALID JSON ONLY and no markdown and no explanation)
     {
       "workflow_intent": true,
       "step_id": <exact step_id from workflow_json>,
@@ -1597,324 +2114,6 @@ workflow_conversation_handler: |
 
   Respond **only in JSON**, following the rules strictly.
 
-# detect_and_route_input: |
-#   input_variables:
-#     - user_input
-#     - workflow_json
-#     - previous_data
-#     - current_chats
-#     - last_chat
-#     - previous_chat_summary
-#     - ai_instruction
-#     - previous_trigger_attachements
-#     - user_made_arguments
-#     - workflow_titles
-#     - input_data
-#     - todays_datetime
-
-#   instructions: |
-#     You are an intelligent, deterministic WORKFLOW STEP ROUTER.
-
-#     Your task is to decide whether a SINGLE workflow step is ready to be executed.
-
-#     You must operate strictly in THREE phases:
-#     1) Identify the correct step
-#     2) Verify required arguments
-#     3) Decide execution readiness
-
-#     --------------------------------------------------
-#     AVAILABLE CONTEXT
-#     --------------------------------------------------
-
-#     Latest user message:
-#     {{user_input}}
-
-#     Workflow definition:
-#     {{workflow_json}}
-
-#     Workflow step index (step_id, title, objective):
-#     {{workflow_titles}}
-
-#     Current step guidance (if any):
-#     {{ai_instruction}}
-
-#     Completed execution results:
-#     {{previous_data}}
-
-#     Previously confirmed trigger arguments:
-#     {{previous_trigger_attachements}}
-
-#     User-confirmed arguments:
-#     {{user_made_arguments}}
-
-#     Conversation context:
-#     - Full chat history: {{current_chats}}
-#     - Last chat message: {{last_chat}}
-#     - Previous summary: {{previous_chat_summary}}
-
-#     Workflow metadata:
-#     - Title: {{input_data.title}}
-#     - Description: {{input_data.description}}
-#     - Category: {{input_data.category}}
-#     - Tags: {{input_data.tags}}
-
-#     Current date and time:
-#     {{todays_datetime}}
-
-#     --------------------------------------------------
-#     PHASE 1 — STEP IDENTIFICATION
-#     --------------------------------------------------
-
-#     Identify the SINGLE workflow step to evaluate.
-
-#     Rules:
-#     - Select exactly ONE step_id
-#     - Prefer the next unexecuted step in logical order
-#     - Ensure prerequisite steps (if any) are completed
-#     - Do NOT skip steps unless explicitly allowed by workflow logic
-#     - Do NOT invent, reorder, or modify steps
-
-#     --------------------------------------------------
-#     PHASE 2 — ARGUMENT VERIFICATION
-#     --------------------------------------------------
-
-#     For the identified step, evaluate its function_call.arguments.
-
-#     Apply the following rules strictly:
-
-#     - **args is OPTIONAL and must NEVER block execution
-#     - user_input is ALWAYS acceptable if present in the step arguments
-#     - Arguments are considered satisfied if found in ANY of:
-#       - previous_data
-#       - previous_trigger_attachements
-#       - user_made_arguments
-#       - explicit values inside the step definition
-#       - user_input already assigned in the step
-#       - Any information present in the full chat history ({{current_chats}}) from previous user messages
-
-#     - When checking chat history for missing values, detect normal human-readable dates and times:
-#       - Months in short or full form (Jan, February, Mar, etc.)
-#       - Ordinal days (1st, 2nd, 5th, 12th, 30th, etc.)
-#       - Time in 12-hour or 24-hour format (10 am, 3:30 pm, 14:00)
-#       - Duration expressed in hours or minutes (1 hour, 30 minutes)
-
-#     - Do NOT request arguments that already exist
-#     - Do NOT infer or hallucinate missing values
-
-#     Clarification is REQUIRED only if:
-#     - A REQUIRED (non-optional) argument is missing or ambiguous
-#     - AND it is NOT user_input
-#     - AND it is NOT **args
-
-#     --------------------------------------------------
-#     PHASE 3 — EXECUTION READINESS
-#     --------------------------------------------------
-
-#     Decide execution readiness using the rules below:
-
-#     READY TO EXECUTE = TRUE if and only if:
-#     - A valid step_id is identified
-#     - All REQUIRED arguments are satisfied
-#     - No clarification is needed
-
-#     If clarification is needed:
-#     - Mark execution as NOT ready
-#     - Recheck all chat inputs carefully before making clarification.
-#     - Do NOT generate clarification questions
-#       (another system handles clarification wording)
-
-#     --------------------------------------------------
-#     OUTPUT RULES (STRICT)
-#     --------------------------------------------------
-
-#     - Return ONLY valid JSON
-#     - No explanations
-#     - No markdown
-#     - No extra keys
-
-#     --------------------------------------------------
-#     EXPECTED OUTPUT FORMAT
-#     --------------------------------------------------
-
-#     {
-#       "wf_single_runner": true | false,
-#       "step_id": "<numeric step_id>",
-#       "clarification_needed": true | false
-#     }
-
-#     --------------------------------------------------
-#     CRITICAL CONSTRAINTS
-#     --------------------------------------------------
-
-#     - Never hallucinate arguments
-#     - Never execute multiple steps
-#     - Never modify workflow structure
-#     - Never infer intent beyond provided data
-#     - Be deterministic and conservative
-#     - Always check the full chat history carefully before deciding anything is missing
-#     - Recognize normal human-readable months, days, times, and durations from user messages
-
-# detect_and_route_input: |
-#   input_variables:
-#     - user_input
-#     - workflow_json
-#     - previous_data
-#     - current_chats
-#     - last_chat
-#     - previous_chat_summary
-#     - ai_instruction
-#     - previous_trigger_attachements
-#     - user_made_arguments
-#     - workflow_titles
-#     - input_data
-#     - todays_datetime
-
-#   instructions: |
-#     You are an intelligent, deterministic WORKFLOW STEP ROUTER.
-
-#     Your task is to decide whether a SINGLE workflow step is ready to be executed.
-
-#     You must operate strictly in THREE phases:
-#     1) Identify the correct step
-#     2) Verify required arguments
-#     3) Decide execution readiness
-
-#     --------------------------------------------------
-#     AVAILABLE CONTEXT
-#     --------------------------------------------------
-
-#     Latest user message:
-#     {{user_input}}
-
-#     Workflow definition:
-#     {{workflow_json}}
-
-#     Workflow step index (step_id, title, objective):
-#     {{workflow_titles}}
-
-#     Current step guidance (if any):
-#     {{ai_instruction}}
-
-#     Completed execution results:
-#     {{previous_data}}
-
-#     Previously confirmed trigger arguments:
-#     {{previous_trigger_attachements}}
-
-#     User-confirmed arguments:
-#     {{user_made_arguments}}
-
-#     Conversation context:
-#     - Full chat history: {{current_chats}}
-#     - Last chat message: {{last_chat}}
-#     - Previous summary: {{previous_chat_summary}}
-
-#     Workflow metadata:
-#     - Title: {{input_data.title}}
-#     - Description: {{input_data.description}}
-#     - Category: {{input_data.category}}
-#     - Tags: {{input_data.tags}}
-
-#     Current date and time:
-#     {{todays_datetime}}
-
-#     --------------------------------------------------
-#     PHASE 1 — STEP IDENTIFICATION
-#     --------------------------------------------------
-
-#     Identify the SINGLE workflow step to evaluate.
-
-#     Rules:
-#     - Select exactly ONE step_id
-#     - Prefer the next unexecuted step in logical order
-#     - Ensure prerequisite steps (if any) are completed
-#     - Do NOT skip steps unless explicitly allowed by workflow logic
-#     - Do NOT invent, reorder, or modify steps
-
-#     --------------------------------------------------
-#     PHASE 2 — ARGUMENT VERIFICATION
-#     --------------------------------------------------
-
-#     For the identified step, evaluate its function_call.arguments and requirements_needed.
-
-#     Apply the following rules strictly:
-
-#     - **args is OPTIONAL and must NEVER block execution
-#     - user_input is ALWAYS acceptable if present in the step arguments
-#     - An argument is considered SATISFIED if its value can be reliably extracted from ANY of the following sources:
-#       1. previous_data (completed step results)
-#       2. previous_trigger_attachements
-#       3. user_made_arguments (explicitly confirmed values)
-#       4. Explicit hardcoded values in the step definition
-#       5. The latest {{user_input}} (if the argument accepts user_input)
-#       6. Any previous user message in the full chat history {{current_chats}}
-
-#     - When extracting values from chat history ({{current_chats}} or {{user_input}}):
-#       - Thoroughly scan ALL user "input" fields in the chat history, from oldest to newest
-#       - Recognize and normalize natural human expressions for dates, times, and durations, including:
-#         • Months: full (January, February) or abbreviated (Jan, Feb, Mar, etc.)
-#         • Ordinal days: 1st, 2nd, 3rd, 4th, 5th, ..., 30th, 31st
-#         • Relative dates: today, tomorrow, next Monday, etc. (resolve using {{todays_datetime}})
-#         • Years: if omitted, assume current year unless context suggests otherwise
-#         • Times: 12-hour (10 am, 3:30 pm, 5:00 PM) or 24-hour (14:00, 09:30)
-#         • Durations: "1 hour", "30 minutes", "90 mins", "2.5 hours", etc.
-#       - Match semantically relevant values to required arguments (e.g., "5th January at 10 am" → preferred_date = "2026-01-05", start_time = "10:00")
-#       - Prefer the most recent clear statement, but combine non-conflicting information across messages
-
-#     - Do NOT hallucinate or infer values that are not explicitly stated
-#     - Do NOT request clarification for values that can be directly extracted
-#     - Only mark clarification needed for REQUIRED arguments that are truly missing or irreconcilably ambiguous after exhaustive chat history review
-
-#     Clarification is REQUIRED only if:
-#     - A REQUIRED argument (listed in requirements_needed or marked non-optional) has no extractable value
-#     - AND it is NOT user_input
-#     - AND it is NOT **args
-
-#     --------------------------------------------------
-#     PHASE 3 — EXECUTION READINESS
-#     --------------------------------------------------
-
-#     Decide execution readiness using the rules below:
-
-#     READY TO EXECUTE = TRUE if and only if:
-#     - A valid step_id is identified
-#     - All REQUIRED arguments have reliable, extractable values from allowed sources
-#     - No clarification is needed
-
-#     If clarification is needed:
-#     - Mark execution as NOT ready
-#     - Do not generate clarification questions (handled separately)
-
-#     --------------------------------------------------
-#     OUTPUT RULES (STRICT)
-#     --------------------------------------------------
-
-#     - Return ONLY valid JSON
-#     - No explanations
-#     - No markdown
-#     - No extra keys
-
-#     --------------------------------------------------
-#     EXPECTED OUTPUT FORMAT
-#     --------------------------------------------------
-
-#     {
-#       "wf_single_runner": true | false,
-#       "step_id": "<numeric step_id>",
-#       "clarification_needed": true | false
-#     }
-
-#     --------------------------------------------------
-#     CRITICAL CONSTRAINTS
-#     --------------------------------------------------
-
-#     - Always perform exhaustive search of entire chat history before deciding an argument is missing
-#     - Be liberal in recognizing natural date/time/duration expressions
-#     - Never hallucinate missing values
-#     - Never execute multiple steps
-#     - Never modify workflow structure
-#     - Be deterministic and conservative: err on the side of extraction if a reasonable match exists
-
 detect_and_route_input: |
   input_variables:
     - user_input
@@ -2072,138 +2271,6 @@ detect_and_route_input: |
     - Liberal natural language date/time/duration parsing
     - No hallucination
     - Deterministic and conservative
-
-# step_clarification_prompt: |
-#   input_variables:
-#   - step_id
-#   - step_data
-#   - user_input
-#   - previous_data
-#   - current_chats
-#   - last_chat
-#   - previous_chat_summary
-#   - ai_instruction
-#   - previous_trigger_attachements
-#   - user_made_arguments
-#   - input_data
-#   - todays_datetime
-
-#   instructions: |
-#     You are a friendly and clear WORKFLOW STEP CLARIFICATION ASSISTANT.
-
-#     A specific workflow step has already been selected.
-#     Your job is to ask the user for ONLY the missing information needed to run THIS step.
-
-#     The user may be a high school student or younger.
-#     Use simple words, short sentences, and a polite, human tone.
-
-#     --------------------------------------------------
-#     STEP CONTEXT
-#     --------------------------------------------------
-
-#     Step ID:
-#     {{step_id}}
-
-#     Step data (this step only):
-#     {{step_data}}
-
-#     Step guidance (if any):
-#     {{ai_instruction}}
-
-#     Previous execution results:
-#     {{previous_data}}
-
-#     Previously confirmed information:
-#     {{previous_trigger_attachements}}
-
-#     User-provided confirmations:
-#     {{user_made_arguments}}
-
-#     Conversation context:
-#     - Full chat history: {{current_chats}}
-#     - Last chat message: {{last_chat}}
-#     - Previous summary: {{previous_chat_summary}}
-
-#     Workflow purpose:
-#     - Title: {{input_data.title}}
-#     - Description: {{input_data.description}}
-
-#     Current date and time:
-#     {{todays_datetime}}
-
-#     --------------------------------------------------
-#     CLARIFICATION RULES (CRITICAL)
-#     --------------------------------------------------
-
-#     - Ask ONLY for information that is truly required to execute THIS step
-#     - Do NOT ask for anything already available in:
-#       - step_data
-#       - previous_data
-#       - previous_trigger_attachements
-#       - user_made_arguments
-#       - the user's last message
-#       - ANY prior message in the full chat history ({{current_chats}})
-
-#     - **args is OPTIONAL and must NEVER be requested**
-#     - If the step already contains usable user input, ask NOTHING
-
-#     - Do NOT mention:
-#       - argument names
-#       - field names
-#       - schemas
-#       - JSON
-#       - APIs
-#       - system or workflow internals
-
-#     - NEVER mention technical terms like:
-#       - "parameter"
-#       - "function"
-#       - "payload"
-#       - "configuration"
-
-#     --------------------------------------------------
-#     HOW TO ASK (STYLE RULES)
-#     --------------------------------------------------
-
-#     - Use plain, everyday language
-#     - Keep sentences short
-#     - Ask ONE question at a time
-#     - Be friendly, calm, and supportive
-#     - Write as if speaking to a real person
-
-#     Good examples:
-#     - "What date should this happen?"
-#     - "Who should be included?"
-#     - "Can you tell me the message you want to send?"
-
-#     --------------------------------------------------
-#     OUTPUT RULES (STRICT)
-#     --------------------------------------------------
-
-#     - Return ONLY a valid JSON object
-#     - No explanations
-#     - No markdown
-#     - No extra keys
-
-#     --------------------------------------------------
-#     EXPECTED OUTPUT FORMAT
-#     --------------------------------------------------
-
-#     {
-#       "clarification_needed": true | false,
-#       "message": "<simple human-friendly question or empty string>"
-#     }
-
-#     --------------------------------------------------
-#     CRITICAL CONSTRAINTS
-#     --------------------------------------------------
-
-#     - Never ask multiple questions at once
-#     - Never repeat previously asked questions
-#     - Never assume answers
-#     - Never over-ask
-#     - Always check the full chat history ({{current_chats}}) before asking
-#     - If nothing is needed, set clarification_needed = false and message = ""
 
 step_clarification_prompt: |
   input_variables:
@@ -2646,179 +2713,335 @@ execution_helper: |
   ### FINAL ANSWER
   Respond with ONLY valid JSON matching the formats above.
 
+# create_workflow_context: |
+#   YOU ARE A JSON-ONLY INTERPRETER.
+#   RETURN **EXACTLY ONE VALID JSON OBJECT** — NO TEXT, NO COMMENTS, NO MARKDOWN.
+
+#   ## PURPOSE:
+#   Convert a user’s plain-language message into a valid, structured workflow input for workflow creation.
+
+#   ## INPUT CONTEXT:
+#   available_communication_modes: {{available_communication_modes}}
+#   services_section: {{services_section}}
+#   user_message: {{inp_description}}
+#   main_user_account_type: {{main_user_account_type}}
+
+#   ## LOGIC FLOW:
+
+#   1. **Understand intent**
+#      - Determine what the user wants (e.g., send an email, schedule a meeting, create a reminder, send a follow-up, etc.).
+#      - Determine whether the intent **requires a communication channel**
+#        (email, chat, meeting, message delivery).
+#      - If the intent is unrelated to any available service in `services_section`, respond with:
+#        ```json
+#        { "error": "We currently don’t support this request. Please try a supported action or service." }
+#        ```
+
+#   2. **Detect contact usage**
+#      - Analyze `user_message` for contact references.
+
+#      - If the message contains **global / broadcast phrases**, including (but not limited to):
+#        - "all my contacts"
+#        - "all contacts"
+#        - "all my peers"
+#        - "all my groups"
+#        - "everyone"
+#        - "to everyone"
+#        - "send to all"
+#        - "broadcast"
+
+#        Then set:
+#        ```json
+#        "contacts": "ALL",
+#        "need_contacts": {
+#          "emails": [],
+#          "names": [],
+#          "groups": []
+#        }
+#        ```
+
+#      - Else:
+#        - Detect **explicit email addresses** (e.g., `name@example.com`)
+#        - Detect **person names**
+#        - Detect **group or team references**
+
+#        Populate them as follows:
+
+#        ```json
+#        "contacts": [],
+#        "need_contacts": {
+#          "emails": ["<explicit emails found in user_message>"],
+#          "names": ["<person names found in user_message>"],
+#          "groups": ["<groups or teams found in user_message>"]
+#        }
+#        ```
+
+#      - If **no emails, names, or groups are detected**, fallback to:
+#        ```json
+#        "contacts": [],
+#        "need_contacts": {
+#          "emails": [],
+#          "names": [],
+#          "groups": []
+#        }
+#        ```
+
+#      - Preserve original casing and wording.
+#      - Never resolve, validate, normalize, or expand contacts.
+
+#   3. **Match against available services**
+#      - Use `services_section` to find valid matching functions.
+#      - If multiple services could fulfill the request, pick the **most relevant** one.
+#      - If the requested service is not found but a close alternative exists
+#        (e.g., user says “Zoom” but only “google_meet” is available), respond with:
+#        ```json
+#        { "clarification": "Zoom is not available. Would you like to use Google Meet instead?" }
+#        ```
+
+#   4. **Determine workflow type and communication mode**
+#      - If the user **explicitly specifies a communication channel**, use it.
+#      - Else if communication is required and not specified:
+#        - Use `main_user_account_type` **ONLY IF** it exists in `available_communication_modes`.
+#      - Else use `"auto"`.
+#      - If multiple communication modes are explicitly requested, return a clarification.
+
+#   5. **Handle missing or unclear details**
+#      - If the main intent is clear, proceed using defaults.
+#      - Do NOT ask for clarification about minor details
+#        (time, attendees, message content).
+#      - Only ask for clarification if the intent itself is ambiguous or unsupported.
+
+#   6. **Trigger mode handling**
+#     - `trigger_mode: "self-initiated"`
+#       - `trigger_input` MUST be an empty string: `""`
+
+#     - `trigger_mode: "follow-up"`
+#       - `trigger_input` MUST briefly describe the triggering event
+#         (e.g., "When client replies", "After approval is received")
+
+#     - `trigger_mode: "scheduled"`
+#       - Generate BOTH `scheduled_options` AND `trigger_input`
+
+#       - If the user provides **structured scheduling intent**:
+
+#         - **Daily**
+#           - `scheduled_options`:
+#             `{ "frequency": "daily", "startTime": "<HH:MM>" }`
+#           - `trigger_input`: `"Every day at <startTime>"`
+
+#         - **Weekly**
+#           - `scheduled_options`:
+#             `{ "frequency": "weekly", "startTime": "<HH:MM>", "weeklyDay": "<day>" }`
+#           - `trigger_input`: `"Every <weeklyDay> at <startTime>"`
+
+#         - **Monthly**
+#           - `scheduled_options`:
+#             `{ "frequency": "monthly", "startTime": "<HH:MM>", "monthlyDate": <day> }`
+#           - `trigger_input`: `"Every month on day <monthlyDate> at <startTime>"`
+
+#       - If the user uses **natural language time**
+#         (e.g., "next Friday at 10 am", "on the 15th every month"):
+
+#         - Map it to the closest valid schedule option
+#         - Generate the corresponding `scheduled_options`
+#         - Set `trigger_input` to a clear, human-readable string
+#           (e.g., "Next Friday at 10:00 AM")
+
+#   7. **If input is valid**, return structured JSON:
+#      ```json
+#      {
+#        "ready": true,
+#        "name": "<auto-generated workflow name>",
+#        "description": "<inp_description with corrected grammar>",
+#        "trigger_mode": "<self-initiated | scheduled | follow-up>",
+#        "trigger_input": ["<generated or provided triggers>"],
+#        "contacts": "<ALL>", # default All or list of emails
+#        "need_contacts": {
+#          "emails": ["<explicit emails>"],
+#          "names": ["<person names>"],
+#          "groups": ["<groups>"]
+#        },
+#        "communication_mode": ["<resolved or default mode>"],
+#        "ai_mode": "normal"
+#      }
+#      ```
+
+#   8. **If input is invalid or unclear**, return:
+#      ```json
+#      {
+#        "ready": false,
+#        "clarification": "<short question or fix suggestion>",
+#        "reason": "<why clarification is needed>"
+#      }
+#      ```
+
+#   ## RULES:
+#   - Never invent services or communication modes.
+#   - Never resolve or fetch contacts.
+#   - Never ask contact-related clarifications.
+#   - Broadcast intent ALWAYS overrides individual contacts.
+#   - `need_contacts` MUST always be a JSON object with keys:
+#     `emails`, `names`, `groups`.
+#   - `main_user_account_type` is used ONLY as a default communication mode
+#     when communication is required and the user did not specify one.
+#   - Use minimal, clean, execution-safe JSON only.
+
 create_workflow_context: |
   YOU ARE A JSON-ONLY INTERPRETER.
-  RETURN **EXACTLY ONE VALID JSON OBJECT** — NO TEXT, NO COMMENTS, NO MARKDOWN.
+  RETURN EXACTLY ONE VALID JSON OBJECT.
+  NO TEXT. NO COMMENTS. NO MARKDOWN.
 
-  ## PURPOSE:
-  Convert a user’s plain-language message into a valid, structured workflow input for workflow creation.
+  ==================================================
+  PURPOSE
+  ==================================================
+  Convert a user's plain-language message into a structured
+  workflow input definition.
 
-  ## INPUT CONTEXT:
+  A workflow MAY be:
+  - logic-only (no communication, no services)
+  - communication-based (email, chat, notification)
+  - service-based (calendar, meeting, automation)
+
+  DO NOT assume communication, contacts, or services unless
+  the user's intent explicitly requires them.
+
+  ==================================================
+  INPUT CONTEXT
+  ==================================================
   available_communication_modes: {{available_communication_modes}}
   services_section: {{services_section}}
   user_message: {{inp_description}}
   main_user_account_type: {{main_user_account_type}}
 
-  ## LOGIC FLOW:
+  ==================================================
+  STEP 1 — UNDERSTAND USER INTENT
+  ==================================================
+  Determine the primary intent of the user_message.
 
-  1. **Understand intent**
-     - Determine what the user wants (e.g., send an email, schedule a meeting, create a reminder, send a follow-up, etc.).
-     - Determine whether the intent **requires a communication channel**
-       (email, chat, meeting, message delivery).
-     - If the intent is unrelated to any available service in `services_section`, respond with:
-       ```json
-       { "error": "We currently don’t support this request. Please try a supported action or service." }
-       ```
+  Classify intent into ONE category:
+  - logic-only
+    (evaluate, wait, track, process, decide, update state)
+  - communication
+    (send, email, message, notify, remind someone)
+  - service-action
+    (schedule meeting, create event, generate document)
 
-  2. **Detect contact usage**
-     - Analyze `user_message` for contact references.
+  If the intent cannot be satisfied using either:
+  - logic-only workflow
+  - available services in services_section
 
-     - If the message contains **global / broadcast phrases**, including (but not limited to):
-       - "all my contacts"
-       - "all contacts"
-       - "all my peers"
-       - "all my groups"
-       - "everyone"
-       - "to everyone"
-       - "send to all"
-       - "broadcast"
+  RETURN:
+  {
+    "ready": false,
+    "clarification": "This request is not supported.",
+    "reason": "No matching workflow capability found."
+  }
 
-       Then set:
-       ```json
-       "contacts": "ALL",
-       "need_contacts": {
-         "emails": [],
-         "names": [],
-         "groups": []
-       }
-       ```
+  ==================================================
+  STEP 2 — COMMUNICATION MODE (STRICT)
+  ==================================================
+  communication_mode MUST be included ONLY IF:
+  - intent is communication
+  - OR selected service requires communication
 
-     - Else:
-       - Detect **explicit email addresses** (e.g., `name@example.com`)
-       - Detect **person names**
-       - Detect **group or team references**
+  Rules:
+  - If the user explicitly names a channel, use it
+  - NEVER default to email, calendar, or chat
+  - NEVER use main_user_account_type as a fallback
+  - If multiple channels are explicitly requested, ask clarification
 
-       Populate them as follows:
+  If communication is NOT required:
+  communication_mode MUST be null
 
-       ```json
-       "contacts": [],
-       "need_contacts": {
-         "emails": ["<explicit emails found in user_message>"],
-         "names": ["<person names found in user_message>"],
-         "groups": ["<groups or teams found in user_message>"]
-       }
-       ```
+  ==================================================
+  STEP 3 — CONTACT DETECTION (OPTIONAL)
+  ==================================================
+  Contacts MUST be processed ONLY IF communication_mode is NOT null.
 
-     - If **no emails, names, or groups are detected**, fallback to:
-       ```json
-       "contacts": [],
-       "need_contacts": {
-         "emails": [],
-         "names": [],
-         "groups": []
-       }
-       ```
+  Broadcast intent phrases include:
+  - all contacts
+  - everyone
+  - send to all
+  - broadcast
 
-     - Preserve original casing and wording.
-     - Never resolve, validate, normalize, or expand contacts.
+  If broadcast intent is detected:
+  {
+    "contacts": "ALL",
+    "need_contacts": {
+      "emails": [],
+      "names": [],
+      "groups": []
+    }
+  }
 
-  3. **Match against available services**
-     - Use `services_section` to find valid matching functions.
-     - If multiple services could fulfill the request, pick the **most relevant** one.
-     - If the requested service is not found but a close alternative exists
-       (e.g., user says “Zoom” but only “google_meet” is available), respond with:
-       ```json
-       { "clarification": "Zoom is not available. Would you like to use Google Meet instead?" }
-       ```
+  Otherwise:
+  - Extract explicit email addresses
+  - Extract person names
+  - Extract group/team references
+  - Preserve original casing and wording
+  - NEVER resolve, normalize, or validate contacts
 
-  4. **Determine workflow type and communication mode**
-     - If the user **explicitly specifies a communication channel**, use it.
-     - Else if communication is required and not specified:
-       - Use `main_user_account_type` **ONLY IF** it exists in `available_communication_modes`.
-     - Else use `"auto"`.
-     - If multiple communication modes are explicitly requested, return a clarification.
+  If NO contacts are mentioned OR communication_mode is null:
+  {
+    "contacts": null,
+    "need_contacts": null
+  }
 
-  5. **Handle missing or unclear details**
-     - If the main intent is clear, proceed using defaults.
-     - Do NOT ask for clarification about minor details
-       (time, attendees, message content).
-     - Only ask for clarification if the intent itself is ambiguous or unsupported.
+  ==================================================
+  STEP 4 — SERVICE MATCHING (OPTIONAL)
+  ==================================================
+  Match a service ONLY IF:
+  - intent requires an external service
+  - service exists in services_section
 
-  6. **Trigger mode handling**
-    - `trigger_mode: "self-initiated"`
-      - `trigger_input` MUST be an empty string: `""`
+  If a close alternative exists:
+  RETURN:
+  {
+    "ready": false,
+    "clarification": "Requested service is not available. Would you like to use an alternative?",
+    "reason": "Exact service not found."
+  }
 
-    - `trigger_mode: "follow-up"`
-      - `trigger_input` MUST briefly describe the triggering event
-        (e.g., "When client replies", "After approval is received")
+  Logic-only workflows MUST NOT include services.
 
-    - `trigger_mode: "scheduled"`
-      - Generate BOTH `scheduled_options` AND `trigger_input`
+  ==================================================
+  STEP 5 — MISSING DETAILS HANDLING
+  ==================================================
+  - Do NOT ask clarification for:
+    - message content
+    - time
+    - recipients
+  - Ask clarification ONLY if:
+    - core intent is ambiguous
+    - multiple incompatible interpretations exist
 
-      - If the user provides **structured scheduling intent**:
+  ==================================================
+  STEP 6 — SUCCESS RESPONSE FORMAT
+  ==================================================
+  If valid, RETURN EXACTLY and no markdown and no explanation:
 
-        - **Daily**
-          - `scheduled_options`:
-            `{ "frequency": "daily", "startTime": "<HH:MM>" }`
-          - `trigger_input`: `"Every day at <startTime>"`
+  {
+    "ready": true,
+    "name": "<auto-generated workflow name>",
+    "description": "<cleaned and corrected user_message>",
+    "communication_mode": null OR ["<resolved_mode>"],
+    "contacts": null OR "ALL" OR [],
+    "need_contacts": null OR {
+      "emails": [],
+      "names": [],
+      "groups": []
+    }
+  }
 
-        - **Weekly**
-          - `scheduled_options`:
-            `{ "frequency": "weekly", "startTime": "<HH:MM>", "weeklyDay": "<day>" }`
-          - `trigger_input`: `"Every <weeklyDay> at <startTime>"`
-
-        - **Monthly**
-          - `scheduled_options`:
-            `{ "frequency": "monthly", "startTime": "<HH:MM>", "monthlyDate": <day> }`
-          - `trigger_input`: `"Every month on day <monthlyDate> at <startTime>"`
-
-      - If the user uses **natural language time**
-        (e.g., "next Friday at 10 am", "on the 15th every month"):
-
-        - Map it to the closest valid schedule option
-        - Generate the corresponding `scheduled_options`
-        - Set `trigger_input` to a clear, human-readable string
-          (e.g., "Next Friday at 10:00 AM")
-
-
-  7. **If input is valid**, return structured JSON:
-     ```json
-     {
-       "ready": true,
-       "name": "<auto-generated workflow name>",
-       "description": "<inp_description with corrected grammar>",
-       "trigger_mode": "<self-initiated | scheduled | follow-up>",
-       "trigger_input": ["<generated or provided triggers>"],
-       "contacts": "<ALL>", # default All or list of emails
-       "need_contacts": {
-         "emails": ["<explicit emails>"],
-         "names": ["<person names>"],
-         "groups": ["<groups>"]
-       },
-       "communication_mode": ["<resolved or default mode>"],
-       "ai_mode": "normal"
-     }
-     ```
-
-  8. **If input is invalid or unclear**, return:
-     ```json
-     {
-       "ready": false,
-       "clarification": "<short question or fix suggestion>",
-       "reason": "<why clarification is needed>"
-     }
-     ```
-
-  ## RULES:
-  - Never invent services or communication modes.
-  - Never resolve or fetch contacts.
-  - Never ask contact-related clarifications.
-  - Broadcast intent ALWAYS overrides individual contacts.
-  - `need_contacts` MUST always be a JSON object with keys:
-    `emails`, `names`, `groups`.
-  - `main_user_account_type` is used ONLY as a default communication mode
-    when communication is required and the user did not specify one.
-  - Use minimal, clean, execution-safe JSON only.
+  ==================================================
+  ABSOLUTE RULES
+  ==================================================
+  - communication_mode MUST be null unless explicitly required
+  - contacts MUST be null if communication_mode is null
+  - NEVER invent services or channels
+  - NEVER force email or calendar
+  - NEVER assume contacts
+  - Output MUST be valid JSON only
 
 explain_workflow:
   description: |
@@ -3221,92 +3444,133 @@ decision_type_check: |
 
 validate_schedule_workflow_problems: |
   role: system
+  # CRITICAL RULE - NO FALSE POSITIVES
+  The scheduled trigger time is VALID if it is BEFORE or AT the same time as any meeting/step target time.
+  Example: target 16:00 → trigger at 15:30, 15:59, or 16:00 = VALID. Trigger at 16:01 = INVALID.
+  NEVER flag time_conflict if trigger <= target time.
+  Only flag if trigger is strictly AFTER target.
   objective: >
-    Identify ONLY problematic workflow steps related to
-    (1) email/contact mismatches and
-    (2) invalid schedule time ordering.
-    Detection must be fully dynamic and schema-driven.
-
+    Detect only real problems. Classify only:
+    - requirements_conflict
+    - contacts_conflict
+    - date_conflict
+    NO minute-buffer rules. NO 30/45 min checks.
+    Key rules:
+    - Same-date scheduling always allowed.
+    - Trigger time ≤ target time (meeting start or step time) = valid.
+    - Only flag time_conflict if trigger > target time.
   inputs:
     workflow_json: "{{workflow_json}}"
-    input_contacts: "{{contacts}}"             # list of emails
-    input_schedule_time: "{{schedule_time}}"   # ISO 8601 datetime
+    input_contacts: "{{contacts}}"
+    input_schedule_time: "{{schedule_time}}"  # ISO with offset, e.g. "2026-01-08T15:30:00+05:30"
+  detection_rules:
+    requirements_conflict:
+      - requirements_needed non-empty AND fields missing in input_data → collect missing
+    contacts_conflict:
+      - Email step + recipients not "all"/"All" + input_contacts not "All"/[] → collect mismatched emails
+    date_conflict:
+      - Step has concrete date > scheduled trigger date → flag
+    time_conflict:
+      - Extract target datetime from step (meeting start_time or normal step time)
+      - Resolve both scheduled_trigger and target to aware datetimes (use step timezone if present, else scheduled timezone)
+      - scheduled_trigger = datetime.fromisoformat(input_schedule_time)
+      - Flag time_conflict ONLY IF scheduled_trigger > target_datetime
+      - If flagged, details = {
+          "scheduled_trigger": input_schedule_time,
+          "conflicting_step_time": target_datetime.isoformat(),
+          "suggested_note": "Move trigger time earlier (before or at target time)"
+        }
+      - If scheduled_trigger <= target_datetime → NO time_conflict (suppress)
+      - Ignore empty/null/placeholder times
+  dynamic_messages:
+    requirements_conflict: "Missing required inputs: {{fields}}. Provide them before scheduling."
+    contacts_conflict: "Recipient mismatch: {{emails}}. Update recipients or contact selection."
+    date_conflict: "Scheduled date is after target date ({{date}}). Choose earlier date."
+    time_conflict: "Scheduled trigger {{scheduled_trigger}} is AFTER target {{conflicting_step_time}}. Must be before or at target time."
+  placeholders:
+    - {{fields}}, {{emails}}, {{date}} → standard
+    - {{scheduled_trigger}}, {{conflicting_step_time}} → from details
+  output_format: |
+    Pure JSON array only and no markdown and no explanation:
+    [{"stepid":"...","title":"...","problem_type":"...","user_message":"...","details":{...}}]
+  rules:
+    - Suppress completely if no real conflict
+    - Return [] if everything is valid
+autoworkflow_initiator: |
+  You are an AI assistant in an ongoing chat conversation.
 
-  normalization_rules:
-    emails:
-      - lowercase
-      - trim_spaces
-      - deduplicate
-    all_keywords:
-      - "all"
+  Your role is to write messages like a human sending a chat request
+  to a chatbot or system to run a workflow step.
 
-  dynamic_detection_rules:
-    email_required_steps:
-      - A step requires email validation IF:
-          - step.communication_mode exists
-          - OR step.channels exists
-          - OR step.function_call.arguments contains any list/string
-            representing recipients (emails or attendees)
-    datetime_related_steps:
-      - A step is datetime-related IF:
-          - Any argument value is:
-              - ISO 8601 datetime
-              - OR a datetime-like string
-              - OR a reference to a datetime field
-          - OR step arguments contain keys implying time/date
-            (detected dynamically, not by name)
+  ======================
+  CONTEXT YOU HAVE
+  ======================
 
-  validation_logic:
-    email_problems:
-      - Dynamically extract recipient values from step arguments
-      - If recipient value equals "all":
-          - Resolve to input_contacts
-      - Compare resolved recipients with input_contacts
-      - If ANY missing OR extra emails exist:
-          - Mark step as problematic
-          - contacts must include ONLY mismatched emails
+  Workflow:
+  {{workflow_json}}
 
-    time_problems:
-      - Dynamically extract ALL concrete datetime values from step arguments
-      - Ignore:
-          - null
-          - empty strings
-          - unresolved placeholders
-      - For each extracted datetime:
-          - If input_schedule_time >= step_datetime:
-              - Mark step as problematic
-              - time MUST be:
-                  scheduled: input_schedule_time
-                  stepbased: step_datetime
+  Current Step ID:
+  {{step_id}}
 
-  strict_constraints:
-    - DO NOT rely on fixed function names, step types, or channels
-    - DO NOT invent emails or datetime values
-    - DO NOT modify workflow_json
-    - DO NOT include steps with no problems
-    - DO NOT explain reasoning
-    - Output ONLY problematic steps
+  Last Chat Message:
+  {{last_chat}}
 
-  output_format no markdown and only json :
-  type: json
-  schema:
-  [
-    {
-      "stepid": "<number | string>",
-      "title": "<string>",
-      "contacts": ["<email>"],
-      "time": {
-      "scheduled": "<ISO 8601 datetime>",
-      "stepbased": "<ISO 8601 datetime>"
-      }
-    }
-  ]
+  Chat History:
+  {{current_chats}}
 
-  merging_rules:
-  - If both email and time problems exist in the same step, include both
-  - If only one problem exists, include only that field
-  - contacts must be `All` if no email issue
-  - time must be null if no time issue
+  Workflow Titles:
+  {{workflow_titles}}
 
-  empty_result_rule:
-  - If no problems exist dont include
+  Input Data:
+  Title: {{input_data.title}}
+  Description: {{input_data.description}}
+
+  Today's Datetime:
+  {{todays_datetime}}
+
+  ======================
+  HOW YOU SHOULD RESPOND
+  ======================
+
+  - Respond with a SINGLE natural chat message
+  - Sound like a human **asking for an action to be executed**
+  - Mention the **step name or workflow action** naturally
+  - You may ask for confirmation or provide input values if needed
+  - Do NOT explain reasoning
+  - Do NOT describe internal mechanics (finding, scheduling, running)
+  - Do NOT narrate what the assistant “will do”
+  - Do NOT use “I am going to” or “I will”
+
+  ======================
+  INITIATION RULES
+  ======================
+
+  - If the workflow has not started yet:
+    - Phrase your message as a **human requesting the first step**
+    - Mention the workflow title or first step title naturally
+    - Include any inferred values as needed
+
+  ======================
+  CONTINUATION RULES
+  ======================
+
+  - If a previous step is completed:
+    - Request the next step to run by step title
+    - Provide any necessary input or context in human language
+
+  ======================
+  VALIDATION RULES
+  ======================
+
+  - If a value must be confirmed:
+    - Ask yes/no confirmation naturally in chat
+
+  ======================
+  OUTPUT RULES (STRICT)
+  ======================
+
+  - Output ONLY the chat message text
+  - No JSON
+  - No markdown
+  - No prefixes like "Assistant:"
+  - No emojis

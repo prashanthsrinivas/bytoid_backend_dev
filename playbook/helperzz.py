@@ -3,10 +3,8 @@ import json
 import re
 import yaml
 from agent_route.doc_clarity import fetch_ques_with_docs
-from agent_route.routes import getFilenameData
 from services.meet_service import GoogleMeetService
 from services.microsoft_calender_service import MicrosoftGraphCalendarService
-from utils.async_check import run_async
 from utils.fireworkzz import (
     evaluator_context_llama,
     get_evaluator_fireworks,
@@ -15,9 +13,6 @@ from utils.fireworkzz import (
 from utils.pb_config_utils import *
 from utils.normal import (
     ensure_dir,
-    load_yaml_file,
-    read_function_jsons,
-    read_function_jsons2,
 )
 from datetime import datetime
 import tempfile
@@ -29,7 +24,12 @@ from db.db_checkers import (
     get_subagent_by_userid,
 )
 from cust_helpers import pathconfig
-from request_context import current_user_id
+from utils.s3_utils import upload_exefileany_file
+
+
+def base_name(filename):
+    base_name = os.path.splitext(filename)[0]
+    return base_name
 
 
 def clean_yaml_block(text: str) -> str:
@@ -117,6 +117,7 @@ async def evallogic(templatedata, batch, userid):
     res_raw = await evaluator_context_llama(
         templatedata.get("context_workflow_validator_batch"), batch, userid=userid
     )
+    print("res jaw in eval", res_raw)
     # Extract the JSON array block using regex
     if isinstance(res_raw, str):
         match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)
@@ -124,7 +125,7 @@ async def evallogic(templatedata, batch, userid):
             json_block = match.group(0)
             try:
                 res_json = yaml.safe_load(json_block)
-            # print("✅ Extracted & parsed response block.")
+                # print("✅ Extracted & parsed response block.")
             except Exception as e:
                 print(f"❌ YAML parsing error: {e}")
                 res_json = []
@@ -137,7 +138,7 @@ async def evallogic(templatedata, batch, userid):
     else:
         # print("❌ Unexpected type of response from evaluator.")
         res_json = []
-
+    print("✅ Extracted & parsed response block.", res_json)
     # Evaluate results
     for original_item, eval_result in zip(batch, res_json):
         actual_q = original_item["query"]
@@ -155,30 +156,40 @@ async def evallogic(templatedata, batch, userid):
 
 async def triggeraicontextfinder(instruction_input, userid, templatedata, contacts):
     normalized = normalize_input(instruction_input)
+
     ques = await check_doc_context_needed(normalized, templatedata, userid=userid)
     print("len of the questions made", len(ques), ques)
-    if len(ques) > 0:
-        # filenames = getFilenameData(userid)
-        content = run_async(fetch_ques_with_docs(ques, userid, contacts))
-        batch_size = 10
+
+    if not ques:
+        return []
+
+    content = await fetch_ques_with_docs(ques, userid, contacts)
+    batch_size = 10
+
+    print(len(content), "context length")
+
+    async def run_batches(templatedata, content, batch_size, userid):
+        tasks = [
+            evallogic(
+                templatedata,
+                content[i : i + batch_size],
+                userid=userid,
+            )
+            for i in range(0, len(content), batch_size)
+        ]
+
+        results = await asyncio.gather(*tasks)
+
         valid_responses = []
+        for r in results:
+            valid_responses.extend(r)
 
-        print(len(content), "context length")
-
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [
-                executor.submit(
-                    evallogic, templatedata, content[i : i + batch_size], userid=userid
-                )
-                for i in range(0, len(content), batch_size)
-            ]
-
-        valid_responses = []
-        for f in futures:
-            valid_responses.extend(f.result())
         return valid_responses
+
+    # ✅ JUST AWAIT — NO asyncio.run
+    valid_responses = await run_batches(templatedata, content, batch_size, userid)
+
+    return valid_responses
 
 
 def normalize_contacts(contacts):
@@ -208,51 +219,27 @@ def returninsructdata(data):
     """
     name = data.get("title", "")
     description = data.get("description", "")
-    triggermode = data.get("trigger_mode", "")
-    ai_mode = data.get("ai_mode", "normal")
-    inp_steps = data.get("steps", [])
-    contacts = normalize_contacts(data.get("contacts", "All"))
+    inp_steps = data.get("steps") or []
 
-    # Communication channels
-    communication_channels = list(
-        set(
-            [ch for ch in data.get("communication_channels", []) if isinstance(ch, str)]
-        )
-    )
+    # Normalize contacts
+    contacts = normalize_contacts(data.get("contacts") or [])
 
-    # Trigger input
-    trigger_input_list = []
-    if triggermode.lower() == "scheduled":
-        schedule = data.get("scheduled_options", {})
-        freq = schedule.get("frequency", "daily")
-        start = schedule.get("startTime", "09:00")
-        trigger_input_list.append(f"schedule: {freq}")
-        trigger_input_list.append(f"in_time: {start}")
-        end_time = schedule.get("endTime")
-        if end_time:
-            trigger_input_list.append(f"out_time: {end_time}")
-    else:
-        raw_input = data.get("trigger_input", "")
-        if raw_input:
-            trigger_input_list.append(raw_input)
+    # ✅ FIX: Normalize communication_channels safely
+    raw_channels = data.get("communication_channels") or []
+    communication_channels = list({ch for ch in raw_channels if isinstance(ch, str)})
 
     instruction_input = {
         "name": name,
         "description": description,
-        "trigger_mode": triggermode,
-        "trigger_input": trigger_input_list,
         "communication_mode": communication_channels,
         "selected_contacts": contacts,
-        "ai_mode": ai_mode,
         "inp_steps": inp_steps,
-        "context_section": "[]",  # to be updated
-        "services_section": "",  # to be updated
+        "context_section": "[]",
+        "services_section": "",
         "additional_data": data.get("additional_data", ""),
         "main_user_account_type": "",
-        "user_timezone": "UTc",
-        "todays_date": datetime.now().strftime(
-            "%A, %d %B %Y"
-        ),  # e.g., Monday, 21 October 2025
+        "user_timezone": "UTC",
+        "todays_date": datetime.now().strftime("%A, %d %B %Y"),
     }
 
     return instruction_input
@@ -340,7 +327,7 @@ async def minimize_functions(
     instruction_input, template_data, functions_ds, actual_social, userid
 ):
     # functions_datas = read_function_jsons2(Full=True)
-    # print("the functions data", len(functions_datas))
+    print("the functions data", len(functions_ds))
 
     fn_temp_prompt = template_data.get("functions_checker")
     #  users_social_behaviour=actual_social,
@@ -377,15 +364,15 @@ async def minimize_functions(
 
     # ----------------------------
     required = validated.get("required_functions", [])
-    # print("the required values", required)
+    print("the required values", required)
+
+    if not required:
+        return functions_ds, None
+
     checker_dict = {
         "is_googlecalender": False,
         "is_microsoftcalender": False,
     }
-
-    if not required:
-        return functions_ds
-
     expanded_functions = []
 
     for fn_name in required:
@@ -404,6 +391,7 @@ async def minimize_functions(
             checker_dict["is_googlecalender"] = True
 
         expanded_functions.append(fn)
+    # print("len of expanded funcitons", len(expanded_functions))
 
     if len(expanded_functions) > 0:
         return expanded_functions, checker_dict
@@ -444,6 +432,9 @@ async def create_playbook(
 ):
     userid = data["user_id"]
     actual_social = fetch_user_Social(user_id=userid)
+    filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
+    ensure_dir(f"{pathconfig.basepath}/test/")
+    filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
 
     # token = current_user_id.set(userid)
     # print("actuial social", actual_social)
@@ -475,6 +466,7 @@ async def create_playbook(
                 )
             else:
                 instruction_input["context_section"] = "[]"
+        print("before minimizing")
         functions_datas, checker_dict = await minimize_functions(
             instruction_input=instruction_input,
             template_data=template_data,
@@ -501,10 +493,18 @@ async def create_playbook(
         if not template:
             raise ValueError("Missing 'create_instruction' template in YAML file.")
         instruction_input["main_user_account_type"] = actual_social
-        base_prompt = template.format(**instruction_input)
+        # print("instruiction input", len(instruction_input))
+        try:
+            base_prompt = template.format(**instruction_input)
+        except Exception as e:
+            print("TEMPLATE ERROR:", e)
+            # print(template)
+            raise
+        # print("base prompt", base_prompt)
 
         full_prompt = base_prompt
         # print("checkerdict", checker_dict)
+
         if checker_dict:
             meeting_rules = []
 
@@ -527,23 +527,24 @@ async def create_playbook(
             base_prompt = template.format(**instruction_input)
 
             replacement_text = "\n\n".join(meeting_rules) if meeting_rules else None
-            full_prompt = replace_section(
-                prompt=base_prompt,
-                section_title="MEETING FUNCTION LINKING RULES",
-                replacement=replacement_text,
-            )
+            if replacement_text:
+                full_prompt = replace_section(
+                    prompt=base_prompt,
+                    section_title="MEETING FUNCTION LINKING RULES",
+                    replacement=replacement_text,
+                )
 
         raw_response = await get_fireworks_response2(
             user_message=full_prompt, role="system", user_id=userid
         )
-        # print("raw response", raw_response)
+        print("raw response", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
         try:
             response_dict1 = json.loads(cleaned_j)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
-        print("data from initial", response_dict1)
+        # print("data from initial", response_dict1)
         eval_pr = template_data.get("evaluate_workflow_execution_validity")
         base_Eval_prompt = eval_pr.format(
             instruction_input=json.dumps(instruction_input, separators=(",", ":")),
@@ -553,21 +554,18 @@ async def create_playbook(
         raw_response = await get_evaluator_fireworks(
             user_message=base_Eval_prompt, role="system", user_id=userid
         )
-        print("raw response", len(raw_response))
+        print("raw response eval", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
         try:
             response_dict = json.loads(cleaned_j)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
-        filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
-        ensure_dir(f"{pathconfig.basepath}/test/")
-        filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
+
     except Exception as e:
         print("error on playbook creation", e)
-    finally:
-        #   current_user_id.reset(token)
-        print("ss")
+
+    first_char = base_name(filename=filename)
 
     full_output = {
         "filename": filename,
@@ -575,8 +573,9 @@ async def create_playbook(
         "workflow": response_dict.get("workflow"),  # AI-generated YAML parsed into dict
         "clarifications_generated": False,
         "WorkflowDate": datetime.now().isoformat(),
+        "autotest": {"status": False, "count": 0},
     }
-    delete_file_from_s3(filepath=f"{userid}/workflow/{filename}")
+    delete_file_from_s3(filepath=f"{userid}/workflow/{first_char}/{filename}")
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(full_output, f, indent=2)
     res = upload_any_file(
@@ -622,6 +621,18 @@ def save_playbook_to_s3(
 
     else:
         return {"status": "success", "message": success_message, "data": playbook}
+
+
+def save_execution_playbook_to_s3(playbook, user_id, success_message, filepath):
+    with tempfile.NamedTemporaryFile(
+        delete=False, suffix=".json", mode="w"
+    ) as tmp_file:
+        json.dump(playbook, tmp_file, indent=2)
+        temp_file_path = tmp_file.name
+
+    upload_exefileany_file(file_path=temp_file_path, bfilepath=filepath)
+    os.remove(temp_file_path)
+    return {"status": "success", "message": success_message, "data": playbook}
 
 
 def format_step_data(stepdata: dict) -> dict:
@@ -762,3 +773,89 @@ def generate_meeting_email_body(details: dict, field_data: dict) -> str:
     <p style="margin-top:32px;font-size:14px;color:#6b7280;">Regards,<br><strong>Your Team</strong></p>
     </div>
     """
+
+
+def update_playbook_schedule_and_runtime(
+    userid,
+    filename,
+    schedule=None,
+    runtime=None,
+    status=None,
+):
+    """
+    Atomic update:
+    - Updates base workflow JSON (current_schedule)
+    - Updates playbooksconfig.json (schedule, runtime, status)
+    """
+
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    config_data = read_json_from_s3(config_path) or {}
+
+    # ----------------------------------
+    # Ensure user block
+    # ----------------------------------
+    if userid not in config_data:
+        config_data[userid] = {"playbooklist": []}
+
+    playbooks = config_data[userid]["playbooklist"]
+
+    # ----------------------------------
+    # Update BASE WORKFLOW JSON
+    # ----------------------------------
+    if schedule is not None:
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        main_workflow = read_json_from_s3(wf_loc) or {}
+
+        # Always overwrite to keep source of truth
+        main_workflow["current_schedule"] = schedule
+
+        save_playbook_to_s3(
+            main_workflow,
+            userid,
+            "workflow schedule updated",
+            filename,
+        )
+
+    # ----------------------------------
+    # Find or create playbook entry
+    # ----------------------------------
+    entry = next((pb for pb in playbooks if pb.get("name") == filename), None)
+
+    if not entry:
+        entry = {
+            "name": filename,
+            "schedule": {},
+            "runtime": {},
+            "status": "Stopped",
+        }
+        playbooks.append(entry)
+
+    # ----------------------------------
+    # Apply updates
+    # ----------------------------------
+    if schedule is not None:
+        entry["schedule"] = schedule
+
+    if runtime is not None:
+        entry.setdefault("runtime", {})
+        entry["runtime"].update(runtime)
+
+    if status is not None:
+        entry["status"] = status
+
+    # ----------------------------------
+    # Persist playbooksconfig.json
+    # ----------------------------------
+    local_path = f"/tmp/{userid}_playbooksconfig.json"
+    with open(local_path, "w") as f:
+        json.dump(config_data, f, indent=2)
+
+    upload_any_file(
+        file_path=local_path,
+        user_id=userid,
+        file_name=config_path,
+        type="workflow",
+    )
+
+    os.remove(local_path)
+    return True

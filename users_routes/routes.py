@@ -36,9 +36,11 @@ def format_address(door, unit, street, zip_code):
 def submit_onboarding():
     try:
         payload = request.get_json()
-        # print("onboarding", payload)
+        print("onboarding", payload)
 
-        user_id = session.get("user_id") or payload.get("user_id")
+        # user_id = session.get("user_id") or payload.get("user_id")
+        user_id = payload.get("user_id")
+
         data = payload.get("data", {})
 
         conn = connect_to_rds()
@@ -140,6 +142,22 @@ def submit_onboarding():
         )
 
         conn.commit()
+    
+        print(" business_info_id , user_id : ")
+        print(f" {business_info_id} | {user_id}")
+        cursor.execute(
+                """
+                SELECT business_info_id FROM business_info WHERE user_id_fk = %s
+            """,
+                (str(user_id),),
+            )
+        row = cursor.fetchone()
+
+        if not row:
+                print(f"not found business_info_id")
+        else:
+            print(f"business_info_id found : {row[0]}")
+
         cursor.close()
         conn.close()
 

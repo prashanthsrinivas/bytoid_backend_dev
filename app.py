@@ -28,6 +28,8 @@ from integrations.routes import integrations_bp
 from training.docs_train.docs_base import docs_agent_bps
 from training.scrape.scrape_base import scrape_agent_bps
 from training.voice.audio_base import audio_agent_bps
+from payments.payments import payments_bp
+from plans.routes import plans_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -49,58 +51,65 @@ BASE_ORGINS = [
     "https://bytoid.ai",
     "https://dev.bytoid.ai",
     "http://localhost:8081",
-    'bytoid://',
-    'user-app://',
-    'http://localhost:19000',
-    'http://localhost:19006',
-    'https://auth.expo.io',
+    "bytoid://",
+    "user-app://",
+    "http://localhost:19000",
+    "http://localhost:19006",
+    "https://auth.expo.io",
 ]
 # register_session_check(app)
 
 ALLOWED_ORIGINS = {o.rstrip("/") for o in BASE_ORGINS}
 
-ALLOWED_SCHEMES = ['bytoid', 'user-app', 'exp']
+ALLOWED_SCHEMES = ["bytoid", "user-app", "exp"]
+
 
 def is_origin_allowed(origin):
     """Check if origin is allowed"""
     # No origin header = native mobile app making API request
     if not origin:
         return True
-    
+
     # Check exact matches (web/development)
     if origin in ALLOWED_ORIGINS:
         return True
-    
+
     # Check if origin starts with allowed scheme (mobile OAuth)
     for scheme in ALLOWED_SCHEMES:
-        if origin.startswith(f'{scheme}://'):
+        if origin.startswith(f"{scheme}://"):
             return True
-    
+
     # Allow any localhost port (development)
-    if origin.startswith('http://localhost:'):
+    if origin.startswith("http://localhost:"):
         return True
-    
+
     return False
+
 
 @app.after_request
 def after_request(response):
-    origin = request.headers.get('Origin')
+    origin = request.headers.get("Origin")
 
     if is_origin_allowed(origin):
         # If no origin (mobile app), use *
         # If has origin, echo it back
-        response.headers['Access-Control-Allow-Origin'] = origin if origin else '*'
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
-        response.headers['Access-Control-Max-Age'] = '3600'
+        response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS"
+        )
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-Requested-With"
+        )
+        response.headers["Access-Control-Max-Age"] = "3600"
 
     return response
 
+
 # Handle preflight OPTIONS requests
-@app.route('/<path:path>', methods=['OPTIONS'])
+@app.route("/<path:path>", methods=["OPTIONS"])
 def handle_options(path):
-    return '', 204
+    return "", 204
 
 
 CORS(
@@ -245,6 +254,16 @@ CORS(
     supports_credentials=True,
     origins=BASE_ORGINS,
 )
+CORS(
+    plans_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
+CORS(
+    payments_bp,
+    supports_credentials=True,
+    origins=BASE_ORGINS,
+)
 
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
@@ -281,6 +300,8 @@ app.register_blueprint(integrations_bp)
 app.register_blueprint(docs_agent_bps)
 app.register_blueprint(scrape_agent_bps)
 app.register_blueprint(audio_agent_bps)
+app.register_blueprint(plans_bp)
+app.register_blueprint(payments_bp)
 
 import argparse
 

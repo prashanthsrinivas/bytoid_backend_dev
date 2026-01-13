@@ -382,8 +382,11 @@ import os
  # status_data = read_status_file()
 OUTLOOK_SYNC_LOG_DIR = "data"
 OUTLOOK_SYNC_LOG_FILE = os.path.join(OUTLOOK_SYNC_LOG_DIR, "outlook_mail_sync_log.json")
+ZOHO_SYNC_LOG_FILE = os.path.join(OUTLOOK_SYNC_LOG_DIR, "zoho_mail_sync_log.json")
+
 os.makedirs(OUTLOOK_SYNC_LOG_DIR, exist_ok=True)
 
+# --------- mail sync time for outlook -----------------#
 
 def get_last_sync_time(user_id):
     """
@@ -426,7 +429,6 @@ def set_user_sync_time(user_id, time_value):
     return True
 
 
-
 def delete_user_sync_time(user_id):
     """
     Delete the sync time entry for the given user_id.
@@ -455,6 +457,79 @@ def delete_user_sync_time(user_id):
 
     return True
 
+
+# ---------- mail sync time for zoho ------------------#
+
+def get_last_sync_time_zoho(user_id):
+    """
+    Return the sync time for the given user_id only if the file exists.
+    If the file does not exist OR the user_id is not found, return None.
+    """
+    if not os.path.exists(ZOHO_SYNC_LOG_FILE):
+        return None  # file not present
+    
+    try:
+        with open(ZOHO_SYNC_LOG_FILE, "r") as f:
+            data = json.load(f)
+            return data.get(user_id)  # may return None if user not found
+    except Exception:
+        return None
+
+
+def set_user_sync_time_zoho(user_id, time_value):
+    """
+    Update or insert sync time for the given user_id.
+    If file does not exist, create it.
+    """
+    # Load existing data OR create empty dict
+    if os.path.exists(ZOHO_SYNC_LOG_FILE):
+        try:
+            with open(ZOHO_SYNC_LOG_FILE, "r") as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}
+    else:
+        data = {}
+
+    # Set / update the value
+    data[user_id] = time_value
+
+    # Save back to file
+    with open(ZOHO_SYNC_LOG_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+    return True
+
+
+def delete_user_sync_time_zoho(user_id):
+    """
+    Delete the sync time entry for the given user_id.
+    If the file does not exist, return False.
+    If user_id does not exist inside file, do nothing.
+    """
+    # File missing → cannot delete
+    if not os.path.exists(ZOHO_SYNC_LOG_FILE):
+        return False
+
+    # Load file
+    try:
+        with open(ZOHO_SYNC_LOG_FILE, "r") as f:
+            data = json.load(f) or {}
+    except Exception:
+        # If file is unreadable, treat as missing
+        return False
+
+    # Remove the user_id if present
+    if user_id in data:
+        del data[user_id]
+
+    # Save the updated data
+    with open(ZOHO_SYNC_LOG_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+    return True
+
+# --------------------------------- #
 
 def delete_from_cache_sync(user_id):
     async def _inner():

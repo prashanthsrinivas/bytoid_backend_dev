@@ -1542,6 +1542,7 @@ def add_expiry_integrations():
         cursor.close()
         connection.close()
 
+
 def create_credits_table():
     connection = connect_to_rds()
     if connection is None:
@@ -1574,6 +1575,438 @@ def create_credits_table():
     except pymysql.MySQLError as e:
         print(f"MySQL Error: {e}")
 
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_create_plans():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        # 1️⃣ Drop existing table
+        drop_table_query = """
+        DROP TABLE IF EXISTS plans;
+        """
+        cursor.execute(drop_table_query)
+
+        # 2️⃣ Create new plans table (Option A - JSON details)
+        create_table_query = """
+        CREATE TABLE plans (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+            -- Plan identity
+            plan_code VARCHAR(50) NOT NULL UNIQUE, 
+            name VARCHAR(100) NOT NULL,
+            description TEXT,
+
+            -- Pricing
+            amount_cents INT NOT NULL DEFAULT 0,
+            currency CHAR(3) NOT NULL DEFAULT 'INR',
+            billing_interval ENUM('month', 'year') NOT NULL DEFAULT 'month',
+
+            -- Token limits
+            monthly_token_limit BIGINT NOT NULL,
+            overage_price_per_million DECIMAL(10,2),
+
+            -- Plan details / pointers
+            details JSON,
+
+            -- Status
+            is_free BOOLEAN DEFAULT FALSE,
+            is_active BOOLEAN DEFAULT TRUE,
+
+            -- Audit
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB;
+        """
+
+        cursor.execute(create_table_query)
+        connection.commit()
+
+        print("✅ Plans table dropped and recreated successfully")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_user_subscriptions():
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DROP TABLE IF EXISTS user_subscriptions")
+
+        create_table_query = """
+        CREATE TABLE user_subscriptions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+            user_id VARCHAR(36) NOT NULL,
+            plan_id BIGINT NOT NULL,
+
+            last_billing_date DATE NOT NULL,
+            renewal_date DATE NOT NULL,
+
+            billing_interval ENUM('month', 'year') NOT NULL,
+
+            status ENUM(
+                'active',
+                'trialing',
+                'past_due',
+                'canceled',
+                'expired'
+            ) NOT NULL DEFAULT 'active',
+
+            stripe_customer_id VARCHAR(100),
+            stripe_subscription_id VARCHAR(100),
+            stripe_price_id VARCHAR(100),
+
+            cancel_at_period_end BOOLEAN DEFAULT FALSE,
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+
+            CONSTRAINT fk_user_subscription_plan
+                FOREIGN KEY (plan_id) REFERENCES plans(id)
+                ON DELETE RESTRICT,
+
+            UNIQUE KEY uniq_active_subscription (user_id, status)
+        ) ENGINE=InnoDB;
+        """
+
+        cursor.execute(create_table_query)
+        connection.commit()
+
+        print("✅ user_subscriptions table created (last_billing_date + renewal_date)")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_add_create_plans():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        # 1️⃣ Drop existing table
+        cursor.execute("DROP TABLE IF EXISTS plans;")
+
+        # 2️⃣ Create plans table
+        create_table_query = """
+        CREATE TABLE plans (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+            -- Plan identity
+            plan_code VARCHAR(50) NOT NULL UNIQUE,
+            name VARCHAR(100) NOT NULL,
+            description TEXT,
+
+            -- Pricing
+            amount_cents INT NOT NULL DEFAULT 0,
+            currency CHAR(3) NOT NULL DEFAULT 'USD',
+            billing_interval ENUM('month', 'year') NOT NULL DEFAULT 'month',
+
+            -- Token limits
+            monthly_token_limit BIGINT NOT NULL,
+            overage_price_per_million DECIMAL(10,2) NOT NULL,
+
+            -- Plan details / UI pointers
+            details JSON,
+
+            -- Status flags
+            is_free BOOLEAN DEFAULT FALSE,
+            is_active BOOLEAN DEFAULT TRUE,
+            is_popular BOOLEAN DEFAULT FALSE,
+
+            -- Audit
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB;
+        """
+        cursor.execute(create_table_query)
+
+        # 3️⃣ Insert default plans
+        insert_query = """
+        INSERT INTO plans (
+            plan_code,
+            name,
+            description,
+            amount_cents,
+            currency,
+            billing_interval,
+            monthly_token_limit,
+            overage_price_per_million,
+            details,
+            is_free,
+            is_popular
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """
+
+        plans = [
+            # FREE
+            (
+                "FREE",
+                "Free",
+                "Free plan with 250K monthly tokens",
+                0,
+                "USD",
+                "month",
+                250_000,
+                5.00,
+                json.dumps(
+                    {
+                        "features": [
+                            "Free tier included",
+                            "250K tokens per month",
+                            "Overage: $5 per 1M tokens",
+                        ]
+                    }
+                ),
+                True,
+                False,
+            ),
+            # PROFESSIONAL
+            (
+                "PRO",
+                "Professional",
+                "Professional plan with 10M monthly tokens",
+                2000,
+                "USD",
+                "month",
+                10_000_000,
+                5.00,
+                json.dumps(
+                    {
+                        "features": [
+                            "$2 per 1M tokens",
+                            "10M tokens per month",
+                            "Overage: $5 per 1M tokens",
+                        ]
+                    }
+                ),
+                False,
+                True,
+            ),
+            # SMBs
+            (
+                "SMB",
+                "SMBs",
+                "SMB plan with 25M monthly tokens",
+                5000,
+                "USD",
+                "month",
+                25_000_000,
+                5.00,
+                json.dumps(
+                    {
+                        "features": [
+                            "$2 per 1M tokens",
+                            "25M tokens per month",
+                            "Overage: $5 per 1M tokens",
+                        ]
+                    }
+                ),
+                False,
+                False,
+            ),
+            # ENTERPRISE
+            (
+                "ENTERPRISE",
+                "Enterprise",
+                "Enterprise plan with 50M monthly tokens",
+                10000,
+                "USD",
+                "month",
+                50_000_000,
+                5.00,
+                json.dumps(
+                    {
+                        "features": [
+                            "$2 per 1M tokens",
+                            "50M tokens per month",
+                            "Overage: $5 per 1M tokens",
+                        ]
+                    }
+                ),
+                False,
+                False,
+            ),
+        ]
+
+        cursor.executemany(insert_query, plans)
+
+        connection.commit()
+        print("✅ Plans table recreated and seeded successfully")
+
+    except pymysql.MySQLError as e:
+        connection.rollback()
+        print(f"❌ MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def add_stripe_columns_to_plans():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+
+    try:
+        # Check existing columns
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'plans'
+              AND COLUMN_NAME IN ('stripe_product_id', 'stripe_price_id')
+        """
+        )
+        existing_columns = {row[0] for row in cursor.fetchall()}
+
+        alter_queries = []
+
+        if "stripe_product_id" not in existing_columns:
+            alter_queries.append(
+                "ADD COLUMN stripe_product_id VARCHAR(100) AFTER is_free"
+            )
+
+        if "stripe_price_id" not in existing_columns:
+            alter_queries.append(
+                "ADD COLUMN stripe_price_id VARCHAR(100) AFTER stripe_product_id"
+            )
+
+        if not alter_queries:
+            print("ℹ️ Stripe columns already exist")
+            return
+
+        alter_sql = f"""
+            ALTER TABLE plans
+            {", ".join(alter_queries)};
+        """
+
+        cursor.execute(alter_sql)
+        connection.commit()
+
+        print("✅ Stripe columns added successfully")
+
+    except pymysql.MySQLError as e:
+        print(f"❌ MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_add_create_payments():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        # 1️⃣ Drop existing table
+        cursor.execute("DROP TABLE IF EXISTS payments;")
+
+        # 2️⃣ Create payments table
+        create_table_query = """
+        CREATE TABLE payments (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+            user_id VARCHAR(64) NOT NULL,
+
+            stripe_event_id VARCHAR(255),
+            stripe_payment_intent_id VARCHAR(255),
+            stripe_checkout_session_id VARCHAR(255),
+            stripe_invoice_id VARCHAR(255),
+
+            amount_cents INT NOT NULL,
+            currency VARCHAR(10) NOT NULL,
+
+            payment_type ENUM('one_time','subscription') NOT NULL,
+            status ENUM('pending','succeeded','failed') NOT NULL,
+
+            invoice_url TEXT,
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        cursor.execute(create_table_query)
+
+        connection.commit()
+        print("✅ payments table created successfully")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Error creating payments table:", e)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_add_create_subscriptions():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        # 1️⃣ Drop existing table
+        cursor.execute("DROP TABLE IF EXISTS subscriptions;")
+
+        # 2️⃣ Create subscriptions table
+        create_table_query = """
+        CREATE TABLE subscriptions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+            user_id VARCHAR(64) NOT NULL,
+
+            stripe_subscription_id VARCHAR(255) UNIQUE,
+            stripe_customer_id VARCHAR(255),
+            stripe_price_id VARCHAR(255),
+
+            status ENUM('active','past_due','canceled','incomplete') NOT NULL,
+
+            current_period_start TIMESTAMP NULL,
+            current_period_end TIMESTAMP NULL,
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        );
+        """
+        cursor.execute(create_table_query)
+
+        connection.commit()
+        print("✅ subscriptions table created successfully")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Error creating subscriptions table:", e)
     finally:
         cursor.close()
         connection.close()
@@ -1622,5 +2055,10 @@ if __name__ == "__main__":
     # add_type_integrations()
     # add_type_integrations()
     # create_scraped_websites_table()
-    create_credits_table()
+    # create_credits_table()
+    # update_create_plans()
+    # update_add_create_plans()
+    # add_stripe_columns_to_plans()
+    update_add_create_payments()
+    update_add_create_subscriptions()
     print("ok")

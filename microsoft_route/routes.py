@@ -747,160 +747,6 @@ async def microsoft_callback():
         return redirect(f"{frontend_url}/login?error=callback_failed")
 
 
-# @microsoft_bp.route("/microsoft/login/debug", methods=["GET"])
-# def microsoft_login_debug():
-#     """Debug endpoint to test Microsoft login flow without frontend"""
-#     try:
-#         # Validate MSAL app
-#         if not msal_app:
-#             return "<h2>Error:</h2><p>MSAL app not configured</p>"
-
-#         # Get dynamic redirect URI for debug
-#         redirect_uri = get_microsoft_redirect_uri(request)
-
-#         flow = msal_app.initiate_auth_code_flow(
-#             scopes=SCOPES,
-#             redirect_uri=redirect_uri,
-#         )
-
-#         # Return HTML that redirects to Microsoft login
-#         auth_url = flow["auth_uri"]
-#         session["auth_flow"] = flow
-#         session.permanent = True
-
-#         # Debug info
-#         debug_info = f"""
-#         <h3>Debug Info:</h3>
-#         <ul>
-#             <li><strong>CLIENT_ID:</strong> {CLIENT_ID[:10]}...</li>
-#             <li><strong>TENANT_ID:</strong> {TENANT_ID}</li>
-#             <li><strong>REDIRECT_URI:</strong> {redirect_uri}</li>
-#             <li><strong>SCOPES:</strong> {', '.join(SCOPES)}</li>
-#             <li><strong>Flow Keys:</strong> {', '.join(flow.keys())}</li>
-#             <li><strong>Has PKCE:</strong> {'Yes' if 'code_verifier' in flow else 'No'}</li>
-#             <li><strong>Session ID:</strong> {session.get('_id', 'Not set')}</li>
-#         </ul>
-#         """
-
-#         html = f"""
-#         <html>
-#         <head><title>Microsoft Login Debug</title></head>
-#         <body>
-#             <h2>Microsoft OAuth Debug</h2>
-#             <p>Click the link below to test Microsoft login:</p>
-#             <a href="{auth_url}" target="_blank" style="
-#                 background: #0078d4;
-#                 color: white;
-#                 padding: 10px 20px;
-#                 text-decoration: none;
-#                 border-radius: 5px;
-#             ">Login with Microsoft</a>
-#             <br><br>
-#             {debug_info}
-#             <p><small>Auth URL: <code>{auth_url}</code></small></p>
-#         </body>
-#         </html>
-#         """
-#         return html
-
-#     except Exception as e:
-#         logger.error(f"Debug endpoint error: {str(e)}")
-#         return f"<h2>Error:</h2><p>{str(e)}</p><pre>{traceback.format_exc()}</pre>"
-
-
-# @microsoft_bp.route("/browser_url_microsoft", methods=["POST"])
-# def receive_browser_url_microsoft():
-#     print(f"********* browser url ************")
-#     try:
-#         data = request.get_json()
-#         browser_url = data.get("url")
-#         state = session.get("state", data.get("state"))
-
-#         # This function should return the user ID (e.g., Microsoft account ID)
-#         user_id, newuser = microsoft_oauth_callback(browser_url, state)
-#         session_id, access_token, refresh_token = session_login(user_id)
-#         # print("Microsoft login:", user_id, newuser)
-#         apikey = fetch_apikey_from_launch(user_id)
-
-#         # Note: Microsoft doesn't have watch requests like Gmail, so we skip that
-
-#         # Prepare response
-#         response = make_response(
-#             jsonify(
-#                 {
-#                     "status": "success",
-#                     "url": browser_url,
-#                     "userid": user_id,
-#                     "user_onboarded": newuser,
-#                     "api_key": apikey or "",
-#                 }
-#             )
-#         )
-#         # print("response from browser_url_microsoft", response)
-
-#         # Set secure session cookie (HttpOnly, Secure)
-#         response.set_cookie(
-#             "session_id",
-#             session_id,
-#             max_age=30 * 24 * 60 * 60,  # 30 days
-#             httponly=True,
-#             secure=True,
-#             samesite="None",
-#         )
-
-#         response.set_cookie(
-#             "access_token",
-#             access_token,
-#             max_age=30 * 24 * 60 * 60,  # 30 days
-#             httponly=True,
-#             secure=True,
-#             samesite="None",
-#         )
-
-#         response.set_cookie(
-#             "refresh_token",
-#             refresh_token,
-#             max_age=30 * 24 * 60 * 60,  # 30 days
-#             httponly=True,
-#             secure=True,
-#             samesite="None",
-#         )
-
-#         return response
-
-#     except Exception as e:
-#         logger.error(f"Error in browser_url_microsoft: {str(e)}")
-#         return jsonify({"error": str(e)}), 500
-
-
-# @microsoft_bp.route("/microsoft_login", methods=["POST"])
-# def microsoft_login_post():
-#     """Microsoft login endpoint similar to Gmail's google_login"""
-#     print(f"******************* 2 ******************")
-
-#     try:
-#         data = request.json
-#         if not data or "access_token" not in data:
-#             return jsonify({"error": "Access token is required"}), 400
-
-#         access_token = data["access_token"]
-
-#         # Verify the token with Microsoft Graph
-#         headers = {"Authorization": f"Bearer {access_token}"}
-#         response = requests.get("https://graph.microsoft.com/v1.0/me", headers=headers)
-
-#         if response.status_code != 200:
-#             return jsonify({"error": "Invalid token"}), 403
-
-#         user_info = response.json()
-#         email = user_info.get("mail") or user_info.get("userPrincipalName")
-#         user_id = user_info.get("id")
-
-#         return jsonify({"success": True, "email": email, "user_id": user_id})
-
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
-
 
 @microsoft_bp.route("/microsoft/session-debug", methods=["GET"])
 def session_debug():
@@ -3597,6 +3443,7 @@ async def outlook_webhook():
 def refresh_expired_google_tokens_for_integrations(user_id, connection):
     try:
         with connection.cursor() as cursor:
+            print(f"user_id inside refresh_expired_google_tokens_for_integrations : {user_id}")
             cursor.execute(
                 """
                 SELECT user_id, client_id, client_secret, access_token, refresh_token, expiry
@@ -3612,6 +3459,12 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
 
             google_user_id, client_id, client_secret, token, refresh_token, expiry = row
           
+            print("google_user_id:", google_user_id)
+            print("client_id:", client_id)
+            print("client_secret:", client_secret)
+            print("token:", token)
+            print("refresh_token:", refresh_token)
+            print("expiry:", expiry)
 
 
             # Ensure expiry is a datetime object

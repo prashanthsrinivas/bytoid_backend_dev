@@ -2037,7 +2037,7 @@ async def post_calrify_with_user(
             aggregation,
             filters,
             temporal_flag,
-        ) = await q_intent_extrt.extract_all(original_query, sql_intent, userid=user_id)
+        ) = await q_intent_extrt.extract_all(original_query, sql_intent)
         print(
             f"entity : {entity} | grouping_dimension : {grouping_dimension} |  metric : {metric} | aggregation : {aggregation} | filters : {filters}"
         )
@@ -2072,7 +2072,7 @@ async def post_calrify_with_user(
         #     )
 
         modified_yaml = await get_fireworks_response2(
-            user_id, filled_prompt, role="system", temp=0.5, user_id=user_id
+            user_id=user_id, user_message = filled_prompt, role="system", temp=0.5
         )
         try:
             data_extraction_result = parse_llm_response(modified_yaml)
@@ -2105,7 +2105,7 @@ async def post_calrify_with_user(
                 "{{user_query}}", str(original_query)
             )
             modified_yaml = await get_fireworks_response2(
-                user_id, filled_prompt, role="system", temp=0.5, user_id=user_id
+                user_id=user_id, user_message =filled_prompt, role="system", temp=0.5
             )
             try:
                 direction_limit_result = parse_llm_response(modified_yaml)

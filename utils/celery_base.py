@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 from random import uniform
 import shutil
@@ -17,6 +18,10 @@ from utils.async_check import run_async
 from microsoft_route.get_microsoft_emails import v2all_continuous_outlook
 from create_db import connect_to_rds
 from request_context import current_user_id
+from playbook.helperzz import returnconfigandpath
+from utils.s3_utils import read_json_from_s3, upload_any_file
+from zoho_routes.routes import v2all_continuous_zoho
+
 
 
 # from umail_helper.auto_rep import autoReplyhelper
@@ -135,9 +140,14 @@ def umail_sync(self, user_id):
         if social == "google":
             result = asyncio.run(v2all_continuous(user_id, integration=integration))
             return {"status": "completed", "user_id": user_id, "result": result}
-        else:
+        elif social == "outlook":
             result = asyncio.run(
                 v2all_continuous_outlook(user_id, integration=integration)
+            )
+            return {"status": "completed", "user_id": user_id, "result": result}
+        else:
+            result = asyncio.run(
+                v2all_continuous_zoho(user_id, integration=integration)
             )
             return {"status": "completed", "user_id": user_id, "result": result}
     except Exception as exc:
@@ -164,9 +174,12 @@ def web_umail_sync(self, user_id, channel=None, integration=None):
             print(f"results")
             return {"status": "completed", "user_id": user_id, "result": result}
         else:
-            result = asyncio.run(v2all_continuous(user_id))
+            result = asyncio.run(
+                v2all_continuous_zoho(user_id, integration=integration)
+            )
+            print(f"results")
             return {"status": "completed", "user_id": user_id, "result": result}
-
+    
     except Exception as exc:
         countdown = backoff(self.request.retries)
         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
@@ -332,7 +345,6 @@ async def send_bulk_emails(self, user_id: str, email_count: int, receiver_email:
 
             # Generate email body (HTML)
             email_body_html = await ai.create_custom_email_body(
-                user_id,
                 user_input=f"Write a short memo/news update about {rand_title} with 200 - 300 words and it must have a title included in <title> tag ",
             )
             # print("emmail_body_html", type(email_body_html))
@@ -370,18 +382,306 @@ async def send_bulk_emails(self, user_id: str, email_count: int, receiver_email:
         release_user_lock(user_id)
 
 
+def generate_execution_id():
+    return "exec_" + datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def is_workflow_running(userid, filename):
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    config = read_json_from_s3(config_path) or {}
+
+    for pb in config.get(userid, {}).get("playbooklist", []):
+        if pb["name"] == filename:
+            return pb.get("runtime", {}).get("is_running", False)
+    return False
+
+
+def try_acquire_workflow_lock(userid, filename, execution_id):
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    config = read_json_from_s3(config_path) or {}
+
+    if userid not in config:
+        return False
+
+    for pb in config[userid].get("playbooklist", []):
+        if pb.get("name") == filename:
+            runtime = pb.setdefault("runtime", {})
+
+            if runtime.get("is_running"):
+                return False
+
+            runtime.update(
+                {
+                    "is_running": True,
+                    "current_execution_id": execution_id,
+                    "last_run_at": datetime.utcnow().isoformat(),
+                }
+            )
+            break
+    else:
+        return False
+
+    local_path = f"/tmp/{userid}_playbooksconfig.json"
+    with open(local_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    upload_any_file(
+        file_path=local_path,
+        user_id=userid,
+        file_name=config_path,
+        type="workflow",
+    )
+    os.remove(local_path)
+    return True
+
+
+# def update_playbook_runtime(userid, filename, runtime_updates):
+#     playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+#     config = read_json_from_s3(config_path) or {}
+
+#     if userid not in config:
+#         return False
+
+#     for pb in config[userid].get("playbooklist", []):
+#         if pb.get("name") == filename:
+#             pb.setdefault("runtime", {}).update(runtime_updates)
+#             pb.setdefault("status", runtime_updates["last_execution_status"])
+#             break
+#     else:
+#         return False
+
+#     local_path = f"/tmp/{userid}_playbooksconfig.json"
+#     with open(local_path, "w") as f:
+#         json.dump(config, f, indent=2)
+
+#     upload_any_file(
+#         file_path=local_path,
+#         user_id=userid,
+#         file_name=config_path,
+#         type="workflow",
+#     )
+#     os.remove(local_path)
+#     return True
+
+
+def update_playbook_runtime(userid, filename, runtime_updates):
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    config = read_json_from_s3(config_path) or {}
+
+    if userid not in config:
+        return False
+
+    playbooks = config.get(userid, {}).get("playbooklist", [])
+    found = False
+
+    for pb in playbooks:
+        if pb.get("name") == filename:
+            found = True
+
+            # Ensure runtime exists
+            pb.setdefault("runtime", {})
+
+            # Update runtime fields
+            for k, v in runtime_updates.items():
+                if k != "status":
+                    pb["runtime"][k] = v
+
+            # Update status ONLY if explicitly provided
+            if "status" in runtime_updates:
+                pb["status"] = runtime_updates["status"]
+
+            break
+
+    if not found:
+        return False
+
+    local_path = f"/tmp/{userid}_playbooksconfig.json"
+    with open(local_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    upload_any_file(
+        file_path=local_path,
+        user_id=userid,
+        file_name=config_path,
+        type="workflow",
+    )
+
+    os.remove(local_path)
+    return True
+
+
+# @celery.task(bind=True, max_retries=3, name="tasks.workflow_scheduler")
+# def run_scheduled_job(self, userid, filename, contacts):
+#     from services.workflow_service import WorkflowRunnerV2
+#     from services.scheduler_service import SchedulerService
+#     import asyncio
+
+#     execution_id = generate_execution_id()
+#     redis_key = f"scheduled:{userid}:{filename}:all"
+
+#     if not try_acquire_workflow_lock(userid, filename, execution_id):
+#         return {"status": "skipped", "reason": "workflow_already_running"}
+
+#     loop = asyncio.new_event_loop()
+#     asyncio.set_event_loop(loop)
+
+#     try:
+#         runner = WorkflowRunnerV2(
+#             userid=userid,
+#             filename=filename,
+#             contacts=contacts,
+#             testing=False,
+#             execution_id=execution_id,
+#         )
+
+#         result = loop.run_until_complete(runner.execute())
+
+#         update_playbook_runtime(
+#             userid,
+#             filename,
+#             {"last_execution_id": execution_id, "last_execution_status": "success"},
+#         )
+
+#         return {"status": "completed", "execution_id": execution_id, "result": result}
+
+#     except Exception as e:
+#         update_playbook_runtime(
+#             userid,
+#             filename,
+#             {
+#                 "last_execution_id": execution_id,
+#                 "last_execution_status": "failed",
+#                 "last_error": str(e),
+#             },
+#         )
+#         # loop.run_until_complete(SchedulerService.redis_service.delete(redis_key))
+#         raise
+
+#     finally:
+#         update_playbook_runtime(
+#             userid,
+#             filename,
+#             {
+#                 "is_running": False,
+#                 "current_execution_id": None,
+#                 "last_execution_status": "failed",
+#             },
+#         )
+#         # loop.run_until_complete(SchedulerService.redis_service.delete(redis_key))
+#         loop.close()
+
+
 @celery.task(bind=True, max_retries=3, name="tasks.workflow_scheduler")
-async def run_scheduled_job(self, userid, filename):
+def run_scheduled_job(self, userid, filename, contacts,uniquekey):
+    from services.workflow_service import WorkflowRunnerV2
+    import asyncio
+
+    execution_id = generate_execution_id()
+
+    # 🔒 Lock check
+    if not try_acquire_workflow_lock(userid, filename, execution_id):
+        update_playbook_runtime(
+            userid,
+            filename,
+            {"status": "skipped"},
+        )
+        return {"status": "skipped", "reason": "workflow_already_running"}
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     try:
-        from services.workflow_service import WorkflowRunnerV2
+        # 🔹 Mark as running
+        update_playbook_runtime(
+            userid,
+            filename,
+            {
+                "status": "running",
+                "current_execution_id": execution_id,
+                "is_running": True,
+            },
+        )
 
-        service = WorkflowRunnerV2(userid=userid, filename=filename)
-        message = await service.execute()
-        return {"status": "done", "message": message}
+        runner = WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            contacts=contacts,
+            testing=False,
+            execution_id=execution_id,
+            execution_unique_key=uniquekey,
+        )
 
-    except Exception as exc:
-        countdown = 2**self.request.retries  # exponential backoff
-        raise self.retry(exc=exc, countdown=countdown)
+        result = loop.run_until_complete(runner.execute())
+
+        # ✅ Success
+        update_playbook_runtime(
+            userid,
+            filename,
+            {
+                "status": "success",
+                "last_execution_id": execution_id,
+            },
+        )
+
+        return {
+            "status": "completed",
+            "execution_id": execution_id,
+            "result": result,
+        }
+
+    except Exception as e:
+        # ❌ Failure
+        update_playbook_runtime(
+            userid,
+            filename,
+            {
+                "status": "failed",
+                "last_execution_id": execution_id,
+                "last_error": str(e),
+            },
+        )
+        raise
+
+    finally:
+        # 🧹 Cleanup only (NO status change here)
+        update_playbook_runtime(
+            userid,
+            filename,
+            {
+                "is_running": False,
+                "current_execution_id": None,
+            },
+        )
+        loop.close()
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.workflow_schedule_single")
+def run_scheduled_step_job(self, userid, filename, stepid):
+    from services.workflow_service import WorkflowRunnerV2
+    from services.scheduler_service import SchedulerService
+
+    redis_key = f"scheduled:{userid}:{filename}:{stepid}"
+
+    try:
+        runner = WorkflowRunnerV2(userid=userid, filename=filename, testing=False)
+
+        result = asyncio.run(
+            runner.execute_from_text_input(
+                step_id=stepid, user_input=f"execute the step {stepid}"
+            )
+        )
+
+        return result
+
+    except Exception as e:
+        print("error", e)
+        # asyncio.run(SchedulerService.redis_service.delete(redis_key))
+        raise
+
+    finally:
+        # Remove Redis key after completion
+        # asyncio.run(SchedulerService.redis_service.delete(redis_key))
+        print("run scheduled job")
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.lance_embedding")
@@ -431,26 +731,6 @@ def next_monthemails(self, user_id, lastmsgdate):
     finally:
         # always release lock at end so new task can start
         release_user_lock(user_id)
-
-
-# @new_celery.task(bind=True, name="tasks.run_scrape_links")
-# def run_back_scrape(self, url, user_id, level):
-#     from training.scrape.fast_multilevel_scraper import run_scrapper_links
-
-#     try:
-#         if not acquire_scrape_lock(user_id, url):
-#             logger.info("scrape Task already running for %s", user_id)
-#             return {"message": "Task already running", "user_id": user_id}
-
-#         result = run_async(run_scrapper_links(url=url, user_id=user_id, level=level))
-#         return result
-
-#     except Exception as exc:
-#         countdown = backoff(self.request.retries)
-#         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
-
-#     finally:
-#         release_scrape_lock(user_id)
 
 
 @new_celery.task(bind=True, name="tasks.run_scrape_links")

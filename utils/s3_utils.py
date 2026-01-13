@@ -48,7 +48,11 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
         final_name = os.path.basename(file_name) or os.path.basename(file_path)
 
         if type == "workflow":
-            s3_key = f"{user_id}/workflow/{final_name}"
+            if final_name.startswith("config"):
+                s3_key = f"{user_id}/workflow/{final_name}"
+            else:
+                first_char = os.path.splitext(final_name)[0]
+                s3_key = f"{user_id}/workflow/{first_char}/{final_name}"
         elif type == "yaml":
             s3_key = f"{user_id}/yaml/{final_name}"
         elif type == "audio":
@@ -62,7 +66,24 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
 
     try:
         s3.upload_file(file_path, S3_BUCKET, s3_key)
-        print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
+        # print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
+        return {"status": "success", "s3_key": s3_key}
+    except Exception as e:
+        print(f"❌ Upload failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def upload_exefileany_file(file_path, bfilepath=None):
+    s3 = s3bucket()
+
+    if not os.path.isfile(file_path):
+        print(f"❌ File not found: {file_path}")
+        return
+    s3_key = bfilepath
+
+    try:
+        s3.upload_file(file_path, S3_BUCKET, s3_key)
+        # print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
         return {"status": "success", "s3_key": s3_key}
     except Exception as e:
         print(f"❌ Upload failed: {e}")

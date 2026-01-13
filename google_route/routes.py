@@ -38,19 +38,19 @@ def login():
     session.pop("state", None)  # Optional, but clean
     ga = GoogleAuth()
 
-    #EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
-    #WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
-    
-    #use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
-    #redirect_uri = EXPO_REDIRECT_URI if use_expo else WEB_REDIRECT_URI
+    # EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
+    # WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
+
+    # use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
+    # redirect_uri = EXPO_REDIRECT_URI if use_expo else WEB_REDIRECT_URI
 
     # Get the mobile app's redirect URI from query params
-    mobile_redirect_uri = request.args.get('redirect_uri')
-    platform = request.args.get('platform')
+    mobile_redirect_uri = request.args.get("redirect_uri")
+    platform = request.args.get("platform")
 
     # Store the mobile redirect URI in session for later use
-    if mobile_redirect_uri and platform == 'mobile':
-        session['mobile_redirect_uri'] = mobile_redirect_uri
+    if mobile_redirect_uri and platform == "mobile":
+        session["mobile_redirect_uri"] = mobile_redirect_uri
         print(f"Stored mobile redirect URI: {mobile_redirect_uri}")
 
     ga = GoogleAuth()
@@ -73,9 +73,8 @@ def login():
             # "https://www.googleapis.com/auth/docs",
             "openid",
         ),
-
         redirect_uri=WEB_REDIRECT_URI,
-        #redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
+        # redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
     # google_bp.logger.info(f"{flow}")
 
@@ -89,6 +88,7 @@ def login():
         return redirect(auth_url)
     return jsonify(auth_url=auth_url)
 
+
 @google_bp.route("/oauth2callback")
 def oauth2callback(url, state):
     if not state:
@@ -98,7 +98,7 @@ def oauth2callback(url, state):
 
     EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
     WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
-    
+
     use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
     redirect_uri = WEB_REDIRECT_URI
 
@@ -119,7 +119,7 @@ def oauth2callback(url, state):
             "openid",
         ),
         redirect_uri=redirect_uri,
-        #redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
+        # redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
 
     try:
@@ -270,12 +270,11 @@ def oauth2callback(url, state):
             mobile_redirect_uri = session.pop("mobile_redirect_uri", None)  # ADDED
             if mobile_redirect_uri:  # ADDED
                 # Optional strictness: force it to be the expected Expo redirect URI
-                #if mobile_redirect_uri != EXPO_REDIRECT_URI:  # ADDED
-                    #return "Invalid mobile redirect URI", 400  # ADDED
+                # if mobile_redirect_uri != EXPO_REDIRECT_URI:  # ADDED
+                # return "Invalid mobile redirect URI", 400  # ADDED
 
                 # IMPORTANT: keep it minimal; you can swap unique_id for your own exchange code
                 return redirect(f"{mobile_redirect_uri}?code={unique_id}")  # ADDED
-
 
             # generate_session()
         # invited user special case
@@ -694,7 +693,7 @@ def get_token(inuser=None, value=None, in_connection=None):
             connection.close()
 
 
-@google_bp.route("/token/update-and-check", methods=["POST"])
+@google_bp.route("/check-user", methods=["POST"])
 def token_update_and_check():
     """
     Universal token validator + refresher
@@ -706,6 +705,7 @@ def token_update_and_check():
     user_id = (
         session.get("user_id") or session.get("userState_id") or data.get("user_id")
     )
+    print(f"user_id: {user_id}")
 
     if not user_id:
         return jsonify({"login_required": True}), 401
@@ -731,6 +731,8 @@ def token_update_and_check():
 
             if isinstance(expiry, str):
                 expiry = datetime.fromisoformat(expiry)
+
+            print(f"{social} | {client_id} | {expiry}")
 
             # 🔹 Google
             if social == "google":
@@ -820,13 +822,74 @@ def refresh_google_if_needed(
             )
             connection.commit()
 
-            return jsonify({"success": True})
+            return jsonify({"message": "user found"})
 
         except Exception as e:
             print("Google refresh failed:", e)
             return jsonify({"login_required": True}), 401
 
-    return jsonify({"success": True})
+    return jsonify({"message": "user found"})
+
+
+def refresh_microsoft_if_needed(
+    cursor,
+    connection,
+    user_id,
+    refresh_token,
+    expiry,
+):
+    time_to_expiry = expiry - datetime.utcnow()
+
+    if expiry <= datetime.utcnow() or time_to_expiry <= timedelta(minutes=10):
+        client_id = os.environ.get("MICROSOFT_CLIENT_ID")
+        client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET")
+        try:
+            response = requests.post(
+                "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "scope": "offline_access https://graph.microsoft.com/.default",
+                },
+            )
+
+            data = response.json()
+
+            if "access_token" not in data:
+                raise Exception(data)
+
+            new_access_token = data["access_token"]
+            new_refresh_token = data["refresh_token"]  # ALWAYS rotated
+            expires_in = int(data["expires_in"])
+
+            new_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET token = %s,
+                    refresh_token = %s,
+                    expiry = %s
+                WHERE user_id = %s
+                """,
+                (
+                    new_access_token,
+                    new_refresh_token,
+                    new_expiry.isoformat(),
+                    user_id,
+                ),
+            )
+            connection.commit()
+
+            return jsonify({"message": "user found"})
+
+        except Exception as e:
+            print("Microsoft refresh failed:", e)
+            return jsonify({"login_required": True}), 401
+
+    return jsonify({"message": "user found"})
 
 
 def refresh_microsoft_if_needed(
@@ -957,40 +1020,40 @@ def sendCredits():
 # @google_bp
 
 
-@google_bp.route("/check-user", methods=["POST"])
-def check_user():
-    """
-    here we check weather the user present or not
-    """
-    data = request.json
-    userid = data["userid"]
-    connection = connect_to_rds()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT social
-                FROM users
-                WHERE user_id = %s
-            """,
-                (str(userid),),
-            )
-            row = cursor.fetchone()
+# @google_bp.route("/check-user", methods=["POST"])
+# def check_user():
+#     """
+#     here we check weather the user present or not
+#     """
+#     data = request.json
+#     userid = data["userid"]
+#     connection = connect_to_rds()
+#     try:
+#         with connection.cursor() as cursor:
+#             cursor.execute(
+#                 """
+#                 SELECT social
+#                 FROM users
+#                 WHERE user_id = %s
+#             """,
+#                 (str(userid),),
+#             )
+#             row = cursor.fetchone()
 
-            if not row:
-                return jsonify({"error": "User not found"}), 404
+#             if not row:
+#                 return jsonify({"error": "User not found"}), 404
 
-            social = row[0]
-            if social == "google":
-                # print("google based account")
-                get_token(userid)
-                return {"message": "user found"}, 200
-            return {"message": "user found"}, 200
+#             social = row[0]
+#             if social == "google":
+#                 # print("google based account")
+#                 get_token(userid)
+#                 return {"message": "user found"}, 200
+#             return {"message": "user found"}, 200
 
-    except Exception as e:
-        return jsonify({"error": f"Failed to check user: {e}"}), 500
-    finally:
-        connection.close()
+#     except Exception as e:
+#         return jsonify({"error": f"Failed to check user: {e}"}), 500
+#     finally:
+#         connection.close()
 
 
 def refresh_expired_microsoft_tokens_for_integrations(

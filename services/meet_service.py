@@ -23,12 +23,13 @@ class GoogleMeetService:
         testing=False,
         workflow=None,
         wf_id=None,
+        connection=None,
     ):
         """
         access_token: OAuth 2.0 access token with Calendar, Drive scope
         user_email: authenticated user's email address
         """
-        self.conn = connect_to_rds()
+        self.conn = connection or connect_to_rds()
         self.userid = userid
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
         with get_cursor(self.conn) as cursor:

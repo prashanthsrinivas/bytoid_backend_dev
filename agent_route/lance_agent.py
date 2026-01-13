@@ -253,9 +253,7 @@ class LanceClient:
 
         credits = Credits()
         await credits.update_ai_credits_redis(
-            credit_type="embedding",
-            total_chars=total_chars,
-            user_id = self.user_id
+            credit_type="embedding", total_chars=total_chars, user_id=self.user_id
         )
 
         # ----------------------------------------------
@@ -304,9 +302,7 @@ class LanceClient:
 
             credits = Credits()
             await credits.update_ai_credits_redis(
-                credit_type="embedding",
-                total_chars=total_chars,
-                user_id = self.user_id
+                credit_type="embedding", total_chars=total_chars, user_id=self.user_id
             )
 
             # ------------------------------------------------
@@ -348,9 +344,7 @@ class LanceClient:
             user_id = query_input.user_id
             credits = Credits()
             await credits.update_ai_credits_redis(
-                credit_type="embedding",
-                total_chars=total_chars,
-                user_id = self.user_id
+                credit_type="embedding", total_chars=total_chars, user_id=self.user_id
             )
             # ------------------------------------------------
 
@@ -425,9 +419,7 @@ class LanceClient:
 
             credits = Credits()
             await credits.update_ai_credits_redis(
-                credit_type="embedding",
-                total_chars=total_chars,
-                user_id=self.user_id
+                credit_type="embedding", total_chars=total_chars, user_id=self.user_id
             )
             # -------------------------------------------------
 
@@ -467,11 +459,9 @@ class LanceClient:
 
             credits = Credits()
             await credits.update_ai_credits_redis(
-                    credit_type="embedding",
-                    total_chars=total_chars,
-                    user_id=user_id
-                )
-           
+                credit_type="embedding", total_chars=total_chars, user_id=user_id
+            )
+
             # ----------------------------------------------
 
             docs_results = await self.query_vector(query_input, vector=vector)
@@ -501,7 +491,7 @@ class LanceClient:
             )
 
             ai_response = await get_fireworks_response(
-                full_prompt, role="system", user_id=user_id
+                user_message=full_prompt, role="system", user_id=user_id
             )
 
             if ai_response:

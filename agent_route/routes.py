@@ -12,6 +12,7 @@ from agent_route.ag_helperzz import (
     remove_https_prefix,
 )
 from agent_route.doc_clarity import (
+    flatten_list,
     preProcessDocWithUsecases,
     remove_transcript_clarifications,
 )

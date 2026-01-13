@@ -227,6 +227,7 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
             os.remove(path)
             logger.info(f"[🗑] Deleted processed file: {path}")
 
+    print(f"processed_filenames : {processed_filenames}")
     if not processed_filenames:
         return  # Nothing to merge
 
@@ -236,6 +237,8 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
 
     # Ensure user directory exists
     yaml_path = f"{userid}/yaml/users_fileData.yaml"
+
+    print(f"yaml_path : {yaml_path}")
 
     # Load existing YAML or initialize structure
     # # if os.path.exists(yaml_path):

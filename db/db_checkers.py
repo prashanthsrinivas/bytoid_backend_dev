@@ -550,7 +550,7 @@ def get_existing_umail_json(user_id, connection=None):
                 "SELECT umail_json FROM users WHERE user_id = %s", (user_id,)
             )
             row = cursor.fetchone()
-        
+
         if row and row[0]:
             try:
                 return json.loads(row[0])
@@ -564,7 +564,7 @@ def get_existing_umail_json(user_id, connection=None):
                     "SELECT umail_json FROM integrations WHERE user_id = %s", (user_id,)
                 )
                 row = cursor.fetchone()
-                
+
             if row and row[0]:
                 try:
                     return json.loads(row[0])
@@ -601,7 +601,6 @@ def get_existing_umail_json_integration(user_id, connection=None):
     finally:
         if own_conn:
             connection.close()
-
 
 
 def update_umail_json(user_id, new_count, connection=None, keep_days=10):
@@ -685,6 +684,7 @@ def update_umail_json(user_id, new_count, connection=None, keep_days=10):
     finally:
         if own_conn:
             connection.close()
+
 
 def update_umail_json_integration(user_id, new_count, connection=None, keep_days=10):
     """

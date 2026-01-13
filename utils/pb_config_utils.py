@@ -1,5 +1,10 @@
 import os
-from .s3_utils import upload_any_file, read_json_from_s3, delete_file_from_s3
+from .s3_utils import (
+    delete_folder_from_s3,
+    upload_any_file,
+    read_json_from_s3,
+    delete_file_from_s3,
+)
 import json
 import uuid
 from .normal import ensure_dir
@@ -33,45 +38,6 @@ def create_empty_playbook_config(user_id):
     return s3_key
 
 
-# def update_playbook_config(configpath,user_id, name, filepath, title, description,num_steps):
-#     config_filename = "playbooksconfig.json"
-#     local_config_path = f"data/tmp_json/{config_filename}"
-#     user_id=str(user_id)
-#     ensure_dir(os.path.dirname(local_config_path))
-#     # Step 1: Read existing config from S3
-#     config_data = read_json_from_s3(configpath)
-#     if not config_data:
-#         config_data = {}
-
-#     # Step 2: Prepare new entry
-#     new_entry = {
-#         "name": name,
-#         "filepath": filepath,
-#         "title": title,
-#         "description": description,
-#         "num_steps":num_steps
-#     }
-#     if user_id not in config_data:
-#         config_data[user_id] = {"playbooklist": []}
-
-#     # Step 3: Append or create playbooklist
-#     config_data[user_id]["playbooklist"].append(new_entry)
-
-#     # Step 4: Save locally
-#     with open(local_config_path, "w") as f:
-#         json.dump(config_data, f, indent=2)
-
-#     # Step 5: Upload updated config to S3
-#     upload_any_file(file_path=local_config_path, user_id=user_id, file_name=configpath,type="workflow")
-#     try:
-#         os.remove(local_config_path)
-#         print(f"🧹 Deleted local temp file: {local_config_path}")
-#         return True
-#     except Exception as e:
-#         print(f"⚠️ Failed to delete temp file: {e}")
-#         return False
-
-
 def update_playbook_config(
     configpath, user_id, name, filepath, title, description, num_steps, status="stopped"
 ):
@@ -93,6 +59,8 @@ def update_playbook_config(
         "description": description,
         "num_steps": num_steps,
         "status": status,
+        "schedule": {},
+        "runtime": {},
     }
 
     # Step 3: Insert or update entry in playbooklist
@@ -229,7 +197,7 @@ def deleteConfigdata(configpath, user_id, name):
     ]
 
     for s3_key in s3_keys_to_delete:
-        delete_file_from_s3(s3_key)
+        delete_folder_from_s3(s3_key)
 
     # Step 6: Clean local temp file
     try:

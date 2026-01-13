@@ -57,7 +57,7 @@ class AutoMateService:
             # Optional: structured error for runner / logs
             raise ValueError(f"Step '{self.current_step_id}' not found in workflow")
 
-    async def create_custom_email_body(self, user_id, user_input: str, **args):
+    async def create_custom_email_body(self, user_input: str, **args):
         """
         Generates a modern, professionally designed HTML email using user_input and dynamic data.
         The AI must return only a fully designed HTML string (no fallbacks, no text, no markdown).
@@ -126,16 +126,13 @@ class AutoMateService:
     Return only the final HTML email — no extra commentary, no markdown.
     """
 
-        token = current_user_id.set(user_id)
-        try:
-
-            # Get designed HTML from Fireworks model
-            email_html = await get_fireworks_response2(
-                prompt, "system", temp=0.5, user_id=self.userid
-            )
-
-        finally:
-            current_user_id.reset(token)
+        # Get designed HTML from Fireworks model
+        email_html = await get_fireworks_response2(
+            self.userid,
+            prompt,
+            "system",
+            temp=0.5,
+        )
 
         # Enforce strict HTML-only output
         # if not email_html.lower().startswith("<html"):
@@ -143,7 +140,7 @@ class AutoMateService:
 
         return {"email_body_html": email_html.strip()}
 
-    async def generate_file_from_ai(self, user_id, user_input: str, **args):
+    async def generate_file_from_ai(self, user_input: str, **args):
         """
         Generate a real file based on user input using AI.
         Supports txt, md, css, html, docx, pptx.
@@ -153,146 +150,141 @@ class AutoMateService:
         creator_template = template_data.get("generate_file_content")
         output_dir = "data"
 
-        token = current_user_id.set(user_id)
-        try:
-            # 1. Generate AI content
-            ai_content = await get_fireworks_response2(
-                f"{creator_template['instructions']}\nUser Input: {user_input}",
-                role="system",
-                temp=0.3,
-                user_id=self.userid,
-            )
-            # 🔹 Extract only the JSON-like part using regex
-            json_match = re.search(r"\{[\s\S]*\}", ai_content)
-            if json_match:
-                ai_content = json_match.group(0).strip()
-            # print("ai content received", ai_content)
+        # 1. Generate AI content
+        ai_content = await get_fireworks_response2(
+            user_message=f"{creator_template['instructions']}\nUser Input: {user_input}",
+            role="system",
+            temp=0.3,
+            user_id=self.userid,
+        )
+        # 🔹 Extract only the JSON-like part using regex
+        json_match = re.search(r"\{[\s\S]*\}", ai_content)
+        if json_match:
+            ai_content = json_match.group(0).strip()
+        # print("ai content received", ai_content)
 
-            # 2. Ask AI to suggest filename and file type
-            filename_and_type_prompt = (
-                f"Based on this content description: '{user_input}', "
-                "suggest a short, descriptive filename (underscores, no spaces) "
-                "and a suitable file type/extension (txt, md, docx, pptx, css, html). "
-                "Return only as 'filename.extension'."
-            )
-            suggested_file = await get_fireworks_response2(
-                filename_and_type_prompt, role="system", temp=0.7, user_id=self.userid
-            ).strip()
+        # 2. Ask AI to suggest filename and file type
+        filename_and_type_prompt = (
+            f"Based on this content description: '{user_input}', "
+            "suggest a short, descriptive filename (underscores, no spaces) "
+            "and a suitable file type/extension (txt, md, docx, pptx, css, html). "
+            "Return only as 'filename.extension'."
+        )
+        suggested_file = await get_fireworks_response2(
+            filename_and_type_prompt, role="system", temp=0.7, user_id=self.userid
+        ).strip()
 
-            # 3. Fallback if AI returns invalid
-            if not suggested_file or "." not in suggested_file:
-                suggested_file = f"{uuid.uuid4()}.txt"
-            ##print("filename created", suggested_file)
+        # 3. Fallback if AI returns invalid
+        if not suggested_file or "." not in suggested_file:
+            suggested_file = f"{uuid.uuid4()}.txt"
+        ##print("filename created", suggested_file)
 
-            # 4. Ensure output directory exists
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            file_path = Path(output_dir) / suggested_file
-            ext = file_path.suffix.lower()
+        # 4. Ensure output directory exists
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        file_path = Path(output_dir) / suggested_file
+        ext = file_path.suffix.lower()
 
-            # Helper for safe JSON parsing
-            def parse_ai_json(ai_response):
-                try:
-                    return json.loads(ai_response)
-                except json.JSONDecodeError:
-                    return None
+        # Helper for safe JSON parsing
+        def parse_ai_json(ai_response):
+            try:
+                return json.loads(ai_response)
+            except json.JSONDecodeError:
+                return None
 
-            # 5. Save content based on file type
-            if ext in [".txt", ".md", ".css", ".html"]:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(ai_content)
+        # 5. Save content based on file type
+        if ext in [".txt", ".md", ".css", ".html"]:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(ai_content)
 
-            elif ext == ".docx":
-                if not ai_content:
-                    structured_doc = await get_fireworks_response2(
-                        f"""
-                        You are an expert content writer and Word document designer.
-
-                        Generate a structured Word document based on this input:
-                        '{user_input}'
-
-                        Return **valid JSON only** with the following keys:
-                        - "title": the main document title
-                        - "sections": a list of sections, each with:
-                            - "heading": section heading
-                            - "paragraphs": list of paragraphs as strings
-                        Do not include any extra text or markdown outside JSON.
-                        """,
-                        role="system",
-                        temp=0.6,
-                        user_id=self.userid,
-                    )
-                else:
-                    structured_doc = ai_content
-                # 2️⃣ Extract JSON from any extra text (AI may return extra characters)
-                json_match = re.search(r"\{[\s\S]*\}", structured_doc)
-                if json_match:
-                    structured_doc = json_match.group(0).strip()
-
-                # 3️⃣ Parse JSON
-                try:
-                    doc_data = json.loads(structured_doc)
-                except json.JSONDecodeError:
-                    doc_data = None
-
-                doc_data = prepare_docx_data_from_ai(structured_doc)
-
-                # 5️⃣ Save the .docx using your existing helper
-                save_docx_from_json(doc_data, file_path)
-
-            elif ext == ".pptx":
-                # Generate structured PPT JSON using the full AI content
-                structured_ppt = await get_fireworks_response2(
+        elif ext == ".docx":
+            if not ai_content:
+                structured_doc = await get_fireworks_response2(
                     f"""
-                    You are an expert PowerPoint presentation designer.
+                    You are an expert content writer and Word document designer.
 
-                    Based on the following detailed content, generate a complete, visually engaging slideshow structure:
-                    ---
-                    {ai_content}
-                    ---
+                    Generate a structured Word document based on this input:
+                    '{user_input}'
 
-                    ## OUTPUT REQUIREMENTS:
-                    - Return valid JSON only, with a top-level key "slides".
-                    - Each slide must include:
-                    - "title": short and clear (<= 12 words)
-                    - "bulletPoints": list of 2–5 concise points
-                    - "visuals" (optional): background/image ideas
-                    - "animation" (optional): animation/transition suggestion
-                    - "style" (optional): slide style like "corporate", "modern", "minimal", etc.
-                    - Avoid markdown or formatting outside JSON.
-                    - Focus on stunning visual storytelling — transitions, layouts, imagery.
+                    Return **valid JSON only** with the following keys:
+                    - "title": the main document title
+                    - "sections": a list of sections, each with:
+                        - "heading": section heading
+                        - "paragraphs": list of paragraphs as strings
+                    Do not include any extra text or markdown outside JSON.
                     """,
                     role="system",
                     temp=0.6,
                     user_id=self.userid,
                 )
-
-                # 🔹 Extract JSON from any extra text first
-                json_match = re.search(r"\{[\s\S]*\}", structured_ppt)
-                if json_match:
-                    structured_ppt = json_match.group(0).strip()
-
-                # 🔹 Parse JSON
-                slide_data = parse_ai_json(structured_ppt)
-
-                # 🔁 Retry with manual fallback if JSON is invalid or no slides
-                if slide_data is None or not slide_data.get("slides"):
-                    # print("Attempting to parse raw AI content for PPTX...")
-                    slide_data = parse_pptx_content_to_json(ai_content)
-                # print("the pptx structured final", slide_data)
-
-                if slide_data is None or not slide_data.get("slides"):
-                    return {"error": "Cannot create the file"}
-
-                # 🔹 Save the structured PPT
-                save_pptx_from_json(slide_data, file_path)
-
             else:
-                # Default to plain text
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(ai_content)
+                structured_doc = ai_content
+            # 2️⃣ Extract JSON from any extra text (AI may return extra characters)
+            json_match = re.search(r"\{[\s\S]*\}", structured_doc)
+            if json_match:
+                structured_doc = json_match.group(0).strip()
 
-        finally:
-            current_user_id.reset(token)
+            # 3️⃣ Parse JSON
+            try:
+                doc_data = json.loads(structured_doc)
+            except json.JSONDecodeError:
+                doc_data = None
+
+            doc_data = prepare_docx_data_from_ai(structured_doc)
+
+            # 5️⃣ Save the .docx using your existing helper
+            save_docx_from_json(doc_data, file_path)
+
+        elif ext == ".pptx":
+            # Generate structured PPT JSON using the full AI content
+            structured_ppt = await get_fireworks_response2(
+                user_message=f"""
+                You are an expert PowerPoint presentation designer.
+
+                Based on the following detailed content, generate a complete, visually engaging slideshow structure:
+                ---
+                {ai_content}
+                ---
+
+                ## OUTPUT REQUIREMENTS:
+                - Return valid JSON only, with a top-level key "slides".
+                - Each slide must include:
+                - "title": short and clear (<= 12 words)
+                - "bulletPoints": list of 2–5 concise points
+                - "visuals" (optional): background/image ideas
+                - "animation" (optional): animation/transition suggestion
+                - "style" (optional): slide style like "corporate", "modern", "minimal", etc.
+                - Avoid markdown or formatting outside JSON.
+                - Focus on stunning visual storytelling — transitions, layouts, imagery.
+                """,
+                role="system",
+                temp=0.6,
+                user_id=self.userid,
+            )
+
+            # 🔹 Extract JSON from any extra text first
+            json_match = re.search(r"\{[\s\S]*\}", structured_ppt)
+            if json_match:
+                structured_ppt = json_match.group(0).strip()
+
+            # 🔹 Parse JSON
+            slide_data = parse_ai_json(structured_ppt)
+
+            # 🔁 Retry with manual fallback if JSON is invalid or no slides
+            if slide_data is None or not slide_data.get("slides"):
+                # print("Attempting to parse raw AI content for PPTX...")
+                slide_data = parse_pptx_content_to_json(ai_content)
+            # print("the pptx structured final", slide_data)
+
+            if slide_data is None or not slide_data.get("slides"):
+                return {"error": "Cannot create the file"}
+
+            # 🔹 Save the structured PPT
+            save_pptx_from_json(slide_data, file_path)
+
+        else:
+            # Default to plain text
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(ai_content)
 
         return str(file_path)
 
@@ -311,7 +303,7 @@ class AutoMateService:
             """
         try:
             response = await get_fireworks_response2(
-                prompt, role="system", temp=0.5, user_id=self.userid
+                user_message=prompt, role="system", temp=0.5, user_id=self.userid
             )
             return response.strip()
         except Exception as e:
@@ -404,7 +396,7 @@ class AutoMateService:
 
         try:
             response = await get_fireworks_response2(
-                prompt, role="system", temp=0.4, user_id=self.userid
+                user_message=prompt, role="system", temp=0.4, user_id=self.userid
             )
             chat_reply = response.strip()
             return {"return_str": chat_reply}
@@ -510,7 +502,7 @@ class AutoMateService:
 
         try:
             response = await get_fireworks_response2(
-                prompt, role="system", temp=0.5, userid=self.userid
+                user_message=prompt, role="system", temp=0.5, user_id=self.userid
             )
 
             generated_content = response.strip()
@@ -639,7 +631,7 @@ class AutoMateService:
 
         try:
             response = await get_fireworks_response2(
-                prompt, role="system", temp=0.3, user_id=self.userid
+                user_message=prompt, role="system", temp=0.3, user_id=self.userid
             )
 
             questions = json.loads(response.strip())
@@ -677,88 +669,88 @@ class AutoMateService:
 
             # 📝 Review prompt
             prompt = f"""
-    You are a PROFESSIONAL CONTENT REVIEWER operating inside a workflow execution system.
+            You are a PROFESSIONAL CONTENT REVIEWER operating inside a workflow execution system.
 
-    ============================
-    YOUR ROLE
-    ============================
-    You must REVIEW the provided content in a professional, constructive manner.
+            ============================
+            YOUR ROLE
+            ============================
+            You must REVIEW the provided content in a professional, constructive manner.
 
-    ❌ Do NOT rewrite the content  
-    ❌ Do NOT generate new content  
-    ❌ Do NOT add examples or alternatives  
-    ❌ Do NOT ask questions  
+            ❌ Do NOT rewrite the content  
+            ❌ Do NOT generate new content  
+            ❌ Do NOT add examples or alternatives  
+            ❌ Do NOT ask questions  
 
-    Your job is to evaluate and give feedback only.
+            Your job is to evaluate and give feedback only.
 
-    ============================
-    STEP CONTEXT
-    ============================
-    Workflow Step:
-    {step_context}
+            ============================
+            STEP CONTEXT
+            ============================
+            Workflow Step:
+            {step_context}
 
-    AI Instruction:
-    "{ai_instruction}"
+            AI Instruction:
+            "{ai_instruction}"
 
-    ============================
-    CONTENT TO REVIEW
-    ============================
-    {user_input}
+            ============================
+            CONTENT TO REVIEW
+            ============================
+            {user_input}
 
-    ============================
-    RUNTIME DATA
-    ============================
-    Arguments:
-    {args_pretty}
+            ============================
+            RUNTIME DATA
+            ============================
+            Arguments:
+            {args_pretty}
 
-    Timestamp Reference (DO NOT MODIFY):
-    {current_time_prefix}
+            Timestamp Reference (DO NOT MODIFY):
+            {current_time_prefix}
 
-    ============================
-    REVIEW CRITERIA
-    ============================
-    Evaluate the content based on:
+            ============================
+            REVIEW CRITERIA
+            ============================
+            Evaluate the content based on:
 
-    1. Alignment with the AI instruction
-    2. Accuracy and relevance
-    3. Completeness
-    4. Clarity and professional tone
+            1. Alignment with the AI instruction
+            2. Accuracy and relevance
+            3. Completeness
+            4. Clarity and professional tone
 
-    ============================
-    RESPONSE FORMAT (MANDATORY)
-    ============================
-    Use EXACTLY the following structure:
+            ============================
+            RESPONSE FORMAT (MANDATORY)
+            ============================
+            Use EXACTLY the following structure:
 
-    Overall Status:
-    - OK | NEEDS IMPROVEMENT | NOT OK
+            Overall Status:
+            - OK | NEEDS IMPROVEMENT | NOT OK
 
-    What Is Good:
-    - <clearly state what works well>
-    - <be specific and professional>
+            What Is Good:
+            - <clearly state what works well>
+            - <be specific and professional>
 
-    What Is Not Good:
-    - <clearly state issues or gaps>
-    - <mention only real problems>
+            What Is Not Good:
+            - <clearly state issues or gaps>
+            - <mention only real problems>
 
-    How to Improve:
-    - <actionable guidance>
-    - <do NOT rewrite the content>
-    - <do NOT add examples>
+            How to Improve:
+            - <actionable guidance>
+            - <do NOT rewrite the content>
+            - <do NOT add examples>
 
-    ============================
-    STRICT RULES
-    ============================
-    - Be professional and concise
-    - No emojis
-    - No markdown
-    - No policy or system mentions
-    - Plain text only
-    - Output will be consumed directly by a workflow runner
-    """
+            ============================
+            STRICT RULES
+            ============================
+            - Be professional and concise
+            - No emojis
+            - No markdown
+            - No policy or system mentions
+            - Plain text only
+            - Output will be consumed directly by a workflow runner
+            """
 
             # 🤖 LLM call
             response = await get_fireworks_response2(
-                prompt, role="system", temp=0.4, user_id=self.userid
+                user_message=prompt, role="system", temp=0.4, user_id=self.userid
             )
 
             review_output = response.strip()

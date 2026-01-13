@@ -33,7 +33,7 @@ creds = get_secret()
 #     pool_recycle=3600,  # recycle connections after 1h
 #     pool_pre_ping=True,  # check before using a connection
 # )
-
+# print(creds)
 pool = PooledDB(
     creator=pymysql,
     maxconnections=120,
