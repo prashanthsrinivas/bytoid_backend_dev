@@ -44,6 +44,23 @@ def verify_webhook(payload, sig_header):
     )
 
 
+# def create_checkout_session(
+#     *,
+#     mode,
+#     line_items,
+#     email,
+#     metadata=None,
+# ):
+#     return stripe.checkout.Session.create(
+#         mode=mode,
+#         line_items=line_items,
+#         customer_email=email,
+#         metadata=metadata or {},
+#         success_url=STRIPE_SUCCESS_URL,
+#         cancel_url=STRIPE_CANCEL_URL,
+#     )
+
+
 def create_checkout_session(
     *,
     mode,
@@ -58,6 +75,12 @@ def create_checkout_session(
         metadata=metadata or {},
         success_url=STRIPE_SUCCESS_URL,
         cancel_url=STRIPE_CANCEL_URL,
+        # ✅ Automatic tax
+        automatic_tax={"enabled": True},
+        # ✅ Collect billing address
+        billing_address_collection="required",
+        # ✅ Always collect card
+        payment_method_collection="always",
     )
 
 
