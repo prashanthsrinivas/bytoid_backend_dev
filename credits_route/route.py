@@ -3,6 +3,7 @@ from db.rds_db import connect_to_rds
 from db.db_checkers import check_onboarding_user
 import uuid
 import os
+from services.credit_system import CreditManager
 from services.redis_service import RedisService
 import json
 from request_context import current_user_id
@@ -60,206 +61,186 @@ PLAN_CREDITS = {
 }
 
 
+# class Credits:
+#     def __init__(self):
+#         self.redis_client = RedisService()
+
+#     async def update_ai_credits_redis(
+#         self, credit_type: str, total_chars: int, user_id
+#     ):
+
+#         if not user_id:
+#             # log and exit — never write under None
+#             return
+
+#         try:
+#             await self.redis_client.hincrby(
+#                 name=f"user_credits:{user_id}",
+#                 key=credit_type,
+#                 amount=total_chars,
+#             )
+#             credits = await self.redis_client.hgetall(f"user_credits:{user_id}")
+
+#             print(f"redis  updated for credits")
+#             # print(f"total_chars : {total_chars}")
+#             # print("Final credits:", credits)
+
+#             # ----------- update the s3 credits daily json file -------------
+
+#             result = await self.store_daily_credits_to_s3(
+#                 user_id, total_chars, credit_type
+#             )
+
+#         except Exception as e:
+#             print(f"redis not updated for credits : {e} ")
+#             raise
+
+#     async def store_daily_credits_to_s3(
+#         self, user_id: str, total_chars: int, credit_type: str
+#     ):
+#         """
+#         Append credit event to daily JSON file in S3.
+#         Path: credits/events/{user_id}/daily/YYYY/MM/DD.json
+#         """
+
+#         now = datetime.utcnow()
+#         year = now.strftime("%Y")
+#         month = now.strftime("%m")
+#         day = now.strftime("%d")
+
+#         credits_folder = os.path.join(pathconfig.basepath, "credits", user_id)
+#         ensure_dir(credits_folder)
+
+#         credits_daily_filepath = os.path.join(credits_folder, "daily_credits.json")
+
+#         s3_key = f"credits/events/{user_id}/daily/" f"{year}/{month}/{day}.json"
+
+#         s3_data = read_json_from_s3(s3_key)
+#         if s3_data is None:
+#             s3_data = {}
+
+#         now = datetime.now(timezone.utc)
+#         date_key = now.strftime("%Y-%m-%d")
+
+#         new_record = {
+#             "timestamp": now.isoformat().replace("+00:00", "Z"),
+#             "credits": total_chars,
+#             "credit_type": credit_type,
+#         }
+
+#         s3_data.setdefault("date", date_key)
+#         s3_data.setdefault("events", []).append(new_record)
+
+#         with open(credits_daily_filepath, "w", encoding="utf-8") as f:
+#             json.dump(s3_data, f, indent=2)
+
+#         result = upload_any_file(
+#             credits_daily_filepath,
+#             user_id,
+#             type="credits",
+#             s3_key_C=s3_key,
+#         )
+
+#         if result.get("status") == "success":
+#             os.remove(credits_daily_filepath)
+#             # print(f"s3 daily added")
+#             # print(f"daily credits in s3: {s3_data}")
+
+#         # ---------- uplaoding monthly credits -------------#
+
+#         s3_key = f"credits/events/{user_id}/monthly/{year}/{month}.json"
+
+#         s3_data = read_json_from_s3(s3_key)
+#         if not isinstance(s3_data, dict):
+#             s3_data = {}
+
+#         # Update credits
+#         s3_data[credit_type] = s3_data.get(credit_type, 0) + total_chars
+
+#         credits_folder = os.path.join(pathconfig.basepath, "credits", user_id)
+#         ensure_dir(credits_folder)
+
+#         credits_monthly_filepath = os.path.join(credits_folder, "monthly_credits.json")
+
+#         with open(credits_monthly_filepath, "w", encoding="utf-8") as f:
+#             json.dump(s3_data, f, indent=2)
+
+#         result = upload_any_file(
+#             credits_monthly_filepath,
+#             user_id,
+#             type="credits",
+#             s3_key_C=s3_key,
+#         )
+
+#         if result.get("status") == "success":
+#             os.remove(credits_monthly_filepath)
+#             # print(f"s3 monthly added")
+#             # print(f"{s3_data}")
+
+#         return {
+#             "status": "ok",
+#             "s3_key": s3_key,
+#             "records_today": s3_data,
+#         }
+
+
 class Credits:
+    """
+    Backward-compatible adapter.
+    Existing callers continue using update_ai_credits_redis()
+    """
+
+    CREDIT_MULTIPLIER = 0.25  # chars → credits
+
     def __init__(self):
-        self.redis_client = RedisService()
+        self.db = connect_to_rds()
+        self.cm = CreditManager(self.db)
 
+    # -------------------------------------------------
+    # MAIN ENTRY (USED EVERYWHERE)
+    # -------------------------------------------------
     async def update_ai_credits_redis(
-        self, credit_type: str, total_chars: int, user_id
+        self,
+        credit_type: str,
+        total_chars: int,
+        user_id: str,
+        reference_id: str = None,
     ):
+        """
+        credit_type: normal | embedding | evaluator | etc
+        total_chars: raw character count
+        """
 
-        if not user_id:
-            # log and exit — never write under None
+        if not user_id or not total_chars:
+            return
+        print("credit type", credit_type, reference_id)
+        print("total chars we got", total_chars)
+        # ✅ FIXED CREDIT CALCULATION
+        credits_to_consume = int(total_chars * self.CREDIT_MULTIPLIER)
+        print("total credits modified", credits_to_consume)
+
+        if credits_to_consume <= 0:
             return
 
         try:
-            await self.redis_client.hincrby(
-                name=f"user_credits:{user_id}",
-                key=credit_type,
-                amount=total_chars,
-            )
-            credits = await self.redis_client.hgetall(f"user_credits:{user_id}")
-
-            print(f"redis  updated for credits")
-            # print(f"total_chars : {total_chars}")
-            # print("Final credits:", credits)
-
-            # ----------- update the s3 credits daily json file -------------
-
-            result = await self.store_daily_credits_to_s3(
-                user_id, total_chars, credit_type
+            self.cm.consume_credits(
+                user_id=user_id,
+                credits_needed=credits_to_consume,
+                reason=credit_type.upper(),
+                reference_id=reference_id or "AI_EXECUTION",
             )
 
         except Exception as e:
-            print(f"redis not updated for credits : {e} ")
+            # This will surface INSUFFICIENT_CREDITS correctly
+            print(f"❌ Credit consumption failed: {e}")
             raise
-
-    async def store_daily_credits_to_s3(
-        self, user_id: str, total_chars: int, credit_type: str
-    ):
-        """
-        Append credit event to daily JSON file in S3.
-        Path: credits/events/{user_id}/daily/YYYY/MM/DD.json
-        """
-
-        # try:
-        #     with open(credits_daily_filepath, "r", encoding="utf-8") as f:
-        #         data = json.load(f)
-        #         if not isinstance(data, dict):
-        #             data = {}
-        # except (FileNotFoundError, json.JSONDecodeError):
-        #     data = {}
-
-        # data.setdefault("date", date_key)
-        # data.setdefault("events", []).append(new_record)
-
-        # with open(credits_daily_filepath, "w", encoding="utf-8") as f:
-        #     json.dump(data, f, indent=2)
-
-        # ---------- uplaoding daily credits -------------#
-
-        now = datetime.utcnow()
-        year = now.strftime("%Y")
-        month = now.strftime("%m")
-        day = now.strftime("%d")
-
-        credits_folder = os.path.join(pathconfig.basepath, "credits", user_id)
-        ensure_dir(credits_folder)
-
-        credits_daily_filepath = os.path.join(credits_folder, "daily_credits.json")
-
-        s3_key = f"credits/events/{user_id}/daily/" f"{year}/{month}/{day}.json"
-
-        s3_data = read_json_from_s3(s3_key)
-        if s3_data is None:
-            s3_data = {}
-
-        now = datetime.now(timezone.utc)
-        date_key = now.strftime("%Y-%m-%d")
-
-        new_record = {
-            "timestamp": now.isoformat().replace("+00:00", "Z"),
-            "credits": total_chars,
-            "credit_type": credit_type,
-        }
-
-        s3_data.setdefault("date", date_key)
-        s3_data.setdefault("events", []).append(new_record)
-
-        with open(credits_daily_filepath, "w", encoding="utf-8") as f:
-            json.dump(s3_data, f, indent=2)
-
-        result = upload_any_file(
-            credits_daily_filepath,
-            user_id,
-            type="credits",
-            s3_key_C=s3_key,
-        )
-
-        if result.get("status") == "success":
-            os.remove(credits_daily_filepath)
-            # print(f"s3 daily added")
-            # print(f"daily credits in s3: {s3_data}")
-
-        # ---------- uplaoding monthly credits -------------#
-
-        s3_key = f"credits/events/{user_id}/monthly/{year}/{month}.json"
-
-        s3_data = read_json_from_s3(s3_key)
-        if not isinstance(s3_data, dict):
-            s3_data = {}
-
-        # Update credits
-        s3_data[credit_type] = s3_data.get(credit_type, 0) + total_chars
-
-        credits_folder = os.path.join(pathconfig.basepath, "credits", user_id)
-        ensure_dir(credits_folder)
-
-        credits_monthly_filepath = os.path.join(credits_folder, "monthly_credits.json")
-
-        with open(credits_monthly_filepath, "w", encoding="utf-8") as f:
-            json.dump(s3_data, f, indent=2)
-
-        result = upload_any_file(
-            credits_monthly_filepath,
-            user_id,
-            type="credits",
-            s3_key_C=s3_key,
-        )
-
-        if result.get("status") == "success":
-            os.remove(credits_monthly_filepath)
-            # print(f"s3 monthly added")
-            # print(f"{s3_data}")
 
         return {
             "status": "ok",
-            "s3_key": s3_key,
-            "records_today": s3_data,
+            "credit_type": credit_type,
+            "chars": total_chars,
+            "credits_used": credits_to_consume,
         }
-
-    async def flush_redis_credits_to_db(self, conn, user_id: str):
-        redis_key = f"user_credits:{user_id}"
-
-        credits = await self.redis_client.hgetall(redis_key)
-
-        if not credits:
-            return
-
-        # Redis returns strings → convert to int
-        credits = {k: int(v) for k, v in credits.items()}
-        total = sum(credits.values())
-
-        credits_id = str(uuid.uuid4())
-        timestamp = datetime.utcnow()
-
-        try:
-            cursor = conn.cursor()
-
-            safe_execute(
-                cursor,
-                """
-                    INSERT INTO credits (
-                        credits_id,
-                        user_id_fk,
-                        text_to_audio,
-                        audio_to_text,
-                        embedding,
-                        normal,
-                        evaluator,
-                        ai_suggest,
-                        total,
-                        timestamp
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                (
-                    credits_id,
-                    user_id,
-                    credits.get("text_to_audio", 0),
-                    credits.get("audio_to_text", 0),
-                    credits.get("embedding", 0),
-                    credits.get("normal", 0),
-                    credits.get("evaluator", 0),
-                    credits.get("ai_suggest", 0),
-                    total,
-                    timestamp,
-                ),
-            )
-
-            conn.commit()  # be explicit unless safe_execute guarantees commit
-
-            # delete Redis ONLY after DB commit
-            await self.redis_client.delete(redis_key)
-
-        except Exception:
-            if conn:
-                conn.rollback()
-            raise
-
-        finally:
-            if cursor:
-                cursor.close()
 
 
 @credits_bp.route("/load_credits_page_monthly", methods=["POST"])
@@ -420,170 +401,170 @@ def get_plan_details(plan_name):
     return None
 
 
-@credits_bp.route("/api/plans/<plan_name>", methods=["GET"])
-def get_plan_details_route(plan_name):
-    """Get specific plan details and pricing tiers"""
-    try:
-        plan_details = get_plan_details(plan_name)
+# @credits_bp.route("/api/plans/<plan_name>", methods=["GET"])
+# def get_plan_details_route(plan_name):
+#     """Get specific plan details and pricing tiers"""
+#     try:
+#         plan_details = get_plan_details(plan_name)
 
-        if not plan_details:
-            return jsonify({"success": False, "message": "Plan not found"}), 404
+#         if not plan_details:
+#             return jsonify({"success": False, "message": "Plan not found"}), 404
 
-        return jsonify({"success": True, "plan": plan_details})
+#         return jsonify({"success": True, "plan": plan_details})
 
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@credits_bp.route("/api/plans/calculate-credits", methods=["POST"])
-def calculate_credits():
-    """Calculate credits for a specific plan and pricing tier"""
-    try:
-        data = request.get_json()
-        plan_name = data.get("planName")
-        billing_type = data.get("billingType", "monthly")
-        tier_index = data.get("tierIndex", 0)
-
-        if not plan_name:
-            return jsonify({"success": False, "message": "Plan name required"}), 400
-
-        if not validate_plan(plan_name):
-            return jsonify({"success": False, "message": "Invalid plan name"}), 400
-
-        credits = get_credits_for_plan(plan_name, billing_type, tier_index)
-        plan_data = (
-            PLAN_CREDITS[plan_name][billing_type][tier_index]
-            if tier_index < len(PLAN_CREDITS[plan_name][billing_type])
-            else PLAN_CREDITS[plan_name][billing_type][0]
-        )
-
-        return jsonify(
-            {
-                "success": True,
-                "plan_name": plan_name,
-                "billing_type": billing_type,
-                "tier_index": tier_index,
-                "credits": credits,
-                "price_usd": plan_data["price_usd"],
-            }
-        )
-
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+#     except Exception as e:
+#         return jsonify({"success": False, "message": str(e)}), 500
 
 
-@credits_bp.route("/api/plans/store-selection", methods=["POST"])
-def store_plan_selection():
-    """Store plan selection in the plans table"""
-    try:
-        data = request.get_json()
-        plan_name = data.get("planName")
-        billing_type = data.get("billingType", "monthly")
-        tier_index = data.get("tierIndex", 0)
-        subscribe_id = data.get("subscribeId", str(uuid.uuid4()))
-        add_ons = data.get("addOns", [])
-        add_ons_measurement = data.get("addOnsMeasurement", {})
+# @credits_bp.route("/api/plans/calculate-credits", methods=["POST"])
+# def calculate_credits():
+#     """Calculate credits for a specific plan and pricing tier"""
+#     try:
+#         data = request.get_json()
+#         plan_name = data.get("planName")
+#         billing_type = data.get("billingType", "monthly")
+#         tier_index = data.get("tierIndex", 0)
 
-        print(
-            data,
-            plan_name,
-            billing_type,
-            tier_index,
-            subscribe_id,
-            add_ons,
-            add_ons_measurement,
-        )
+#         if not plan_name:
+#             return jsonify({"success": False, "message": "Plan name required"}), 400
 
-        if not plan_name:
-            return jsonify({"success": False, "message": "Plan name required"}), 400
+#         if not validate_plan(plan_name):
+#             return jsonify({"success": False, "message": "Invalid plan name"}), 400
 
-        if not validate_plan(plan_name):
-            return jsonify({"success": False, "message": "Invalid plan name"}), 400
+#         credits = get_credits_for_plan(plan_name, billing_type, tier_index)
+#         plan_data = (
+#             PLAN_CREDITS[plan_name][billing_type][tier_index]
+#             if tier_index < len(PLAN_CREDITS[plan_name][billing_type])
+#             else PLAN_CREDITS[plan_name][billing_type][0]
+#         )
 
-        credits = get_credits_for_plan(plan_name, billing_type, tier_index)
-        plan_id = str(uuid.uuid4())
+#         return jsonify(
+#             {
+#                 "success": True,
+#                 "plan_name": plan_name,
+#                 "billing_type": billing_type,
+#                 "tier_index": tier_index,
+#                 "credits": credits,
+#                 "price_usd": plan_data["price_usd"],
+#             }
+#         )
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT INTO plans (plans_id, subscribe_id, plans, credits, `add-ons`, `add-ons-measurement`, created_in, updated_in)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-            (
-                plan_id,
-                subscribe_id,
-                plan_name,
-                str(credits),
-                add_ons,
-                add_ons_measurement,
-                datetime.datetime.now(),
-                datetime.datetime.now(),
-            ),
-        )
-
-        conn.commit()
-        conn.close()
-
-        return jsonify(
-            {
-                "success": True,
-                "message": "Plan selection stored successfully",
-                "plan_id": plan_id,
-                "subscribe_id": subscribe_id,
-                "plan_name": plan_name,
-                "billing_type": billing_type,
-                "tier_index": tier_index,
-                "credits": credits,
-            }
-        )
-
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+#     except Exception as e:
+#         return jsonify({"success": False, "message": str(e)}), 500
 
 
-@credits_bp.route("/api/plans/available", methods=["GET"])
-def get_available_plans():
-    """Get all available plans and their credit mappings"""
-    return jsonify({"success": True, "plans": PLAN_CREDITS})
+# @credits_bp.route("/api/plans/store-selection", methods=["POST"])
+# def store_plan_selection():
+#     """Store plan selection in the plans table"""
+#     try:
+#         data = request.get_json()
+#         plan_name = data.get("planName")
+#         billing_type = data.get("billingType", "monthly")
+#         tier_index = data.get("tierIndex", 0)
+#         subscribe_id = data.get("subscribeId", str(uuid.uuid4()))
+#         add_ons = data.get("addOns", [])
+#         add_ons_measurement = data.get("addOnsMeasurement", {})
+
+#         print(
+#             data,
+#             plan_name,
+#             billing_type,
+#             tier_index,
+#             subscribe_id,
+#             add_ons,
+#             add_ons_measurement,
+#         )
+
+#         if not plan_name:
+#             return jsonify({"success": False, "message": "Plan name required"}), 400
+
+#         if not validate_plan(plan_name):
+#             return jsonify({"success": False, "message": "Invalid plan name"}), 400
+
+#         credits = get_credits_for_plan(plan_name, billing_type, tier_index)
+#         plan_id = str(uuid.uuid4())
+
+#         conn = get_db_connection()
+#         cursor = conn.cursor()
+
+#         cursor.execute(
+#             """
+#             INSERT INTO plans (plans_id, subscribe_id, plans, credits, `add-ons`, `add-ons-measurement`, created_in, updated_in)
+#             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+#         """,
+#             (
+#                 plan_id,
+#                 subscribe_id,
+#                 plan_name,
+#                 str(credits),
+#                 add_ons,
+#                 add_ons_measurement,
+#                 datetime.datetime.now(),
+#                 datetime.datetime.now(),
+#             ),
+#         )
+
+#         conn.commit()
+#         conn.close()
+
+#         return jsonify(
+#             {
+#                 "success": True,
+#                 "message": "Plan selection stored successfully",
+#                 "plan_id": plan_id,
+#                 "subscribe_id": subscribe_id,
+#                 "plan_name": plan_name,
+#                 "billing_type": billing_type,
+#                 "tier_index": tier_index,
+#                 "credits": credits,
+#             }
+#         )
+
+#     except Exception as e:
+#         return jsonify({"success": False, "message": str(e)}), 500
 
 
-@credits_bp.route("/api/plans/by-subscription/<subscribe_id>", methods=["GET"])
-def get_plans_by_subscription(subscribe_id):
-    """Get plans for a specific subscription"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+# @credits_bp.route("/api/plans/available", methods=["GET"])
+# def get_available_plans():
+#     """Get all available plans and their credit mappings"""
+#     return jsonify({"success": True, "plans": PLAN_CREDITS})
 
-        cursor.execute(
-            """
-            SELECT plans_id, subscribe_id, plans, credits, `add-ons`, `add-ons-measurement`, created_in, updated_in
-            FROM plans 
-            WHERE subscribe_id = %s
-            ORDER BY created_in DESC
-        """,
-            (subscribe_id,),
-        )
 
-        plans = cursor.fetchall()
-        conn.close()
+# @credits_bp.route("/api/plans/by-subscription/<subscribe_id>", methods=["GET"])
+# def get_plans_by_subscription(subscribe_id):
+#     """Get plans for a specific subscription"""
+#     try:
+#         conn = get_db_connection()
+#         cursor = conn.cursor()
 
-        # Convert MySQL results to dict format
-        plans_dict = []
-        for plan in plans:
-            if cursor.description:
-                plan_dict = {}
-                for i, column in enumerate(cursor.description):
-                    plan_dict[column[0]] = plan[i]
-                plans_dict.append(plan_dict)
+#         cursor.execute(
+#             """
+#             SELECT plans_id, subscribe_id, plans, credits, `add-ons`, `add-ons-measurement`, created_in, updated_in
+#             FROM plans
+#             WHERE subscribe_id = %s
+#             ORDER BY created_in DESC
+#         """,
+#             (subscribe_id,),
+#         )
 
-        return jsonify(
-            {"success": True, "subscribe_id": subscribe_id, "plans": plans_dict}
-        )
+#         plans = cursor.fetchall()
+#         conn.close()
 
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+#         # Convert MySQL results to dict format
+#         plans_dict = []
+#         for plan in plans:
+#             if cursor.description:
+#                 plan_dict = {}
+#                 for i, column in enumerate(cursor.description):
+#                     plan_dict[column[0]] = plan[i]
+#                 plans_dict.append(plan_dict)
+
+#         return jsonify(
+#             {"success": True, "subscribe_id": subscribe_id, "plans": plans_dict}
+#         )
+
+#     except Exception as e:
+#         return jsonify({"success": False, "message": str(e)}), 500
 
 
 def update_ai_credits_to_db(user_id: str, credit_type: str, total_chars: int):
@@ -637,42 +618,193 @@ def update_ai_credits_to_db(user_id: str, credit_type: str, total_chars: int):
     connection.close()
 
 
-# async def update_ai_credits_redis(
-#     user_id: str,
-#     credit_type: str,
-#     total_chars: int,
-# ):
-#     """
-#     Updates AI usage credits stored in Redis as a raw dict.
+# ====================================================
+# 1. GET TOTAL CREDIT BALANCE (DASHBOARD / PREFLIGHT)
+# ====================================================
+@credits_bp.route("/credits", methods=["GET"])
+def get_credits():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
 
-#     Redis key:
-#         user_credits:{user_id}
+    conn = connect_to_rds()
+    cm = CreditManager(conn)
+    next_expiry = None
 
-#     Stored format (dict):
-#     {
-#         "text_to_audio": 123,
-#         "audio_to_text": 456,
-#         "embedding": 789,
-#         "normal": 100,
-#         "evaluator": 50,
-#         "ai_suggest": 25
-#     }
-#     """
+    balance = cm.get_credit_balance(user_id)
+    if not balance:
 
-#     redis_client = RedisService()
-#     redis_key = f"user_credits:{user_id}"
+        cur = conn.cursor()  # no dictionary=True
+        cur.execute(
+            """
+            SELECT
+                (credits_total - credits_used) AS remaining,
+                expires_at,
+                source_type
+            FROM credit_buckets
+            WHERE user_id = %s
+            AND is_expired = 0
+            AND expires_at IS NOT NULL
+            ORDER BY expires_at ASC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            next_expiry = {
+                "remaining": row[0],
+                "expires_at": row[1].isoformat() if row[1] else None,
+                "source_type": row[2],
+            }
 
-#     # fetch existing credits (dict)
-#     credits = await redis_client.get(redis_key)
+    cur.close()
+    conn.close()
 
-#     if not isinstance(credits, dict):
-#         credits = {}
+    return jsonify(
+        {
+            "user_id": user_id,
+            "total_credits": balance["total"],
+            "breakdown": balance["breakdown"],
+            "next_expiry": next_expiry,
+        }
+    )
 
-#     # increment or create key
-#     credits[credit_type] = credits.get(credit_type, 0) + total_chars
 
-#     # store back as raw dict
-#     await redis_client.set(redis_key, credits)
+# ====================================================
+# 2. FAST CREDIT CHECK (USED BEFORE AI EXECUTION)
+# ====================================================
+@credits_bp.route("/credits/check", methods=["GET"])
+def check_credits():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
 
-#     print("credit added to redis:")
-#     print(credits)
+    conn = connect_to_rds()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(credits_total - credits_used), 0)
+        FROM credit_buckets
+        WHERE user_id = %s
+          AND is_expired = 0
+        """,
+        (user_id,),
+    )
+
+    total = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+
+    return jsonify({"has_credits": total > 0, "total_credits": total})
+
+
+# ====================================================
+# 3. GET CREDIT BUCKETS (DEBUG / ADMIN / SUPPORT)
+# ====================================================
+@credits_bp.route("/credits/buckets", methods=["GET"])
+def get_credit_buckets():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    conn = connect_to_rds()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            bucket_id,
+            source_type,
+            credits_total,
+            credits_used,
+            (credits_total - credits_used) AS remaining,
+            expires_at,
+            created_at
+        FROM credit_buckets
+        WHERE user_id = %s
+          AND is_expired = 0
+        ORDER BY expires_at ASC
+        """,
+        (user_id,),
+    )
+
+    buckets = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return jsonify({"buckets": buckets})
+
+
+# ====================================================
+# 4. GET CREDIT USAGE HISTORY
+# ====================================================
+@credits_bp.route("/credits/usage", methods=["GET"])
+def get_credit_usage():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    limit = int(request.args.get("limit", 50))
+    offset = int(request.args.get("offset", 0))
+
+    conn = connect_to_rds()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            u.created_at AS used_at,
+            u.credits_used,
+            u.reason,
+            u.reference_id,
+            b.source_type
+        FROM credit_usage_log u
+        JOIN credit_buckets b ON u.bucket_id = b.bucket_id
+        WHERE u.user_id = %s
+        ORDER BY u.created_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        (user_id, limit, offset),
+    )
+
+    usage = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return jsonify({"usage": usage, "limit": limit, "offset": offset})
+
+
+# ====================================================
+# 5. GET CREDIT SUMMARY (FOR BILLING / UI)
+# ====================================================
+@credits_bp.route("/credits/summary", methods=["GET"])
+def credit_summary():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    conn = connect_to_rds()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            source_type,
+            SUM(credits_total) AS total,
+            SUM(credits_used) AS used,
+            SUM(credits_total - credits_used) AS remaining
+        FROM credit_buckets
+        WHERE user_id = %s
+          AND is_expired = 0
+        GROUP BY source_type
+        """,
+        (user_id,),
+    )
+
+    summary = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return jsonify({"user_id": user_id, "summary": summary})
