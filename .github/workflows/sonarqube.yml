@@ -64,5 +64,5 @@ jobs:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
           args: >
-            -Dsonar.projectKey=bytoid_python
+            -Dsonar.projectKey=PROJECT_KEY
             -Dsonar.organization=YOUR_ORG_KEY
