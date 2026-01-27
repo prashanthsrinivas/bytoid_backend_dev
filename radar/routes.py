@@ -168,6 +168,17 @@ async def retreval_from_sources(
                             "data": results[0].get("text"),
                         }
                     )
+            if file.get("type") == "scrape":
+                url = file.get("url")
+                results = dbserver.search_scraped_data_by_url(query=payload, url=url)
+                if results:
+                    data_for_review.append(
+                        {
+                            "type": "scrape",
+                            "source": url,
+                            "data": results[0].get("content") or results.get("content"),
+                        }
+                    )
 
     return data_for_review
 

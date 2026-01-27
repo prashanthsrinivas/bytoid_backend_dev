@@ -1690,6 +1690,94 @@ class LanceDBServer:
             print(f"Error searching scraped data: {e}")
             raise e
 
+    def search_scraped_data_by_url(
+        self, query: "QueryData", url: str, sender_email="All"
+    ):
+        from training.scrape.helper import generate_level_context
+
+        if isinstance(query, dict):
+            query = QueryData(**query)
+
+        try:
+            if len(query.embedding) != EMBEDDING_DIM:
+                raise ValueError(f"Embedding must be {EMBEDDING_DIM} dimensions")
+
+            table = self._get_scrape_table(query.user_id)
+            query_vector = np.array(query.embedding, dtype=np.float32)
+
+            # 🔥 Remote LanceDB requires filter AFTER search()
+            base_results = (
+                table.search(query_vector, vector_column_name="embedding")
+                .where(f'url == "{url}"')
+                .metric("cosine")
+                .limit(query.top_k)
+                .to_list()
+            )
+
+            if not base_results:
+                print(f"No scraped data found for URL: {url}")
+                return None
+
+            results = []
+            for result in base_results:
+                contacts = result.get("contacts", [])
+
+                metadata = result.get("metadata") or {}
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except Exception:
+                        continue
+
+                # Only active pages
+                if metadata.get("status") != "active":
+                    continue
+
+                # Contact filtering
+                if "All" in contacts:
+                    results.append(result)
+                elif isinstance(sender_email, list):
+                    if any(email in contacts for email in sender_email):
+                        results.append(result)
+                elif sender_email and sender_email in contacts:
+                    results.append(result)
+
+            if not results:
+                print("No valid results after filtering")
+                return None
+
+            # Pick best match
+            best = min(results, key=lambda x: x.get("_distance", 999999))
+            best_distance = best.get("_distance", 1)
+
+            if best_distance > 0.8:
+                print("Weak match – rejecting")
+                return None
+
+            pages_by_level = best.get("pages_by_level")
+            main_content = best.get("content", "")
+
+            full_context = None
+            if pages_by_level and isinstance(pages_by_level, (list, dict)):
+                full_context = generate_level_context(pages_by_level)
+
+            if not full_context:
+                full_context = (
+                    main_content if isinstance(main_content, str) else str(main_content)
+                )
+
+            return {
+                "url": best.get("url"),
+                "title": best.get("title"),
+                "text": full_context,
+                "contacts": best.get("contacts"),
+                "score": best_distance,
+            }
+
+        except Exception as e:
+            print(f"Error searching scraped data by URL: {e}")
+            raise
+
     # -----------------SEARCH EMAIL-------------------------#
     def search_email(self, data: SearchEmailQueryData):
 
@@ -2296,8 +2384,6 @@ class LanceDBServer:
                     pa.field("images", pa.list_(pa.string())),
                     pa.field("files", pa.list_(pa.string())),
                     pa.field("embedding", pa.list_(pa.float32(), self.EMBEDDING_DIM)),
-
-
                 ]
             )
 
@@ -2310,15 +2396,13 @@ class LanceDBServer:
                     "timestamp": "init_row",
                     "images": [],
                     "files": [],
-                    "embedding": [0.0] * self.EMBEDDING_DIM, 
-
+                    "embedding": [0.0] * self.EMBEDDING_DIM,
                 }
             ]
 
             return self.db.create_table(
                 table_name, data=dummy, schema=schema, mode="create"
             )
-
 
     async def insert_chat(self, chat, user_id):
         print("in the insert chat")
@@ -2337,25 +2421,27 @@ class LanceDBServer:
         records = []
         for v in chat:
 
-            records.append({
-                "id": v.id,
-                "chat_id": v.chat_id,
-                "role": v.role,
-                "content": v.content,
-                "timestamp": v.timestamp,
-                "images": v.images or [],
-                "files": v.files or [],
-                "embedding": v.embedding,
-            })
+            records.append(
+                {
+                    "id": v.id,
+                    "chat_id": v.chat_id,
+                    "role": v.role,
+                    "content": v.content,
+                    "timestamp": v.timestamp,
+                    "images": v.images or [],
+                    "files": v.files or [],
+                    "embedding": v.embedding,
+                }
+            )
 
         # Add records in one shot
         table.add(records)
 
         return {"user_id": user_id, "chat_id": chat_id}
-    
 
-    def get_user_chats_by_timestamp(self, user_id: str, last_timestamp: str = None, limit: int = 30):
-        
+    def get_user_chats_by_timestamp(
+        self, user_id: str, last_timestamp: str = None, limit: int = 30
+    ):
         """
         Fetch chat rows for a user, ordered by timestamp.
         If last_timestamp is provided, fetch rows newer than that (cursor pagination).
@@ -2363,25 +2449,23 @@ class LanceDBServer:
         table = self._get_bytoid_pro_table(user_id)
 
         query = table.search()
-        
+
         if last_timestamp:
             # fetch only rows after the last timestamp
             query = query.where(f"timestamp > '{last_timestamp}'")
-        
+
         rows = query.limit(limit).to_list()
-        
+
         # sort oldest → newest
         rows.sort(key=lambda r: r.get("timestamp", ""))
         return rows
-
-        
 
     def get_chat_by_id(self, user_id: str, chat_id: str) -> List[Dict]:
         """
         Fetch all chat messages for a given user_id and chat_id from LanceDB.
         Returns a list of dictionaries with: id, chat_id, role, content, timestamp
         """
-       
+
         table = self._get_bytoid_pro_table(user_id)
 
         # Search all rows for the given chat_id
@@ -2389,17 +2473,17 @@ class LanceDBServer:
 
         return rows
 
-
     def find_semantic_matches(self, vector, user_id, chat_id, top_k: int = 5):
         try:
             print("inside find_semantic_matches")
             table = self._get_bytoid_pro_table(user_id)
 
             # 1️⃣ Create search object and filter by chat_id
-            search_obj = table.search(
-                vector,
-                vector_column_name="embedding"
-            ).metric("cosine").limit(top_k)
+            search_obj = (
+                table.search(vector, vector_column_name="embedding")
+                .metric("cosine")
+                .limit(top_k)
+            )
 
             if chat_id:
                 search_obj = search_obj.where(f"chat_id == '{chat_id}'")
@@ -2413,15 +2497,17 @@ class LanceDBServer:
             # 4️⃣ Extract relevant content
             matched_content = []
             for _, row in results_df.iterrows():
-                matched_content.append({
-                    "chat_id": row.get("chat_id"),
-                    "role": row.get("role"),
-                    "content": row.get("content"),
-                    "timestamp": row.get("timestamp"),
-                    "images": row.get("images"),
-                    "files": row.get("files"),
-                    "score": row.get("_distance"),  # cosine distance
-                })
+                matched_content.append(
+                    {
+                        "chat_id": row.get("chat_id"),
+                        "role": row.get("role"),
+                        "content": row.get("content"),
+                        "timestamp": row.get("timestamp"),
+                        "images": row.get("images"),
+                        "files": row.get("files"),
+                        "score": row.get("_distance"),  # cosine distance
+                    }
+                )
 
             print(f"matched_content : {matched_content}")
             return matched_content
@@ -2429,4 +2515,3 @@ class LanceDBServer:
         except Exception as e:
             print(f"Semantic search failed: {str(e)}")
             return []
-
