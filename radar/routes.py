@@ -155,7 +155,7 @@ async def retreval_from_sources(
                 # Step 3: add transcript suffix
                 fname = f"{name_without_ext}_transcript.json"
 
-                print("fname for checking", fname)
+                # print("fname for checking", fname)
 
                 results = await dbserver.rec_query_vector_foldername(
                     query=payload, foldername=fname
