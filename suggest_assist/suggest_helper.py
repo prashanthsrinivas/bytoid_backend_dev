@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import inspect
 import os
 import uuid
 from agent_route.lance_agent import LanceClient, QueryInput
@@ -190,7 +191,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
 
             # Call model to generate retrieval question
             base_query = await get_fireworks_response(
-                filled_prompt, "system", user_id=userid
+                user_message=filled_prompt, role="system", user_id=userid
             )
             print("basequery", type(base_query), base_query)
 

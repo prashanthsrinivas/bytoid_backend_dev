@@ -10,7 +10,9 @@ from agent_route.Drive_downloader import (
 from agent_route.ag_helperzz import deletefilebasedData, process_and_update_yaml
 from agent_route.lance_agent import LanceClient
 from agent_route.routes import agent_bps
+from credits_route.route import Credits
 from db.db_checkers import check_userid_valid
+from db.rds_db import connect_to_rds
 from flask import (
     Blueprint,
     request,
@@ -29,7 +31,6 @@ from werkzeug.utils import secure_filename
 import uuid
 
 
-
 logger = get_logger(__name__)
 
 docs_agent_bps = Blueprint("agent_docs", __name__)
@@ -37,23 +38,11 @@ docs_agent_bps = Blueprint("agent_docs", __name__)
 
 @docs_agent_bps.route("/process-drive", methods=["POST"])
 def download_files_stream():
-    # from db.lance_db_service import LanceDBServer
     data = request.json
+
     if not get_main_service():
-        return (
-            jsonify({"error": "Google Drive service not initialized."}),
-            500,
-        )
-    # service=LanceDBServer()
-    # if not service.check_lance_db_Connection():
-    #     yield "event: error\ndata: Problem with the server\n\n"
+        return jsonify({"error": "Google Drive service not initialized."}), 500
 
-    try:
-        ensure_dir("data")
-    except Exception as e:
-        return jsonify({"error": f"Failed to create download directory: {e}"}), 500
-
-    data = request.json
     if not data or "files" not in data or not isinstance(data["files"], list):
         return (
             jsonify(
@@ -63,134 +52,170 @@ def download_files_stream():
             ),
             400,
         )
-    if len(data["files"]) == 0:
-        return jsonify({"error": "No files Picked"}), 400
+
+    if not data["files"]:
+        return jsonify({"error": "No files picked"}), 400
+
     apikey = data.get("api_key")
-    id = data.get("user_id")
+    user_id = data.get("user_id")
     primary_provider = data.get("primary_provider")
-    print(f"primary_provider:{primary_provider}")
 
-    # userid = fetch_userid_from_launch(apikey)
-    if primary_provider:
-        access_token = get_token(id, value=True)
-        userid = id
-    else:
-        # fetch from integrations table
-        access_token, userid = get_integration_access_token(id, "google")
+    if not user_id:
+        return jsonify({"error": "Missing user_id"}), 400
 
-    # if user sigend in through google and selected file from google drive, userid = id
-    # if user sigend in through microsoft and selected file from google drive, then -
-    #  - userid is google userid,  id is microsoft user id. (id of the primary user is "id")
+    try:
+        ensure_dir("data")
+    except Exception as e:
+        return jsonify({"error": f"Failed to create download directory: {e}"}), 500
 
-    print("--------------------------")
-    print(f"userid:{userid}")
-    print(f"id:{id}")
-    print("--------------------------")
+    # --------------------------------------------------
+    # DB + Credits (shared for entire stream)
+    # --------------------------------------------------
+    db = connect_to_rds()
+    credits = Credits(db=db)
 
-    def event_stream():
-        yield "event: start\ndata: Starting processing...\n\n"
+    try:
+        # --------------------------------------------------
+        # Resolve access token + actual userid
+        # --------------------------------------------------
+        if primary_provider:
+            access_token = get_token(user_id, value=True, in_connection=db)
+            actual_userid = user_id
+        else:
+            access_token, actual_userid = get_integration_access_token(
+                user_id, "google"
+            )
 
-        # Step 1: Validate Drive service
-        if not get_main_service():
-            yield "event: error\ndata: Google Drive service not initialized.\n\n"
-            return
+        if not access_token:
+            db.close()
+            return jsonify({"error": "Unable to fetch access token"}), 401
 
-        user_service = GetEmailandDriveService(access_token)
-        if not user_service:
-            yield "event: error\ndata: Cannot access drive\n\n"
-            return
+        # --------------------------------------------------
+        # Streaming generator
+        # --------------------------------------------------
+        def event_stream():
+            try:
+                yield "event: start\ndata: Starting processing...\n\n"
 
-        # Step 2: Download files
-        all_downloaded_paths, is_downloaded = Mediatorservice(
-            data, userid, user_service
+                user_service = GetEmailandDriveService(access_token)
+                if not user_service:
+                    yield "event: error\ndata: Cannot access Google Drive\n\n"
+                    return
+
+                # -------------------------------
+                # Step 1: Download files
+                # -------------------------------
+                all_paths, is_downloaded = Mediatorservice(
+                    data, actual_userid, user_service
+                )
+
+                if not is_downloaded or not all_paths:
+                    yield "event: error\ndata: Failed to download files\n\n"
+                    return
+
+                for i, path in enumerate(all_paths, 1):
+                    yield (
+                        f"event: progress\ndata: Downloaded {i}/{len(all_paths)}: {path}\n\n"
+                    )
+
+                # -------------------------------
+                # Step 2: Process files (embeddings)
+                # Credits are deducted INSIDE
+                # -------------------------------
+                folderpath = os.path.commonpath(all_paths)
+
+                processed_data = asyncio.run(
+                    process_and_update_yaml(
+                        all_downloaded_paths=all_paths,
+                        userid=actual_userid,
+                        provider="google",
+                        folderpath=folderpath,
+                        db=db,
+                        credits=credits,  # 🔐 atomic credit usage inside
+                    )
+                )
+
+                # -------------------------------
+                # Commit only if everything succeeded
+                # -------------------------------
+                db.commit()
+
+                yield (
+                    f"event: complete\ndata: {json.dumps({'message': 'Successfully processed files', 'files': processed_data})}\n\n"
+                )
+
+            except Exception as e:
+                db.rollback()
+                yield f"event: error\ndata: {str(e)}\n\n"
+
+            finally:
+                db.close()
+
+        return Response(
+            stream_with_context(event_stream()),
+            mimetype="text/event-stream",
         )
-        if not is_downloaded:
-            yield "event: error\ndata: Problem with accessing files\n\n"
-            return
 
-        for i, path in enumerate(all_downloaded_paths, 1):
-            yield f"event: progress\ndata: Downloaded {i}/{len(all_downloaded_paths)}: {path}\n\n"
-
-        # Step 3: Process files (embedding, YAML update)
-        folderpath = os.path.commonpath(all_downloaded_paths)
-        all_file_data = None
-        try:
-            all_file_data = asyncio.run(
-                process_and_update_yaml(
-                    all_downloaded_paths=all_downloaded_paths,
-                    userid=id,
-                    provider="google",
-                    folderpath=folderpath,
-                )
-            )
-        except Exception as e:
-            print(f"error in download_files_stream:{e} ")
-
-        yield f"event: complete\ndata: {json.dumps({'message': 'Successfully processed files', 'files': all_file_data})}\n\n"
-
-    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
+    except Exception as e:
+        db.rollback()
+        db.close()
+        return jsonify({"error": str(e)}), 500
 
 
-@docs_agent_bps.route("/process-local", methods=["POST"])
-def process_local():
+# @docs_agent_bps.route("/process-local", methods=["POST"])
+# def process_local():
+
+#     # 🔹 Get file
+#     if "files" not in request.files:
+#         return jsonify({"error": "No file uploaded"}), 400
+
+#     file = request.files["files"]
+#     print(f"file name : {file.filename}")
+
+#     if file.filename == "":
+#         return jsonify({"error": "No file selected"}), 400
+
+#     # 🔹 Get form fields
+#     user_id = request.form.get("user_id")
+#     api_key = request.form.get("api_key")
+#     source = request.form.get("source")
+
+#     if not user_id or not api_key:
+#         return jsonify({"error": "Missing user_id or api_key"}), 400
+
+#     UPLOAD_FOLDER = f"uploads_{uuid.uuid4()}"
+#     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+#     # 🔹 Save file safely
+#     filename = secure_filename(file.filename)
+#     file_path = os.path.join(UPLOAD_FOLDER, filename)
+#     file.save(file_path)
 
 
-    # 🔹 Get file
-    if "files" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+#     def event_stream():
+#         yield "event: start\ndata: Starting processing...\n\n"
 
-    file = request.files["files"]
-    print(f"file name : {file.filename}")
+#         try:
+#             all_file_data = asyncio.run(
+#                 process_and_update_yaml(
+#                     all_downloaded_paths=[file_path],
+#                     userid=user_id,
+#                     provider="local",
+#                     folderpath=UPLOAD_FOLDER,
+#                     credits=credits
+#                 )
+#             )
 
-    if file.filename == "":
-        return jsonify({"error": "No file selected"}), 400
+#             yield (
+#                 "event: complete\n"
+#                 f"data: {json.dumps({'message': 'Successfully processed files', 'files': all_file_data})}\n\n"
+#             )
 
-    # 🔹 Get form fields
-    user_id = request.form.get("user_id")
-    api_key = request.form.get("api_key")
-    source = request.form.get("source")
+#         except Exception as e:
+#             yield ("event: error\n" f"data: {json.dumps({'error': str(e)})}\n\n")
 
-    if not user_id or not api_key:
-        return jsonify({"error": "Missing user_id or api_key"}), 400
+#     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
-    UPLOAD_FOLDER = f"uploads_{uuid.uuid4()}"
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-
-    # 🔹 Save file safely
-    filename = secure_filename(file.filename)
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-    file.save(file_path)
-
-    def event_stream():
-        yield "event: start\ndata: Starting processing...\n\n"
-
-        try:
-            all_file_data = asyncio.run(
-                process_and_update_yaml(
-                    all_downloaded_paths=[file_path],
-                    userid=user_id,          
-                    provider="local",
-                    folderpath=UPLOAD_FOLDER
-
-                )
-            )
-
-            yield (
-                "event: complete\n"
-                f"data: {json.dumps({'message': 'Successfully processed files', 'files': all_file_data})}\n\n"
-            )
-
-        except Exception as e:
-            yield (
-                "event: error\n"
-                f"data: {json.dumps({'error': str(e)})}\n\n"
-            )
-
-    return Response(
-        stream_with_context(event_stream()),
-        mimetype="text/event-stream"
-    )
 
 @docs_agent_bps.route("/get-usersDocs", methods=["Get"])
 def getUsersDocs():

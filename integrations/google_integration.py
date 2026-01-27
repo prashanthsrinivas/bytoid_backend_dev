@@ -10,42 +10,58 @@ import pymysql
 from google.auth.transport.requests import Request as g_request
 
 
-
 # --- Step 1: Redirect user to Google login ---
 def google_integration_login():
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
-        scopes=[
-                            "https://www.googleapis.com/auth/userinfo.profile",
-                            "https://www.googleapis.com/auth/userinfo.email",
-                            "https://www.googleapis.com/auth/gmail.readonly",
-                            "https://www.googleapis.com/auth/gmail.send",
-                            "https://www.googleapis.com/auth/gmail.modify",
-                            "https://www.googleapis.com/auth/gmail.compose",
-                            "https://www.googleapis.com/auth/drive.metadata.readonly",
-                            "https://www.googleapis.com/auth/drive",
-                            "https://www.googleapis.com/auth/calendar",
-                            "https://www.googleapis.com/auth/contacts",
-                            "openid",
-        ],
-        redirect_uri="https://dev.bytoid.ai/integration/google/callback"
+        # scopes=[
+        #                     "https://www.googleapis.com/auth/userinfo.profile",
+        #                     "https://www.googleapis.com/auth/userinfo.email",
+        #                     "https://www.googleapis.com/auth/gmail.readonly",
+        #                     "https://www.googleapis.com/auth/gmail.send",
+        #                     "https://www.googleapis.com/auth/gmail.modify",
+        #                     "https://www.googleapis.com/auth/gmail.compose",
+        #                     "https://www.googleapis.com/auth/drive.metadata.readonly",
+        #                     "https://www.googleapis.com/auth/drive",
+        #                     "https://www.googleapis.com/auth/calendar",
+        #                     "https://www.googleapis.com/auth/contacts",
+        #                     "openid",
+        # ],
+        scopes=(
+            # Identity
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/userinfo.email",
+            # Gmail – FULL access
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.compose",
+            # Drive – READ ONLY
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+            # Calendar – READ ONLY
+            "https://www.googleapis.com/auth/calendar",
+            # Contacts – READ ONLY
+            "https://www.googleapis.com/auth/contacts.readonly",
+        ),
+        redirect_uri="https://dev.bytoid.ai/integration/google/callback",
     )
-    
+
     auth_url, state = flow.authorization_url(
         access_type="offline",  # ensures refresh token is returned
-        prompt="consent"        # forces showing consent screen
+        prompt="consent",  # forces showing consent screen
     )
-    return jsonify({
-        "exists":False,
-        "auth_url": auth_url
-        })
+    return jsonify({"exists": False, "auth_url": auth_url})
 
 
 def refresh_google_token(user_id, db_connection):
 
-
     cursor = db_connection.cursor()
-    cursor.execute("SELECT access_token, refresh_token, client_id, client_secret FROM users WHERE user_id=%s", (user_id,))
+    cursor.execute(
+        "SELECT access_token, refresh_token, client_id, client_secret FROM users WHERE user_id=%s",
+        (user_id,),
+    )
     row = cursor.fetchone()
     if not row:
         return None
@@ -61,7 +77,7 @@ def refresh_google_token(user_id, db_connection):
             "https://www.googleapis.com/auth/userinfo.profile",
             "https://www.googleapis.com/auth/userinfo.email",
             "https://www.googleapis.com/auth/drive",
-        ]
+        ],
     )
 
     if creds.expired:
@@ -69,10 +85,10 @@ def refresh_google_token(user_id, db_connection):
         # Save refreshed token back to DB
         cursor.execute(
             "UPDATE users SET access_token=%s, expiry=%s WHERE user_id=%s",
-            (creds.token, creds.expiry.isoformat(), user_id)
+            (creds.token, creds.expiry.isoformat(), user_id),
         )
         db_connection.commit()
-    
+
     return creds.token
 
 
@@ -84,7 +100,7 @@ def get_integration_access_token(user_id, provider):
     """
 
     try:
-        print( "inside get_integration_access_token")
+        print("inside get_integration_access_token")
         connection = connect_to_rds()
         with connection.cursor() as cursor:
             query = """
@@ -101,7 +117,7 @@ def get_integration_access_token(user_id, provider):
 
             if row:
                 access_token, userid, refresh_token, expiry = row
-               
+
             else:
                 print("no row")
                 return None, None
@@ -134,20 +150,37 @@ def get_integration_access_token(user_id, provider):
                         token_uri="https://oauth2.googleapis.com/token",
                         client_id=client_id,
                         client_secret=client_secret,
-                        scopes=[
-                             "https://www.googleapis.com/auth/userinfo.profile",
+                        # scopes=[
+                        #     "https://www.googleapis.com/auth/userinfo.profile",
+                        #     "https://www.googleapis.com/auth/userinfo.email",
+                        #     "https://www.googleapis.com/auth/gmail.readonly",
+                        #     "https://www.googleapis.com/auth/gmail.send",
+                        #     "https://www.googleapis.com/auth/gmail.modify",
+                        #     "https://www.googleapis.com/auth/gmail.compose",
+                        #     "https://www.googleapis.com/auth/drive.metadata.readonly",
+                        #     "https://www.googleapis.com/auth/drive",
+                        #     "https://www.googleapis.com/auth/calendar",
+                        #     "https://www.googleapis.com/auth/contacts",
+                        #     "openid",
+                        # ],
+                        scopes=(
+                            # Identity
+                            "openid",
+                            "https://www.googleapis.com/auth/userinfo.profile",
                             "https://www.googleapis.com/auth/userinfo.email",
+                            # Gmail – FULL access
                             "https://www.googleapis.com/auth/gmail.readonly",
                             "https://www.googleapis.com/auth/gmail.send",
                             "https://www.googleapis.com/auth/gmail.modify",
                             "https://www.googleapis.com/auth/gmail.compose",
+                            # Drive – READ ONLY
+                            "https://www.googleapis.com/auth/drive.readonly",
                             "https://www.googleapis.com/auth/drive.metadata.readonly",
-                            "https://www.googleapis.com/auth/drive",
+                            # Calendar – READ ONLY
                             "https://www.googleapis.com/auth/calendar",
-                            "https://www.googleapis.com/auth/contacts",
-                            "openid",
-                            ],
-                    
+                            # Contacts – READ ONLY
+                            "https://www.googleapis.com/auth/contacts.readonly",
+                        ),
                     )
 
                     creds.refresh(g_request())
@@ -176,9 +209,8 @@ def get_integration_access_token(user_id, provider):
                 except Exception as e:
                     print(f"Token refresh failed: {e}")
                     return redirect("https://bytoid.ai/login")
-                
-            return access_token, userid
 
+            return access_token, userid
 
             # Return existing token if not refreshed
             # cursor.execute("SELECT access_token FROM integration WHERE user_id = %s", (userid,))

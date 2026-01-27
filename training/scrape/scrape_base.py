@@ -169,7 +169,8 @@ async def scrape_youtube_route():
         await credits.update_ai_credits_redis(
             credit_type="embedding",
             total_chars=total_chars,
-            user_id=user_id
+            user_id=user_id,
+            reference_id=inspect.stack()[0].function,
         )
 
         # ---------------------------------------------------
@@ -486,7 +487,8 @@ async def scrape_website_route():
         await credits.update_ai_credits_redis(
             credit_type="embedding",
             total_chars=total_chars,
-            user_id=user_id
+            user_id=user_id,
+            reference_id=inspect.stack()[0].function,
         )
 
         # -----------------------------------------
@@ -1569,7 +1571,8 @@ async def check_scrape_base():
     await credits.update_ai_credits_redis(
         credit_type="embedding",
         total_chars=total_chars,
-        user_id=userid
+        user_id=userid,
+        reference_id=inspect.stack()[0].function,
     )
 
     # -----------------------------------------

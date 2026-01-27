@@ -55,19 +55,37 @@ class GoogleMeetService:
             token_uri="https://oauth2.googleapis.com/token",
             client_id=client_id,
             client_secret=client_secret,
-            scopes=[
+            # scopes=[
+            #     "https://www.googleapis.com/auth/userinfo.profile",
+            #     "https://www.googleapis.com/auth/userinfo.email",
+            #     "https://www.googleapis.com/auth/gmail.readonly",
+            #     "https://www.googleapis.com/auth/gmail.send",
+            #     "https://www.googleapis.com/auth/gmail.modify",
+            #     "https://www.googleapis.com/auth/gmail.compose",
+            #     "https://www.googleapis.com/auth/drive.metadata.readonly",
+            #     "https://www.googleapis.com/auth/drive",
+            #     "https://www.googleapis.com/auth/calendar",
+            #     "openid",
+            #     "https://www.googleapis.com/auth/contacts",
+            # ],
+            scopes=(
+                # Identity
+                "openid",
                 "https://www.googleapis.com/auth/userinfo.profile",
                 "https://www.googleapis.com/auth/userinfo.email",
+                # Gmail – FULL access
                 "https://www.googleapis.com/auth/gmail.readonly",
                 "https://www.googleapis.com/auth/gmail.send",
                 "https://www.googleapis.com/auth/gmail.modify",
                 "https://www.googleapis.com/auth/gmail.compose",
+                # Drive – READ ONLY
+                "https://www.googleapis.com/auth/drive.readonly",
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
-                "https://www.googleapis.com/auth/drive",
+                # Calendar – READ ONLY
                 "https://www.googleapis.com/auth/calendar",
-                "openid",
-                "https://www.googleapis.com/auth/contacts",
-            ],
+                # Contacts – READ ONLY
+                "https://www.googleapis.com/auth/contacts.readonly",
+            ),
             expiry=expiryed,
         )
         if self.creds.expired and self.creds.refresh_token:

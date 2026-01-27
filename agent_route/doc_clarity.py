@@ -1,5 +1,6 @@
 import asyncio
 import json
+import inspect
 from agent_route.utils import extract_filename
 import yaml
 from utils.base_logger import get_logger
@@ -119,13 +120,16 @@ def generate_yaml_ques(usecase, prompts, industry, response_text):
     return {"UseCase": usecase, "questions": question_list}
 
 
-async def generate_yaml_ques_batch(usecases_with_docs, prompts, industry, userid):
+async def generate_yaml_ques_batch(
+    usecases_with_docs, prompts, industry, userid, credits
+):
     questions_json = await generate_usecases_questions_batch(
         prompts.get("usecase_prompt_template"),
         "gpt-3.5-turbo",
         industry,
         usecases_with_docs,
         userid=userid,
+        credits=credits,
     )
     # logger.info(f"[🔍] Generated questions for {questions_json} industry.")
 
@@ -143,30 +147,32 @@ async def generate_yaml_ques_batch(usecases_with_docs, prompts, industry, userid
 
 
 async def fetch_ques_with_docs(
-    usecases: list[str], userid: str, contacts: list[str]
+    usecases: list[str], userid: str, contacts: list[str], credits
 ) -> list[dict]:
     from agent_route.lance_agent import LanceClient
 
     try:
-        embeddings = await get_firework_embedding()
-        vectors = embeddings.embed_documents(usecases)
+        # credits = Credits()
 
         total_input_chars = sum(len(u) for u in usecases)
+
         # total_output_chars = 0
         # total_output_chars += sum(len(vec) for vec in vectors)
+        embeddings = await get_firework_embedding(userid=userid)
+        vectors = embeddings.embed_documents(usecases)
         total_output_chars = len(vectors)
         total_chars = total_input_chars + total_output_chars
 
-        credits = Credits()
         await credits.update_ai_credits_redis(
             user_id=userid,
             credit_type="embedding",
             total_chars=total_chars,
+            reference_id=inspect.stack()[0].function,
         )
     except Exception as e:
         print(f"error in fetch_ques_with_docs:{e} ")
 
-    res = LanceClient(user_id=userid)
+    res = LanceClient(user_id=userid, credits=credits)
 
     async def run_query(usecase: str, vec):
         query_input = QueryInput(
@@ -193,7 +199,7 @@ async def fetch_ques_with_docs(
 
 
 async def fetch_usecases_with_docs(
-    usecases: list[str], userid: str, filenames: list[str]
+    usecases: list[str], userid: str, filenames: list[str], credits
 ) -> list[dict]:
 
     total_input_chars = 0
@@ -207,11 +213,12 @@ async def fetch_usecases_with_docs(
 
     total_chars = total_input_chars + total_output_chars
 
-    credits = Credits()
+    # credits = Credits()
     await credits.update_ai_credits_redis(
         user_id=userid,
         credit_type="embedding",
         total_chars=total_chars,
+        reference_id=inspect.stack()[0].function,
     )
 
     batch_payload = BatchQueryData(
@@ -329,7 +336,9 @@ def append_to_failed_no_duplicates(failed_data, new_entries, passed_data):
     return failed_data
 
 
-async def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
+async def preProcessDocWithUsecases(
+    industry=None, userid=None, filenames=None, credits=None
+):
     if not filenames or not isinstance(filenames, list):
         logger.warning("⚠ No filenames passed for QA processing.")
         return None
@@ -369,11 +378,11 @@ async def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
 
     try:
         usecases_with_docs = await fetch_usecases_with_docs(
-            usecases, userid, filenames=filenames
+            usecases=usecases, userid=userid, filenames=filenames, credits=credits
         )
 
         all_entries = await generate_yaml_ques_batch(
-            usecases_with_docs, prompts, industry, userid=userid
+            usecases_with_docs, prompts, industry, userid=userid, credits=credits
         )
         logger.info(f"✅ Generated {len(all_entries)} question entries for {industry}.")
 
@@ -390,7 +399,9 @@ async def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
                     actual_to_quote[actual] = quote
 
         # Step 3: Get answers & evaluate
-        content = await fetch_ques_with_docs(all_ques, userid, filenames=filenames)
+        content = await fetch_ques_with_docs(
+            all_ques, userid, filenames=filenames, credits=credits
+        )
         batch_size = 10
 
         for i in range(0, len(content), batch_size):
@@ -400,6 +411,7 @@ async def preProcessDocWithUsecases(industry=None, userid=None, filenames=None):
                 batch,
                 industry,
                 userid=userid,
+                credits=credits
             )
 
             match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)

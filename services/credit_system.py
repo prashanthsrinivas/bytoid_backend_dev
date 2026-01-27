@@ -1,7 +1,11 @@
-import uuid, pymysql
+import asyncio
+import json
+import uuid
+import pymysql
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional
+from services.redis_service import RedisService
 
 # ---------------------------------------------------------
 # DATA MODELS
@@ -12,7 +16,7 @@ from typing import List, Dict, Optional
 class CreditBucket:
     bucket_id: str
     user_id: str
-    source_type: str  # SUBSCRIPTION | ROLLOVER | TOPUP | BONUS
+    source_type: str
     credits_total: int
     credits_used: int
     expires_at: datetime
@@ -28,18 +32,116 @@ class CreditUsageResult:
 # ---------------------------------------------------------
 # CREDIT MANAGER
 # ---------------------------------------------------------
+
+
 class CreditManager:
     """
-    DB = source of truth
-    Redis = live counters only
+    MySQL = Source of Truth
+    Redis = Fast cache (available credits only)
     """
 
-    def __init__(self, db_conn, redis_client=None):
+    REDIS_KEY = "user:credits:{}"
+    summary_key = "user:creditsSummary:{}"
+
+    def __init__(self, db_conn):
         self.db = db_conn
-        self.redis = redis_client
+        self.redis = RedisService()
 
     # -----------------------------------------------------
-    # ADD CREDITS (subscription / topup / rollover)
+    # REDIS HELPERS
+    # -----------------------------------------------------
+
+    def _redis_key(self, user_id: str) -> str:
+        return self.REDIS_KEY.format(user_id)
+
+    # -----------------------------------------------------
+    # SYNC DB → REDIS (AUTHORITATIVE)
+    # -----------------------------------------------------
+
+    async def sync_credits_to_redis(self, user_id: str) -> int:
+        cur = self.db.cursor(pymysql.cursors.DictCursor)
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(credits_total - credits_used), 0) AS total
+            FROM credit_buckets
+            WHERE user_id = %s
+              AND is_expired = 0
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+
+        total = int(row["total"] or 0)
+
+        if self.redis:
+            await self.redis.hset(
+                self._redis_key(user_id),
+                {
+                    "total_available": total,
+                    "last_synced_at": int(datetime.utcnow().timestamp()),
+                },
+            )
+
+            await self.redis.expire(self._redis_key(user_id), 3600)
+            await self._write_credit_summary_to_redis(user_id)
+
+        return total
+
+    # -----------------------------------------------------
+    # FAST READ (REDIS → DB FALLBACK)
+    # -----------------------------------------------------
+
+    async def get_available_credits(self, user_id: str) -> int:
+        if self.redis:
+            cached = await self.redis.hget(self._redis_key(user_id), "total_available")
+            if cached is not None:
+                print("cached data credits", cached)
+                return int(cached)
+
+        return await self.sync_credits_to_redis(user_id)
+
+    # -----------------------------------------------------
+    # PREFLIGHT CHECK
+    # -----------------------------------------------------
+
+    async def has_sufficient_credits(self, user_id: str, needed: int) -> bool:
+        return await self.get_available_credits(user_id) >= needed
+
+    async def _write_credit_summary_to_redis(self, user_id: str):
+        print("_write_credit_summary_to_redis")
+
+        summary = self.get_credit_summary(user_id)
+
+        if not self.redis:
+            return summary
+
+        redis_payload = {
+            "status": summary["status"],
+            "message": summary.get("message"),
+            "available_total": summary.get("available_total", 0),
+            "available_breakdown": json.dumps(summary.get("available_breakdown", [])),
+            "usage_breakdown": json.dumps(summary.get("usage_breakdown", [])),
+            "next_expiry": (
+                json.dumps(summary.get("next_expiry"))
+                if summary.get("next_expiry")
+                else None
+            ),
+            "last_updated_at": int(datetime.utcnow().timestamp()),
+        }
+
+        # Remove None values (Redis doesn't like them)
+        redis_payload = {k: v for k, v in redis_payload.items() if v is not None}
+
+        await self.redis.hset(
+            self.summary_key.format(user_id),
+            redis_payload,
+        )
+
+        return summary
+
+    # -----------------------------------------------------
+    # ADD CREDITS
     # -----------------------------------------------------
 
     def add_credits(
@@ -52,8 +154,8 @@ class CreditManager:
     ) -> str:
 
         bucket_id = str(uuid.uuid4())
-
         cur = self.db.cursor(pymysql.cursors.DictCursor)
+
         cur.execute(
             """
             INSERT INTO credit_buckets (
@@ -61,7 +163,7 @@ class CreditManager:
                 source_ref, credits_total, expires_at
             )
             VALUES (%s, %s, %s, %s, %s, %s)
-        """,
+            """,
             (
                 bucket_id,
                 user_id,
@@ -72,24 +174,26 @@ class CreditManager:
             ),
         )
 
-        # Ensure wallet exists
-        cur.execute(
-            """
-            INSERT IGNORE INTO credit_wallets (user_id)
-            VALUES (%s)
-        """,
-            (user_id,),
-        )
-
         self.db.commit()
         cur.close()
+
+        # Redis increment (non-authoritative)
+        if self.redis:
+            asyncio.run(
+                self.redis.hincrby(
+                    self._redis_key(user_id),
+                    "total_available",
+                    credits,
+                )
+            )
+
         return bucket_id
 
     # -----------------------------------------------------
-    # CONSUME CREDITS (AI execution)
+    # CONSUME CREDITS (TRANSACTION SAFE)
     # -----------------------------------------------------
 
-    def consume_credits(
+    async def consume_credits(
         self,
         user_id: str,
         credits_needed: int,
@@ -112,7 +216,7 @@ class CreditManager:
                   AND credits_used < credits_total
                 ORDER BY expires_at ASC
                 FOR UPDATE
-            """,
+                """,
                 (user_id,),
             )
 
@@ -130,7 +234,7 @@ class CreditManager:
                     UPDATE credit_buckets
                     SET credits_used = credits_used + %s
                     WHERE bucket_id = %s
-                """,
+                    """,
                     (consume, b["bucket_id"]),
                 )
 
@@ -141,7 +245,7 @@ class CreditManager:
                         credits_used, reason, reference_id
                     )
                     VALUES (%s, %s, %s, %s, %s, %s)
-                """,
+                    """,
                     (
                         str(uuid.uuid4()),
                         user_id,
@@ -166,27 +270,149 @@ class CreditManager:
             if remaining > 0:
                 raise Exception("INSUFFICIENT_CREDITS")
 
-            self.db.commit()
+            # self.db.commit()
 
-        except Exception:
-            self.db.rollback()
-            raise
+        # except Exception:
+        #     self.db.rollback()
+        #     raise
 
         finally:
             cur.close()
 
-        # Redis live tracking (non-authoritative)
-        if self.redis:
-            self.redis.hincrby(f"user_credits:{user_id}", "normal", credits_needed)
-
+        # # # Redis decrement AFTER COMMIT
+        # if self.redis:
+        #     await self.redis.hincrby(
+        #         self._redis_key(user_id),
+        #         "total_available",
+        #         -credits_needed,
+        #     )
+        # await self._write_credit_summary_to_redis(user_id)
         return CreditUsageResult(
             requested=credits_needed,
             consumed=credits_needed,
             breakdown=breakdown,
         )
 
+    def get_credit_summary(self, user_id: str) -> Dict:
+        cur = self.db.cursor(pymysql.cursors.DictCursor)
+
+        cur.execute(
+            """
+            SELECT
+                source_type,
+                source_ref,
+                credits_total,
+                credits_used,
+                expires_at,
+                is_expired,
+                created_at
+            FROM credit_buckets
+            WHERE user_id = %s
+            ORDER BY expires_at ASC
+            """,
+            (user_id,),
+        )
+
+        rows = cur.fetchall()
+        cur.close()
+
+        # --------------------------------------------------
+        # 1️⃣ No credit buckets at all
+        # --------------------------------------------------
+        if not rows:
+            return {
+                "user_id": user_id,
+                "status": "NO_CREDITS",
+                "message": "No credits found. Please purchase or subscribe.",
+                "available_total": 0,
+                "available_breakdown": [],
+                "usage_breakdown": [],
+                "next_expiry": None,
+            }
+
+        available_total = 0
+        available_breakdown = {}
+        usage_breakdown = {}
+        next_expiry = None
+        has_available = False
+
+        # --------------------------------------------------
+        # 2️⃣ Process buckets
+        # --------------------------------------------------
+        for r in rows:
+            remaining = r["credits_total"] - r["credits_used"]
+
+            # -------------------------
+            # Usage (ALWAYS count)
+            # -------------------------
+            usage_breakdown.setdefault(r["source_type"], {"total": 0, "used": 0})
+            usage_breakdown[r["source_type"]]["total"] += r["credits_total"]
+            usage_breakdown[r["source_type"]]["used"] += r["credits_used"]
+
+            # -------------------------
+            # Availability (ONLY usable)
+            # -------------------------
+            if r["is_expired"] or remaining <= 0:
+                continue
+
+            has_available = True
+            available_total += remaining
+
+            available_breakdown.setdefault(r["source_type"], {"remaining": 0})
+            available_breakdown[r["source_type"]]["remaining"] += remaining
+
+            # nearest expiry
+            if not next_expiry and r["expires_at"]:
+                next_expiry = {
+                    "source_type": r["source_type"],
+                    "source_ref": r["source_ref"],
+                    "total": r["credits_total"],
+                    "used": r["credits_used"],
+                    "remaining": remaining,
+                    "expires_at": r["expires_at"].isoformat(),
+                }
+
+        # --------------------------------------------------
+        # 3️⃣ No usable credits
+        # --------------------------------------------------
+        if not has_available:
+            status = "NO_ACTIVE_CREDITS"
+            message = "All credits are used or expired."
+        else:
+            status = "ACTIVE"
+            message = "Credits are active and available."
+
+        # --------------------------------------------------
+        # 4️⃣ Final response
+        # --------------------------------------------------
+        return {
+            "user_id": user_id,
+            "status": status,
+            "message": message,
+            # usable credits
+            "available_total": available_total,
+            "available_breakdown": [
+                {
+                    "source_type": k,
+                    "remaining": v["remaining"],
+                }
+                for k, v in available_breakdown.items()
+            ],
+            # usage visibility (this is what you were missing)
+            "usage_breakdown": [
+                {
+                    "source_type": k,
+                    "total": v["total"],
+                    "used": v["used"],
+                    "remaining": v["total"] - v["used"],
+                }
+                for k, v in usage_breakdown.items()
+            ],
+            "next_expiry": next_expiry,
+        }
+
     # -----------------------------------------------------
-    # CREDIT BALANCE (UI / API)
+    # CREDIT BALANCE (UI)
     # -----------------------------------------------------
 
     def get_credit_balance(self, user_id: str) -> Dict:
@@ -198,7 +424,7 @@ class CreditManager:
                 SUM(credits_total - credits_used) AS remaining
             FROM credit_buckets
             WHERE user_id = %s
-            AND is_expired = 0
+              AND is_expired = 0
             GROUP BY source_type
             """,
             (user_id,),
@@ -219,7 +445,6 @@ class CreditManager:
 
     def rollover_monthly_credits(self, user_id: str, next_month_end: datetime):
         cur = self.db.cursor(pymysql.cursors.DictCursor)
-
         cur.execute(
             """
             SELECT *
@@ -227,10 +452,9 @@ class CreditManager:
             WHERE user_id = %s
               AND source_type = 'SUBSCRIPTION'
               AND is_expired = 0
-        """,
+            """,
             (user_id,),
         )
-
         buckets = cur.fetchall()
         cur.close()
 
@@ -245,6 +469,10 @@ class CreditManager:
                     source_ref=b["bucket_id"],
                 )
 
+        # Redis rebuild (safe)
+        if self.redis:
+            self.redis.delete(self._redis_key(user_id))
+
     # -----------------------------------------------------
     # EXPIRY CRON
     # -----------------------------------------------------
@@ -257,7 +485,7 @@ class CreditManager:
             SET is_expired = 1
             WHERE expires_at < NOW()
               AND is_expired = 0
-        """
+            """
         )
-        self.db.commit()
+        # self.db.commit()
         cur.close()

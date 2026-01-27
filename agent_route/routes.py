@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from credits_route.route import Credits
 from dotenv import load_dotenv
 from flask import (
     Blueprint,
@@ -372,6 +373,7 @@ def checkquerywithApiKeyog():
             return jsonify({"error": "Query is required"}), 400
 
         connection = connect_to_rds()
+        credits = Credits(db=connection)
         with connection.cursor() as cursor:
             # Check if the API key exists for the user
             cursor.execute(
@@ -415,7 +417,7 @@ def checkquerywithApiKeyog():
         # If no exact match, perform vector search
         top_k = 1
         query_input = QueryInput(user_id=userid, query_text=querytext, top_k=top_k)
-        lance_client = LanceClient(user_id=userid)
+        lance_client = LanceClient(user_id=userid, credits=credits)
         results = run_async(lance_client.query_vector(query_input))
 
         for r in results:
@@ -430,13 +432,16 @@ def checkquerywithApiKeyog():
                     "full_text": clean_text,
                 }
             )
-        connection.close()
+        connection.commit()
 
         return jsonify(response_data), 200
 
     except Exception as e:
+        connection.rollback()
         # print("❌ Error during query processing:", e)
         return jsonify({"error": str(e)}), 400
+    finally:
+        connection.close()
 
 
 def get_website_url(api_key):
@@ -539,7 +544,9 @@ def parse_llm_response(response_text):
     raise ValueError(error_msg)
 
 
-async def generate_fallback_response(user_id, query, previous_query, previous_response):
+async def generate_fallback_response(
+    user_id, query, previous_query, previous_response, credits
+):
 
     fallback_response = ""
     is_repeated = False
@@ -576,7 +583,7 @@ async def generate_fallback_response(user_id, query, previous_query, previous_re
         )
 
         modified_yaml = await get_fireworks_response(
-            filled_prompt, "system", user_id=user_id
+            user_message=filled_prompt, role="system", user_id=user_id, credits=credits
         )
 
         try:
@@ -606,7 +613,7 @@ async def generate_fallback_response(user_id, query, previous_query, previous_re
 
 
 async def semantically_repeated_response(
-    user_id, query, previous_query, previous_response
+    user_id, query, previous_query, previous_response, credits
 ):
 
     fallback_response = ""
@@ -628,7 +635,7 @@ async def semantically_repeated_response(
     )
 
     modified_yaml = await get_fireworks_response(
-        filled_prompt, "system", user_id=user_id
+        user_message=filled_prompt, role="system", user_id=user_id, credits=credits
     )
 
     try:
@@ -667,6 +674,7 @@ async def checkquerywithApiKey():
             return jsonify({"error": "Query is required"}), 400
 
         connection = connect_to_rds()
+        credits = Credits(db=connection)
         with connection.cursor() as cursor:
             # Check if the API key exists for the user
             cursor.execute(
@@ -689,7 +697,7 @@ async def checkquerywithApiKey():
         try:
             # check for repitative user queries
             repeated_check_ans = await generate_fallback_response(
-                userid, querytext, previous_query, previous_response
+                userid, querytext, previous_query, previous_response, credits
             )
             repeated_fallback_response = repeated_check_ans["fallback_response"]
             is_repeated = repeated_check_ans["is_repeated"]
@@ -716,7 +724,10 @@ async def checkquerywithApiKey():
                 .replace("{{conversation_summary}}", str(conversation_summary))
             )
             modified_yaml = await get_fireworks_response(
-                filled_prompt, role="system", user_id=userid
+                user_message=filled_prompt,
+                role="system",
+                user_id=userid,
+                credits=credits,
             )
 
             try:
@@ -749,11 +760,12 @@ async def checkquerywithApiKey():
                         "conversation_summary": summary_generated,
                     }
                 )
+                connection.commit()
                 return jsonify(response_data), 200
 
             elif type == "repetition":
                 response = await semantically_repeated_response(
-                    userid, querytext, previous_query, previous_response
+                    userid, querytext, previous_query, previous_response, credits
                 )
                 response_data.append(
                     {
@@ -764,6 +776,7 @@ async def checkquerywithApiKey():
                         "conversation_summary": summary_generated,
                     }
                 )
+                connection.commit()
                 return jsonify(response_data), 200
 
             else:
@@ -792,11 +805,11 @@ async def checkquerywithApiKey():
                 # If no exact match, perform vector search
                 base_doc_ans = []
                 if validated_query:
-                    top_k = 3
+                    top_k = 10
                     query_input = QueryInput(
                         user_id=userid, query_text=validated_query, top_k=top_k
                     )
-                    lance_client = LanceClient(user_id=userid)
+                    lance_client = LanceClient(user_id=userid, credits=credits)
                     # results = run_async(lance_client.mixed_query_vector(query_input))
                     print("***** before calling query_vector")
                     results = await lance_client.query_vector(query_input)
@@ -837,7 +850,10 @@ async def checkquerywithApiKey():
                 )
 
                 modified_yaml = await get_fireworks_response(
-                    filled_prompt, "system", user_id=userid
+                    user_message=filled_prompt,
+                    role="system",
+                    user_id=userid,
+                    credits=credits,
                 )
 
                 try:
@@ -875,6 +891,7 @@ async def checkquerywithApiKey():
                             "conversation_summary": summary_generated,
                         }
                     )
+                    connection.commit()
                     return jsonify(response_data), 200
 
                 elif no_answer_found == "Partial":
@@ -903,7 +920,10 @@ async def checkquerywithApiKey():
                         .replace("{{previous_response}}", str(previous_response))
                     )
                     modified_yaml = await get_fireworks_response(
-                        filled_prompt, role="system", user_id=userid
+                        user_message=filled_prompt,
+                        role="system",
+                        user_id=userid,
+                        credits=credits,
                     )
 
                     try:
@@ -928,6 +948,7 @@ async def checkquerywithApiKey():
                             "conversation_summary": summary_generated,
                         }
                     )
+                    connection.commit()
                     return jsonify(response_data), 200
 
                 else:
@@ -941,7 +962,10 @@ async def checkquerywithApiKey():
                         .replace("{{previous_response}}", str(previous_response))
                     )
                     modified_yaml = await get_fireworks_response(
-                        filled_prompt, role="system", user_id=userid
+                        user_message=filled_prompt,
+                        role="system",
+                        user_id=userid,
+                        credits=credits,
                     )
 
                     try:
@@ -966,12 +990,14 @@ async def checkquerywithApiKey():
                             "conversation_summary": summary_generated,
                         }
                     )
+                    connection.commit()
                     return jsonify(response_data), 200
         except Exception as e:
             print(f"error in cehckquerywithApiKey:{e} ")
 
     except Exception as e:
         # print("❌ Error during query processing:", e)
+        connection.rollback()
         return jsonify({"error": str(e)}), 400
     finally:
         if connection:
@@ -1010,15 +1036,62 @@ def makeuserDocClarifications(userid=None, industry=None):
     If the YAML files don't exist, triggers background QA generation.
     """
     data = request.json
+    db = connect_to_rds()
     fetched_userid = data.get("userid") or userid
     # print("fetched_userid", fetched_userid)
+    try:
 
-    if not check_userid_valid(fetched_userid):
-        return jsonify({"error": "Invalid access"}), 404
+        if not check_userid_valid(fetched_userid, db):
+            return jsonify({"error": "Invalid access"}), 404
 
-    if fetched_userid:
-        task_run = task_status.get(fetched_userid, {}).get("status", "not started")
-        if task_run == "running":
+        if fetched_userid:
+            task_run = task_status.get(fetched_userid, {}).get("status", "not started")
+            if task_run == "running":
+                return (
+                    jsonify(
+                        {"message": "Currently generating clarifications for the user."}
+                    ),
+                    400,
+                )
+
+        if not fetched_userid:
+            return jsonify({"error": "User ID is required"}), 400
+
+        # Load failed questions YAML
+        failed_path = f"{fetched_userid}/yaml/failed_ques.yaml"
+        failed_entries = load_yaml_from_s3(failed_path) or []
+        credits = Credits(db)
+
+        if not failed_entries:
+            logger.info("⚠ failed_ques.yaml not found or empty, regenerating QAs...")
+            fetched_industry = get_line_of_business(fetched_userid, db)
+            if not fetched_industry:
+                return jsonify({"error": "No line of business present"}), 401
+
+            present_files = getFilenameData(fetched_userid)
+
+            if not present_files:
+                return (
+                    jsonify(
+                        {"error": "Please upload a document to have clarifications"}
+                    ),
+                    404,
+                )
+
+            def pre_process_wrapper(**kwargs):
+                import asyncio
+
+                return asyncio.run(preProcessDocWithUsecases(**kwargs))
+
+            # Trigger background QA generation
+            result = run_background_task(
+                userid=fetched_userid,
+                industry=fetched_industry,
+                filenames=present_files,
+                credits=credits,
+                func=pre_process_wrapper,
+            )
+            print(f"[DEBUG] Background task queued: {result}")
             return (
                 jsonify(
                     {"message": "Currently generating clarifications for the user."}
@@ -1026,64 +1099,29 @@ def makeuserDocClarifications(userid=None, industry=None):
                 400,
             )
 
-    if not fetched_userid:
-        return jsonify({"error": "User ID is required"}), 400
+        # Flatten nested lists if needed
+        if isinstance(failed_entries[0], list):
+            failed_entries = [item for sublist in failed_entries for item in sublist]
 
-    # Load failed questions YAML
-    failed_path = f"{fetched_userid}/yaml/failed_ques.yaml"
-    failed_entries = load_yaml_from_s3(failed_path) or []
+        # Build clarifications
+        clarifications = []
+        for entry in failed_entries:
+            if isinstance(entry, dict):
+                clarification = {
+                    "usecase": entry.get("Rephrased Question", "").strip(),
+                    "response": entry.get("Ai Response"),
+                    "quote": entry.get("quote", "").strip(),
+                }
+                clarifications.append(clarification)
 
-    if not failed_entries:
-        logger.info("⚠ failed_ques.yaml not found or empty, regenerating QAs...")
-        fetched_industry = get_line_of_business(fetched_userid)
-        if not fetched_industry:
-            return jsonify({"error": "No line of business present"}), 401
+        if not clarifications:
+            return "No clarifications required"
 
-        present_files = getFilenameData(fetched_userid)
-
-        if not present_files:
-            return (
-                jsonify({"error": "Please upload a document to have clarifications"}),
-                404,
-            )
-
-        def pre_process_wrapper(**kwargs):
-            import asyncio
-
-            return asyncio.run(preProcessDocWithUsecases(**kwargs))
-
-        # Trigger background QA generation
-        result = run_background_task(
-            userid=fetched_userid,
-            industry=fetched_industry,
-            filenames=present_files,
-            func=pre_process_wrapper,
-        )
-        print(f"[DEBUG] Background task queued: {result}")
-        return (
-            jsonify({"message": "Currently generating clarifications for the user."}),
-            400,
-        )
-
-    # Flatten nested lists if needed
-    if isinstance(failed_entries[0], list):
-        failed_entries = [item for sublist in failed_entries for item in sublist]
-
-    # Build clarifications
-    clarifications = []
-    for entry in failed_entries:
-        if isinstance(entry, dict):
-            clarification = {
-                "usecase": entry.get("Rephrased Question", "").strip(),
-                "response": entry.get("Ai Response"),
-                "quote": entry.get("quote", "").strip(),
-            }
-            clarifications.append(clarification)
-
-    if not clarifications:
-        return "No clarifications required"
-
-    return jsonify(clarifications)
+        return jsonify(clarifications)
+    except Exception as e:
+        db.rollback()
+    finally:
+        db.close()
 
 
 @agent_bps.route("/clarification_update", methods=["POST"])
@@ -1116,7 +1154,8 @@ async def updateClarifications(userid=None, industry=None):
         entry.get("Rephrased Question", "").strip(): entry.get("User", "").strip()
         for entry in failed_entries
     }
-    token = current_user_id.set(fetched_userid)
+    db = connect_to_rds()
+    credits = Credits(db)
     try:
         for query in fetched_queries:
             rephrased = query.get("usecase", "").strip()
@@ -1131,6 +1170,7 @@ async def updateClarifications(userid=None, industry=None):
                 usecase,
                 reply,
                 industry,
+                credits=credits,
                 userid=fetched_userid,
             )
 
@@ -1220,65 +1260,72 @@ async def updateClarifications(userid=None, industry=None):
                             "filename": filename,
                         }
                     )
-    finally:
-        current_user_id.reset(token)
 
-    # ✅ Save YAML files
-    # with open(passed_path, "w", encoding="utf-8") as pf:
-    #     yaml.dump(passed_entries, pf, allow_unicode=True, sort_keys=False)
+        # ✅ Save YAML files
+        # with open(passed_path, "w", encoding="utf-8") as pf:
+        #     yaml.dump(passed_entries, pf, allow_unicode=True, sort_keys=False)
 
-    # with open(failed_path, "w", encoding="utf-8") as ff:
-    #     yaml.dump(failed_entries, ff, allow_unicode=True, sort_keys=False)
-    if passed_entries:
-        save_yaml_to_s3(passed_entries, userid, "passed_ques.yaml")
-    if failed_entries:
-        save_yaml_to_s3(failed_entries, userid, "failed_ques.yaml")
+        # with open(failed_path, "w", encoding="utf-8") as ff:
+        #     yaml.dump(failed_entries, ff, allow_unicode=True, sort_keys=False)
+        if passed_entries:
+            save_yaml_to_s3(passed_entries, userid, "passed_ques.yaml")
+        if failed_entries:
+            save_yaml_to_s3(failed_entries, userid, "failed_ques.yaml")
 
-    if len(failed_entries) > 0:
-        clarifications = []
+        if len(failed_entries) > 0:
+            clarifications = []
 
-        for entry in failed_entries:
-            usecase = entry.get("User")
+            for entry in failed_entries:
+                usecase = entry.get("User")
 
-            # Find matching reply in fetched_queries by usecase
-            matching_query = next(
-                (
-                    q
-                    for q in fetched_queries
-                    if q.get("usecase", "").strip() == usecase.strip()
+                # Find matching reply in fetched_queries by usecase
+                matching_query = next(
+                    (
+                        q
+                        for q in fetched_queries
+                        if q.get("usecase", "").strip() == usecase.strip()
+                    ),
+                    None,
+                )
+
+                clarification = {
+                    "usecase": entry.get("Rephrased Question", "").strip(),
+                    "response": (
+                        matching_query.get("reply", "").strip()
+                        if matching_query
+                        else ""
+                    ),
+                    "quote": entry.get("quote", "").strip() if "quote" in entry else "",
+                }
+
+                clarifications.append(clarification)
+            db.commit()
+
+            return (
+                jsonify(
+                    {
+                        "clarifications": clarifications,
+                        "message": "Clarifications partially updated",
+                    }
                 ),
-                None,
+                207,
             )
-
-            clarification = {
-                "usecase": entry.get("Rephrased Question", "").strip(),
-                "response": (
-                    matching_query.get("reply", "").strip() if matching_query else ""
-                ),
-                "quote": entry.get("quote", "").strip() if "quote" in entry else "",
-            }
-
-            clarifications.append(clarification)
+        db.commit()
 
         return (
             jsonify(
                 {
-                    "clarifications": clarifications,
-                    "message": "Clarifications partially updated",
+                    "clarifications": [],
+                    "message": "All clarifications updated successfully",
                 }
             ),
-            207,
+            200,
         )
-
-    return (
-        jsonify(
-            {
-                "clarifications": [],
-                "message": "All clarifications updated successfully",
-            }
-        ),
-        200,
-    )
+    except Exception as e:
+        db.rollback()
+        print("error in update clarification", e)
+    finally:
+        db.close()
 
 
 # --- Main endpoint (updated) ---
@@ -1286,6 +1333,8 @@ async def updateClarifications(userid=None, industry=None):
 async def get_ai_suggestion():
     try:
         data = request.json
+        db = connect_to_rds()
+        credits = Credits(db)
         if not data or "usecase" not in data or "url" not in data:
             return jsonify({"error": "usecase and url are required"}), 400
 
@@ -1297,7 +1346,7 @@ async def get_ai_suggestion():
         userid = data.get("userid")
         if not userid:
             return jsonify({"error": "User ID is required"}), 400
-        if not check_userid_valid(userid):
+        if not check_userid_valid(userid, db):
             return jsonify({"error": "Invalid access"}), 404
 
         # --- Load business context ---
@@ -1307,36 +1356,7 @@ async def get_ai_suggestion():
             return jsonify({"error": "Prompt template not found"}), 500
 
         # --- Get user's business type ---
-        fetched_industry = get_line_of_business(userid)
-
-        # # --- Scrape the website ---
-        # scraper = WebScrapingLanceClient(user_id=userid)
-        # scraped_data = scraper.scrape_website(
-        #     url=website_url, use_selenium=True, max_depth=1
-        # )
-        # if not scraped_data:
-        #     return jsonify({"error": "Scraping failed"}), 500
-
-        # # --- Save scraped data as JSON ---
-        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # json_filename = f"scrape_{timestamp}.json"
-        # json_path = os.path.join(
-        #     "/home/ec2-user/bytoid/exe2/data/scrape_results", json_filename
-        # )
-        # # Convert to the expected format for saving
-        # scraped_data_for_json = {
-        #     "url": scraped_data["url"],
-        #     "title": scraped_data["title"],
-        #     "results": [{"text": scraped_data["content"]}],  # Match expected format
-        #     "metadata": scraped_data["metadata"],
-        # }
-        # with open(json_path, "w", encoding="utf-8") as f:
-        #     json.dump(scraped_data_for_json, f, ensure_ascii=False, indent=2)
-
-        # # --- Prepare context from scraped JSON ---
-        # context_text = scraped_data.get(
-        #     "content", ""
-        # )  # Use content directly from enhanced scraper
+        fetched_industry = get_line_of_business(userid, db)
 
         # --- Create final AI prompt ---
         full_prompt = QA_assist_prompt_template.format(
@@ -1348,17 +1368,21 @@ async def get_ai_suggestion():
         # --- Get AI response ---
         try:
             ai_suggestion = await get_fireworks_response(
-                full_prompt, role="user", user_id=userid
+                user_message=full_prompt, role="user", user_id=userid, credits=credits
             )
         except Exception as e:
             print(f"error in get_ai_suggestion:{e} ")
 
         # return jsonify({"suggestion": ai_suggestion, "scraped_file": json_path}), 200
+        db.commit()
         return jsonify({"suggestion": ai_suggestion}), 200
 
     except Exception as e:
         # print("❌ Error during AI suggestion processing:", e)
+        db.rollback()
         return jsonify({"error": "Internal server error"}), 500
+    finally:
+        db.close()
 
 
 @agent_bps.route("/create-ticket", methods=["POST"])
@@ -1375,264 +1399,6 @@ def create_sub_ticket():
             return {"message": "created ticket successfully"}, 200
     except Exception as e:
         return jsonify({"error": f"Internal server error {e}"}), 500
-
-
-# @agent_bps.route("/process_audio", methods=["POST"])
-# async def process_audio():
-#     # print("request data", request.form, request.files)
-#     api_key = request.form.get("api_key")
-#     if not api_key:
-#         return jsonify({"error": "API key is required"}), 400
-#     userid, agentid = get_user_agent_id(api_key)
-#     if not userid:
-#         return jsonify({"error": "User ID is required"}), 400
-#     if not check_userid_valid(userid):
-#         return jsonify({"error": "Invalid access"}), 404
-
-#     if "audio_file" not in request.files:
-#         return jsonify({"error": "Audio file is required"}), 400
-
-#     audio_file = request.files["audio_file"]
-#     filename = secure_filename(audio_file.filename)
-#     local_audio_path = os.path.join("/tmp", filename)
-#     audio_file.save(local_audio_path)
-#     duration_from_frontend = request.form.get("duration_seconds")
-#     transcript_local_path = None
-#     config_local_path = None
-
-#     try:
-#         # 🔹 Load or create per-user config
-#         config_present = False
-#         config_Exists = fetch_document_link(agentid)
-#         if config_Exists is None:
-#             logger.info(
-#                 f"Creating new audio config for user {userid} as no existing config found"
-#             )
-#             config_filename = f"{uuid.uuid4().hex[:8]}.json"
-#             config = {"user_id": userid, "recordings": []}
-#             trans_filename = config_filename
-#         else:
-#             # unwrap tuple if needed
-#             if isinstance(config_Exists, (tuple, list)):
-#                 config_filename = config_Exists[0]
-#             else:
-#                 config_filename = config_Exists
-
-#             logger.info(
-#                 f"Loading existing audio config for user {userid}: {config_filename}"
-#             )
-#             config = read_json_from_s3(config_filename)
-#             if not config:
-#                 config = {"user_id": userid, "recordings": []}  ## o
-#             trans_filename = extract_filename(config_filename)
-#             config_present = True
-#         # 🔹 Upload original audio file to S3
-#         audio_s3_path = upload_any_file(
-#             local_audio_path, user_id=userid, file_name=filename, type="audio"
-#         )
-
-#         # 🔹 Run Speech-to-Text
-#         main_process = Speech2TextService(userid=userid)
-#         transcript_text = await main_process.transcribe_audio(local_audio_path)
-
-#         if not transcript_text:
-#             return jsonify({"error": "Failed to transcribe audio"}), 500
-
-#         prompts = load_yaml_file(path=pathconfig.agent_template)
-#         clean_transcription_prompt = prompts.get("clean_transcription_prompt")
-#         val = evaluate_transcript(clean_transcription_prompt, transcript_text)
-#         if not val:
-#             return jsonify({"error": "Failed to evaluate transcript"}), 500
-
-#         # 🔹 Build transcript metadata
-#         now = datetime.utcnow().isoformat(timespec="seconds")
-#         transcript_data = {
-#             "id": str(uuid.uuid4().hex[:8]),
-#             "filename": filename,
-#             "date": now,
-#             "text": val["clean_text"],
-#             "summary": val["summary"],
-#         }
-
-#         # 🔹 Save transcript to JSON
-#         transcript_filename = f"{os.path.splitext(filename)[0]}_transcript.json"
-#         transcript_local_path = os.path.join("/tmp", transcript_filename)
-#         with open(transcript_local_path, "w", encoding="utf-8") as f:
-#             json.dump(transcript_data, f, ensure_ascii=False, indent=2)
-
-#         ser = TrainLanceAgent(user_id=userid)
-#         await ser.embed_single_audio_json(
-#             file_path=transcript_local_path, filename=transcript_filename
-#         )
-#         # 🔹 Upload transcript file to S3
-#         transcript_s3_path = upload_any_file(
-#             transcript_local_path,
-#             user_id=userid,
-#             file_name=transcript_filename,
-#             type="audio",
-#         )
-
-#         if val["clarifications"]:
-#             clarific_transcriptions(
-#                 userid, val, filename, trans_filename, transcript_data["id"]
-#             )
-
-#         # 🔹 Add new recording entry
-#         config["recordings"].append(
-#             {
-#                 "id": transcript_data["id"],
-#                 "title": transcript_data["filename"],
-#                 "date": transcript_data["date"],
-#                 "preview": " ".join(transcript_text.split()[:20]),
-#                 "audio_location": audio_s3_path["s3_key"],
-#                 "transcript_location": transcript_s3_path["s3_key"],
-#                 "summary": val["summary"],
-#                 "clarifications": len(val["clarifications"]),
-#                 "duration": duration_from_frontend or "unknown",
-#             }
-#         )
-
-#         # 🔹 Save updated config
-#         config_local_path = os.path.join("/tmp", trans_filename)
-#         with open(config_local_path, "w", encoding="utf-8") as f:
-#             json.dump(config, f, ensure_ascii=False, indent=2)
-#         new_configpath = upload_any_file(
-#             config_local_path, user_id=userid, file_name=trans_filename, type="audio"
-#         )
-#         if not config_present:
-#             logger.info(
-#                 f"New audio config created for user {userid}: {new_configpath['s3_key']}"
-#             )
-#             update_agent_document_link(new_configpath["s3_key"], agentid)
-
-#         return (
-#             jsonify(
-#                 {
-#                     "message": "Transcription successful",
-#                     "audio_file": audio_s3_path,
-#                     "transcript_file": transcript_s3_path,
-#                     "config_updated": True,
-#                 }
-#             ),
-#             200,
-#         )
-
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
-
-#     finally:
-#         # 🔹 Clean up local temp files
-#         for f in [local_audio_path, transcript_local_path, config_local_path]:
-#             if f and os.path.exists(f):
-#                 try:
-#                     os.remove(f)
-#                 except Exception as cleanup_err:
-#                     print(f"Failed to delete temp file {f}: {cleanup_err}")
-
-
-# @agent_bps.route("/update-transcript", methods=["POST"])
-# async def update_transcript():
-#     data = request.json or {}
-
-#     api_key = data.get("api_key")
-#     if not api_key:
-#         return jsonify({"error": "API key is required"}), 400
-#     userid, agentid = get_user_agent_id(api_key)
-#     if not userid:
-#         return jsonify({"error": "User ID is required"}), 400
-
-#     if not check_userid_valid(userid):
-#         return jsonify({"error": "Invalid access"}), 404
-
-#     filename = data.get("filename")  # title or file reference
-#     transcript_data = data.get("transcript_data")
-
-#     if not filename:
-#         return jsonify({"error": "Filename is required"}), 400
-#     if not transcript_data:
-#         return jsonify({"error": "Transcript data is required"}), 400
-
-#     try:
-#         # Load user config JSON
-#         config_filename = fetch_document_link(agentid)
-#         if not config_filename:
-#             return jsonify({"error": "No audio config found for this user"}), 404
-
-#         config = read_json_from_s3(config_filename)
-#         if not config:
-#             return jsonify({"error": "User config file could not be read"}), 404
-
-#         update_loc = None
-#         for rec in config.get("recordings", []):
-#             if rec.get("title") == filename:
-#                 update_loc = rec.get("transcript_location")
-#                 rec["updated_date"] = datetime.utcnow().isoformat(timespec="seconds")
-#                 break
-
-#         if not update_loc:
-#             return jsonify({"error": "Transcript not found in user config"}), 404
-
-#         # Load existing transcript
-#         transcript_maindata = read_json_from_s3(update_loc)
-#         if not transcript_maindata:
-#             return jsonify({"error": "Transcript data not found"}), 404
-
-#         # Update transcript text
-#         transcript_maindata["text"] = transcript_data
-
-#         # Save updated transcript locally
-#         local_transcript_path = "/tmp/temp_transcript.json"
-#         with open(local_transcript_path, "w", encoding="utf-8") as f:
-#             json.dump(transcript_maindata, f, ensure_ascii=False, indent=2)
-
-#         ser = TrainLanceAgent(user_id=userid)
-#         await ser.embed_single_audio_json(
-#             file_path=local_transcript_path, filename=filename
-#         )
-
-#         # Upload updated transcript
-#         upload_any_file(
-#             local_transcript_path,
-#             user_id=userid,
-#             file_name=extract_transcript_filename(update_loc),
-#             type="audio",
-#         )
-
-#         # Save updated config locally
-#         local_config_path = "/tmp/temp_config.json"
-#         with open(local_config_path, "w", encoding="utf-8") as f:
-#             json.dump(config, f, ensure_ascii=False, indent=2)
-
-#         # Upload updated config
-#         upload_any_file(
-#             local_config_path,
-#             user_id=userid,
-#             file_name=config_filename,
-#             type="audio",
-#         )
-
-#         # Cleanup
-#         os.remove(local_config_path)
-#         os.remove(local_transcript_path)
-
-#         return (
-#             jsonify(
-#                 {
-#                     "message": "Transcript updated successfully",
-#                     "changed_filename": filename,
-#                     "config_updated": True,
-#                 }
-#             ),
-#             200,
-#         )
-
-#     except FileNotFoundError:
-#         return jsonify({"error": "Transcript file not found"}), 404
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
-
-
-# Add the main YouTube scraping endpoint
 
 
 @agent_bps.route("/get-clarifications", methods=["GET"])

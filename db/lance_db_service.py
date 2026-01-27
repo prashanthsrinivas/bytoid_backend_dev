@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 import numpy as np
 import pyarrow as pa
+import pandas as pd
 import json, random, asyncio, time
 from datetime import datetime, timedelta, timezone
 from db.rds_db import connect_to_rds
@@ -79,6 +80,17 @@ class SearchEmailQueryData(BaseModel):
     embeddings: List[float]
     folder_names: Optional[List[str]] = None
     semantic_condition: Optional[str] = None
+
+
+class Bytoid_pro(BaseModel):
+    id: str
+    chat_id: str
+    role: str
+    content: str
+    timestamp: str
+    images: Optional[List[str]] = []
+    files: Optional[List[str]] = []
+    embedding: List[float]
 
 
 MetricsClientType = Any  # e.g., datadog client with increment/timing/gauge methods
@@ -567,6 +579,83 @@ class LanceDBServer:
                     logger.debug("error_hook raised an exception")
             raise
 
+    @retry_async(attempts=3, initial_delay=0.2, factor=2.0, max_delay=4.0, jitter=0.1)
+    async def query_vector_filename(
+        self, query: "QueryData", filename: str
+    ) -> List[Dict[str, Any]]:
+
+        if isinstance(query, dict):
+            query = QueryData(**query)
+
+        start = time.time()
+
+        try:
+            if len(query.embedding) > self.EMBEDDING_DIM:
+                raise ValueError(
+                    f"Query embedding must be {self.EMBEDDING_DIM} floats long"
+                )
+
+            table = await self._open_or_create_table(query.user_id)
+            query_embedding = np.array(query.embedding, dtype=np.float32)
+
+            def _search():
+                return (
+                    table.search(query_embedding, vector_column_name="embedding")
+                    .where(f'foldername == "{filename}"')  # 🔥 filter by file
+                    .limit(query.top_k)
+                    .to_list()
+                )
+
+            results = await asyncio.to_thread(_search)
+
+            latency = time.time() - start
+            logger.debug(
+                "query_vector_filename user=%s filename=%s top_k=%d results=%d latency=%.3fs",
+                query.user_id,
+                filename,
+                query.top_k,
+                len(results),
+                latency,
+            )
+
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.query.success")
+                    self.metrics.timing("lancedb.query.latency", latency)
+                except Exception:
+                    logger.debug("metrics client call failed on query_vector")
+
+            return results
+
+        except Exception as e:
+            logger.exception(
+                "query_vector_filename failed user=%s filename=%s: %s",
+                getattr(query, "user_id", None),
+                filename,
+                e,
+            )
+
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.query.failure")
+                except Exception:
+                    logger.debug("metrics client increment failed on query failure")
+
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e,
+                        {
+                            "action": "query_vector_filename",
+                            "user_id": getattr(query, "user_id", None),
+                            "filename": filename,
+                        },
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+
+            raise
+
     async def query_vector_batch(
         self, query: "BatchQueryData"
     ) -> List[List[Dict[str, Any]]]:
@@ -738,13 +827,11 @@ class LanceDBServer:
         Returns number of rows deleted.
         """
         try:
-            table = await asyncio.to_thread(lambda: self._get_table(user_id))
+            table = await self._open_or_create_table(user_id)
             logger.info(f"Deleting folder '{foldername}' for user '{user_id}'")
 
-            deleted_count = await asyncio.to_thread(
-                lambda: table.delete(f"foldername == '{foldername}'")
-            )
-            # await asyncio.to_thread(lambda: table.optimize())
+            result = table.delete(f"foldername == '{foldername}'")
+            deleted_count = result
 
             logger.info(f"Deleted {deleted_count} rows from folder '{foldername}'")
             return deleted_count
@@ -1067,15 +1154,14 @@ class LanceDBServer:
         start_date = end_date - timedelta(days=5)
 
         print(
-        f"params -> "
-        f"start_date={start_date}, "
-        f"end_date={end_date}, "
-        f"user_id={user_id}, "
-        f"cursor={end_date}, "
-        f"user_id_again={user_id}, "
-        f"page_size={page_size}"
-    )
-
+            f"params -> "
+            f"start_date={start_date}, "
+            f"end_date={end_date}, "
+            f"user_id={user_id}, "
+            f"cursor={end_date}, "
+            f"user_id_again={user_id}, "
+            f"page_size={page_size}"
+        )
 
         # query = """
         # SELECT m.conversation_id_fk, m.sender_id, m.created_at
@@ -1087,7 +1173,7 @@ class LanceDBServer:
         #     JOIN communication c
         #     ON m2.sender_id = c.users_clients_id_fk
         #     WHERE m2.created_at >= %s
-        #     AND m2.created_at < %s            
+        #     AND m2.created_at < %s
         #     AND c.user_id_fk = %s
         #     GROUP BY m2.sender_id
         # ) latest
@@ -1100,7 +1186,6 @@ class LanceDBServer:
         # ORDER BY m.created_at DESC
         # LIMIT %s;
         # """
-
 
         query = """
         SELECT m.conversation_id_fk, m.sender_id, m.created_at
@@ -1866,6 +1951,83 @@ class LanceDBServer:
             raise
 
     @retry_async(attempts=3, initial_delay=0.2, factor=2.0, max_delay=4.0, jitter=0.1)
+    async def rec_query_vector_foldername(
+        self, query: "QueryData", foldername: str
+    ) -> List[Dict[str, Any]]:
+
+        if isinstance(query, dict):
+            query = QueryData(**query)
+
+        start = time.time()
+
+        try:
+            if len(query.embedding) > self.EMBEDDING_DIM:
+                raise ValueError(
+                    f"Query embedding must be {self.EMBEDDING_DIM} floats long"
+                )
+
+            table = await self._open_recording_create(query.user_id)
+            query_embedding = np.array(query.embedding, dtype=np.float32)
+
+            def _search():
+                return (
+                    table.search(query_embedding, vector_column_name="embedding")
+                    .where(f'foldername == "{foldername}"')  # 🔥 filter by recording
+                    .limit(query.top_k)
+                    .to_list()
+                )
+
+            results = await asyncio.to_thread(_search)
+
+            latency = time.time() - start
+            logger.debug(
+                "rec_query_vector_foldername user=%s folder=%s top_k=%d results=%d latency=%.3fs",
+                query.user_id,
+                foldername,
+                query.top_k,
+                len(results),
+                latency,
+            )
+
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.query.success")
+                    self.metrics.timing("lancedb.query.latency", latency)
+                except Exception:
+                    logger.debug("metrics client call failed on query_vector")
+
+            return results
+
+        except Exception as e:
+            logger.exception(
+                "rec_query_vector_foldername failed user=%s folder=%s: %s",
+                getattr(query, "user_id", None),
+                foldername,
+                e,
+            )
+
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.query.failure")
+                except Exception:
+                    logger.debug("metrics client increment failed on query failure")
+
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e,
+                        {
+                            "action": "rec_query_vector_foldername",
+                            "user_id": getattr(query, "user_id", None),
+                            "foldername": foldername,
+                        },
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+
+            raise
+
+    @retry_async(attempts=3, initial_delay=0.2, factor=2.0, max_delay=4.0, jitter=0.1)
     async def rec_delete_vector(self, data: "DeleteData"):
         """
         Delete a single vector by id for a user.
@@ -1962,3 +2124,309 @@ class LanceDBServer:
                     logger.debug("error_hook raised an exception")
 
             raise
+
+    async def _open_or_create_apiconnectors_table(
+        self, user_id: str, app_id: str, endpoint_id: str
+    ):
+        table_name = f"apiconnectors_{user_id}_{app_id}_{endpoint_id}"
+        self.db = self._connect_if_needed()
+
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("foldername", pa.string()),
+                pa.field("text", pa.string()),
+                pa.field("original", pa.string()),  # ✅ raw JSON as string
+                pa.field("embedding", pa.list_(pa.float32(), self.EMBEDDING_DIM)),
+            ]
+        )
+
+        required_cols = ["id", "foldername", "text", "original", "embedding"]
+
+        def _open():
+            return self.db.open_table(table_name)
+
+        try:
+            table = await asyncio.to_thread(_open)
+
+            # 🚨 Detect schema drift
+            if table.schema.names != required_cols:
+                print(f"⚠️ Schema mismatch for {table_name}, recreating")
+                await asyncio.to_thread(lambda: self.db.drop_table(table_name))
+                raise Exception("Schema mismatch")
+
+            return table
+
+        except Exception:
+            dummy = [
+                {
+                    "id": "init",
+                    "foldername": "init",
+                    "text": "init",
+                    "original": "{}",
+                    "embedding": np.zeros(self.EMBEDDING_DIM, dtype=np.float32),
+                }
+            ]
+
+            def _create():
+                return self.db.create_table(
+                    table_name,
+                    data=dummy,
+                    schema=schema,
+                    mode="create",
+                )
+
+            table = await asyncio.to_thread(_create)
+
+            await asyncio.to_thread(lambda: table.delete('id == "init"'))
+
+            # ✅ Correct vector index
+            try:
+                await asyncio.to_thread(
+                    lambda: table.create_index(column="embedding", metric="cosine")
+                )
+            except Exception as e:
+                print("Index creation warning:", e)
+
+            print(f"Created LanceDB table {table_name}")
+            return table
+
+    async def get_app_runs(
+        self,
+        user_id: str,
+        app_id: str,
+        endpoint_id: str,
+        limit: int = 10,
+        newest_first: bool = True,
+    ):
+        """
+        Fetch the latest app run records for a given endpoint.
+        Sorted by foldername (minute_bucket).
+        """
+        table = await self._open_or_create_apiconnectors_table(
+            user_id, app_id, endpoint_id
+        )
+
+        def _query():
+            records = table.to_arrow_table().to_pylist()
+            # Sort by foldername (minute_bucket)
+            records.sort(key=lambda r: r["foldername"], reverse=newest_first)
+            return records[:limit]
+
+        records = await asyncio.to_thread(_query)
+
+        # Parse JSON text
+        for r in records:
+            r["text"] = json.loads(r["text"])
+        return records
+
+    async def delete_app_runs(self, user_id: str, app_id: str, endpoint_id: str):
+        """
+        Delete all runs for a given endpoint.
+        """
+        table = await self._open_or_create_apiconnectors_table(
+            user_id, app_id, endpoint_id
+        )
+
+        def _delete():
+            table.delete(
+                'id != "init"'
+            )  # delete all real records, keep dummy if exists
+
+        await asyncio.to_thread(_delete)
+        return True
+
+    async def query_app_endpoint(self, payload: dict):
+        user_id = payload["user_id"]
+        app_id = payload["app_id"]
+        endpoint_id = payload["endpoint_id"]
+        embedding = payload["embedding"]
+        foldernames = payload.get("foldernames")
+        top_k = payload.get("top_k", 5)
+
+        table_name = f"apiconnectors_{user_id}_{app_id}_{endpoint_id}"
+
+        db = self._connect_if_needed()
+        table = db.open_table(table_name)
+
+        # 1️⃣ Build LanceDB query
+        query = table.search(embedding)
+
+        # 2️⃣ Apply foldername filter (time slicing)
+        if foldernames:
+            quoted = ",".join([f'"{f}"' for f in foldernames])
+            query = query.where(f"foldername IN ({quoted})")
+
+        # 3️⃣ Run vector search
+        results = query.limit(top_k).to_list()
+
+        # 4️⃣ Parse JSON payloads
+        final = []
+        for r in results:
+            final.append(
+                {
+                    "score": r.get("_distance") or r.get("score"),
+                    "foldername": r["foldername"],
+                    "data": json.loads(r["text"]),
+                }
+            )
+
+        return final
+
+    # --------------  bytoid pro --------------------
+
+    def _get_bytoid_pro_table(self, user_id):
+        table_name = f"bytoid_pro_chat{user_id}"
+        print("in bytoid pro chat table")
+
+        try:
+            self.db = self._connect_if_needed()
+            print("self.db", self.db)
+            return self.db.open_table(table_name)
+        except Exception:
+            print(f"[DEBUG] Creating new table {table_name}")
+
+            schema = pa.schema(
+                [
+                    pa.field("id", pa.string()),
+                    pa.field("chat_id", pa.string()),
+                    pa.field("role", pa.string()),
+                    pa.field("content", pa.string()),
+                    pa.field("timestamp", pa.string()),
+                    pa.field("images", pa.list_(pa.string())),
+                    pa.field("files", pa.list_(pa.string())),
+                    pa.field("embedding", pa.list_(pa.float32(), self.EMBEDDING_DIM)),
+
+
+                ]
+            )
+
+            dummy = [
+                {
+                    "id": "init",
+                    "chat_id": "init row",
+                    "role": "init_row",
+                    "content": "init_row",
+                    "timestamp": "init_row",
+                    "images": [],
+                    "files": [],
+                    "embedding": [0.0] * self.EMBEDDING_DIM, 
+
+                }
+            ]
+
+            return self.db.create_table(
+                table_name, data=dummy, schema=schema, mode="create"
+            )
+
+
+    async def insert_chat(self, chat, user_id):
+        print("in the insert chat")
+        if not chat:
+            return {"inserted_count": 0}
+
+        chat_id = chat[0].chat_id
+        print(f"********user id inside lance: {user_id}")
+        # folder_name = chat[0].folder_name
+        id = chat[0].id
+        print(f"********id inside lance: {id}")
+
+        table = self._get_bytoid_pro_table(user_id)
+        print("table", table)
+
+        records = []
+        for v in chat:
+
+            records.append({
+                "id": v.id,
+                "chat_id": v.chat_id,
+                "role": v.role,
+                "content": v.content,
+                "timestamp": v.timestamp,
+                "images": v.images or [],
+                "files": v.files or [],
+                "embedding": v.embedding,
+            })
+
+        # Add records in one shot
+        table.add(records)
+
+        return {"user_id": user_id, "chat_id": chat_id}
+    
+
+    def get_user_chats_by_timestamp(self, user_id: str, last_timestamp: str = None, limit: int = 30):
+        
+        """
+        Fetch chat rows for a user, ordered by timestamp.
+        If last_timestamp is provided, fetch rows newer than that (cursor pagination).
+        """
+        table = self._get_bytoid_pro_table(user_id)
+
+        query = table.search()
+        
+        if last_timestamp:
+            # fetch only rows after the last timestamp
+            query = query.where(f"timestamp > '{last_timestamp}'")
+        
+        rows = query.limit(limit).to_list()
+        
+        # sort oldest → newest
+        rows.sort(key=lambda r: r.get("timestamp", ""))
+        return rows
+
+        
+
+    def get_chat_by_id(self, user_id: str, chat_id: str) -> List[Dict]:
+        """
+        Fetch all chat messages for a given user_id and chat_id from LanceDB.
+        Returns a list of dictionaries with: id, chat_id, role, content, timestamp
+        """
+       
+        table = self._get_bytoid_pro_table(user_id)
+
+        # Search all rows for the given chat_id
+        rows = table.search().where(f"chat_id == '{chat_id}'").limit(30).to_list()
+
+        return rows
+
+
+    def find_semantic_matches(self, vector, user_id, chat_id, top_k: int = 5):
+        try:
+            print("inside find_semantic_matches")
+            table = self._get_bytoid_pro_table(user_id)
+
+            # 1️⃣ Create search object and filter by chat_id
+            search_obj = table.search(
+                vector,
+                vector_column_name="embedding"
+            ).metric("cosine").limit(top_k)
+
+            if chat_id:
+                search_obj = search_obj.where(f"chat_id == '{chat_id}'")
+
+            # 2️⃣ Execute search and convert to DataFrame
+            results_df = search_obj.to_pandas()
+
+            # 3️⃣ Optionally filter by distance if needed
+            results_df = results_df[results_df["_distance"] < 1.5]
+
+            # 4️⃣ Extract relevant content
+            matched_content = []
+            for _, row in results_df.iterrows():
+                matched_content.append({
+                    "chat_id": row.get("chat_id"),
+                    "role": row.get("role"),
+                    "content": row.get("content"),
+                    "timestamp": row.get("timestamp"),
+                    "images": row.get("images"),
+                    "files": row.get("files"),
+                    "score": row.get("_distance"),  # cosine distance
+                })
+
+            print(f"matched_content : {matched_content}")
+            return matched_content
+
+        except Exception as e:
+            print(f"Semantic search failed: {str(e)}")
+            return []
+

@@ -4,6 +4,7 @@ from random import uniform
 import shutil
 import time
 import traceback
+from apiConnector.helpers import is_schedule_app_active
 from cust_helpers import pathconfig
 from dotenv import load_dotenv
 from celery import Celery
@@ -23,13 +24,11 @@ from utils.s3_utils import read_json_from_s3, upload_any_file
 from zoho_routes.routes import v2all_continuous_zoho
 
 
-
 # from umail_helper.auto_rep import autoReplyhelper
 
 logger = get_task_logger(__name__)
 load_dotenv()
 
-import redis
 
 base_ip = os.getenv("CELERY_BROKER_URL")
 
@@ -179,7 +178,7 @@ def web_umail_sync(self, user_id, channel=None, integration=None):
             )
             print(f"results")
             return {"status": "completed", "user_id": user_id, "result": result}
-    
+
     except Exception as exc:
         countdown = backoff(self.request.retries)
         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
@@ -572,7 +571,7 @@ def update_playbook_runtime(userid, filename, runtime_updates):
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.workflow_scheduler")
-def run_scheduled_job(self, userid, filename, contacts,uniquekey):
+def run_scheduled_job(self, userid, filename, contacts, uniquekey):
     from services.workflow_service import WorkflowRunnerV2
     import asyncio
 
@@ -658,9 +657,6 @@ def run_scheduled_job(self, userid, filename, contacts,uniquekey):
 @celery.task(bind=True, max_retries=3, name="tasks.workflow_schedule_single")
 def run_scheduled_step_job(self, userid, filename, stepid):
     from services.workflow_service import WorkflowRunnerV2
-    from services.scheduler_service import SchedulerService
-
-    redis_key = f"scheduled:{userid}:{filename}:{stepid}"
 
     try:
         runner = WorkflowRunnerV2(userid=userid, filename=filename, testing=False)
@@ -675,12 +671,10 @@ def run_scheduled_step_job(self, userid, filename, stepid):
 
     except Exception as e:
         print("error", e)
-        # asyncio.run(SchedulerService.redis_service.delete(redis_key))
         raise
 
     finally:
         # Remove Redis key after completion
-        # asyncio.run(SchedulerService.redis_service.delete(redis_key))
         print("run scheduled job")
 
 
@@ -759,3 +753,64 @@ def run_back_scrape(self, url, user_id, level):
 
     finally:
         release_scrape_lock(user_id)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.schedule_app")
+def run_schedule_app(self, userid, app_id):
+    from apiConnector.helpers import _execute_app_internal, is_schedule_active
+
+    # 🛑 HARD STOP if user disabled it
+    if not is_schedule_app_active(app_id):
+        return "SKIPPED — schedule disabled by user"
+
+    try:
+        return _execute_app_internal(app_id, userid)
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.schedule_app_endpoint")
+def run_schedule_app_endpoint(self, userid, endpoint_id, context=None):
+    from apiConnector.helpers import (
+        _execute_endpoint_internal,
+        is_schedule_active,
+        completed_endpoint_schedule,
+    )
+
+    # 🛑 HARD STOP if user disabled it
+    if not is_schedule_active(endpoint_id):
+        return "SKIPPED — schedule disabled by user"
+
+    try:
+        result = _execute_endpoint_internal(endpoint_id, userid, context)
+        if result:
+            completed_endpoint_schedule(endpoint_id=endpoint_id)
+        return result
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.run_endpoint_interval")
+def run_endpoint_interval(self, userid, endpoint_id, interval_seconds, stop_key=None):
+    """
+    Executes endpoint and reschedules itself.
+    stop_key: optional unique key to check if this interval should stop
+    """
+    from services.scheduler_service import APIConnectorScheduler
+    from apiConnector.helpers import _execute_endpoint_internal
+
+    # Check if user disabled this schedule
+    if stop_key and asyncio.run(APIConnectorScheduler.is_schedule_disabled(stop_key)):
+        return {"stopped": True}
+
+    try:
+        # Execute the endpoint
+        _execute_endpoint_internal(endpoint_id, userid)
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+    # Reschedule self
+    self.apply_async(
+        args=[userid, endpoint_id, interval_seconds, stop_key],
+        countdown=interval_seconds,
+    )

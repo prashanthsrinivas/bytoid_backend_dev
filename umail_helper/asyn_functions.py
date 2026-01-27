@@ -734,15 +734,12 @@ def v2process_batch_with_embedding(
             # run CPU-bound embedding in a thread so we don’t block
             print(f"lance_folder : {lance_folder}")
 
-            token = current_user_id.set(user_id)
-            try:
-                await client.embed_both_json_and_plain(lance_folder)
+            
+            await client.embed_both_json_and_plain(lance_folder)
                 # run_lance_embedding.delay(user_id, batch_count, lance_folder)
 
-                total_runtime = time.perf_counter() - start_time
-                print("************ Total Time Lance *******", total_runtime)
-            finally:
-                current_user_id.reset(token)
+            total_runtime = time.perf_counter() - start_time
+            print("************ Total Time Lance *******", total_runtime)
 
         except Exception as e:
             # log/handle the error

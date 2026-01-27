@@ -1,3 +1,4 @@
+import inspect
 from cust_helpers import pathconfig
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.prompts import ChatPromptTemplate
@@ -81,7 +82,7 @@ def generate_usecases_questions(
 
 
 async def generate_usecases_questions_batch(
-    prompt_block, model, industry, usecases_with_docs,userid
+    prompt_block, model, industry, usecases_with_docs, userid, credits
 ):
     prompt_text = prompt_block["instructions"]
 
@@ -96,7 +97,7 @@ async def generate_usecases_questions_batch(
     response = chain.invoke(
         {"industry": industry, "usecases_with_docs": usecases_with_docs}
     )
-    
+
     # logger.info(f"[🔍] Model response: {response}")
     try:
         raw = response.content.strip()
@@ -112,20 +113,18 @@ async def generate_usecases_questions_batch(
         # ------ calculate credits -----------
 
         total_input_chars = sum(
-        len(v)
-        for d in usecases_with_docs
-        for v in d.values()
-        if isinstance(v, str)
+            len(v) for d in usecases_with_docs for v in d.values() if isinstance(v, str)
         )
         total_output_chars = len(raw)
 
         total_chars = total_input_chars + total_output_chars
 
-        credits = Credits()
+        # credits = Credits()
         await credits.update_ai_credits_redis(
             credit_type="embedding",
             total_chars=total_chars,
-            user_id=userid
+            user_id=userid,
+            reference_id=inspect.stack()[0].function,
         )
 
         # --------------------------------

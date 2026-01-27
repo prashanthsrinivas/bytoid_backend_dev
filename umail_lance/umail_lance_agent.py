@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from dotenv import load_dotenv
 import os
 import requests
@@ -152,7 +153,8 @@ class UmailLanceClient:
         await credits.update_ai_credits_redis(
             credit_type="embedding",
             total_chars=total_chars,
-            user_id=self.user_id
+            user_id=self.user_id,
+            reference_id=inspect.currentframe().f_code.co_name,
         )
 
         return all_vectors
@@ -409,9 +411,10 @@ class UmailLanceClient:
         and returns a combined list of all flattened strings.
         """
         results = []
-        print("processing folderpath", folder_path)
+        print(f"processing folderpath : {folder_path}")
 
         for filename in os.listdir(folder_path):
+            print(f"filename : {filename}")
             if not filename.lower().endswith(".json"):
                 print(f"no filename")
                 continue
@@ -707,7 +710,9 @@ class UmailLanceClient:
             # -------------------------------
             # Plain text embedding
             # -------------------------------
-            plain_chunks = self.plain_splitter.split_text(plain_text) if plain_text else []
+            plain_chunks = (
+                self.plain_splitter.split_text(plain_text) if plain_text else []
+            )
             # plain_vectors = (
             #     [self.embeddings.embed_query(c) for c in plain_chunks]
             #     if plain_chunks
@@ -716,8 +721,7 @@ class UmailLanceClient:
             plain_vectors = await self.safe_embed_chunks(plain_chunks, user_id=user_id)
             merged_plain_embedding = self._safe_mean_embedding(plain_vectors)
         finally:
-          current_user_id.reset(token)
-
+            current_user_id.reset(token)
 
         # -------------------------------
         # Build LanceDB row
@@ -918,7 +922,7 @@ class UmailLanceClient:
 
                     sleep_time = BACKOFF**attempt
                     time.sleep(sleep_time)
-
+        print("succesfully inserted into lancedb")
         return results
 
     def print_content(self, user_id):
@@ -966,7 +970,8 @@ class UmailLanceClient:
             await credits.update_ai_credits_redis(
                 credit_type="embedding",
                 total_chars=total_chars,
-                user_id=user_id
+                user_id=user_id,
+                reference_id=inspect.currentframe().f_code.co_name,
             )
 
             payload = {

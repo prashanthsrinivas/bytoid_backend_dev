@@ -1,11 +1,13 @@
+from datetime import datetime
 import os
+import uuid
 from dotenv import load_dotenv
 import boto3
 import json
 from botocore.exceptions import ClientError
 import yaml
 import io
-
+from werkzeug.utils import secure_filename
 
 load_dotenv()
 S3_BUCKET = os.getenv("S3_BUCKET")
@@ -66,7 +68,6 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
 
     try:
         s3.upload_file(file_path, S3_BUCKET, s3_key)
-        # print(f"✅ Uploaded '{file_path}' to 's3://{S3_BUCKET}/{s3_key}'")
         return {"status": "success", "s3_key": s3_key}
     except Exception as e:
         print(f"❌ Upload failed: {e}")
@@ -209,8 +210,118 @@ def attach_CLDFRNT_url(link):
 # print(list_all_files("112359636982080060072/messages"))
 # print(list_all_files())
 
+
 # print(
 #     read_json_from_s3(
 #         filepath="109161866299858012556/aud_scripts/46d0f21a-8334-4c59-af4f-f25f75bf2912_transcript.json"
 #     )
 # )
+def upload_think_image_and_get_url(
+    *, user_id: str, file_obj, filename: str, content_type: str
+) -> str:
+    """
+    Upload THINK image to:
+    think/<user_id>/photos/<date>_<uuid>.<ext>
+    """
+    ext = filename.rsplit(".", 1)[-1]
+    date = datetime.utcnow().strftime("%Y-%m-%d")
+    uid = uuid.uuid4().hex[:8]
+    s3_client = s3bucket()
+
+    key = f"think/{user_id}/photos/{date}_{uid}.{ext}"
+
+    s3_client.upload_fileobj(
+        file_obj,
+        S3_BUCKET,
+        key,
+        ExtraArgs={
+            "ContentType": content_type,
+            "ACL": "private",
+        },
+    )
+    clrf = os.getenv("CLOUDFRNT")
+    print(f"clrf: {clrf}")
+
+    return f"{clrf}/{key}"
+
+
+def upload_any_file_and_get_url(
+    *, user_id: str, file_obj, filename: str, content_type: str
+) -> str:
+    """
+    Upload ANY file type to:
+    uploads/<user_id>/<yyyy-mm-dd>/<uuid>_<filename>
+    """
+
+    date = datetime.utcnow().strftime("%Y-%m-%d")
+    uid = uuid.uuid4().hex[:8]
+
+    safe_name = secure_filename(filename)
+    key = f"uploads/{user_id}/{date}/{uid}_{safe_name}"
+
+    s3_client = s3bucket()
+
+    s3_client.upload_fileobj(
+        file_obj,
+        S3_BUCKET,
+        key,
+        ExtraArgs={
+            "ContentType": content_type,
+            "ACL": "private",
+        },
+    )
+
+    cloudfront = os.getenv("CLOUDFRNT")
+    return f"{cloudfront}/{key}"
+
+
+def save_app_runbase_S3(record, key):
+    try:
+        s3 = s3bucket()
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
+        existing = json.loads(obj["Body"].read())
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            existing = []
+        else:
+            raise
+
+    existing.append(record)
+    try:
+        s3.put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=json.dumps(existing, default=str),
+            ContentType="application/json",
+        )
+        return key
+    except Exception as e:
+        return None
+
+
+def getallendpointdetails(prefix):
+    s3_client = s3bucket()
+    resp = s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
+
+    files = []
+    for obj in resp.get("Contents", []):
+        name = obj["Key"].replace(prefix, "")
+        if name.endswith(".json"):
+            files.append(
+                {
+                    "file": name,
+                    "size": obj["Size"],
+                    "last_modified": obj["LastModified"].isoformat(),
+                }
+            )
+
+    files.sort(key=lambda x: x["file"], reverse=True)  # latest first
+
+    return files
+
+
+def get_filedata_endp(key):
+    s3_client = s3bucket()
+    obj = s3_client.get_object(Bucket=S3_BUCKET, Key=key)
+    data = json.loads(obj["Body"].read())
+    return data

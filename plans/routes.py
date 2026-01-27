@@ -8,7 +8,10 @@ import json
 from services.redis_service import RedisService
 from dotenv import load_dotenv
 from utils.stripe_config import dev_stipe as stripe
-from utils.stripe_config import create_new_price_and_disable_old,create_stripe_product_and_price
+from utils.stripe_config import (
+    create_new_price_and_disable_old,
+    create_stripe_product_and_price,
+)
 
 load_dotenv()
 plans_bp = Blueprint("plans_bp", __name__)
@@ -50,7 +53,6 @@ def normalize_for_json(data):
 
     else:
         return data
-
 
 
 # =====================================================
@@ -180,6 +182,20 @@ def add_plan():
     details = body.get("details", {})
     is_free = body.get("is_free", False)
 
+    # -------------------------------
+    # PLAN TYPE (NEW)
+    # -------------------------------
+    is_subscription = body.get("is_subscription", True)
+    is_topup = body.get("is_topup", False)
+
+    if (is_subscription + is_topup) != 1:
+        return (
+            jsonify(
+                {"error": "Exactly one of is_subscription or is_topup must be true"}
+            ),
+            400,
+        )
+
     stripe_product_id, stripe_price_id = create_stripe_product_and_price(
         {
             "plan_code": plan_code,
@@ -188,7 +204,9 @@ def add_plan():
             "amount_cents": amount_cents,
             "currency": currency,
             "billing_interval": billing_interval,
-        }
+        },
+        is_subscription=is_subscription,
+        is_topup=is_topup,
     )
 
     connection = connect_to_rds()
@@ -201,10 +219,11 @@ def add_plan():
                 plan_code, name, description, amount_cents, currency,
                 billing_interval, monthly_token_limit,
                 overage_price_per_million, details, is_free,
-                stripe_product_id, stripe_price_id
+                stripe_product_id, stripe_price_id,
+                is_subscription, is_topup
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """,
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
             (
                 plan_code,
                 name,
@@ -218,6 +237,8 @@ def add_plan():
                 is_free,
                 stripe_product_id,
                 stripe_price_id,
+                is_subscription,
+                is_topup,
             ),
         )
 
@@ -258,8 +279,11 @@ def edit_plan():
         "overage_price_per_million",
         "details",
         "is_free",
+        "is_subscription",
+        "is_topup",
     ]
 
+    # Prepare fields for update
     fields = {
         k: (json.dumps(v) if k == "details" else v)
         for k, v in body.items()
@@ -273,25 +297,64 @@ def edit_plan():
     cursor = connection.cursor()
 
     try:
+        # Fetch current plan info
         cursor.execute(
-            "SELECT stripe_product_id, stripe_price_id FROM plans WHERE plan_code=%s",
+            """
+            SELECT stripe_product_id, stripe_price_id,
+                   is_subscription, is_topup, billing_interval, amount_cents, currency
+            FROM plans
+            WHERE plan_code=%s
+            """,
             (plan_code,),
         )
-        product_id, price_id = cursor.fetchone()
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Plan not found"}), 404
 
-        if any(k in fields for k in ["amount_cents", "currency", "billing_interval"]):
-            new_price_id = create_new_price_and_disable_old(
-                {
-                    "plan_code": plan_code,
-                    "amount_cents": body.get("amount_cents"),
-                    "currency": body.get("currency"),
-                    "billing_interval": body.get("billing_interval"),
-                    "stripe_product_id": product_id,
-                },
-                price_id,
+        (
+            stripe_product_id,
+            stripe_price_id,
+            curr_sub,
+            curr_topup,
+            curr_billing_interval,
+            curr_amount,
+            curr_currency,
+        ) = row
+
+        # ----------------------------------
+        # PLAN TYPE VALIDATION
+        # ----------------------------------
+        new_sub = fields.get("is_subscription", curr_sub)
+        new_topup = fields.get("is_topup", curr_topup)
+
+        if (new_sub + new_topup) != 1:
+            return (
+                jsonify(
+                    {"error": "Exactly one of is_subscription or is_topup must be true"}
+                ),
+                400,
             )
+
+        # ----------------------------------
+        # STRIPE PRICE UPDATE
+        # ----------------------------------
+        if any(k in fields for k in ["amount_cents", "currency", "billing_interval"]):
+            # Use updated values or current defaults
+            price_data = {
+                "plan_code": plan_code,
+                "amount_cents": body.get("amount_cents", curr_amount),
+                "currency": body.get("currency", curr_currency),
+                "billing_interval": body.get("billing_interval", curr_billing_interval),
+                "stripe_product_id": stripe_product_id,
+            }
+
+            new_price_id = create_new_price_and_disable_old(
+                price_data, stripe_price_id, is_subscription=new_sub, is_topup=new_topup
+            )
+
             fields["stripe_price_id"] = new_price_id
 
+        # Build SQL update statement
         set_clause = ", ".join(f"{k}=%s" for k in fields)
         cursor.execute(
             f"UPDATE plans SET {set_clause} WHERE plan_code=%s",

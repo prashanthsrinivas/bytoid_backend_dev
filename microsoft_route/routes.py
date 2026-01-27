@@ -14,7 +14,7 @@ from agent_route.ag_helperzz import (
     remove_https_prefix,
 )
 from .microsoft_helpers import retrieve_auth_state_from_redis
-from integrations.integrations_helpers  import get_all_integrations
+from integrations.integrations_helpers import get_all_integrations
 from umail_helper.helper import store_integrations_in_redis
 from google_route.google_helpers import check_google_token_expiry
 from google.oauth2.credentials import Credentials
@@ -23,11 +23,6 @@ from services.gmail_service import GmailService
 import base64
 from google_route.routes import refresh_expired_microsoft_tokens_for_integrations
 from request_context import current_user_id
-
-
-
-
-
 
 
 # Third-party imports
@@ -242,7 +237,6 @@ async def store_auth_state_in_redis(
     except Exception as e:
         logger.warning(f"⚠️ Failed to store auth state in Redis: {str(e)}")
         return False
-
 
 
 # Create Blueprint
@@ -674,7 +668,9 @@ async def microsoft_callback():
 
         print(f"integrations_data : {integrations_data}")
         if integrations_data:
-            redis_response = await store_integrations_in_redis(user_id,integrations_data)
+            redis_response = await store_integrations_in_redis(
+                user_id, integrations_data
+            )
             if redis_response:
                 print(f"integrations stored in redis")
             else:
@@ -687,18 +683,21 @@ async def microsoft_callback():
             if exists:
                 print(f"goole in integratiosn")
                 connection = connect_to_rds()
-                google_user_id = refresh_expired_google_tokens_for_integrations(user_id, connection)
+                google_user_id = refresh_expired_google_tokens_for_integrations(
+                    user_id, connection
+                )
 
                 cursor.close()
                 connection.close()
 
                 print(f"calling watch servoce using : {google_user_id}")
-                service = GmailService(user_id=google_user_id, integration = True)
+                service = GmailService(user_id=google_user_id, integration=True)
                 service.create_watch_req()
 
         # ---- SESSION LOGIN ----
-        session_id, access_token_session, refresh_token_session = await session_login(user_id)
-        
+        session_id, access_token_session, refresh_token_session = await session_login(
+            user_id
+        )
 
         response = make_response(
             jsonify(
@@ -745,7 +744,6 @@ async def microsoft_callback():
         logger.error(f"Traceback: {traceback.format_exc()}")
         frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
         return redirect(f"{frontend_url}/login?error=callback_failed")
-
 
 
 @microsoft_bp.route("/microsoft/session-debug", methods=["GET"])
@@ -2527,9 +2525,8 @@ def outlook_send_mail(
     attachments=None,
     cc=None,
     bcc=None,
-    integration = None,
-    outlook_integration = None
-
+    integration=None,
+    outlook_integration=None,
 ):
     """
     Sends an Outlook email using Microsoft Graph.
@@ -2574,8 +2571,8 @@ def outlook_send_mail(
             row = cursor.fetchone()
             if not row:
                 raise Exception("No active Microsoft integration found.")
-   
-        integration_user_id,access_token,refresh_token,mail = row
+
+        integration_user_id, access_token, refresh_token, mail = row
 
     else:
         cursor.execute(
@@ -2590,7 +2587,6 @@ def outlook_send_mail(
         if not row:
             raise Exception("No active Microsoft user found.")
         access_token, refresh_token, mail = row
-
 
     # sender_email = row["email"]  # Outlook email ID
 
@@ -2652,12 +2648,16 @@ def outlook_send_mail(
     if integration:
         expired = check_microsoft_token_expiry(cursor, user_id)
         if expired:
-            resp =  refresh_expired_microsoft_tokens_for_integrations(refresh_token, cursor, conn, None, integration_user_id)
+            resp = refresh_expired_microsoft_tokens_for_integrations(
+                refresh_token, cursor, conn, None, integration_user_id
+            )
             data = resp.get_json()
             access_token = data["token"]
 
     else:
-        expired , access_token = check_microsoft_token_expiry_normal(cursor,conn, user_id)
+        expired, access_token = check_microsoft_token_expiry_normal(
+            cursor, conn, user_id
+        )
 
     cursor.close()
     conn.close()
@@ -2801,7 +2801,6 @@ def process_outlook():
                 )
             except Exception as e:
                 print(f"error in process_outlook:{e} ")
-
 
             yield (
                 "event: complete\ndata: "
@@ -3340,7 +3339,6 @@ async def outlook_webhook():
     conn = connect_to_rds()
     cursor = conn.cursor()
 
-
     integration = False
     email = ""
     cursor.execute("SELECT email FROM integrations WHERE user_id=%s", (user_id,))
@@ -3366,14 +3364,16 @@ async def outlook_webhook():
                 return ("Token refresh failed", 400)
 
         else:
-            check_result, token = check_microsoft_token_expiry_normal(cursor,conn, user_id)
-            if not check_result :
+            check_result, token = check_microsoft_token_expiry_normal(
+                cursor, conn, user_id
+            )
+            if not check_result:
                 print("cannot refresh token")
                 return ("Could not refresh token ", 401)
-                
+
         delayed_trigger.delay(
-                email, history_id, channel="microsoft", integration=integration
-            )
+            email, history_id, channel="microsoft", integration=integration
+        )
 
     except Exception as e:
         logger.error(f"Failed to trigger delayed task for {email}: {e}")
@@ -3443,7 +3443,9 @@ async def outlook_webhook():
 def refresh_expired_google_tokens_for_integrations(user_id, connection):
     try:
         with connection.cursor() as cursor:
-            print(f"user_id inside refresh_expired_google_tokens_for_integrations : {user_id}")
+            print(
+                f"user_id inside refresh_expired_google_tokens_for_integrations : {user_id}"
+            )
             cursor.execute(
                 """
                 SELECT user_id, client_id, client_secret, access_token, refresh_token, expiry
@@ -3458,14 +3460,13 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
                 return jsonify({"error": "User not found"}), 404
 
             google_user_id, client_id, client_secret, token, refresh_token, expiry = row
-          
+
             print("google_user_id:", google_user_id)
             print("client_id:", client_id)
             print("client_secret:", client_secret)
             print("token:", token)
             print("refresh_token:", refresh_token)
             print("expiry:", expiry)
-
 
             # Ensure expiry is a datetime object
             if isinstance(expiry, str):
@@ -3485,19 +3486,37 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
                         token_uri="https://oauth2.googleapis.com/token",
                         client_id=client_id,
                         client_secret=client_secret,
-                        scopes=[
+                        # scopes=[
+                        #     "https://www.googleapis.com/auth/userinfo.profile",
+                        #     "https://www.googleapis.com/auth/userinfo.email",
+                        #     "https://www.googleapis.com/auth/gmail.readonly",
+                        #     "https://www.googleapis.com/auth/gmail.send",
+                        #     "https://www.googleapis.com/auth/gmail.modify",
+                        #     "https://www.googleapis.com/auth/gmail.compose",
+                        #     "https://www.googleapis.com/auth/drive.metadata.readonly",
+                        #     "https://www.googleapis.com/auth/drive",
+                        #     "https://www.googleapis.com/auth/calendar",
+                        #     "https://www.googleapis.com/auth/contacts",
+                        #     "openid",
+                        # ],
+                        scopes=(
+                            # Identity
+                            "openid",
                             "https://www.googleapis.com/auth/userinfo.profile",
                             "https://www.googleapis.com/auth/userinfo.email",
+                            # Gmail – FULL access
                             "https://www.googleapis.com/auth/gmail.readonly",
                             "https://www.googleapis.com/auth/gmail.send",
                             "https://www.googleapis.com/auth/gmail.modify",
                             "https://www.googleapis.com/auth/gmail.compose",
+                            # Drive – READ ONLY
+                            "https://www.googleapis.com/auth/drive.readonly",
                             "https://www.googleapis.com/auth/drive.metadata.readonly",
-                            "https://www.googleapis.com/auth/drive",
+                            # Calendar – READ ONLY
                             "https://www.googleapis.com/auth/calendar",
-                            "https://www.googleapis.com/auth/contacts",
-                            "openid",
-                        ],
+                            # Contacts – READ ONLY
+                            "https://www.googleapis.com/auth/contacts.readonly",
+                        ),
                     )
 
                     creds.refresh(g_request())
@@ -3519,14 +3538,16 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
                     return redirect("https://bytoid.ai/login")
 
             # Return existing token if not refreshed
-            cursor.execute("SELECT user_id FROM integrations WHERE primary_user_id_fk = %s", (user_id,))
+            cursor.execute(
+                "SELECT user_id FROM integrations WHERE primary_user_id_fk = %s",
+                (user_id,),
+            )
             user_row = cursor.fetchone()
             print(f"google not expired")
 
             if user_row is None:
                 return jsonify({"error": "Token missing after fallback"}), 400
             ##print("returning token", user_row[0])
-           
 
             return user_row[0]
 

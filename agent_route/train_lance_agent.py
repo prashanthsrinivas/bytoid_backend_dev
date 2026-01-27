@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from dotenv import load_dotenv
 import os
 import json
@@ -147,7 +148,10 @@ class TrainLanceAgent:
 
         credits = Credits()
         await credits.update_ai_credits_redis(
-            credit_type="embedding", total_chars=total_chars, user_id=user_id
+            credit_type="embedding",
+            total_chars=total_chars,
+            user_id=user_id,
+            reference_id=inspect.stack()[0].function,
         )
         # ------------------------------------------------------
 

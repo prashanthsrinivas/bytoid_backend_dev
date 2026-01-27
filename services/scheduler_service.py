@@ -333,3 +333,211 @@ class SchedulerService:
 # sc = SchedulerService()
 # print("task remoded",sc.delete_scheduled_task(task_id="f4439e13-47d4-4f9a-962a-dd99b44bfb91"))
 # print("task remoded",sc.delete_scheduled_task(task_id="2c4dc220-bce4-4a31-93da-c3f8048b6528"))
+
+
+# =========================================================
+# API Connector Scheduler Service
+# =========================================================
+class APIConnectorScheduler:
+    redis_service = RedisService()
+
+    # ========================
+    # Timezone Helpers
+    # ========================
+    @staticmethod
+    def to_utc(dt: datetime, timezone: str):
+        tz = pytz.timezone(timezone)
+        return tz.localize(dt).astimezone(pytz.UTC)
+
+    @staticmethod
+    def local_time_to_utc_hour_min(hour, minute, timezone):
+        local_dt = datetime.combine(date.today(), time(hour, minute))
+        utc_dt = APIConnectorScheduler.to_utc(local_dt, timezone)
+        return utc_dt.hour, utc_dt.minute
+
+    # ========================
+    # Stop/Disable Helpers
+    # ========================
+    @staticmethod
+    def revoke_task(task_id):
+        celery.control.revoke(task_id, terminate=True)
+        celery.backend.forget(task_id)
+
+    @staticmethod
+    def disable_celery_entry(entry_name):
+        celery.conf.beat_schedule.pop(entry_name, None)
+
+    @staticmethod
+    async def stop_schedule(task_info: dict):
+        """
+        task_info: dict containing celery_task_id or celery_entry or stop_key
+        """
+        if "celery_task_id" in task_info:
+            APIConnectorScheduler.revoke_task(task_info["celery_task_id"])
+        if "celery_entry" in task_info:
+            APIConnectorScheduler.disable_celery_entry(task_info["celery_entry"])
+        if "stop_key" in task_info:
+            await APIConnectorScheduler.redis_service.set(
+                task_info["stop_key"], "disabled"
+            )
+
+    @staticmethod
+    async def is_schedule_disabled(stop_key: str):
+        status = await APIConnectorScheduler.redis_service.get(stop_key)
+        return status == "disabled"
+
+    @staticmethod
+    async def make_schedule_disabled(stop_key: str):
+        status = await APIConnectorScheduler.redis_service.set(
+            key=stop_key, value="disabled"
+        )
+        return status == "disabled"
+
+    # ========================
+    # ONE-TIME
+    # ========================
+    @staticmethod
+    async def schedule_app_once(userid, app_id, run_at, timezone):
+        dt_utc = APIConnectorScheduler.to_utc(run_at, timezone)
+        task = celery.send_task("tasks.schedule_app", args=[userid, app_id], eta=dt_utc)
+        return {"task_id": task.id, "run_at_utc": dt_utc.isoformat()}
+
+    @staticmethod
+    async def schedule_endpoint_once(userid, endpoint_id, run_at, timezone):
+        dt_utc = APIConnectorScheduler.to_utc(run_at, timezone)
+        task = celery.send_task(
+            "tasks.schedule_app_endpoint", args=[userid, endpoint_id], eta=dt_utc
+        )
+        return {"task_id": task.id, "run_at_utc": dt_utc.isoformat()}
+
+    # ========================
+    # DAILY / WEEKLY / MONTHLY (Beat Schedules)
+    # ========================
+    @staticmethod
+    async def schedule_app_daily(userid, app_id, hour, minute, timezone):
+        key = f"app_daily_{userid}_{app_id}"
+        utc_hour, utc_minute = APIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_app",
+            "schedule": crontab(hour=utc_hour, minute=utc_minute),
+            "args": (userid, app_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_daily(userid, endpoint_id, hour, minute, timezone):
+        key = f"endpoint_daily_{userid}_{endpoint_id}"
+        utc_hour, utc_minute = APIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_app_endpoint",
+            "schedule": crontab(hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_app_weekly(userid, app_id, weekday, hour, minute, timezone):
+        key = f"app_weekly_{userid}_{app_id}_{weekday}"
+        utc_hour, utc_minute = APIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_app",
+            "schedule": crontab(weekday=weekday, hour=utc_hour, minute=utc_minute),
+            "args": (userid, app_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_weekly(
+        userid, endpoint_id, weekday, hour, minute, timezone
+    ):
+        key = f"endpoint_weekly_{userid}_{endpoint_id}_{weekday}"
+        utc_hour, utc_minute = APIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_app_endpoint",
+            "schedule": crontab(weekday=weekday, hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_app_monthly(userid, app_id, day, hour, minute, timezone):
+        key = f"app_monthly_{userid}_{app_id}_{day}"
+        utc_hour, utc_minute = APIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_app",
+            "schedule": crontab(day_of_month=day, hour=utc_hour, minute=utc_minute),
+            "args": (userid, app_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_monthly(
+        userid, endpoint_id, day, hour, minute, timezone
+    ):
+        key = f"endpoint_monthly_{userid}_{endpoint_id}_{day}"
+        utc_hour, utc_minute = APIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_app_endpoint",
+            "schedule": crontab(day_of_month=day, hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    # ========================
+    # INTERVAL (dynamic, self-rescheduling)
+    # ========================
+    @staticmethod
+    async def schedule_app_interval(userid, app_id, interval_seconds):
+        stop_key = f"app:{app_id}:{userid}:interval"
+        task = celery.send_task(
+            "tasks.run_app_interval", args=[userid, app_id, interval_seconds, stop_key]
+        )
+        return {"task_id": task.id, "stop_key": stop_key}
+
+    @staticmethod
+    async def schedule_endpoint_interval(userid, endpoint_id, interval_seconds):
+        stop_key = f"endpoint:{endpoint_id}:{userid}:interval"
+        task = celery.send_task(
+            "tasks.run_endpoint_interval",
+            args=[userid, endpoint_id, interval_seconds, stop_key],
+        )
+        return {"task_id": task.id, "stop_key": stop_key}
+
+    # ========================
+    # CUSTOM DATES (multiple one-time runs)
+    # ========================
+    @staticmethod
+    async def schedule_app_custom_dates(userid, app_id, datetimes, timezone):
+        task_ids = []
+        for dt_str in datetimes:
+            dt = datetime.fromisoformat(dt_str)
+            dt_utc = APIConnectorScheduler.to_utc(dt, timezone)
+            task = celery.send_task(
+                "tasks.schedule_app", args=[userid, app_id], eta=dt_utc
+            )
+            task_ids.append(task.id)
+        return {"scheduled_runs": len(task_ids), "task_ids": task_ids}
+
+    @staticmethod
+    async def schedule_endpoint_custom_dates(userid, endpoint_id, datetimes, timezone):
+        task_ids = []
+        for dt_str in datetimes:
+            dt = datetime.fromisoformat(dt_str)
+            dt_utc = APIConnectorScheduler.to_utc(dt, timezone)
+            task = celery.send_task(
+                "tasks.schedule_app_endpoint", args=[userid, endpoint_id], eta=dt_utc
+            )
+            task_ids.append(task.id)
+        return {"scheduled_runs": len(task_ids), "task_ids": task_ids}

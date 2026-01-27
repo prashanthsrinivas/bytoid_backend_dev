@@ -161,7 +161,9 @@ def normalize_url_for_comparison(url):
     return normalized
 
 
-async def process_and_update_yaml(all_downloaded_paths, userid, provider, folderpath):
+async def process_and_update_yaml(
+    all_downloaded_paths, userid, provider, db, folderpath, credits
+):
     """
     Process files, delete processed ones, and store/update metadata in a provider-based YAML structure.
 
@@ -173,7 +175,7 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     """
 
     processed_filenames = []
-    connection = connect_to_rds()
+    connection = db or connect_to_rds()
     industry = None
     selected_id = None
     with connection.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -208,10 +210,11 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
         if not user_row:
             return jsonify({"error": "No line of business present"}), 401
         industry = user_row["LineOfBusiness"]
-    connection.close()
+    if not db:
+        connection.close()
     for path in all_downloaded_paths:
         filename = os.path.basename(path)
-        lance_client = LanceClient(user_id=userid)
+        lance_client = LanceClient(user_id=userid, credits=credits)
         result = await lance_client.process_document(file_path=path, filename=filename)
 
         if result.get("vectors_made", 0) > 0:
@@ -254,7 +257,6 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
     print(f"yaml_path: {yaml_path}")
     print(f"existing_data: {existing_data}")
     print("------------------------")
-
 
     if provider not in existing_data:
         existing_data[provider] = []
@@ -305,13 +307,13 @@ async def process_and_update_yaml(all_downloaded_paths, userid, provider, folder
         # )
 
         async def background_runner():
-            
+
             await preProcessDocWithUsecases(
-                    userid=userid,
-                    industry=matched_industry,
-                    filenames=new_or_updated_files
-                )
-           
+                userid=userid,
+                industry=matched_industry,
+                filenames=new_or_updated_files,
+                credits=credits,
+            )
 
         asyncio.create_task(background_runner())
         print(f"[DEBUG] Background task queued: {result}")

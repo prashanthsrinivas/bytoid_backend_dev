@@ -27,6 +27,10 @@ from utils.s3_utils import (
 )
 from werkzeug.utils import secure_filename
 from request_context import current_user_id
+from credits_route.route import Credits
+from db.rds_db import connect_to_rds
+
+
 
 logger = get_logger(__name__)
 
@@ -118,8 +122,10 @@ def process_audio_stream():
                     path=pathconfig.agent_template
                 )  # adjust if path param needed
                 clean_transcription_prompt = prompts.get("clean_transcription_prompt")
+                task_db = connect_to_rds()
+                task_credits = Credits(task_db)
                 val = await evaluate_transcript(
-                    clean_transcription_prompt, transcript_text,userid=userid
+                    clean_transcription_prompt, transcript_text,task_credits, userid=userid
                 )
                 if not val:
                     yield "data: ERROR: Failed to evaluate transcript\n\n"
@@ -288,154 +294,6 @@ def process_audio_stream():
     return Response(
         stream_with_context(wrapped_stream(userid)), content_type="text/event-stream"
     )
-
-
-# @audio_agent_bps.route("/update-transcript", methods=["POST"])
-# def update_transcript_stream():
-#     """
-#     Streaming endpoint to update an existing transcript text, re-embed it, upload and update config.
-#     Emits progress and final JSON as FINAL_RESPONSE.
-#     """
-
-#     data = request.json or {}
-#     api_key = data.get("api_key")
-#     if not api_key:
-#         return jsonify({"error": "API key is required"}), 400
-
-#     userid, agentid = get_user_agent_id(api_key)
-#     if not userid:
-#         return jsonify({"error": "User ID is required"}), 400
-#     if not check_userid_valid(userid):
-#         return jsonify({"error": "Invalid access"}), 404
-
-#     filename = data.get("filename", "audio_location")
-#     transcript_text = data.get("transcript")
-#     if not filename:
-#         return jsonify({"error": "Filename is required"}), 400
-#     if not transcript_text:
-#         return jsonify({"error": "Transcript data is required"}), 400
-
-#     async def async_event_stream():
-#         local_transcript_path = None
-#         local_config_path = None
-#         try:
-#             yield "data: Loading user config...\n\n"
-#             print("data: Loading user config...\n\n")
-#             config_s3_key = fetch_document_link(agentid)
-#             if not config_s3_key:
-#                 yield "data: ERROR: No audio config found for this user\n\n"
-#                 print("data: ERROR: No audio config found for this user\n\n")
-#                 return
-
-#             config_s3_key = (
-#                 config_s3_key[0]
-#                 if isinstance(config_s3_key, (list, tuple))
-#                 else config_s3_key
-#             )
-#             config_obj = read_json_from_s3(config_s3_key)
-#             if not config_obj:
-#                 yield "data: ERROR: User config file could not be read\n\n"
-#                 print("data: ERROR: User config file could not be read\n\n")
-#                 return
-
-#             yield "data: Locating transcript in user config...\n\n"
-#             update_loc = None
-#             for rec in config_obj.get("recordings", []):
-#                 if rec.get("title") == filename:
-#                     update_loc = rec.get("transcript_location")
-#                     rec["updated_date"] = datetime.utcnow().isoformat(
-#                         timespec="seconds"
-#                     )
-#                     break
-
-#             if not update_loc:
-#                 yield "data: ERROR: Transcript not found in user config\n\n"
-#                 return
-
-#             yield "data: Loading existing transcript...\n\n"
-#             print("data: Loading existing transcript...\n\n")
-#             transcript_maindata = read_json_from_s3(update_loc)
-#             if not transcript_maindata:
-#                 yield "data: ERROR: Transcript data not found\n\n"
-#                 return
-
-#             yield "data: Updating transcript text...\n\n"
-#             transcript_maindata["text"] = transcript_text
-
-#             print("data: Updating transcript text...\n\n")
-#             # write local temp transcript
-#             local_transcript_path = "/tmp/temp_transcript.json"
-#             with open(local_transcript_path, "w", encoding="utf-8") as f:
-#                 json.dump(transcript_maindata, f, ensure_ascii=False, indent=2)
-#             yield "data: Transcript saved locally\n\n"
-
-#             transcript_filename = f"{os.path.splitext(filename)[0]}_transcript.json"
-
-#             # re-embed (async)
-#             ser = TrainLanceAgent(user_id=userid)
-#             await ser.embed_single_audio_json(
-#                 file_path=local_transcript_path, filename=transcript_filename
-#             )
-#             yield "data: Embedding complete\n\n"
-
-#             # upload updated transcript
-#             # keep S3 key same basename as update_loc when uploading
-#             upload_any_file(
-#                 local_transcript_path,
-#                 user_id=userid,
-#                 file_name=extract_transcript_filename(update_loc),
-#                 type="audio",
-#             )
-#             yield "data: Transcript uploaded\n\n"
-
-#             # update config object and upload
-#             local_config_path = "/tmp/temp_config.json"
-#             with open(local_config_path, "w", encoding="utf-8") as f:
-#                 json.dump(config_obj, f, ensure_ascii=False, indent=2)
-
-#             upload_any_file(
-#                 local_config_path, user_id=userid, file_name=config_s3_key, type="audio"
-#             )
-#             yield "data: Config uploaded\n\n"
-
-#             final_response = {
-#                 "message": "Transcript updated successfully",
-#                 "changed_filename": filename,
-#                 "config_updated": True,
-#             }
-#             yield f"data: FINAL_RESPONSE:{json.dumps(final_response)}\n\n"
-
-#         except Exception as e:
-#             logger.exception("Error in update_transcript_stream")
-#             yield f"data: ERROR: {str(e)}\n\n"
-#         finally:
-#             _safe_remove(local_transcript_path)
-#             _safe_remove(local_config_path)
-
-#     def wrapped_stream():
-#         loop = asyncio.new_event_loop()
-#         asyncio.set_event_loop(loop)
-#         agen = async_event_stream()
-#         try:
-#             while True:
-#                 try:
-#                     chunk = loop.run_until_complete(agen.__anext__())
-#                 except StopAsyncIteration:
-#                     break
-#                 if isinstance(chunk, str):
-#                     yield chunk
-#                 else:
-#                     yield str(chunk)
-#         finally:
-#             try:
-#                 loop.run_until_complete(agen.aclose())
-#             except Exception:
-#                 pass
-#             loop.close()
-
-#     return Response(
-#         stream_with_context(wrapped_stream()), content_type="text/event-stream"
-#     )
 
 
 @audio_agent_bps.route("/update-transcript", methods=["POST"])

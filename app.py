@@ -1,4 +1,6 @@
-from flask import Flask, request
+from datetime import datetime
+import json
+from flask import Flask, request, jsonify
 from flask_compress import Compress
 from google_route.routes import google_bp
 from facebook_route.routes import facebook_bp
@@ -30,6 +32,9 @@ from training.scrape.scrape_base import scrape_agent_bps
 from training.voice.audio_base import audio_agent_bps
 from payments.payments import payments_bp
 from plans.routes import plans_bp
+from bytoid_pro_dev.routes import bytoid_dev_pro_bp
+from apiConnector.routes import apiconnector_bp
+from radar.routes import radar_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -112,197 +117,102 @@ def handle_options(path):
     return "", 204
 
 
-CORS(
-    app,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
+blueprints = [
     google_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     facebook_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     agent_bps,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
-    playbook_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     gmail_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
+    playbook_bp,
     session_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     microsoft_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     twilio_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     users_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     contacts_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     zoho_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     umail_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     tickets_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     inv_users_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-
-CORS(
     agent_hub_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     search_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     assist_suggest_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     unified_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     ai_assistant_chat_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     onboarding_bps,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     ai_reporting_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     forwarding_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     calenders_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-
-CORS(
     integrations_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     audio_agent_bps,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     docs_agent_bps,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     scrape_agent_bps,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
+    credits_bp,
     plans_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
-CORS(
     payments_bp,
-    supports_credentials=True,
-    origins=BASE_ORGINS,
-)
+    bytoid_dev_pro_bp,
+    apiconnector_bp,
+    radar_bp,
+]
 
+for print in blueprints:
+    CORS(
+        print,
+        supports_credentials=True,
+        origins=BASE_ORGINS,
+    )
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
 
 # Create data directory if not exists
 os.makedirs("data", exist_ok=True)
 
-# Register Blueprints
-app.register_blueprint(google_bp)
-app.register_blueprint(facebook_bp)
-app.register_blueprint(agent_bps)
-app.register_blueprint(gmail_bp)
-app.register_blueprint(session_bp)
-app.register_blueprint(microsoft_bp)
-app.register_blueprint(twilio_bp)
-app.register_blueprint(users_bp)
-app.register_blueprint(contacts_bp)
-app.register_blueprint(playbook_bp)
-app.register_blueprint(zoho_bp)
-app.register_blueprint(credits_bp)
-app.register_blueprint(umail_bp)
-app.register_blueprint(tickets_bp)
-app.register_blueprint(inv_users_bp)
-app.register_blueprint(agent_hub_bp)
-app.register_blueprint(search_bp)
-app.register_blueprint(assist_suggest_bp)
-app.register_blueprint(unified_bp)
-app.register_blueprint(ai_assistant_chat_bp)
-app.register_blueprint(onboarding_bps)
-app.register_blueprint(ai_reporting_bp)
-app.register_blueprint(forwarding_bp)
-app.register_blueprint(calenders_bp)
-app.register_blueprint(integrations_bp)
-app.register_blueprint(docs_agent_bps)
-app.register_blueprint(scrape_agent_bps)
-app.register_blueprint(audio_agent_bps)
-app.register_blueprint(plans_bp)
-app.register_blueprint(payments_bp)
+for prints in blueprints:
+    app.register_blueprint(prints)
 
+from collections import defaultdict
+
+
+def list_routes_by_blueprint(app):
+    grouped = defaultdict(list)
+
+    for rule in app.url_map.iter_rules():
+        endpoint = rule.endpoint  # e.g. payments_bp.paymenttopup
+
+        if "." in endpoint:
+            blueprint, func_name = endpoint.split(".", 1)
+        else:
+            blueprint = "app"
+            func_name = endpoint
+
+        grouped[blueprint].append(
+            {
+                "endpoint": endpoint,
+                "function": func_name,
+                "methods": list(rule.methods),
+                "path": str(rule),
+            }
+        )
+
+    return grouped
+
+
+def save_routes_to_json(file_path="all_apis.json"):
+    routes = list_routes_by_blueprint(app)
+
+    data = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "total_blueprints": len(routes),
+        "apis": routes,
+    }
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True) if "/" in file_path else None
+
+    with open(file_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+    return file_path
+
+
+# save_routes_to_json()
 import argparse
 
 if __name__ == "__main__":

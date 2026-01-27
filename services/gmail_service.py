@@ -50,7 +50,13 @@ def get_cutoff_ts(days_back: int) -> int:
 
 class GmailService:
     def __init__(
-        self, user_id, connection=None, testing=False, workflow=None, wf_id=None, integration = None
+        self,
+        user_id,
+        connection=None,
+        testing=False,
+        workflow=None,
+        wf_id=None,
+        integration=None,
     ):
         # Use provided connection or get a new one
         self.conn = connection or connect_to_rds()
@@ -65,13 +71,13 @@ class GmailService:
         with get_cursor(self.conn) as cursor:
             if integration:
                 cursor.execute(
-                """
+                    """
                 SELECT client_id, client_secret, access_token, refresh_token, expiry
                 FROM integrations
                 WHERE user_id = %s
                 """,
-                (str(user_id)),
-            )
+                    (str(user_id)),
+                )
             else:
                 cursor.execute(
                     """
@@ -94,19 +100,37 @@ class GmailService:
             token_uri="https://oauth2.googleapis.com/token",
             client_id=client_id,
             client_secret=client_secret,
-            scopes=[
+            # scopes=[
+            #     "https://www.googleapis.com/auth/userinfo.profile",
+            #     "https://www.googleapis.com/auth/userinfo.email",
+            #     "https://www.googleapis.com/auth/gmail.readonly",
+            #     "https://www.googleapis.com/auth/gmail.send",
+            #     "https://www.googleapis.com/auth/gmail.modify",
+            #     "https://www.googleapis.com/auth/gmail.compose",
+            #     "https://www.googleapis.com/auth/drive.metadata.readonly",
+            #     "https://www.googleapis.com/auth/drive",
+            #     "https://www.googleapis.com/auth/calendar",
+            #     "openid",
+            #     "https://www.googleapis.com/auth/contacts",
+            # ],
+            scopes=(
+                # Identity
+                "openid",
                 "https://www.googleapis.com/auth/userinfo.profile",
                 "https://www.googleapis.com/auth/userinfo.email",
+                # Gmail – FULL access
                 "https://www.googleapis.com/auth/gmail.readonly",
                 "https://www.googleapis.com/auth/gmail.send",
                 "https://www.googleapis.com/auth/gmail.modify",
                 "https://www.googleapis.com/auth/gmail.compose",
+                # Drive – READ ONLY
+                "https://www.googleapis.com/auth/drive.readonly",
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
-                "https://www.googleapis.com/auth/drive",
+                # Calendar – READ ONLY
                 "https://www.googleapis.com/auth/calendar",
-                "openid",
-                "https://www.googleapis.com/auth/contacts",
-            ],
+                # Contacts – READ ONLY
+                "https://www.googleapis.com/auth/contacts.readonly",
+            ),
             expiry=expiryed,
         )
         if self.creds.expired and self.creds.refresh_token:
@@ -247,7 +271,6 @@ class GmailService:
         else:
             logger.info("watch log creation failed %s", self.user_email)
         return response
-    
 
     def check_hisdata(self, stored_history_id):
         response = (
@@ -1308,7 +1331,9 @@ class GmailService:
                     ]
 
                     for pattern in reply_patterns:
-                        plain = re.split(pattern, plain, maxsplit=1, flags=re.IGNORECASE)[0]
+                        plain = re.split(
+                            pattern, plain, maxsplit=1, flags=re.IGNORECASE
+                        )[0]
 
                     body = plain.strip()
                     plain_text = " ".join(body.split())

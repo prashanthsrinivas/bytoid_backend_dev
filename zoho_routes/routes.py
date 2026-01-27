@@ -583,7 +583,7 @@ def get_zoho_thread_count_dynamic(user_id):
 
 
 
-@zoho_bp.route("/zoho/get_email/<user_id>")
+# @zoho_bp.route("/zoho/get_email/<user_id>")
 def fetch_zoho_emails(user_id):
     try:
         conn = connect_to_rds()
@@ -685,7 +685,6 @@ def fetch_zoho_emails(user_id):
                         "Authorization": f"Zoho-oauthtoken {access_token}"
                     })                
                     full_body = resp.json()["data"]["content"]
-                    print(f"full_body : {full_body}")
                 except Exception as e:
                     print(f"error in getting body: {e}")
                 subject = mail.get("subject")
@@ -733,16 +732,7 @@ def fetch_zoho_emails(user_id):
 
             start += limit
 
-        # Current UTC time
-        current_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-
-        # Convert to epoch milliseconds
-        current_epoch_ms = int(current_utc.timestamp() * 1000)
-
-        # Call the function to set/update the user's sync time
-        set_user_sync_time_zoho(user_id, current_epoch_ms)
-
-        return jsonify(results)
+        return results
 
     except Exception as e:
         print("Zoho mail sync failed")
@@ -791,7 +781,6 @@ async def v2fetch_zoho_messages_batch(user_id,connection):
                 "grouped_messages": {},
             }
 
-        # print(f"results: {results}")
         count_new = 0
         grouped_messages = defaultdict(list)
 
@@ -949,7 +938,7 @@ async def v2fetch_zoho_messages_batch(user_id,connection):
                 message = {
                     "id": row_id,
                     "from": from_email,
-                    "to": to_emails[0],
+                    "to": to_emails[0] if to_emails else None,
                     "cc": msg.get("cc", ""),
                     "bcc": msg.get("bcc", ""),
                     "body": body_content,
@@ -1154,14 +1143,14 @@ async def v2all_continuous_zoho(user_id, integration=None, min_days=2):
             )
 
         # update the outlook_sync file
-        # Get current UTC time
+        # Current UTC time
         current_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
 
-        # Convert to ISO8601 "Z" format
-        current_time_str = current_utc.isoformat().replace("+00:00", "Z")
+        # Convert to epoch milliseconds
+        current_epoch_ms = int(current_utc.timestamp() * 1000)
 
         # Call the function to set/update the user's sync time
-        set_user_sync_time_zoho(user_id, current_time_str)
+        set_user_sync_time_zoho(user_id, current_epoch_ms)
 
         return {
             "user":  user_id,

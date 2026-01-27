@@ -5,15 +5,13 @@ from utils.base_logger import get_logger
 from .google_integration import google_integration_login
 from .microsoft_integration import microsoft_integration_login
 from urllib.parse import unquote
-from microsoft_route.microsoft_helpers import  retrieve_auth_state_from_redis
+from microsoft_route.microsoft_helpers import retrieve_auth_state_from_redis
 import asyncio
 from utils.s3_utils import S3_BUCKET, load_yaml_from_s3, s3bucket, save_yaml_to_s3
 from agent_route.lance_agent import LanceClient
 from microsoft_route.microsoft_helpers import OutlookSubscriptionManager
 from umail_helper.helper import delete_user_sync_time
 from .integrations_helpers import get_all_integrations
-
-
 
 
 # import request
@@ -23,13 +21,13 @@ integrations_bp = Blueprint("integrations", __name__)
 logger = get_logger(__name__)
 
 
-
 from flask import request, jsonify
 from google_auth_oauthlib.flow import Flow
 import requests
 from datetime import datetime
 import os
 import uuid
+
 
 @integrations_bp.route("/check_integrations", methods=["POST"])
 def check_integrations():
@@ -38,8 +36,8 @@ def check_integrations():
     try:
         data = request.json
         user_id = data.get("user_id")
-        platform = data.get("platform")     # example: "google", "microsoft"
-        type_ = data.get("type")            # example: "drive", "mails"
+        platform = data.get("platform")  # example: "google", "microsoft"
+        type_ = data.get("type")  # example: "drive", "mails"
 
         print("----- REQUEST DATA START -----")
         print(f"user_id: {user_id}")
@@ -72,27 +70,24 @@ def check_integrations():
             elif platform == "microsoft":
                 result = microsoft_integration_login()
             return result
-        
+
     except Exception as e:
         logger.error("Integration check error: %s", str(e))
         return {"error": "Internal server error"}, 500
 
     finally:
-            if cursor:
-                cursor.close()
-            if connection:
-                connection.close()
-        
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 @integrations_bp.route("/get_all_integrations_for_user", methods=["POST"])
 def get_all_integrations_for_user():
-    data = request.json 
+    data = request.json
     user_id = data.get("user_id")
     return get_all_integrations(user_id)
 
-
-    
 
 def deletefilebasedData(filenames, userid):
     """
@@ -168,7 +163,7 @@ def deletefilebasedData(filenames, userid):
         return False
 
 
-async def delete_integration_file_(userid,source):
+async def delete_integration_file_(userid, source):
     """
     Deletes vector data from LanceDB via LanceClient and updates the YAML metadata:
     - Sets 'FileStatus' to 'Deleted'
@@ -220,14 +215,14 @@ async def delete_integration_file_(userid,source):
                 f"Failed to delete question entries for user {userid}, file {filename}"
             )
 
-        # Step 3: Delete vectors from LanceDB
+            # Step 3: Delete vectors from LanceDB
             lance_agent = LanceClient(user_id=userid)
             for filename in filenames:
                 delete_result = await lance_agent.delete_file_Data(foldername=filename)
                 if delete_result.get("status") != "success":
                     print(f"error: {delete_result.get('message', 'Unknown error')}")
                     return False
-        
+
     # # Reload for returning updated data
     # all_file_data
 
@@ -262,13 +257,15 @@ async def delete_all_user_integration_files(userid):
     # Delete passed/failed question entries
     success = delete_all_QA_files(userid)
     if not success:
-            print(f"warning: failed to delete Q&A entries for {userid}")
+        print(f"warning: failed to delete Q&A entries for {userid}")
 
     # Delete vector files from LanceDB
     lance_agent = LanceClient(user_id=userid)
     delete_result = await lance_agent.delete_all_file_Data()
     if delete_result.get("status") != "success":
-        print(f"error while deleting vector for {userid}: {delete_result.get('message')}")
+        print(
+            f"error while deleting vector for {userid}: {delete_result.get('message')}"
+        )
         return False
 
     return True
@@ -312,14 +309,14 @@ async def delete_integration():
 
         data = request.json
         primary_user_id = data.get("user_id")
-        platform = data.get("platform")     # example: "google", "microsoft"
+        platform = data.get("platform")  # example: "google", "microsoft"
 
         print("----- REQUEST DATA START -----")
         print(f"primary_user_id: {primary_user_id}")
         print(f"platform: {platform}")
         print("----- REQUEST DATA END -----")
 
-        if not primary_user_id or not platform :
+        if not primary_user_id or not platform:
             return {"error": "primary_user_id are required"}, 400
 
         query = """
@@ -330,7 +327,7 @@ async def delete_integration():
             AND platform = %s
         """
 
-        cursor.execute(query, (primary_user_id,platform))
+        cursor.execute(query, (primary_user_id, platform))
         row = cursor.fetchone()  # fetch all rows
 
         if not row:
@@ -338,7 +335,6 @@ async def delete_integration():
 
         user_id = row["user_id"]
 
-    
         # Get a list of tuples with (user_id, platform)
         query = """
             DELETE 
@@ -348,11 +344,11 @@ async def delete_integration():
             AND platform = %s
         """
 
-        cursor.execute(query, (primary_user_id,platform))
+        cursor.execute(query, (primary_user_id, platform))
         connection.commit()
 
         if cursor.rowcount > 0:
-            result = await delete_integration_file_(primary_user_id,platform )
+            result = await delete_integration_file_(primary_user_id, platform)
             if not result:
                 return jsonify({"error": "not deleted"}), 400
         else:
@@ -363,18 +359,17 @@ async def delete_integration():
             return jsonify({"message": "successfully deleted"}), 200
         else:
             return jsonify({"error": "not deleted"}), 400
-        
-        
+
     except Exception as e:
         logger.error("delete_integrations check error: %s", str(e))
         return {"error": "Internal server error in delete_integrations"}, 500
 
     finally:
-            if cursor:
-                cursor.close()
-            if connection:
-                connection.close()
-        
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
 
 async def delete_integrations_of_contact():
     connection = connect_to_rds()
@@ -388,7 +383,7 @@ async def delete_integrations_of_contact():
         print(f"primary_user_id: {primary_user_id}")
         print("----- REQUEST DATA END -----")
 
-        if not primary_user_id :
+        if not primary_user_id:
             return {"error": "primary_user_id are required"}, 400
 
         query = """
@@ -405,7 +400,7 @@ async def delete_integrations_of_contact():
             print(f"no integrations for this user")
             return True
 
-        user_ids = [r['user_id'] for r in row]  
+        user_ids = [r["user_id"] for r in row]
 
         # Get a list of tuples with (user_id, platform)
         query = """
@@ -421,8 +416,8 @@ async def delete_integrations_of_contact():
         if cursor.rowcount > 0:
             pass
 
-            # for user_id in user_ids:   
-            
+            # for user_id in user_ids:
+
             #         result = await delete_all_user_integration_files(primary_user_id)
             #         if not result:
             #             return jsonify({"error": "not deleted"}), 400
@@ -434,23 +429,22 @@ async def delete_integrations_of_contact():
             #         return jsonify({"message": "successfully deleted"}), 200
             #     else:
             #         return jsonify({"error": "not deleted"}), 400
-                
-        
+
     except Exception as e:
         logger.error("delete_integrations check error: %s", str(e))
         return {"error": "Internal server error in delete_integrations"}, 500
 
     finally:
-            if cursor:
-                cursor.close()
-            if connection:
-                connection.close()
-        
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 from urllib.parse import unquote
 
-#----------- GOOGLE CALLBAK FOR INTEGRATION ---------------
+# ----------- GOOGLE CALLBAK FOR INTEGRATION ---------------
+
 
 @integrations_bp.route("/integration/google/callback", methods=["GET"])
 def google_integration_callback():
@@ -470,7 +464,10 @@ def google_integration_callback():
         print("----------------------------------------")
 
         if not full_url or not code:
-            return jsonify({"connected": False, "error": "Missing required params"}), 400
+            return (
+                jsonify({"connected": False, "error": "Missing required params"}),
+                400,
+            )
 
         # Google URL is double encoded → decode twice
         decoded_url = unquote(unquote(full_url))
@@ -479,20 +476,38 @@ def google_integration_callback():
         # OAuth Flow
         flow = Flow.from_client_secrets_file(
             "client_secrets.json",
-            scopes=[
-                            "https://www.googleapis.com/auth/userinfo.profile",
-                            "https://www.googleapis.com/auth/userinfo.email",
-                            "https://www.googleapis.com/auth/gmail.readonly",
-                            "https://www.googleapis.com/auth/gmail.send",
-                            "https://www.googleapis.com/auth/gmail.modify",
-                            "https://www.googleapis.com/auth/gmail.compose",
-                            "https://www.googleapis.com/auth/drive.metadata.readonly",
-                            "https://www.googleapis.com/auth/drive",
-                            "https://www.googleapis.com/auth/calendar",
-                            "https://www.googleapis.com/auth/contacts",
-                            "openid",
-            ],
-            redirect_uri="https://dev.bytoid.ai/integration/google/callback"
+            # scopes=[
+            #                 "https://www.googleapis.com/auth/userinfo.profile",
+            #                 "https://www.googleapis.com/auth/userinfo.email",
+            #                 "https://www.googleapis.com/auth/gmail.readonly",
+            #                 "https://www.googleapis.com/auth/gmail.send",
+            #                 "https://www.googleapis.com/auth/gmail.modify",
+            #                 "https://www.googleapis.com/auth/gmail.compose",
+            #                 "https://www.googleapis.com/auth/drive.metadata.readonly",
+            #                 "https://www.googleapis.com/auth/drive",
+            #                 "https://www.googleapis.com/auth/calendar",
+            #                 "https://www.googleapis.com/auth/contacts",
+            #                 "openid",
+            # ],
+            scopes=(
+                # Identity
+                "openid",
+                "https://www.googleapis.com/auth/userinfo.profile",
+                "https://www.googleapis.com/auth/userinfo.email",
+                # Gmail – FULL access
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.compose",
+                # Drive – READ ONLY
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/drive.metadata.readonly",
+                # Calendar – READ ONLY
+                "https://www.googleapis.com/auth/calendar",
+                # Contacts – READ ONLY
+                "https://www.googleapis.com/auth/contacts.readonly",
+            ),
+            redirect_uri="https://dev.bytoid.ai/integration/google/callback",
         )
 
         flow.fetch_token(authorization_response=decoded_url)
@@ -533,7 +548,7 @@ def google_integration_callback():
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         cursor.execute(
-        """
+            """
         INSERT INTO integrations
             (
                 integration_id,
@@ -559,26 +574,25 @@ def google_integration_callback():
             status = 'active',
             updated_at = NOW()
         """,
-        (
-            # INSERT values (13)
-            str(uuid.uuid4()),   # 1 integration_id
-            google_user_id,      # 2 user_id
-            "google",            # 3 platform
-            client_id,           # 4 client_id
-            client_secret,       # 5 client_secret
-            access_token,        # 6 access_token
-            refresh_token,       # 7 refresh_token
-            expiry_str,          # 8 expiry
-            "active",            # 9 status
-            app_user_id,         # 10 primary_user_id_fk
-            email,               # 11 email
-
-            # UPDATE values (3)
-            access_token,        # 12
-            refresh_token,       # 13
-            expiry_str            # 14
+            (
+                # INSERT values (13)
+                str(uuid.uuid4()),  # 1 integration_id
+                google_user_id,  # 2 user_id
+                "google",  # 3 platform
+                client_id,  # 4 client_id
+                client_secret,  # 5 client_secret
+                access_token,  # 6 access_token
+                refresh_token,  # 7 refresh_token
+                expiry_str,  # 8 expiry
+                "active",  # 9 status
+                app_user_id,  # 10 primary_user_id_fk
+                email,  # 11 email
+                # UPDATE values (3)
+                access_token,  # 12
+                refresh_token,  # 13
+                expiry_str,  # 14
+            ),
         )
-    )
 
         conn.commit()
         cursor.close()
@@ -591,7 +605,8 @@ def google_integration_callback():
         return jsonify({"connected": False, "error": str(e)}), 500
 
 
-#----------- MICROSOFT CALLBAK FOR INTEGRATION ---------------
+# ----------- MICROSOFT CALLBAK FOR INTEGRATION ---------------
+
 
 @integrations_bp.route("/integration/microsoft/callback", methods=["GET"])
 def microsoft_integration_callback():
@@ -622,7 +637,10 @@ def microsoft_integration_callback():
         # print("----------------------------")
 
         if error or not auth_code or not state:
-            return jsonify({"connected": False, "error": "Missing required params"}), 400
+            return (
+                jsonify({"connected": False, "error": "Missing required params"}),
+                400,
+            )
 
         # ✅ Retrieve the stored PKCE verifier from Redis using state
         stored_state = asyncio.run(retrieve_auth_state_from_redis(state))
@@ -630,12 +648,11 @@ def microsoft_integration_callback():
         if not stored_state:
             return jsonify({"connected": False, "error": "no stored variable"}), 400
 
-
         code_verifier = stored_state.get("code_verifier")
 
         if not code_verifier:
             return jsonify({"connected": False, "error": "no code verifier"}), 400
-       
+
         # print("----------------------------")
         # print(f"code_verifier: {code_verifier}")
         # print(f"auth_code: {auth_code}")
@@ -647,16 +664,15 @@ def microsoft_integration_callback():
 
         token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 
-        
         token_data = {
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "code": auth_code,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-                "code_verifier": code_verifier,  # ✅ Send PKCE verifier directly
-                "scope": " ".join(SCOPES),
-            }
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "code": auth_code,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+            "code_verifier": code_verifier,  # ✅ Send PKCE verifier directly
+            "scope": " ".join(SCOPES),
+        }
 
         token_response = requests.post(token_url, data=token_data, timeout=10)
 
@@ -664,10 +680,11 @@ def microsoft_integration_callback():
 
         # Get user info (like Google does)
         access_token = result["access_token"]
-        refresh_token = result.get("refresh_token","")
+        refresh_token = result.get("refresh_token", "")
         expiry = result["expires_in"]  # int
 
         from datetime import datetime, timedelta
+
         expiry_dt = datetime.utcnow() + timedelta(seconds=expiry)
         expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -686,9 +703,8 @@ def microsoft_integration_callback():
 
         userinfo = userinfo_response.json()
         email = userinfo.get("mail") or userinfo.get("userPrincipalName")
-        microsoft_user_id = userinfo.get("id")  
+        microsoft_user_id = userinfo.get("id")
 
-              
         # print("-----------------------")
         # print(f"microsoft_user_id : {microsoft_user_id}")
         # print(f"email : {email}")
@@ -699,7 +715,7 @@ def microsoft_integration_callback():
             conn = connect_to_rds()
             cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-             # check if this email is already in user table
+            # check if this email is already in user table
             cursor.execute(
                 """
                 SELECT 1 
@@ -710,14 +726,18 @@ def microsoft_integration_callback():
             )
             row = cursor.fetchone()
             if row:
-                return jsonify({
-                    "connected":False,
-                    "error":"This account is already registered as a user. Use a different microsoft account to integrate."
-                }),409
-        
+                return (
+                    jsonify(
+                        {
+                            "connected": False,
+                            "error": "This account is already registered as a user. Use a different microsoft account to integrate.",
+                        }
+                    ),
+                    409,
+                )
 
             cursor.execute(
-            """
+                """
             INSERT INTO integrations
                 (integration_id, user_id, platform, access_token, refresh_token, expiry, status, created_at, updated_at, primary_user_id_fk, email)
             VALUES
@@ -729,25 +749,23 @@ def microsoft_integration_callback():
                 status='active',
                 updated_at=NOW()
             """,
-            (
-                # INSERT (11)
-                str(uuid.uuid4()),     # 1 integration_id
-                microsoft_user_id,     # 2 user_id
-                "microsoft",           # 3 platform
-                access_token,          # 4
-                refresh_token,         # 5
-                expiry_str,            # 6
-                "active",              # 7 status
-                app_user_id,           # 8 primary_user_id_fk
-                email,                 # 9 email
-
-                # UPDATE (3)
-                access_token,          # 10
-                refresh_token,         # 11
-                expiry_str             # 12
+                (
+                    # INSERT (11)
+                    str(uuid.uuid4()),  # 1 integration_id
+                    microsoft_user_id,  # 2 user_id
+                    "microsoft",  # 3 platform
+                    access_token,  # 4
+                    refresh_token,  # 5
+                    expiry_str,  # 6
+                    "active",  # 7 status
+                    app_user_id,  # 8 primary_user_id_fk
+                    email,  # 9 email
+                    # UPDATE (3)
+                    access_token,  # 10
+                    refresh_token,  # 11
+                    expiry_str,  # 12
+                ),
             )
-        )
-
 
             conn.commit()
             cursor.close()
@@ -756,15 +774,12 @@ def microsoft_integration_callback():
             manager = OutlookSubscriptionManager()
             future = manager.create_subscription_async(access_token, email)
 
-            return jsonify({"connected": True}),200
-
+            return jsonify({"connected": True}), 200
 
         except Exception as db_error:
             print("ERROR:", str(e))
             return jsonify({"connected": False, "error": str(e)}), 500
 
-       
     except Exception as e:
         print("ERROR:", str(e))
         return jsonify({"connected": False, "error": str(e)}), 500
-

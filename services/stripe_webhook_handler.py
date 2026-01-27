@@ -1,7 +1,8 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from db.db_checkers import get_userid
 from db.rds_db import connect_to_rds
+from services.credit_system import CreditManager
 from utils.stripe_config import dev_stipe as stripe
 
 
@@ -24,6 +25,80 @@ class StripeWebhookHandler:
         self.event = event
         self.event_type = event.get("type", "unknown")
         self.obj = event.get("data", {}).get("object", {})
+
+    def get_token_by_planidorpriceid(plancode=None, price_id=None):
+        conn = connect_to_rds()
+        cur = conn.cursor()
+
+        try:
+            if price_id:
+
+                # --- 2️⃣ Get token amount from plans table ---
+                cur.execute(
+                    "SELECT monthly_token_limit FROM plans WHERE stripe_price_id = %s LIMIT 1",
+                    (price_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return row[0]
+            if plancode:
+                cur.execute(
+                    "SELECT monthly_token_limit FROM plans WHERE plan_code = %s LIMIT 1",
+                    (plancode,),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return row[0]
+
+            # --- 3️⃣ Fallback: use metadata from invoice/checkout session ---
+            # You can pass invoice or session as a parameter if needed
+            print(f"⚠️ Price {price_id} not found in plans, fallback to metadata")
+            return 0
+
+        finally:
+            cur.close()
+            conn.close()
+
+    def _get_subscription_tokens(self, subscription_id):
+        """
+        Return the number of tokens for a subscription.
+        1️⃣ Look up the subscription's price_id
+        2️⃣ Get monthly_token_limit from plans
+        3️⃣ Fallback to metadata if needed
+        """
+        conn = connect_to_rds()
+        cur = conn.cursor()
+
+        try:
+            # --- 1️⃣ Get price_id from subscriptions table ---
+            cur.execute(
+                "SELECT stripe_price_id FROM subscriptions WHERE stripe_subscription_id = %s LIMIT 1",
+                (subscription_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                print(f"⚠️ Subscription {subscription_id} not found")
+                return 0
+
+            price_id = row[0]
+
+            # --- 2️⃣ Get token amount from plans table ---
+            cur.execute(
+                "SELECT monthly_token_limit FROM plans WHERE stripe_price_id = %s LIMIT 1",
+                (price_id,),
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                return row[0]
+
+            # --- 3️⃣ Fallback: use metadata from invoice/checkout session ---
+            # You can pass invoice or session as a parameter if needed
+            print(f"⚠️ Price {price_id} not found in plans, fallback to metadata")
+            return 0
+
+        finally:
+            cur.close()
+            conn.close()
 
     # -------------------------------------------------
     # ENTRY POINT
@@ -96,105 +171,141 @@ class StripeWebhookHandler:
     # PAYMENT SAVE (HARD GUARANTEES)
     # -------------------------------------------------
     def save_payment(self, data):
+        """
+        Save Stripe payment, merging checkout.session.completed and invoice.paid events.
+        Event-order aware: never downgrade succeeded payments, and always attach session ID.
+        """
+        STATUS_PRIORITY = {"pending": 1, "succeeded": 2, "failed": 3}
+
         user_id = data.get("user_id")
         if not user_id:
             print("❌ Payment skipped (missing user_id)")
             return
 
-        payment_intent_id = data.get("payment_intent_id")
-        invoice_id = data.get("invoice_id")
-        subscription_id = data.get("subscription_id")
-        checkout_session_id = data.get("checkout_session_id")
-        payment_type = data.get("payment_type")
-
-        # 🔐 Guarantee checkout_session_id
-        if not checkout_session_id:
-            checkout_session_id = self._get_existing_checkout_session(
-                payment_intent_id, invoice_id, subscription_id
-            )
-
         conn = connect_to_rds()
         if not conn:
+            print("❌ DB connection failed")
             return
 
-        cur = conn.cursor()
         try:
-            # 1️⃣ If it's a subscription, check for the latest payment for same subscription in last 10 seconds
+            cur = conn.cursor()
             existing_payment_id = None
-            if subscription_id:
+            old_status = None
+            old_checkout_session_id = None
+
+            invoice_id = data.get("invoice_id")
+            payment_intent_id = data.get("payment_intent_id")
+            subscription_id = data.get("subscription_id")
+            amount_cents = data.get("amount_cents")
+
+            # --- 1️⃣ Look for existing by invoice_id / payment_intent_id ---
+            if invoice_id:
+                cur.execute(
+                    "SELECT id, status, stripe_checkout_session_id FROM payments WHERE stripe_invoice_id = %s LIMIT 1",
+                    (invoice_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    existing_payment_id, old_status, old_checkout_session_id = row
+
+            elif payment_intent_id:
+                cur.execute(
+                    "SELECT id, status, stripe_checkout_session_id FROM payments WHERE stripe_payment_intent_id = %s LIMIT 1",
+                    (payment_intent_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    existing_payment_id, old_status, old_checkout_session_id = row
+
+            # --- 2️⃣ Merge by subscription + amount + 10s window if not found ---
+            if not existing_payment_id and subscription_id:
                 cur.execute(
                     """
-                    SELECT id, created_at
+                    SELECT id, status, stripe_checkout_session_id, created_at
                     FROM payments
                     WHERE stripe_subscription_id = %s
+                    AND amount_cents = %s
+                    AND ABS(TIMESTAMPDIFF(SECOND, created_at, NOW())) <= 60
                     ORDER BY created_at DESC
                     LIMIT 1
                     """,
-                    (subscription_id,),
+                    (subscription_id, amount_cents),
                 )
                 row = cur.fetchone()
                 if row:
-                    existing_id, created_at = row
-                    # If last payment is within 10 seconds, consider it same transaction (merge session + invoice)
-                    time_diff = (datetime.utcnow() - created_at).total_seconds()
-                    if time_diff <= 10:
-                        existing_payment_id = existing_id
+                    existing_payment_id, old_status, old_checkout_session_id = (
+                        row[0],
+                        row[1],
+                        row[2],
+                    )
+                    print(f"🔀 Merging payment events into id={existing_payment_id}")
 
-            # 2️⃣ If not subscription or no recent payment, check for unique identifiers
-            if not existing_payment_id:
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM payments
-                    WHERE (stripe_payment_intent_id IS NOT NULL AND stripe_payment_intent_id = %s)
-                    OR (stripe_checkout_session_id IS NOT NULL AND stripe_checkout_session_id = %s)
-                    OR (stripe_invoice_id IS NOT NULL AND stripe_invoice_id = %s)
-                    LIMIT 1
-                    """,
-                    (payment_intent_id, checkout_session_id, invoice_id),
-                )
-                row = cur.fetchone()
-                if row:
-                    existing_payment_id = row[0]
+            # --- 3️⃣ Determine final status ---
+            new_status = data.get("status", "pending")
+            if old_status and STATUS_PRIORITY.get(old_status, 0) > STATUS_PRIORITY.get(
+                new_status, 0
+            ):
+                # Do not downgrade
+                new_status = old_status
 
-            # 3️⃣ If found, update
+            # --- 4️⃣ Update or Insert ---
             if existing_payment_id:
-                cur.execute(
-                    """
-                    UPDATE payments
-                    SET
-                        user_id = %s,
-                        stripe_event_id = %s,
-                        stripe_payment_intent_id = COALESCE(%s, stripe_payment_intent_id),
-                        stripe_checkout_session_id = COALESCE(%s, stripe_checkout_session_id),
-                        stripe_invoice_id = COALESCE(%s, stripe_invoice_id),
-                        stripe_subscription_id = COALESCE(%s, stripe_subscription_id),
-                        amount_cents = %s,
-                        currency = %s,
-                        payment_type = %s,
-                        status = %s,
-                        invoice_url = COALESCE(%s, invoice_url)
-                    WHERE id = %s
-                    """,
-                    (
-                        user_id,
-                        data.get("stripe_event_id"),
-                        payment_intent_id,
-                        checkout_session_id,
-                        invoice_id,
-                        subscription_id,
-                        data.get("amount_cents"),
-                        data.get("currency"),
-                        payment_type,
-                        data.get("status"),
-                        data.get("invoice_url"),
-                        existing_payment_id,
-                    ),
-                )
-                print(f"💾 Payment merged with existing (id={existing_payment_id})")
+                # If old is succeeded and new is pending (late session), only update session ID
+                if (
+                    old_status == "succeeded"
+                    and new_status == "succeeded"
+                    and data.get("checkout_session_id")
+                ):
+                    cur.execute(
+                        """
+                        UPDATE payments
+                        SET stripe_checkout_session_id=COALESCE(%s,stripe_checkout_session_id)
+                        WHERE id=%s
+                        """,
+                        (data.get("checkout_session_id"), existing_payment_id),
+                    )
+                    print(
+                        f"💾 Updated checkout_session_id only for succeeded payment id={existing_payment_id}"
+                    )
 
-            # 4️⃣ Otherwise, insert new
+                else:
+                    # Normal merge/update
+                    cur.execute(
+                        """
+                        UPDATE payments
+                        SET
+                            user_id=%s,
+                            stripe_event_id=COALESCE(%s,stripe_event_id),
+                            stripe_payment_intent_id=COALESCE(%s,stripe_payment_intent_id),
+                            stripe_checkout_session_id=COALESCE(%s,stripe_checkout_session_id),
+                            stripe_invoice_id=COALESCE(%s,stripe_invoice_id),
+                            stripe_subscription_id=COALESCE(%s,stripe_subscription_id),
+                            amount_cents=%s,
+                            currency=%s,
+                            payment_type=%s,
+                            status=%s,
+                            invoice_url=COALESCE(%s,invoice_url)
+                        WHERE id=%s
+                        """,
+                        (
+                            user_id,
+                            data.get("stripe_event_id"),
+                            payment_intent_id,
+                            data.get("checkout_session_id"),
+                            invoice_id,
+                            subscription_id,
+                            amount_cents,
+                            data.get("currency"),
+                            data.get("payment_type"),
+                            new_status,
+                            data.get("invoice_url"),
+                            existing_payment_id,
+                        ),
+                    )
+                    print(f"💾 Payment updated (merged) id={existing_payment_id}")
+
             else:
+                # Insert new payment
                 cur.execute(
                     """
                     INSERT INTO payments
@@ -209,31 +320,37 @@ class StripeWebhookHandler:
                         currency,
                         payment_type,
                         status,
-                        invoice_url
+                        invoice_url,
+                        created_at
                     )
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                     """,
                     (
                         user_id,
                         data.get("stripe_event_id"),
                         payment_intent_id,
-                        checkout_session_id,
+                        data.get("checkout_session_id"),
                         invoice_id,
                         subscription_id,
-                        data.get("amount_cents"),
+                        amount_cents,
                         data.get("currency"),
-                        payment_type,
-                        data.get("status"),
+                        data.get("payment_type"),
+                        new_status,
                         data.get("invoice_url"),
                     ),
                 )
-                print("💾 Payment inserted as new")
+                print(f"💾 Payment inserted (new) id={cur.lastrowid}")
 
             conn.commit()
 
+        except Exception as e:
+            print("⚠️ Error on save payment:", e)
+
         finally:
-            cur.close()
-            conn.close()
+            if cur:
+                cur.close()
+            if conn:
+                conn.close()
 
     # -------------------------------------------------
     # SUBSCRIPTIONS
@@ -261,6 +378,7 @@ class StripeWebhookHandler:
                 VALUES (%s,%s,%s,%s,%s,%s,%s)
                 AS new
                 ON DUPLICATE KEY UPDATE
+                    stripe_price_id=new.stripe_price_id,
                     status = new.status,
                     current_period_start = new.current_period_start,
                     current_period_end = new.current_period_end;
@@ -281,6 +399,25 @@ class StripeWebhookHandler:
         finally:
             cur.close()
             conn.close()
+
+    def _save_subscription_from_stripe(self, sub):
+        customer = stripe.Customer.retrieve(sub["customer"])
+        user_id = customer.metadata.get("user_id") or get_userid(customer.email)
+
+        price_id = sub["items"]["data"][0]["price"]["id"]
+        print("sub details", sub)
+
+        self.save_subscription(
+            {
+                "user_id": user_id,
+                "subscription_id": sub["id"],
+                "customer_id": sub["customer"],
+                "price_id": price_id,
+                "status": sub["status"],
+                "period_start": sub.get("current_period_start"),
+                "period_end": sub.get("current_period_end"),
+            }
+        )
 
     def update_subscription_status(self, subscription):
         stripe_status = subscription.get("status")
@@ -337,7 +474,6 @@ class StripeWebhookHandler:
 
         metadata = session.get("metadata", {})
         user_id = metadata.get("user_id")
-
         if not user_id:
             email = session.get("customer_details", {}).get("email")
             user_id = get_userid(email)
@@ -356,22 +492,21 @@ class StripeWebhookHandler:
         # Determine payment status
         # -------------------------
         receipt_url = None
-        if is_one_time:
-            # checkout.session.completed is FINAL for one-time
-            if session.get("payment_status") == "paid":
-                status = "succeeded"
-                pi_id = session.get("payment_intent")
-                if pi_id:
-                    pi = stripe.PaymentIntent.retrieve(pi_id)
-                    # print("pi", pi)
+        status = "pending"
 
-                    charge_id = pi.get("latest_charge")
-                    if charge_id:
-                        charge = stripe.Charge.retrieve(charge_id)
-                        # print("charge", charge)
-                        receipt_url = charge.get("receipt_url")
+        if is_one_time:
+            # For one-time payments, check final status
+            payment_status = session.get("payment_status")
+            pi_id = session.get("payment_intent")
+
+            if payment_status == "paid" and pi_id:
+                status = "succeeded"
+                pi = stripe.PaymentIntent.retrieve(pi_id)
+                charge_id = pi.get("latest_charge")
+                if charge_id:
+                    charge = stripe.Charge.retrieve(charge_id)
+                    receipt_url = charge.get("receipt_url")
             else:
-                # async methods (UPI, netbanking)
                 status = "pending"
 
         else:
@@ -391,21 +526,69 @@ class StripeWebhookHandler:
                 "currency": session.get("currency"),
                 "payment_intent_id": session.get("payment_intent"),
                 "checkout_session_id": session.get("id"),
-                # subscription-only
                 "subscription_id": session.get("subscription"),
-                # invoice-only (will be set later for subs)
-                "invoice_id": receipt_url,
+                "invoice_id": None,
+                "invoice_url": receipt_url,
+            }
+        )
+        print(
+            {
+                "user_id": user_id,
+                "stripe_event_id": self.event.get("id"),
+                "payment_type": payment_type,
+                "status": status,
+                "amount_cents": session.get("amount_total"),
+                "currency": session.get("currency"),
+                "payment_intent_id": session.get("payment_intent"),
+                "checkout_session_id": session.get("id"),
+                "subscription_id": session.get("subscription"),
+                "invoice_id": None,
+                "invoice_url": receipt_url,
             }
         )
 
-        # # -------------------------
-        # # Business logic
-        # # -------------------------
-        # if is_one_time and status == "paid":
-        #     self.credit_topup(user_id, session.get("amount_total"))
+        # -------------------------
+        # CREDIT ALLOCATION
+        # -------------------------
+        if status == "succeeded":
+            try:
+                # 1️⃣ Primary source: metadata
+                tokens = metadata.get("credits") or metadata.get("amount_cents")
 
-        # if is_subscription:
-        #     print("📌 Subscription created, waiting for invoice.paid")
+                # 2️⃣ Fallback ONLY if metadata missing
+                if not tokens:
+                    price_id = None
+                    if session.get("line_items"):
+                        price_id = session["line_items"][0]["price"]["id"]
+
+                    tokens = self.get_token_by_planidorpriceid(
+                        plancode=metadata.get("plan_code"),
+                        price_id=price_id,
+                    )
+
+                if not tokens or int(tokens) <= 0:
+                    raise ValueError("Invalid credit amount")
+
+                tokens = int(tokens)
+
+                conn = connect_to_rds()
+                credit_manager = CreditManager(db_conn=conn)
+
+                source_type = metadata.get("type", "ONETIME").upper()
+
+                credit_manager.add_credits(
+                    user_id=user_id,
+                    credits=tokens,
+                    source_type=source_type,
+                    expires_at=datetime.utcnow() + timedelta(days=60),
+                    source_ref=session.get("id"),  # 👈 idempotency key
+                )
+
+                conn.close()
+                print(f"💰 Added {tokens} credits to user {user_id}")
+
+            except Exception as e:
+                print(f"⚠️ Failed to add credits: {e}")
 
     def checkout_failed(self):
         print("❌ Checkout failed:", self.obj.get("id"))
@@ -455,36 +638,33 @@ class StripeWebhookHandler:
     # -------------------------------------------------
     def invoice_paid(self):
         invoice = self.obj
-        # print("invoice obj", invoice)
 
         # Get customer info
-        customer = stripe.Customer.retrieve(invoice.get("customer"))
+        customer_id = invoice.get("customer")
+        customer = stripe.Customer.retrieve(customer_id)
         user_id = customer.metadata.get("user_id") or get_userid(customer.email)
 
-        # Attempt to get subscription_id from multiple sources
+        # Resolve subscription_id safely
         subscription_id = invoice.get("subscription")
-
         if not subscription_id:
-            # 1️⃣ Try first line item parent details
             lines = invoice.get("lines", {}).get("data", [])
             for line in lines:
                 parent = line.get("parent", {})
-                subscription_details = parent.get(
-                    "subscription_item_details"
-                ) or parent.get("subscription_details")
-                if subscription_details and subscription_details.get("subscription"):
-                    subscription_id = subscription_details["subscription"]
+                sub_details = parent.get("subscription_item_details") or parent.get(
+                    "subscription_details"
+                )
+                if sub_details and sub_details.get("subscription"):
+                    subscription_id = sub_details["subscription"]
                     break
 
         if not subscription_id:
-            # 2️⃣ Fallback to invoice.parent.subscription_details
             subscription_id = (
                 invoice.get("parent", {})
                 .get("subscription_details", {})
                 .get("subscription")
             )
 
-        # Save the payment
+        # Save the payment first
         self.save_payment(
             {
                 "user_id": user_id,
@@ -497,32 +677,40 @@ class StripeWebhookHandler:
                 "invoice_id": invoice.get("id"),
                 "invoice_url": invoice.get("hosted_invoice_url"),
                 "subscription_id": subscription_id,
-                "checkout_session_id": self._get_existing_checkout_session(
-                    invoice.get("payment_intent"), invoice.get("id"), subscription_id
-                ),
+                "checkout_session_id": None,
             }
         )
 
-        # Save subscription if we have subscription_id
+        # -------------------------
+        # CREDIT ALLOCATION (SUBSCRIPTION)
+        # -------------------------
         if subscription_id:
-            # Use first line item for price/period
-            line = lines[0] if lines else {}
-            price_id = line.get("price", {}).get("id") or line.get("pricing", {}).get(
-                "price_details", {}
-            ).get("price")
-            period = line.get("period", {})
+            # # Safely extract price_id
+            # line_item = invoice.get("lines", {}).get("data", [{}])[0]
+            # price_id = line_item.get("price", {}).get("id")
 
-            self.save_subscription(
-                {
-                    "user_id": user_id,
-                    "subscription_id": subscription_id,
-                    "customer_id": invoice.get("customer"),
-                    "price_id": price_id,
-                    "status": "active",
-                    "period_start": period.get("start") or invoice.get("period_start"),
-                    "period_end": period.get("end") or invoice.get("period_end"),
-                }
-            )
+            # if not price_id:
+            #     print(
+            #         f"⚠️ Invoice {invoice.get('id')} has no price. Skipping credit allocation."
+            #     )
+            #     return
+
+            tokens = self._get_subscription_tokens(subscription_id=subscription_id)
+            print("base tokens", tokens)
+
+            if tokens > 0:
+                conn = connect_to_rds()
+                credit_manager = CreditManager(db_conn=conn)
+
+                credit_manager.add_credits(
+                    user_id=user_id,
+                    credits=tokens,
+                    source_type="SUBSCRIPTION",
+                    expires_at=datetime.utcnow() + timedelta(days=45),
+                    source_ref=subscription_id,
+                )
+
+                conn.close()
 
     def invoice_failed(self):
         invoice = self.obj
@@ -578,14 +766,19 @@ class StripeWebhookHandler:
     # SUBSCRIPTION LIFECYCLE
     # -------------------------------------------------
     def subscription_created(self):
-        print("🔔 Subscription created:", self.obj.get("id"))
+        sub = self.obj
+        print("🔔 Subscription created:", sub.get("id"))
+
+        self._save_subscription_from_stripe(sub)
+
+        print("✅ Subscription created & saved")
 
     def subscription_updated(self):
-        # sub = self.obj
-        # self.update_subscription_status(sub)
+        sub = self.obj
 
-        # ❌ No email logic
-        print("🔄 Subscription updated:", self.obj.get("id"))
+        self._save_subscription_from_stripe(sub)
+
+        print("🔁 Subscription updated & saved")
 
     def subscription_deleted(self):
         sub = self.obj

@@ -2012,6 +2012,468 @@ def update_add_create_subscriptions():
         connection.close()
 
 
+def alter_payments_table():
+    conn = connect_to_rds()
+    if not conn:
+        print("❌ DB connection failed")
+        return
+
+    cur = conn.cursor()
+    try:
+        # -------------------------------------------------
+        # 1️⃣ Check if column exists
+        # -------------------------------------------------
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'payments'
+              AND COLUMN_NAME = 'stripe_subscription_id';
+        """
+        )
+        exists = cur.fetchone()[0]
+
+        if exists == 0:
+            print("➕ Adding stripe_subscription_id column")
+
+            cur.execute(
+                """
+                ALTER TABLE payments
+                ADD COLUMN stripe_subscription_id VARCHAR(255) DEFAULT NULL
+                AFTER stripe_invoice_id;
+            """
+            )
+        else:
+            print("ℹ️ stripe_subscription_id already exists")
+
+        # -------------------------------------------------
+        # 2️⃣ Add SAFE unique indexes (NULL allowed)
+        # -------------------------------------------------
+        indexes = {
+            "uniq_checkout_session": "stripe_checkout_session_id",
+            "uniq_payment_intent": "stripe_payment_intent_id",
+            "uniq_invoice": "stripe_invoice_id",
+        }
+
+        for index_name, column in indexes.items():
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.STATISTICS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'payments'
+                  AND INDEX_NAME = '{index_name}';
+            """
+            )
+            idx_exists = cur.fetchone()[0]
+
+            if idx_exists == 0:
+                print(f"➕ Creating index {index_name}")
+                cur.execute(f"CREATE UNIQUE INDEX {index_name} ON payments ({column});")
+            else:
+                print(f"ℹ️ Index {index_name} already exists")
+
+        conn.commit()
+        print("✅ payments table altered successfully")
+
+    except Exception as e:
+        conn.rollback()
+        print("❌ Error altering payments table:", e)
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def recreate_payments_table():
+    conn = connect_to_rds()
+    if not conn:
+        print("❌ DB connection failed")
+        return
+
+    cur = conn.cursor()
+    try:
+        print("🗑 Dropping payments table")
+        cur.execute("DROP TABLE IF EXISTS payments;")
+
+        print("➕ Creating payments table")
+        cur.execute(
+            """
+            CREATE TABLE payments (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+                user_id VARCHAR(64) NOT NULL,
+
+                stripe_event_id VARCHAR(255),
+
+                stripe_payment_intent_id VARCHAR(255),
+                stripe_checkout_session_id VARCHAR(255),
+                stripe_invoice_id VARCHAR(255),
+                stripe_subscription_id VARCHAR(255),
+
+                amount_cents INT NOT NULL,
+                currency VARCHAR(10) NOT NULL,
+
+                payment_type ENUM('one_time','subscription') NOT NULL,
+                status ENUM('pending','succeeded','failed') NOT NULL,
+
+                invoice_url TEXT,
+
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                UNIQUE KEY uniq_payment_intent (stripe_payment_intent_id),
+                UNIQUE KEY uniq_checkout_session (stripe_checkout_session_id),
+                UNIQUE KEY uniq_invoice (stripe_invoice_id)
+            );
+            """
+        )
+
+        conn.commit()
+        print("✅ payments table recreated successfully")
+
+    except Exception as e:
+        conn.rollback()
+        print("❌ Error recreating payments table:", e)
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def recreate_subscriptions_table():
+    conn = connect_to_rds()
+    if not conn:
+        print("❌ DB connection failed")
+        return
+
+    cur = conn.cursor()
+    try:
+        print("🗑 Dropping subscriptions table")
+        cur.execute("DROP TABLE IF EXISTS subscriptions;")
+
+        print("➕ Creating subscriptions table")
+        cur.execute(
+            """
+            CREATE TABLE subscriptions (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+                user_id VARCHAR(64) NOT NULL,
+
+                stripe_subscription_id VARCHAR(255) NOT NULL,
+                stripe_customer_id VARCHAR(255),
+                stripe_price_id VARCHAR(255),
+
+                status ENUM(
+                    'active',
+                    'past_due',
+                    'canceled',
+                    'incomplete'
+                ) NOT NULL,
+
+                current_period_start TIMESTAMP NULL,
+                current_period_end TIMESTAMP NULL,
+
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+                UNIQUE KEY uniq_subscription (stripe_subscription_id)
+            );
+            """
+        )
+
+        conn.commit()
+        print("✅ subscriptions table recreated successfully")
+
+    except Exception as e:
+        conn.rollback()
+        print("❌ Error recreating subscriptions table:", e)
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# DATABASE SCHEMA HELPERS
+# ---------------------------------------------------------
+
+
+def combo_create_credit_tables():
+    conn = connect_to_rds()
+    if not conn:
+        print("❌ DB connection failed")
+        return
+
+    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        # cur.execute("DROP TABLE IF EXISTS credit_wallets;")
+        cur.execute("DROP TABLE IF EXISTS credit_buckets;")
+        cur.execute("DROP TABLE IF EXISTS credit_usage_log;")
+
+        # cur.execute(
+        #     """
+        # CREATE TABLE IF NOT EXISTS credit_wallets (
+        #     user_id        VARCHAR(36) PRIMARY KEY,
+        #     total_credits  BIGINT NOT NULL DEFAULT 0,
+        #     updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        #         ON UPDATE CURRENT_TIMESTAMP
+        # )
+        # """
+        # )
+
+        cur.execute(
+            """
+        CREATE TABLE IF NOT EXISTS credit_buckets (
+            bucket_id      CHAR(36) PRIMARY KEY,
+            user_id        VARCHAR(36) NOT NULL,
+
+            source_type    ENUM('SUBSCRIPTION','ROLLOVER','TOPUP','BONUS') NOT NULL,
+            source_ref     VARCHAR(64),
+
+            credits_total  BIGINT NOT NULL,
+            credits_used   BIGINT NOT NULL DEFAULT 0,
+
+            expires_at     DATETIME NOT NULL,
+            is_expired     BOOLEAN DEFAULT 0,
+
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            INDEX idx_user_expiry (user_id, expires_at),
+            INDEX idx_user_active (user_id, is_expired)
+        )
+        """
+        )
+
+        cur.execute(
+            """
+        CREATE TABLE IF NOT EXISTS credit_usage_log (
+            usage_id     CHAR(36) PRIMARY KEY,
+            user_id      VARCHAR(36) NOT NULL,
+            bucket_id    CHAR(36) NOT NULL,
+            credits_used BIGINT NOT NULL,
+            reason       VARCHAR(32),
+            reference_id VARCHAR(64),
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print("❌ Error recreating subscriptions table:", e)
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def add_plan_type_columns():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+
+    try:
+        # -----------------------------------------
+        # Check existing columns
+        # -----------------------------------------
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'plans'
+              AND COLUMN_NAME IN ('is_subscription', 'is_topup')
+            """
+        )
+        existing_columns = {row[0] for row in cursor.fetchall()}
+
+        alter_parts = []
+
+        if "is_subscription" not in existing_columns:
+            alter_parts.append(
+                "ADD COLUMN is_subscription BOOLEAN NOT NULL DEFAULT TRUE AFTER is_free"
+            )
+
+        if "is_topup" not in existing_columns:
+            alter_parts.append(
+                "ADD COLUMN is_topup BOOLEAN NOT NULL DEFAULT FALSE AFTER is_subscription"
+            )
+
+        # Add CHECK constraint only once
+        cursor.execute(
+            """
+            SELECT CONSTRAINT_NAME
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'plans'
+              AND CONSTRAINT_TYPE = 'CHECK'
+              AND CONSTRAINT_NAME = 'chk_plan_type'
+            """
+        )
+        constraint_exists = cursor.fetchone()
+
+        if not constraint_exists:
+            alter_parts.append(
+                "ADD CONSTRAINT chk_plan_type CHECK ((is_subscription + is_topup) = 1)"
+            )
+
+        if not alter_parts:
+            print("ℹ️ Plan type columns already exist")
+            return
+
+        alter_sql = f"""
+            ALTER TABLE plans
+            {", ".join(alter_parts)};
+        """
+
+        cursor.execute(alter_sql)
+        connection.commit()
+
+        print("✅ Plan type columns added successfully")
+
+    except pymysql.MySQLError as e:
+        print(f"❌ MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_external_apps_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+
+    try:
+        # DROP CHILD FIRST
+        cursor.execute("DROP TABLE IF EXISTS external_app_endpoints;")
+        cursor.execute("DROP TABLE IF EXISTS external_apps;")
+
+        cursor.execute(
+            """
+            CREATE TABLE external_apps (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+                user_id VARCHAR(64) NOT NULL,
+
+                app_name VARCHAR(100) NOT NULL,
+                provider VARCHAR(50) NOT NULL DEFAULT 'custom',
+
+                base_url TEXT NOT NULL,
+
+                -- AUTH
+                auth_type ENUM('bearer', 'api_key', 'basic', 'oauth2', 'none') NOT NULL,
+                auth_config JSON NOT NULL,
+
+                -- DEFAULT REQUEST CONFIG
+                headers JSON DEFAULT NULL,
+                query_params JSON DEFAULT NULL,
+
+                timeout_seconds INT DEFAULT 10,
+                retry_count INT DEFAULT 0,
+                retry_backoff_seconds INT DEFAULT 0,
+
+                -- STATUS + TESTING
+                status ENUM('active', 'inactive') DEFAULT 'active',
+                last_test_status ENUM('success', 'failed') DEFAULT NULL,
+                last_error JSON DEFAULT NULL,
+                last_tested_at DATETIME DEFAULT NULL,
+
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+                UNIQUE KEY uq_user_app_name (user_id, app_name),
+                INDEX idx_external_apps_user (user_id),
+                INDEX idx_external_apps_provider (provider)
+            );
+            """
+        )
+
+        connection.commit()
+        print("✅ external_apps table created")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create external_apps table:", str(e))
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_external_app_endpoints_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE external_app_endpoints (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+                app_id BIGINT NOT NULL,
+
+                name VARCHAR(100) NOT NULL,
+
+                path VARCHAR(255) NOT NULL,
+                method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+
+                headers JSON DEFAULT NULL,
+                query_params JSON DEFAULT NULL,
+                body_template JSON DEFAULT NULL,
+
+                timeout_seconds INT DEFAULT NULL,
+
+                is_active BOOLEAN DEFAULT TRUE,
+
+                last_tested_at DATETIME DEFAULT NULL,
+                last_test_status ENUM('success','failed') DEFAULT NULL,
+                last_error JSON DEFAULT NULL,
+
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+                UNIQUE KEY uq_app_path_method (app_id, path, method),
+                UNIQUE KEY uq_app_endpoint_name (app_id, name),
+
+                INDEX idx_endpoint_app (app_id),
+
+                CONSTRAINT fk_endpoint_app
+                    FOREIGN KEY (app_id)
+                    REFERENCES external_apps(id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+
+        connection.commit()
+        print("✅ external_app_endpoints table created")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create external_app_endpoints table:", str(e))
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # print("HHSS")
@@ -2059,6 +2521,13 @@ if __name__ == "__main__":
     # update_create_plans()
     # update_add_create_plans()
     # add_stripe_columns_to_plans()
-    update_add_create_payments()
-    update_add_create_subscriptions()
+    # update_add_create_payments()
+    # update_add_create_subscriptions()
+    # alter_payments_table()
+    # recreate_payments_table()
+    # recreate_subscriptions_table()
+    # combo_create_credit_tables()
+    # add_plan_type_columns()
+    create_external_apps_table()
+    create_external_app_endpoints_table()
     print("ok")

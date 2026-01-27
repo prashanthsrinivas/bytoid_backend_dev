@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 
 class AutoMateService:
-    def __init__(self, userid, testing=False, workflow=None, wf_id=None):
+    def __init__(self, userid, testing=False, credits=None, workflow=None, wf_id=None):
         self.userid = userid
         self.connection = connect_to_rds()
 
@@ -35,6 +35,7 @@ class AutoMateService:
 
         self.current_step_id = wf_id
         self.current_step_data = None
+        self.credits = credits
         if self.current_step_id:
             self.get_current_step_data()
 
@@ -128,10 +129,11 @@ class AutoMateService:
 
         # Get designed HTML from Fireworks model
         email_html = await get_fireworks_response2(
-            self.userid,
-            prompt,
-            "system",
+            user_id=self.userid,
+            user_message=prompt,
+            role="system",
             temp=0.5,
+            credits=self.credits,
         )
 
         # Enforce strict HTML-only output
@@ -156,6 +158,7 @@ class AutoMateService:
             role="system",
             temp=0.3,
             user_id=self.userid,
+            credits=self.credits,
         )
         # 🔹 Extract only the JSON-like part using regex
         json_match = re.search(r"\{[\s\S]*\}", ai_content)
@@ -171,7 +174,11 @@ class AutoMateService:
             "Return only as 'filename.extension'."
         )
         suggested_file = await get_fireworks_response2(
-            filename_and_type_prompt, role="system", temp=0.7, user_id=self.userid
+            user_message=filename_and_type_prompt,
+            role="system",
+            temp=0.7,
+            user_id=self.userid,
+            credits=self.credits,
         ).strip()
 
         # 3. Fallback if AI returns invalid
@@ -199,7 +206,7 @@ class AutoMateService:
         elif ext == ".docx":
             if not ai_content:
                 structured_doc = await get_fireworks_response2(
-                    f"""
+                    user_message=f"""
                     You are an expert content writer and Word document designer.
 
                     Generate a structured Word document based on this input:
@@ -215,6 +222,7 @@ class AutoMateService:
                     role="system",
                     temp=0.6,
                     user_id=self.userid,
+                    credits=self.credits,
                 )
             else:
                 structured_doc = ai_content
@@ -259,6 +267,7 @@ class AutoMateService:
                 role="system",
                 temp=0.6,
                 user_id=self.userid,
+                credits=self.credits,
             )
 
             # 🔹 Extract JSON from any extra text first
@@ -303,7 +312,11 @@ class AutoMateService:
             """
         try:
             response = await get_fireworks_response2(
-                user_message=prompt, role="system", temp=0.5, user_id=self.userid
+                user_message=prompt,
+                role="system",
+                temp=0.5,
+                user_id=self.userid,
+                credits=self.credits,
             )
             return response.strip()
         except Exception as e:
@@ -396,7 +409,11 @@ class AutoMateService:
 
         try:
             response = await get_fireworks_response2(
-                user_message=prompt, role="system", temp=0.4, user_id=self.userid
+                user_message=prompt,
+                role="system",
+                temp=0.4,
+                user_id=self.userid,
+                credits=self.credits,
             )
             chat_reply = response.strip()
             return {"return_str": chat_reply}
@@ -502,7 +519,11 @@ class AutoMateService:
 
         try:
             response = await get_fireworks_response2(
-                user_message=prompt, role="system", temp=0.5, user_id=self.userid
+                user_message=prompt,
+                role="system",
+                temp=0.5,
+                user_id=self.userid,
+                credits=self.credits,
             )
 
             generated_content = response.strip()
@@ -631,7 +652,11 @@ class AutoMateService:
 
         try:
             response = await get_fireworks_response2(
-                user_message=prompt, role="system", temp=0.3, user_id=self.userid
+                user_message=prompt,
+                role="system",
+                temp=0.3,
+                user_id=self.userid,
+                credits=self.credits,
             )
 
             questions = json.loads(response.strip())
@@ -750,7 +775,11 @@ class AutoMateService:
 
             # 🤖 LLM call
             response = await get_fireworks_response2(
-                user_message=prompt, role="system", temp=0.4, user_id=self.userid
+                user_message=prompt,
+                role="system",
+                temp=0.4,
+                user_id=self.userid,
+                credits=self.credits,
             )
 
             review_output = response.strip()

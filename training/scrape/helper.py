@@ -1,5 +1,6 @@
 # Add this helper function for YouTube content summarization
 from datetime import datetime, timezone
+import inspect
 import json
 import os
 import re, yaml, requests
@@ -735,7 +736,10 @@ async def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
             total_chars = total_input_chars + total_output_chars
             credits = Credits()
             await credits.update_ai_credits_redis(
-                credit_type="embedding", total_chars=total_chars, user_id=user_id
+                credit_type="embedding",
+                total_chars=total_chars,
+                user_id=user_id,
+                reference_id=inspect.stack()[0].function,
             )
             # ----------------------------
 

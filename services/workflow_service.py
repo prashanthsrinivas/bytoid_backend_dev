@@ -44,10 +44,13 @@ class WorkflowRunnerV2:
         on_update=None,
         execution_id=None,
         execution_unique_key=None,
+        db=None,
+        credits=None,
     ):
         self.userid = userid
         self.filename = filename
-        self.connection = connect_to_rds()
+        self.credits = credits
+        self.connection = db or connect_to_rds()
         self.basename = os.path.splitext(filename)[0]
         self.wf_loc = f"{userid}/workflow/{self.basename}/{filename}"
         self.on_loc = f"{userid}/workflow/{self.basename}/{execution_id}.json"
@@ -624,7 +627,12 @@ class WorkflowRunnerV2:
         # =========================
         # LLM → human-style request
         # =========================
-        chat_response = await get_fireworks_response(prompt_text, "user", self.userid)
+        chat_response = await get_fireworks_response(
+            user_message=prompt_text,
+            role="user",
+            user_id=self.userid,
+            credits=self.credits,
+        )
 
         if isinstance(chat_response, dict):
             chat_response = chat_response.get("text", "")
@@ -1064,7 +1072,11 @@ class WorkflowRunnerV2:
         """
         for attempt in range(2):
             response_text = await get_fireworks_response2(
-                user_message=prompt_text, role=role, temp=temp, user_id=self.userid
+                user_message=prompt_text,
+                role=role,
+                temp=temp,
+                user_id=self.userid,
+                credits=self.credits,
             )
 
             if not response_text:
@@ -1106,7 +1118,11 @@ class WorkflowRunnerV2:
         """
         for attempt in range(2):
             response_text = await get_evaluator_fireworks(
-                response_text=prompt_text, role=role, temp=temp, user_id=self.userid
+                response_text=prompt_text,
+                role=role,
+                temp=temp,
+                user_id=self.userid,
+                credits=self.credits,
             )
 
             if not response_text:
@@ -1142,9 +1158,14 @@ class WorkflowRunnerV2:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.connection:
-            self.connection.close()
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc:
+                self.db.rollback()
+            else:
+                self.db.commit()
+        finally:
+            self.db.close()
 
     def get_attendees(self, attendees=None):
         """
@@ -1897,7 +1918,10 @@ class WorkflowRunnerV2:
         # Here, you could trigger AI generation / LLM response
         self.logger.info(f"[SELF-LEARN] {step['ai_instructions']}")
         result = await get_fireworks_response(
-            step["ai_instructions"], role="system", user_id=self.userid
+            user_message=step["ai_instructions"],
+            role="system",
+            user_id=self.userid,
+            credits=self.credits,
         )
         self.ai_made_output[step["id"]] = result
         return {"output": result, "next_step": step.get("next_step")}
@@ -1986,6 +2010,7 @@ class WorkflowRunnerV2:
                 testing=self.testing,
                 workflow=self.workflow_json,
                 wf_id=step_id,
+                credits=self.credits,
             )
         # print("triggering automate service")
         elif service_prefix == "twilio":

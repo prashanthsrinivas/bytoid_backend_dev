@@ -1,5 +1,6 @@
 import re
 import uuid
+from credits_route.route import Credits
 from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
@@ -41,26 +42,43 @@ def base_name(filename):
 
 
 @playbook_bp.route("/create_instruction", methods=["POST"])
-def create_new_instruction():
+async def create_new_instruction():
+    db = connect_to_rds()
     data = request.json
     userid = data["user_id"]
 
-    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    credits = Credits(db)
 
-    if not playbook_id:
-        config_s3_path = create_empty_playbook_config(userid)
-        playb_id = str(uuid.uuid4())
+    try:
+        # 🔐 Start transaction (OWNER)
+        db.begin()
 
-        playbook_id, config_path = create_subagent_to_playbook(
-            playb_id, subagent_id, config_s3_path
-        )
+        total_input_chars = 5000
+        if not await credits.has_ai_credits(
+            total_chars=total_input_chars,
+            user_id=userid,
+        ):
+            db.rollback()
+            return "INSUFFICIENT", 402
 
-    async def _create_and_update():
+        playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+
+        if not playbook_id:
+            config_s3_path = create_empty_playbook_config(userid)
+            playb_id = str(uuid.uuid4())
+
+            playbook_id, config_path = create_subagent_to_playbook(
+                playb_id, subagent_id, config_s3_path
+            )
+
+        # 🔁 Pass db + credits explicitly
         full_output, npath = await create_playbook(
             data=data,
             template_data=PLAY_TEMPLATE,
             minor_data=MINOR_PROMPTS,
             functions_ds=ALL_FUNCTIONS,
+            db=db,
+            credits=credits,
         )
 
         update_playbook_config(
@@ -73,16 +91,17 @@ def create_new_instruction():
             num_steps=len(full_output["workflow"]["steps"]),
         )
 
-        return full_output
+        # ✅ All good → commit once
+        db.commit()
+        await credits.cm.sync_credits_to_redis(
+            user_id=userid
+        )  # ✅ sync Redis after commit
 
-    def run_in_thread():
-        return asyncio.run(_create_and_update())
+        return jsonify({"status": "success", "data": full_output})
 
-    future = executor.submit(run_in_thread)
-
-    try:
-        full_output = future.result(timeout=60)
     except Exception as e:
+        # ❌ Any failure → rollback EVERYTHING (including credits)
+        db.rollback()
         return (
             jsonify(
                 {
@@ -94,20 +113,39 @@ def create_new_instruction():
             500,
         )
 
-    return jsonify({"status": "success", "data": full_output})
+    finally:
+        db.close()
 
 
 @playbook_bp.route("/update_instruction", methods=["POST"])
-def updateInstruction():
+async def updateInstruction():
     data = request.json
-    userid = data["user_id"]
-    filename = data["filename"]
+    userid = data.get("user_id")
+    filename = data.get("filename")
 
-    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    if not userid or not filename:
+        return jsonify({"error": "user_id and filename required"}), 400
+
+    # Ensure JSON file extension
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
+    # Get playbook info
+    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+
+    # Open DB and initialize Credits
+    db = connect_to_rds()
+    credits = Credits(db)
+
     async def _create_and_update():
+        # Estimate input size for credits (optional)
+        total_input_chars = 5000  # or dynamically compute
+        if not await credits.has_ai_credits(
+            total_chars=total_input_chars, user_id=userid
+        ):
+            raise Exception("INSUFFICIENT_CREDITS")
+
+        # Call your async playbook creation logic
         full_output, npath = await create_playbook(
             data=data,
             template_data=PLAY_TEMPLATE,
@@ -116,6 +154,7 @@ def updateInstruction():
             nfilename=filename,
         )
 
+        # Update playbook metadata in DB (transaction-scoped)
         update_playbook_config(
             configpath=config_path,
             user_id=userid,
@@ -128,6 +167,7 @@ def updateInstruction():
 
         return full_output
 
+    # Run async function in executor thread
     def run_in_thread():
         return asyncio.run(_create_and_update())
 
@@ -136,6 +176,11 @@ def updateInstruction():
     try:
         full_output = future.result(timeout=60)
     except Exception as e:
+        db.rollback()
+        db.close()
+        # Handle insufficient credits separately
+        if "INSUFFICIENT_CREDITS" in str(e):
+            return jsonify({"status": "error", "message": "Insufficient credits"}), 402
         return (
             jsonify(
                 {
@@ -146,6 +191,11 @@ def updateInstruction():
             ),
             500,
         )
+
+    # Commit all changes safely
+    db.commit()
+    db.close()
+    await credits.cm.sync_credits_to_redis(user_id=userid)  # ✅ sync Redis after commit
 
     return jsonify({"status": "success", "data": full_output})
 
@@ -309,8 +359,13 @@ def edit_a_step():
     steps = playbook.get("workflow", {}).get("steps", [])
 
     updated = False
+    # for i, step in enumerate(steps):
+    #     if step["id"] == step_data["id"]:
+    #         steps[i] = step_data
+    #         updated = True
+    #         break
     for i, step in enumerate(steps):
-        if step["id"] == step_data["id"]:
+        if str(step.get("id")) == str(step_data.get("id")):
             steps[i] = step_data
             updated = True
             break
@@ -765,6 +820,9 @@ def delete_a_step():
 
 @playbook_bp.route("/modify_instruction", methods=["POST"])
 async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None):
+    db = connect_to_rds()
+    credits = Credits(db)
+
     try:
         # -----------------------------
         # 1. INPUT HANDLING
@@ -798,6 +856,18 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
                 400,
             )
 
+        # -----------------------------
+        # 1a. Credit preflight
+        # -----------------------------
+        total_input_chars = len(update_instruction)
+        if not await credits.has_ai_credits(
+            total_chars=total_input_chars, user_id=user_id
+        ):
+            return jsonify({"status": "error", "message": "Insufficient credits"}), 402
+
+        # -----------------------------
+        # 2. Validate instruction
+        # -----------------------------
         if is_inappropriate(update_instruction):
             return (
                 jsonify(
@@ -808,11 +878,12 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
                 ),
                 400,
             )
+
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
 
         # -----------------------------
-        # 2. LOAD PROMPTS
+        # 3. LOAD PROMPTS
         # -----------------------------
         yaml_data = PLAY_TEMPLATE
         modify_prompt = yaml_data.get("modify_instruction")
@@ -830,7 +901,7 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
             )
 
         # -----------------------------
-        # 3. LOAD EXISTING WORKFLOW
+        # 4. LOAD EXISTING WORKFLOW
         # -----------------------------
         original_json = read_json_from_s3(
             f"{user_id}/workflow/{base_name(filename)}/{filename}"
@@ -846,13 +917,12 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
                 500,
             )
 
-        # Prepare prompt
         workflow_json_str = json.dumps(original_json["workflow"], indent=2)
-        contacts_pr = original_json["input_data"]["contacts"] or "All"
+        contacts_pr = original_json["input_data"].get("contacts") or "All"
         services_functions = read_function_jsons()
 
         # -----------------------------
-        # 4. BUILD MODIFY PROMPT
+        # 5. BUILD MODIFY PROMPT
         # -----------------------------
         full_prompt = (
             modify_prompt.replace("{existing_workflow}", workflow_json_str)
@@ -864,7 +934,7 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
         )
 
         # -----------------------------
-        # 5. MEETING INTENT DETECTION
+        # 6. MEETING INTENT DETECTION
         # -----------------------------
         def detect_meeting_intent(text: str) -> bool:
             return any(
@@ -896,7 +966,7 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
                 checker_dict[actual_social] = True
 
         # -----------------------------
-        # 6. INJECT MEETING RULES
+        # 7. INJECT MEETING RULES
         # -----------------------------
         if has_meeting_intent:
             meeting_rules = []
@@ -919,24 +989,27 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
                 )
 
         # -----------------------------
-        # 7. CALL MODIFY LLM
+        # 8. CALL MODIFY LLM (WITH CREDITS)
         # -----------------------------
+        db.begin()  # 🔐 start transaction
 
-        # token = current_user_id.set(user_id)
-        # try:
-        #     llm_response = await get_fireworks_response2(
-        #         full_prompt, role="system", temp=0.5
-        #     )
-        # finally:
-        #     current_user_id.reset(token)
         llm_response = await get_fireworks_response2(
-            user_message=full_prompt, role="system", temp=0.5, user_id=user_id
+            user_message=full_prompt,
+            role="system",
+            temp=0.5,
+            user_id=user_id,
+            credits=credits,
         )
+
+        if llm_response == "INSUFFICIENT":
+            db.rollback()
+            return jsonify({"status": "error", "message": "Insufficient credits"}), 402
 
         cleaned_response = extract_json_from_llm_output(llm_response)
         modified_json = json.loads(cleaned_response)
 
         if "unrelated_instruction_message" in modified_json:
+            db.rollback()
             return (
                 jsonify(
                     {
@@ -948,61 +1021,14 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
             )
 
         if "steps" not in modified_json:
+            db.rollback()
             return (
                 jsonify(
-                    {
-                        "status": "error",
-                        "message": "Modified workflow missing steps.",
-                    }
+                    {"status": "error", "message": "Modified workflow missing steps."}
                 ),
                 500,
             )
-        # print("modified json", modified_json)
-        # # -----------------------------
-        # # 8. RUN EVALUATOR (POST-MODIFY)
-        # # -----------------------------
-        # evaluator_prompt = eval_prompt
-        # evaluator_prompt = evaluator_prompt.replace(
-        #     "{instruction_input}",
-        #     json.dumps(
-        #         {
-        #             "update_instruction": update_instruction,
-        #             "todays_date": datetime.now().strftime("%Y-%m-%d"),
-        #         },
-        #         separators=(",", ":"),
-        #     ),
-        # )
 
-        # evaluator_prompt = evaluator_prompt.replace(
-        #     "{workflow_json}", json.dumps(modified_json, separators=(",", ":"))
-        # )
-
-        # evaluator_prompt = evaluator_prompt.replace(
-        #     "{functions_data}", services_functions
-        # )
-
-        # # print("evaluator prompt", evaluator_prompt)
-
-        # eval_response = get_evaluator_fireworks(evaluator_prompt, role="system",user_id=user_id)
-
-        # # print("🔎 Evaluator RAW response:", repr(eval_response))
-
-        # if not eval_response or not eval_response.strip():
-        #     raise ValueError("Evaluator returned EMPTY response")
-
-        # eval_cleaned = clean_json_block(eval_response)
-
-        # # print("🔎 Evaluator CLEANED response:", repr(eval_cleaned))
-
-        # if not eval_cleaned or not eval_cleaned.strip():
-        #     raise ValueError("Evaluator returned NON-JSON or empty output")
-
-        # eval_result = json.loads(eval_cleaned)
-
-        # if "workflow" not in eval_result:
-        #     raise ValueError("Evaluator JSON missing 'workflow' key")
-
-        # final_workflow = eval_result["workflow"]
         final_workflow = modified_json
 
         # -----------------------------
@@ -1017,11 +1043,9 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
 
         original_json["workflow"]["steps"] = final_workflow["steps"]
         original_json["WorkflowDate"] = datetime.now().isoformat()
-        result = returnconfigandpath(user_id)
-        if isinstance(result, tuple) and len(result) == 3:
-            _, config_path, _ = result
 
-        # return original_json
+        # Update playbook config
+        _, config_path, _ = returnconfigandpath(user_id)
         update_playbook_config(
             configpath=config_path,
             user_id=user_id,
@@ -1031,111 +1055,23 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
             description=original_json["workflow"]["description"],
             num_steps=len(original_json["workflow"]["steps"]),
         )
-        message = original_json.get(
-            "modified_message", "Workflow updated successfully."
-        )
 
-        return save_playbook_to_s3(original_json, user_id, message, filename)
+        db.commit()  # ✅ commit transaction
+        await credits.cm.sync_credits_to_redis(user_id)  # ✅ sync Redis after commit
 
-    except Exception as e:
-        print(f"❌ modify_instruction fatal error: {e}")
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "message": f"Internal server error: {e}",
-                }
-            ),
-            500,
-        )
-
-
-@playbook_bp.route("/workflow-aisuggest", methods=["POST"])
-async def workflow_ai_suggest():
-    try:
-        body = request.json
-        user_id = body.get("user_id")
-        category = body.get("quote")  # "quote" is the category
-        question = body.get("question")
-        filename = body.get("filename")
-        # token = current_user_id.set(user_id)
-        # Validate required fields
-        if not all([user_id, category, question, filename]):
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Missing required fields: user_id, quote (category), question, or filename.",
-                    }
-                ),
-                400,
-            )
-        if not filename.lower().endswith(".json"):
-            filename = f"{filename}.json"  # try:
-
-        # Load prompt template from YAML
-        promptfile = PLAY_TEMPLATE
-        workflow_json = read_json_from_s3(
-            filepath=f"{user_id}/workflow/{base_name(filename)}/{filename}"
-        )
-        validation_prompt = promptfile.get("ai_suggest_workflow_ans")
-
-        if not validation_prompt:
-            return (
-                jsonify(
-                    {
-                        "status": "error",
-                        "message": "Prompt template 'ai_suggest_workflow_ans' not found.",
-                    }
-                ),
-                500,
-            )
-
-        # Format the prompt
-        prompt_input = validation_prompt.format(
-            category=category.strip() if category else "",
-            question=question.strip() if question else "",
-            workflow_json=json.dumps(workflow_json, indent=2),
-        )
-
-        # Call LLM
-        # llm_output = get_fireworks_response(prompt_input, role="system")
-        llm_output = await get_fireworks_response2(
-            user_message=prompt_input, role="system", temp=0.7, user_id=user_id
-        )
-        ai_answer = llm_output.strip()
-
-        # Clean markdown formatting if returned (optional safety)
-        if ai_answer.startswith("```"):
-            ai_answer = ai_answer.strip("` \n")
-        # finally:
-        #     current_user_id.reset(token)
-
-        return (
-            jsonify(
-                {
-                    "status": "success",
-                    "user_id": user_id,
-                    "filename": filename,
-                    "category": category,
-                    "question": question,
-                    "ai_answer": ai_answer,
-                }
-            ),
-            200,
+        return save_playbook_to_s3(
+            original_json, user_id, "Workflow updated successfully.", filename
         )
 
     except Exception as e:
+        db.rollback()
         return (
-            jsonify(
-                {
-                    "status": "error",
-                    "message": "An error occurred while processing the question.",
-                    "details": str(e),
-                }
-            ),
+            jsonify({"status": "error", "message": f"Internal server error: {e}"}),
             500,
         )
+
+    finally:
+        db.close()
 
 
 @playbook_bp.route("/run_workflow", methods=["POST"])
@@ -1145,43 +1081,37 @@ async def runWorkflow():
     filename = data.get("filename")
     testing = data.get("testing")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
-    if not filename:
-        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+    if not userid or not filename:
+        return jsonify({"status": "error", "message": "Invalid input"}), 400
+
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
-    # token = current_user_id.set(userid)
+
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+    db = connect_to_rds()
+    credits = Credits(db=db)
+
     try:
-        # ✅ Pre-validate workflow existence
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
-        workflow_json = read_json_from_s3(wf_loc)
-        if not workflow_json:
-            return (
-                jsonify(
-                    {
-                        "message": f"Workflow file '{filename}' not found ",
-                        "status": "error",
-                    }
-                ),
-                404,
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=testing,
+            db=db,
+            credits=credits,
+        ) as runner:
+            await runner.execute()
+            return jsonify(
+                {"status": "success", "execution_log": runner.get_execution_log()}
             )
 
-        try:
-            with WorkflowRunnerV2(
-                userid=userid,
-                filename=filename,
-                workflowJson=workflow_json,
-                testing=testing,
-            ) as runner:
-                await runner.execute()
-                result = runner.get_execution_log()
-                return jsonify({"status": "success", "execution_log": result})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-    finally:
-        # current_user_id.reset(token)
-        print("ss")
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @playbook_bp.route("/run_workflow_step", methods=["POST"])
@@ -1191,126 +1121,87 @@ def run_workflow_step():
     filename = data.get("filename")
     step_id = data.get("step_id")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
-    if not filename:
-        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-    if not step_id:
-        return jsonify({"message": "Missing step_id", "status": "error"}), 400
+    if not userid or not filename or not step_id:
+        return jsonify({"status": "error", "message": "Invalid input"}), 400
+
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
-    # token = current_user_id.set(userid)
+
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+    db = connect_to_rds()
+    credits = Credits(db=db)
+
     try:
-        # ✅ Pre-validate workflow existence
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
-        workflow_json = read_json_from_s3(wf_loc)
-        if not workflow_json:
-            return (
-                jsonify(
-                    {
-                        "message": f"Workflow file '{filename}' not found ",
-                        "status": "error",
-                    }
-                ),
-                404,
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            db=db,
+            credits=credits,
+        ) as runner:
+
+            step = runner.steps.get(step_id)
+            if not step:
+                return jsonify({"status": "error", "message": "Step not found"}), 404
+
+            result = runner._execute_step(step)
+
+            return jsonify(
+                {
+                    "status": "success",
+                    "workflow_step_result": result,
+                    "execution_log": runner.get_execution_log(),
+                }
             )
 
-        try:
-            with WorkflowRunnerV2(
-                userid=userid, filename=filename, workflowJson=workflow_json
-            ) as runner:
-                steps = runner.steps
-                selected_step = steps.get(step_id)
-
-                if not selected_step:
-                    return (
-                        jsonify(
-                            {
-                                "message": f"Step '{step_id}' not found in workflow.",
-                                "status": "error",
-                            }
-                        ),
-                        404,
-                    )
-
-                step_result = runner._execute_step(selected_step)
-                execution_log = runner.get_execution_log()
-
-                return jsonify(
-                    {
-                        "status": "success",
-                        "workflow_step_result": step_result,
-                        "execution_log": execution_log,
-                    }
-                )
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-    finally:
-        # current_user_id.reset(token)
-        print("ss")
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @playbook_bp.route("/test-playground-step", methods=["GET", "POST"])
 def testworkflowbyinput_stream():
-    if request.method == "POST":
-        data = request.json
-        userid = data.get("user_id")
-        userinput = data.get("userinput")
-        filename = data.get("filename")
-    else:
-        userid = request.args.get("user_id")
-        userinput = request.args.get("userinput")
-        filename = request.args.get("filename")
-    # print("details", userid, userinput, filename)
+    data = request.json if request.method == "POST" else request.args
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
-    if not filename:
-        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
-    if not userinput:
-        return jsonify({"message": "Missing userinput", "status": "error"}), 400
+    userid = data.get("user_id")
+    filename = data.get("filename")
+    userinput = data.get("userinput")
 
-    # token = current_user_id.set(userid)
+    if not userid or not filename or not userinput:
+        return jsonify({"status": "error", "message": "Invalid input"}), 400
+
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
-    try:
 
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
-        workflow_json = read_json_from_s3(wf_loc)
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
 
-        if not workflow_json:
-            return (
-                jsonify(
-                    {"message": f"Workflow '{filename}' not found", "status": "error"}
-                ),
-                404,
-            )
+    if not workflow_json:
+        return jsonify({"status": "error", "message": "Workflow not found"}), 404
 
-        def event_stream():
-            try:
-                with WorkflowRunnerV2(
-                    userid=userid,
-                    filename=filename,
-                    workflowJson=workflow_json,
-                    testing=True,
-                ) as service:
-                    # token = current_user_id.set(userid)
-                    # try:
-                    #     result = asyncio.run(service.check_input_tone(user_input=userinput))
-                    # finally:
-                    #     current_user_id.reset(token)
-                    result = asyncio.run(service.check_input_tone(user_input=userinput))
+    def event_stream():
+        db = connect_to_rds()
+        credits = Credits(db=db)
 
-                # print("result from back", result)
+        try:
+            with WorkflowRunnerV2(
+                userid=userid,
+                filename=filename,
+                workflowJson=workflow_json,
+                testing=True,
+                db=db,
+                credits=credits,
+            ) as runner:
+                result = asyncio.run(runner.check_input_tone(user_input=userinput))
 
-                yield f"event: done\ndata: {json.dumps(result)}\n\n"
+            yield f"event: done\ndata: {json.dumps(result)}\n\n"
 
-            except Exception as e:
-                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-
-    finally:
-        # current_user_id.reset(token)
-        print("ss")
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
@@ -1446,23 +1337,37 @@ def clear_testing_data():
 
 @playbook_bp.route("/generate-workflow-input", methods=["POST"])
 async def generate_workflow_input():
+    db = connect_to_rds()
+    credits = Credits(db)
+
     try:
+        # -----------------------------
+        # 1️⃣ INPUT HANDLING
+        # -----------------------------
         data = request.get_json(force=True)
         userid = data.get("user_id")
         inp_description = data.get("description", "").strip()
+
         if not userid:
-            return {"error": "need userid"}
-        if not inp_description:
-            return {"error": "need input"}
+            return jsonify({"error": "Missing user_id"}), 400
         if not inp_description:
             return jsonify({"error": "Missing 'description' field"}), 400
-        connection = connect_to_rds()
-        main_user_account_type = fetch_user_Social(
-            user_id=userid, connection=connection
-        )
-        print("maiun user logged in", main_user_account_type)
 
-        # ✅ Available communication modes
+        # -----------------------------
+        # 2️⃣ CREDIT CHECK
+        # -----------------------------
+        total_input_chars = len(inp_description)
+        if not await credits.has_ai_credits(
+            total_chars=total_input_chars, user_id=userid
+        ):
+            return jsonify({"error": "Insufficient credits"}), 402
+
+        # -----------------------------
+        # 3️⃣ USER ACCOUNT TYPE & SERVICES
+        # -----------------------------
+        main_user_account_type = fetch_user_Social(user_id=userid, connection=db)
+        print("main user logged in:", main_user_account_type)
+
         available_modes = [
             "auto",
             "gmail",
@@ -1472,35 +1377,40 @@ async def generate_workflow_input():
             "calendar",
         ]
 
-        # token = current_user_id.set(userid)
-        # try:
-
-        # ✅ Load all available service functions
         services_section = read_function_jsons2()
 
-        # ✅ Load the YAML prompt
         prompt_yaml = PLAY_TEMPLATE
         prompt_template = prompt_yaml.get("create_workflow_context")
         prompt_text = yaml.dump(prompt_template, sort_keys=False)
-        # ✅ Inject dynamic values
+
         formatted_prompt = (
             prompt_text.replace("{{inp_description}}", inp_description)
             .replace("{{main_user_account_type}}", main_user_account_type)
             .replace("{{available_communication_modes}}", json.dumps(available_modes))
             .replace("{{services_section}}", json.dumps(services_section))
         )
-        ##print("fomatted prompt", formatted_prompt)
 
-        # ✅ Call the LLM
+        # -----------------------------
+        # 4️⃣ CALL LLM WITH CREDITS
+        # -----------------------------
         llm_output = await get_fireworks_response2(
-            user_message=formatted_prompt, role="system", temp=0.3, user_id=userid
+            user_message=formatted_prompt,
+            role="system",
+            temp=0.3,
+            user_id=userid,
+            credits=credits,  # ✅ Pass credits for deduction
         )
-        # llm_output = get_evaluator_gpt4(formatted_prompt).strip()
+
+        if llm_output == "INSUFFICIENT":
+            return jsonify({"error": "Insufficient credits"}), 402
+
         llm_output = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", llm_output, flags=re.MULTILINE
         ).strip()
 
-        # ✅ Parse JSON safely
+        # -----------------------------
+        # 5️⃣ PARSE LLM OUTPUT
+        # -----------------------------
         try:
             workflow_data = json.loads(llm_output)
         except json.JSONDecodeError:
@@ -1513,93 +1423,64 @@ async def generate_workflow_input():
                 ),
                 500,
             )
+
         need_contacts = workflow_data.get("need_contacts") or {}
-
         resolved_report = {"found": {}, "not_found": [], "new": []}
-
         final_contacts = set()
 
-        with connection.cursor() as cursor:
-
-            # =====================================================
-            # 1️⃣ RESOLVE NAMES
-            # =====================================================
-            names = need_contacts.get("names", [])
-
-            for name in names:
+        # -----------------------------
+        # 6️⃣ RESOLVE CONTACTS FROM DB
+        # -----------------------------
+        with db.cursor() as cursor:
+            # 6a. Names
+            for name in need_contacts.get("names", []):
                 key = name.strip()
                 if not key:
                     continue
-
                 query = """
                     SELECT DISTINCT uc.email_id
                     FROM users_clients uc
                     JOIN communication c
                     ON uc.communication_id_fk = c.communication_id
                     WHERE c.user_id_fk = %s
-                    AND (
-                            LOWER(uc.first_name) LIKE %s
-                        OR LOWER(uc.last_name) LIKE %s
-                        OR LOWER(uc.email_id) LIKE %s
-                    )
+                      AND (LOWER(uc.first_name) LIKE %s
+                           OR LOWER(uc.last_name) LIKE %s
+                           OR LOWER(uc.email_id) LIKE %s)
                 """
-
                 like = f"%{key.lower()}%"
                 cursor.execute(query, (userid, like, like, like))
                 rows = [r[0] for r in cursor.fetchall()]
-
                 if rows:
                     resolved_report["found"][key] = rows
                     final_contacts.update(rows)
                 else:
                     resolved_report["not_found"].append(key)
 
-            # =====================================================
-            # 2️⃣ RESOLVE EXPLICIT EMAILS
-            # =====================================================
-            emails = need_contacts.get("emails", [])
-
-            for email in emails:
+            # 6b. Emails
+            for email in need_contacts.get("emails", []):
                 key = email.strip().lower()
                 if not key:
                     continue
-
                 query = """
                     SELECT uc.email_id
                     FROM users_clients uc
                     JOIN communication c
                     ON uc.communication_id_fk = c.communication_id
                     WHERE c.user_id_fk = %s
-                    AND LOWER(uc.email_id) = %s
+                      AND LOWER(uc.email_id) = %s
                 """
-
                 cursor.execute(query, (userid, key))
                 row = cursor.fetchone()
-
                 if row:
                     resolved_report["found"][email] = [row[0]]
                     final_contacts.add(row[0])
                 else:
                     resolved_report["new"].append(email)
 
-            # =====================================================
-            # 3️⃣ HANDLE GROUPS (NO SILENT DROP)
-            # =====================================================
-            # groups = need_contacts.get("groups", [])
-
-            # for group in groups:
-            #     key = group.strip()
-            #     if not key:
-            #         continue
-
-            #     # Groups are acknowledged but unresolved for now
-            #     resolved_report["not_found"].append(key)
-
-        # =====================================================
-        # 4️⃣ FINAL WORKFLOW MUTATION
-        # =====================================================
+        # -----------------------------
+        # 7️⃣ FINALIZE WORKFLOW
+        # -----------------------------
         workflow_data["contacts"] = list(final_contacts)
-
         workflow_data["need_contacts"] = resolved_report
         not_found = resolved_report.get("not_found", [])
 
@@ -1610,18 +1491,17 @@ async def generate_workflow_input():
         workflow_data["description"] = remove_not_found_entities(
             wfdescription, not_found
         )
-
         workflow_data["need_caution"] = bool(
             resolved_report["not_found"] or resolved_report["new"]
         )
-        connection.close()
-        # finally:
-        #     current_user_id.reset(token)
-
+        db.commit()
         return jsonify(workflow_data)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    finally:
+        db.close()
 
 
 @playbook_bp.route("/test-mid", methods=["POST"])
@@ -1734,264 +1614,145 @@ def resolve_schedule_from_activation(scheduled):
     raise ValueError(f"Unsupported frequency: {frequency}")
 
 
-# @playbook_bp.route("/schedule-workflow-checker", methods=["POST"])
-# def schedule_workflow_checker():
-#     body = request.json or {}
-#     print("body", body)
-
-#     userid = body["user_id"]
-#     filename = body["filename"]
-
-#     deployment = body.get("deployment", {})
-#     contacts = deployment.get("selectedContacts", [])
-#     scheduled = deployment.get("scheduledActivation", {})
-
-#     timezone = scheduled.get("timezone", "UTC")
-
-#     if not filename.lower().endswith(".json"):
-#         filename = f"{filename}.json"
-
-#     wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
-#     workflow_json = read_json_from_s3(wf_loc)
-
-#     if not workflow_json:
-#         return jsonify({"status": "error", "message": "Workflow not found"}), 404
-
-#     # --------------------------------------------------
-#     # PREVIEW schedule (NO SIDE EFFECTS)
-#     # --------------------------------------------------
-#     try:
-#         schedule_type, data = resolve_schedule_from_activation(scheduled)
-
-#         # ---------- DAILY ----------
-#         if schedule_type == "daily":
-#             hour, minute = map(int, data["startTime"].split(":"))
-#             scheduled_dt = SchedulerService.preview_next_daily_time(
-#                 hour, minute, data["timezone"]
-#             )
-
-#         # ---------- WEEKLY ----------
-#         elif schedule_type == "weekly":
-#             hour, minute = map(int, data["startTime"].split(":"))
-#             scheduled_dt = SchedulerService.preview_next_weekly_time(
-#                 data["weekday"], hour, minute, data["timezone"]
-#             )
-
-#         # ---------- ONE-TIME ----------
-#         elif schedule_type == "one_time":
-#             scheduled_dt = data["datetime"]
-
-#         # ---------- CUSTOM (NEW) ----------
-#         elif schedule_type == "custom":
-#             scheduled_dt = SchedulerService.preview_next_custom_time(
-#                 start_date=data["startDate"],
-#                 end_date=data["endDate"],
-#                 start_time=data["startTime"],
-#                 end_time=data["endTime"],
-#                 timezone=data["timezone"],
-#             )
-
-#             if not scheduled_dt:
-#                 return (
-#                     jsonify(
-#                         {
-#                             "status": "error",
-#                             "message": "No valid execution time in custom window",
-#                         }
-#                     ),
-#                     400,
-#                 )
-
-#         else:
-#             return jsonify({"error": "Unsupported schedule type"}), 400
-
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 400
-
-#     # --------------------------------------------------
-#     # Build LLM prompt (AI just needs context)
-#     # --------------------------------------------------
-#     prompt = PLAY_TEMPLATE["validate_schedule_workflow_problems"]
-
-#     base_workflow = {
-#         "workflow": workflow_json.get("workflow"),
-#         "input_data": workflow_json.get("input_data"),
-#     }
-#     # print("base workfflow ", base_workflow)
-
-#     full_prompt = (
-#         prompt.replace("{workflow_json}", json.dumps(base_workflow))
-#         .replace("{contacts}", json.dumps(contacts))
-#         .replace("{schedule_time}", json.dumps(str(scheduled_dt)))
-#     )
-#     print("prompt", full_prompt)
-#     # --------------------------------------------------
-#     # LLM call
-#     # --------------------------------------------------
-#     llm_output = asyncio.run(
-#         get_fireworks_response2(
-#             user_message=full_prompt,
-#             role="system",
-#             temp=0.3,
-#             user_id=userid,
-#         )
-#     )
-
-#     llm_output = re.sub(r"^```(?:json)?|```$", "", llm_output).strip()
-
-#     try:
-#         response = json.loads(llm_output)
-#         if not isinstance(response, list):
-#             raise ValueError
-#     except Exception:
-#         return jsonify({"error": "Invalid LLM JSON", "raw": llm_output}), 500
-
-
-#     return jsonify(response)
 @playbook_bp.route("/schedule-workflow-checker", methods=["POST"])
-def schedule_workflow_checker():
-    body = request.json or {}
-    print("body", body)
-
-    userid = body["user_id"]
-    filename = body["filename"]
-
-    deployment = body.get("deployment", {})
-    contacts = deployment.get("selectedContacts", [])
-    scheduled = deployment.get("scheduledActivation", {})  # full user schedule object
-
-    if not filename.lower().endswith(".json"):
-        filename = f"{filename}.json"
-
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
-    workflow_json = read_json_from_s3(wf_loc)
-
-    if not workflow_json:
-        return jsonify({"status": "error", "message": "Workflow not found"}), 404
-
-    # --------------------------------------------------
-    # PREVIEW schedule → earliest trigger time (NO SIDE EFFECTS)
-    # --------------------------------------------------
+async def schedule_workflow_checker():
     try:
-        schedule_type, data = resolve_schedule_from_activation(scheduled)
+        body = request.json or {}
+        userid = body.get("user_id")
+        filename = body.get("filename")
+        deployment = body.get("deployment", {})
+        contacts = deployment.get("selectedContacts", [])
+        scheduled = deployment.get("scheduledActivation", {})
 
-        if schedule_type == "daily":
-            hour, minute = map(int, data["startTime"].split(":"))
-            scheduled_dt = SchedulerService.preview_next_daily_time(
-                hour, minute, data["timezone"]
-            )
-            schedule_time_json = json.dumps(str(scheduled_dt))
+        if not userid or not filename:
+            return jsonify({"error": "Missing user_id or filename"}), 400
 
-        elif schedule_type == "weekly":
-            hour, minute = map(int, data["startTime"].split(":"))
-            scheduled_dt = SchedulerService.preview_next_weekly_time(
-                data["weekday"], hour, minute, data["timezone"]
-            )
-            schedule_time_json = json.dumps(str(scheduled_dt))
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
 
-        # elif schedule_type == "one_time" or schedule_type == "once":
-        #     # Safety: ensure one_time datetime is aware ISO string
-        #     try:
-        #         dt = datetime.fromisoformat(data["datetime"].replace("Z", "+00:00"))
-        #         if dt.tzinfo is None:
-        #             return (
-        #                 jsonify({"error": "one_time schedule must include timezone"}),
-        #                 400,
-        #             )
-        #         schedule_time_json = json.dumps(dt.isoformat())
-        #     except Exception:
-        #         return jsonify({"error": "Invalid datetime format for one_time"}), 400
-        elif schedule_type in ("one_time", "once"):
-            try:
+        # -----------------------------
+        # Load workflow
+        # -----------------------------
+        wf_loc = f"{userid}/workflow/{base_name(filename)}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        # -----------------------------
+        # Resolve earliest schedule time
+        # -----------------------------
+        try:
+            schedule_type, data = resolve_schedule_from_activation(scheduled)
+
+            if schedule_type == "daily":
+                hour, minute = map(int, data["startTime"].split(":"))
+                scheduled_dt = SchedulerService.preview_next_daily_time(
+                    hour, minute, data["timezone"]
+                )
+
+            elif schedule_type == "weekly":
+                hour, minute = map(int, data["startTime"].split(":"))
+                scheduled_dt = SchedulerService.preview_next_weekly_time(
+                    data["weekday"], hour, minute, data["timezone"]
+                )
+
+            elif schedule_type in ("one_time", "once"):
                 tz = pytz.timezone(data["timezone"])
                 naive_dt = datetime.fromisoformat(data["datetime"])
-                dt = tz.localize(naive_dt)
+                scheduled_dt = tz.localize(naive_dt).astimezone(pytz.UTC)
 
-                schedule_time_json = json.dumps(dt.astimezone(pytz.UTC).isoformat())
-            except Exception as e:
-                return (
-                    jsonify({"error": f"Invalid datetime for one_time: {str(e)}"}),
-                    400,
+            elif schedule_type == "custom":
+                scheduled_dt = SchedulerService.preview_next_custom_time(
+                    start_date=data["startDate"],
+                    end_date=data["endDate"],
+                    start_time=data["startTime"],
+                    end_time=data["endTime"],
+                    timezone=data["timezone"],
                 )
+                if not scheduled_dt:
+                    return (
+                        jsonify(
+                            {
+                                "status": "error",
+                                "message": "No valid execution time in custom window",
+                            }
+                        ),
+                        400,
+                    )
 
-        elif schedule_type == "custom":
-            earliest_dt = SchedulerService.preview_next_custom_time(
-                start_date=data["startDate"],
-                end_date=data["endDate"],
-                start_time=data["startTime"],
-                end_time=data["endTime"],
-                timezone=data["timezone"],
-            )
+            else:
+                return jsonify({"error": "Unsupported schedule type"}), 400
 
-            if not earliest_dt:
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": "No valid execution time in custom window (e.g. window in past or invalid)",
-                        }
-                    ),
-                    400,
-                )
+            schedule_time_json = json.dumps(scheduled_dt.isoformat())
 
-            schedule_time_json = json.dumps(
-                earliest_dt.isoformat()
-            )  # single ISO with offset
+        except Exception as e:
+            return jsonify({"error": f"Schedule resolution failed: {str(e)}"}), 400
 
-        else:
-            return jsonify({"error": "Unsupported schedule type"}), 400
+        # -----------------------------
+        # Build LLM prompt
+        # -----------------------------
+        prompt_template = PLAY_TEMPLATE.get("validate_schedule_workflow_problems")
+        if not prompt_template:
+            return jsonify({"error": "Missing LLM prompt template"}), 500
 
-    except Exception as e:
-        return jsonify({"error": f"Schedule resolution failed: {str(e)}"}), 400
+        base_workflow = {
+            "workflow": workflow_json.get("workflow"),
+            "input_data": workflow_json.get("input_data"),
+        }
 
-    # --------------------------------------------------
-    # Build LLM prompt with original user schedule for feasible fixes
-    # --------------------------------------------------
-    prompt = PLAY_TEMPLATE["validate_schedule_workflow_problems"]
+        full_prompt = (
+            prompt_template.replace("{workflow_json}", json.dumps(base_workflow))
+            .replace("{contacts}", json.dumps(contacts))
+            .replace("{schedule_time}", schedule_time_json)
+            .replace("{original_scheduled}", json.dumps(scheduled))
+        )
 
-    base_workflow = {
-        "workflow": workflow_json.get("workflow"),
-        "input_data": workflow_json.get("input_data"),
-    }
-    print("schedule time json", schedule_time_json)
+        # -----------------------------
+        # Call LLM WITH CREDITS
+        # -----------------------------
+        db = connect_to_rds()
+        credits = Credits(db=db)
+        total_chars = len(full_prompt)
+        if not await credits.has_ai_credits(total_chars=total_chars, user_id=userid):
+            return jsonify({"error": "Insufficient credits"}), 402
 
-    full_prompt = (
-        prompt.replace("{workflow_json}", json.dumps(base_workflow))
-        .replace("{contacts}", json.dumps(contacts))
-        .replace("{schedule_time}", schedule_time_json)  # resolved earliest trigger
-        .replace(
-            "{original_scheduled}", json.dumps(scheduled)
-        )  # full user schedule for fixes
-    )
-
-    # --------------------------------------------------
-    # LLM call
-    # --------------------------------------------------
-    llm_output = asyncio.run(
-        get_evaluator_fireworks(
+        llm_output = await get_evaluator_fireworks(
             user_message=full_prompt,
             role="system",
             temp=0.3,
             user_id=userid,
+            credits=credits,  # Pass Credits for consumption
         )
-    )
 
-    llm_output = re.sub(r"^```(?:json)?|```$", "", llm_output).strip()
+        llm_output = re.sub(r"^```(?:json)?|```$", "", llm_output).strip()
 
-    try:
-        response = json.loads(llm_output)
-        if not isinstance(response, list):
-            raise ValueError("Response must be a list")
+        # -----------------------------
+        # Parse JSON safely
+        # -----------------------------
+        try:
+            response = json.loads(llm_output)
+            if not isinstance(response, list):
+                raise ValueError("Response must be a list")
+        except Exception as e:
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid LLM JSON",
+                        "raw": llm_output,
+                        "parse_error": str(e),
+                    }
+                ),
+                500,
+            )
+
+        return jsonify(response)
+
     except Exception as e:
-        return (
-            jsonify(
-                {"error": "Invalid LLM JSON", "raw": llm_output, "parse_error": str(e)}
-            ),
-            500,
-        )
-    print("response for schedule", response)
+        return jsonify({"error": str(e)}), 500
 
-    return jsonify(response)
+    finally:
+        if "db" in locals() and db:
+            db.close()
 
 
 @playbook_bp.route("/schedule-workflow", methods=["POST"])
@@ -2254,6 +2015,8 @@ async def autocheckworkflow():
                 ),
                 404,
             )
+        db = connect_to_rds()
+        credits = Credits(db=db)
 
         try:
             with WorkflowRunnerV2(
@@ -2261,6 +2024,8 @@ async def autocheckworkflow():
                 filename=filename,
                 workflowJson=workflow_json,
                 testing=True,
+                db=db,
+                credits=credits,
             ) as runner:
                 result = await runner.autocheckerworkflow()
                 return jsonify({"message": result})

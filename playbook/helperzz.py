@@ -72,7 +72,7 @@ def extract_questions(text):
     return questions
 
 
-async def check_doc_context_needed(instruction_input, templatedata, userid):
+async def check_doc_context_needed(instruction_input, templatedata, userid, credits):
     template = templatedata.get("checklanceneeded")
 
     if not template or not isinstance(template, str):
@@ -93,7 +93,11 @@ async def check_doc_context_needed(instruction_input, templatedata, userid):
 
     # response = get_fireworks_response(full_prompt, role="system")
     response = await get_fireworks_response2(
-        user_message=full_prompt, role="system", temp=0.4, user_id=userid
+        user_message=full_prompt,
+        role="system",
+        temp=0.4,
+        user_id=userid,
+        credits=credits,
     )
 
     # print("len of respinse", len(response), response)
@@ -112,10 +116,13 @@ async def check_doc_context_needed(instruction_input, templatedata, userid):
     return extract_questions(response)
 
 
-async def evallogic(templatedata, batch, userid):
+async def evallogic(templatedata, batch, userid, credits):
     valid_responses = []
     res_raw = await evaluator_context_llama(
-        templatedata.get("context_workflow_validator_batch"), batch, userid=userid
+        templatedata.get("context_workflow_validator_batch"),
+        batch,
+        credits,
+        userid=userid,
     )
     print("res jaw in eval", res_raw)
     # Extract the JSON array block using regex
@@ -154,16 +161,18 @@ async def evallogic(templatedata, batch, userid):
     return valid_responses
 
 
-async def triggeraicontextfinder(instruction_input, userid, templatedata, contacts):
+async def triggeraicontextfinder(
+    instruction_input, userid, templatedata, contacts, credits
+):
     normalized = normalize_input(instruction_input)
 
-    ques = await check_doc_context_needed(normalized, templatedata, userid=userid)
+    ques = await check_doc_context_needed(normalized, templatedata, userid, credits)
     print("len of the questions made", len(ques), ques)
 
     if not ques:
         return []
 
-    content = await fetch_ques_with_docs(ques, userid, contacts)
+    content = await fetch_ques_with_docs(ques, userid, contacts, credits)
     batch_size = 10
 
     print(len(content), "context length")
@@ -174,6 +183,7 @@ async def triggeraicontextfinder(instruction_input, userid, templatedata, contac
                 templatedata,
                 content[i : i + batch_size],
                 userid=userid,
+                credits=credits,
             )
             for i in range(0, len(content), batch_size)
         ]
@@ -287,7 +297,7 @@ def cheap_internal_data_hint(instruction_input):
     return bool(INTERNAL_DATA_PATTERN.search(text))
 
 
-async def needs_internal_data(instruction_input, template_data, user_id):
+async def needs_internal_data(instruction_input, template_data, user_id, credits):
     """
     Determine whether the instruction requires internal data.
     Step 1: cheap regex check
@@ -304,7 +314,11 @@ async def needs_internal_data(instruction_input, template_data, user_id):
         instruction_input_as_json=json.dumps(instruction_input, separators=(",", ":")),
     )
     functions_res = await get_fireworks_response2(
-        user_message=main_fnprompt, role="system", temp=0, user_id=user_id
+        user_message=main_fnprompt,
+        role="system",
+        temp=0,
+        user_id=user_id,
+        credits=credits,
     )
 
     # Clean response
@@ -324,7 +338,7 @@ async def needs_internal_data(instruction_input, template_data, user_id):
 
 
 async def minimize_functions(
-    instruction_input, template_data, functions_ds, actual_social, userid
+    instruction_input, template_data, functions_ds, actual_social, userid, credits
 ):
     # functions_datas = read_function_jsons2(Full=True)
     print("the functions data", len(functions_ds))
@@ -338,7 +352,11 @@ async def minimize_functions(
     )
 
     functions_res = await get_fireworks_response2(
-        user_message=main_fnprompt, role="system", temp=0, user_id=userid
+        user_message=main_fnprompt,
+        role="system",
+        temp=0,
+        user_id=userid,
+        credits=credits,
     )
 
     # ----------------------------
@@ -428,10 +446,16 @@ def replace_section(
 
 
 async def create_playbook(
-    data, template_data, minor_data, functions_ds, nfilename=None
+    data,
+    template_data,
+    minor_data,
+    functions_ds,
+    db,
+    credits,
+    nfilename=None,
 ):
     userid = data["user_id"]
-    actual_social = fetch_user_Social(user_id=userid)
+    actual_social = fetch_user_Social(user_id=userid, connection=db)
     filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
     ensure_dir(f"{pathconfig.basepath}/test/")
     filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
@@ -445,6 +469,7 @@ async def create_playbook(
             template_data=template_data,
             instruction_input=instruction_input,
             user_id=userid,
+            credits=credits,
         )
         print("result -->", result)
 
@@ -454,6 +479,7 @@ async def create_playbook(
                 userid,
                 template_data,
                 contacts=instruction_input["selected_contacts"],
+                credits=credits,
             )
             if ques:
                 context_items = [
@@ -473,6 +499,7 @@ async def create_playbook(
             functions_ds=functions_ds,
             actual_social=actual_social,
             userid=userid,
+            credits=credits,
         )
         if not functions_datas:
             print("NO functions present")
@@ -535,7 +562,7 @@ async def create_playbook(
                 )
 
         raw_response = await get_fireworks_response2(
-            user_message=full_prompt, role="system", user_id=userid
+            user_message=full_prompt, role="system", user_id=userid, credits=credits
         )
         print("raw response", len(raw_response))
         # Clean AI response
@@ -552,7 +579,10 @@ async def create_playbook(
             functions_data=json.dumps(functions_datas, separators=(",", ":")),
         )
         raw_response = await get_evaluator_fireworks(
-            user_message=base_Eval_prompt, role="system", user_id=userid
+            user_message=base_Eval_prompt,
+            role="system",
+            user_id=userid,
+            credits=credits,
         )
         print("raw response eval", len(raw_response))
         # Clean AI response
@@ -635,11 +665,59 @@ def save_execution_playbook_to_s3(playbook, user_id, success_message, filepath):
     return {"status": "success", "message": success_message, "data": playbook}
 
 
+# def format_step_data(stepdata: dict) -> dict:
+#     """Return a cleaned step definition with only populated fields."""
+#     out = {}
+
+#     # always worth keeping if present
+#     for src, tgt in [
+#         ("id", "id"),
+#         ("title", "title"),
+#         ("stepType", "type"),
+#         ("objective", "objective"),
+#     ]:
+#         val = stepdata.get(src)
+#         if val:
+#             out[tgt] = val
+
+#     # Always include decision_point (true or false)
+#     out["decision_point"] = bool(stepdata.get("isDecisionPoint", False))
+
+#     # Only include decision_type if applicable
+#     if stepdata.get("isDecisionPoint") and stepdata.get("decisionType"):
+#         out["decision_type"] = stepdata["decisionType"]
+
+#     # lists / strings that might be empty
+#     if stepdata.get("conditions"):
+#         out["condition"] = stepdata["conditions"]
+
+#     if stepdata.get("nextStepIds"):
+#         out["next_step"] = stepdata["nextStepIds"]
+
+#     if stepdata.get("instructions"):
+#         out["ai_instructions"] = stepdata["instructions"]
+
+#     # communication extras
+#     if stepdata.get("stepType") == "communication":
+#         if stepdata.get("communicationMode"):
+#             out["communication_mode"] = stepdata["communicationMode"]
+#         if stepdata.get("selectedIntegrations"):
+#             out["channels"] = stepdata["selectedIntegrations"]
+#         if stepdata.get("calendar_type"):
+#             out["calendar_type"] = stepdata["calendar_type"]
+
+#     # navigation extras
+#     if stepdata.get("stepType") == "navigation" and stepdata.get("pageUrl"):
+#         out["page_url"] = stepdata["pageUrl"]
+
+#     return out
+
+
 def format_step_data(stepdata: dict) -> dict:
-    """Return a cleaned step definition with only populated fields."""
+    """Return a cleaned step definition matching the new workflow step schema."""
     out = {}
 
-    # always worth keeping if present
+    # ---- Core fields (always safe to keep if present) ----
     for src, tgt in [
         ("id", "id"),
         ("title", "title"),
@@ -647,27 +725,48 @@ def format_step_data(stepdata: dict) -> dict:
         ("objective", "objective"),
     ]:
         val = stepdata.get(src)
-        if val:
+        if val is not None and val != "":
             out[tgt] = val
 
-    # Always include decision_point (true or false)
+    # ---- Decision handling (always include boolean) ----
     out["decision_point"] = bool(stepdata.get("isDecisionPoint", False))
 
-    # Only include decision_type if applicable
-    if stepdata.get("isDecisionPoint") and stepdata.get("decisionType"):
+    if out["decision_point"] and stepdata.get("decisionType"):
         out["decision_type"] = stepdata["decisionType"]
 
-    # lists / strings that might be empty
+    # ---- Conditions ----
     if stepdata.get("conditions"):
         out["condition"] = stepdata["conditions"]
 
+    # ---- Next step ----
     if stepdata.get("nextStepIds"):
         out["next_step"] = stepdata["nextStepIds"]
+    elif stepdata.get("next_step") is not None:
+        # Explicit null is allowed
+        out["next_step"] = stepdata["next_step"]
 
+    # ---- AI instructions ----
     if stepdata.get("instructions"):
         out["ai_instructions"] = stepdata["instructions"]
 
-    # communication extras
+    # ---- Function call (NEW FORMAT – MUST KEEP AS-IS) ----
+    if stepdata.get("function_call"):
+        out["function_call"] = stepdata["function_call"]
+
+    # ---- Requirements ----
+    if stepdata.get("requirements_needed"):
+        out["requirements_needed"] = stepdata["requirements_needed"]
+    else:
+        out["requirements_needed"] = []
+
+    # ---- Scheduler ----
+    out["is_scheduler"] = stepdata.get("is_scheduler")
+
+    # ---- Fallback ----
+    if stepdata.get("fallback_step") is not None:
+        out["fallback_step"] = stepdata["fallback_step"]
+
+    # ---- Communication step extras ----
     if stepdata.get("stepType") == "communication":
         if stepdata.get("communicationMode"):
             out["communication_mode"] = stepdata["communicationMode"]
@@ -676,7 +775,7 @@ def format_step_data(stepdata: dict) -> dict:
         if stepdata.get("calendar_type"):
             out["calendar_type"] = stepdata["calendar_type"]
 
-    # navigation extras
+    # ---- Navigation step extras ----
     if stepdata.get("stepType") == "navigation" and stepdata.get("pageUrl"):
         out["page_url"] = stepdata["pageUrl"]
 

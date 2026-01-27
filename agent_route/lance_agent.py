@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import os
 import uuid
@@ -24,6 +25,39 @@ from db.lance_db_service import LanceDBServer
 from utils.normal import load_yaml_file
 from credits_route.route import Credits
 from request_context import current_user_id
+import numpy as np
+
+import re
+from html import unescape
+
+
+def normalize_for_embedding(value):
+    """
+    Turns ANY input (dict, list, html, text, numbers) into clean searchable text
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, str):
+        # Remove HTML
+        text = re.sub(r"<[^>]+>", " ", value)
+        text = unescape(text)
+        return text
+
+    if isinstance(value, list):
+        return " ".join(normalize_for_embedding(v) for v in value)
+
+    if isinstance(value, dict):
+        parts = []
+        for k, v in value.items():
+            parts.append(str(k))
+            parts.append(normalize_for_embedding(v))
+        return " ".join(parts)
+
+    return str(value)
 
 
 # ────────────────────────
@@ -55,15 +89,32 @@ class QueryData(BaseModel):
     top_k: int = 5
 
 
+class AppQueryInput(BaseModel):
+    user_id: str
+    query_text: str
+    app_id: int
+    endpoint_id: int
+    top_k: int = 5
+
+
+class AppQueryData(BaseModel):
+    user_id: str
+    embedding: List[float]
+    top_k: int = 5
+    app_id: int
+    endpoint_id: int
+
+
 # ────────────────────────
 # LanceClient Class
 # ────────────────────────
 class LanceClient:
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, credits):
         load_dotenv()
         self.user_id = user_id
         self.dimension = 2880
         self.service = LanceDBServer()
+        self.credits = credits
         #     embeddings = OpenAIEmbeddings(
         # #     model="text-embedding-3-large",
         # #     openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -253,7 +304,10 @@ class LanceClient:
 
         credits = Credits()
         await credits.update_ai_credits_redis(
-            credit_type="embedding", total_chars=total_chars, user_id=self.user_id
+            credit_type="embedding",
+            total_chars=total_chars,
+            user_id=self.user_id,
+            reference_id=inspect.stack()[0].function,
         )
 
         # ----------------------------------------------
@@ -278,10 +332,28 @@ class LanceClient:
     async def query_vector(self, query_input: QueryInput, vector=None):
         try:
             await self._ensure_embeddings()
+            total_output_chars = 0
 
             if not vector:
 
                 vector = self.embeddings.embed_query(query_input.query_text)
+                # --------- calculate credits -------------------
+
+                total_input_chars = len(query_input.query_text)
+                # total_output_chars = 0
+                # total_output_chars += sum(len(vec) for vec in vector)
+                total_output_chars = len(vector)
+
+                total_chars = total_input_chars + total_output_chars
+
+                # credits = Credits()
+                await self.credits.update_ai_credits_redis(
+                    credit_type="embedding",
+                    total_chars=total_chars,
+                    user_id=self.user_id,
+                    reference_id=inspect.stack()[0].function,
+                )
+
             payload = QueryData(
                 user_id=query_input.user_id,
                 embedding=vector,
@@ -291,19 +363,50 @@ class LanceClient:
             results = await self.service.query_vector(payload.dict())
             logger.info(f"[🔍] Retrieved doc {len(results)} results.")
 
-            # --------- calculate credits -------------------
+            # ------------------------------------------------
 
-            total_input_chars = len(query_input.query_text)
-            # total_output_chars = 0
-            # total_output_chars += sum(len(vec) for vec in vector)
-            total_output_chars = len(vector)
+            return results
 
-            total_chars = total_input_chars + total_output_chars
+        except Exception as e:
+            logger.error(f"[!] Query failed: {str(e)}")
+            raise
 
-            credits = Credits()
-            await credits.update_ai_credits_redis(
-                credit_type="embedding", total_chars=total_chars, user_id=self.user_id
+    async def query_app_endpoint(
+        self, query_input: AppQueryInput, foldernames: List = None, vector=None
+    ):
+        try:
+            await self._ensure_embeddings()
+            total_output_chars = 0
+
+            if not vector:
+
+                vector = self.embeddings.embed_query(query_input.query_text)
+                # --------- calculate credits -------------------
+
+                total_input_chars = len(query_input.query_text)
+                total_output_chars = len(vector)
+
+                total_chars = total_input_chars + total_output_chars
+
+                # credits = Credits()
+                await self.credits.update_ai_credits_redis(
+                    credit_type="embedding",
+                    total_chars=total_chars,
+                    user_id=self.user_id,
+                    reference_id=inspect.stack()[0].function,
+                )
+
+            payload = AppQueryData(
+                user_id=query_input.user_id,
+                embedding=vector,
+                top_k=query_input.top_k,
+                app_id=query_input.app_id,
+                endpoint_id=query_input.endpoint_id,
+                foldernames=foldernames,
             )
+
+            results = await self.service.query_app_endpoint(payload.dict())
+            logger.info(f"[🔍] Retrieved doc {len(results)} results.")
 
             # ------------------------------------------------
 
@@ -312,6 +415,58 @@ class LanceClient:
         except Exception as e:
             logger.error(f"[!] Query failed: {str(e)}")
             raise
+
+    async def save_app_run(
+        self,
+        user_id: str,
+        app_id: str,
+        endpoint_id: str,
+        request_cfg: dict,
+        result: dict,
+        trigger: str,
+        minute_bucket,
+    ):
+        await self._ensure_embeddings()
+
+        table = await self.service._open_or_create_apiconnectors_table(
+            user_id, app_id, endpoint_id
+        )
+
+        # Searchable text
+        text_blob = " ".join(
+            [
+                normalize_for_embedding(trigger),
+                normalize_for_embedding(request_cfg),
+                normalize_for_embedding(result),
+            ]
+        )
+
+        # 🔥 Raw structured payload
+        original_blob = json.dumps(
+            {
+                "trigger": trigger,
+                "request": request_cfg,
+                "response": result,
+            },
+            ensure_ascii=False,
+        )
+
+        embedding = np.array(
+            self.embeddings.embed_query(text_blob),
+            dtype=np.float32,
+        )
+
+        record = {
+            "id": minute_bucket,
+            "foldername": minute_bucket,
+            "text": text_blob,
+            "original": original_blob,  # ✅ real JSON preserved
+            "embedding": embedding,
+        }
+
+        await asyncio.to_thread(lambda: table.add([record]))
+
+        return f"apiconnectors/{user_id}/{app_id}/{endpoint_id}/{minute_bucket}"
 
     async def audio_query_vector(
         self,
@@ -323,6 +478,22 @@ class LanceClient:
             await self._ensure_embeddings()
             if not vector:
                 vector = self.embeddings.embed_query(query_input.query_text)
+                # --------- calculate credits -------------------
+
+                total_input_chars = len(query_input.query_text)
+                # total_output_chars += sum(len(vec) for vec in vector)
+                total_output_chars = len(vector)
+
+                total_chars = total_input_chars + total_output_chars
+
+                user_id = query_input.user_id
+                # credits = Credits()
+                await self.credits.update_ai_credits_redis(
+                    credit_type="embedding",
+                    total_chars=total_chars,
+                    user_id=self.user_id,
+                    reference_id=inspect.stack()[0].function,
+                )
 
             payload = QueryData(
                 user_id=query_input.user_id,
@@ -333,19 +504,6 @@ class LanceClient:
             results = await self.service.rec_query_vector(payload.dict())
             logger.info(f"[🔍] Retrieved audio {len(results)} results.")
 
-            # --------- calculate credits -------------------
-
-            total_input_chars = len(query_input.query_text)
-            # total_output_chars += sum(len(vec) for vec in vector)
-            total_output_chars = len(vector)
-
-            total_chars = total_input_chars + total_output_chars
-
-            user_id = query_input.user_id
-            credits = Credits()
-            await credits.update_ai_credits_redis(
-                credit_type="embedding", total_chars=total_chars, user_id=self.user_id
-            )
             # ------------------------------------------------
 
             need_to_return = []
@@ -397,6 +555,22 @@ class LanceClient:
             await self._ensure_embeddings()
             if not vector:
                 vector = self.embeddings.embed_query(query_input.query_text)
+                # --------- calculate credits -------------------
+
+                total_input_chars = len(query_input.query_text)
+                # total_output_chars += sum(len(vec) for vec in vector)
+                total_output_chars = len(vector)
+
+                total_chars = total_input_chars + total_output_chars
+
+                # credits = Credits()
+                await self.credits.update_ai_credits_redis(
+                    credit_type="embedding",
+                    total_chars=total_chars,
+                    user_id=self.user_id,
+                    reference_id=inspect.stack()[0].function,
+                )
+                # -------------------------------------------------
 
             payload = QueryData(
                 user_id=query_input.user_id,
@@ -408,20 +582,6 @@ class LanceClient:
                 payload.dict(), sender_email=sender_email
             )
             logger.info(f"[🔍] Retrieved scrape {len(result)} results.")
-
-            # --------- calculate credits -------------------
-
-            total_input_chars = len(query_input.query_text)
-            # total_output_chars += sum(len(vec) for vec in vector)
-            total_output_chars = len(vector)
-
-            total_chars = total_input_chars + total_output_chars
-
-            credits = Credits()
-            await credits.update_ai_credits_redis(
-                credit_type="embedding", total_chars=total_chars, user_id=self.user_id
-            )
-            # -------------------------------------------------
 
             return result
 
@@ -446,22 +606,26 @@ class LanceClient:
 
             print("started mixed query")
             if not vector:
+                print("new vector")
                 await self._ensure_embeddings()
                 vector = self.embeddings.embed_query(query_input.query_text)
 
-            # --------- calculate credits -------------------
-            total_input_chars = len(query_input.query_text)
-            # total_output_chars = 0
-            # total_output_chars += sum(len(vec) for vec in vector)
-            total_output_chars = len(vector)
+                # --------- calculate credits -------------------
+                total_input_chars = len(query_input.query_text)
+                # total_output_chars = 0
+                # total_output_chars += sum(len(vec) for vec in vector)
+                total_output_chars = len(vector)
 
-            total_chars = total_input_chars + total_output_chars
+                total_chars = total_input_chars + total_output_chars
 
-            credits = Credits()
-            await credits.update_ai_credits_redis(
-                credit_type="embedding", total_chars=total_chars, user_id=user_id
-            )
-
+                # credits = Credits()
+                print("cheees", inspect.stack()[0].function)
+                await self.credits.update_ai_credits_redis(
+                    credit_type="embedding",
+                    total_chars=total_chars,
+                    user_id=user_id,
+                    reference_id=inspect.stack()[0].function,
+                )
             # ----------------------------------------------
 
             docs_results = await self.query_vector(query_input, vector=vector)
@@ -491,7 +655,10 @@ class LanceClient:
             )
 
             ai_response = await get_fireworks_response(
-                user_message=full_prompt, role="system", user_id=user_id
+                user_message=full_prompt,
+                role="system",
+                user_id=user_id,
+                credits=credits,
             )
 
             if ai_response:

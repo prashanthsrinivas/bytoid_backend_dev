@@ -119,3 +119,4 @@ def safe_execute(cursor, query, params=None, retries=3, delay=0.2):
 # start_rds_instance()
 # connect_to_rds()
 # get_secret()
+# print(get_secret())
