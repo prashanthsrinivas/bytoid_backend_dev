@@ -65,4 +65,4 @@ jobs:
         with:
           args: >
             -Dsonar.projectKey=${{ secrets.PROJECT_KEY }}
-            -Dsonar.organization=Bytoid-Inc
+            -Dsonar.organization=${{ secrets.YOUR_ORG_KEY }}
