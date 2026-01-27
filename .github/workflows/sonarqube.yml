@@ -65,4 +65,4 @@ jobs:
         with:
           args: >
             -Dsonar.projectKey=bytoid_python
-            -Dsonar.organization=Bytoid-Inc
+            -Dsonar.organization=YOUR_ORG_KEY
