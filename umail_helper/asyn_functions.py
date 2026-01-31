@@ -84,8 +84,8 @@ async def get_datewise_info_base(
 
         enddate_str = enddate.strftime("%Y-%m-%d")
         startdate_str = startdate.strftime("%Y-%m-%d")
-        print(f"----------------")
-        print(f"inside get_datewise_info_base : {userid} : {integration}")
+        # print(f"----------------")
+        # print(f"inside get_datewise_info_base : {userid} : {integration}")
         gmail_service = GmailService(userid, connection, integration=integration)
         inbox_count = await gmail_service.get_inbox_date_wise_stats_dynamic(
             start_date=startdate_str, end_date=enddate_str
@@ -167,7 +167,7 @@ def has_new_threads(existing_json, total_messages):
         return True
 
     last_processed = today_record.get("processed_threads", 0)
-    print(threads_max, last_processed)
+    # print(threads_max, last_processed)
     return threads_max != last_processed
 
 
@@ -186,7 +186,7 @@ async def v2all_continuous(user_id, integration=None):
     complete_results = 0
     embedding_futures = []
     start_time = time.perf_counter()
-    print(f"integration inside v2all_continuous: {integration}")
+    # print(f"integration inside v2all_continuous: {integration}")
     try:
         if integration:
             existing_json = get_existing_umail_json_integration(user_id, connection)
@@ -217,8 +217,8 @@ async def v2all_continuous(user_id, integration=None):
         # )
         # newly_creation = True
 
-        print(f"total messages:")
-        print(f"{total_messages}")
+        # print(f"total messages:")
+        # print(f"{total_messages}")
         threads_max = total_messages["threadsTotal"]["count"]
         threads = total_messages["threadsTotal"]["threads"]
         my_email = total_messages["email"]
@@ -245,16 +245,16 @@ async def v2all_continuous(user_id, integration=None):
                         integration=integration,
                     )
                 except Exception as e:
-                    print(f"❌ Error fetching Gmail batch {batch_count}: {e}")
+                    # print(f"❌ Error fetching Gmail batch {batch_count}: {e}")
                     import traceback
 
                     traceback.print_exc()
                     return None
 
                 if gmail_result.get("status") != "success":
-                    print(
-                        f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}"
-                    )
+                    # print(
+                    #     f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}"
+                    # )
                     return None
 
                 complete_results += len(gmail_result)
@@ -262,9 +262,9 @@ async def v2all_continuous(user_id, integration=None):
                 new_messages = gmail_result.get("new_messages", 0)
                 if new_messages > 0:
                     any_new_messages = True  # mark that we did get something
-                    print(f"📬 Batch {batch_count}: {new_messages} new messages")
-                else:
-                    print(f"📭 Batch {batch_count}: no new messages")
+                    # print(f"📬 Batch {batch_count}: {new_messages} new messages")
+                # else:
+                #     #print(f"📭 Batch {batch_count}: no new messages")
 
                 current_batch_messages = gmail_result.get("grouped_messages", {})
                 if new_messages > 0 and current_batch_messages:
@@ -286,7 +286,7 @@ async def v2all_continuous(user_id, integration=None):
                     )
                     embedding_futures.append(task)
                 else:
-                    print(f"📭 Batch {batch_count}: no new messages to process")
+                    # print(f"📭 Batch {batch_count}: no new messages to process")
                     return None
                 return gmail_result
 
@@ -300,9 +300,9 @@ async def v2all_continuous(user_id, integration=None):
 
         async def process_batch(batch_index, batch):
             batch_start_time = time.perf_counter()
-            print(
-                f"\n⚡ Starting batch {batch_index+1}/{max_batchval} with {len(batch)} threads..."
-            )
+            # print(
+            #     f"\n⚡ Starting batch {batch_index+1}/{max_batchval} with {len(batch)} threads..."
+            # )
             tasks = [
                 process_with_semaphore(
                     batch, batch_index + 1, max_batchval, ticket_allocator
@@ -310,7 +310,7 @@ async def v2all_continuous(user_id, integration=None):
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             batch_runtime = time.perf_counter() - batch_start_time
-            print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
+            # print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
             return results
 
         all_batch_results = await asyncio.gather(
@@ -370,10 +370,10 @@ async def v2all_continuous(user_id, integration=None):
             await asyncio.gather(*embedding_futures)
 
         total_runtime = time.perf_counter() - start_time
-        print(
-            f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
-            f"\n total gmail results counted: {complete_results}",
-        )
+        # print(
+        #     f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
+        #     f"\n total gmail results counted: {complete_results}",
+        # )
 
         # ✅ Only update umail_json + finalize if any batch had new messages
         if any_new_messages:
@@ -385,9 +385,9 @@ async def v2all_continuous(user_id, integration=None):
                 folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
                 if os.path.exists(folder_path):
                     shutil.rmtree(folder_path)
-                    print(f"🗑️ Deleted folder and contents: {folder_path}")
-                else:
-                    print(f"⚠️ Folder not found: {folder_path}")
+                    # print(f"🗑️ Deleted folder and contents: {folder_path}")
+                # else:
+                #     #print(f"⚠️ Folder not found: {folder_path}")
 
             else:
                 update_umail_json(
@@ -397,15 +397,15 @@ async def v2all_continuous(user_id, integration=None):
                 folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
                 if os.path.exists(folder_path):
                     shutil.rmtree(folder_path)
-                    print(f"🗑️ Deleted folder and contents: {folder_path}")
-                else:
-                    print(f"⚠️ Folder not found: {folder_path}")
-        else:
-            print(
-                "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
-            )
+                    # print(f"🗑️ Deleted folder and contents: {folder_path}")
+                # else:
+                #     #print(f"⚠️ Folder not found: {folder_path}")
+        # else:
+        #     #print(
+        #         "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
+        #     )
         if not newly_creation and any_new_messages:
-            print("Triggering this api autopilot check")
+            # print("Triggering this api autopilot check")
             pilotvalues = get_existing_autopilot_json(
                 user_id=user_id, connection=connection
             )
@@ -426,7 +426,7 @@ async def v2all_continuous(user_id, integration=None):
         }
 
     except Exception as e:
-        print(f"[ERROR] v2all_continuous failed: {e}")
+        # print(f"[ERROR] v2all_continuous failed: {e}")
         import traceback
 
         traceback.print_exc()
@@ -473,8 +473,8 @@ async def fetchnextmonthmails(user_id, startDate):
     # bs_startdate = bs_startdate.date()
 
     # Debug logs
-    print("➡ startDate (end):", endDate)
-    print("➡ bs_startdate (start):", bs_startdate)
+    # print("➡ startDate (end):", endDate)
+    # print("➡ bs_startdate (start):", bs_startdate)
 
     try:
         newly_creation = False
@@ -508,16 +508,16 @@ async def fetchnextmonthmails(user_id, startDate):
                         user_id, threads, my_email, batch_count, connection
                     )
                 except Exception as e:
-                    print(f"❌ Error fetching Gmail batch {batch_count}: {e}")
+                    # print(f"❌ Error fetching Gmail batch {batch_count}: {e}")
                     import traceback
 
                     traceback.print_exc()
                     return None
 
                 if gmail_result.get("status") != "success":
-                    print(
-                        f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}"
-                    )
+                    # print(
+                    #     f"❌ Gmail batch {batch_count} failed: {gmail_result.get('error')}"
+                    # )
                     return None
 
                 complete_results += len(gmail_result)
@@ -525,9 +525,9 @@ async def fetchnextmonthmails(user_id, startDate):
                 new_messages = gmail_result.get("new_messages", 0)
                 if new_messages > 0:
                     any_new_messages = True  # mark that we did get something
-                    print(f"📬 Batch {batch_count}: {new_messages} new messages")
-                else:
-                    print(f"📭 Batch {batch_count}: no new messages")
+                    # print(f"📬 Batch {batch_count}: {new_messages} new messages")
+                # else:
+                #     #print(f"📭 Batch {batch_count}: no new messages")
 
                 current_batch_messages = gmail_result.get("grouped_messages", {})
                 if new_messages > 0 and current_batch_messages:
@@ -549,7 +549,7 @@ async def fetchnextmonthmails(user_id, startDate):
                     )
                     embedding_futures.append(task)
                 else:
-                    print(f"📭 Batch {batch_count}: no new messages to process")
+                    # print(f"📭 Batch {batch_count}: no new messages to process")
                     return None
                 return gmail_result
 
@@ -563,9 +563,9 @@ async def fetchnextmonthmails(user_id, startDate):
 
         async def process_batch(batch_index, batch):
             batch_start_time = time.perf_counter()
-            print(
-                f"\n⚡ Starting batch {batch_index+1}/{max_batchval} with {len(batch)} threads..."
-            )
+            # print(
+            #     f"\n⚡ Starting batch {batch_index+1}/{max_batchval} with {len(batch)} threads..."
+            # )
             tasks = [
                 process_with_semaphore(
                     batch, batch_index + 1, max_batchval, ticket_allocator
@@ -573,7 +573,7 @@ async def fetchnextmonthmails(user_id, startDate):
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             batch_runtime = time.perf_counter() - batch_start_time
-            print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
+            # print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
             return results
 
         all_batch_results = await asyncio.gather(
@@ -633,10 +633,10 @@ async def fetchnextmonthmails(user_id, startDate):
             await asyncio.gather(*embedding_futures)
 
         total_runtime = time.perf_counter() - start_time
-        print(
-            f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
-            f"\n total gmail results counted: {complete_results}",
-        )
+        # print(
+        #     f"\n🎯 Completed processing {threads_max} threads in {total_runtime:.2f} seconds",
+        #     f"\n total gmail results counted: {complete_results}",
+        # )
 
         # ✅ Only update umail_json + finalize if any batch had new messages
         if any_new_messages:
@@ -647,15 +647,15 @@ async def fetchnextmonthmails(user_id, startDate):
             folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
             if os.path.exists(folder_path):
                 shutil.rmtree(folder_path)
-                print(f"🗑️ Deleted folder and contents: {folder_path}")
-            else:
-                print(f"⚠️ Folder not found: {folder_path}")
-        else:
-            print(
-                "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
-            )
+                # print(f"🗑️ Deleted folder and contents: {folder_path}")
+            # else:
+            # print(f"⚠️ Folder not found: {folder_path}")
+        # else:
+        #     #print(
+        #         "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
+        #     )
         # if not newly_creation and any_new_messages:
-        #     print("Triggering this api autopilot check")
+        #     #print("Triggering this api autopilot check")
         #     pilotvalues = get_existing_autopilot_json(
         #         user_id=user_id, connection=connection
         #     )
@@ -676,7 +676,7 @@ async def fetchnextmonthmails(user_id, startDate):
         }
 
     except Exception as e:
-        print(f"[ERROR] v2all_continuous failed: {e}")
+        # print(f"[ERROR] v2all_continuous failed: {e}")
         import traceback
 
         traceback.print_exc()
@@ -728,22 +728,21 @@ def v2process_batch_with_embedding(
                     ticket_allocator,
                 )
 
-            print(f"🧩 batch {batch_count} messages analyzed: {len(messages)}")
+            # print(f"🧩 batch {batch_count} messages analyzed: {len(messages)}")
 
             client = UmailLanceClient(user_id)
             # run CPU-bound embedding in a thread so we don’t block
-            print(f"lance_folder : {lance_folder}")
+            # print(f"lance_folder : {lance_folder}")
 
-            
             await client.embed_both_json_and_plain(lance_folder)
-                # run_lance_embedding.delay(user_id, batch_count, lance_folder)
+            # run_lance_embedding.delay(user_id, batch_count, lance_folder)
 
             total_runtime = time.perf_counter() - start_time
-            print("************ Total Time Lance *******", total_runtime)
+            # print("************ Total Time Lance *******", total_runtime)
 
         except Exception as e:
             # log/handle the error
-            print(f"[ERROR] v2process_batch_with_embedding failed: {e}")
+            # print(f"[ERROR] v2process_batch_with_embedding failed: {e}")
             import traceback
 
             traceback.print_exc()
@@ -841,10 +840,10 @@ dummy_batch_results = [
 async def test_cache_insertion():
     redis_service = RedisService()
 
-    print("\nChecking Redis connection:")
+    # print("\nChecking Redis connection:")
     await redis_service.checker()
 
-    print("\nWriting dummy data...")
+    # print("\nWriting dummy data...")
     data = await update_user_message_cache(
         redis_service,
         user_id="dummy_user",
@@ -852,12 +851,12 @@ async def test_cache_insertion():
         newly_creation=True,
     )
 
-    print("\nWritten payload:")
-    print(data)
+    # print("\nWritten payload:")
+    # print(data)
 
-    print("\nReading back from Redis:")
+    # print("\nReading back from Redis:")
     stored = await redis_service.get("umail_dummy_user")
-    print(stored)
+    # print(stored)
 
 
 # asyncio.run(test_cache_insertion())

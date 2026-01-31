@@ -67,7 +67,7 @@ class GmailService:
 
         if not self.conn:
             raise ConnectionError("❌ Failed to connect to RDS (too many connections?)")
-        print(f"user_id : {str(user_id)}")
+        # print(f"user_id : {str(user_id)}")
         with get_cursor(self.conn) as cursor:
             if integration:
                 cursor.execute(
@@ -124,7 +124,7 @@ class GmailService:
                 "https://www.googleapis.com/auth/gmail.modify",
                 "https://www.googleapis.com/auth/gmail.compose",
                 # Drive – READ ONLY
-                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
                 # Calendar – READ ONLY
                 "https://www.googleapis.com/auth/calendar",
@@ -139,7 +139,7 @@ class GmailService:
                 self.creds.refresh(
                     Request()
                 )  # You need to import google.auth.transport.requests.Request
-                print(f"✅ Token refreshed successfully for user {user_id}")
+                # print(f"✅ Token refreshed successfully for user {user_id}")
 
                 # 4. CRITICAL STEP: Save the NEW tokens and expiry back to the database
                 with get_cursor(self.conn) as cursor:
@@ -155,7 +155,7 @@ class GmailService:
 
             except Exception as e:
                 # Token refresh failed (e.g., refresh token revoked)
-                print(f"❌ Token refresh failed for user {user_id}: {e}")
+                # print(f"❌ Token refresh failed for user {user_id}: {e}")
                 raise ValueError(
                     f"Token refresh failed. User must re-authenticate: {e}"
                 )
@@ -181,7 +181,7 @@ class GmailService:
                 .execute()
             )
             messages = results.get("messages", [])
-            print(f"📬 Found {len(messages)} messages to process")
+            # print(f"📬 Found {len(messages)} messages to process")
 
             email_set = set()
             successful_messages = 0
@@ -190,9 +190,9 @@ class GmailService:
             for i, msg in enumerate(messages):
                 for attempt in range(5):  # Retry up to 5 times
                     try:
-                        print(
-                            f"🔄 Processing message {i+1}/{len(messages)}: {msg['id']}"
-                        )
+                        # print(
+                        #     f"🔄 Processing message {i+1}/{len(messages)}: {msg['id']}"
+                        # )
                         msg_detail = (
                             self.service.users()
                             .messages()
@@ -209,7 +209,7 @@ class GmailService:
                         for header in headers:
                             if header["name"] in ["From", "To"]:
                                 email_set.add(header["value"])
-                                print(f"📧 Added email: {header['value']}")
+                                # print(f"📧 Added email: {header['value']}")
 
                         successful_messages += 1
                         break  # Success, exit retry loop
@@ -217,37 +217,37 @@ class GmailService:
                     except HttpError as e:
                         if e.resp.status in [403, 429]:  # Quota exceeded or Rate limit
                             wait_time = (2**attempt) + random.random()
-                            print(
-                                f"⏳ Quota/Rate limit hit. Retrying in {wait_time:.2f}s..."
-                            )
+                            # print(
+                            #     f"⏳ Quota/Rate limit hit. Retrying in {wait_time:.2f}s..."
+                            # )
                             time.sleep(wait_time)
                         elif e.resp.status in [400, 404]:
                             failed_messages += 1
-                            print(
-                                f"⏭️ Skipping inaccessible message {msg['id']}: HTTP {e.resp.status}"
-                            )
+                            # print(
+                            #     f"⏭️ Skipping inaccessible message {msg['id']}: HTTP {e.resp.status}"
+                            # )
                             break  # Don't retry client errors
                         else:
                             failed_messages += 1
-                            print(f"❌ HTTP Error for message {msg['id']}: {e}")
+                            # print(f"❌ HTTP Error for message {msg['id']}: {e}")
                             break  # Don't retry other errors
                     except Exception as e:
                         failed_messages += 1
-                        print(f"❌ Error processing message {msg['id']}: {e}")
+                        # print(f"❌ Error processing message {msg['id']}: {e}")
                         break  # Don't retry unexpected errors
 
             final_emails = list(email_set)
-            print(
-                f"✅ get_contacts completed - Success: {successful_messages}, Failed: {failed_messages}, Unique emails: {len(final_emails)}"
-            )
+            # print(
+            #     f"✅ get_contacts completed - Success: {successful_messages}, Failed: {failed_messages}, Unique emails: {len(final_emails)}"
+            # )
             return final_emails
 
         except HttpError as e:
-            print(f"❌ Gmail API error: {e}")
+            # print(f"❌ Gmail API error: {e}")
             return []
         except Exception as e:
-            print(f"💥 Unexpected error in get_contacts: {e}")
-            print(f"📋 Traceback: {traceback.format_exc()}")
+            # print(f"💥 Unexpected error in get_contacts: {e}")
+            # print(f"📋 Traceback: {traceback.format_exc()}")
             return []
 
     def parse_headers(self, headers):
@@ -268,9 +268,20 @@ class GmailService:
             logger.info(
                 "watch log created for the user successfully %s", self.user_email
             )
+            # print("successfullt created watch list")
         else:
             logger.info("watch log creation failed %s", self.user_email)
         return response
+
+    def stop_watch(self):
+        logger.info("stopping watch for user %s", self.user_id)
+
+        response = self.service.users().stop(userId="me").execute()
+        # print("successfully stopped")
+        logger.info("watch stopped successfully for user %s", self.user_id)
+        return response
+
+    ""
 
     def check_hisdata(self, stored_history_id):
         response = (
@@ -322,13 +333,13 @@ class GmailService:
                 .execute()
                 .get("emailAddress")
             )
-            print(f"📧 My email: {my_email}")
+            # print(f"📧 My email: {my_email}")
 
             while True:
                 try:
-                    print(
-                        f"🔄 Fetching page of threads (already got {total_fetched})..."
-                    )
+                    # print(
+                    #     f"🔄 Fetching page of threads (already got {total_fetched})..."
+                    # )
 
                     # Prepare the request parameters
                     request_params = {
@@ -347,7 +358,7 @@ class GmailService:
                     )
 
                     threads = response.get("threads", [])
-                    print(f"📬 Retrieved {len(threads)} threads in this batch")
+                    # print(f"📬 Retrieved {len(threads)} threads in this batch")
 
                     if not threads:
                         # print("📭 No more threads found")
@@ -363,7 +374,7 @@ class GmailService:
                             )
 
                     tasks = [process_with_semaphore(thread) for thread in threads]
-                    print(f"🚀 Processing {len(tasks)} threads concurrently...")
+                    # print(f"🚀 Processing {len(tasks)} threads concurrently...")
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
                     # Count successful and failed threads
@@ -373,32 +384,32 @@ class GmailService:
                     for i, result in enumerate(results):
                         if isinstance(result, Exception):
                             failed_threads += 1
-                            print(
-                                f"💥 Failed to process thread {threads[i].get('id', 'unknown')}: {str(result)}"
-                            )
+                            # print(
+                            #     f"💥 Failed to process thread {threads[i].get('id', 'unknown')}: {str(result)}"
+                            # )
                         elif result:
                             all_threads.extend(result)
                             successful_threads += 1
                         else:
                             failed_threads += 1
 
-                    print(
-                        f"📊 Batch complete - Success: {successful_threads}, Failed: {failed_threads}"
-                    )
+                    # print(
+                    #     f"📊 Batch complete - Success: {successful_threads}, Failed: {failed_threads}"
+                    # )
 
                     # Add delay between batches to avoid rate limiting
                     if batch_delay > 0 and next_page_token:
-                        print(
-                            f"😴 Sleeping for {batch_delay} seconds to avoid rate limits..."
-                        )
+                        # print(
+                        #     f"😴 Sleeping for {batch_delay} seconds to avoid rate limits..."
+                        # )
                         await asyncio.sleep(batch_delay)
 
                     total_fetched += len(threads)
-                    print(f"📊 Total threads processed so far: {total_fetched}")
+                    # print(f"📊 Total threads processed so far: {total_fetched}")
 
                     # Check if we've reached the max_results limit
                     if max_results and total_fetched >= max_results:
-                        print(f"🏁 Reached max_results limit of {max_results}")
+                        # print(f"🏁 Reached max_results limit of {max_results}")
                         # Return next page token for continuation
                         return all_threads, response.get("nextPageToken")
 
@@ -408,17 +419,17 @@ class GmailService:
                         # print("🏁 No more pages available")
                         return all_threads, None  # No more pages
 
-                    print(f"➡️ Moving to next page (token: {next_page_token[:20]}...)")
+                    # print(f"➡️ Moving to next page (token: {next_page_token[:20]}...)")
 
                 except Exception as e:
                     # print(f"❌ Error fetching thread batch: {str(e)}")
                     break
 
-            print(f"✅ Completed! Total threads fetched: {len(all_threads)}")
+            # print(f"✅ Completed! Total threads fetched: {len(all_threads)}")
             return all_threads, next_page_token
 
         except Exception as e:
-            print(f"💥 A general error occurred in get_threads_async: {str(e)}")
+            # print(f"💥 A general error occurred in get_threads_async: {str(e)}")
             return [], None
 
     async def _process_single_thread_async(self, thread, my_email, max_retries=3):
@@ -433,9 +444,9 @@ class GmailService:
                 if attempt > 0:
                     # Wait before retrying (exponential backoff)
                     wait_time = 2**attempt
-                    print(
-                        f"⏳ Retrying thread {thread_id} in {wait_time} seconds (attempt {attempt + 1}/{max_retries + 1})"
-                    )
+                    # print(
+                    #     f"⏳ Retrying thread {thread_id} in {wait_time} seconds (attempt {attempt + 1}/{max_retries + 1})"
+                    # )
                     await asyncio.sleep(wait_time)
 
                 # The Gmail API calls remain synchronous but wrapped in async function
@@ -454,7 +465,7 @@ class GmailService:
 
                 # break
                 if not messages:
-                    print(f"⚠️ Thread {thread_id} has no messages")
+                    # print(f"⚠️ Thread {thread_id} has no messages")
                     return []
 
                 # DEBUG: Print message IDs and basic info
@@ -528,9 +539,9 @@ class GmailService:
                         thread_data.append(message_data)
 
                     except Exception as e:
-                        print(
-                            f"⚠️ Error processing message in thread {thread_id}: {str(e)}"
-                        )
+                        # print(
+                        #     f"⚠️ Error processing message in thread {thread_id}: {str(e)}"
+                        # )
                         continue
 
                 # If we get here, the request was successful
@@ -538,34 +549,34 @@ class GmailService:
 
             except HttpError as e:
                 if e.resp.status == 500:
-                    print(
-                        f"🔥 Gmail API backend error for thread {thread_id} (attempt {attempt + 1}): {str(e)}"
-                    )
+                    # print(
+                    #     f"🔥 Gmail API backend error for thread {thread_id} (attempt {attempt + 1}): {str(e)}"
+                    # )
                     if attempt < max_retries:
                         continue  # Try again
                     else:
-                        print(
-                            f"❌ Giving up on thread {thread_id} after {max_retries + 1} attempts"
-                        )
+                        # print(
+                        #     f"❌ Giving up on thread {thread_id} after {max_retries + 1} attempts"
+                        # )
                         return []  # Skip this thread after all retries
                 elif e.resp.status in [400, 404]:
-                    print(
-                        f"⏭️ Skipping inaccessible thread {thread_id}: HTTP {e.resp.status}"
-                    )
+                    # print(
+                    #     f"⏭️ Skipping inaccessible thread {thread_id}: HTTP {e.resp.status}"
+                    # )
                     return []  # Don't retry for client errors
                 else:
-                    print(
-                        f"❌ HTTP Error {e.resp.status} for thread {thread_id}: {str(e)}"
-                    )
+                    # print(
+                    #     f"❌ HTTP Error {e.resp.status} for thread {thread_id}: {str(e)}"
+                    # )
                     return []
             except Exception as e:
-                print(f"💥 Unexpected error processing thread {thread_id}: {str(e)}")
+                # print(f"💥 Unexpected error processing thread {thread_id}: {str(e)}")
                 if attempt < max_retries:
                     continue  # Try again for unexpected errors
                 else:
-                    print(
-                        f"❌ Giving up on thread {thread_id} after {max_retries + 1} attempts"
-                    )
+                    # print(
+                    #     f"❌ Giving up on thread {thread_id} after {max_retries + 1} attempts"
+                    # )
                     return []
 
         return []  # This should never be reached, but just in case
@@ -615,9 +626,9 @@ class GmailService:
             # )
 
             for chunk_idx, chunk in enumerate(chunks, start=1):
-                print(
-                    f"➡️ Processing chunk {chunk_idx}/{len(chunks)} (size={len(chunk)})"
-                )
+                # print(
+                #     f"➡️ Processing chunk {chunk_idx}/{len(chunks)} (size={len(chunk)})"
+                # )
 
                 threads_to_fetch = list(chunk)
 
@@ -645,7 +656,7 @@ class GmailService:
                         ]
 
                         if not failed_threads:
-                            print(f"✅ Chunk {chunk_idx} successful")
+                            # print(f"✅ Chunk {chunk_idx} successful")
                             break
                         else:
                             threads_to_fetch = failed_threads
@@ -673,14 +684,14 @@ class GmailService:
                     for t in chunk
                     if "error" in results.get(t["id"] if isinstance(t, dict) else t, {})
                 ]
-                if failed_after_retries:
-                    print(
-                        f"❌ Chunk {chunk_idx} had {len(failed_after_retries)} threads that failed permanently"
-                    )
+                # if failed_after_retries:
+                # print(
+                #     f"❌ Chunk {chunk_idx} had {len(failed_after_retries)} threads that failed permanently"
+                # )
 
             # Cooldown after all chunks complete
             cooldown = random.randint(5, 10)
-            print(f"🕒 All {len(chunks)} chunks processed. Cooling down {cooldown}s...")
+            # print(f"🕒 All {len(chunks)} chunks processed. Cooling down {cooldown}s...")
             await asyncio.sleep(cooldown)
 
             # print("retuening results from fetch_threads_batch", len(results))
@@ -688,7 +699,7 @@ class GmailService:
 
         finally:
             self.service_running = False
-            print(f"current batch fetched {batch_count}")
+            # print(f"current batch fetched {batch_count}")
 
     # ============ ATTACHMENT S3 UPLOAD LOGIC ============
 
@@ -853,22 +864,22 @@ class GmailService:
 
                 # Step 1: Check MIME type against whitelist
                 if mime_type not in ALLOWED_MIMETYPES:
-                    print(f"⏭️ Skipping {filename} - MIME type {mime_type} not allowed")
+                    # print(f"⏭️ Skipping {filename} - MIME type {mime_type} not allowed")
                     continue
 
                 if not file_data:
-                    print(f"⏭️ Skipping {filename} - No file data")
+                    # print(f"⏭️ Skipping {filename} - No file data")
                     continue
 
-                print(
-                    f"� Processing attachment: {filename} ({mime_type}, {len(file_data)} bytes)"
-                )
+                # print(
+                #     f"� Processing attachment: {filename} ({mime_type}, {len(file_data)} bytes)"
+                # )
 
                 # ===== CALENDAR FILES (ICS/iCal) - UPLOAD TO S3 =====
                 if mime_type in CALENDAR_MIMETYPES or filename.lower().endswith(".ics"):
-                    print(
-                        f"📅 [CALENDAR] {filename} is a calendar file - uploading to S3"
-                    )
+                    # print(
+                    #     f"📅 [CALENDAR] {filename} is a calendar file - uploading to S3"
+                    # )
 
                     # Create temporary file
                     with tempfile.NamedTemporaryFile(
@@ -882,7 +893,7 @@ class GmailService:
                     s3_key = f"{user_id}/messages/attachments/{thread_id}/{message_id}/{filename_safe}"
 
                     # Upload to S3
-                    print(f"☁️ Uploading calendar to S3: {s3_key}")
+                    # print(f"☁️ Uploading calendar to S3: {s3_key}")
                     result = upload_any_file(
                         tmp_path, user_id, type="messages", s3_key_C=s3_key
                     )
@@ -902,11 +913,11 @@ class GmailService:
                                 "type": "calendar",
                             }
                         )
-                        print(f"✅ Calendar uploaded {filename}: {s3_url}")
+                        # print(f"✅ Calendar uploaded {filename}: {s3_url}")
                     else:
-                        print(
-                            f"❌ S3 upload failed for {filename}: {result.get('message')}"
-                        )
+                        # print(
+                        #     f"❌ S3 upload failed for {filename}: {result.get('message')}"
+                        # )
                         processed_attachments.append(
                             {
                                 "filename": filename,
@@ -927,9 +938,9 @@ class GmailService:
 
                 # ===== NON-CALENDAR FILES - STORE METADATA ONLY =====
                 else:
-                    print(
-                        f"💾 [ON-DEMAND] {filename} - storing metadata only (will download on-demand)"
-                    )
+                    # print(
+                    #     f"💾 [ON-DEMAND] {filename} - storing metadata only (will download on-demand)"
+                    # )
 
                     processed_attachments.append(
                         {
@@ -944,11 +955,11 @@ class GmailService:
                             "download_required": True,
                         }
                     )
-                    print(f"📝 Metadata stored for {filename} (requires user download)")
+                    # print(f"📝 Metadata stored for {filename} (requires user download)")
 
             except Exception as e:
-                print(f"❌ Error processing attachment {filename}: {e}")
-                print(f"📋 Traceback: {traceback.format_exc()}")
+                # print(f"❌ Error processing attachment {filename}: {e}")
+                # print(f"📋 Traceback: {traceback.format_exc()}")
                 processed_attachments.append(
                     {
                         "filename": attachment.get("filename", "unknown"),
@@ -957,9 +968,9 @@ class GmailService:
                     }
                 )
 
-        print(
-            f"📊 Attachment summary: {len(processed_attachments)} processed from {len(attachments_list)} total"
-        )
+        # print(
+        #     f"📊 Attachment summary: {len(processed_attachments)} processed from {len(attachments_list)} total"
+        # )
         return processed_attachments
 
     @staticmethod
@@ -1166,10 +1177,10 @@ class GmailService:
             return body, attachments
 
         except HttpError as e:
-            print(f"❌ [MIME] Gmail API error: {e}")
+            # print(f"❌ [MIME] Gmail API error: {e}")
             return "", []
         except Exception as e:
-            print(f"❌ [MIME] Extraction error: {e}")
+            # print(f"❌ [MIME] Extraction error: {e}")
             return "", []
 
     @staticmethod
@@ -1371,10 +1382,10 @@ class GmailService:
             return body, attachments, plain_text
 
         except HttpError as e:
-            print(f"❌ [MIME] Gmail API error: {e}")
+            # print(f"❌ [MIME] Gmail API error: {e}")
             return "", "", []
         except Exception as e:
-            print(f"❌ [MIME] Extraction error: {e}")
+            # print(f"❌ [MIME] Extraction error: {e}")
             return "", "", []
 
     @staticmethod
@@ -1503,7 +1514,7 @@ class GmailService:
             #             {"filename": filename, "mimeType": mime_type, "url": url}
             #         )
             #     except Exception as e:
-            #         print(f"⚠️ Failed to process attachment {filename}: {e}")
+            #         #print(f"⚠️ Failed to process attachment {filename}: {e}")
 
             # Recurse nested parts
             for sub_part in part.get("parts", []):
@@ -1787,10 +1798,10 @@ class GmailService:
             if not remaining:
                 break  # ✅ all done
 
-            print(
-                f"🔄 Global attempt {attempt+1}/{global_retries} with {len(remaining)} threads",
-                # f"the data pushing to{remaining[0]} {type(remaining[0])}",
-            )
+            # print(
+            #     f"🔄 Global attempt {attempt+1}/{global_retries} with {len(remaining)} threads",
+            #     # f"the data pushing to{remaining[0]} {type(remaining[0])}",
+            # )
 
             responses = await self.fetch_threads_batch(remaining, batch_count)
             # print(f"len of the responses batch {batch_count} --->", len(responses))
@@ -1814,7 +1825,7 @@ class GmailService:
 
                 messages = resp.get("messages", [])
                 if not messages:
-                    print(f"⚠️ Thread {thread_id} has no messages")
+                    # print(f"⚠️ Thread {thread_id} has no messages")
                     final_results[thread_id] = ([], None)
                     continue
 
@@ -1831,7 +1842,7 @@ class GmailService:
                         }
 
                         message_id = headers.get("message-id")
-                        print(f" *********** messages_id : {message_id}")
+                        # print(f" *********** messages_id : {message_id}")
                         from_header = headers.get("from", "Unknown Sender")
                         to_header = headers.get("to", "")
                         cc_header = headers.get("cc", "")
@@ -1892,10 +1903,10 @@ class GmailService:
                             # print(
                             #     f"📎 Processing {len(attachments)} attachments for message {message_id}"
                             # )
-                            for att in attachments:
-                                print(
-                                    f"   - {att.get('filename', '?')} ({att.get('mimeType', '?')})"
-                                )
+                            # for att in attachments:
+                            # print(
+                            #     f"   - {att.get('filename', '?')} ({att.get('mimeType', '?')})"
+                            # )
                             processed_attachments = self.process_and_upload_attachments(
                                 attachments,
                                 user_id=self.user_id,
@@ -1905,17 +1916,17 @@ class GmailService:
                             # print(
                             #     f"✅ Attachment processing complete: {len(processed_attachments)} uploaded/processed"
                             # )
-                            if processed_attachments:
-                                for att in processed_attachments:
-                                    print(
-                                        f"   ✅ {att.get('filename', '?')}: {att.get('status', '?')} - URL: {att.get('url', 'NO URL')}"
-                                    )
+                            # if processed_attachments:
+                            #     for att in processed_attachments:
+                            #         #print(
+                            #             f"   ✅ {att.get('filename', '?')}: {att.get('status', '?')} - URL: {att.get('url', 'NO URL')}"
+                            #         )
                         #     else:
-                        #         print(
+                        #         #print(
                         #             f"⚠️ WARNING: No attachments were processed/uploaded!"
                         #         )
                         # else:
-                        #     print(
+                        #     #print(
                         #         f"🔍 [MIME DEBUG] No attachments found for message {message_id}"
                         #     )
 
@@ -1946,14 +1957,14 @@ class GmailService:
                         # print(
                         #     f"   - Attachments in message object: {len(processed_attachments) if processed_attachments else 0}"
                         # )
-                        if processed_attachments:
-                            for att in processed_attachments:
-                                print(
-                                    f"     ✅ {att.get('filename', '?')}: {att.get('status', '?')}"
-                                )
+                        # if processed_attachments:
+                        #     for att in processed_attachments:
+                        #         #print(
+                        #             f"     ✅ {att.get('filename', '?')}: {att.get('status', '?')}"
+                        #         )
 
                     except Exception as e:
-                        print(f"⚠️ Error processing message in thread {thread_id}: {e}")
+                        # print(f"⚠️ Error processing message in thread {thread_id}: {e}")
                         continue
 
                 final_results[thread_id] = (thread_data, None)
@@ -1968,10 +1979,10 @@ class GmailService:
                 await asyncio.sleep(wait)
 
         # After all retries, log permanent failures
-        if remaining:
-            print("❌ Permanent failures after all retries:")
-            # for tid in remaining:
-            #     print(f"   - Thread {tid}: {final_results[tid][1]}")
+        # if remaining:
+        # print("❌ Permanent failures after all retries:")
+        # for tid in remaining:
+        #     #print(f"   - Thread {tid}: {final_results[tid][1]}")
 
         # print("✅ Returning results from batch", len(final_results))
         return final_results
@@ -2006,11 +2017,11 @@ class GmailService:
                     )
                     body += decoded_body
                 except Exception as decode_error:
-                    print(f"⚠️ Error decoding message body: {decode_error}")
+                    # print(f"⚠️ Error decoding message body: {decode_error}")
                     body += "[Error decoding message body]"
 
         except Exception as e:
-            print(f"⚠️ Error extracting message body: {e}")
+            # print(f"⚠️ Error extracting message body: {e}")
             body = "[Error extracting message body]"
 
         return body.strip()
@@ -2185,7 +2196,7 @@ class GmailService:
                 total_count += result["count"]
                 all_threads.extend(result["threads"])
             except Exception as e:
-                print(f"⚠️ Chunk {s_date} → {e_date} failed: {e}")
+                # print(f"⚠️ Chunk {s_date} → {e_date} failed: {e}")
                 # Split if more than min_days
                 s_dt = datetime.fromisoformat(s_date)
                 e_dt = datetime.fromisoformat(e_date)
@@ -2194,8 +2205,8 @@ class GmailService:
                     mid_dt = s_dt + timedelta(days=delta_days // 2)
                     stack.insert(0, (mid_dt.strftime("%Y-%m-%d"), e_date))
                     stack.insert(0, (s_date, mid_dt.strftime("%Y-%m-%d")))
-                else:
-                    print(f"❌ Skipping unresponsive chunk {s_date} → {e_date}")
+                # else:
+                # print(f"❌ Skipping unresponsive chunk {s_date} → {e_date}")
 
         return {"count": total_count, "threads": all_threads}
 
@@ -2218,7 +2229,7 @@ class GmailService:
                 "end_date": end_date,
             }
         except Exception as e:
-            print(f"❌ Error fetching inbox stats: {e}")
+            # print(f"❌ Error fetching inbox stats: {e}")
             return None
 
     def get_inbox_stats(self, days_back=180):
@@ -2266,7 +2277,7 @@ class GmailService:
 
             return full_threads  # Each full_thread contains all its messages
         except Exception as e:
-            print(f"❌ Error fetching inbox stats: {e}")
+            # print(f"❌ Error fetching inbox stats: {e}")
             return None
 
     def get_non_promotional_messages(self, max_results=20):
@@ -2595,7 +2606,7 @@ class GmailService:
                 from email.mime.base import MIMEBase
                 from email import encoders
 
-                print(f"📎 Attaching {len(attachments)} file(s) to email...")
+                # print(f"📎 Attaching {len(attachments)} file(s) to email...")
                 for att in attachments:
                     try:
                         s3_key = att.get("s3_key")
@@ -2603,16 +2614,16 @@ class GmailService:
                         filename = att.get("original_filename") or att.get("filename")
                         mime_type = att.get("mime_type", "application/octet-stream")
 
-                        if not s3_key or not filename:
-                            print(
-                                f"⚠️ Skipping attachment - missing s3_key or filename: {att}"
-                            )
-                            continue
+                        # if not s3_key or not filename:
+                        #     #print(
+                        #         f"⚠️ Skipping attachment - missing s3_key or filename: {att}"
+                        #     )
+                        # continue
 
                         # Read file from S3
                         file_data = read_binary_from_s3(s3_key)
                         if not file_data:
-                            print(f"⚠️ Failed to read attachment from S3: {s3_key}")
+                            # print(f"⚠️ Failed to read attachment from S3: {s3_key}")
                             continue
 
                         # Parse MIME type
@@ -2633,12 +2644,12 @@ class GmailService:
 
                         # Add to message
                         message.attach(attachment)
-                        print(f"✅ Attached: {filename} ({len(file_data)} bytes)")
+                        # print(f"✅ Attached: {filename} ({len(file_data)} bytes)")
 
                     except Exception as e:
-                        print(
-                            f"❌ Error attaching file {att.get('filename')}: {str(e)}"
-                        )
+                        # print(
+                        #     f"❌ Error attaching file {att.get('filename')}: {str(e)}"
+                        # )
                         continue
 
             # Encode message for Gmail API
@@ -2688,7 +2699,7 @@ class GmailService:
 
             return MESSAGES[message_id]
         except Exception as e:
-            print(f"❌ Error sending email: {e}")
+            # print(f"❌ Error sending email: {e}")
             return {
                 "success": False,
                 "response": None,
@@ -3006,12 +3017,12 @@ class GmailService:
                     mime_type = att.get("mime_type", "application/octet-stream")
 
                     if not s3_key or not filename:
-                        print(f"⚠️ Skipping invalid attachment: {att}")
+                        # print(f"⚠️ Skipping invalid attachment: {att}")
                         continue
 
                     file_data = read_binary_from_s3(s3_key)
                     if not file_data:
-                        print(f"⚠️ Failed to load attachment from S3: {s3_key}")
+                        # print(f"⚠️ Failed to load attachment from S3: {s3_key}")
                         continue
 
                     # Parse MIME
@@ -3034,7 +3045,7 @@ class GmailService:
                     message.attach(part)
 
                 except Exception as e:
-                    print(f"❌ Error attaching file: {e}")
+                    # print(f"❌ Error attaching file: {e}")
                     continue
 
         # ================
@@ -3137,7 +3148,7 @@ class GmailService:
             # Process and attach files
             from utils.s3_utils import read_binary_from_s3
 
-            print(f"📎 Attaching {len(attachments)} file(s) to forward...")
+            # print(f"📎 Attaching {len(attachments)} file(s) to forward...")
             for att in attachments:
                 try:
                     s3_key = att.get("s3_key")
@@ -3146,15 +3157,15 @@ class GmailService:
                     mime_type = att.get("mime_type", "application/octet-stream")
 
                     if not s3_key or not filename:
-                        print(
-                            f"⚠️ Skipping attachment - missing s3_key or filename: {att}"
-                        )
+                        #     #print(
+                        #         f"⚠️ Skipping attachment - missing s3_key or filename: {att}"
+                        #     )
                         continue
 
                     # Read file from S3
                     file_data = read_binary_from_s3(s3_key)
                     if not file_data:
-                        print(f"⚠️ Failed to read attachment from S3: {s3_key}")
+                        # print(f"⚠️ Failed to read attachment from S3: {s3_key}")
                         continue
 
                     # Parse MIME type
@@ -3175,10 +3186,10 @@ class GmailService:
 
                     # Add to message
                     message.attach(attachment)
-                    print(f"✅ Attached: {filename} ({len(file_data)} bytes)")
+                    # print(f"✅ Attached: {filename} ({len(file_data)} bytes)")
 
                 except Exception as e:
-                    print(f"❌ Error attaching file {att.get('filename')}: {str(e)}")
+                    # print(f"❌ Error attaching file {att.get('filename')}: {str(e)}")
                     continue
         else:
             # No attachments - use simpler structure

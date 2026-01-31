@@ -72,10 +72,39 @@ def flatten_list(lst):
     return flattened
 
 
-def get_usecases_for_smb(smb_name, data):
+# def get_usecases_for_smb(smb_name, data):
+#     for entry in data:
+#         if entry.get("SMB") == smb_name:
+#             return entry.get("Usecases", [])
+#     return []
+
+
+def get_usecases_for_smb(industry: str, data: list) -> list:
+    """
+    industry examples:
+    - 'Undergraduate Student'
+    - 'Law Firm'
+    - 'Healthcare Services'
+    """
+
+    if not industry or not isinstance(data, list):
+        return []
+
+    industry = industry.strip().lower()
+
     for entry in data:
-        if entry.get("SMB") == smb_name:
-            return entry.get("Usecases", [])
+        if not isinstance(entry, dict):
+            continue
+
+        for key, value in entry.items():
+            # Skip the Usecases key
+            if key.lower() == "usecases":
+                continue
+
+            # value is the persona name
+            if isinstance(value, str) and value.strip().lower() == industry:
+                return entry.get("Usecases", [])
+
     return []
 
 
@@ -170,7 +199,8 @@ async def fetch_ques_with_docs(
             reference_id=inspect.stack()[0].function,
         )
     except Exception as e:
-        print(f"error in fetch_ques_with_docs:{e} ")
+        # print(f"error in fetch_ques_with_docs:{e} ")
+        return {"error": e}
 
     res = LanceClient(user_id=userid, credits=credits)
 
@@ -263,7 +293,7 @@ def remove_entries_for_files(existing, filenames):
     flat_existing = flatten_list(existing)
     filenames_norm = [os.path.splitext(f.strip().lower())[0] for f in filenames]
 
-    print(f"-----filenames_norm : {filenames_norm}")
+    # print(f"-----filenames_norm : {filenames_norm}")
 
     filtered = []
     for entry in flat_existing:
@@ -367,12 +397,12 @@ async def preProcessDocWithUsecases(
     all_new = all(is_new_file(fn, passed_data, failed_data) for fn in filenames)
     # print("all new data", all_new)
 
-    print(f"---------after all_new")
+    # print(f"---------after all_new")
 
     if not all_new:
         failed_data = remove_entries_for_files(failed_data, filenames)
 
-    print(f"---------after failed_data")
+    # print(f"---------after failed_data")
     valid_responses, clarification_responses = [], []
     # Step 1: Fetch docs & generate questions
 
@@ -411,7 +441,7 @@ async def preProcessDocWithUsecases(
                 batch,
                 industry,
                 userid=userid,
-                credits=credits
+                credits=credits,
             )
 
             match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)
@@ -446,7 +476,8 @@ async def preProcessDocWithUsecases(
                     clarification_responses.append(entry_obj)
 
     except Exception as e:
-        print(f"error in preProcessDocWithUsecases: {e} ")
+        # print(f"error in preProcessDocWithUsecases: {e} ")
+        return {"error", e}
 
     # Step 4–6: Update passed/failed
     npassed_data = append_passed_with_ai_diff(passed_data, valid_responses)

@@ -4,6 +4,7 @@ import json
 import os
 from flask import Blueprint, request, jsonify
 from services.uamil_auto_service import UmailAutoService
+from umail_helper.mails_process import check_mailbox_email
 from utils.base_logger import get_logger
 from utils.celery_base import delayed_trigger, lock_client
 from db.rds_db import connect_to_rds
@@ -37,6 +38,9 @@ async def receive_gmail_notification():
     history_id = decoded_data.get("historyId")
     if not user_email or not history_id:
         return "Invalid Pub/Sub message data", 400
+    mailcheck = check_mailbox_email(user_email)
+    if not mailcheck:
+        return "ok", 200
 
     # Ensure log directory exists
     os.makedirs(WEBHOOK_LOG_DIR, exist_ok=True)
@@ -94,7 +98,6 @@ async def receive_gmail_notification():
     # ✅ Trigger Celery for this webhook (even if same user, different history_id)
     logger.info(f"Processing webhook for {user_email}, historyId={history_id}")
 
-
     # check if integration or not
     conn = connect_to_rds()
     cursor = conn.cursor()
@@ -113,7 +116,9 @@ async def receive_gmail_notification():
 
     print(f"integratiosn passed to delayed_trigger : {integration}")
 
-    delayed_trigger.delay(user_email, history_id, integration = integration, channel = "google")
+    delayed_trigger.delay(
+        user_email, history_id, integration=integration, channel="google"
+    )
     return "OK", 200
 
 

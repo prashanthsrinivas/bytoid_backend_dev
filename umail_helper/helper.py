@@ -124,7 +124,7 @@ def get_contact_by_identity(user_id, participant, direction):
             "name": full_name,
             "channels": {k: v for k, v in standardized_channels.items() if v},
         }
-        print(f"contact data for {participant} : {contact_data}")
+        #print(f"contact data for {participant} : {contact_data}")
         CONTACTS[user_id][contact_data["id"]] = {
             "name": contact_data["name"],
             "channels": contact_data["channels"],
@@ -181,7 +181,7 @@ def get_contact_by_identity(user_id, participant, direction):
             clean_channels = {k: v for k, v in user_channels.items() if v}
 
             CONTACTS[user_id][user_id] = {"name": full_name, "channels": clean_channels}
-            print(f"contact data for {participant} : {CONTACTS}")
+            #print(f"contact data for {participant} : {CONTACTS}")
 
             for v in clean_channels.values():
                 IDENTITY_MAP[user_id][v] = {
@@ -346,10 +346,10 @@ async def store_integrations_in_redis(
 
         await client.set(key, json.dumps(value))
         await client.expire(key, ttl)  # Set expiration separately (Glide API)
-        print(f"✅ Stored integrations in Redis for user id: {user_id}")
+        #print(f"✅ Stored integrations in Redis for user id: {user_id}")
         return True
     except Exception as e:
-        print(f"⚠️ Failed to store integrations in Redis: {str(e)}")
+        #print(f"⚠️ Failed to store integrations in Redis: {str(e)}")
         return False
     finally:
         if client:
@@ -364,13 +364,13 @@ async def get_integrations_from_redis(user_id: str):
 
         data = await client.get(key)
         if not data:
-            print(f"ℹ️ No integrations found in Redis for user id: {user_id}")
+            #print(f"ℹ️ No integrations found in Redis for user id: {user_id}")
             return None
 
         return json.loads(data)
 
     except Exception as e:
-        print(f"⚠️ Failed to fetch integrations from Redis: {str(e)}")
+        #print(f"⚠️ Failed to fetch integrations from Redis: {str(e)}")
         return None
 
     finally:
@@ -533,8 +533,10 @@ def delete_user_sync_time_zoho(user_id):
 
 def delete_from_cache_sync(user_id):
     async def _inner():
-        print("deleting from cache")
+        #print("deleting from cache")
         client = RedisService()
         return await client.delete(f"umail_{user_id}")
 
     return asyncio.run(_inner())
+
+

@@ -320,7 +320,7 @@ class AutoMateService:
             )
             return response.strip()
         except Exception as e:
-            print(f"Error generating email reply: {e}")
+            #print(f"Error generating email reply: {e}")
             return "Sorry, I couldn't generate an email reply."
 
     async def generate_chat_reply(self, previous_msg, **args):
@@ -418,7 +418,7 @@ class AutoMateService:
             chat_reply = response.strip()
             return {"return_str": chat_reply}
         except Exception as e:
-            print(f"Error generating chat reply: {e}")
+            #print(f"Error generating chat reply: {e}")
             return {"error": "encountering a problem please try again"}
 
     async def generate_ai_content(self, user_input, **args):
@@ -529,7 +529,7 @@ class AutoMateService:
             generated_content = response.strip()
             return {"return_str": generated_content}
         except Exception as e:
-            print(f"Error generating AI content: {e}")
+            #print(f"Error generating AI content: {e}")
             return {"error": "Sorry, I couldn't generate content right now."}
 
     async def generate_questions(self, user_input, **args):
@@ -668,7 +668,7 @@ class AutoMateService:
                 "raw_response": response.strip(),
             }
         except Exception as e:
-            print(f"Error generating questions: {e}")
+            #print(f"Error generating questions: {e}")
             return {"error": "Sorry, I couldn't generate questions right now."}
 
     async def review_content(self, user_input, **args):
@@ -790,5 +790,5 @@ class AutoMateService:
             return {"return_str": review_output}
 
         except Exception as e:
-            print(f"Error reviewing content: {e}")
+            #print(f"Error reviewing content: {e}")
             return {"error": "Sorry, I couldn't review the content right now."}

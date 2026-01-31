@@ -3,10 +3,13 @@ import uuid
 from collections import defaultdict
 import traceback
 from datetime import datetime, timedelta
+
 # from gmail_route.routes import sync_gmail_contacts
 import logging
 from typing import Callable, Any, Optional
 import asyncio
+
+from gmail_route.routes import sync_gmail_contacts
 
 
 # Stores task status: running/completed/failed
@@ -21,24 +24,24 @@ def run_background_task(userid, industry, func, **kwargs):
     task_id = str(uuid.uuid4())  # unique ID for tracking
 
     if userid in task_threads and task_threads[userid].is_alive():
-        print(f"[DEBUG] Skipping — task already running for user {userid}")
+        # print(f"[DEBUG] Skipping — task already running for user {userid}")
         return {"message": "Task already running for this user.", "task_id": task_id}
 
     def task_wrapper():
         try:
             task_status[userid] = {"status": "running", "task_id": task_id}
-            print(
-                f"[DEBUG] Task {task_id} started for user={userid}, industry={industry}, kwargs={kwargs}"
-            )
+            # print(
+            #     f"[DEBUG] Task {task_id} started for user={userid}, industry={industry}, kwargs={kwargs}"
+            # )
 
             func(userid=userid, industry=industry, **kwargs)
 
             task_status[userid]["status"] = "completed"
-            print(f"[DEBUG] Task {task_id} completed successfully.")
+            # print(f"[DEBUG] Task {task_id} completed successfully.")
         except Exception as e:
             task_status[userid]["status"] = "failed"
             task_status[userid]["error"] = str(e)
-            print(f"[ERROR] Task {task_id} failed: {e}")
+            # print(f"[ERROR] Task {task_id} failed: {e}")
 
     thread = threading.Thread(target=task_wrapper, daemon=True)
     task_threads[userid] = thread
@@ -55,11 +58,11 @@ def run_fetch_gmail_in_background(fetch_function, user_id) -> dict:
 
     def background_task():
         try:
-            print(f"Starting background Gmail fetch for user: {user_id}")
+            # print(f"Starting background Gmail fetch for user: {user_id}")
             asyncio.run(fetch_function(user_id))
         except Exception as e:
             error_msg = f"Background Gmail fetch failed for user {user_id}: {str(e)}"
-            print(f"[ERROR] {error_msg}")
+            # print(f"[ERROR] {error_msg}")
             logging.error(error_msg)
         finally:
             # Once done, remove from dict
@@ -75,18 +78,17 @@ def run_fetch_gmail_in_background(fetch_function, user_id) -> dict:
     return {"message": "Fetch started.", "user_id": user_id}
 
 
-
-# Example usage:
-def handle_result(result, user_id):
-    """Optional callback to handle the result"""
-    if result.get("status") == "ok":
-        print(
-            f"Successfully fetched {result.get('new_messages', 0)} new messages for {user_id}"
-        )
-    else:
-        print(
-            f"Error fetching messages for {user_id}: {result.get('error', 'Unknown error')}"
-        )
+# # Example usage:
+# def handle_result(result, user_id):
+#     """Optional callback to handle the result"""
+#     # if result.get("status") == "ok":
+#     #     print(
+#     #         f"Successfully fetched {result.get('new_messages', 0)} new messages for {user_id}"
+#     #     )
+#     # else:
+#     #     print(
+#     #         f"Error fetching messages for {user_id}: {result.get('error', 'Unknown error')}"
+#     #     )
 
 
 # @task_bp.route("/gmail/sync_gmail_contacts/<user_id>")
@@ -95,7 +97,7 @@ def run_gmail_sync_background(user_id, func=None, **kwargs):
 
     # Check if task is already running for this user
     if user_id in gmail_sync_threads and gmail_sync_threads[user_id].is_alive():
-        print(f"[DEBUG] Skipping — Gmail sync already running for user {user_id}")
+        # print(f"[DEBUG] Skipping — Gmail sync already running for user {user_id}")
         return {
             "success": False,
             "message": "Gmail sync already running for this user.",
@@ -116,8 +118,8 @@ def run_gmail_sync_background(user_id, func=None, **kwargs):
                 "result": None,
             }
 
-            print(f"[DEBUG] Gmail sync task {task_id} started for user {user_id}")
-            print(f"[DEBUG] Additional kwargs: {kwargs}")
+            # print(f"[DEBUG] Gmail sync task {task_id} started for user {user_id}")
+            # print(f"[DEBUG] Additional kwargs: {kwargs}")
 
             # Use provided function or default to sync_gmail_contacts
             if func:
@@ -135,9 +137,9 @@ def run_gmail_sync_background(user_id, func=None, **kwargs):
                 }
             )
 
-            print(
-                f"[DEBUG] Gmail sync task {task_id} completed successfully for user {user_id}"
-            )
+            # print(
+            #     f"[DEBUG] Gmail sync task {task_id} completed successfully for user {user_id}"
+            # )
 
         except Exception as e:
             # Task failed
@@ -153,10 +155,10 @@ def run_gmail_sync_background(user_id, func=None, **kwargs):
                 }
             )
 
-            print(
-                f"[ERROR] Gmail sync task {task_id} failed for user {user_id}: {error_msg}"
-            )
-            print(f"[ERROR] Traceback: {error_traceback}")
+            # print(
+            #     f"[ERROR] Gmail sync task {task_id} failed for user {user_id}: {error_msg}"
+            # )
+            # print(f"[ERROR] Traceback: {error_traceback}")
 
     # Create and start the background thread
     thread = threading.Thread(target=sync_task_wrapper, daemon=True)
@@ -221,7 +223,5 @@ def cleanup_completed_gmail_syncs(max_age_hours=24):
         if user_id in gmail_sync_threads:
             del gmail_sync_threads[user_id]
 
-    print(f"[DEBUG] Cleaned up {len(users_to_remove)} old Gmail sync tasks")
+    # print(f"[DEBUG] Cleaned up {len(users_to_remove)} old Gmail sync tasks")
     return len(users_to_remove)
-
-

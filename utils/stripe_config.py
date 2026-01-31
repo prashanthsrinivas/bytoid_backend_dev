@@ -14,12 +14,12 @@ STRIPE_WEBHOOK_SECRET = os.getenv(
 )
 STRIPE_SUCCESS_URL = os.getenv(
     "STRIPE_SUCCESS_URL",
-    "https://dev.bytoid.ai/billing/success",
+    "https://app.bytoid.ai/billing/success",
 )
 
 STRIPE_CANCEL_URL = os.getenv(
     "STRIPE_CANCEL_URL",
-    "https://dev.bytoid.ai/billing/cancelled",
+    "https://app.bytoid.ai/billing/cancelled",
 )
 
 # -------------------------------------------------

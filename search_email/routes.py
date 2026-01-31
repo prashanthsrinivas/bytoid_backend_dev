@@ -88,8 +88,8 @@ def get_entity(text_input, user_id, cursor):
     results = []
     person_names = []
 
-    for token in doc:
-        print(token.text, token.pos_, token.tag_)
+    # for token in doc:
+    # print(token.text, token.pos_, token.tag_)
 
     for ent in doc.ents:
         if ent.label_ == "PERSON":
@@ -112,13 +112,13 @@ def get_entity(text_input, user_id, cursor):
                 (" ".join(temp_name), start_idx, token.idx + len(temp_name[-1]))
             )
 
-    print(f"person_names : {person_names}")
+    # print(f"person_names : {person_names}")
     for full_name, start_idx, end_idx in person_names:
         name_parts = full_name.strip().split()
 
         if len(name_parts) == 2:
             first_name, last_name = name_parts
-            print(f"name_parts :{name_parts}")
+            # print(f"name_parts :{name_parts}")
 
             # 1. Try exact full name match
             cursor.execute(
@@ -173,7 +173,7 @@ def get_entity(text_input, user_id, cursor):
             # Single name: match first or last name
 
             single_name = name_parts[0]
-            print(f"single_name : {single_name}")
+            # print(f"single_name : {single_name}")
             cursor.execute(
                 """
                     SELECT uc.users_clients_id
@@ -214,7 +214,7 @@ def remove_multiple_entities(text, spans):
     """
     # Sort spans in reverse order so indexes don't shift while removing
     spans = sorted(spans, key=lambda x: x[0], reverse=True)
-    print(f"spans: {spans}")
+    # print(f"spans: {spans}")
     for start, end in spans:
         text = text[:start] + text[end:]  # remove the entity
 
@@ -270,7 +270,7 @@ def anonymizer(text_input, entities):
 async def normalize_query(text_input, userid):
 
     try:
-        print(f"inside normalize query")
+        # print(f"inside normalize query")
         now = datetime.now()
         todays_date = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -299,11 +299,11 @@ async def normalize_query(text_input, userid):
                 # print("⚠️ Key 'output_query' missing after parsing")
                 return None
         except Exception as e:
-            print(f"🔥 YAML parse failed: {e}")
+            # print(f"🔥 YAML parse failed: {e}")
             return None
 
     except Exception as e:
-        print(f"🔥 Exception during normalisation of query: {str(e)}")
+        # print(f"🔥 Exception during normalisation of query: {str(e)}")
         return None
 
 
@@ -337,11 +337,11 @@ async def get_search_summary(text_input, anonymised_input, entity_groups, userid
                 # print("⚠️ Key 'output_query' missing after parsing")
                 return None
         except Exception as e:
-            print(f"🔥 YAML parse failed: {e}")
+            # print(f"🔥 YAML parse failed: {e}")
             return None
 
     except Exception as e:
-        print(f"🔥 Exception during normalisation of query : {str(e)}")
+        # print(f"🔥 Exception during normalisation of query : {str(e)}")
         return None
 
 
@@ -457,7 +457,7 @@ def search_db(db_queries, user_id, cursor):
 
         if current_query_ids:
             all_query_results.append(current_query_ids)
-            print(f"Query IDs: {current_query_ids}")
+            # print(f"Query IDs: {current_query_ids}")
 
         # Find common IDs across all queries
     if len(all_query_results) == 0:
@@ -471,7 +471,7 @@ def search_db(db_queries, user_id, cursor):
         for query_result in all_query_results[1:]:
             common_query_ids = common_query_ids.intersection(query_result)
 
-    print(f"common_query_ids: {common_query_ids}")
+    # print(f"common_query_ids: {common_query_ids}")
 
     for message_id in common_query_ids:
         if message_id in query_messages:
@@ -740,9 +740,9 @@ async def search_emails(text_input=None, user_id=None):
                     "from_address": from_address,
                 }
                 message_body.append(msg)
-                print(
-                    f"id: {mail.get('id')} | conversation_id: {mail.get('conversation_id')}"
-                )
+                # print(
+                #     f"id: {mail.get('id')} | conversation_id: {mail.get('conversation_id')}"
+                # )
 
                 # print(f"disp_results : {disp_results}")
             # print(f"message_body before anonymization : {message_body}")

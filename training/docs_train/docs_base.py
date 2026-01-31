@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 import json
 import os
+import threading
 from agent_route.Drive_downloader import (
     GetEmailandDriveService,
     Mediatorservice,
@@ -9,7 +10,6 @@ from agent_route.Drive_downloader import (
 )
 from agent_route.ag_helperzz import deletefilebasedData, process_and_update_yaml
 from agent_route.lance_agent import LanceClient
-from agent_route.routes import agent_bps
 from credits_route.route import Credits
 from db.db_checkers import check_userid_valid
 from db.rds_db import connect_to_rds
@@ -17,7 +17,6 @@ from flask import (
     Blueprint,
     request,
     jsonify,
-    session,
     Response,
     stream_with_context,
 )
@@ -26,7 +25,6 @@ from integrations.google_integration import get_integration_access_token
 from utils.base_logger import get_logger
 from utils.normal import ensure_dir
 from utils.s3_utils import load_yaml_from_s3, save_yaml_to_s3
-from request_context import current_user_id
 from werkzeug.utils import secure_filename
 import uuid
 
@@ -124,16 +122,21 @@ def download_files_stream():
                 # -------------------------------
                 folderpath = os.path.commonpath(all_paths)
 
-                processed_data = asyncio.run(
-                    process_and_update_yaml(
-                        all_downloaded_paths=all_paths,
-                        userid=actual_userid,
-                        provider="google",
-                        folderpath=folderpath,
-                        db=db,
-                        credits=credits,  # 🔐 atomic credit usage inside
-                    )
-                )
+                # processed_data = asyncio.run(
+                #     process_and_update_yaml(
+                #         all_downloaded_paths=all_paths,
+                #         userid=actual_userid,
+                #         provider="google",
+                #         folderpath=folderpath,
+                #         db=db,
+                #         credits=credits,  # 🔐 atomic credit usage inside
+                #     )
+                # )
+                threading.Thread(
+                    target=run_processing_in_background,
+                    args=(all_paths, actual_userid, "google", folderpath),
+                    daemon=True,
+                ).start()
 
                 # -------------------------------
                 # Commit only if everything succeeded
@@ -141,7 +144,7 @@ def download_files_stream():
                 db.commit()
 
                 yield (
-                    f"event: complete\ndata: {json.dumps({'message': 'Successfully processed files', 'files': processed_data})}\n\n"
+                    f"event: complete\ndata: {json.dumps({'message': 'Successfully processed files', 'files': 'started processing'})}\n\n"
                 )
 
             except Exception as e:
@@ -162,59 +165,108 @@ def download_files_stream():
         return jsonify({"error": str(e)}), 500
 
 
-# @docs_agent_bps.route("/process-local", methods=["POST"])
-# def process_local():
+def run_processing_in_background(
+    all_paths,
+    actual_userid,
+    provider,
+    folderpath,
+):
+    db = connect_to_rds()
+    credits = Credits(db=db)
 
-#     # 🔹 Get file
-#     if "files" not in request.files:
-#         return jsonify({"error": "No file uploaded"}), 400
-
-#     file = request.files["files"]
-#     print(f"file name : {file.filename}")
-
-#     if file.filename == "":
-#         return jsonify({"error": "No file selected"}), 400
-
-#     # 🔹 Get form fields
-#     user_id = request.form.get("user_id")
-#     api_key = request.form.get("api_key")
-#     source = request.form.get("source")
-
-#     if not user_id or not api_key:
-#         return jsonify({"error": "Missing user_id or api_key"}), 400
-
-#     UPLOAD_FOLDER = f"uploads_{uuid.uuid4()}"
-#     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-#     # 🔹 Save file safely
-#     filename = secure_filename(file.filename)
-#     file_path = os.path.join(UPLOAD_FOLDER, filename)
-#     file.save(file_path)
+    try:
+        asyncio.run(
+            process_and_update_yaml(
+                all_downloaded_paths=all_paths,
+                userid=actual_userid,
+                provider=provider,
+                folderpath=folderpath,
+                db=db,
+                credits=credits,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
-#     def event_stream():
-#         yield "event: start\ndata: Starting processing...\n\n"
+@docs_agent_bps.route("/process-local", methods=["POST"])
+def process_local():
 
-#         try:
-#             all_file_data = asyncio.run(
-#                 process_and_update_yaml(
-#                     all_downloaded_paths=[file_path],
-#                     userid=user_id,
-#                     provider="local",
-#                     folderpath=UPLOAD_FOLDER,
-#                     credits=credits
-#                 )
-#             )
+    # 🔹 Get file
+    if "files" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
 
-#             yield (
-#                 "event: complete\n"
-#                 f"data: {json.dumps({'message': 'Successfully processed files', 'files': all_file_data})}\n\n"
-#             )
+    file = request.files["files"]
+    print(f"file name : {file.filename}")
 
-#         except Exception as e:
-#             yield ("event: error\n" f"data: {json.dumps({'error': str(e)})}\n\n")
+    if file.filename == "":
+        return jsonify({"error": "No file selected"}), 400
 
-#     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
+    # 🔹 Get form fields
+    user_id = request.form.get("user_id")
+    api_key = request.form.get("api_key")
+    source = request.form.get("source")
+
+    if not user_id or not api_key:
+        return jsonify({"error": "Missing user_id or api_key"}), 400
+
+    UPLOAD_FOLDER = f"uploads/uploads_{uuid.uuid4()}"
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+    # 🔹 Save file safely
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(file_path)
+
+    def event_stream():
+        print("inside event_stream")
+        yield "event: start\ndata: Starting processing...\n\n"
+
+        def runner():
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+
+                return loop.run_until_complete(
+                    process_and_update_yaml(
+                        all_downloaded_paths=[file_path],
+                        userid=user_id,
+                        provider="local",
+                        db=None,
+                        folderpath=UPLOAD_FOLDER,
+                    )
+                )
+            finally:
+                loop.close()
+
+        try:
+            result = runner()
+
+            # 🔴 CREDIT ERROR HANDLING
+            if (
+                isinstance(result, dict)
+                and result.get("error") == "INSUFFICIENT_CREDITS"
+            ):
+                yield ("event: error\n" f"data: {json.dumps(result)}\n\n")
+                return
+
+            # ✅ SUCCESS
+            yield (
+                "event: complete\n"
+                f"data: {json.dumps({'message': 'Done', 'files': result})}\n\n"
+            )
+
+        except Exception as e:
+            yield (
+                "event: error\n"
+                f"data: {json.dumps({'error': 'PROCESSING_FAILED', 'message': str(e)})}\n\n"
+            )
+
+    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
 
 @docs_agent_bps.route("/get-usersDocs", methods=["Get"])
@@ -266,7 +318,8 @@ async def delete_file():
         return jsonify({"error": f"No entries found for source '{source}'"}), 404
 
     # Step 1: Delete vectors from LanceDB
-    lance_agent = LanceClient(user_id=userid)
+    credits = Credits()
+    lance_agent = LanceClient(user_id=userid, credits=credits)
     delete_result = await lance_agent.delete_file_Data(foldername=filename)
     if delete_result.get("status") != "success":
         return jsonify({"error": delete_result.get("message", "Unknown error")}), 500

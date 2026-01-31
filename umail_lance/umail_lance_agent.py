@@ -1,4 +1,5 @@
 import asyncio
+from http.client import HTTPException
 import inspect
 from dotenv import load_dotenv
 import os
@@ -97,13 +98,13 @@ class UmailLanceClient:
                 all_vectors.extend(vectors)
             except Exception as e:
                 # fallback: maybe chunk too long → embed individually
-                print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
+                #print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
                 for chunk in batch:
                     try:
                         vec = self.embeddings.embed_query(chunk)
                         all_vectors.append(vec)
                     except Exception as ee:
-                        print(f"❌ Failed to embed chunk: {ee}")
+                        # print(f"❌ Failed to embed chunk: {ee}")
                         all_vectors.append([])  # empty vector if fails
         return all_vectors
 
@@ -133,7 +134,7 @@ class UmailLanceClient:
                 total_output_tokens += sum(len(v) for v in vectors)
 
             except Exception as e:
-                print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
+                # print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
 
                 for chunk in batch:
                     try:
@@ -144,7 +145,7 @@ class UmailLanceClient:
                         total_output_tokens += len(vec)
 
                     except Exception as ee:
-                        print(f"❌ Failed to embed chunk: {ee}")
+                        # print(f"❌ Failed to embed chunk: {ee}")
                         all_vectors.append([])
 
         total_chars = total_input_chars + total_output_tokens
@@ -172,9 +173,9 @@ class UmailLanceClient:
         Fetch all records stored under a specific user_id/client_id table.
         """
         try:
-            print(
-                f"inside get_all_records for user_id : {user_id} client_id :{client_id}"
-            )
+            # print(
+            #     f"inside get_all_records for user_id : {user_id} client_id :{client_id}"
+            # )
             # Safely fetch or create table
             # response = requests.post(
             #     f"{self.lancedb_url}/filter_umail_table",
@@ -197,13 +198,13 @@ class UmailLanceClient:
             results = [row for row in results if row["id"] != "init"]
 
             if not results:
-                print("No records found")
-                # raise HTTPException(status_code=404, detail="No records found")
+                # print("No records found")
+                raise HTTPException(status_code=404, detail="No records found")
 
             return {"data": results}
 
         except Exception as e:
-            print(f"error : {e}")
+            # print(f"error : {e}")
             print(f"Response content: {response.text[:500]}")  # First 500 chars
 
             # raise HTTPException(status_code=400, detail=str(e))
@@ -211,7 +212,7 @@ class UmailLanceClient:
     def latest_messages_from_lance_test(
         self, user_id, next_cursor
     ):  # used for getting recent messages
-        print(f"latest_messages_from_lance_test")
+        # print(f"latest_messages_from_lance_test")
 
         response = self.lance_service.serverless_get_umail_page_test_test(
             user_id=user_id, next_cursor=next_cursor
@@ -221,7 +222,7 @@ class UmailLanceClient:
     def latest_messages_from_lance(
         self, user_id, next_cursor
     ):  # used for getting recent messages
-        print(f"latest_messages_from_lance")
+        # print(f"latest_messages_from_lance")
         # response = requests.post(
         #     f"{self.lancedb_url}/get_umail_table",
         #     params={"user_id": user_id, "next_cursor": next_cursor},
@@ -262,7 +263,7 @@ class UmailLanceClient:
                     text_data
                 )  # Convert JSON string back to list of dicts
             except Exception as e:
-                print(f"[WARN] Failed to parse JSON for id {row.get('id')}: {e}")
+                # print(f"[WARN] Failed to parse JSON for id {row.get('id')}: {e}")
                 continue
 
             # If it's a list, pick the last message (or you can pick first or max timestamp)
@@ -315,16 +316,16 @@ class UmailLanceClient:
     def get_selected_conv_from_lance(
         self, user_id, client_id
     ):  # used for getting recent messages
-        print("checking client id", client_id)
+        # print("checking client id", client_id)
         response_data = self.lance_service.filter_umail_table(
             user_id=user_id, folder_name=client_id
         )
-        print("response from selected conv", type(response_data))
+        # print("response from selected conv", type(response_data))
 
         # Get results from API response
 
         if not response_data:
-            print("response_data is empty")
+            # print("response_data is empty")
             return None
 
         selected_conv = {}
@@ -334,7 +335,7 @@ class UmailLanceClient:
             conv_id = row.get("id")
 
             if not text_data:
-                print("NO TEXT DATA")
+                # print("NO TEXT DATA")
                 continue
 
             try:
@@ -343,12 +344,12 @@ class UmailLanceClient:
                 elif isinstance(text_data, str):
                     parsed_data = json.loads(text_data)
                 else:
-                    print(
-                        f"[WARN] Unexpected text type for id {conv_id}: {type(text_data)}"
-                    )
+                    # print(
+                    #     f"[WARN] Unexpected text type for id {conv_id}: {type(text_data)}"
+                    # )
                     continue
             except Exception as e:
-                print(f"[WARN] Failed to parse JSON for id {conv_id}: {e}")
+                # print(f"[WARN] Failed to parse JSON for id {conv_id}: {e}")
                 continue
 
             # Handle both cases: single message (dict) or multiple messages (list)
@@ -358,7 +359,7 @@ class UmailLanceClient:
                     conversation_id = message.get("conversation_id")
 
                     if not conversation_id:
-                        print(f"[WARN] No conversation_id found for id {conv_id}")
+                        # print(f"[WARN] No conversation_id found for id {conv_id}")
                         continue
 
                     if conversation_id not in selected_conv:
@@ -372,7 +373,7 @@ class UmailLanceClient:
                 conversation_id = parsed_data.get("conversation_id")
 
                 if not conversation_id:
-                    print(f"[WARN] No conversation_id found for id {conv_id}")
+                    # print(f"[WARN] No conversation_id found for id {conv_id}")
                     continue
 
                 if conversation_id not in selected_conv:
@@ -382,9 +383,9 @@ class UmailLanceClient:
                 selected_conv[conversation_id].append(parsed_data)
 
             else:
-                print(
-                    f"[WARN] Unexpected data type for id {conv_id}: {type(parsed_data)}"
-                )
+                # print(
+                #     f"[WARN] Unexpected data type for id {conv_id}: {type(parsed_data)}"
+                # )
                 continue
 
         return selected_conv
@@ -411,12 +412,12 @@ class UmailLanceClient:
         and returns a combined list of all flattened strings.
         """
         results = []
-        print(f"processing folderpath : {folder_path}")
+        # print(f"processing folderpath : {folder_path}")
 
         for filename in os.listdir(folder_path):
-            print(f"filename : {filename}")
+            # print(f"filename : {filename}")
             if not filename.lower().endswith(".json"):
-                print(f"no filename")
+                # print(f"no filename")
                 continue
 
             file_path = os.path.join(folder_path, filename)
@@ -424,7 +425,7 @@ class UmailLanceClient:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except Exception as e:
-                print(f"[!] Failed to read JSON file {filename}: {e}")
+                # print(f"[!] Failed to read JSON file {filename}: {e}")
                 logger.error(f"[!] Failed to read JSON file {filename}: {e}")
                 continue
 
@@ -433,11 +434,11 @@ class UmailLanceClient:
             client_id = parts[1]
             conv_id = os.path.splitext(parts[2])[0]
 
-            print(f"---------")
-            print(f"user_id : {user_id}")
-            print(f"client_id : {client_id}")
-            print(f"conv_id : {conv_id}")
-            print(f"---------")
+            # print(f"---------")
+            # print(f"user_id : {user_id}")
+            # print(f"client_id : {client_id}")
+            # print(f"conv_id : {conv_id}")
+            # print(f"---------")
 
             def make_row(d):
                 flattened_texts = self.flatten_json(d)
@@ -480,7 +481,7 @@ class UmailLanceClient:
             "timestamp": timestamp,
             "plain_text": pl_text,
         }
-        print(f"process_json_files complete with timestamp : {timestamp}")
+        # print(f"process_json_files complete with timestamp : {timestamp}")
         return result
 
     # first fucntion
@@ -567,14 +568,14 @@ class UmailLanceClient:
                         folder_name=client_id,
                         timestamp=timestamp,
                     )
-                    print(f"{conv_id} : {user_id} : {client_id} : {timestamp}")
+                    # print(f"{conv_id} : {user_id} : {client_id} : {timestamp}")
                     vector_batch.append(vector_data)
             except Exception as e:
-                print(f"[!] Embedding failed: {e}")
+                # print(f"[!] Embedding failed: {e}")
                 logger.error(f"[!] Embedding failed: {e}")
 
         if vector_batch:
-            print("embedding complte. sending to lance db for insertion")
+            # print("embedding complte. sending to lance db for insertion")
             self.send_json_batch_to_lancedb(vector_batch)
             return {"vectors_made": len(vector_batch), "docs_processed": len(data)}
         else:
@@ -596,8 +597,8 @@ class UmailLanceClient:
         return np.mean(np.array(valid), axis=0).astype(np.float32).tolist()
 
     async def embed_both_json_and_plain(self, folder_path, batch_size=100):
-        print(f"inside embed_both_json_and_plain")
-        print(f"folder_path : {folder_path}")
+        # print(f"inside embed_both_json_and_plain")
+        # print(f"folder_path : {folder_path}")
         data = self.process_json_files(folder_path)
 
         vector_batch = []
@@ -612,7 +613,7 @@ class UmailLanceClient:
             timestamp = f["timestamp"]
             plain_text = f.get("plain_text", "")
 
-            print(f"user_id : {user_id}")
+            # print(f"user_id : {user_id}")
             # -------------------------------
             # JSON embedding
             # -------------------------------
@@ -638,9 +639,9 @@ class UmailLanceClient:
             # -------------------------------
             # Build record for LanceDB
             # -------------------------------
-            print("----------------------")
-            print(f"inside embed_bith_json_and_plain : {conv_id}")
-            print("----------------------")
+            # print("----------------------")
+            # print(f"inside embed_bith_json_and_plain : {conv_id}")
+            # print("----------------------")
 
             row = UmailData(
                 id=conv_id,
@@ -658,18 +659,18 @@ class UmailLanceClient:
             # Insert batch
             # -------------------------------
             if len(vector_batch) >= batch_size:
-                print(
-                    f"🟦 Inserting batch #{batch_index} ({len(vector_batch)} vectors)"
-                )
+                # print(
+                #     f"🟦 Inserting batch #{batch_index} ({len(vector_batch)} vectors)"
+                # )
                 self.send_json_batch_to_lancedb(vector_batch)
                 vector_batch = []
                 batch_index += 1
 
         # final batch
         if vector_batch:
-            print(
-                f"🟩 Inserting final batch #{batch_index} ({len(vector_batch)} vectors)"
-            )
+            # print(
+            #     f"🟩 Inserting final batch #{batch_index} ({len(vector_batch)} vectors)"
+            # )
             self.send_json_batch_to_lancedb(vector_batch)
 
         return {"total_rows": len(data), "batches_inserted": batch_index}
@@ -682,11 +683,11 @@ class UmailLanceClient:
             lance_data, user_id, client_id, conversation_id
         )
 
-        print("🔍 embed_json_file_for_reply called:")
-        print(f"   user_id: {user_id}")
-        print(f"   client_id: {client_id}")
-        print(f"   conversation_id: {conversation_id}")
-        print(f"   input_data type: {type(lance_data)}")
+        # print("🔍 embed_json_file_for_reply called:")
+        # print(f"   user_id: {user_id}")
+        # print(f"   client_id: {client_id}")
+        # print(f"   conversation_id: {conversation_id}")
+        # print(f"   input_data type: {type(lance_data)}")
 
         # Extract data
         flattened = (file.get("flattened_texts") or "").strip()
@@ -745,110 +746,6 @@ class UmailLanceClient:
             logger.error(f"❌ Failed inserting reply embedding for {conv_id}: {e}")
             return {"status": "failed", "error": str(e)}
 
-    # def embed_json_file_for_reply(
-    #     self, lance_data, user_id, client_id, conversation_id
-    # ):
-    #     file = self.process_json_files_for_reply(
-    #         lance_data, user_id, client_id, conversation_id
-    #     )
-
-    #     print("🔍 embed_json_file_for_reply called:")
-    #     print(f"   user_id: {user_id}")
-    #     print(f"   client_id: {client_id}")
-    #     print(f"   conversation_id: {conversation_id}")
-    #     print(f"   input_data type: {type(lance_data)}")
-
-    #     # Extract data
-    #     flattened = file.get("flattened_texts", "").strip()
-    #     plain_text = file.get("plain_text", "")
-    #     original_data = file.get("original_data")
-    #     timestamp = file.get("timestamp")
-    #     conv_id = file.get("conv_id")
-    #     user_id = file.get("user_id")
-    #     client_id = file.get("client_id")
-
-    #     # -------------------------------
-    #     # Dynamic chunk sizing
-    #     # -------------------------------
-    #     if flattened:
-    #         avg_length = len(flattened)
-    #         dynamic_chunk_size = max(2000, min(self.dimension, avg_length))
-    #     else:
-    #         dynamic_chunk_size = 4000
-
-    #     logger.info(
-    #         f"[📄 reply-embed] Using dynamic chunk size: {dynamic_chunk_size} "
-    #         f"with overlap: {int(dynamic_chunk_size * 0.2)}"
-    #     )
-
-    #     # JSON splitter
-    #     json_splitter = RecursiveCharacterTextSplitter(
-    #         chunk_size=dynamic_chunk_size,
-    #         chunk_overlap=int(dynamic_chunk_size * 0.2),
-    #         length_function=len,
-    #         separators=["\n\n", "\n", " ", ""],
-    #     )
-
-    #     # Plain text splitter
-    #     plain_splitter = RecursiveCharacterTextSplitter(
-    #         chunk_size=1500,
-    #         chunk_overlap=150,
-    #         length_function=len,
-    #         separators=["\n\n", "\n", " ", ""],
-    #     )
-
-    #     # -------------------------------
-    #     # JSON embedding (flattened)
-    #     # -------------------------------
-    #     json_chunks = json_splitter.split_text(flattened) if flattened else []
-    #     json_vectors = (
-    #         [self.embeddings.embed_query(c) for c in json_chunks] if json_chunks else []
-    #     )
-
-    #     merged_json_embedding = (
-    #         np.mean(json_vectors, axis=0).tolist() if json_vectors else []
-    #     )
-
-    #     # -------------------------------
-    #     # Plain text embedding
-    #     # -------------------------------
-    #     plain_chunks = plain_splitter.split_text(plain_text) if plain_text else []
-    #     plain_vectors = (
-    #         [self.embeddings.embed_query(c) for c in plain_chunks]
-    #         if plain_chunks
-    #         else []
-    #     )
-
-    #     merged_plain_embedding = (
-    #         np.mean(plain_vectors, axis=0).tolist() if plain_vectors else []
-    #     )
-
-    #     # -------------------------------
-    #     # Build row (ONE row per conversation)
-    #     # -------------------------------
-    #     row = UmailData(
-    #         id=conv_id,
-    #         user_id=user_id,
-    #         text=json.dumps(original_data, ensure_ascii=False),
-    #         embedding=merged_json_embedding,
-    #         folder_name=client_id,
-    #         timestamp=timestamp,
-    #         plain_text_embedding=merged_plain_embedding,
-    #     )
-
-    #     # -------------------------------
-    #     # Insert to LanceDB
-    #     # -------------------------------
-    #     try:
-    #         self.send_json_batch_to_lancedb_for_reply([row])
-    #         logger.info(
-    #             f"✅ reply embedding inserted into LanceDB for conv_id={conv_id}"
-    #         )
-    #         return {"status": "success", "conv_id": conv_id}
-    #     except Exception as e:
-    #         logger.error(f"❌ Failed inserting reply embedding for {conv_id}: {e}")
-    #         return {"status": "failed", "error": str(e)}
-
     def send_json_batch_to_lancedb_for_reply(self, vector_batch):
         """
         Send vector data to LanceDB for insertion
@@ -858,7 +755,7 @@ class UmailLanceClient:
             return response
 
         except Exception as e:
-            print(f"[!] Exception during batch insert: {str(e)}")
+            # print(f"[!] Exception during batch insert: {str(e)}")
             logger.error(f"[!] Exception during batch insert: {str(e)}")
 
             # Retry logic
@@ -922,7 +819,7 @@ class UmailLanceClient:
 
                     sleep_time = BACKOFF**attempt
                     time.sleep(sleep_time)
-        print("succesfully inserted into lancedb")
+        # print("succesfully inserted into lancedb")
         return results
 
     def print_content(self, user_id):
@@ -937,16 +834,16 @@ class UmailLanceClient:
                 if response.text.strip():  # Check if response has content
                     try:
                         response_data = response.json()
-                        print(f"response_data : {response_data}")
+                        # print(f"response_data : {response_data}")
                         # Process your JSON data here
                     except ValueError as e:
-                        print(f"Response is not valid JSON: {response.text}")
+                        # print(f"Response is not valid JSON: {response.text}")
                         print(f"JSON decode error: {e}")
-                else:
-                    print("Response is empty")
-            else:
-                print(f"HTTP Error: {response.status_code}")
-                print(f"Response text: {response.text}")
+            #     else:
+            #         print("Response is empty")
+            # else:
+            #     print(f"HTTP Error: {response.status_code}")
+            #     print(f"Response text: {response.text}")
 
         except requests.exceptions.RequestException as e:
             print(f"Request failed: {e}")
@@ -991,26 +888,26 @@ class UmailLanceClient:
                 # print(f"result_from_lance : {result_from_lance}")
                 return result_from_lance
             else:
-                print(f"HTTP Error: {response.status_code}")
-                print(f"Response text: {response.text}")
+                # print(f"HTTP Error: {response.status_code}")
+                # print(f"Response text: {response.text}")
                 return []
 
         except Exception as e:
-            print(f"Error in search_email_from_lance: {e}")
+            # print(f"Error in search_email_from_lance: {e}")
             return []
 
     # ------------FETCHING CONV FILE FOR AI ASSISSTANT--------#
 
     def get_conv_from_lance(self, id, user_id, folder_name):
         try:
-            print("inside  get_conv_from_lance")
+            # print("inside  get_conv_from_lance")
 
             payload = {
                 "id": id,
                 "user_id": user_id,
                 "folder_name": folder_name,
             }
-            print("payload", payload)
+            #print("payload", payload)
             response = requests.post(
                 f"{self.lancedb_url}/fetch_conv_file",
                 params=payload,
@@ -1020,12 +917,12 @@ class UmailLanceClient:
                 # print("successfully fetched the results")
                 return response.json().get("results", [])
             else:
-                print(f"HTTP Error: {response.status_code}")
-                print(f"Response text: {response.text}")
+                #print(f"HTTP Error: {response.status_code}")
+                #print(f"Response text: {response.text}")
                 return []
 
         except Exception as e:
-            print(f"Error in search_email_from_lance: {e}")
+            #print(f"Error in search_email_from_lance: {e}")
             return []
 
     # ---------------------Creating index for umail----------------#
@@ -1040,10 +937,10 @@ class UmailLanceClient:
                 # print("successfully created index for umail table")
                 return response.json()
             else:
-                print(f"HTTP Error: {response.status_code}")
-                print(f"Response text: {response.text}")
+                #print(f"HTTP Error: {response.status_code}")
+                #print(f"Response text: {response.text}")
                 return []
 
         except Exception as e:
-            print(f"Error in creating_index: {e}")
+            #print(f"Error in creating_index: {e}")
             return []

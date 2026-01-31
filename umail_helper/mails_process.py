@@ -114,20 +114,20 @@ async def vtooanalyze_and_collect_messages_for_batch(
                 merged_messages.append(new_msg)
                 new_msgs_local.append(new_msg)
 
-        print(f"new_msgs_local : {new_msgs_local}")
+        # print(f"new_msgs_local : {new_msgs_local}")
 
         # Write updated file
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump({"new_messages": merged_messages}, f, indent=2)
 
-        print(f"channel : {channel}")
+        # print(f"channel : {channel}")
         # print(f"merged_messages:{merged_messages}")
         # print(f"new : {new}")
 
         # Heavier async tasks
-        print(f"output_path : {output_path}")
+        # print(f"output_path : {output_path}")
         subjects = await generate_subject(user_id, output_path, channel)
-        print(f"subjects : {subjects}")
+        # print(f"subjects : {subjects}")
         channel_grouped = {client_id: {channel: channel_msgs}}
 
         await asyncio.to_thread(
@@ -188,7 +188,7 @@ async def generate_subject(user_id, output_path, channel):
             # print("❌ Missing user_id or filename")
             return None
 
-        print(f"output_path: {output_path}")
+        # print(f"output_path: {output_path}")
         with open(output_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -219,7 +219,7 @@ async def generate_subject(user_id, output_path, channel):
         )
 
         # Generate YAML output from model
-        print(f"going to generate subjects")
+        # print(f"going to generate subjects")
         modified_yaml = await get_fireworks_response(
             full_prompt, role="system", user_id=user_id
         )
@@ -232,10 +232,10 @@ async def generate_subject(user_id, output_path, channel):
                 # print("⚠️ Key 'subject_groups' missing after parsing")
                 return None
         except Exception as e:
-            print(f"🔥 YAML parse failed: {e}")
+            # print(f"🔥 YAML parse failed: {e}")
             return None
     except Exception as e:
-        print(f"🔥 Exception during summarisation: {str(e)}")
+        # print(f"🔥 Exception during summarisation: {str(e)}")
         return None
 
 
@@ -247,7 +247,7 @@ def append_subject_to_messages(
     batch_count,
     ticket_allocator,
 ):
-    print(f"****inside append_subject_to_messages for batch number : {batch_count}")
+    # print(f"****inside append_subject_to_messages for batch number : {batch_count}")
 
     # Build a lookup of message_id → subject (unchanged)
     subject_map = {}
@@ -390,7 +390,7 @@ def append_subject_to_messages(
             )
             row = cursor.fetchone()
             if row:
-                print("found an existing conversation", new_conversation_id)
+                # print("found an existing conversation", new_conversation_id)
                 if thread_id:
                     # print("THREAD BASE CASE", msg_id)
                     # # mesag_id = msg_id  # keep original name usage
@@ -413,8 +413,8 @@ def append_subject_to_messages(
                             None,
                         )
                     if matching_conv:
-                        print(f"inside if matching_conv line 410 ")
-                        print(f"channel :{channel}")
+                        # print(f"inside if matching_conv line 410 ")
+                        # print(f"channel :{channel}")
                         conversation_id = matching_conv.get("conv_id")
                         # print(
                         #     f"found matching thread-id:{thread_id}; conv_id :{conversation_id}"
@@ -550,8 +550,8 @@ def append_subject_to_messages(
                                 connection.commit()
                                 ##print("UPDATED CONFIG FILE 643", msg_id)
                                 continue
-                else:
-                    print("NOT A GMAIL")
+                # else:
+                # print("NOT A GMAIL")
 
                 # if found_existing_conversation:
                 #    #print("found_existing_conversation Line 637")
@@ -561,7 +561,7 @@ def append_subject_to_messages(
                 # print("new conversation creating", direction)
                 msg["conversation_id"] = new_conversation_id
 
-                print(f"new_conversation_id in else part: {new_conversation_id}")
+                # print(f"new_conversation_id in else part: {new_conversation_id}")
 
                 safe_execute(
                     cursor,
@@ -658,7 +658,7 @@ def append_subject_to_messages(
                         cont_ref = (
                             f"{user_id}/messages/{client_id}/{new_conversation_id}.json"
                         )
-                        print(f"msg_id: {msg_id}")
+                        # print(f"msg_id: {msg_id}")
 
                         safe_execute(
                             cursor,
@@ -706,7 +706,7 @@ def append_subject_to_messages(
                     config_data.setdefault("userclients_id", client_id)
                     config_data.setdefault("conversations", []).append(updated_entry)
                     update_config_file(user_id, client_id, config_data)
-                    print("UPDATED CONFIG FILE 779")
+                    # print("UPDATED CONFIG FILE 779")
                     connection.commit()
 
                 else:
@@ -716,7 +716,7 @@ def append_subject_to_messages(
                     msg["ticket_id"] = None
                     msg["ticket_name"] = None
                     msg["conversation_id"] = new_conversation_id
-                    print("OUTBOUND placed")
+                    # print("OUTBOUND placed")
 
                     safe_execute(
                         cursor,
@@ -788,9 +788,9 @@ def append_subject_to_messages(
                     # )
 
     connection.close()
-    print(
-        f"🏁 EXITING append_subject_to_messages - processed {len(processed_message_ids)} unique messages"
-    )
+    # print(
+    #     f"🏁 EXITING append_subject_to_messages - processed {len(processed_message_ids)} unique messages"
+    # )
     return "ok"
 
 
@@ -864,7 +864,7 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
         input_data.append(msg)
 
         # print(f"*****input_data :{input_data}")
-        print(f"conv_filepath : {conv_filepath}")
+        # print(f"conv_filepath : {conv_filepath}")
         # print(f"input_data : {input_data}")
         with open(conv_filepath, "w", encoding="utf-8") as f:
             json.dump({"input_data": input_data}, f, indent=2)
@@ -882,7 +882,7 @@ def update_or_create_conversation_file(msg, client_id, cursor, batch_count):
     else:
         # print(f"conv not in existing_conversations", message_id)
 
-        print(f"conv_filepath in else : {conv_filepath}")
+        # print(f"conv_filepath in else : {conv_filepath}")
         # print(f"input_data : {msg}")
 
         with open(conv_filepath, "w", encoding="utf-8") as f:
@@ -1015,3 +1015,78 @@ def normalize_datetimes(obj):
         return obj.isoformat()
     else:
         return obj
+
+
+def check_mailbox(user_id):
+    connection = connect_to_rds()
+    if connection is None:
+        return False
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT mailbox FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+
+        if row is None:
+            return None  # user not found
+
+        # print(f"anser: {row[0]}")
+        if row:
+            return bool(row[0])  # 1 -> True, 0 -> False
+
+    except Exception as e:
+        # print(f"MySQL Error: {e}")
+        return False
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def check_mailbox_email(email):
+    connection = connect_to_rds()
+    if connection is None:
+        return False
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT mailbox FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+
+        if row is None:
+            return None  # user not found
+
+        # print(f"anser: {row[0]}")
+        if row:
+            return bool(row[0])  # 1 -> True, 0 -> False
+
+    except Exception as e:
+        # print(f"MySQL Error: {e}")
+        return False
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_integration_users(primary_user_id_fk, connection):
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT user_id, platform
+        FROM integrations
+        WHERE primary_user_id_fk = %s
+    """,
+        (primary_user_id_fk,),
+    )
+
+    rows = cursor.fetchall()
+    cursor.close()
+
+    # convert tuples → dicts explicitly
+    integrations = []
+    for row in rows:
+        integrations.append({"user_id": row[0], "platform": row[1]})
+
+    return integrations

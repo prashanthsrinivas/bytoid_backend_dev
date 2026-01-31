@@ -15,7 +15,7 @@ BASE_ORGINS = [
     "http://172.31.12.212",
     "https://www.bytoid.ai",
     "https://bytoid.ai",
-    "https://dev.bytoid.ai",
+    "https://app.bytoid.ai",
 ]
 
 EXEMPT_PATHS = [
@@ -36,7 +36,6 @@ EXEMPT_PATHS = [
 ]
 
 
-
 def register_session_check(app):
     CORS(app, supports_credentials=True, resources={r"/*": {"origins": BASE_ORGINS}})
 
@@ -53,19 +52,28 @@ def register_session_check(app):
 
         if not session_hash or not access_token:
             logger.warning("NO session_hash or access_token")
-            return jsonify({"error": "Authentication required", "redirect": "/login"}), 401
+            return (
+                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                401,
+            )
         session, key_str = asyncio.run(get_session(session_hash, request))
         if not session:
             logger.warning("NO session")
             asyncio.run(delete_all_session_cookies(key_str))
-            return jsonify({"error": "Authentication required", "redirect": "/login"}), 401
+            return (
+                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                401,
+            )
         client_ip = request.remote_addr
         client_ua = request.headers.get("User-Agent")
 
         if session["ip"] != client_ip or session["user_agent"] != client_ua:
             logger.warning("client_ip or ua not same")
             asyncio.run(delete_all_session_cookies(key_str))
-            return jsonify({"error": "Authentication required", "redirect": "/login"}), 401
+            return (
+                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                401,
+            )
         now = datetime.now(timezone.utc)
         expiry_str = session["session_expiry"]
         expiry = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
@@ -79,16 +87,21 @@ def register_session_check(app):
         )
         if not is_valid:
             logger.warning("Token validation failed")
-            return jsonify({"error": "Authentication required", "redirect": "/login"}), 401
+            return (
+                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                401,
+            )
         # store context for later
         g.user_id = session["user_id"]
         g.session_data = session
         g.new_tokens = new_tokens
-        g.current_access_token = new_tokens["access_token"] if new_tokens else access_token
+        g.current_access_token = (
+            new_tokens["access_token"] if new_tokens else access_token
+        )
 
         if new_tokens:
             logger.info(f"Token refreshed in request, updating session context")
-            
+
         return None  # continue processing
 
     @app.after_request
@@ -105,4 +118,3 @@ def register_session_check(app):
             )
 
         return response
-

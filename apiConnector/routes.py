@@ -131,7 +131,7 @@ def create_external_app():
 
     try:
         data = request.get_json(force=True)
-        print("data from frontend", data)
+       #print("data from frontend", data)
 
         # ------------------------
         # Required fields
@@ -260,7 +260,7 @@ def create_external_app():
         )
 
     except Exception as e:
-        print("error", e)
+       #print("error", e)
         if conn:
             conn.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -279,7 +279,7 @@ def update_external_app(app_id):
 
     try:
         data = request.get_json(force=True)
-        print("update payload", data)
+       #print("update payload", data)
 
         user_id = data["user_id"]
 
@@ -437,7 +437,7 @@ def update_external_app(app_id):
         )
 
     except Exception as e:
-        print("update error", e)
+       #print("update error", e)
         if conn:
             conn.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -629,7 +629,7 @@ def create_endpoint(app_id):
         )
 
     except Exception as e:
-        print("err", e)
+       #print("err", e)
         conn.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -731,7 +731,7 @@ def test_endpoint(endpoint_id, userid=None):
             "body": json.loads(row["body_template"] or "{}"),
         },
     }
-    print("coonfig from endpoint test", config)
+   #print("coonfig from endpoint test", config)
     connector = APIConnector(userid=userid, config=config)
     result = connector.execute()
     # print("result", result)
@@ -876,7 +876,7 @@ async def execute_endpoint(endpoint_id, userid=None):
         result = await _execute_endpoint_internal(endpoint_id, userid, context)
         return jsonify(result)
     except Exception as e:
-        print("error on executing endpoint", e)
+       #print("error on executing endpoint", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -1014,7 +1014,7 @@ async def schedule_app(app_id):
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/schedule", methods=["POST"])
 async def schedule_endpoint(endpoint_id):
     body = request.json or {}
-    print("body received for schedule ", body)
+   #print("body received for schedule ", body)
     userid = body.get("user_id")
     activation = body.get("scheduledActivation")
 
@@ -1024,7 +1024,7 @@ async def schedule_endpoint(endpoint_id):
     schedule_type, data = resolve_schedule_from_activation(activation)
     timezone = data.get("timezone", "UTC")
     if values := get_schedule_endpointdetails(endpoint_id):
-        print("values", values, type(values))
+       #print("values", values, type(values))
 
         celery_type = values.get("celery_type", "")
         celery_id = values.get("celery_task_id", "")
@@ -1152,23 +1152,23 @@ async def stop_schedule(endpoint_id):
     # Find and stop the schedule
     for sch in schedules:
         sch_key = sch.get("execution_key")
-        print(f'type of sch.get("execution_key") = {type(sch_key)}, value = {sch_key}')
-        print(f"type of execution_key = {type(execution_key)}, value = {execution_key}")
+       #print(f'type of sch.get("execution_key") = {type(sch_key)}, value = {sch_key}')
+       #print(f"type of execution_key = {type(execution_key)}, value = {execution_key}")
         if sch.get("execution_key") == execution_key:
             execution_key = sch.get("execution_key")
             sch["status"] = "inactive"
 
             # Stop celery beat/interval
             if sch.get("celery_entry"):
-                print("stopping a beat")
+               #print("stopping a beat")
                 await APIConnectorScheduler.disable_celery_entry(sch["celery_entry"])
 
             # Stop one-time task
             if sch.get("celery_task_id"):
-                print("stopping a task")
+               #print("stopping a task")
                 await APIConnectorScheduler.revoke_task(sch["celery_task_id"])
             if sch.get("celery_task_ids"):
-                print("stopping multiple tasks", len(sch["celery_task_ids"]))
+               #print("stopping multiple tasks", len(sch["celery_task_ids"]))
                 for tid in sch["celery_task_ids"]:
                     APIConnectorScheduler.revoke_task(tid)
 

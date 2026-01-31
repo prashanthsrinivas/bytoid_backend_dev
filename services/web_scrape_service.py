@@ -73,7 +73,7 @@ class WebScrapingLanceClient:
             for chrome_path in chrome_paths:
                 if os.path.exists(chrome_path):
                     chrome_options.binary_location = chrome_path
-                    print(f"[SELENIUM] Using Chrome binary: {chrome_path}")
+                    #print(f"[SELENIUM] Using Chrome binary: {chrome_path}")
                     break
             else:
                 raise Exception(
@@ -85,7 +85,7 @@ class WebScrapingLanceClient:
             return driver
 
         except Exception as e:
-            print(f"[SELENIUM] Chrome driver setup failed: {e}")
+            # print(f"[SELENIUM] Chrome driver setup failed: {e}")
             raise
 
     def _extract_internal_links(self, soup, base_url, base_domain):
@@ -134,7 +134,7 @@ class WebScrapingLanceClient:
     def _scrape_single_page_requests(self, url: str):
         """Robust single-page scraping method using requests"""
         try:
-            print(f"[REQUESTS] Attempting to scrape: {url}")
+            # print(f"[REQUESTS] Attempting to scrape: {url}")
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -148,7 +148,7 @@ class WebScrapingLanceClient:
             response = requests.get(
                 url, headers=headers, timeout=15, allow_redirects=True
             )
-            print(f"[REQUESTS] Response status: {response.status_code}")
+            # print(f"[REQUESTS] Response status: {response.status_code}")
             response.raise_for_status()
 
             soup = BeautifulSoup(response.content, "html.parser")
@@ -156,9 +156,9 @@ class WebScrapingLanceClient:
             title_text = title.get_text().strip() if title else "Scraped Website"
             content = self._extract_content_with_structure(soup)
 
-            print(
-                f"[REQUESTS] Successfully scraped: {title_text} ({len(content)} chars)"
-            )
+            # print(
+            #     f"[REQUESTS] Successfully scraped: {title_text} ({len(content)} chars)"
+            # )
 
             return {
                 "url": url,
@@ -172,7 +172,7 @@ class WebScrapingLanceClient:
                 },
             }
         except Exception as e:
-            print(f"[REQUESTS] Error scraping {url}: {e}")
+            # print(f"[REQUESTS] Error scraping {url}: {e}")
             import traceback
 
             traceback.print_exc()
@@ -261,7 +261,7 @@ class WebScrapingLanceClient:
             try:
                 driver = self._setup_selenium_driver()
             except Exception as selenium_error:
-                print(f"[SELENIUM] Failed: {selenium_error}")
+                # print(f"[SELENIUM] Failed: {selenium_error}")
                 # print("[FALLBACK] Using requests method")
                 return self._scrape_single_page_requests_enhanced(url)
 
@@ -295,7 +295,7 @@ class WebScrapingLanceClient:
                 if current_url in visited or depth > max_depth:
                     continue
 
-                print(f"[ENHANCED] Scraping Level {depth}: {current_url}")
+                # print(f"[ENHANCED] Scraping Level {depth}: {current_url}")
 
                 try:
                     driver.get(current_url)
@@ -349,13 +349,13 @@ class WebScrapingLanceClient:
                     visited.add(current_url)
                     pages_scraped += 1
 
-                    print(
-                        f"[ENHANCED] ✅ Analyzed: {page_analysis['title']} "
-                        f"({page_analysis['word_count']} words, {page_analysis['heading_count']} headings)"
-                    )
+                    # print(
+                    #     f"[ENHANCED] ✅ Analyzed: {page_analysis['title']} "
+                    #     f"({page_analysis['word_count']} words, {page_analysis['heading_count']} headings)"
+                    # )
 
                 except Exception as e:
-                    print(f"[ENHANCED] ❌ Error analyzing {current_url}: {e}")
+                    #print(f"[ENHANCED] ❌ Error analyzing {current_url}: {e}")
                     continue
 
             # Compile enhanced final content
@@ -385,7 +385,7 @@ class WebScrapingLanceClient:
             return scraped_data
 
         except Exception as e:
-            print(f"[ENHANCED] Fatal error: {e}")
+            #print(f"[ENHANCED] Fatal error: {e}")
             return None
 
         finally:
@@ -496,7 +496,7 @@ class WebScrapingLanceClient:
     def _scrape_single_page_requests_enhanced(self, url: str):
         """Enhanced single-page scraping with structure extraction"""
         try:
-            print(f"[REQUESTS ENHANCED] Scraping: {url}")
+            #print(f"[REQUESTS ENHANCED] Scraping: {url}")
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
@@ -540,5 +540,5 @@ class WebScrapingLanceClient:
                 },
             }
         except Exception as e:
-            print(f"[REQUESTS ENHANCED] Error: {e}")
+            #print(f"[REQUESTS ENHANCED] Error: {e}")
             return None

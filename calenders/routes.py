@@ -46,7 +46,7 @@ def get_all_user_events():
         from_date = parse_iso(from_date_raw) if from_date_raw else None
         to_date = parse_iso(to_date_raw) if to_date_raw else None
         service = None
-        print(type(userid), userid)
+       #print(type(userid), userid)
 
         val = fetch_user_Social(user_id=userid)
         # print("val receved", val)

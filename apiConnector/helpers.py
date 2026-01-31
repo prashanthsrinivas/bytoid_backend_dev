@@ -163,7 +163,7 @@ async def _execute_endpoint_internal(endpoint_id, userid, context=None):
 
     cur.close()
     conn.close()
-    print("res done", result.get("status_code"))
+   #print("res done", result.get("status_code"))
     return result
 
 

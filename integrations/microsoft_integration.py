@@ -12,7 +12,6 @@ import asyncio
 logger = get_logger(__name__)
 
 
-
 def microsoft_integration_login():
     """Simple Microsoft login with global access like Gmail"""
 
@@ -29,19 +28,16 @@ def microsoft_integration_login():
     #     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     #     return response
 
-
     # Validate MSAL app is available
-    
 
-
-    msal_app =initialize_msal()
+    msal_app = initialize_msal()
     if not msal_app:
         logger.error("❌ MSAL app not available")
         return jsonify({"error": "Microsoft OAuth not properly configured"}), 500
 
     try:
-    
-        redirect_uri = "https://dev.bytoid.ai/integration/microsoft/callback"
+
+        redirect_uri = "https://app.bytoid.ai/integration/microsoft/callback"
 
         logger.info(f"🌍 Using  redirect URI: {redirect_uri}")
 

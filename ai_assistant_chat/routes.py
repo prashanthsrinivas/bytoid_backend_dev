@@ -165,7 +165,7 @@ def save_new_contact(conn, user_id, first_name, last_name, phone_number, email_i
     except Exception as e:
         if conn:
             conn.rollback()
-        print(f"❌ Error saving new contact: {e}")
+        # print(f"❌ Error saving new contact: {e}")
         raise
 
     finally:
@@ -223,7 +223,7 @@ def verify_contact():
         )
 
     except Exception as e:
-        print(f"Error in verify_contact: {e}")
+        # print(f"Error in verify_contact: {e}")
         return jsonify({"error": "Something went wrong"}), 500
 
     finally:
@@ -626,7 +626,7 @@ async def process_website_msg():
     cursor = conn.cursor()
 
     data = request.json
-    print(f"data: {data}")
+   #print(f"data: {data}")
 
     user_id = data.get("user_id")
     client_id = data.get("client_id")
@@ -695,7 +695,7 @@ async def process_website_msg():
 def get_website_msg():
 
     data = request.json
-    print(f"📥 [DEBUG] Request data: {data}")
+   #print(f"📥 [DEBUG] Request data: {data}")
 
     user_id = data.get("user_id")
     client_id = data.get("client_id")
@@ -751,7 +751,7 @@ def close_ticket(user_id, client_id):
 def close_ticket_for_assistant():
 
     data = request.json
-    print(f"📥 [DEBUG] Request data: {data}")
+   #print(f"📥 [DEBUG] Request data: {data}")
 
     user_id = data.get("user_id")
     client_id = data.get("client_id")
@@ -765,7 +765,7 @@ def update_summary():
     try:
 
         data = request.json
-        print(f"📥 [DEBUG] Request data: {data}")
+       #print(f"📥 [DEBUG] Request data: {data}")
 
         user_id = data.get("user_id")
         client_id = data.get("client_id")
@@ -798,5 +798,5 @@ def update_summary():
         return jsonify({"message": "conversation_summary update successful"}), 200
 
     except Exception as e:
-        print(f"Error in update summary: {e}")
+       #print(f"Error in update summary: {e}")
         return jsonify({"error": "Something went wrong", "details": e}), 500

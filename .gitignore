@@ -40,7 +40,7 @@ logs/
 *~
 cust_helpers/messages/*
 cust_helpers/messages_backup/*
-
+cust_helpers/attachments/*
 cust_helpers/test/*
 # Testing
 .pytest_cache/
@@ -63,3 +63,6 @@ data/*
 oldone.py
 oldone
 cloned.py
+uploads/*
+uploads_*
+jobs_file.json

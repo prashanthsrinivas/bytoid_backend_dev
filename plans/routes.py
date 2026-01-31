@@ -450,99 +450,36 @@ def get_rates():
 #     payload = request.data
 #     sig_header = request.headers.get("Stripe-Signature")
 
+#     # print("\n========== STRIPE WEBHOOK RECEIVED ==========")
+#     # print("Headers:")
+#     # print(dict(request.headers))
+
+#     # print("\nRaw Payload:")
+#     # print(payload.decode("utf-8"))
+
 #     try:
 #         event = stripe.Webhook.construct_event(
 #             payload=payload,
 #             sig_header=sig_header,
 #             secret=STRIPE_WEBHOOK_SECRET,
 #         )
-#     except stripe.error.SignatureVerificationError:
+#     except stripe.error.SignatureVerificationError as e:
+#         # print("❌ Signature verification failed:", str(e))
 #         return jsonify({"error": "Invalid signature"}), 400
 #     except Exception as e:
+#         # print("❌ Webhook error:", str(e))
 #         return jsonify({"error": str(e)}), 400
 
-#     event_type = event["type"]
-#     data = event["data"]["object"]
+#     # print("\nParsed Event:")
+#     # print("Event ID:", event["id"])
+#     # print("Event Type:", event["type"])
 
-#     try:
-#         # -------------------------------
-#         # 💳 PAYMENT EVENTS
-#         # -------------------------------
-#         # if event_type == "payment_intent.succeeded":
-#         #     handle_payment_success(data)
+#     # print("\nEvent Data Object:")
+#     # print(event["data"]["object"])
 
-#         # elif event_type == "payment_intent.payment_failed":
-#         #     handle_payment_failure(data)
+#     # print("========== END STRIPE WEBHOOK ==========\n")
 
-#         # # -------------------------------
-#         # # 🔁 SUBSCRIPTIONS
-#         # # -------------------------------
-#         # elif event_type == "customer.subscription.created":
-#         #     handle_subscription_created(data)
-
-#         # elif event_type == "customer.subscription.updated":
-#         #     handle_subscription_updated(data)
-
-#         # elif event_type == "customer.subscription.deleted":
-#         #     handle_subscription_cancelled(data)
-
-#         # # -------------------------------
-#         # # 🧾 INVOICES
-#         # # -------------------------------
-#         # elif event_type == "invoice.paid":
-#         #     handle_invoice_paid(data)
-
-#         # elif event_type == "invoice.payment_failed":
-#         #     handle_invoice_failed(data)
-
-#         # -------------------------------
-#         # ⚠️ IGNORE OTHERS
-#         # -------------------------------
-#         # else:
-#         #     print(f"Ignored event: {event_type}")
-
-#         # return jsonify({"status": "success"})
-
-#     except Exception as e:
-#         print("Webhook processing error:", e)
-#         return jsonify({"error": str(e)}), 500
-
-
-@plans_bp.route("/stripe_webhook", methods=["POST"])
-def stripe_webhook():
-    payload = request.data
-    sig_header = request.headers.get("Stripe-Signature")
-
-    print("\n========== STRIPE WEBHOOK RECEIVED ==========")
-    print("Headers:")
-    print(dict(request.headers))
-
-    print("\nRaw Payload:")
-    print(payload.decode("utf-8"))
-
-    try:
-        event = stripe.Webhook.construct_event(
-            payload=payload,
-            sig_header=sig_header,
-            secret=STRIPE_WEBHOOK_SECRET,
-        )
-    except stripe.error.SignatureVerificationError as e:
-        print("❌ Signature verification failed:", str(e))
-        return jsonify({"error": "Invalid signature"}), 400
-    except Exception as e:
-        print("❌ Webhook error:", str(e))
-        return jsonify({"error": str(e)}), 400
-
-    print("\nParsed Event:")
-    print("Event ID:", event["id"])
-    print("Event Type:", event["type"])
-
-    print("\nEvent Data Object:")
-    print(event["data"]["object"])
-
-    print("========== END STRIPE WEBHOOK ==========\n")
-
-    return jsonify({"status": "received"}), 200
+#     return jsonify({"status": "received"}), 200
 
 
 @plans_bp.route("/stripe/products", methods=["GET"])

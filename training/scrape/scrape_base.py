@@ -766,7 +766,7 @@ def delete_website_summary():
             delete_file_from_s3(website_metadata_path)
         else:
             save_yaml_to_s3(updated_websites, user_id, "scraped_websites.yaml")
-        scraper = FastMultilevelScraper(user_id=user_id, max_workers=3)
+        scraper = FastMultilevelScraper(user_id=user_id, credits=None, max_workers=3)
 
         # Check for duplicate
         duplicate = asyncio.run(scraper.clear_duplicate_scrape(url_to_delete))
@@ -1401,11 +1401,11 @@ def scrape_website_page_endpoint():
             return jsonify({"error": "Invalid access"}), 404
 
         logger.info(f"[PAGE_DETAIL] Getting details for {page_url}")
-
+        credits = Credits()
         # Quick scrape of just this page
         from training.scrape.fast_multilevel_scraper import FastMultilevelScraper
 
-        scraper = FastMultilevelScraper(user_id=user_id, max_workers=1)
+        scraper = FastMultilevelScraper(user_id=user_id, credits=credits, max_workers=1)
         page_data = scraper._scrape_page(page_url, depth=level)
 
         if not page_data:

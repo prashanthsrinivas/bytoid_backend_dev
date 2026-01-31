@@ -37,15 +37,6 @@ all_messages = {}
 # @twilio_bp.route('/twilio_webhook/send_whatsapp', methods=['POST'])
 def send_whatsapp(from_number, to_number, body, conversation_id, subject):
 
-    print(
-        f"Sending WhatsApp message from {from_number} to {to_number} with body: {body}"
-    )
-    if not to_number or not body:
-        print("Missing 'to' or 'body' fields")
-
-    if not to_number.startswith("whatsapp:"):
-        print("Recipient number must start with 'whatsapp:'")
-
     message = client.messages.create(
         from_=from_number,
         to=to_number,
@@ -70,21 +61,13 @@ def send_whatsapp(from_number, to_number, body, conversation_id, subject):
         "sender_name": "You",
     }
 
-    print(f"messages are: {MESSAGES}")
+    # print(f"messages are: {MESSAGES}")
 
     return {"sid": message.sid, "status": "sent", "channel": "whatsapp"}
 
 
 # @twilio_bp.route('/twilio_webhook/send-sms', methods=['POST'])
 def send_sms(from_number, to_number, body, conversation_id, subject):
-    print(
-        f"Sending sms message from {from_number} to {to_number} with body: {body} conversation_id :{conversation_id} subject: {subject}"
-    )
-    if not to_number or not body:
-        print("Missing 'to' or 'body' fields")
-
-    if to_number.startswith("whatsapp:"):
-        print("Recipient number cannot start with 'whatsapp:'")
 
     try:
 
@@ -111,10 +94,10 @@ def send_sms(from_number, to_number, body, conversation_id, subject):
             "sender_name": "You",
         }
 
-        print(f"messages are: {MESSAGES}")
+        # print(f"messages are: {MESSAGES}")
 
     except Exception as e:
-        print(f"Error sending messages: {e}")
+        # print(f"Error sending messages: {e}")
         return "Internal Server Error", 500
 
     return jsonify({"sid": message.sid, "status": "sent", "channel": "whatsapp"}), 200
@@ -185,10 +168,6 @@ def handle_twilio_sms_webhook():
         "subject": subject,
         "conversation_id": from_,
     }
-    print(
-        f"Message from {sender_name}: number:{from_number}  body : {content}  source:{source} (SID: {message_sid}) at {timestamp}"
-    )
-    print(f"Current messages: {MESSAGES}")
 
     return "OK", 200
 
@@ -197,7 +176,7 @@ def handle_twilio_sms_webhook():
 @twilio_bp.route("/twilio_webhook/receive_messages", methods=["POST"])
 def handle_twilio_webhook():
     payload = request.form.to_dict() or request.get_json()
-    print(f"payload is: {payload}")
+    # print(f"payload is: {payload}")
     ##print("helloooo")
 
     # print(f"Received payload from Twilio: {payload}")
@@ -233,7 +212,7 @@ def handle_twilio_webhook():
         "conversation_id": from_ if source == "whatsapp" else from_number,
     }
 
-    print(f"Message from whatsapp:{MESSAGES[message_sid]} ")
+    # print(f"Message from whatsapp:{MESSAGES[message_sid]} ")
     return "OK", 200
 
 
@@ -253,7 +232,7 @@ def voice_webhook():
         transcribe_callback="/twilio_webhook/transcription-complete",
         action="/twilio_webhook/recording-complete",
     )
-    print(f"Voice webhook triggered. Recording will start now.")
+    # print(f"Voice webhook triggered. Recording will start now.")
     return Response(str(response), mimetype="application/xml")
 
 
@@ -263,7 +242,7 @@ def recording_complete():
     recording_url = request.form.get("RecordingUrl")
     call_sid = request.form.get("CallSid")
 
-    print(f"Recording completed: {recording_url} (Call SID: {call_sid})")
+    # print(f"Recording completed: {recording_url} (Call SID: {call_sid})")
     return "OK", 200
 
 
@@ -295,10 +274,10 @@ def transcription_complete():
         "timestamp": timestamp,
     }
 
-    print(f"Stored transcription for call {call_sid}:")
-    print(f"From: {from_number}, To: {to_number}")
-    print(f"Transcription: {transcription_text}")
-    print(f"MESSAGES: {MESSAGES}")
+    # print(f"Stored transcription for call {call_sid}:")
+    # print(f"From: {from_number}, To: {to_number}")
+    # print(f"Transcription: {transcription_text}")
+    # print(f"MESSAGES: {MESSAGES}")
 
     return "OK", 200
 
@@ -335,7 +314,7 @@ def handle_slack_events():
         elif channel.startswith("C"):
             source = "slackworkspace"
         else:
-            print(f"Unsupported channel type: {channel}")
+            # print(f"Unsupported channel type: {channel}")
             return "Unsupported channel type", 400
 
         my_user_id = "U094N4DTVSL"  # Replace later with your actual Slack user ID
@@ -376,12 +355,12 @@ def handle_slack_events():
                 "conversation_id": channel,  # Use channel ID as conversation ID
             }
 
-        else:
-            print(f"Failed to fetch user info for user ID: {user_id}")
+        # else:
+        #     #print(f"Failed to fetch user info for user ID: {user_id}")
 
-        print(f"Message from slack:{MESSAGES[key]} ")
-    else:
-        print(f"Received event: {event}")
+        # print(f"Message from slack:{MESSAGES[key]} ")
+    # else:
+    #     #print(f"Received event: {event}")
     return "OK", 200
 
 
@@ -464,7 +443,7 @@ def send_slack_message(
     channel_id, text, subject, sender_user_id=None, sender_name=None
 ):
 
-    print(f"Sending Slack message to {channel_id} with body: {text}")
+    #print(f"Sending Slack message to {channel_id} with body: {text}")
 
     if not channel_id or not text:
         # print("Missing channel_id or text fields")
@@ -473,7 +452,7 @@ def send_slack_message(
     try:
         # Send the message via Slack API
         response = slack_client.chat_postMessage(channel=channel_id, text=text)
-        print(f"Slack message sent. ts: {response['ts']}")
+        #print(f"Slack message sent. ts: {response['ts']}")
 
         # Generate UUID for internal tracking
         message_id = str(uuid.uuid4())
@@ -504,9 +483,9 @@ def send_slack_message(
             "conversation_id": channel_id,
         }
 
-        print(
-            f"Stored Slack message in MESSAGES under key: {MESSAGES[key]['id']}: {MESSAGES[key]}"
-        )
+        # print(
+        #     f"Stored Slack message in MESSAGES under key: {MESSAGES[key]['id']}: {MESSAGES[key]}"
+        # )
         return response
 
     except Exception as e:

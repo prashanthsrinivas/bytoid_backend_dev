@@ -26,6 +26,8 @@ from microsoft_route.microsoft_helpers import (
     refresh_expired_microsoft_tokens,
     check_microsoft_token_expiry,
 )
+from umail_helper.mails_process import check_mailbox
+from services.credit_system import CreditManager
 
 load_dotenv()  # Load from .env into environment variables
 google_bp = Blueprint("auth", __name__)
@@ -51,7 +53,7 @@ def login():
     # Store the mobile redirect URI in session for later use
     if mobile_redirect_uri and platform == "mobile":
         session["mobile_redirect_uri"] = mobile_redirect_uri
-        print(f"Stored mobile redirect URI: {mobile_redirect_uri}")
+        # print(f"Stored mobile redirect URI: {mobile_redirect_uri}")
 
     ga = GoogleAuth()
 
@@ -84,7 +86,7 @@ def login():
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/gmail.compose",
             # Drive – READ ONLY
-            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/drive.metadata.readonly",
             # Calendar – READ ONLY
             "https://www.googleapis.com/auth/calendar",
@@ -147,7 +149,7 @@ def oauth2callback(url, state):
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/gmail.compose",
             # Drive – READ ONLY
-            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/drive.metadata.readonly",
             # Calendar – READ ONLY
             "https://www.googleapis.com/auth/calendar",
@@ -346,31 +348,36 @@ async def receive_browser_url():
         session_id, access_token, refresh_token = await session_login(user_id)
         # print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
-        service = GmailService(user_id=user_id)
-        service.create_watch_req()
+
+        mailbox_setting = check_mailbox(user_id)
+        if mailbox_setting:
+            service = GmailService(user_id=user_id)
+            service.create_watch_req()
+
+        connection = connect_to_rds()
+        cursor = connection.cursor()
 
         # get all integrations for this user and store it in redis
         integrations_data, status_code = get_all_integrations(user_id)
         # integrations = integrations_data.get("integrations")
 
-        print(f"integrations_data : {integrations_data}")
+        # print(f"integrations_data : {integrations_data}")
         if integrations_data:
             redis_response = await store_integrations_in_redis(
                 user_id, integrations_data
             )
-            if redis_response:
-                print(f"integrations stored in redis")
-            else:
-                print(f"integrations not stored in redis")
+            # if redis_response:
+            #     #print(f"integrations stored in redis")
+            # else:
+            #     #print(f"integrations not stored in redis")
 
             exists = any(
                 item["platform"] == "microsoft"
                 for item in integrations_data.get("integrations", [])
             )
             if exists:
-                print(f"microsoft in integratiosn")
-                connection = connect_to_rds()
-                cursor = connection.cursor()
+                # print(f"microsoft in integratiosn")
+
                 cursor.execute(
                     """
                     SELECT email,access_token, refresh_token, user_id
@@ -381,8 +388,8 @@ async def receive_browser_url():
                 )
                 row = cursor.fetchone()
 
-                if not row:
-                    print(f"cannot find microsoft integration email")
+                # if not row:
+                #     print(f"cannot find microsoft integration email")
 
                 (
                     microsoft_email,
@@ -402,20 +409,24 @@ async def receive_browser_url():
                     )
                     data = resp.get_json()
                     microsoft_access_token = data["token"]
-                    if microsoft_access_token:
-                        print(f"new token created")
-
-                cursor.close()
-                connection.close()
-
-                print(f"microsoft_access_token : {microsoft_access_token}")
+                    # if microsoft_access_token:
+                    # print(f"new token created")
 
                 manager = OutlookSubscriptionManager()
 
-                print(f"creating subscription for {microsoft_email}")
+                # print(f"creating subscription for {microsoft_email}")
                 future = manager.create_subscription_async(
                     microsoft_access_token, microsoft_email
                 )
+
+        # check if credits are available
+        credits = CreditManager(connection)
+        avail_credits = credits.check_if_remaining(user_id=user_id)
+        credit_status = avail_credits.get("status")
+        message = avail_credits.get("message")
+
+        cursor.close()
+        connection.close()
 
         # Prepare response
         response = make_response(
@@ -427,6 +438,8 @@ async def receive_browser_url():
                     "user_onboarded": newuser,
                     "api_key": apikey or "",
                     "service": "google",
+                    "credit_status": credit_status,
+                    "message": message,
                 }
             )
         )
@@ -697,7 +710,7 @@ def get_token(inuser=None, value=None, in_connection=None):
                             "https://www.googleapis.com/auth/gmail.modify",
                             "https://www.googleapis.com/auth/gmail.compose",
                             # Drive – READ ONLY
-                            "https://www.googleapis.com/auth/drive.readonly",
+                            "https://www.googleapis.com/auth/drive",
                             "https://www.googleapis.com/auth/drive.metadata.readonly",
                             # Calendar – READ ONLY
                             "https://www.googleapis.com/auth/calendar",
@@ -723,7 +736,7 @@ def get_token(inuser=None, value=None, in_connection=None):
                     return jsonify({"token": creds.token})
 
                 except Exception as e:
-                    print(f"Token refresh failed: {e}")
+                    # print(f"Token refresh failed: {e}")
                     return redirect("https://bytoid.ai/login")
 
             # Return existing token if not refreshed
@@ -739,7 +752,7 @@ def get_token(inuser=None, value=None, in_connection=None):
             return jsonify({"token": user_row[0]})
 
     except Exception as e:
-        print(f"Error occurred: {e}")
+        # print(f"Error occurred: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
     finally:
@@ -759,7 +772,7 @@ def token_update_and_check():
     user_id = (
         session.get("user_id") or session.get("userState_id") or data.get("user_id")
     )
-    print(f"user_id: {user_id}")
+    # print(f"user_id: {user_id}")
 
     if not user_id:
         return jsonify({"login_required": True}), 401
@@ -786,7 +799,7 @@ def token_update_and_check():
             if isinstance(expiry, str):
                 expiry = datetime.fromisoformat(expiry)
 
-            print(f"{social} | {client_id} | {expiry}")
+            # print(f"{social} | {client_id} | {expiry}")
 
             # 🔹 Google
             if social == "google":
@@ -814,7 +827,7 @@ def token_update_and_check():
             return jsonify({"login_required": True}), 401
 
     except Exception as e:
-        print("Token update error:", e)
+        # print("Token update error:", e)
         return jsonify({"login_required": True}), 401
 
     finally:
@@ -865,7 +878,7 @@ def refresh_google_if_needed(
                     "https://www.googleapis.com/auth/gmail.modify",
                     "https://www.googleapis.com/auth/gmail.compose",
                     # Drive – READ ONLY
-                    "https://www.googleapis.com/auth/drive.readonly",
+                    "https://www.googleapis.com/auth/drive",
                     "https://www.googleapis.com/auth/drive.metadata.readonly",
                     # Calendar – READ ONLY
                     "https://www.googleapis.com/auth/calendar",
@@ -897,7 +910,7 @@ def refresh_google_if_needed(
             return jsonify({"message": "user found"})
 
         except Exception as e:
-            print("Google refresh failed:", e)
+            # print("Google refresh failed:", e)
             return jsonify({"login_required": True}), 401
 
     return jsonify({"message": "user found"})
@@ -958,7 +971,7 @@ def refresh_microsoft_if_needed(
             return jsonify({"message": "user found"})
 
         except Exception as e:
-            print("Microsoft refresh failed:", e)
+            # print("Microsoft refresh failed:", e)
             return jsonify({"login_required": True}), 401
 
     return jsonify({"message": "user found"})
@@ -1019,7 +1032,7 @@ def refresh_microsoft_if_needed(
             return jsonify({"success": True})
 
         except Exception as e:
-            print("Microsoft refresh failed:", e)
+            # print("Microsoft refresh failed:", e)
             return jsonify({"login_required": True}), 401
 
     return jsonify({"success": True})
@@ -1156,7 +1169,7 @@ def refresh_expired_microsoft_tokens_for_integrations(
 
         response = requests.post(token_url, data=payload)
         if response.status_code != 200:
-            print("Refresh failed:", response.text)
+            # print("Refresh failed:", response.text)
             return redirect("https://bytoid.ai/login")
 
         new_data = response.json()
@@ -1184,5 +1197,5 @@ def refresh_expired_microsoft_tokens_for_integrations(
         return jsonify({"token": new_token})
 
     except Exception as e:
-        print(f"Microsoft token refresh failed: {e}")
+        # print(f"Microsoft token refresh failed: {e}")
         return redirect("https://bytoid.ai/login")

@@ -41,7 +41,7 @@ def facebook_callback():
         "pages": user_info.get("accounts", {}).get("data", []),
     }
 
-    return redirect("/dashboard")
+    return redirect("/radar")
 
 
 @facebook_bp.route("/auth/facebook/deauthorize", methods=["POST"])

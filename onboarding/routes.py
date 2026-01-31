@@ -1072,7 +1072,7 @@ Do you have any final questions before we finish?""",
 TOUR_PAGE_ROUTES = {
     "terms_and_conditions": "/beta-agreement",
     "onboarding_1": "/onboarding",
-    "home": "/dashboard",
+    "home": "/radar",
     "train_dev": "/train-rachel",
     "unified_mailbox": "/umail",
     "my_notes": "/notes",

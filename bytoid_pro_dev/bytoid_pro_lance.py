@@ -45,7 +45,7 @@ class Bytoid_pro_lance:
     #     return vectors[0] if vectors else []
     
     async def get_context(self, message, chat_id):
-        print("inside get context")
+       #print("inside get context")
         vector = await self.emb_client.safe_embed_chunks(message, user_id=self.user_id)
     
         context = self.lance_service.find_semantic_matches(vector, self.user_id, chat_id)

@@ -39,11 +39,11 @@ def check_integrations():
         platform = data.get("platform")  # example: "google", "microsoft"
         type_ = data.get("type")  # example: "drive", "mails"
 
-        print("----- REQUEST DATA START -----")
-        print(f"user_id: {user_id}")
-        print(f"platform: {platform}")
-        print(f"type: {type_}")
-        print("----- REQUEST DATA END -----")
+        # print("----- REQUEST DATA START -----")
+        # print(f"user_id: {user_id}")
+        # print(f"platform: {platform}")
+        # print(f"type: {type_}")
+        # print("----- REQUEST DATA END -----")
 
         if not user_id or not platform or not type_:
             return {"error": "user_id, platform, and type are required"}, 400
@@ -180,7 +180,7 @@ async def delete_integration_file_(userid, source):
     all_file_data = load_yaml_from_s3(yaml_path) or {}
 
     # if source not in all_file_data or not isinstance(all_file_data[source], list):
-    #     print("error: no entries found for source")
+    # print("error: no entries found for source")
     #     return False
 
     # Step 1: Update YAML entry
@@ -199,7 +199,7 @@ async def delete_integration_file_(userid, source):
         file_found = True
 
     # if not file_found:
-    #     print("error: source not found")
+    # print("error: source not found")
     #     return False
 
     # Step 2: Save updated YAML
@@ -220,7 +220,7 @@ async def delete_integration_file_(userid, source):
             for filename in filenames:
                 delete_result = await lance_agent.delete_file_Data(foldername=filename)
                 if delete_result.get("status") != "success":
-                    print(f"error: {delete_result.get('message', 'Unknown error')}")
+                    # print(f"error: {delete_result.get('message', 'Unknown error')}")
                     return False
 
     # # Reload for returning updated data
@@ -245,7 +245,7 @@ async def delete_all_user_integration_files(userid):
 
     # Nothing to delete
     if not all_file_data:
-        print("no files found for this user")
+        # print("no files found for this user")
         return True
 
     # Clear the YAML entirely
@@ -256,16 +256,16 @@ async def delete_all_user_integration_files(userid):
 
     # Delete passed/failed question entries
     success = delete_all_QA_files(userid)
-    if not success:
-        print(f"warning: failed to delete Q&A entries for {userid}")
+    # if not success:
+    # print(f"warning: failed to delete Q&A entries for {userid}")
 
     # Delete vector files from LanceDB
     lance_agent = LanceClient(user_id=userid)
     delete_result = await lance_agent.delete_all_file_Data()
     if delete_result.get("status") != "success":
-        print(
-            f"error while deleting vector for {userid}: {delete_result.get('message')}"
-        )
+        # print(
+        #     f"error while deleting vector for {userid}: {delete_result.get('message')}"
+        # )
         return False
 
     return True
@@ -311,10 +311,10 @@ async def delete_integration():
         primary_user_id = data.get("user_id")
         platform = data.get("platform")  # example: "google", "microsoft"
 
-        print("----- REQUEST DATA START -----")
-        print(f"primary_user_id: {primary_user_id}")
-        print(f"platform: {platform}")
-        print("----- REQUEST DATA END -----")
+        # print("----- REQUEST DATA START -----")
+        # print(f"primary_user_id: {primary_user_id}")
+        # print(f"platform: {platform}")
+        # print("----- REQUEST DATA END -----")
 
         if not primary_user_id or not platform:
             return {"error": "primary_user_id are required"}, 400
@@ -379,9 +379,9 @@ async def delete_integrations_of_contact():
         data = request.json
         primary_user_id = data.get("user_id")
 
-        print("----- REQUEST DATA START -----")
-        print(f"primary_user_id: {primary_user_id}")
-        print("----- REQUEST DATA END -----")
+        # print("----- REQUEST DATA START -----")
+        # print(f"primary_user_id: {primary_user_id}")
+        # print("----- REQUEST DATA END -----")
 
         if not primary_user_id:
             return {"error": "primary_user_id are required"}, 400
@@ -397,7 +397,7 @@ async def delete_integrations_of_contact():
         row = cursor.fetchall()  # fetch all rows
 
         if not row:
-            print(f"no integrations for this user")
+            # print(f"no integrations for this user")
             return True
 
         user_ids = [r["user_id"] for r in row]
@@ -448,7 +448,7 @@ from urllib.parse import unquote
 
 @integrations_bp.route("/integration/google/callback", methods=["GET"])
 def google_integration_callback():
-    print("inside callback")
+    # print("inside callback")
 
     try:
         full_url = request.args.get("url")
@@ -456,12 +456,12 @@ def google_integration_callback():
         state = request.args.get("state")
         app_user_id = request.args.get("user_id")
 
-        print("----- Integration Callback Params -----")
-        print(f"full_url     : {full_url}")
-        print(f"code         : {code}")
-        print(f"state        : {state}")
-        print(f"app_user_id  : {app_user_id}")
-        print("----------------------------------------")
+        # print("----- Integration Callback Params -----")
+        # print(f"full_url     : {full_url}")
+        # print(f"code         : {code}")
+        # print(f"state        : {state}")
+        # print(f"app_user_id  : {app_user_id}")
+        # print("----------------------------------------")
 
         if not full_url or not code:
             return (
@@ -471,7 +471,7 @@ def google_integration_callback():
 
         # Google URL is double encoded → decode twice
         decoded_url = unquote(unquote(full_url))
-        print("DECODED URL:", decoded_url)
+        # print("DECODED URL:", decoded_url)
 
         # OAuth Flow
         flow = Flow.from_client_secrets_file(
@@ -500,14 +500,14 @@ def google_integration_callback():
                 "https://www.googleapis.com/auth/gmail.modify",
                 "https://www.googleapis.com/auth/gmail.compose",
                 # Drive – READ ONLY
-                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
                 # Calendar – READ ONLY
                 "https://www.googleapis.com/auth/calendar",
                 # Contacts – READ ONLY
                 "https://www.googleapis.com/auth/contacts.readonly",
             ),
-            redirect_uri="https://dev.bytoid.ai/integration/google/callback",
+            redirect_uri="https://app.bytoid.ai/integration/google/callback",
         )
 
         flow.fetch_token(authorization_response=decoded_url)
@@ -520,14 +520,14 @@ def google_integration_callback():
         client_id = credentials.client_id
         client_secret = credentials.client_secret
 
-        print("----- Google OAuth Tokens -----")
-        print(f"access_token : {access_token}")
-        print(f"refresh_token: {refresh_token}")
-        print(f"expiry       : {expiry}")
-        print(f"expiry_str   : {expiry_str}")
-        print(f"client_id   : {client_id}")
-        print(f"client_secret   : {client_secret}")
-        print("--------------------------------")
+        # print("----- Google OAuth Tokens -----")
+        # print(f"access_token : {access_token}")
+        # print(f"refresh_token: {refresh_token}")
+        # print(f"expiry       : {expiry}")
+        # print(f"expiry_str   : {expiry_str}")
+        # print(f"client_id   : {client_id}")
+        # print(f"client_secret   : {client_secret}")
+        # print("--------------------------------")
 
         # User info
         userinfo = requests.get(
@@ -538,10 +538,10 @@ def google_integration_callback():
         google_user_id = userinfo.get("sub")
         email = userinfo.get("email")
 
-        print("----- Google User Info -----")
-        print(f"google_user_id: {google_user_id}")
-        print(f"email         : {email}")
-        print("--------------------------------")
+        # print("----- Google User Info -----")
+        # print(f"google_user_id: {google_user_id}")
+        # print(f"email         : {email}")
+        # print("--------------------------------")
 
         # Save to DB
         conn = connect_to_rds()
@@ -601,7 +601,7 @@ def google_integration_callback():
         return jsonify({"connected": True})
 
     except Exception as e:
-        print("ERROR:", str(e))
+        # print("ERROR:", str(e))
         return jsonify({"connected": False, "error": str(e)}), 500
 
 
@@ -660,7 +660,7 @@ def microsoft_integration_callback():
 
         # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
         # redirect_uri = get_microsoft_redirect_uri(request)
-        redirect_uri = "https://dev.bytoid.ai/integration/microsoft/callback"
+        redirect_uri = "https://app.bytoid.ai/integration/microsoft/callback"
 
         token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 
@@ -777,9 +777,9 @@ def microsoft_integration_callback():
             return jsonify({"connected": True}), 200
 
         except Exception as db_error:
-            print("ERROR:", str(e))
+            # print("ERROR:", str(e))
             return jsonify({"connected": False, "error": str(e)}), 500
 
     except Exception as e:
-        print("ERROR:", str(e))
+        # print("ERROR:", str(e))
         return jsonify({"connected": False, "error": str(e)}), 500

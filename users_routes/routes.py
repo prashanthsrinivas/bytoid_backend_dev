@@ -36,7 +36,7 @@ def format_address(door, unit, street, zip_code):
 def submit_onboarding():
     try:
         payload = request.get_json()
-        print("onboarding", payload)
+        #print("onboarding", payload)
 
         # user_id = session.get("user_id") or payload.get("user_id")
         user_id = payload.get("user_id")
@@ -142,21 +142,21 @@ def submit_onboarding():
         )
 
         conn.commit()
-    
-        print(" business_info_id , user_id : ")
-        print(f" {business_info_id} | {user_id}")
+
+        # print(" business_info_id , user_id : ")
+        # print(f" {business_info_id} | {user_id}")
         cursor.execute(
-                """
+            """
                 SELECT business_info_id FROM business_info WHERE user_id_fk = %s
             """,
-                (str(user_id),),
-            )
+            (str(user_id),),
+        )
         row = cursor.fetchone()
 
-        if not row:
-                print(f"not found business_info_id")
-        else:
-            print(f"business_info_id found : {row[0]}")
+        # if not row:
+        #         #print(f"not found business_info_id")
+        # else:
+        #     #print(f"business_info_id found : {row[0]}")
 
         cursor.close()
         conn.close()
@@ -444,7 +444,7 @@ def onboarding_update():
 @users_bp.route("/generate-website-api-key", methods=["POST"])
 def generate_api_key():
     data = request.get_json()
-    print(session.get("user", "No user in session"))
+    #print(session.get("user", "No user in session"))
     user_id = data.get("userid") or session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401

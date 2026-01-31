@@ -948,6 +948,7 @@ def _save_scrape_to_lancedb(user_id: str, scraped_data: dict):
 
         chunk_embeddings = []
 
+        run_async(embed_client._ensure_embeddings())
         for idx, chunk in enumerate(chunks):
             emb = embed_client.embeddings.embed_query(chunk)
             chunk_embeddings.append(emb)

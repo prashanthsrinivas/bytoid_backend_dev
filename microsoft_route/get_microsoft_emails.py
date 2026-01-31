@@ -2,7 +2,12 @@ from db.rds_db import connect_to_rds
 from cust_helpers import pathconfig
 from utils.normal import ensure_dir
 from email.utils import parseaddr
-from umail_helper.helper import get_users_client_id, update_user_message_cache, set_user_sync_time, get_last_sync_time
+from umail_helper.helper import (
+    get_users_client_id,
+    update_user_message_cache,
+    set_user_sync_time,
+    get_last_sync_time,
+)
 from gmail_route.routes import add_lead_contact, add_customer_contact, safe_json_load
 from utils.s3_utils import (
     read_json_from_s3,
@@ -18,6 +23,7 @@ import shutil
 from db.db_checkers import update_umail_json, update_umail_json_integration
 from services.redis_service import RedisService
 import json, threading
+
 
 async def get_outlook_thread_count_dynamic(
     user_id, start_date, end_date, min_days=7, integration=None
@@ -95,7 +101,7 @@ async def get_outlook_thread_count_dynamic(
             total_count += result["count"]
             all_conversations.extend(result["conversations"])
         except Exception as e:
-            print(f"⚠️ Chunk {s_date} → {e_date} failed: {e}")
+            # print(f"⚠️ Chunk {s_date} → {e_date} failed: {e}")
             # Split if more than min_days
             s_dt = parse_iso_utc(s_date)
             e_dt = parse_iso_utc(e_date)
@@ -104,10 +110,10 @@ async def get_outlook_thread_count_dynamic(
                 mid_dt = s_dt + timedelta(days=delta_days // 2)
                 stack.insert(0, (mid_dt.strftime("%Y-%m-%d"), e_date))
                 stack.insert(0, (s_date, mid_dt.strftime("%Y-%m-%d")))
-            else:
-                print(f"❌ Skipping unresponsive chunk {s_date} → {e_date}")
+            # else:
+            # print(f"❌ Skipping unresponsive chunk {s_date} → {e_date}")
 
-    print(f"all_conversations : {all_conversations}")
+    # print(f"all_conversations : {all_conversations}")
 
     return {
         "conversationsTotal": {
@@ -127,7 +133,7 @@ async def get_outlook_conversation_ids_dynamic(
     - Optionally use start_date and end_date to limit range.
     Returns dict: {"conversation_ids": [list_of_ids]}
     """
-    print(f"inside get_outlook_conversation_ids_dynamic")
+    # print(f"inside get_outlook_conversation_ids_dynamic")
 
     params = {}
     if start_date:
@@ -148,7 +154,13 @@ async def get_outlook_conversation_ids_dynamic(
 
 
 async def v2fetch_outlook_messages_batch(
-    user_id, conv_batch, my_email, batch_count, connection, integration=None, primary_user_id = None
+    user_id,
+    conv_batch,
+    my_email,
+    batch_count,
+    connection,
+    integration=None,
+    primary_user_id=None,
 ):
     """
     Fetch a single batch of Outlook messages dynamically using conversation IDs.
@@ -177,10 +189,10 @@ async def v2fetch_outlook_messages_batch(
             connection = new_connection
 
         cursor = connection.cursor()
-        print(f"🚀 Starting Outlook batch {batch_count} fetch for user {user_id}")
+        # print(f"🚀 Starting Outlook batch {batch_count} fetch for user {user_id}")
 
-        print(f"integration : {integration}")
-        print(f"primary_user_id : {primary_user_id}")
+        # print(f"integration : {integration}")
+        # print(f"primary_user_id : {primary_user_id}")
 
         # --- STEP 1: fetch conversation IDs dynamically ---
         # conv_result = await get_outlook_conversation_ids_dynamic(user_id, integration =integration)
@@ -188,9 +200,9 @@ async def v2fetch_outlook_messages_batch(
 
         conv_ids = conv_batch
 
-        print(f"conv_ids: {conv_ids}")
+        # print(f"conv_ids: {conv_ids}")
         if not conv_ids:
-            print("⚠️ No conversations found for user")
+            # print("⚠️ No conversations found for user")
             return {
                 "status": "success",
                 "new_messages": 0,
@@ -200,11 +212,11 @@ async def v2fetch_outlook_messages_batch(
 
         outlook_service = OutlookService(user_id)
 
-        print(
-            f"\n📧 [OUTLOOK SYNC] Calling process_conversations_batch with {len(conv_ids)} conversations"
-        )
+        # print(
+        #     f"\n📧 [OUTLOOK SYNC] Calling process_conversations_batch with {len(conv_ids)} conversations"
+        # )
         results = await outlook_service.process_conversations_batch(
-            conv_ids, my_email, batch_count, integration = integration
+            conv_ids, my_email, batch_count, integration=integration
         )
         if not results:
             return {
@@ -248,7 +260,7 @@ async def v2fetch_outlook_messages_batch(
             except Exception as e:
                 print(f"⚠️ Error loading existing data: {e}")
 
-        print(f"************* before db pre checks")
+        # print(f"************* before db pre checks")
 
         # DB pre-checks
         email_to_client_id = {}
@@ -262,9 +274,9 @@ async def v2fetch_outlook_messages_batch(
         #     )
         # else:
         cursor.execute(
-                "SELECT m.message_id, th.conversation_id FROM messages m JOIN threads th ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
-                (user_id,),
-            )
+            "SELECT m.message_id, th.conversation_id FROM messages m JOIN threads th ON m.conversation_id_fk = th.conversation_id WHERE th.external_user_id = %s",
+            (user_id,),
+        )
 
         rows = cursor.fetchall()
         if rows:
@@ -274,17 +286,16 @@ async def v2fetch_outlook_messages_batch(
         for conv_id in conv_ids:
             conv_res = results.get(conv_id)
             if not conv_res:
-                print(f"⚠️ No response for conversation {conv_id}")
+                # print(f"⚠️ No response for conversation {conv_id}")
                 continue
 
             conv_messages, err = conv_res
             if err or not conv_messages:
-                if err:
-                    print(f"⚠️ Conversation {conv_id} error: {err}")
-                continue
+                if not err:
+                    # print(f"⚠️ Conversation {conv_id} error: {err}")
+                    continue
 
             thread_id = conv_id
-
 
             for msg in conv_messages:
                 message_id = msg.get("messageId") or msg.get("id") or str(uuid.uuid4())
@@ -306,8 +317,8 @@ async def v2fetch_outlook_messages_batch(
                 )
 
                 row = cursor.fetchone()
-                if row and row[2] == (user_id):
-                    print(f"message {message_id} already exists in DB for user")
+                # if row and row[2] == (user_id):
+                # print(f"message {message_id} already exists in DB for user")
 
                 # Check local cache for recent messages to skip
                 if row_id in existing_ids_local:
@@ -316,7 +327,7 @@ async def v2fetch_outlook_messages_batch(
                         if (
                             datetime.now(timezone.utc) - msg_time
                         ).total_seconds() < 3600:
-                            print(f"skipping recent message {message_id}")
+                            # print(f"skipping recent message {message_id}")
                             continue
                         existing_ids_local.discard(row_id)
                     except Exception:
@@ -340,9 +351,16 @@ async def v2fetch_outlook_messages_batch(
 
                 conversation_id = f"{user_id}_{thread_id}"
 
-
-                participant = from_email if direction == "inbound" else (to_emails[0] if to_emails else None)
-                participant_name = from_name if direction == "inbound" else (to_names[0] if to_names else "")
+                participant = (
+                    from_email
+                    if direction == "inbound"
+                    else (to_emails[0] if to_emails else None)
+                )
+                participant_name = (
+                    from_name
+                    if direction == "inbound"
+                    else (to_names[0] if to_names else "")
+                )
 
                 # Get or create client
                 if participant in email_to_client_id:
@@ -401,9 +419,9 @@ async def v2fetch_outlook_messages_batch(
                     "attachments": outlook_attachments,
                 }
 
-                print("----------------------------")
-                print(f"in vefetch_outlook_messages_batch : {conversation_id}")
-                print("----------------------------")
+                # print("----------------------------")
+                # print(f"in vefetch_outlook_messages_batch : {conversation_id}")
+                # print("----------------------------")
 
                 grouped_messages.setdefault(client_id, {}).setdefault(
                     "outlook", []
@@ -431,7 +449,7 @@ async def v2fetch_outlook_messages_batch(
                             os.fsync(f.fileno())
 
                         s3_config_key = f"{user_id}/messages/{client_id}/config.json"
-                        print(f"s3_config_key : {s3_config_key}")
+                        # print(f"s3_config_key : {s3_config_key}")
 
                         s3_data = read_json_from_s3(s3_config_key)
                         if s3_data is None:
@@ -446,7 +464,7 @@ async def v2fetch_outlook_messages_batch(
 
         # Merge with existing data and save
         existing_data = safe_json_load(filepath)
-        print(f"filepath : {filepath}")
+        # print(f"filepath : {filepath}")
         merged_messages = existing_data.get("input_data", {})
         for client_id, channels in grouped_messages.items():
             for channel, messages in channels.items():
@@ -459,7 +477,7 @@ async def v2fetch_outlook_messages_batch(
                 {"filename": filename, "input_data": merged_messages}, f, indent=2
             )
 
-        print(f"✅ Outlook batch complete: {count_new} new messages processed")
+        # print(f"✅ Outlook batch complete: {count_new} new messages processed")
         return {
             "status": "success",
             "new_messages": count_new,
@@ -468,7 +486,7 @@ async def v2fetch_outlook_messages_batch(
         }
 
     except Exception as e:
-        print(f"[ERROR] → v2fetch_outlook_messages_batch failed: {e}")
+        # print(f"[ERROR] → v2fetch_outlook_messages_batch failed: {e}")
         return {
             "error": str(e),
             "status": "failed",
@@ -490,18 +508,17 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
     Run Outlook fetch + processing in parallel batches.
     Each batch also runs heavy embedding processes in parallel.
     """
-    print(f"inside v2all_continuous_outlook with user id : {user_id} ")
+    # print(f"inside v2all_continuous_outlook with user id : {user_id} ")
     import time
     from umail_helper.asyn_functions import v2process_batch_with_embedding
 
-   
-# also, give a code block that would call the function to get the time value for a user id. if there is no entry found for the user id, set start time as the current day starting time. else the time fetched form the fucntion is start. end is always the current time. 
-    
+    # also, give a code block that would call the function to get the time value for a user id. if there is no entry found for the user id, set start time as the current day starting time. else the time fetched form the fucntion is start. end is always the current time.
+
     # get start date
     start = get_last_sync_time(user_id)
 
-    print("start =", start)
-    print(f"--------------")
+    # print("start =", start)
+    # print(f"--------------")
 
     # If start is a string, convert it to datetime
     if isinstance(start, str):
@@ -509,8 +526,9 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
 
     if start is None:
         # start of today's date in UTC
-        start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-
+        start = datetime.utcnow().replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc
+        )
 
     # convert to ISO8601 with Z
     start_date = start.isoformat().replace("+00:00", "Z")
@@ -519,12 +537,12 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
     end_dt = datetime.utcnow().replace(tzinfo=timezone.utc)
     end_date = end_dt.isoformat().replace("+00:00", "Z")
 
-    print("start =", start_date)
-    print("end   =", end_date)
+    # print("start =", start_date)
+    # print("end   =", end_date)
 
-    print(f"--------------")
-    print(f"integration : {integration}")
-    print(f"----------------")
+    # print(f"--------------")
+    # print(f"integration : {integration}")
+    # print(f"----------------")
 
     connection = connect_to_rds()
     cursor = connection.cursor()
@@ -542,7 +560,7 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
         )
         row = cursor.fetchone()
         my_email, primary_user_id = row
-        print(f"{my_email} | {primary_user_id}")
+        # print(f"{my_email} | {primary_user_id}")
 
     else:
         cursor.execute(
@@ -583,17 +601,17 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
         threads_max = total_threads["conversationsTotal"]["count"]
         threads = total_threads["conversationsTotal"]["conversations"]
 
-        print("====== OUTLOOK THREAD SUMMARY ======")
-        print(f"Total threads: {threads_max}")
-        print(f"First thread raw object: {threads[0] if threads else 'No threads'}")
-        print(f"my_email : {my_email}")
-        print("====================================")
+        # print("====== OUTLOOK THREAD SUMMARY ======")
+        # print(f"Total threads: {threads_max}")
+        # print(f"First thread raw object: {threads[0] if threads else 'No threads'}")
+        # print(f"my_email : {my_email}")
+        # print("====================================")
 
         # startdate = total_convos["start_date"]
         # enddate = total_convos["end_date"]
 
-        print(f"🚀 Starting continuous Outlook batch processing for user {user_id}")
-        print(f"total conversations: {threads_max}")
+        # print(f"🚀 Starting continuous Outlook batch processing for user {user_id}")
+        # print(f"total conversations: {threads_max}")
 
         semaphore = asyncio.Semaphore(5)
 
@@ -610,19 +628,19 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
                         batch_count,
                         connection,
                         integration=integration,
-                        primary_user_id = primary_user_id
+                        primary_user_id=primary_user_id,
                     )
                 except Exception as e:
-                    print(f"❌ Error fetching Outlook batch {batch_count}: {e}")
+                    # print(f"❌ Error fetching Outlook batch {batch_count}: {e}")
                     import traceback
 
                     traceback.print_exc()
                     return None
 
                 if outlook_result.get("status") != "success":
-                    print(
-                        f"❌ Outlook batch {batch_count} failed: {outlook_result.get('error')}"
-                    )
+                    # print(
+                    #     f"❌ Outlook batch {batch_count} failed: {outlook_result.get('error')}"
+                    # )
                     return None
 
                 # print("====================================")
@@ -632,9 +650,9 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
                 new_messages = outlook_result.get("new_messages", 0)
                 if new_messages > 0:
                     any_new_messages = True
-                    print(f"📬 Batch {batch_count}: {new_messages} new messages")
-                else:
-                    print(f"📭 Batch {batch_count}: no new messages")
+                    # print(f"📬 Batch {batch_count}: {new_messages} new messages")
+                # else:
+                # print(f"📭 Batch {batch_count}: no new messages")
 
                 complete_results += new_messages
 
@@ -672,9 +690,9 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
 
         async def process_batch(batch_index, batch, integration=None):
             batch_start_time = time.perf_counter()
-            print(
-                f"\n⚡ Starting batch {batch_index+1}/{len(batches)} with {len(batch)} conversations..."
-            )
+            # print(
+            #     f"\n⚡ Starting batch {batch_index+1}/{len(batches)} with {len(batch)} conversations..."
+            # )
             results = await asyncio.gather(
                 process_with_semaphore(
                     batch, batch_index + 1, ticket_allocator, integration=integration
@@ -682,7 +700,7 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
                 return_exceptions=True,
             )
             batch_runtime = time.perf_counter() - batch_start_time
-            print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
+            # print(f"✅ Finished batch {batch_index+1} in {batch_runtime:.2f} seconds")
             return results
 
         all_batch_results = await asyncio.gather(
@@ -702,7 +720,6 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
 
         # Update Redis cache and wait for embeddings
 
-
         # print("------------------------")
         # print(f"saved to redis: {all_results}")
         # print("------------------------")
@@ -716,9 +733,9 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
             await asyncio.gather(*embedding_futures)
 
         total_runtime = time.perf_counter() - start_time
-        print(
-            f"\n🎯 Completed processing {threads_max} conversations in {total_runtime:.2f} seconds, total messages: {complete_results}"
-        )
+        # print(
+        #     f"\n🎯 Completed processing {threads_max} conversations in {total_runtime:.2f} seconds, total messages: {complete_results}"
+        # )
 
         # ✅ Only update umail_json + finalize if any batch had new messages
         if any_new_messages:
@@ -727,28 +744,28 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
                     user_id=user_id, new_count=threads_max, connection=connection
                 )
                 await ticket_allocator.finalize()
-                folder_path = os.path.join(pathconfig.basepath, "messages",user_id)
+                folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
                 if os.path.exists(folder_path):
                     shutil.rmtree(folder_path)
-                    print(f"🗑️ Deleted folder and contents: {folder_path}")
-                else:
-                    print(f"⚠️ Folder not found: {folder_path}")
+                    # print(f"🗑️ Deleted folder and contents: {folder_path}")
+                # else:
+                # print(f"⚠️ Folder not found: {folder_path}")
             else:
                 update_umail_json(
                     user_id=user_id, new_count=threads_max, connection=connection
                 )
                 await ticket_allocator.finalize()
-                folder_path = os.path.join(pathconfig.basepath, "messages",user_id)
+                folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
                 if os.path.exists(folder_path):
                     shutil.rmtree(folder_path)
-                    print(f"🗑️ Deleted folder and contents: {folder_path}")
-                else:
-                    print(f"⚠️ Folder not found: {folder_path}")
+                    # print(f"🗑️ Deleted folder and contents: {folder_path}")
+                # else:
+                # print(f"⚠️ Folder not found: {folder_path}")
 
-        else:
-            print(
-                "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
-            )
+        # else:
+        # print(
+        #     "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
+        # )
 
         # update the outlook_sync file
         # Get current UTC time
@@ -761,7 +778,7 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
         set_user_sync_time(user_id, current_time_str)
 
         return {
-            "user":  user_id,
+            "user": user_id,
             "total_conversations": threads_max,
             "batches": len(batches),
             "runtime_seconds": total_runtime,
@@ -769,7 +786,7 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
         }
 
     except Exception as e:
-        print(f"[ERROR] v2all_continuous_outlook failed: {e}")
+        # print(f"[ERROR] v2all_continuous_outlook failed: {e}")
         import traceback
 
         traceback.print_exc()

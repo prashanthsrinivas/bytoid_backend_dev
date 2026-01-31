@@ -265,7 +265,8 @@ class LanceClient:
         )
         return docs
 
-    async def process_document(self, file_path: str, filename: str):
+    async def process_document(self, file_path: str, filename: str, credits=None):
+        # print("inside process_document ")
         await self._ensure_embeddings()
         documents = self.langchainprocessDocs(file_path)
         vector_batch = []
@@ -302,16 +303,23 @@ class LanceClient:
 
         total_chars = total_input_chars + total_output_chars
 
-        credits = Credits()
-        await credits.update_ai_credits_redis(
+        credit_response = await credits.update_ai_credits_redis(
             credit_type="embedding",
             total_chars=total_chars,
             user_id=self.user_id,
             reference_id=inspect.stack()[0].function,
         )
+        if (
+            not credit_response
+            or credit_response.get("error") == "INSUFFICIENT_CREDITS"
+        ):
+            return {
+                "error": "INSUFFICIENT_CREDITS",
+                "message": "Your credits are too low to continue processing.",
+            }
 
         # ----------------------------------------------
-
+        # print(f"************ vectors_made:{len(vector_batch)} ")
         return {
             "vectors_made": len(vector_batch),
             "docs_processed": len(documents),
@@ -604,9 +612,9 @@ class LanceClient:
         try:
             user_id = query_input.user_id or self.user_id
 
-            print("started mixed query")
+            # print("started mixed query")
             if not vector:
-                print("new vector")
+                # print("new vector")
                 await self._ensure_embeddings()
                 vector = self.embeddings.embed_query(query_input.query_text)
 
@@ -619,7 +627,7 @@ class LanceClient:
                 total_chars = total_input_chars + total_output_chars
 
                 # credits = Credits()
-                print("cheees", inspect.stack()[0].function)
+                # print("cheees", inspect.stack()[0].function)
                 await self.credits.update_ai_credits_redis(
                     credit_type="embedding",
                     total_chars=total_chars,
@@ -662,7 +670,7 @@ class LanceClient:
             )
 
             if ai_response:
-                print("the ai extracted information", len(ai_response))
+                # print("the ai extracted information", len(ai_response))
                 return ai_response.strip()
 
             # fallback (raw data)

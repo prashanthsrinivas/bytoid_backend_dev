@@ -187,8 +187,9 @@ def get_all_user_agents(userid):
         )
 
     except Exception as e:
-        print(f"❌ [ERROR] agents_hub route: {str(e)}")
+        # print(f"❌ [ERROR] agents_hub route: {str(e)}")
         import traceback
+
         traceback.print_exc()
         try:
             conn.rollback()

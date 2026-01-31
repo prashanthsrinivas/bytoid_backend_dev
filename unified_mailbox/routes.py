@@ -39,7 +39,7 @@ def get_user_login_method(user_id):
         return "gmail"
 
     except Exception as e:
-        print(f"❌ [ERROR] Error in get_user_login_method: {str(e)}")
+        # print(f"❌ [ERROR] Error in get_user_login_method: {str(e)}")
         return "gmail"  # Default fallback
 
 
@@ -117,60 +117,10 @@ def get_active_customers():
             content_ref = row[1]
             content_dict[msg_id] = content_ref
 
-    print(f"content_dict lenght : {len(content_dict)}")
+    # print(f"content_dict lenght : {len(content_dict)}")
     messages = get_latest_msg(content_dict, user_id)
 
     return jsonify(messages)
-
-
-# @unified_bp.route('/get_all_messages', methods=['POST'])
-# def get_all_messages():
-#     """
-#     Get ALL messages from all conversations (customers, leads, etc.)
-#     without time or type filters - similar to active customers but includes everything.
-#     Returns conversations with proper contact email addresses and names.
-#     """
-#     data = request.get_json()
-#     user_id = data.get("user_id")
-#     if not user_id:
-#         return jsonify({"error": "user id needed"}), 400
-
-#     connection = connect_to_rds()
-#     if connection is None:
-#        #print("❌ [DEBUG] Database connection failed")
-#         return jsonify({"error": "Database connection failed"}), 500
-#     cursor = connection.cursor()
-
-#     content_dict = {}
-#     # Get ALL messages without time filter - just group by sender to get latest from each conversation
-#     query = """
-#         SELECT
-#             m.sender_id,
-#             m.content_ref as content
-#         FROM messages m
-#         JOIN users_clients uc ON m.sender_id = uc.users_clients_id
-#         JOIN communication c ON uc.communication_id_fk = c.communication_id
-#         WHERE m.message_type = 'inbound'
-#         AND c.user_id_fk = %s
-#         GROUP BY m.sender_id
-#         ORDER BY MAX(m.created_at) DESC
-#         """
-#     cursor.execute(query, (user_id,))
-#     rows = cursor.fetchall()
-
-#     if rows:
-#         for row in rows:
-#             msg_id = row[0]
-#             content_ref = row[1]
-#             content_dict[msg_id] = content_ref
-
-#     cursor.close()
-#     connection.close()
-
-#     print(f"content_dict length: {len(content_dict)}")
-#     messages = get_latest_msg(content_dict, user_id)
-
-#     return jsonify(messages)
 
 
 @unified_bp.route("/get_dormant_customers", methods=["POST"])
@@ -211,7 +161,7 @@ def get_dormant_customers():
             content_ref = row[1]
             content_dict[msg_id] = content_ref
 
-    print(f"content_dict lenght : {len(content_dict)}")
+    # print(f"content_dict lenght : {len(content_dict)}")
     messages = get_latest_msg(content_dict, user_id)
 
     return jsonify(messages)
@@ -256,7 +206,7 @@ def get_active_leads():
             content_ref = row[1]
             content_dict[msg_id] = content_ref
 
-    print(f"content_dict lenght : {len(content_dict)}")
+    # print(f"content_dict lenght : {len(content_dict)}")
     messages = get_latest_msg(content_dict, user_id)
 
     return jsonify(messages)
@@ -301,7 +251,7 @@ def get_dormant_leads():
             content_ref = row[1]
             content_dict[msg_id] = content_ref
 
-    print(f"content_dict lenght : {len(content_dict)}")
+    # print(f"content_dict lenght : {len(content_dict)}")
     messages = get_latest_msg(content_dict, user_id)
 
     return jsonify(messages)
@@ -345,7 +295,7 @@ def get_snoozed_customers():
                 content_ref = row[1]
                 content_dict[msg_id] = content_ref
 
-        print(f"content_dict lenght : {len(content_dict)}")
+        # print(f"content_dict lenght : {len(content_dict)}")
         messages = get_latest_msg(content_dict, user_id)
 
         return jsonify(messages)
@@ -365,8 +315,8 @@ def snooze_customer():
         data = request.get_json()
         user_id = data.get("user_id")
         conversation_id = data.get("conversation_id")
-        print(f"conversation_id :{conversation_id}")
-        print(f"usrs_id: {user_id}")
+        # print(f"conversation_id :{conversation_id}")
+        # print(f"usrs_id: {user_id}")
 
         connection = connect_to_rds()
         if connection is None:
@@ -392,7 +342,7 @@ def snooze_customer():
                 404,
             )
 
-        print(f"client_id:{client_id}")
+        # print(f"client_id:{client_id}")
 
         cursor.execute(
             "UPDATE users_clients SET snooze = CASE WHEN snooze = 0 THEN 1 ELSE 0 END WHERE users_clients_id = %s",
@@ -512,7 +462,7 @@ def create_note():
     try:
         # print("[DEBUG] Starting create_note function")
         data = request.get_json()
-        print(f"[DEBUG] create_note received data: {data}")
+        # print(f"[DEBUG] create_note received data: {data}")
 
         if not data:
             # print("[DEBUG] No JSON data received")
@@ -524,9 +474,9 @@ def create_note():
         note_content = (data.get("note_content") or "").strip()
         note_type = (data.get("note_type") or "").strip()
 
-        print(
-            f"[DEBUG] Extracted fields - user_id: '{user_id}', conversation_id: '{conversation_id}', sender_id: '{sender_id}', note_content: '{note_content}', note_type: '{note_type}'"
-        )
+        # print(
+        #     f"[DEBUG] Extracted fields - user_id: '{user_id}', conversation_id: '{conversation_id}', sender_id: '{sender_id}', note_content: '{note_content}', note_type: '{note_type}'"
+        # )
 
         # Check for required fields (empty strings are invalid)
         if not user_id or not conversation_id or not note_content or not note_type:
@@ -539,7 +489,7 @@ def create_note():
                 missing_fields.append("note_content")
             if not note_type:
                 missing_fields.append("note_type")
-            print(f"[DEBUG] Missing required fields: {missing_fields}")
+            # print(f"[DEBUG] Missing required fields: {missing_fields}")
             return (
                 jsonify(
                     {"error": f"Missing required fields: {', '.join(missing_fields)}"}
@@ -548,7 +498,7 @@ def create_note():
             )
 
         if note_type not in ["private", "shared"]:
-            print(f"[DEBUG] Invalid note type: {note_type}")
+            # print(f"[DEBUG] Invalid note type: {note_type}")
             return (
                 jsonify({"error": "Invalid note type. Must be 'private' or 'shared'"}),
                 400,
@@ -563,7 +513,7 @@ def create_note():
         created_at = datetime.now()
 
         # Insert into conversation_notes table
-        print(f"[DEBUG] About to insert note with ID: {note_id}")
+        # print(f"[DEBUG] About to insert note with ID: {note_id}")
         cursor.execute(
             """INSERT INTO conversation_notes 
                (note_id, conversation_id, user_id, sender_id, note_content, note_type, created_at, updated_at, is_active) 
@@ -591,7 +541,7 @@ def create_note():
             (note_id,),
         )
         verification = cursor.fetchone()
-        print(f"[DEBUG] Verification result: {verification}")
+        # print(f"[DEBUG] Verification result: {verification}")
 
         return (
             jsonify(
@@ -607,7 +557,7 @@ def create_note():
 
     except Exception as e:
         traceback.print_exc()
-        print(f"[DEBUG] Exception in create_note: {str(e)}")
+        # print(f"[DEBUG] Exception in create_note: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
@@ -622,14 +572,14 @@ def get_conversation_notes():
     try:
         # print("[DEBUG] Starting get_conversation_notes function")
         data = request.get_json()
-        print(f"[DEBUG] get_conversation_notes received data: {data}")
+        # print(f"[DEBUG] get_conversation_notes received data: {data}")
 
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
 
         user_id = data.get("user_id")
         conversation_id = data.get("conversation_id")
-        print(f"[DEBUG] user_id: {user_id}, conversation_id: {conversation_id}")
+        # print(f"[DEBUG] user_id: {user_id}, conversation_id: {conversation_id}")
 
         if not all([user_id, conversation_id]):
             return jsonify({"error": "Missing required fields"}), 400
@@ -649,9 +599,9 @@ def get_conversation_notes():
             (conversation_id,),
         )
         total_notes = cursor.fetchone()[0]
-        print(
-            f"[DEBUG] Total notes found for conversation {conversation_id}: {total_notes}"
-        )
+        # print(
+        #     f"[DEBUG] Total notes found for conversation {conversation_id}: {total_notes}"
+        # )
 
         # Then check how many are active
         cursor.execute(
@@ -660,12 +610,12 @@ def get_conversation_notes():
             (conversation_id,),
         )
         active_notes = cursor.fetchone()[0]
-        print(f"[DEBUG] Active notes found: {active_notes}")
+        # print(f"[DEBUG] Active notes found: {active_notes}")
 
         # Get all notes user has access to (private notes of the user + shared notes)
-        print(
-            f"[DEBUG] Fetching notes for user {user_id} in conversation {conversation_id}"
-        )
+        # print(
+        #     f"[DEBUG] Fetching notes for user {user_id} in conversation {conversation_id}"
+        # )
         cursor.execute(
             """SELECT n.note_id, n.conversation_id, n.user_id, n.sender_id, n.note_content, n.note_type, n.created_at, n.updated_at,
                       COALESCE(u.first_name, '') as first_name, COALESCE(u.last_name, '') as last_name
@@ -680,7 +630,7 @@ def get_conversation_notes():
 
         # print("[DEBUG] SQL query executed successfully")
         rows = cursor.fetchall()
-        print(f"[DEBUG] Found {len(rows)} rows")
+        # print(f"[DEBUG] Found {len(rows)} rows")
 
         notes = []
         for row in rows:
@@ -708,11 +658,11 @@ def get_conversation_notes():
                 }
             )
 
-        print(f"[DEBUG] Returning {len(notes)} notes")
+        # print(f"[DEBUG] Returning {len(notes)} notes")
         return jsonify({"notes": notes})
 
     except Exception as e:
-        print(f"[DEBUG] Exception in get_conversation_notes: {str(e)}")
+        # print(f"[DEBUG] Exception in get_conversation_notes: {str(e)}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     finally:
@@ -926,9 +876,9 @@ def search_users_for_sharing():
             # 🔴 DEFENSIVE CHECK: Ensure current user never appears
             # (belt and suspenders - query should already exclude them)
             if current_user_id == user_id:
-                print(
-                    f"[DEBUG] WARNING: Current user {user_id} appeared in search results. Skipping."
-                )
+                # print(
+                #     f"[DEBUG] WARNING: Current user {user_id} appeared in search results. Skipping."
+                # )
                 continue
 
             users.append(
@@ -1222,8 +1172,8 @@ def change_assignee():
     data = request.get_json()
     assignee_user_id = data.get("assignee_id")
     tickets_id = data.get("ticket_id")
-    print(f"assignee_user_id :{assignee_user_id}")
-    print(f"tickets_id : {tickets_id}")
+    # print(f"assignee_user_id :{assignee_user_id}")
+    # print(f"tickets_id : {tickets_id}")
 
     if not assignee_user_id:
         return jsonify({"error": "user id needed"}), 400
@@ -1277,7 +1227,7 @@ def add_user_by_id(cursor, result_emails, user_id_val):
                 "id": user_id_result,
             }
             result_emails.append(details)
-            print(f"[DEBUG] Added user by ID: {details}")
+            # print(f"[DEBUG] Added user by ID: {details}")
     except Exception as e:
         print(f"[ERROR] add_user_by_id failed: {e}")
 
@@ -1309,7 +1259,7 @@ def add_user_by_email(cursor, result_emails, email):
                 "id": user_id_result,
             }
             result_emails.append(details)
-            print(f"[DEBUG] Added user by email: {details}")
+            # print(f"[DEBUG] Added user by email: {details}")
     except Exception as e:
         print(f"[ERROR] add_user_by_email failed: {e}")
 
@@ -1335,18 +1285,18 @@ def get_assignee_list():
 
     try:
         # Get user data
-        print(f"[DEBUG] /get_assignee_list called for user: {user_id}")
+        # print(f"[DEBUG] /get_assignee_list called for user: {user_id}")
         cursor.execute(
             "SELECT user_type, permissions FROM users WHERE user_id = %s", (user_id,)
         )
         user_data = cursor.fetchone()
 
         if not user_data:
-            print(f"[DEBUG] User {user_id} not found")
+            # print(f"[DEBUG] User {user_id} not found")
             return jsonify({"assignees": []})
 
         user_type, permissions_json = user_data
-        print(f"[DEBUG] user_type={user_type}")
+        # print(f"[DEBUG] user_type={user_type}")
 
         # Parse permissions safely
         try:
@@ -1355,9 +1305,9 @@ def get_assignee_list():
                 shared_items = permissions.get("shared", [])
             else:
                 shared_items = []
-            print(f"[DEBUG] Parsed {len(shared_items)} shared items")
+            # print(f"[DEBUG] Parsed {len(shared_items)} shared items")
         except (json.JSONDecodeError, AttributeError, TypeError) as parse_err:
-            print(f"[DEBUG] Permission parsing failed: {parse_err}")
+            # print(f"[DEBUG] Permission parsing failed: {parse_err}")
             shared_items = []
 
         # Helper to check mailbox permission
@@ -1369,7 +1319,7 @@ def get_assignee_list():
 
         # === CASE 1: Admin User ===
         if user_type == "admin":
-            print(f"[DEBUG] Processing admin user {user_id}")
+            # print(f"[DEBUG] Processing admin user {user_id}")
 
             # Add self (the admin)
             result_emails = add_user_by_id(cursor, result_emails, user_id)
@@ -1378,12 +1328,12 @@ def get_assignee_list():
             for item in shared_items:
                 if has_mailbox_permission(item) and "email" in item:
                     email = item["email"]
-                    print(f"[DEBUG] Adding admin team member: {email}")
+                    # print(f"[DEBUG] Adding admin team member: {email}")
                     result_emails = add_user_by_email(cursor, result_emails, email)
 
         # === CASE 2: Regular User ===
         elif user_type == "user":
-            print(f"[DEBUG] Processing regular user {user_id}")
+            # print(f"[DEBUG] Processing regular user {user_id}")
 
             # Add self
             result_emails = add_user_by_id(cursor, result_emails, user_id)
@@ -1394,7 +1344,7 @@ def get_assignee_list():
                 if has_mailbox_permission(item) and "invited_by" in item:
                     invited_by_emails.append(item["invited_by"])
 
-            print(f"[DEBUG] User invited by: {invited_by_emails}")
+            # print(f"[DEBUG] User invited by: {invited_by_emails}")
 
             # Get team members from the admin(s) who invited them
             for invited_email in invited_by_emails:
@@ -1417,19 +1367,19 @@ def get_assignee_list():
                         for item in invited_shared:
                             if has_mailbox_permission(item) and "email" in item:
                                 email = item["email"]
-                                print(f"[DEBUG] Adding team member: {email}")
+                                # print(f"[DEBUG] Adding team member: {email}")
                                 result_emails = add_user_by_email(
                                     cursor, result_emails, email
                                 )
                     except Exception as e:
-                        print(f"[ERROR] Failed to process admin {invited_email}: {e}")
+                        # print(f"[ERROR] Failed to process admin {invited_email}: {e}")
                         continue
 
-        print(f"[DEBUG] Returning {len(result_emails)} assignees")
+        # print(f"[DEBUG] Returning {len(result_emails)} assignees")
         return jsonify({"assignees": result_emails}), 200
 
     except Exception as e:
-        print(f"[ERROR] Exception in get_assignee_list: {e}")
+        # print(f"[ERROR] Exception in get_assignee_list: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     finally:
@@ -1448,7 +1398,7 @@ def get_user_notes():
     if not user_id:
         return jsonify({"error": "user id needed"}), 400
 
-    print(f"[DEBUG] Processing request for user_id: {user_id}")
+    # print(f"[DEBUG] Processing request for user_id: {user_id}")
     val = get_notes_data(user_id)
     if "error" in val:
         return jsonify(val), 500

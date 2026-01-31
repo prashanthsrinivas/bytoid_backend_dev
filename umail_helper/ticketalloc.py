@@ -24,7 +24,7 @@ TTL_90_DAYS = 90 * 24 * 60 * 60  # 90 days in seconds
 #         """
 #         # Get the base ticket number from DB (synchronous call)
 #         latest = await asyncio.to_thread(client_ticket.call_ticket_number, user_id) or 0
-#         print(f"Latest ticket from DB: {latest}")
+#         #print(f"Latest ticket from DB: {latest}")
 
 #         return cls(client_ticket, user_id, latest_ticket=latest)
 
@@ -47,7 +47,7 @@ TTL_90_DAYS = 90 * 24 * 60 * 60  # 90 days in seconds
 #                 self.user_id,
 #                 self._ticket_counter,
 #             )
-#             print(f"Final ticket number saved to DB: {self._ticket_counter}")
+#             #print(f"Final ticket number saved to DB: {self._ticket_counter}")
 
 
 import asyncio
@@ -102,7 +102,7 @@ class TicketAllocator:
         finally:
             connection.close()
 
-        print(f"Latest ticket from DB: {latest}")
+        #print(f"Latest ticket from DB: {latest}")
         return cls(user_id, latest_ticket=latest)
 
     def update_ticket(self, value):
@@ -176,4 +176,4 @@ class TicketAllocator:
                     connection.close()
 
             await asyncio.to_thread(_update)
-            print(f"Final ticket number saved to DB: {self._ticket_counter}")
+            #print(f"Final ticket number saved to DB: {self._ticket_counter}")

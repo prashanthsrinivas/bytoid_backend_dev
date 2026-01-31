@@ -802,6 +802,26 @@ def get_userid(email, connection=None):
         if own_conn:
             connection.close()
 
+def get_email_by_id(userid, connection=None):
+    """Get the user_id for a given email."""
+    own_conn = False
+    if connection is None:
+        connection = connect_to_rds()
+        own_conn = True
+
+    try:
+        with get_cursor(connection) as cursor:
+            cursor.execute(
+                "SELECT email FROM users WHERE user_id = %s",
+                (userid,),
+            )
+            result = cursor.fetchone()
+            if result:
+                return result[0]  # user_id
+            return None
+    finally:
+        if own_conn:
+            connection.close()
 
 def get_users_clients_id(email, user_id, connection=None):
     """

@@ -71,9 +71,9 @@ def create_forwarding_rule():
             "is_active": True,
         }
 
-        print(f"✅ Forwarding rule created: {rule_id}")
-        print(f"   Keywords: {keywords}")
-        print(f"   Forward to ({forward_to_type}): {forward_to_display_name}")
+        # print(f"✅ Forwarding rule created: {rule_id}")
+        # print(f"   Keywords: {keywords}")
+        # print(f"   Forward to ({forward_to_type}): {forward_to_display_name}")
 
         return (
             jsonify(
@@ -87,8 +87,8 @@ def create_forwarding_rule():
         )
 
     except Exception as e:
-        print(f"❌ Error creating forwarding rule: {e}")
-        print(f"📋 Traceback: {traceback.format_exc()}")
+        # print(f"❌ Error creating forwarding rule: {e}")
+        # print(f"📋 Traceback: {traceback.format_exc()}")
         return (
             jsonify(
                 {
@@ -138,12 +138,12 @@ def get_forwarding_rules():
 
         rules_list = list(forwarding_rules.values())
 
-        print(f"✅ Retrieved {len(rules_list)} forwarding rules")
+        # print(f"✅ Retrieved {len(rules_list)} forwarding rules")
 
         return jsonify({"status": "success", "rules": rules_list}), 200
 
     except Exception as e:
-        print(f"❌ Error retrieving forwarding rules: {e}")
+        # print(f"❌ Error retrieving forwarding rules: {e}")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
@@ -176,7 +176,7 @@ def update_forwarding_rule(rule_id):
         if "is_active" in data:
             forwarding_rules[rule_id]["is_active"] = data["is_active"]
             status = "Active" if data["is_active"] else "Inactive"
-            print(f"✅ Rule {rule_id} status changed to: {status}")
+            # print(f"✅ Rule {rule_id} status changed to: {status}")
 
         return (
             jsonify({"status": "success", "message": "Rule updated successfully"}),
@@ -184,7 +184,7 @@ def update_forwarding_rule(rule_id):
         )
 
     except Exception as e:
-        print(f"❌ Error updating rule: {e}")
+        # print(f"❌ Error updating rule: {e}")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
@@ -209,7 +209,7 @@ def delete_forwarding_rule(rule_id):
 
         del forwarding_rules[rule_id]
 
-        print(f"✅ Rule {rule_id} deleted")
+        # print(f"✅ Rule {rule_id} deleted")
 
         return (
             jsonify({"status": "success", "message": "Rule deleted successfully"}),
@@ -217,7 +217,7 @@ def delete_forwarding_rule(rule_id):
         )
 
     except Exception as e:
-        print(f"❌ Error deleting rule: {e}")
+        # print(f"❌ Error deleting rule: {e}")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
@@ -270,10 +270,10 @@ def check_email_forwarding(email_subject):
 
         should_forward = len(forward_to) > 0
 
-        if should_forward:
-            print(
-                f"✅ Email '{email_subject}' matches {len(forward_to)} forwarding rule(s)"
-            )
+        # if should_forward:
+        #     #print(
+        #         f"✅ Email '{email_subject}' matches {len(forward_to)} forwarding rule(s)"
+        #     )
 
         return (
             jsonify(
@@ -287,5 +287,5 @@ def check_email_forwarding(email_subject):
         )
 
     except Exception as e:
-        print(f"❌ Error checking email forwarding: {e}")
+        # print(f"❌ Error checking email forwarding: {e}")
         return jsonify({"status": "error", "error": str(e)}), 500

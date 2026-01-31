@@ -29,10 +29,7 @@ class QueryIntentionExtractor:
         filled_prompt = entity_template.replace("{{user_query}}", str(original_query))
 
         llm_output = await get_fireworks_response2(
-            user_id=self.userid,
-            user_message=filled_prompt,
-            role="system",
-            temp=0.2
+            user_id=self.userid, user_message=filled_prompt, role="system", temp=0.2
         )
         return parse_llm_response(llm_output)
 
@@ -91,7 +88,7 @@ class QueryIntentionExtractor:
             "aggregation": "find_grouping_dimension_aggregation",
             "retrieval": "find_grouping_dimension_ranking",
         }
-        print(f"sql_intent_lower:{sql_intent_lower}")
+        # print(f"sql_intent_lower:{sql_intent_lower}")
         template_key = template_key_map.get(sql_intent_lower)
         if not template_key:
             return None
@@ -139,7 +136,8 @@ class QueryIntentionExtractor:
                 raise RuntimeError(f"Grouping dimension parsing failed: {e}")
 
         if grouping_dimension:
-            print("✔️ Grouping dimension:", grouping_dimension)
+            # print("✔️ Grouping dimension:", grouping_dimension)
+            return None, None
         return grouping_dimension, temporal_flag
 
     # ---------------- Metric & Aggregation ----------------
@@ -151,7 +149,7 @@ class QueryIntentionExtractor:
         }
         template_key = template_key_map.get(sql_intent_lower)
         if not template_key:
-            print(f"no template_key found for sql_intent_lower: {sql_intent_lower}")
+            # print(f"no template_key found for sql_intent_lower: {sql_intent_lower}")
             return None, None
 
         template = self.reporting_yaml.get(template_key)
@@ -166,7 +164,7 @@ class QueryIntentionExtractor:
 
         # --- First LLM call ---
         raw1 = await get_fireworks_response2(
-             user_id = self.userid, user_message = filled_prompt, role="system", temp=0.2
+            user_id=self.userid, user_message=filled_prompt, role="system", temp=0.2
         )
         try:
             result1 = parse_llm_response(raw1)
@@ -175,7 +173,7 @@ class QueryIntentionExtractor:
 
         # --- Second LLM call ---
         raw2 = await get_fireworks_response(
-            user_message = filled_prompt, role="system", user_id=self.userid
+            user_message=filled_prompt, role="system", user_id=self.userid
         )
         try:
             result2 = parse_llm_response(raw2)
@@ -184,9 +182,9 @@ class QueryIntentionExtractor:
 
         # --- Compare results and retry if mismatch ---
         if result1 != result2:
-            print("⚠️ Mismatch between LLM outputs — retrying once more")
+            # print("⚠️ Mismatch between LLM outputs — retrying once more")
             raw3 = await get_fireworks_response(
-                user_message = filled_prompt, role="system", user_id=self.userid
+                user_message=filled_prompt, role="system", user_id=self.userid
             )
             try:
                 final_result = parse_llm_response(raw3)
@@ -201,11 +199,11 @@ class QueryIntentionExtractor:
             metric = self.validator.normalize_metric(metric)
         except ValueError as e:
             # You got an error
-            print("Metric normalization failed:", str(e))
+            # print("Metric normalization failed:", str(e))
             metric = None
 
         aggregation = final_result.get("aggregation")
-        print("✔️ Metric & Aggregation:", metric, aggregation)
+        # print("✔️ Metric & Aggregation:", metric, aggregation)
         return metric, aggregation
 
     # ---------------- Full Extraction ----------------

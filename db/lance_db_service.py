@@ -10,7 +10,7 @@ import json, random, asyncio, time
 from datetime import datetime, timedelta, timezone
 from db.rds_db import connect_to_rds
 from flask import jsonify
-
+import re
 from utils.base_logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,8 +18,8 @@ logger = get_logger(__name__)
 load_dotenv()
 db_key = os.getenv("LANCE_SERVERLESS")
 db_uri = os.getenv("LANCE_SERVERLESS_URI")
-if not db_key and db_uri:
-    print("NEED LANCE DB DETAILS")
+# if not db_key and db_uri:
+#    print("NEED LANCE DB DETAILS")
 
 EMBEDDING_DIM = 4096
 MetricsClientType = Any  # e.g., datadog client with increment/timing/gauge methods
@@ -148,6 +148,46 @@ def retry_async(
     return decorator
 
 
+def _safe_json_parse(value):
+    JSON_REGEX = re.compile(r"^\s*(\{.*\}|\[.*\])\s*$", re.DOTALL)
+    if value is None:
+        return {}
+
+    # ✅ Already parsed
+    if isinstance(value, (dict, list)):
+        return value
+
+    if not isinstance(value, str):
+        return {}
+
+    s = value.strip()
+
+    # 🔁 Remove wrapping quotes if JSON is inside a string
+    # Example: "{\"a\": 1}" → {"a": 1}
+    if (s.startswith('"') and s.endswith('"')) or (
+        s.startswith("'") and s.endswith("'")
+    ):
+        s = s[1:-1]
+        s = s.replace('\\"', '"')
+
+    # 🎯 Check if it LOOKS like JSON
+    if not JSON_REGEX.match(s):
+        return {}
+
+    # 🧠 Parse once
+    try:
+        parsed = json.loads(s)
+
+        # 🪆 Double-encoded JSON
+        if isinstance(parsed, str) and JSON_REGEX.match(parsed.strip()):
+            return json.loads(parsed)
+
+        return parsed
+
+    except Exception:
+        return {}
+
+
 def parse_ts(ts):
     """
     Safely parse a timestamp (ISO string or Unix epoch ms/s) into a timezone-aware datetime.
@@ -225,13 +265,14 @@ class LanceDBServer:
 
         if self.db is None:
             try:
-                print("going to create new instance of lance")
+               #print("going to create new instance of lance")
                 self.db = lancedb.connect(
                     uri=self.db_uri, api_key=self.db_key, region=self.region
                 )
-                print("CONNECTED:", self.db)
+               #print("CONNECTED:", self.db)
             except Exception as e:
-                print("LanceDB CONNECT ERROR:", e)
+               #print("LanceDB CONNECT ERROR:", e)
+               return e
         return self.db
 
     async def _create_schema_dummy(self) -> pa.Schema:
@@ -319,7 +360,7 @@ class LanceDBServer:
         """
         table_name = f"u_{user_id}"
         self.db = self._connect_if_needed()
-        print("deleting db tables started", table_name)
+       #print("deleting db tables started", table_name)
 
         def _drop():
             return self.db.drop_table(table_name)
@@ -523,7 +564,7 @@ class LanceDBServer:
         if isinstance(query, dict):
             query = QueryData(**query)
         start = time.time()
-        print("len values", len(query.embedding))
+       #print("len values", len(query.embedding))
         try:
             if len(query.embedding) > self.EMBEDDING_DIM:
                 raise ValueError(
@@ -883,14 +924,14 @@ class LanceDBServer:
 
     def _get_umail_table(self, user_id, folder_name=None):
         table_name = f"u_{user_id}"
-        print("in get umail table")
+       #print("in get umail table")
 
         try:
             self.db = self._connect_if_needed()
-            print("self.db", self.db)
+           #print("self.db", self.db)
             return self.db.open_table(table_name)
         except Exception:
-            print(f"[DEBUG] Creating new table {table_name}")
+           #print(f"[DEBUG] Creating new table {table_name}")
 
             schema = pa.schema(
                 [
@@ -943,18 +984,18 @@ class LanceDBServer:
         return [{"id": r.get("id"), "text": r.get("text")} for r in rows]
 
     def insert_umail_vectors(self, vectors):
-        print("in the insert umail")
+       #print("in the insert umail")
         if not vectors:
             return {"inserted_count": 0}
 
         user_id = vectors[0].user_id
-        print(f"********user id inside lance: {user_id}")
+       #print(f"********user id inside lance: {user_id}")
         # folder_name = vectors[0].folder_name
         id = vectors[0].id
-        print(f"********id inside lance: {id}")
+       #print(f"********id inside lance: {id}")
 
         table = self._get_umail_table(user_id)
-        print("table", table)
+       #print("table", table)
 
         # === DELETE once per folder (FAST, not per ID) ===
         # table.delete(f"folder_name == '{folder_name}'")
@@ -965,12 +1006,12 @@ class LanceDBServer:
             .limit(10)  # safety
             .to_list()  # EXECUTE
         )
-        if rows:
-            for row in rows:
-                print(f"row already inside:")
-                # print(row["text"])
-        else:
-            print(f"no rows already")
+        # if rows:
+        #     for row in rows:
+        #        #print(f"row already inside:")
+        #         # print(row["text"])
+        # else:
+        #    #print(f"no rows already")
 
         table.delete(f"id == '{id}'")
 
@@ -1036,9 +1077,9 @@ class LanceDBServer:
 
     def serverless_get_umail_page(self, user_id: str, next_cursor=None, page_size=1000):
         table = self._get_umail_table(user_id)
-        print(f"[SERVERLESS] user_id:{user_id} next_cursor:{next_cursor}")
+       #print(f"[SERVERLESS] user_id:{user_id} next_cursor:{next_cursor}")
 
-        print("----------------------------")
+       #print("----------------------------")
 
         # Normalize timestamp cursor
         current_dt = (
@@ -1153,15 +1194,15 @@ class LanceDBServer:
 
         start_date = end_date - timedelta(days=5)
 
-        print(
-            f"params -> "
-            f"start_date={start_date}, "
-            f"end_date={end_date}, "
-            f"user_id={user_id}, "
-            f"cursor={end_date}, "
-            f"user_id_again={user_id}, "
-            f"page_size={page_size}"
-        )
+        # print(
+        #     f"params -> "
+        #     f"start_date={start_date}, "
+        #     f"end_date={end_date}, "
+        #     f"user_id={user_id}, "
+        #     f"cursor={end_date}, "
+        #     f"user_id_again={user_id}, "
+        #     f"page_size={page_size}"
+        # )
 
         # query = """
         # SELECT m.conversation_id_fk, m.sender_id, m.created_at
@@ -1230,8 +1271,8 @@ class LanceDBServer:
         connection.close()
 
         result = []
-        print(f"rows:")
-        print({rows})
+       #print(f"rows:")
+       #print({rows})
         collected = []
         for row in rows:
             conversation_id, client_id, timestamp = row
@@ -1312,9 +1353,9 @@ class LanceDBServer:
         connection.close()
 
         result = []
-        print(f"rows:")
-        print({rows})
-        print(f"lenght : {len(rows)}")
+       #print(f"rows:")
+       #print({rows})
+       #print(f"lenght : {len(rows)}")
 
         collected = []
         for row in rows:
@@ -1330,13 +1371,13 @@ class LanceDBServer:
                 # Sort by timestamp in Python
                 text_rows.sort(key=lambda x: x["timestamp"], reverse=True)
                 collected.append(text_rows[0])
-                print(f"****** {text_rows[0]['folder_name']}  | {text_rows[0]['id']}")
+               #print(f"****** {text_rows[0]['folder_name']}  | {text_rows[0]['id']}")
 
                 # latest_text = text_rows[0]["text"]
                 # latest_timestamp = text_rows[0]["timestamp"]
-            else:
-                print(f"not found:")
-                print(f"client_id : {client_id} | conversation_id : {conversation_id}")
+            # else:
+            #    #print(f"not found:")
+            #    #print(f"client_id : {client_id} | conversation_id : {conversation_id}")
 
         next_cursor = None
 
@@ -1352,19 +1393,24 @@ class LanceDBServer:
         #     "timestamp": latest_timestamp,
         #     "text": latest_text
         # })
-        print(f"lenght of collected: {len(collected)}")
-        print(f"next_cursor: {next_cursor}")
+       #print(f"lenght of collected: {len(collected)}")
+       #print(f"next_cursor: {next_cursor}")
         return collected, next_cursor
 
     # -------------------SCRAPE FUNCTIONALITY-------------------------------#
 
     def _get_scrape_table(self, user_id: str):
-        """Create or get the scraping data table for a user"""
         table_name = f"scrape_{user_id}"
         self.db = self._connect_if_needed()
 
-        if table_name not in self.db.table_names():
-            print(f"[DEBUG] Creating new scrape table for user {user_id}")
+        try:
+            # 🔥 Always try to open first
+            return self.db.open_table(table_name)
+
+        except Exception as e:
+           #print(
+            #     f"[DEBUG] Scrape table not found for user {user_id}, creating new one"
+            # )
 
             schema = pa.schema(
                 [
@@ -1374,13 +1420,12 @@ class LanceDBServer:
                     pa.field("content", pa.string()),
                     pa.field("contacts", pa.string()),
                     pa.field("timestamp", pa.string()),
-                    pa.field("metadata", pa.string()),  # JSON serialized
+                    pa.field("metadata", pa.string()),
                     pa.field("embedding", pa.list_(pa.float32(), EMBEDDING_DIM)),
                     pa.field("pages_by_level", pa.string()),
                 ]
             )
 
-            # Insert dummy row
             dummy = [
                 {
                     "user_id": user_id,
@@ -1396,10 +1441,11 @@ class LanceDBServer:
             ]
 
             return self.db.create_table(
-                table_name, data=dummy, schema=schema, mode="overwrite"
+                table_name,
+                data=dummy,
+                schema=schema,
+                mode="create",  # 🔥 DO NOT overwrite
             )
-
-        return self.db.open_table(table_name)
 
     def _update_summary_scrape(self, user_id, url, content):
         table = self._get_scrape_table(user_id=user_id)
@@ -1551,7 +1597,7 @@ class LanceDBServer:
             return {"status": "success", "url": data.url}
 
         except Exception as e:
-            print(f"Error inserting scraped data: {e}")
+           #print(f"Error inserting scraped data: {e}")
             raise e
 
     def delete_scraped_data(self, user_id, url):
@@ -1566,7 +1612,7 @@ class LanceDBServer:
             return {"status": "success", "url": url}
 
         except Exception as e:
-            print(f"Error inserting scraped data: {e}")
+           #print(f"Error inserting scraped data: {e}")
             raise e
 
     def update_scraped_contacts(self, user_id, url, contacts):
@@ -1641,25 +1687,25 @@ class LanceDBServer:
                 elif sender_email and sender_email in contacts:
                     results.append(result)
             if not results:
-                print("no results found in base search")
+               #print("no results found in base search")
                 return None
             # for i in results:
-            #     print("title", i["title"])
-            #     print("distance", i["_distance"])
+            #    #print("title", i["title"])
+            #    #print("distance", i["_distance"])
             # Pick the BEST (lowest cosine distance)
             best = min(results, key=lambda x: x.get("_distance", 999999))
             best_distance = best.get("_distance", 1)
             if len(results) >= 1 and best_distance > 0.8:
-                print("result found and score > 0.8 → rejecting")
+               #print("result found and score > 0.8 → rejecting")
                 return None
             pages_by_level = best.get("pages_by_level")
             main_content = best.get("content", "")
-            print("len of main content", len(main_content))
+           #print("len of main content", len(main_content))
 
             # Try to generate from pages_by_level
             full_context = None
             if pages_by_level and isinstance(pages_by_level, (list, dict)):
-                print("checking the internal pages of the site")
+               #print("checking the internal pages of the site")
                 full_context = generate_level_context(pages_by_level)
 
             # If invalid or empty, fallback to 'content'
@@ -1667,14 +1713,14 @@ class LanceDBServer:
                 logger.warning(
                     "[FAST] pages_by_level invalid or empty; falling back to best.content"
                 )
-                print("--", type(main_content))
+               #print("--", type(main_content))
                 if isinstance(main_content, str):
-                    print("1111")
+                   #print("1111")
                     full_context = main_content.strip()
                 else:
-                    print("2222")
+                   #print("2222")
                     full_context = str(main_content)
-            print("len of retun text length", len(full_context))
+           #print("len of retun text length", len(full_context))
             # Format output
             result = {
                 "url": best.get("url"),
@@ -1687,13 +1733,129 @@ class LanceDBServer:
             return result
 
         except Exception as e:
-            print(f"Error searching scraped data: {e}")
+           #print(f"Error searching scraped data: {e}")
             raise e
+
+    def debug_list_scrape_urls(self, user_id: str, limit=50):
+        try:
+            table = self._get_scrape_table(user_id)
+
+            # Use a zero vector to fetch arbitrary rows
+            dummy_vector = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+
+            rows = (
+                table.search(dummy_vector, vector_column_name="embedding")
+                .limit(limit)
+                .to_list()
+            )
+
+           #print(f"\n[SCRAPE TABLE] Showing up to {limit} rows\n")
+
+            # for i, row in enumerate(rows):
+            #    #print(
+            #         f"{i+1}. url={row.get('url')} | title={row.get('title')} | metadata={row.get('metadata')}"
+            #     )
+
+            # if not rows:
+            #    #print("Table is empty")
+
+        except Exception as e:
+            # print("Failed to read scrape table:", e)
+            return e
+
+    # def search_scraped_data_by_url(
+    #     self, query: "QueryData", url: str, sender_email="All"
+    # ):
+    #     from training.scrape.helper import generate_level_context
+
+    #     if isinstance(query, dict):
+    #         query = QueryData(**query)
+
+    #     try:
+    #         if len(query.embedding) != EMBEDDING_DIM:
+    #             raise ValueError(f"Embedding must be {EMBEDDING_DIM} dimensions")
+
+    #         table = self._get_scrape_table(query.user_id)
+
+    #         # 🔥 Remote LanceDB requires filter AFTER search()
+    #         base_results = (
+    #             table.search(query.embedding, vector_column_name="embedding")
+    #             .where(f'url == "{url}"')
+    #             .limit(query.top_k)
+    #             .to_list()
+    #         )
+
+    #         if not base_results:
+    #             print(f"No scraped data found for URL: {url}")
+    #             return None
+
+    #         results = []
+    #         for result in base_results:
+    #             contacts = result.get("contacts", [])
+
+    #             metadata = result.get("metadata") or {}
+    #             if isinstance(metadata, str):
+    #                 try:
+    #                     metadata = json.loads(metadata)
+    #                 except Exception:
+    #                     continue
+
+    #             # Only active pages
+    #             if metadata.get("status") != "active":
+    #                 continue
+
+    #             # Contact filtering
+    #             if "All" in contacts:
+    #                 results.append(result)
+    #             elif isinstance(sender_email, list):
+    #                 if any(email in contacts for email in sender_email):
+    #                     results.append(result)
+    #             elif sender_email and sender_email in contacts:
+    #                 results.append(result)
+
+    #         if not results:
+    #             print("No valid results after filtering")
+    #             return None
+
+    #         # Pick best match
+    #         best = min(results, key=lambda x: x.get("_distance", 999999))
+    #         best_distance = best.get("_distance", 1)
+    #         print("distance is", best_distance)
+
+    #         if best_distance > 0.8:
+    #             print("Weak match – rejecting")
+    #             return None
+
+    #         pages_by_level = best.get("pages_by_level")
+    #         main_content = best.get("content", "")
+
+    #         full_context = None
+    #         if pages_by_level and isinstance(pages_by_level, (list, dict)):
+    #             full_context = generate_level_context(pages_by_level)
+
+    #         if not full_context:
+    #             full_context = (
+    #                 main_content if isinstance(main_content, str) else str(main_content)
+    #             )
+
+    #         return {
+    #             "url": best.get("url"),
+    #             "title": best.get("title"),
+    #             "text": full_context,
+    #             "contacts": best.get("contacts"),
+    #             "score": best_distance,
+    #         }
+
+    #     except Exception as e:
+    #         print(f"Error searching scraped data by URL: {e}")
+    #         raise
 
     def search_scraped_data_by_url(
         self, query: "QueryData", url: str, sender_email="All"
     ):
         from training.scrape.helper import generate_level_context
+        import numpy as np
+        import json
 
         if isinstance(query, dict):
             query = QueryData(**query)
@@ -1703,26 +1865,30 @@ class LanceDBServer:
                 raise ValueError(f"Embedding must be {EMBEDDING_DIM} dimensions")
 
             table = self._get_scrape_table(query.user_id)
-            query_vector = np.array(query.embedding, dtype=np.float32)
 
-            # 🔥 Remote LanceDB requires filter AFTER search()
-            base_results = (
-                table.search(query_vector, vector_column_name="embedding")
+            # Stage 1 — ANN search (page-level embedding)
+            candidates = (
+                table.search(query.embedding, vector_column_name="embedding")
                 .where(f'url == "{url}"')
-                .metric("cosine")
                 .limit(query.top_k)
-                .to_list()
+                .to_arrow()
+                .to_pylist()
             )
 
-            if not base_results:
-                print(f"No scraped data found for URL: {url}")
+            if not candidates:
+               #print(f"No scraped data found for URL: {url}")
                 return None
 
-            results = []
-            for result in base_results:
-                contacts = result.get("contacts", [])
+            # Cosine distance
+            def cosine_distance(a, b):
+                return 1 - (np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
-                metadata = result.get("metadata") or {}
+            reranked = []
+
+            for row in candidates:
+                contacts = row.get("contacts", [])
+
+                metadata = row.get("metadata") or {}
                 if isinstance(metadata, str):
                     try:
                         metadata = json.loads(metadata)
@@ -1734,24 +1900,46 @@ class LanceDBServer:
                     continue
 
                 # Contact filtering
-                if "All" in contacts:
-                    results.append(result)
-                elif isinstance(sender_email, list):
-                    if any(email in contacts for email in sender_email):
-                        results.append(result)
-                elif sender_email and sender_email in contacts:
-                    results.append(result)
+                if sender_email != "All":
+                    if isinstance(sender_email, list):
+                        if not any(email in contacts for email in sender_email):
+                            continue
+                    elif sender_email not in contacts:
+                        continue
 
-            if not results:
-                print("No valid results after filtering")
+                # Stage 2 — Chunk-level reranking
+                chunk_embeddings = metadata.get("chunk_embeddings")
+
+                if chunk_embeddings:
+                    try:
+                        best_chunk_distance = min(
+                            cosine_distance(
+                                query.embedding, np.array(chunk, dtype=np.float32)
+                            )
+                            for chunk in chunk_embeddings
+                            if len(chunk) == EMBEDDING_DIM
+                        )
+                    except Exception:
+                        best_chunk_distance = row.get("_distance", 1)
+                else:
+                    # fallback to page embedding distance
+                    best_chunk_distance = row.get("_distance", 1)
+
+                row["_effective_distance"] = best_chunk_distance
+                reranked.append(row)
+
+            if not reranked:
+               #print("No valid results after filtering")
                 return None
 
-            # Pick best match
-            best = min(results, key=lambda x: x.get("_distance", 999999))
-            best_distance = best.get("_distance", 1)
+            # Pick best match using chunk-aware score
+            best = min(reranked, key=lambda x: x["_effective_distance"])
+            best_distance = best["_effective_distance"]
+
+           #print("Best semantic distance:", best_distance)
 
             if best_distance > 0.8:
-                print("Weak match – rejecting")
+               #print("Weak match – rejecting")
                 return None
 
             pages_by_level = best.get("pages_by_level")
@@ -1775,19 +1963,19 @@ class LanceDBServer:
             }
 
         except Exception as e:
-            print(f"Error searching scraped data by URL: {e}")
+           #print(f"Error searching scraped data by URL: {e}")
             raise
 
     # -----------------SEARCH EMAIL-------------------------#
     def search_email(self, data: SearchEmailQueryData):
 
-        print("inside search_emails")
+       #print("inside search_emails")
 
         table = self._get_umail_table(data.user_id)
-        print(f"schema : {table.schema}")
-        print(f"indices : {table.list_indices()}")
-        for idx in table.list_indices():
-            print(idx)
+       #print(f"schema : {table.schema}")
+       #print(f"indices : {table.list_indices()}")
+        # for idx in table.list_indices():
+        #     print(idx)
 
         query_embeddings = np.array(data.embeddings, dtype=np.float32)
         # if query_embeddings.ndim != 2 or query_embeddings.shape[1] != EMBEDDING_DIM:
@@ -1814,13 +2002,13 @@ class LanceDBServer:
             query_embeddings, vector_column_name="plain_text_embedding"
         ).metric("cosine")
         if filter_condition:
-            print(f"filter_condition: {filter_condition}")
+           #print(f"filter_condition: {filter_condition}")
             search_obj = search_obj.where(filter_condition)
 
         results = search_obj.to_pandas()
-        print(f"results: {results}")
+       #print(f"results: {results}")
         results = results[results["_distance"] < 1.5]
-        print(results[["_distance", "text"]])
+       #print(results[["_distance", "text"]])
         text_results = results["text"].tolist()
 
         return text_results
@@ -1828,7 +2016,7 @@ class LanceDBServer:
     # -------------------FETCHING CONV FILE FOR AI ASSISTANT---------------#
     def get_conv_file(self, id, user_id, folder_name):
 
-        print(f"DEBUG: id={id}, user_id={user_id}, folder_name={folder_name}")
+       #print(f"DEBUG: id={id}, user_id={user_id}, folder_name={folder_name}")
         table = self._get_umail_table(user_id)
         results = (
             table.search()
@@ -1981,7 +2169,7 @@ class LanceDBServer:
         if isinstance(query, dict):
             query = QueryData(**query)
         start = time.time()
-        print("len values", len(query.embedding))
+       #print("len values", len(query.embedding))
         try:
             if len(query.embedding) > self.EMBEDDING_DIM:
                 raise ValueError(
@@ -2239,7 +2427,7 @@ class LanceDBServer:
 
             # 🚨 Detect schema drift
             if table.schema.names != required_cols:
-                print(f"⚠️ Schema mismatch for {table_name}, recreating")
+               #print(f"⚠️ Schema mismatch for {table_name}, recreating")
                 await asyncio.to_thread(lambda: self.db.drop_table(table_name))
                 raise Exception("Schema mismatch")
 
@@ -2274,9 +2462,10 @@ class LanceDBServer:
                     lambda: table.create_index(column="embedding", metric="cosine")
                 )
             except Exception as e:
-                print("Index creation warning:", e)
+               #print("Index creation warning:", e)
+                return e
 
-            print(f"Created LanceDB table {table_name}")
+           #print(f"Created LanceDB table {table_name}")
             return table
 
     async def get_app_runs(
@@ -2365,14 +2554,14 @@ class LanceDBServer:
 
     def _get_bytoid_pro_table(self, user_id):
         table_name = f"bytoid_pro_chat{user_id}"
-        print("in bytoid pro chat table")
+       #print("in bytoid pro chat table")
 
         try:
             self.db = self._connect_if_needed()
-            print("self.db", self.db)
+           #print("self.db", self.db)
             return self.db.open_table(table_name)
         except Exception:
-            print(f"[DEBUG] Creating new table {table_name}")
+           #print(f"[DEBUG] Creating new table {table_name}")
 
             schema = pa.schema(
                 [
@@ -2405,18 +2594,18 @@ class LanceDBServer:
             )
 
     async def insert_chat(self, chat, user_id):
-        print("in the insert chat")
+       #print("in the insert chat")
         if not chat:
             return {"inserted_count": 0}
 
         chat_id = chat[0].chat_id
-        print(f"********user id inside lance: {user_id}")
+       #print(f"********user id inside lance: {user_id}")
         # folder_name = chat[0].folder_name
         id = chat[0].id
-        print(f"********id inside lance: {id}")
+       #print(f"********id inside lance: {id}")
 
         table = self._get_bytoid_pro_table(user_id)
-        print("table", table)
+       #print("table", table)
 
         records = []
         for v in chat:
@@ -2475,7 +2664,7 @@ class LanceDBServer:
 
     def find_semantic_matches(self, vector, user_id, chat_id, top_k: int = 5):
         try:
-            print("inside find_semantic_matches")
+           #print("inside find_semantic_matches")
             table = self._get_bytoid_pro_table(user_id)
 
             # 1️⃣ Create search object and filter by chat_id
@@ -2509,9 +2698,275 @@ class LanceDBServer:
                     }
                 )
 
-            print(f"matched_content : {matched_content}")
+           #print(f"matched_content : {matched_content}")
             return matched_content
 
         except Exception as e:
-            print(f"Semantic search failed: {str(e)}")
+           #print(f"Semantic search failed: {str(e)}")
             return []
+
+    # ------------------------------------------------------------------
+    # Schema
+    # ------------------------------------------------------------------
+    async def _create_radar_schema(self):
+        return pa.schema(
+            [
+                pa.field("id", pa.string()),  # logical RADAR session id
+                pa.field("name", pa.string()),
+                pa.field("review_id", pa.string()),  # unique per run
+                pa.field("user_input", pa.string()),
+                pa.field("status", pa.string()),
+                pa.field("result", pa.string()),  # JSON
+                pa.field("error", pa.string()),
+                pa.field("started_at", pa.int64()),
+                pa.field("main_source", pa.string()),
+                pa.field("data_sources", pa.string()),
+                pa.field("reference_sources", pa.string()),
+                pa.field("refernce_main_source", pa.string()),
+            ]
+        )
+
+    # ------------------------------------------------------------------
+    # Table bootstrap
+    # ------------------------------------------------------------------
+    async def _open_or_create_radar_table(self, user_id: str):
+        table_name = f"radar_{user_id}"
+        self.db = self._connect_if_needed()
+
+        def _open():
+            return self.db.open_table(table_name)
+
+        try:
+            return await asyncio.to_thread(_open)
+
+        except Exception:
+            schema = await self._create_radar_schema()
+
+            dummy = [
+                {
+                    "id": "init",
+                    "name": "",
+                    "review_id": "init",
+                    "user_input": "",
+                    "status": "init",
+                    "result": "{}",
+                    "error": "",
+                    "started_at": 0,
+                    "main_source": "",
+                    "data_sources": "",
+                    "reference_sources": "",
+                    "refernce_main_source": "",
+                }
+            ]
+
+            def _create():
+                return self.db.create_table(
+                    table_name, data=dummy, schema=schema, mode="create"
+                )
+
+            table = await asyncio.to_thread(_create)
+
+            try:
+                await asyncio.to_thread(lambda: table.delete('review_id == "init"'))
+            except Exception:
+                pass
+
+            logger.info("Created RADAR table %s", table_name)
+            return table
+
+    # ------------------------------------------------------------------
+    # Create
+    # ------------------------------------------------------------------
+    async def radar_create_review(self, user_id: str, review_data: dict):
+        table = await self._open_or_create_radar_table(user_id)
+
+        record = {
+            "id": review_data.get("id"),
+            "name": review_data.get("name", ""),
+            "review_id": review_data["review_id"],
+            "user_input": review_data.get("user_input", ""),
+            "status": review_data.get("status", ""),
+            "result": json.dumps(review_data.get("result") or {}),
+            "error": review_data.get("error") or "",
+            "started_at": review_data.get("started_at", int(time.time())),
+            "main_source": review_data.get("main_source", ""),
+            "data_sources": json.dumps(review_data.get("data_sources") or {}),
+            "reference_sources": json.dumps(review_data.get("reference_sources") or {}),
+            "refernce_main_source": review_data.get("refernce_main_source", ""),
+        }
+
+        await asyncio.to_thread(lambda: table.add([record]))
+
+    # ------------------------------------------------------------------
+    # Upsert (append new execution)
+    # ------------------------------------------------------------------
+    async def radar_upsert_review(
+        self,
+        user_id: str,
+        *,
+        name: str,
+        radar_id: str,
+        review_id: str,
+        user_input: str,
+        new_result: dict,
+        status: str,
+        error: str = "",
+        main_source: str = "",
+        data_sources=None,
+        reference_sources=None,
+        refernce_main_source: str = "",
+    ):
+        table = await self._open_or_create_radar_table(user_id)
+        now = int(time.time())
+
+        record = {
+            "id": radar_id,
+            "name": name,
+            "review_id": review_id,
+            "user_input": user_input,
+            "status": status,
+            "result": json.dumps(new_result or {}),
+            "error": error or "",
+            "started_at": now,
+            "main_source": main_source,
+            "data_sources": json.dumps(data_sources or {}),
+            "reference_sources": json.dumps(reference_sources or {}),
+            "refernce_main_source": refernce_main_source,
+        }
+
+        await asyncio.to_thread(lambda: table.add([record]))
+
+    # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Read
+    # ------------------------------------------------------------------
+    async def radar_get_by_id(self, user_id: str, radar_id: str):
+        table = await self._open_or_create_radar_table(user_id)
+
+        def _query():
+            return table.search().where(f'id == "{radar_id}"').to_list()
+
+        rows = await asyncio.to_thread(_query)
+        if not rows:
+            return None
+
+        row = rows[0]
+        row["result"] = _safe_json_parse(row.get("result"))
+        row["data_sources"] = _safe_json_parse(row.get("data_sources"))
+        row["reference_sources"] = _safe_json_parse(row.get("reference_sources"))
+        return row
+
+    async def radar_get_review(self, user_id: str, review_id: str):
+        table = await self._open_or_create_radar_table(user_id)
+
+        def _query():
+            return table.search().where(f'review_id == "{review_id}"').to_list()
+
+        rows = await asyncio.to_thread(_query)
+        if not rows:
+            return None
+
+        row = rows[0]
+        row["result"] = _safe_json_parse(row.get("result"))
+        row["data_sources"] = _safe_json_parse(row.get("data_sources"))
+        row["reference_sources"] = _safe_json_parse(row.get("reference_sources"))
+        return row
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _extract_result(self, row: dict):
+        result = _safe_json_parse(row.get("result"))
+        if isinstance(result, dict) and "professional_review" in result:
+            return result["professional_review"]
+        return result
+
+    async def radar_get_review_last_response(
+        self,
+        user_id: str,
+        radar_id: str,
+        review_id=None,
+    ):
+        table = await self._open_or_create_radar_table(user_id)
+
+        def _query():
+            return table.search().where(f'id == "{radar_id}"').to_list()
+
+        rows = await asyncio.to_thread(_query)
+        if not rows:
+            return None
+
+        if review_id:
+            for row in rows:
+                if row.get("review_id") == review_id:
+                    return self._extract_result(row)
+            return None
+
+        rows.sort(key=lambda r: r.get("started_at", 0), reverse=True)
+        return self._extract_result(rows[0])
+
+    # ------------------------------------------------------------------
+    # Delete
+    # ------------------------------------------------------------------
+    async def radar_delete_review(self, user_id: str, review_id: str):
+        table = await self._open_or_create_radar_table(user_id)
+        await asyncio.to_thread(lambda: table.delete(f'review_id == "{review_id}"'))
+
+    # ------------------------------------------------------------------
+    # Lists
+    # ------------------------------------------------------------------
+    async def radar_get_all_reviews(self, user_id: str):
+        table = await self._open_or_create_radar_table(user_id)
+
+        def _query():
+            return table.search().to_list()
+
+        rows = await asyncio.to_thread(_query) or []
+        return rows
+
+    async def radar_get_review_index(self, user_id: str):
+        table = await self._open_or_create_radar_table(user_id)
+
+        def _query():
+            return table.search().to_list()
+
+        rows = await asyncio.to_thread(_query) or []
+
+        reviews = [
+            {
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "review_id": r.get("review_id"),
+                "user_input": r.get("user_input"),
+                "status": r.get("status"),
+                "started_at": r.get("started_at", 0),
+            }
+            for r in rows
+        ]
+
+        reviews.sort(key=lambda r: r["started_at"], reverse=True)
+        return reviews
+    async def radar_update_result(
+    self,
+    user_id: str,
+    review_id: str,
+    new_result: dict,
+    ):
+        table = await self._open_or_create_radar_table(user_id)
+
+        payload = {
+            "result": json.dumps(new_result),
+            "status": "completed",
+            "error": "",
+        }
+
+        def _update():
+            table.update(
+                where=f'review_id == "{review_id}"',
+                values=payload
+            )
+
+        await asyncio.to_thread(_update)

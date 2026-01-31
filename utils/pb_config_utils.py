@@ -93,10 +93,10 @@ def update_playbook_config(
 
     try:
         os.remove(local_config_path)
-        print(f"🧹 Deleted local temp file: {local_config_path}")
+        # print(f"🧹 Deleted local temp file: {local_config_path}")
         return True
     except Exception as e:
-        print(f"⚠️ Failed to delete temp file: {e}")
+        # print(f"⚠️ Failed to delete temp file: {e}")
         return False
 
 
@@ -142,10 +142,10 @@ def update_playbook_clarifications(configpath, user_id, name, clarifications_req
 
     try:
         os.remove(local_config_path)
-        print(f"🧹 Deleted local temp file: {local_config_path}")
+        # print(f"🧹 Deleted local temp file: {local_config_path}")
         return True
     except Exception as e:
-        print(f"⚠️ Failed to delete temp file: {e}")
+        # print(f"⚠️ Failed to delete temp file: {e}")
         return False
 
 
@@ -178,7 +178,7 @@ def deleteConfigdata(configpath, user_id, name):
     ]
 
     if len(updated_playbooklist) == len(playbooklist):
-        print(f"⚠️ No entry found with name: {name}")
+        # print(f"⚠️ No entry found with name: {name}")
         return False
 
     config_data[user_id]["playbooklist"] = updated_playbooklist

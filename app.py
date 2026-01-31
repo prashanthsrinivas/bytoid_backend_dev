@@ -50,11 +50,12 @@ app.secret_key = os.getenv(
 )  # set a secret key as an enviornmental variable later
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 BASE_ORGINS = [
-    # "http://localhost:4173/",
+    # "http://localhost:3001",
+    # "http://127.0.0.1:3001",
     "http://172.31.12.212",
     "https://www.bytoid.ai",
     "https://bytoid.ai",
-    "https://dev.bytoid.ai",
+    "https://app.bytoid.ai",
     "http://localhost:8081",
     "bytoid://",
     "user-app://",

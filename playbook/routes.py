@@ -1262,7 +1262,7 @@ def clear_playground_data():
         )
 
     except Exception as e:
-        print("Error clearing playground data:", e)
+        # print("Error clearing playground data:", e)
         return (
             jsonify({"message": f"Error clearing data: {str(e)}", "status": "error"}),
             500,
@@ -1326,7 +1326,7 @@ def clear_testing_data():
         )
 
     except Exception as e:
-        print("Error clearing testing data:", e)
+        # print("Error clearing testing data:", e)
         return (
             jsonify(
                 {"message": f"Error clearing testing data: {str(e)}", "status": "error"}
@@ -1366,7 +1366,7 @@ async def generate_workflow_input():
         # 3️⃣ USER ACCOUNT TYPE & SERVICES
         # -----------------------------
         main_user_account_type = fetch_user_Social(user_id=userid, connection=db)
-        print("main user logged in:", main_user_account_type)
+        # print("main user logged in:", main_user_account_type)
 
         available_modes = [
             "auto",
@@ -1875,7 +1875,7 @@ def get_all_fns():
 @playbook_bp.route("/update-questions", methods=["POST"])
 def updatequestionsworkflow():
     data = request.json
-    print("dadss", data)
+    # print("dadss", data)
     userid = data.get("user_id")
     answer = data.get("answer")
     filename = data.get("filename")
@@ -2001,39 +2001,39 @@ async def autocheckworkflow():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
     # token = current_user_id.set(userid)
-    try:
-        # ✅ Pre-validate workflow existence
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
-        workflow_json = read_json_from_s3(wf_loc)
-        if not workflow_json:
-            return (
-                jsonify(
-                    {
-                        "message": f"Workflow file '{filename}' not found ",
-                        "status": "error",
-                    }
-                ),
-                404,
-            )
-        db = connect_to_rds()
-        credits = Credits(db=db)
 
-        try:
-            with WorkflowRunnerV2(
-                userid=userid,
-                filename=filename,
-                workflowJson=workflow_json,
-                testing=True,
-                db=db,
-                credits=credits,
-            ) as runner:
-                result = await runner.autocheckerworkflow()
-                return jsonify({"message": result})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-    finally:
-        # current_user_id.reset(token)
-        print("checking auto check workflow")
+    # ✅ Pre-validate workflow existence
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    if not workflow_json:
+        return (
+            jsonify(
+                {
+                    "message": f"Workflow file '{filename}' not found ",
+                    "status": "error",
+                }
+            ),
+            404,
+        )
+    db = connect_to_rds()
+    credits = Credits(db=db)
+
+    try:
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+            db=db,
+            credits=credits,
+        ) as runner:
+            result = await runner.autocheckerworkflow()
+            return jsonify({"message": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    # finally:
+    # current_user_id.reset(token)
+    # print("checking auto check workflow")
 
 
 @playbook_bp.route("/autocheck-status-update", methods=["POST"])
@@ -2051,35 +2051,35 @@ def autocheckstatusupdate():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
     # token = current_user_id.set(userid)
-    try:
-        # ✅ Pre-validate workflow existence
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
-        workflow_json = read_json_from_s3(wf_loc)
-        if not workflow_json:
-            return (
-                jsonify(
-                    {
-                        "message": f"Workflow file '{filename}' not found ",
-                        "status": "error",
-                    }
-                ),
-                404,
-            )
+    # try:
+    # ✅ Pre-validate workflow existence
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    if not workflow_json:
+        return (
+            jsonify(
+                {
+                    "message": f"Workflow file '{filename}' not found ",
+                    "status": "error",
+                }
+            ),
+            404,
+        )
 
-        try:
-            with WorkflowRunnerV2(
-                userid=userid,
-                filename=filename,
-                workflowJson=workflow_json,
-                testing=True,
-            ) as runner:
-                result = runner.update_statuscount(count=count, status=status)
-                if result:
-                    return jsonify({"message": "Ok"})
-                else:
-                    return jsonify({"error": "failed to update the auto checker"})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-    finally:
-        # current_user_id.reset(token)
-        print("updating auto check")
+    try:
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as runner:
+            result = runner.update_statuscount(count=count, status=status)
+            if result:
+                return jsonify({"message": "Ok"})
+            else:
+                return jsonify({"error": "failed to update the auto checker"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    # finally:
+    # current_user_id.reset(token)
+    # print("updating auto check")

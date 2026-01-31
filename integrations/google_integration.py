@@ -38,14 +38,14 @@ def google_integration_login():
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/gmail.compose",
             # Drive – READ ONLY
-            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/drive.metadata.readonly",
             # Calendar – READ ONLY
             "https://www.googleapis.com/auth/calendar",
             # Contacts – READ ONLY
             "https://www.googleapis.com/auth/contacts.readonly",
         ),
-        redirect_uri="https://dev.bytoid.ai/integration/google/callback",
+        redirect_uri="https://app.bytoid.ai/integration/google/callback",
     )
 
     auth_url, state = flow.authorization_url(
@@ -100,7 +100,7 @@ def get_integration_access_token(user_id, provider):
     """
 
     try:
-        print("inside get_integration_access_token")
+        # print("inside get_integration_access_token")
         connection = connect_to_rds()
         with connection.cursor() as cursor:
             query = """
@@ -119,14 +119,14 @@ def get_integration_access_token(user_id, provider):
                 access_token, userid, refresh_token, expiry = row
 
             else:
-                print("no row")
+                # print("no row")
                 return None, None
-            print("----------------------------")
-            print(f"acess_token : {access_token}")
-            print(f"userid : {userid}")
-            print(f"refresh_token : {refresh_token}")
-            print(f"expiry : {expiry}")
-            print("----------------------------")
+            # print("----------------------------")
+            # print(f"acess_token : {access_token}")
+            # print(f"userid : {userid}")
+            # print(f"refresh_token : {refresh_token}")
+            # print(f"expiry : {expiry}")
+            # print("----------------------------")
 
             # Ensure expiry is a datetime object
             if isinstance(expiry, str):
@@ -136,7 +136,7 @@ def get_integration_access_token(user_id, provider):
 
             # Refresh only if token is close to expiring
             if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
-                print("token time expired")
+                # print("token time expired")
                 try:
                     with open("credentials.json", "r") as f:
                         creds_data = json.load(f)
@@ -174,7 +174,7 @@ def get_integration_access_token(user_id, provider):
                             "https://www.googleapis.com/auth/gmail.modify",
                             "https://www.googleapis.com/auth/gmail.compose",
                             # Drive – READ ONLY
-                            "https://www.googleapis.com/auth/drive.readonly",
+                            "https://www.googleapis.com/auth/drive",
                             "https://www.googleapis.com/auth/drive.metadata.readonly",
                             # Calendar – READ ONLY
                             "https://www.googleapis.com/auth/calendar",
@@ -207,7 +207,7 @@ def get_integration_access_token(user_id, provider):
                     #         })
 
                 except Exception as e:
-                    print(f"Token refresh failed: {e}")
+                    # print(f"Token refresh failed: {e}")
                     return redirect("https://bytoid.ai/login")
 
             return access_token, userid
@@ -227,7 +227,7 @@ def get_integration_access_token(user_id, provider):
             #                 })
 
     except Exception as e:
-        print(f"Error occurred: {e}")
+        # print(f"Error occurred: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
     finally:

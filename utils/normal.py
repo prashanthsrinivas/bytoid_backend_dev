@@ -24,7 +24,7 @@ def load_yaml_file(path):
         with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or []
     except yaml.YAMLError as e:
-        print(f"❌ Error reading YAML file at {path}: {e}")
+        #print(f"❌ Error reading YAML file at {path}: {e}")
         return []
 
 
@@ -206,7 +206,7 @@ def read_function_jsons2(Full=False):
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except json.JSONDecodeError:
-                print(f"⚠️ Skipped invalid JSON file: {path}")
+                #print(f"⚠️ Skipped invalid JSON file: {path}")
                 continue
 
             for fn in data.get("functions", []):

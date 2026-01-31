@@ -8,9 +8,9 @@ def get_all_integrations(user_id):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
 
-        print("----- REQUEST DATA START -----")
-        print(f"user_id: {user_id}")
-        print("----- REQUEST DATA END -----")
+        #print("----- REQUEST DATA START -----")
+        #print(f"user_id: {user_id}")
+        #print("----- REQUEST DATA END -----")
 
         if not user_id :
             return {"error": "user_id are required"}, 400

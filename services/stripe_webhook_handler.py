@@ -77,7 +77,7 @@ class StripeWebhookHandler:
             )
             row = cur.fetchone()
             if not row:
-                print(f"⚠️ Subscription {subscription_id} not found")
+                # print(f"⚠️ Subscription {subscription_id} not found")
                 return 0
 
             price_id = row[0]
@@ -93,7 +93,7 @@ class StripeWebhookHandler:
 
             # --- 3️⃣ Fallback: use metadata from invoice/checkout session ---
             # You can pass invoice or session as a parameter if needed
-            print(f"⚠️ Price {price_id} not found in plans, fallback to metadata")
+            # print(f"⚠️ Price {price_id} not found in plans, fallback to metadata")
             return 0
 
         finally:
@@ -120,7 +120,7 @@ class StripeWebhookHandler:
 
         handler = handler_map.get(self.event_type)
         if handler:
-            print("➡️ Handling event:", self.event_type)
+            # print("➡️ Handling event:", self.event_type)
             handler()
         else:
             self.unhandled_event()
@@ -179,12 +179,12 @@ class StripeWebhookHandler:
 
         user_id = data.get("user_id")
         if not user_id:
-            print("❌ Payment skipped (missing user_id)")
+            # print("❌ Payment skipped (missing user_id)")
             return
 
         conn = connect_to_rds()
         if not conn:
-            print("❌ DB connection failed")
+            # print("❌ DB connection failed")
             return
 
         try:
@@ -238,7 +238,7 @@ class StripeWebhookHandler:
                         row[1],
                         row[2],
                     )
-                    print(f"🔀 Merging payment events into id={existing_payment_id}")
+                    # print(f"🔀 Merging payment events into id={existing_payment_id}")
 
             # --- 3️⃣ Determine final status ---
             new_status = data.get("status", "pending")
@@ -264,9 +264,9 @@ class StripeWebhookHandler:
                         """,
                         (data.get("checkout_session_id"), existing_payment_id),
                     )
-                    print(
-                        f"💾 Updated checkout_session_id only for succeeded payment id={existing_payment_id}"
-                    )
+                    # print(
+                    #     f"💾 Updated checkout_session_id only for succeeded payment id={existing_payment_id}"
+                    # )
 
                 else:
                     # Normal merge/update
@@ -302,7 +302,7 @@ class StripeWebhookHandler:
                             existing_payment_id,
                         ),
                     )
-                    print(f"💾 Payment updated (merged) id={existing_payment_id}")
+                    # print(f"💾 Payment updated (merged) id={existing_payment_id}")
 
             else:
                 # Insert new payment
@@ -339,7 +339,7 @@ class StripeWebhookHandler:
                         data.get("invoice_url"),
                     ),
                 )
-                print(f"💾 Payment inserted (new) id={cur.lastrowid}")
+                # print(f"💾 Payment inserted (new) id={cur.lastrowid}")
 
             conn.commit()
 
@@ -357,7 +357,7 @@ class StripeWebhookHandler:
     # -------------------------------------------------
     def save_subscription(self, data):
         if not data.get("user_id") or not data.get("subscription_id"):
-            print("❌ Subscription skipped (missing data)")
+            # print("❌ Subscription skipped (missing data)")
             return
 
         conn = connect_to_rds()
@@ -394,7 +394,7 @@ class StripeWebhookHandler:
                 ),
             )
             conn.commit()
-            print("📦 Subscription saved")
+            # print("📦 Subscription saved")
 
         finally:
             cur.close()
@@ -405,7 +405,7 @@ class StripeWebhookHandler:
         user_id = customer.metadata.get("user_id") or get_userid(customer.email)
 
         price_id = sub["items"]["data"][0]["price"]["id"]
-        print("sub details", sub)
+        # print("sub details", sub)
 
         self.save_subscription(
             {
@@ -461,7 +461,7 @@ class StripeWebhookHandler:
                 ),
             )
             conn.commit()
-            print(f"🔄 Subscription status updated → {db_status}")
+            # print(f"🔄 Subscription status updated → {db_status}")
         finally:
             cur.close()
             conn.close()
@@ -531,21 +531,6 @@ class StripeWebhookHandler:
                 "invoice_url": receipt_url,
             }
         )
-        print(
-            {
-                "user_id": user_id,
-                "stripe_event_id": self.event.get("id"),
-                "payment_type": payment_type,
-                "status": status,
-                "amount_cents": session.get("amount_total"),
-                "currency": session.get("currency"),
-                "payment_intent_id": session.get("payment_intent"),
-                "checkout_session_id": session.get("id"),
-                "subscription_id": session.get("subscription"),
-                "invoice_id": None,
-                "invoice_url": receipt_url,
-            }
-        )
 
         # -------------------------
         # CREDIT ALLOCATION
@@ -585,7 +570,7 @@ class StripeWebhookHandler:
                 )
 
                 conn.close()
-                print(f"💰 Added {tokens} credits to user {user_id}")
+                #print(f"💰 Added {tokens} credits to user {user_id}")
 
             except Exception as e:
                 print(f"⚠️ Failed to add credits: {e}")
@@ -690,13 +675,13 @@ class StripeWebhookHandler:
             # price_id = line_item.get("price", {}).get("id")
 
             # if not price_id:
-            #     print(
+            #     #print(
             #         f"⚠️ Invoice {invoice.get('id')} has no price. Skipping credit allocation."
             #     )
             #     return
 
             tokens = self._get_subscription_tokens(subscription_id=subscription_id)
-            print("base tokens", tokens)
+            #print("base tokens", tokens)
 
             if tokens > 0:
                 conn = connect_to_rds()
@@ -735,7 +720,7 @@ class StripeWebhookHandler:
                     break
 
         if not subscription_id:
-            print("⚠️ invoice_failed without subscription:", invoice.get("id"))
+            #print("⚠️ invoice_failed without subscription:", invoice.get("id"))
             return
 
         # Fetch subscription from Stripe to get real status
@@ -760,7 +745,7 @@ class StripeWebhookHandler:
             }
         )
 
-        print("❌ Subscription payment failed:", subscription_id)
+        #print("❌ Subscription payment failed:", subscription_id)
 
     # -------------------------------------------------
     # SUBSCRIPTION LIFECYCLE

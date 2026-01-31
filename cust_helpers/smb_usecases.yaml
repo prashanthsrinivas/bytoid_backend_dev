@@ -1,1769 +1,232 @@
-- SMB: Grocery Store / Supermarket
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (recurring orders)
-  - Trigger inventory restock alerts to staff
-- SMB: Convenience Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (e.g. weekly staples)
-  - Trigger inventory restock alerts to staff
-- SMB: Clothing Boutique
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (e.g. monthly boxes)
-  - Trigger inventory restock alerts to staff
-  - Offer styling advice or size recommendations for outfits
-- SMB: Footwear Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items
-  - Trigger inventory restock alerts to staff
-  - Provide shoe size conversion or fitting guidance
-- SMB: Toy Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items
-  - Trigger inventory restock alerts to staff
-  - Recommend age-appropriate gifts or popular toys based on customer queries
-- SMB: Gift & Souvenir Shop
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items
-  - Trigger inventory restock alerts to staff
-  - Suggest gift ideas for special occasions or holidays
-- SMB: Electronics Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (e.g. monthly gadget box)
-  - Trigger inventory restock alerts to staff
-  - Assist with product comparisons and provide basic troubleshooting tips
-- SMB: Mobile & Accessories Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (e.g. monthly data plan renewals)
-  - Trigger inventory restock alerts to staff
-  - Guide customers on compatible accessories or mobile plans for their device
-- SMB: Pet Supply Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (e.g. pet food auto-refill)
-  - Trigger inventory restock alerts to staff
-  - Remind customers to reorder pet essentials and offer basic pet care tips
-- SMB: Beauty Supply Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items
-  - Trigger inventory restock alerts to staff
-  - Offer personalized beauty product recommendations based on customerâ€™s needs
-    (skin type, style)
-- SMB: Vape / Smoke Shop
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (e.g. monthly refill kits)
-  - Trigger inventory restock alerts to staff
-  - Verify customer age compliance before proceeding with inquiries or orders
-- SMB: Furniture Store
-  Usecases:
-  - Take product orders via chat or voice
-  - Provide real-time order status updates
-  - Handle returns and exchange requests
-  - Check product availability instantly
-  - Suggest frequently bought-together items (e.g. matching decor)
-  - Apply discounts or run promotions
-  - Collect product-specific feedback and reviews
-  - Coordinate store pickup or delivery
-  - Enable subscription for essential items (e.g. furniture maintenance plans)
-  - Trigger inventory restock alerts to staff
-  - Provide style matching suggestions or virtual previews of furniture in a room
-- SMB: Thrift / Secondhand Store
-  Usecases:
-  - Take product inquiries or reserve items via chat
-  - Provide updates on new inventory arrivals
-  - Handle return and exchange questions (if applicable)
-  - Check item availability instantly
-  - Suggest related items or accessories
-  - Notify about upcoming sales or promotions
-  - Collect customer feedback on finds and experience
-  - Coordinate store pickup or hold items
-  - Alert staff when high-demand items are requested
-  - Alert loyal customers about new arrivals or one-of-a-kind items in stock
-- SMB: Bookstore
-  Usecases:
-  - Take book orders or reservations via chat
-  - Provide real-time order shipping/status updates
-  - Handle return or exchange requests
-  - Check book availability instantly (title lookup)
-  - Suggest frequently bought-together books or sequel recommendations
-  - Apply discounts or membership promotions
-  - Collect book-specific reviews and ratings
-  - Coordinate in-store pickup or delivery
-  - Enable pre-orders for upcoming releases
-  - Trigger restock alerts for popular titles to staff
-  - Recommend books based on a readerâ€™s genre preferences or past purchases
-- SMB: Office Supplies Store
-  Usecases:
-  - Take supply orders via chat or voice
-  - Provide real-time order delivery status updates
-  - Handle returns and exchange requests
-  - Check product (stationery/equipment) availability instantly
-  - "Suggest complementary supplies (e.g. â€œpeople also buy pens with notebooksâ€\x9D\
-    )"
-  - Apply bulk discounts or business promotions
-  - Collect feedback on products or service
-  - Coordinate curbside pickup or delivery scheduling
-  - Enable subscription/repeat orders for consumables (ink, paper)
-  - Trigger inventory restock alerts to staff
-  - Help customers find items by category or specific office needs
-- SMB: Hardware Store
-  Usecases:
-  - Take orders for tools/materials via chat or voice
-  - Provide real-time order delivery or pickup status
-  - Handle return and exchange requests
-  - Instantly check product (tools, parts) availability
-  - Suggest related items (e.g. if buying paint, suggest brushes)
-  - Apply discounts or run seasonal promotions
-  - Collect feedback on products and service
-  - Coordinate delivery or installation scheduling if offered
-  - Enable special orders for out-of-stock items
-  - Trigger low-stock alerts to staff for key items
-  - Guide DIY customers to the right tools or materials for common projects (via Q&A)
-- SMB: Specialty Food Retailer (e.g. health food shop, gourmet store)
-  Usecases:
-  - Take grocery/food orders via chat or voice
-  - Provide real-time order delivery or pickup status
-  - Handle return or refund requests (for subscriptions or spoiled items)
-  - Instantly check product availability (specific diets or rare ingredients)
-  - Suggest complementary products or recipes (e.g. pairing items)
-  - Apply loyalty discounts or run promotions
-  - Collect product feedback and taste reviews
-  - Coordinate curbside pickup or local delivery
-  - Enable subscription orders for staples (e.g. weekly organic vegetable box)
-  - Trigger restock alerts for popular items to staff
-  - Provide detailed ingredient or allergen information for products upon inquiry
-- SMB: Restaurant
-  Usecases:
-  - Take dine-in and takeaway orders
-  - Update customers on order preparation status
-  - Display real-time kitchen wait times
-  - Personalize menu suggestions based on dietary preferences or history
-  - Handle order modifications and allergy notes
-  - Split bills and process multiple payment types via chat
-  - Upsell high-margin items or combo deals
-  - Enroll customers in or update loyalty programs
-  - Manage table reservations and waitlists
-  - Collect post-meal feedback for quality tracking
-- SMB: CafÃ© / Coffee Shop
-  Usecases:
-  - Take mobile orders for pickup
-  - Provide wait time or queue updates
-  - Answer menu ingredient and allergy questions
-  - Suggest pastry or snack pairings with drinks
-  - Handle modifications (e.g., milk substitutes, sugar level)
-  - Manage coffee bean subscriptions or recurring orders
-  - Apply loyalty rewards or promotions
-  - Notify when order is ready for pickup
-  - Collect feedback on drinks and service
-  - Share daily specials or new roast information
-- SMB: Bakery
-  Usecases:
-  - Take orders for daily baked goods and custom cakes
-  - Provide real-time updates on order status or baking time
-  - Answer ingredient inquiries (allergens, gluten-free options)
-  - Suggest complementary items (e.g., coffee with pastries)
-  - Handle custom cake design quotes and queries
-  - Manage pre-orders for popular items (holiday pies, etc.)
-  - Apply loyalty discounts or bundle deals
-  - Notify when orders are ready for pickup
-  - Collect customer feedback on taste/quality
-  - Update on new flavors or seasonal offerings
-- SMB: Food Truck
-  Usecases:
-  - Announce current location and schedule via chat on demand
-  - Take advance orders for pickup at the truck
-  - Provide wait time estimates for orders
-  - Answer menu questions (ingredients, spice level, etc.)
-  - Suggest popular combos or sides
-  - Handle catering inquiries for events
-  - Send notifications when the truck is nearby (location-based alerts)
-  - Collect feedback on menu items
-  - Promote daily specials or new menu items
-  - Manage loyalty rewards (e.g., every 10th meal free)
-- SMB: Ice Cream or Dessert Shop
-  Usecases:
-  - Take pickup orders or pre-orders for pints/cakes
-  - Provide real-time updates on flavors in stock
-  - Answer questions on ingredients or dietary options (vegan, sugar-free)
-  - Suggest popular toppings or combinations
-  - Handle large order inquiries (parties, events)
-  - Manage a loyalty program or punch card via chat
-  - Notify customers about new or seasonal flavors
-  - Coordinate catering or ice cream truck booking (if available)
-  - Collect customer feedback on flavors
-  - Offer promotions (e.g., buy-one-get-one deals) via chatbot
-- SMB: Juice Bar / Smoothie Bar
-  Usecases:
-  - Take advance orders for pickup
-  - Provide wait time and order status updates
-  - Answer questions about ingredients or nutritional info
-  - Suggest add-ons like protein shots or snacks
-  - Handle subscription orders (daily juice plans)
-  - Manage loyalty rewards or stamp cards digitally
-  - Notify when order is ready
-  - Promote daily specials or new smoothie blends
-  - Collect feedback on taste and service
-  - Offer personalized recommendations based on fitness goals or dietary needs
-- SMB: Catering Business
-  Usecases:
-  - Capture event details and initial inquiries via chat (date, size, cuisine)
-  - Provide instant quotes or menu package suggestions
-  - Schedule tasting appointments or consultations
-  - Answer common questions on services (setup, servers, dietary accommodations)
-  - Upsell additional services (decorations, cake, rentals)
-  - Collect client feedback after events
-  - Send reminders for upcoming event details and final guest counts
-  - Manage booking calendar and availability queries
-  - Share sample menus or photos of past events on request
-  - Assist with invoice queries or payment processing
-- SMB: Meal Prep / Subscription Box
-  Usecases:
-  - Take orders for meal plans or subscription boxes
-  - Allow customers to customize meals (select recipes/dishes)
-  - Provide delivery tracking and updates
-  - Handle subscription changes, skips, or cancellations
-  - Suggest meals based on dietary preferences or history
-  - Apply promo codes or referral discounts
-  - Answer FAQs about ingredients, nutrition, or heating instructions
-  - Collect feedback on each delivery for quality improvements
-  - Upsell add-on items (snacks, drinks) to include in the box
-  - Remind customers to choose their meals before cutoff time
-- SMB: Bar / Pub / Lounge
-  Usecases:
-  - Manage table or booth reservations and waitlist
-  - Provide information on happy hours, events, or live music schedules
-  - Answer common questions (cover charges, dress code, age restrictions)
-  - Suggest drink specials or food pairings (if serving food)
-  - Take orders for pickup (if offering take-out food or growlers)
-  - Promote private event bookings (e.g., party room) via chatbot inquiry
-  - Send last-call or closing time alerts to patrons subscribed
-  - Handle gift card purchases or inquiries
-  - Collect feedback on ambiance, service, or new drinks
-  - Share loyalty program info or drink club memberships
-- SMB: Ethnic Cuisine Outlet (e.g. specialty regional restaurant or food shop)
-  Usecases:
-  - Take orders for pickup or delivery in multiple languages (if applicable)
-  - Provide real-time order status updates
-  - Answer questions about ingredients or spice levels
-  - Suggest popular or chef-recommended dishes
-  - Handle reservation bookings (if a restaurant)
-  - Offer culturally relevant pairing suggestions (food/drink)
-  - Manage catering inquiries for cultural events
-  - Translate menu descriptions via chatbot if needed for customers
-  - Collect feedback on authenticity and taste
-  - Notify customers about special cultural festival menus or events
-- SMB: Law Firm
-  Usecases:
-  - Schedule consultations or meetings
-  - Answer FAQs about legal services, processes, and timelines
-  - Capture lead information and preliminarily qualify them (case type, urgency)
-  - "Provide status updates on ongoing cases (e.g., â€œfiling submitted,â€\x9D â€œcourt\
-    \ date setâ€\x9D)"
-  - Share legal documentation securely (NDAs, contracts) for review/signature
-  - Offer service tier or package explanations (e.g., difference between basic and
-    premium service)
-  - Push alerts about upcoming deadlines or required client actions
-  - Automate invoice and payment queries (billing details, due dates)
-  - Route urgent issues to the appropriate attorney or paralegal
-  - Collect client feedback and satisfaction ratings post-case
-- SMB: Accounting Firm
-  Usecases:
-  - Schedule consultations or calls, especially around tax season
-  - Answer FAQs on tax filing deadlines, required documents, or accounting services
-  - Collect initial financial information from prospects (income, business size) for
-    lead qualification
-  - Provide status updates on filings or financial reports
-  - Share documents securely (tax forms, financial statements) with clients
-  - Explain service packages (bookkeeping vs. full accounting vs. advisory)
-  - Send reminders about upcoming tax deadlines or quarterly filings
-  - Handle billing inquiries and invoice payments automatically
-  - Escalate complex tax law questions to CPAs
-  - Collect client feedback after financial year-end or project completion
-- SMB: Tax Consultant
-  Usecases:
-  - Schedule tax planning or filing appointments
-  - Answer FAQs about tax deductions, credits, or required documents
-  - Gather preliminary information from new clients (income sources, status)
-  - Provide updates on filing status or IRS correspondence
-  - Share tax documents (W-2s, 1099s, returns) securely for review
-  - Offer comparisons of service packages (basic filing vs. audit support)
-  - Send reminders for quarterly estimated payments or tax deadlines
-  - Address billing questions or process payments
-  - Direct urgent audit notices or legal issues to the consultant immediately
-  - Collect feedback after tax season on service satisfaction
-- SMB: Financial Planner
-  Usecases:
-  - Schedule consultations or financial planning meetings
-  - Answer FAQs about planning services, investment strategies, or fees
-  - Capture lead information (financial goals, age, income) to qualify prospects
-  - Provide status updates on plan creation or account performance reports
-  - Share financial documents or plans securely with clients
-  - Offer comparisons of service tiers (basic plan vs. comprehensive wealth management)
-  - Push alerts about upcoming deadlines (tax, retirement contributions) or account
-    reviews
-  - Automate invoice and payment queries for advisory fees
-  - Route urgent market or account concerns to the advisor immediately
-  - Collect client feedback after periodic reviews
-- SMB: Real Estate Agent/Brokerage
-  Usecases:
-  - Book property viewing appointments or open house visits
-  - Match property listings to a buyerâ€™s preferences via chat Q&A
-  - Collect and pre-screen buyer/renter information (budget, requirements)
-  - Provide instant information on listings (price, features, neighborhood stats)
-  - Share listings, photos, or virtual tour links on request
-  - Send alerts about new properties on the market that match criteria
-  - Answer FAQs about the buying/renting process and paperwork
-  - Schedule follow-up calls or meetings with an agent
-  - Forward qualified leads to agents (and notify agents in real-time)
-  - Gather feedback from clients after viewings to refine search
-- SMB: Insurance Agency (home/auto/life insurance brokers)
-  Usecases:
-  - Schedule consultations or call-backs with an agent
-  - Answer FAQs about policy types, coverage options, and premiums
-  - Provide instant insurance quotes after collecting basic info
-  - Assist customers in filing simple claims or directing them through claim forms
-  - Update customers on claim status or policy changes
-  - Share policy documents and forms securely
-  - Remind customers of upcoming renewals or payments due
-  - Cross-sell complementary policies (e.g., bundle auto + home insurance)
-  - Escalate complex claims or coverage questions to a human agent
-  - Collect customer feedback or satisfaction after claim resolution
-- SMB: Marketing or PR Agency
-  Usecases:
-  - Schedule introductory calls or meetings with potential clients
-  - Answer FAQs about services (SEO, social media, PR packages, pricing)
-  - Capture project details from leads (campaign goals, budget range) to qualify them
-  - Provide status updates to current clients on campaign progress or reports
-  - Share case studies or portfolio examples on request via chat
-  - Offer comparisons between service packages or tiers
-  - Push reminders about upcoming campaign deadlines or deliverables
-  - Address billing or contract queries automatically
-  - Route urgent client issues (crisis PR, site down) to the team immediately
-  - Collect client feedback after campaign completion
-- SMB: Business Consulting (general consulting for strategy/operations)
-  Usecases:
-  - Schedule discovery calls or on-site meeting appointments
-  - Answer FAQs about consulting specialties, process, or past results
-  - Capture preliminary business information and challenges from prospects
-  - Provide updates on project milestones or research phases to clients
-  - Share proposals or whitepapers securely with clients
-  - Offer comparisons of consulting packages or engagement models
-  - Send reminders for upcoming workshops or deadlines for client inputs
-  - Handle routine billing questions and invoice payments
-  - Direct urgent client issues to the consulting team immediately
-  - Gather client feedback after project phases or completion
-- SMB: HR/Staffing Firm
-  Usecases:
-  - Schedule meetings with hiring managers or candidate interviews
-  - Answer FAQs from client companies about staffing process and fees
-  - Answer FAQs from job candidates about openings, application status
-  - Collect job requirement details from employers (skills needed, salary range)
-  - Pre-screen candidate information via chat (availability, basic qualifications)
-  - Provide updates to candidates on application/interview status
-  - Provide updates to clients on hiring pipeline status
-  - Handle routine contract or payroll queries from placed candidates
-  - Notify recruiters of high-potential candidates or urgent client requests
-  - Collect feedback from employers and candidates post-placement
-- SMB: Virtual Assistant Services (outsourced admin support)
-  Usecases:
-  - Book intro calls with prospective clients seeking a virtual assistant
-  - Explain service packages (hours per month, dedicated vs. shared VA) and pricing
-  - Capture client needs and tasks list via chat for matching with an assistant
-  - Provide status updates on ongoing tasks or projects
-  - Route specific requests to the assigned virtual assistant or team member
-  - Send reminders to clients about upcoming deadlines or meetings arranged
-  - Answer billing questions or log additional service requests
-  - Upsell additional hours or services if client workload increases
-  - Escalate any urgent or unusual requests to a human supervisor
-  - Collect client satisfaction feedback regularly
-- SMB: Translation Services
-  Usecases:
-  - Schedule consultations or sample translation requests
-  - Answer FAQs about language pairs, turnaround time, pricing per word/page
-  - Collect documents or text snippets for preliminary quotes via chat
-  - Provide status updates on ongoing translation projects
-  - Offer rush service options and upsell faster delivery for a fee
-  - Share translated document securely when ready
-  - Handle billing queries and accept payments
-  - Route complex or technical translation queries to a specialist translator
-  - Notify clients of any issues (unreadable text, clarification needed)
-  - Collect feedback on translation quality and service
-- SMB: Notary Public
-  Usecases:
-  - Schedule notarization appointments (in-person or online)
-  - Provide information on documents required and acceptable IDs
-  - Answer FAQs about notary services (cost, process, mobile notary availability)
-  - Send reminders for upcoming notary appointments
-  - Guide clients on how to prepare documents (where to sign, etc.)
-  - Handle inquiries for mobile/on-site notarization scheduling
-  - Provide directions or parking info for notary office via chat
-  - Log customer details to prepare notary journal entries ahead of time
-  - Process digital payments or provide fee information
-  - Collect feedback on service convenience
-- SMB: Hair Salon / Barber Shop
-  Usecases:
-  - Book, reschedule, or cancel appointments
-  - Send automated appointment reminders and confirmations
-  - Provide service menu details and pricing (cuts, color, treatments)
-  - "Suggest complementary services (e.g., â€œYou had a haircut, would you like a\
-    \ beard trim as well?â€\x9D)"
-  - Answer FAQs on products used or stylist specialties
-  - Notify clients of last-minute openings or cancellations (to fill slots)
-  - Upsell memberships or package deals (e.g., monthly unlimited trims)
-  - Handle gift card purchases or promotions
-  - Allow clients to request a specific stylist via chat
-  - Collect post-appointment feedback or satisfaction ratings
-- SMB: Nail Salon
-  Usecases:
-  - Book, reschedule, or cancel manicure/pedicure appointments
-  - Send appointment reminders and confirmations
-  - Provide details on services (gel vs. acrylic, designs, pricing)
-  - Suggest add-on services (e.g., foot massage with pedicure)
-  - Answer FAQs about polish brands, sterilization practices, etc.
-  - Notify clients of special offers or bundle deals (mani-pedi combo)
-  - Manage group bookings for parties via chat
-  - Handle gift certificate sales and inquiries
-  - Allow clients to request specific nail technicians or artists
-  - Collect feedback on service quality and cleanliness
-- SMB: Spa / Massage Center
-  Usecases:
-  - Book, reschedule, or cancel appointments for various treatments
-  - Send automated reminders and pre-appointment instructions (e.g., arrive early)
-  - Provide descriptions of services (types of massage, facials, packages) and pricing
-  - Suggest upgrades (hot stone add-on, aromatherapy) based on booking
-  - Answer FAQs about therapist specialties, products used, or membership plans
-  - Manage gift card sales and redemption via chat
-  - Notify clients of available time slots or waitlist openings
-  - Upsell spa packages or memberships (monthly massage subscriptions)
-  - Route special requests (couples room, specific therapist) to staff
-  - Collect post-visit feedback on service and ambiance
-- SMB: Tattoo or Piercing Studio
-  Usecases:
-  - Book consultation or tattoo/piercing appointments
-  - Send appointment reminders and any prep instructions (e.g., hydration, shaving
-    area)
-  - Provide basic info on artistsâ€™ styles, portfolio links, and pricing estimates
-  - Answer FAQs about the process (pain, aftercare, healing time)
-  - Gather initial design ideas or reference images via chat to prep for consult
-  - Notify clients of cancellations or earlier openings (to move up appointments)
-  - Handle waiver form pre-fill or digital signing via a link
-  - Upsell merchandise (aftercare kits, apparel) or follow-up touch-up sessions
-  - Route complex design questions to the specific artist
-  - Collect feedback and healed tattoo pictures after service for portfolio
-- SMB: Personal Trainer
-  Usecases:
-  - Book, reschedule, or cancel training sessions (in-person or virtual)
-  - "Send session reminders and prep notes (e.g., â€œleg day tomorrow â€“ bring sneakersâ€\x9D\
-    )"
-  - Answer FAQs about training programs, pricing, and trainer qualifications
-  - Offer basic fitness or nutrition tips via chat between sessions
-  - Suggest group classes or complementary services (yoga, nutrition coaching)
-  - Track client preferences or injuries and share with the trainer
-  - Upsell package deals or monthly memberships
-  - Handle billing questions or package renewals
-  - Notify clients of schedule openings or new available time slots
-  - Collect progress feedback and satisfaction after workouts
-- SMB: Life Coach / Career Coach
-  Usecases:
-  - Book, reschedule, or cancel coaching sessions
-  - Send reminders for sessions and preparatory reflection questions
-  - Provide information on coaching programs, packages, and pricing
-  - Capture client goals or topics before sessions via chat intake forms
-  - Answer FAQs about the coaching process and credentials
-  - Share motivational tips or resources (articles, quotes) between sessions
-  - Upsell multi-session packages or retreats/workshops
-  - Handle billing inquiries and schedule changes automatically
-  - Notify clients of upcoming group webinars or events
-  - Collect feedback on coaching effectiveness and progress milestones
-- SMB: Nutritionist / Dietician
-  Usecases:
-  - Book initial consultations and follow-up appointments
-  - Send appointment reminders and food diary prep instructions
-  - Answer FAQs on services (meal plans, dietary specializations, insurance coverage)
-  - Gather basic dietary habits via chat questionnaire before consultation
-  - Provide general nutrition tips or recipe suggestions via chatbot (between sessions)
-  - Track client progress inputs (weight, symptoms) and share summaries with the nutritionist
-  - Upsell longer-term programs or supplements if offered
-  - Handle billing or reimbursement queries
-  - Remind clients to log meals or complete forms
-  - Collect feedback on meal plans and adjust preferences
-- SMB: Astrologer / Tarot Reader
-  Usecases:
-  - Book, reschedule, or cancel reading appointments (in-person or online)
-  - Send reminders for upcoming sessions and any preparation needed (birth date/time
-    info)
-  - Provide service detail previews (tarot spread types, chart reading length)
-  - Answer FAQs about the reading process and pricing
-  - Offer daily horoscopes or tarot card of the day via chat for engagement
-  - Suggest follow-up sessions or related services (e.g., numerology)
-  - Handle payments or donations via chat interface
-  - Upsell personalized reports (detailed birth chart, yearly forecast)
-  - Address common concerns (privacy, accuracy, how to prepare)
-  - Collect feedback or testimonials after sessions
-- SMB: Makeup Artist / Hair & Makeup Stylist
-  Usecases:
-  - Book appointments for makeovers, bridal trials, or events
-  - "Send confirmations and reminders (with preparation tips like â€œcome with clean\
-    \ faceâ€\x9D)"
-  - Provide service menus and pricing (bridal, photoshoot, special effects makeup,
-    etc.)
-  - Answer FAQs about products used (brands, hypoallergenic options) and experience
-  - Collect client preferences or inspiration photos via chat before the session
-  - Upsell add-ons (false lashes, hair styling, touch-up kit)
-  - Manage group bookings (weddings, group lessons) logistics via chatbot
-  - Handle deposits, payments, and cancellation policies automatically
-  - Notify clients of new services or workshop offerings
-  - Collect reviews and event photos for portfolio after service
-- SMB: Doula / Midwife
-  Usecases:
-  - Book initial consultations or prenatal appointments
-  - Send reminders for prenatal classes or check-ins
-  - Answer FAQs about services (birth support, postpartum visits, fees) and experience
-  - Provide general tips or resources via chat (labor prep, breathing techniques,
-    newborn care)
-  - Coordinate on-call scheduling and let clients know whoâ€™s available
-  - Gather birth plan preferences via chat forms to prepare for labor
-  - "Respond to common pregnancy concerns with guidelines (â€œIs this normal?â€\x9D\
-    \ questions with disclaimer to consult doctor for serious issues)"
-  - Arrange postpartum support visits scheduling
-  - Handle billing questions or insurance documentation support
-  - Collect feedback on support experience postpartum
-- SMB: Electrician
-  Usecases:
-  - Book at-home repair or installation services (wiring, lighting, etc.)
-  - Provide real-time ETA updates for electricianâ€™s arrival
-  - Diagnose basic electrical issues via chat (troubleshooting steps like checking
-    breaker)
-  - Estimate service costs or scope for common jobs (install ceiling fan, fix outlet)
-  - Notify customers of schedule changes or delays
-  - Collect job completion approvals and signatures digitally
-  - Alert back-office on inventory or tool shortages for jobs
-  - Auto-escalate safety or emergency concerns (sparks, outage) to on-call staff
-  - Send routine maintenance reminders (e.g., check smoke detectors)
-  - Capture customer satisfaction feedback and reviews post-service
-- SMB: Plumber
-  Usecases:
-  - Book at-home repair or emergency plumbing services
-  - Provide real-time updates on plumberâ€™s ETA and job status
-  - "Diagnose basic issues via chat AI (e.g., â€œtry shutting off the main valveâ€\x9D\
-    )"
-  - Estimate service costs or scope based on described issue (leak, clog)
-  - Notify customers of schedule changes or delays
-  - Collect approval for additional work (found during job) via chat prompt
-  - Alert back-office when certain parts or inventory are low
-  - Auto-escalate severe emergencies (burst pipe) to immediate dispatch
-  - Send preventative maintenance reminders (seasonal pipe check-ups)
-  - Capture satisfaction ratings and reviews after service
-- SMB: Handyman (General Home Repairs)
-  Usecases:
-  - Book home repair or odd-job appointments
-  - Provide updates on handyman arrival time and job duration
-  - Answer FAQs about services handled (painting, small carpentry, mounting TVs, etc.)
-  - Offer cost estimates for common tasks (fixing a door, patching drywall) via chat
-  - Notify customers of any rescheduling or delays
-  - Collect digital approvals for additional materials or time if needed
-  - Remind customers of seasonal tasks (gutter cleaning, winterizing)
-  - Auto-escalate specialized requests to appropriate trades if beyond scope
-  - Process payments or deposits and handle billing questions
-  - Gather feedback and encourage reviews after tasks
-- SMB: HVAC Services (Heating, Ventilation, Air Conditioning)
-  Usecases:
-  - Book repair or maintenance visits (AC tune-up, furnace check)
-  - Provide status updates on technician dispatch and ETA
-  - "Help troubleshoot basic issues via chat (e.g., â€œtry resetting the thermostatâ€\x9D\
-    )"
-  - Offer upfront estimates for standard services (filter replacement, duct cleaning)
-  - Notify clients of urgent recalls or safety alerts (e.g., carbon monoxide)
-  - Collect approvals for additional work discovered (new part needed)
-  - Schedule seasonal check-ups and send reminders (pre-summer AC service)
-  - Alert backend if inventory (filters, coolant) is running low after jobs
-  - Escalate emergency no-heat/no-cool calls for immediate attention
-  - Collect feedback on system performance after service
-- SMB: Cleaning / Janitorial Services
-  Usecases:
-  - Book one-time or recurring cleaning appointments
-  - Send reminders for scheduled cleanings and allow easy reschedule
-  - Provide service details and pricing (home vs. office packages, deep clean add-ons)
-  - Answer FAQs about cleaning products used (eco-friendly, etc.) and policies (pets,
-    keys)
-  - Match client requests with appropriate cleaning crews (size of team, specialty)
-  - Upsell additional services (window washing, carpet shampooing) during booking
-  - Handle billing questions, invoices, and tip processing
-  - Notify clients of schedule changes or crew en route
-  - Gather special instructions via chat (alarm codes, areas to focus on)
-  - Collect feedback and quality ratings after each cleaning
-- SMB: Pest Control
-  Usecases:
-  - Schedule inspection or extermination appointments quickly (termites, rodents,
-    etc.)
-  - Provide real-time technician ETA and status updates
-  - Answer FAQs about treatment methods, safety, and preparation steps for service
-  - Collect information on pest issues via chat (type of pest, severity) to recommend
-    services
-  - Offer initial cost estimates for common treatments
-  - Notify customers of follow-up treatments or warranty checks due
-  - Upsell preventative plans or seasonal treatments (e.g., spring spraying)
-  - Route urgent infestations (like bed bugs) for priority scheduling
-  - Handle billing and contract inquiries (annual plans, guarantees)
-  - Collect feedback on pest activity post-service and satisfaction
-- SMB: Landscaping / Lawn Care
-  Usecases:
-  - Schedule lawn mowing, landscaping, or yard clean-up services (one-time or recurring)
-  - Provide updates on crew arrival times and service completion
-  - Answer FAQs about services (mowing, fertilization, design work) and pricing
-  - Gather property details via chat (lot size, grass type) to give estimates
-  - Suggest seasonal services (spring planting, fall leaf removal) to existing clients
-  - Manage recurring service plans and adjust schedules for weather
-  - Upsell additional services (sprinkler maintenance, pest control for lawns)
-  - Handle billing, contract, and invoicing questions
-  - Notify customers of weather delays or rescheduling
-  - Collect feedback on service quality and propose improvements or additional treatments
-- SMB: Pool Maintenance
-  Usecases:
-  - Book pool cleaning or maintenance visits (one-time or recurring)
-  - Provide service reminders and updates (technician en route, completed)
-  - Answer FAQs about services (water testing, chemical treatments, repairs)
-  - Collect pool details (size, type, issues) via chat to tailor service/quote
-  - Suggest seasonal openings/closings and upsell those services
-  - Notify clients of any issues found (leak, equipment problem) and schedule repairs
-  - Upsell accessories or upgrades (new filter systems, covers) during interactions
-  - Handle billing questions and plan changes (e.g., suspend service for winter)
-  - Alert customers to reschedule if weather prevents service
-  - Gather feedback on water quality and service satisfaction
-- SMB: Home Renovation Contractor (Small-scale renovations)
-  Usecases:
-  - Schedule initial consultation appointments for project estimates
-  - Answer FAQs about services offered (kitchen remodels, decks, etc.) and process
-  - Collect basic project details via chat (room size, idea of style) to prepare consults
-  - Provide status updates on project milestones (permits obtained, phase completed)
-  - Share images or progress updates with homeowners through the chatbot
-  - Schedule inspections or walkthroughs with clients during the project
-  - Handle common queries during projects (working hours, who to contact on site)
-  - Address billing schedule questions and change order processes
-  - Escalate urgent issues (e.g., water leak during reno) to project manager immediately
-  - Collect feedback post-renovation and provide maintenance tips
-- SMB: Appliance Repair
-  Usecases:
-  - Book repair appointments (washer, fridge, etc.) and collect appliance details
-    upfront
-  - Provide technician tracking and ETA updates
-  - Troubleshoot common appliance issues via chat Q&A (reset instructions)
-  - Estimate repair costs for common problems based on symptoms described
-  - Notify customers of any schedule changes or part order delays
-  - Collect approval if additional issues are found and need fixing during the visit
-  - Send warranty and maintenance tips after repair (to prevent future issues)
-  - Manage warranty service queries and claims information
-  - Escalate urgent situations (e.g., appliance causing electrical issue) to immediate
-    service
-  - Gather feedback on the repair service and device performance afterward
-- SMB: Painting Services
-  Usecases:
-  - Schedule estimates for painting jobs (interior/exterior)
-  - Answer FAQs about service (prep work, paint types, how many coats, timeline)
-  - Collect basic project info via chat (rooms, dimensions, color preferences) for
-    quoting
-  - Provide status updates when a job is in progress (which rooms done, any delays)
-  - Share digital color swatches or previous project photos on request
-  - Notify clients of weather impacts (for exterior jobs) and reschedule automatically
-  - Upsell additional services (wall repairs, decorative finishes, power washing)
-  - Handle billing questions and installment payments
-  - Coordinate color consultation appointments if offered
-  - Collect feedback and final walkthrough punch-list items via chat after job completion
-- SMB: Locksmith
-  Usecases:
-  - Dispatch emergency lockout service requests 24/7
-  - Provide ETA updates for the locksmithâ€™s arrival (crucial during lockouts)
-  - Answer FAQs on services (rekeying, installation, auto lockouts) and pricing
-  - Offer basic guidance for locked-out situations (safety, verifying ownership)
-  - Schedule appointments for non-emergency services (lock upgrades, security consults)
-  - Upsell high-security locks or smart lock installation when appropriate
-  - Handle payment processing or insurance paperwork queries
-  - Notify customers of any delays or if a specialist (e.g. for electronic locks)
-    is needed
-  - Coordinate with law enforcement if required (in cases of break-in repairs)
-  - Collect customer feedback on service speed and professionalism
-- SMB: Roofers / Siding Contractors
-  Usecases:
-  - Schedule roof/siding inspection appointments (for leaks, damage, estimates)
-  - Answer FAQs about services (repair vs. replacement, materials, warranty)
-  - Collect preliminary information (roof type, age, issue description) via chat to
-    prioritize jobs
-  - Provide updates on project scheduling (weather-dependent delays, crew on the way)
-  - Share maintenance tips automatically (clean gutters, inspect after storms) to
-    clients
-  - Notify customers of severe weather alerts and offer post-storm inspection slots
-  - Handle queries about insurance claims process for roof damage
-  - Escalate urgent leak cases for immediate tarping service
-  - Manage billing milestones and payment reminders for large projects
-  - Collect feedback and referral requests after job completion
-- SMB: Photography Studio
-  Usecases:
-  - Allow clients to inquire and book photoshoots (portraits, events) via chat
-  - Provide package details and pricing (e.g., number of photos, prints, digital files)
-  - Answer FAQs on availability, turnaround time, and photographerâ€™s style
-  - Schedule pre-shoot consultations and send preparation tips (what to wear, etc.)
-  - Send reminders for shoots and location details
-  - Manage model releases or contracts by sending digital forms
-  - Upsell add-ons (extra editing, photobooks, expedited delivery) during booking
-  - Provide status updates on photo editing and expected delivery date
-  - Arrange photo reveal sessions or online gallery access
-  - Collect client feedback and testimonials after delivery
-- SMB: Videography Services
-  Usecases:
-  - Book video shoot appointments (events, corporate videos, etc.) and consultations
-  - Provide package options and pricing information (duration, editing, raw footage)
-  - Answer FAQs about equipment, turnaround time, and portfolio/reel availability
-  - Gather project details via chat (event schedule, style preferences) before a shoot
-  - Send reminders for key dates (shoot date, editing review sessions)
-  - Share sample work or demo reels on request through the chatbot
-  - Upsell additional services (extra camera operators, drone footage, live streaming)
-  - Provide editing progress updates and first cut delivery notifications
-  - Coordinate review and feedback sessions with clients
-  - Collect client testimonials and permission to use final videos in portfolio
-- SMB: Art Studio or Gallery
-  Usecases:
-  - Allow visitors to inquire about gallery hours, exhibit schedules, and entry fees
-    via chat
-  - Handle workshop or class sign-ups (painting class, pottery class registrations)
-  - Answer FAQs about featured artists, art piece prices, and purchasing process
-  - Schedule private gallery viewings or artist meet-and-greet appointments
-  - Send event reminders for gallery openings or art shows
-  - Provide information on commissioning artwork or custom pieces
-  - Upsell gallery membership or season passes and related benefits
-  - Manage online store queries for art sales (shipping, authentication)
-  - Alert subscribers about new arrivals or exhibitions via chatbot
-  - Collect visitor feedback or interest (what kind of art they like) for future curation
-- SMB: Craft Supply Store (or Hobby Shop)
-  Usecases:
-  - Take online orders or reserve items for in-store pickup via chat
-  - Instantly check product availability (specific yarn color, model kit, etc.)
-  - Answer FAQs about store hours, return policy, and product recommendations (e.g.,
-    what paint works on glass)
-  - Suggest related supplies or project ideas when customers inquire (upselling tools
-    or kits)
-  - Notify customers about upcoming craft classes or demo days
-  - Handle loyalty program inquiries and point redemptions via chatbot
-  - Provide curbside pickup instructions or shipping tracking on request
-  - Assist with special orders for out-of-stock or specialty items
-  - Send alerts about sales or new arrivals in the customerâ€™s interested category
-  - Collect feedback on products and customer projects after purchase
-- SMB: Music School / Music Studio
-  Usecases:
-  - Allow students to sign up for music lessons (instrument, vocal) and schedule classes
-  - Send reminders for upcoming lessons or class changes
-  - Provide information on instructors, instrument specializations, and pricing packages
-  - Answer FAQs about rentals, practice room availability, and recitals
-  - Match new students with appropriate teachers based on skill level and music style
-    (via chat questionnaire)
-  - Manage rescheduling and makeup class requests automatically
-  - Upsell group classes, workshops, or music summer camps to current students
-  - Handle billing inquiries, installment payments for tuition
-  - Notify students about performance opportunities or concerts
-  - Collect feedback from students/parents on lesson quality and progress
-- SMB: Dance School / Studio
-  Usecases:
-  - Handle class registrations for dance courses (ballet, hip-hop, etc.) at various
-    levels
-  - Provide schedule information and send class reminders or changes notifications
-  - Answer FAQs on dress code, class prerequisites, and fees
-  - Match new students to appropriate classes based on age/skill via chat questionnaire
-  - Manage trial class sign-ups and introductory offers automatically
-  - Upsell recital tickets, costumes, or additional classes (like workshops) to students/parents
-  - Coordinate recital or performance schedules and send details to participants
-  - Handle billing, installment plans, or family discounts via chat
-  - Notify about studio closures (holidays, weather) and do make-up class scheduling
-  - Collect feedback from students and parents at end of term
-- SMB: Pottery or DIY Workshop
-  Usecases:
-  - Allow customers to sign up for workshops or classes (pottery wheel session, DIY
-    craft night) via chat
-  - Provide class schedules, available slots, and pricing instantly
-  - Answer FAQs about skill level required, materials provided, and class length
-  - Send reminders and what-to-bring notes before a session
-  - "Upsell related workshops or multi-session courses to participants (e.g., â€œYou\
-    \ took Intro to Pottery, try Advanced Glazing Techniques nextâ€\x9D)"
-  - Manage private group booking inquiries (birthday parties, team-building events)
-  - Handle gift voucher purchases and redemptions
-  - Notify attendees of any schedule changes or new sessions added
-  - Share photos of finished projects from past classes for inspiration via chat on
-    request
-  - Collect feedback and interest in future topics after each workshop
-- SMB: Web Design Agency
-  Usecases:
-  - Capture project briefs or bug reports from clients via chat (e.g., website goals,
-    features needed)
-  - Book a demo or discovery call for new project inquiries
-  - Match client needs with service tiers (template-based site vs. custom build)
-  - Route technical support issues to the right developer or team
-  - Estimate delivery timelines and ballpark cost based on project scope inputs
-  - Push onboarding guides to new clients (how to use CMS, etc.)
-  - Handle usage-based billing or hosting inquiries
-  - Track project milestones and alert clients if delays (or when approvals needed)
-  - Auto-surface related documentation or FAQs when clients ask questions
-  - Collect feature requests or feedback for the roadmap (for ongoing projects)
-- SMB: IT Support Company (MSP or tech helpdesk)
-  Usecases:
-  - Accept IT support tickets via chat and gather details (issue description, screenshots)
-  - Provide instant solutions to common problems (password reset steps, printer offline
-    fix)
-  - Triage and prioritize tickets, assigning urgent issues to human techs immediately
-  - Book on-site support appointments if needed based on chat diagnosis
-  - Offer status updates on ticket resolution progress
-  - Push knowledge base articles relevant to the userâ€™s query for self- servicedesk365.io
-  - Notify clients of system outages and provide ETA for fixes proactively
-  - Handle account inquiries and simple admin tasks (creating new user accounts, if
-    integrated)
-  - Escalate complex issues to a senior technician and set expectation of response
-    time
-  - Collect feedback after ticket closure on satisfaction and if issue is resolved
-- SMB: Software Development Studio (App/Software developers)
-  Usecases:
-  - Capture initial project ideas and requirements from prospects via chatbot (platform,
-    features, budget)
-  - Schedule discovery meetings or demos for potential clients automatically
-  - Answer FAQs about development process, tech stack, timelines, and past projects
-  - Route technical inquiries from existing clients to the right development team
-    (e.g., front-end vs back-end issues)
-  - Provide status updates on project progress (milestones achieved, next sprint)
-  - Share deployment or release notes to clients and gather quick feedback
-  - Push onboarding documentation or API docs to clients integrating the software
-  - Handle support queries for delivered software (common how-tos, bug reporting)
-  - Offer upsells such as maintenance contracts or additional feature development
-    after project completion
-  - Collect client satisfaction feedback at various project stages and post-launch
-- SMB: Digital Marketing Firm
-  Usecases:
-  - Take inbound inquiries via chat (SEO services, PPC management, etc.) and gather
-    business details
-  - Schedule consultation calls or marketing audits for new leads
-  - Answer FAQs about service offerings, case studies, contract terms
-  - "Provide status updates to clients on campaign performance (â€œYour campaign generated\
-    \ X leads this weekâ€\x9D)"
-  - Deliver monthly reports or key metrics through the chatbot interface upon request
-  - "Suggest additional services (e.g., â€œYou might benefit from social media managementâ€\x9D\
-    ) based on client campaign data"
-  - Handle simple support requests like password resets for client dashboards
-  - Route urgent issues (ad account suspension, website down) to the team immediately
-  - Send reminders about upcoming content deadlines or meetings
-  - Collect feedback on campaign results and strategy alignment regularly
-- SMB: SEO Specialist (or Content Marketing Specialist)
-  Usecases:
-  - Capture potential client details via chat (website, goals, current traffic) for
-    SEO audit offers
-  - Answer FAQs about SEO process, expected timeline, pricing models
-  - Schedule a follow-up call or site analysis once interest is shown
-  - Provide clients with periodic ranking updates or traffic reports on demand
-  - "Offer on-page optimization tips via chatbot for simple issues (e.g., â€œYour\
-    \ title tags are too longâ€\x9D)"
-  - Suggest complementary services (content creation, link building) to SEO clients
-  - Handle billing or subscription questions for ongoing SEO packages
-  - Alert clients to critical issues (site down, Google algorithm update impacts)
-    promptly
-  - Share case study results or references when asked in chat
-  - Collect feedback on traffic growth and lead quality after a few months of service
-- SMB: Cybersecurity Consultant
-  Usecases:
-  - Schedule security audit consultations or emergency incident response via chat
-  - Answer FAQs about services (penetration testing, compliance, monitoring) and experience
-    (certifications)
-  - Collect basic information on a security issue from prospects (systems affected,
-    symptoms) to prioritize response
-  - Provide status updates during incident response (containment done, analysis ongoing)
-  - "Share best-practice resources or checklist via chatbot for general inquiries\
-    \ (â€œHow to improve password securityâ€\x9D)"
-  - Route critical breach alerts from clients directly to on-call security engineers
-  - Notify clients of new vulnerabilities or patches (and upsell a service to handle
-    it)
-  - Handle contract and NDA process by sending/receiving documents securely
-  - Answer compliance-related queries (GDPR, HIPAA) quickly with prepared info
-  - Collect feedback after audits or incidents on the service effectiveness
-- SMB: Data Analytics Services
-  Usecases:
-  - Book consultations to discuss analytics solutions (BI implementation, dashboards,
-    etc.)
-  - Capture lead information about data sources and needs via chat questionnaire
-  - Answer FAQs on tools used (Tableau, PowerBI, etc.), pricing, and case studies
-  - Provide status updates to clients on data report deliveries or insights generation
-  - Share visual snapshots or key metrics on demand for clients (via chatbot integration
-    to their dashboard)
-  - Suggest advanced analytics services (predictive modeling, AI integration) based
-    on clientâ€™s current usage
-  - "Handle support queries for analytics dashboards (login issues, â€œhow toâ€\x9D\
-    \ questions)"
-  - Alert clients to anomalies detected (if offering monitoring) with immediate chatbot
-    notification
-  - Manage billing questions or usage tier changes automatically
-  - Collect feedback on insights usefulness and any additional needs
-- SMB: Tech Equipment Rental (e.g., cameras, AV gear, IT hardware)
-  Usecases:
-  - Allow customers to check availability and reserve equipment via chat (cameras,
-    projectors, servers, etc.)
-  - Provide pricing quotes for rental durations automatically
-  - Answer FAQs on equipment specs, rental terms, deposit, and insurance
-  - "Assist in choosing the right equipment based on user needs (e.g., â€œWhat camera\
-    \ for a beginner shoot?â€\x9D)"
-  - Handle booking modifications or extensions through chatbot
-  - Send pickup, return instructions and reminders (due dates, late fees)
-  - Upsell related items (tripods with cameras, cables with projectors) at checkout
-  - "Manage simple troubleshooting Q&A during rental (â€œhow to set up this light\
-    \ kitâ€\x9D)"
-  - Process payments and security deposit info securely via chat
-  - Collect feedback on equipment condition and rental experience for quality control
-- SMB: App Development Boutique (small app dev team)
-  Usecases:
-  - Schedule free consultations for app ideas via chat
-  - Gather initial app requirements (platform, features, budget) from prospects to
-    prepare quotes
-  - Answer FAQs on tech stack, past apps developed, typical timelines
-  - Provide updates to clients on development milestones (prototype ready, beta testing
-    started)
-  - Triage support requests from launched app clients (bug reports, small feature
-    requests)
-  - Upsell additional services like app marketing or maintenance contracts post- launch
-  - Share analytics or download stats with clients on demand via chatbot (if integrated)
-  - Handle invoicing queries and payment reminders for milestone payments
-  - Alert clients about platform updates (iOS/Android OS changes) that might require
-    app updates (and suggest doing them)
-  - Collect client feedback and feature wishlists after launch for future phases
-- SMB: Auto Repair Shop
-  Usecases:
-  - Schedule vehicle repair or maintenance appointments (oil change, brake service)
-  - Provide updates on service progress and estimated completion time
-  - "Recommend add-on services based on vehicle history (e.g., â€œYouâ€™re due for\
-    \ a tire rotationâ€\x9D)"
-  - Help check warranty or recall eligibility by VIN
-  - Automate pickup/drop-off scheduling or shuttle service for customers
-  - Provide upfront cost estimates for common repairs when given symptoms
-  - Log past service history inquiries for customers via chat
-  - Alert clients on upcoming maintenance milestones (by mileage/time)
-  - Share diagnostic results or inspection reports after service via chat
-  - Collect customer feedback and reviews post-service
-- SMB: Car Wash / Detailing
-  Usecases:
-  - Schedule car wash or detailing appointments and select packages via chat
-  - Send reminders for appointments and weather-related suggestions (e.g., rain- check)
-  - Provide package details and pricing (basic wash vs. full detail)
-  - Answer FAQs (duration of service, use of specific products, waiting area amenities)
-  - Upsell add-ons (wax, interior sanitization, engine bay cleaning) during booking
-  - Manage monthly subscription or membership sign-ups and queries
-  - Notify when vehicle is ready for pickup after service
-  - Handle customer loyalty points or promo code redemptions via chatbot
-  - Collect feedback on service quality and any missed spots for redo
-  - "Suggest next service timing (e.g., â€œItâ€™s been 1 month since your last detailâ€\x9D\
-    )"
-- SMB: Auto Body Shop (Collision Repair)
-  Usecases:
-  - Schedule collision repair estimates and drop-off appointments via chat
-  - Provide information on repair process, expected timelines, and insurance coordination
-  - Answer FAQs about whether a car is safe to drive after damage, or how estimates
-    work
-  - Keep customers updated on repair status (parts ordered, in paint shop, etc.)
-  - Coordinate rental car or shuttle service arrangements for customers
-  - Share photos of repair progress or areas of concern to customers for transparency
-  - Notify customers when repairs are completed or if delays occur (parts backorder)
-  - Handle insurance claim status updates and common paperwork questions
-  - Upsell related services post-repair (detailing, alignment, extended warranty on
-    paint)
-  - Collect satisfaction feedback and testimonials (especially important for referrals)
-- SMB: Tire Shop
-  Usecases:
-  - Schedule tire change, rotation, or repair appointments via chat
-  - Provide instant tire recommendations based on car make/model and driving habits
-  - Answer FAQs on tire brands, warranties, seasonal tire advice (winter vs. summer)
-  - Check inventory for specific tire sizes and models and confirm availability
-  - Offer quotes for sets of tires including installation fees
-  - Upsell wheel alignment or brake inspection when scheduling tire service
-  - Notify customers when special orders arrive (specific tires)
-  - Handle queries about financing or installment payments for large purchases
-  - Send reminders for tire rotations or seasonal tire changeover
-  - Collect feedback on new tire performance and service satisfaction
-- SMB: Car Dealership (Small-scale)
-  Usecases:
-  - Answer questions about car inventory (models, trims, features available) instantlywavetec.com
-  - Schedule test drives or dealership visits for interested buyers
-  - Provide information on pricing, financing options, and current promotions
-  - Pre-qualify leads by gathering preferences (new/used, budget, trade-in info) via
-    chat
-  - Notify online shoppers of new inventory matching their saved searches
-  - Handle service appointment bookings for the dealershipâ€™s service center
-  - Upsell add-ons or warranty packages when discussing a specific vehicle
-  - Set up alerts for price drops or special events (sales, launch of new model)
-  - Answer FAQs about paperwork needed, trade-in process, or dealership hours
-  - Collect feedback after test drives or purchase experiences
-- SMB: Auto Accessories Store (or Parts Store)
-  Usecases:
-  - Assist customers in finding the right parts or accessories via chat (by car model
-    or part number)
-  - Check inventory and place holds or orders for parts
-  - Provide pricing and alternatives if a part is out of stock (e.g., aftermarket
-    vs OEM)
-  - Answer FAQs about compatibility, installation services, or return policies
-  - Process online orders or direct users to correct product pages
-  - Upsell related accessories (buying new headlights? suggest wiring kit or upgraded
-    bulbs)
-  - Notify customers when special-order parts arrive in store or are shipped
-  - Handle inquiries about warranty or core deposit refunds for parts
-  - Offer troubleshooting tips or basic installation guides for DIY customers (within
-    safe limits)
-  - Collect feedback on whether the part solved the issue or if further assistance
-    is needed
-- SMB: Vehicle Wrap Services (custom car wraps/advertising)
-  Usecases:
-  - Schedule consultations to discuss wrap design and get measurements
-  - Answer FAQs about wrap materials, durability, and pricing per square foot or vehicle
-    type
-  - Collect basic vehicle info and design goals via chat to prepare quotes
-  - Provide status updates on design proofs and production (when the wrap is being
-    printed)
-  - Schedule installation appointments and provide prep instructions (cleaning the
-    car, etc.)
-  - Notify client of any delays or issues (e.g., need to adjust design for fit)
-  - Upsell related services like paint protection film for remaining exposed areas
-    or design services for logos
-  - Handle billing questions, deposits, and final payment processing
-  - Arrange courtesy vehicle or shuttle if wrap installation takes a long time
-  - Collect feedback and showcase client vehicles (with permission) after completion
-- SMB: Motorcycle Repair (or small engine repair)
-  Usecases:
-  - Book service appointments for motorcycles/ATVs and describe issues in advance
-  - Provide maintenance package details (e.g., spring tune-up for bikes) and pricing
-  - Answer FAQs on common repairs (tires, brakes, engine tune) and timelines
-  - Offer troubleshooting steps for minor issues (battery check, etc.) to riders via
-    chat
-  - Update customers on repair status and any additional issues found during inspection
-  - Suggest performance upgrades or accessories while discussing repairs (upsell exhaust,
-    filters)
-  - Notify when the motorcycle is ready for pickup or if parts on order cause delays
-  - Handle queries about storage in off-season or transport options for bikes
-  - Process service reminders based on last service date or mileage (chain lube, oil
-    change schedule)
-  - Collect feedback on the bikeâ€™s performance post-service and satisfaction
-- SMB: Gym / Fitness Studio
-  Usecases:
-  - Book training sessions or group fitness classes
-  - Offer class recommendations based on member goals or past attendance
-  - Provide trainer bios and available time slots for personal training
-  - Push daily or weekly class schedules and allow quick sign-ups/cancellations
-  - Track fitness milestones (workouts completed) and congratulate or motivate users
-  - Adjust membership plans or book facility amenities (courts, pool lanes) via chat
-  - Auto-charge for renewals or process cancellations with retention offers
-  - Answer FAQs about equipment availability, hours, or membership benefits
-  - "Escalate health or injury concerns to staff (e.g., â€œI felt pain doing X exerciseâ€\x9D\
-    )"
-  - Gather feedback after classes or training sessions for quality improvement
-- SMB: Yoga Studio
-  Usecases:
-  - Schedule class bookings for different yoga sessions (Hatha, Vinyasa, etc.)
-  - Maintain waitlists and notify clients of open spots automatically
-  - Answer FAQs about class difficulty, what to bring, and membership pricing
-  - Recommend classes or workshops based on skill level or past attendance
-  - Send class reminder notifications and allow quick cancellation or reschedule
-  - Upsell multi-class packages or retreats to frequent attendees
-  - Handle billing questions and auto-renew passes
-  - Provide quick mindfulness tips or pose guides via chat for engagement between
-    classes
-  - Notify of instructor substitutions or studio updates promptly
-  - Collect post-class feedback and energy level ratings for instructors
-- SMB: Pilates Studio
-  Usecases:
-  - Book reformer or mat class sessions and manage capacity
-  - Track class packs usage and remind clients when theyâ€™re running low on sessions
-  - Answer FAQs on class differences, required experience, and pricing
-  - Recommend specific classes (beginner vs. advanced) based on client history
-  - Send personalized exercise tips or core strengthening advice between sessions
-  - Upsell private sessions or duet sessions for clients looking for more attention
-  - Handle membership freezes or extensions (for injury, travel) via chatbot
-  - Notify clients about new class times or instructor changes
-  - Provide form or equipment setup videos on request for newcomers
-  - Gather feedback on class difficulty and instructor guidance for quality control
-- SMB: Martial Arts School
-  Usecases:
-  - Enroll students in classes or sessions (karate, taekwondo, etc.) and trials
-  - Notify parents and students of schedule changes or belt test dates
-  - Assist with fee payments and generate receipts
-  - Deliver practice homework or training videos for students to use at home
-  - Match new students with appropriate classes (by age or belt level)
-  - Alert about upcoming exams, tournaments, or grading events
-  - Provide attendance records or progress reports on request
-  - Support curriculum or class changes announcements (new class added, etc.)
-  - Log behavioral or performance notes (discipline, improvements) for parents to
-    see
-  - Conduct post-term feedback surveys from parents/students for improvements
-- SMB: Physical Therapy Clinic
-  Usecases:
-  - Book appointments for evaluations or therapy sessions
-  - Offer digital intake forms and gather patient history via secure chat before first
-    visit
-  - Answer FAQs about insurance accepted, referral requirements, and clinic hours
-  - Send appointment reminders and any pre-visit instructions (attire, bring scans)
-  - Provide at-home exercise instructions or video demonstrations upon requestdesk365.io
-    (e.g., post-session recap)
-  - Monitor patient progress check-ins via chatbot (pain levels, mobility) and alert
-    therapists if issues
-  - Handle prescription refill requests for related equipment (braces, etc.) or follow-up
-    care
-  - Manage billing questions and copay explanations
-  - Escalate urgent concerns (e.g., severe post-session pain) to clinician attention
-    immediately
-  - Collect patient feedback on therapy effectiveness and overall satisfaction
-- SMB: Chiropractor
-  Usecases:
-  - Schedule initial consultations and follow-up adjustments
-  - Answer FAQs about treatment techniques, first visit expectations, and insurance
-    coverage
-  - Provide educational content about spinal health, posture tips via chat
-  - Send reminders for appointments and exercises recommended between visits
-  - Offer to book complementary services (massage therapy, acupuncture if available)
-  - Handle new patient intake by gathering symptoms and pain locations ahead of time
-  - Manage rescheduling and waitlists automatically
-  - Notify patients of special promotions or wellness workshops at the clinic
-  - Process payment questions or membership plan details (if monthly maintenance plans)
-  - Collect feedback on pain levels and mobility improvements after treatments
-- SMB: Acupuncturist / Holistic Health Practice
-  Usecases:
-  - Schedule acupuncture or holistic therapy sessions conveniently
-  - Provide information on treatment types, what to expect in sessions, and fee structures
-  - Answer FAQs about how acupuncture works, safety, and conditions treated
-  - Send gentle reminders about lifestyle or diet advice given during sessions
-  - Offer package deals (e.g., 5 sessions bundle) and allow booking those via chat
-  - Handle inquiries about combining therapies (herbal medicine, cupping, etc.)
-  - Manage follow-up scheduling and suggest maintenance visits based on condition
-  - Process insurance or flexible spending account questions
-  - Notify clients about new wellness workshops or available slots due to cancellations
-  - Collect feedback on symptom changes and overall well-being after a series of sessions
-- SMB: Mental Health Counseling / Therapy
-  Usecases:
-  - Facilitate booking of therapy appointments or initial intake calls
-  - Send reminders for sessions and self-care activities suggested by the therapist
-    (while maintaining privacy)
-  - Answer general questions about the practice, specialties, and how therapy works
-    (without giving medical advice)
-  - Provide emergency resources or hotlines if someone indicates crisis keywords (and
-    prompt them to seek immediate help)
-  - Handle insurance verification processes and co-pay queries
-  - Manage waitlist and notify clients when earlier slots open up
-  - Process rescheduling or therapist cancellations in a timely manner with automated
-    outreach
-  - Distribute therapist-provided worksheets or journaling prompts via chat between
-    sessions
-  - Escalate any concerning messages to the therapist (or appropriate support) for
-    review
-  - Collect feedback on administrative aspects of the service (not therapy content)
-    and overall satisfaction
-- SMB: Tutoring Center
-  Usecases:
-  - Enroll students in tutoring programs or individual sessions
-  - Notify parents and students about schedule changes or upcoming sessions
-  - Assist with tuition payments and send digital receipts
-  - Deliver homework help or study material links upon request
-  - Match students with tutors based on subject and level automatically
-  - Alert about upcoming exams or test dates and suggest extra prep sessions
-  - Provide attendance records or progress reports to parents via chat
-  - Support curriculum or course changes by informing stakeholders
-  - Log behavioral or academic updates from sessions for parent review
-  - Conduct post-term feedback collection from parents and students
-- SMB: Test Prep Services (SAT/ACT prep, etc.)
-  Usecases:
-  - Register students for prep courses or practice exams via chat
-  - Answer FAQs about test dates, course schedules, and score improvement guarantees
-  - Provide quick practice questions or explain answers on demand as a study aid
-  - Remind students about homework, practice test dates, and official test registration
-    deadlines
-  - Match students with appropriate course level (based on initial assessment scores)
-  - Notify of any schedule changes or additional review sessions
-  - Send motivational tips or study strategies regularly to keep students engaged
-  - Handle billing for course enrollment and send payment confirmations
-  - Alert students when new practice materials or score reports are available
-  - Gather feedback after the test on how prepared they felt and their score improvements
-- SMB: Preschool / Daycare
-  Usecases:
-  - Enroll new children and manage waitlists via chat
-  - Notify parents on daily schedule changes or emergency closures (snow day, etc.)
-  - Assist with fee payments, invoices and receipts
-  - Share daily reports or updates (nap times, meals, activities) securely with parents
-  - Provide instant answers to common parent questions (pickup times, illness policies)
-  - Send alerts about upcoming events (parent-teacher meetings, field trips)
-  - Provide attendance records and check-in/out confirmations
-  - Support curriculum or program changes announcements (new enrichment activity)
-  - Log incident reports or behavioral notes and flag for parent review
-  - Conduct feedback surveys with parents each term to gauge satisfaction
-- SMB: After-school Program
-  Usecases:
-  - Enroll students in after-school activities or clubs
-  - Manage daily attendance and send check-in/out notifications to parents
-  - Inform parents of schedule changes, early closures, or transportation delays
-  - Answer FAQs about program activities, homework help, and staff qualifications
-  - Coordinate special event sign-ups (talent show, science fair nights) via chat
-  - Handle billing for monthly program fees and extracurricular charges
-  - Upsell additional workshops or holiday camps to existing parents
-  - Notify parents of student achievements or issues (completed project, behavior
-    note)
-  - Assist with transportation queries (bus routes, pickup times)
-  - Collect parent feedback on program content and safety regularly
-- SMB: Homeschool Consultant
-  Usecases:
-  - Schedule consultations for curriculum planning or homeschooling advice
-  - Answer FAQs about homeschooling laws, record-keeping, and curriculums offered
-  - Provide resources or recommendations via chat (e.g., links to educational materials
-    for a subject)
-  - Manage sign-ups for workshops or co-op events and send reminders
-  - Review student progress submissions and give automated feedback or schedule a
-    detailed review with a consultant
-  - Handle payments for consulting packages or learning materials
-  - Notify parents about new resources, curriculum updates, or policy changes in their
-    state
-  - Escalate complex educational or behavioral questions to a consultant with prep
-    notes
-  - "Keep track of each familyâ€™s plan and send gentle check-ins or tips periodically\
-    \ (â€œThis week consider a field trip toâ€¦â€\x9D etc.)"
-  - Collect feedback on what has been working or not to tailor future advice
-- SMB: Educational Toys Store
-  Usecases:
-  - Assist customers in finding toys by age group or learning category via chat
-  - Instantly check product availability and reserve popular items for in-store pickup
-  - Answer questions about toy safety, educational benefits, or how a product works
-  - Provide recommendations (e.g., STEM toys for a 7-year-old) based on interests
-    described
-  - Offer promotions or bundle deals (like a puzzle + book combo discount) to shoppers
-  - Send notifications when new educational toy lines arrive or when items are back
-    in stock
-  - 'Handle online order support: tracking shipments, processing simple returns'
-  - Upsell related accessories or batteries needed for certain toys at purchase time
-  - Manage loyalty program points or rewards inquiries via chatbot
-  - Collect feedback from parents on how their child enjoyed the toy, feeding reviews
-- SMB: Learning Apps / Courses Provider (Online Education Venture)
-  Usecases:
-  - Guide users to the right course or learning app based on their goals (language
-    learning vs. coding for kids, etc.)
-  - Answer FAQs about course structure, pricing, and platform requirements
-  - Assist with account setup and technical issues via chatbot (like a quickstart
-    guide)
-  - Provide personalized learning plan recommendations after asking a few questions
-  - Send reminders to users to continue their course or practice daily (push via chat)
-  - Upsell premium features or advanced courses once a user finishes a basic one
-  - Handle subscription changes, cancellations, or billing questions automatically
-  - Offer quick quizzes or fun facts via chat to re-engage inactive learners
-  - Notify users of new courses or content releases in their interest area
-  - Collect feedback on course content and user experience for improvement
-- SMB: Pet Grooming
-  Usecases:
-  - Book grooming appointments (bath, haircut, nail trim) with selected groomer preferences
-  - Send reminders about grooming appointments and any pre-visit prep (e.g., ensure
-    pet is leashed)
-  - Answer FAQs about grooming process, pricing, and time required for specific breeds
-  - Suggest add-on services (teeth cleaning, de-shedding treatment) during booking
-  - Notify pet owners when their pet is ready for pickup
-  - Manage membership or package deals (e.g., monthly grooming plans) inquiries
-  - Upsell pet grooming products (shampoos, brushes) for at-home use based on petâ€™s
-    coat type
-  - Handle customer profile updates (petâ€™s age, weight, health notes) via chat for
-    groomer reference
-  - "Alert customers about seasonal considerations (e.g., â€œSummer is coming, consider\
-    \ a shorter trim for comfortâ€\x9D)"
-  - Collect feedback on the grooming and how the pet is feeling after the visit
-- SMB: Pet Boarding / Daycare
-  Usecases:
-  - Book boarding stays or daycare days for pets and manage capacity
-  - Send daily updates or photos of pets to owners via chat (for long stays)
-  - Answer FAQs about facility (staff qualifications, play areas, feeding routines)
-    and requirements (vaccinations, etc.)
-  - Handle check-in/check-out scheduling and special instructions (medications, feeding
-    times)
-  - Notify owners of any issues during stay (not eating, minor injury) and escalate
-    serious concerns to a call
-  - Upsell extra play sessions, grooming during stay, or premium kennel options
-  - Manage waitlists during holidays and notify when a spot opens
-  - Process deposits, payments and package deals (e.g., 10 daycare days bundle)
-  - Remind pet owners of upcoming stays and what to pack (toys, food)
-  - Collect feedback on petâ€™s condition and behavior after pick-up to ensure quality
-- SMB: Veterinary Clinic (Small-scale)
-  Usecases:
-  - Book vet appointments (routine exams, vaccinations, minor illness) conveniently
-  - Remind pet owners of upcoming checkups or vaccination due dates
-  - Send pet health tips or diet reminders tailored to the petâ€™s profile (breed,
-    age)
-  - "Provide basic triage info via chat (â€œvomitingâ€”common causes, appointment\
-    \ recommended ifâ€¦â€\x9D) with disclaimers"
-  - Answer FAQs on clinic hours, emergency policy, and fees
-  - Enable owners to request prescription refills for pet medications through the
-    chatbot
-  - Route emergencies to on-call vet or nearest ER and provide first-aid steps if
-    appropriate
-  - Handle billing inquiries and insurance claim assistance
-  - Notify when lab results are in and schedule follow-up if needed
-  - Collect feedback on visits and monitor petâ€™s recovery progress post-visit via
-    quick check-in prompts
-- SMB: Pet Training Services (obedience schools, etc.)
-  Usecases:
-  - Book training class sessions or private training appointments for dogs (or other
-    pets)
-  - Provide info on training programs, class schedules, and trainer credentials via
-    chat
-  - Answer common questions (training methods used, what to bring, how many sessions
-    needed)
-  - Send practice homework or reinforcement tips after each class to owners through
-    chatbot
-  - Remind clients of upcoming classes and what skills will be covered
-  - Upsell advanced classes or refreshers after basic course completion
-  - Handle billing for course fees or training packages, and scheduling make-up classes
-    if missed
-  - Notify of any class cancellations (e.g., weather) and auto-reschedule
-  - "Check in on progress (e.g., â€œIs Rover still pulling on the leash?â€\x9D) and\
-    \ suggest solutions or follow-ups"
-  - Collect testimonials and success stories (with permission) to share as motivation
-    for others
-- SMB: Dog Walking Business
-  Usecases:
-  - Schedule one-time or recurring dog walks via chat and specify any special instructions
-  - "Send real-time updates or GPS tracking of walks to owners (â€œBuddy is on his\
-    \ walk now!â€\x9D)"
-  - Answer FAQs on walker background checks, how keys are managed, and service areas
-  - Manage subscription plans (e.g., daily walks package) and allow changes through
-    chatbot
-  - "Notify owners when walk is completed and perhaps share a photo or note (â€œBuddy\
-    \ enjoyed the park today!â€\x9D)"
-  - Upsell additional playtime or pet sitting services if the owner is away
-  - Handle billing and tip processing seamlessly
-  - Alert owners about any issues noticed (low on dog bags, slight limp observed,
-    etc.) by routing to appropriate level of urgency
-  - Coordinate meet-and-greet appointments with new walkers through the system
-  - Collect feedback on each walk for quality assurance and testimonials
-- SMB: Travel Agency
-  Usecases:
-  - Search and book travel itineraries (flights, hotels, tours) via chat by understanding
-    customer needs
-  - Send real-time travel alerts or updates (flight changes, safety advisories)
-  - "Auto-suggest packages or upgrades (e.g., â€œAdd a city tour on your trip?â€\x9D\
-    )"
-  - Help with cancellations or itinerary changes instantly (processing requests or
-    guiding through steps)
-  - Guide customers on visa/document requirements for destinations
-  - Schedule airport pickups/drop-offs or other add-on services for clients
-  - Estimate travel times and fare ranges for local transport at destination
-  - Offer local recommendations (restaurants, attractions) in chat, possibly via integration
-  - Integrate travel insurance offers or upsells during the booking conversation
-  - Collect trip feedback and reviews post-travel
-- SMB: Taxi / Ride-hailing Services (Local)
-  Usecases:
-  - Book immediate or scheduled rides via chat (like a text-based Uber experience)
-  - Provide fare estimates and ETA for pickups
-  - Answer FAQs about service area, operating hours, or lost-and-found procedures
-  - Allow users to choose vehicle type or special requests (car seat, pet-friendly)
-  - Send driver location updates and arrival notifications to the user
-  - Handle simple support issues (driver never arrived, fare discrepancy) by gathering
-    info for quick resolution
-  - Upsell premium services (luxury car, package delivery service) if appropriate
-  - Gather feedback after rides and handle rating submissions
-  - Help users with account issues (reset password, update payment method)
-  - Alert users of surge pricing or suggest off-peak times to save money
-- SMB: Bike / Car / RV Rental
-  Usecases:
-  - Search available rental vehicles (bikes, cars, RVs) for desired dates via chat
-  - Book rentals and handle online agreements/contracts through the chatbot
-  - Provide rental pricing, insurance options, and take customers through choosing
-    add-ons (GPS, child seat, etc.)
-  - Answer FAQs on rental policies (mileage limits, fuel, deposit)
-  - Send pickup location details and return instructions automatically
-  - Handle extension requests (keep the car an extra day) instantly if inventory allows
-  - Upsell insurance coverage or upgraded vehicle models during booking
-  - Notify about special deals or off-peak discounts to encourage bookings
-  - Manage roadside assistance requests or direct to support if trouble arises
-  - Collect post-rental feedback and any damage reporting flows
-- SMB: Tour Operator (Tours, adventure experiences)
-  Usecases:
-  - Book tour packages or excursions directly via chat after answering a few preference
-    questions
-  - Provide details on itinerary, whatâ€™s included, and what to bring for each tour
-  - Answer FAQs about group size, language, physical requirements, and safety measures
-  - Offer personalized tour recommendations based on user interests (history, food,
-    adventure)
-  - Handle date changes or cancellations in existing bookings automatically as per
-    policy
-  - Upsell add-ons like meal plans, equipment rentals (e.g., snorkeling gear), or
-    travel insurance for the tour
-  - Coordinate pickup logistics or point out map locations for tour start points
-  - Notify customers of any changes (weather delays, schedule shifts) promptly
-  - "Follow up with post-tour surveys and cross-sell other tours in different locations\
-    \ (â€œYou enjoyed our city tour; consider our day trip to the nearby mountainsâ€\x9D\
-    )"
-  - Handle special requests (dietary restrictions, private tour options by flagging
-    staff)
-- SMB: Shuttle Services (Aiport shuttles, hotel shuttles, etc.)
-  Usecases:
-  - Allow travelers to book shuttle seats for specific times/routes through chat
-  - Provide shuttle schedules, pickup locations, and fare information instantly
-  - Track shuttle location and give real-time ETA updates to waiting passengers
-  - Answer FAQs on baggage allowance, accessibility, and stops
-  - Handle group bookings or private shuttle inquiries by gathering details
-  - Notify users of any delays or service disruptions and alternate arrangements
-  - Upsell related services like city tours or partner transport options upon arrival
-  - Coordinate with flight data (if possible) to auto-adjust booking if flight delayed
-  - Manage payment and ticketing (issuing e-tickets via chat to phone)
-  - Collect feedback on punctuality and driver courtesy after the ride
-- SMB: Courier / Delivery Business (local deliveries)
-  Usecases:
-  - Accept delivery orders via chat (with pickup/drop-off addresses, package details)
-  - Provide instant quotes and ETA for deliveries
-  - Allow scheduling of courier pickups at a chosen time
-  - Track delivery status and share live updates or confirmation on delivery
-  - Answer FAQs on item restrictions, weight limits, and pricing plans
-  - Upsell express or insured delivery options when applicable
-  - Handle quick support issues (change of address, cancel delivery) automatically
-    or flag to dispatcher
-  - Notify customers of any delays (traffic, weather) and adjusted ETA
-  - Facilitate recurring pickups for businesses with automation
-  - Collect feedback ratings for each delivery to monitor courier performance
-- SMB: Moving Company (Local moves)
-  Usecases:
-  - Schedule in-home estimates or allow a quick inventory via chat for quoting a move
-  - Provide ballpark cost estimates for moving based on number of rooms or item list
-    provided
-  - Answer FAQs on whatâ€™s included (packing, disassembly), insurance, and timeframes
-  - Book moving dates and handle deposit payments through chatbot
-  - Send preparation tips to customers (packing advice, labeling) prior to move
-  - Upsell packing services or moving supplies (boxes, bubble wrap) when a move is
-    booked
-  - Coordinate any changes (additional stop, date change) and update the quote as
-    needed
-  - Notify customers of the crew en route on moving day and any delays
-  - Follow up post-move to ensure all items arrived and gather feedback
-  - Offer storage solutions or partner cleaning services for empty homes as additional
-    services
-- SMB: Limousine Services (or private car service)
-  Usecases:
-  - Book luxury car transfers or hourly charters via chat, with selection of vehicle
-    type (sedan, limo, SUV)
-  - Provide instant pricing for point-to-point transfers or estimated hourly rates
-  - Answer FAQs for special events (weddings, proms) packages and amenities included
-    (champagne, etc.)
-  - Collect itinerary details (multiple stops, wait times) to ensure accurate service
-  - Send driver and vehicle details prior to pickup and allow client to communicate
-    any last-minute changes
-  - Upsell extras like decorations for the car (just married sign, etc.) or security
-    detail if needed
-  - Handle corporate account inquiries and recurring booking management
-  - Notify clients of driver en route and real-time tracking for peace of mind
-  - Manage billing, gratuity options, and receipt sending seamlessly
-  - Gather feedback on driver professionalism and vehicle condition after the ride
-- SMB: Property Management Company
-  Usecases:
-  - Book property viewing appointments for prospective tenants or buyers
-  - Match available listings to user preferences (number of bedrooms, location, budget)
-  - Collect and verify rental application documents via secure chat upload (for leasing)
-  - Schedule virtual tours or send video walkthroughs on request
-  - Track applications or lease contract status and update applicants
-  - Send rent due reminders and provide a link or process to pay rent through chat
-  - 'Respond to maintenance requests: triage them (emergency vs non-urgent) and create
-    work ordersdesk365.io'
-  - Alert tenants about nearby properties or openings if theyâ€™re searching (for
-    relocation or upsizing)
-  - Coordinate move-in/move-out logistics (e.g., schedule elevator use, give checklist)
-  - Log property condition reports and allow tenants to add comments/photos at move-in
-    via chat
-- SMB: Short-term Rental Host / Operator (e.g., Airbnb host management)
-  Usecases:
-  - Answer guest inquiries about the property instantly (amenities, check-in time,
-    location)
-  - Facilitate booking confirmations and send pre-arrival info (key codes, directions)
-  - Provide local recommendations or concierge-type info to guests during their stay
-  - Handle routine guest requests (extra towels, Wi-Fi troubleshooting steps) by notifying
-    cleaners or giving instructions
-  - Manage check-out instructions and send automated reminders to guests
-  - Screen potential guests by answering their questions and collecting needed info
-    (age, purpose of stay)
-  - Coordinate cleaning and turnover service scheduling automatically between bookings
-  - "Notify host of any potential issues flagged by guests (e.g., â€œwater pressure\
-    \ is lowâ€\x9D) and suggest solutions"
-  - 'Manage reviews: remind guests to leave a review and even draft a thank-you for
-    host to post as a response'
-  - Upsell additional services like airport pickup, early check-in/late check-out
-    for a fee if allowed
-- SMB: Vacation Rental Management (for multiple holiday properties)
-  Usecases:
-  - Handle all guest communications across multiple properties instantly (as above
-    for each booking)
-  - Provide centralized availability info and take direct bookings if applicable (bypassing
-    third-party fees)
-  - "Optimize pricing suggestions by analyzing demand (though this is more an AI analytics\
-    \ function than chatbot, but could communicate â€œthis weekend price dropped â€“\
-    \ want to book?â€\x9D to interested repeat guests)"
-  - Coordinate maintenance tasks by receiving guest-reported issues and dispatching
-    contractors
-  - Alert managers to any red flags (party risk, guest sending concerning messages)
-    for intervention
-  - Cross-sell vacancies â€“ if one property is booked, the bot can suggest a similar
-    one open for those dates
-  - "Manage owner reports â€“ letting property owners know occupancy rates and earnings\
-    \ via simple queries (â€œHow did my beach house do this month?â€\x9D)"
-  - Streamline the review management for all listings (as above, prompting reviews
-    and consolidating feedback)
-  - Field inquiries from property owners who might want management services, capturing
-    those leads too
-  - Collect post-stay guest preferences to refine future marketing (e.g., guest loved
-    pet- friendly aspect, push pet-friendly homes to them next time)
-- SMB: Commercial Leasing Broker
-  Usecases:
-  - Capture inquiries for commercial spaces (office, retail) including desired square
-    footage, budget, location â€“ to qualify leads
-  - Provide information on available listings (basic specs, floor plans if integrated,
-    scheduled tours)
-  - Schedule site visits or meetings between prospective tenants and brokers/landlords
-  - Answer FAQs about lease terms, common area amenities, parking, etc., for listed
-    properties
-  - Send follow-up materials automatically (brochures, proposals) after a chat interaction
-  - Alert interested parties when new properties that match their criteria come on
-    the market
-  - Help existing tenants submit service requests or questions about lease via chat
-    (if the brokerage also manages)
-  - Notify brokers about high-value leads or those ready to negotiate (so they can
-    prioritize contact)
-  - "Coordinate lease application processes by providing necessary forms and status\
-    \ updates (â€œYour application is with the landlord for reviewâ€\x9D)"
-  - Collect feedback from site visits and refine search results for the client
-- SMB: Real Estate Photography / Staging
-  Usecases:
-  - Book appointments for property photo shoots or staging consultations
-  - Answer FAQs for agents/owners about services (number of photos, turnaround time,
-    staging inventory)
-  - Provide pricing quotes based on property size and service package via chat
-  - "Send prep instructions automatically (e.g., â€œPlease declutter countertops before\
-    \ the shootâ€\x9D)"
-  - Coordinate key pickup or access details with minimal back-and-forth
-  - Notify when photos or 3D tours are ready and deliver links through chat securely
-  - Upsell add-ons like twilight photos, drone shots, or virtual staging if not already
-    included
-  - Handle rescheduling due to weather or delays quickly with available slots
-  - Manage billing and invoice queries from clients
-  - Collect feedback from agents on photo quality or staging impact (and possibly
-    gather testimonial quotes)
-- SMB: Shopify/DTC Product Store (Small online brand store)
-  Usecases:
-  - Assist with placing orders by guiding users through product selection to checkout
-  - Send live order tracking updates on shipping status
-  - Help apply coupons or promo codes correctly during checkout
-  - Support return/refund workflows by generating labels or instructions instantly
-  - Handle product questions or sizing help (possibly referencing a knowledge base)desk365.io
-  - Offer product recommendations based on browsing or past purchases (upsell/cross-sell)
-  - "Enable back-in-stock notifications sign-up through chat (â€œNotify me when availableâ€\x9D\
-    )"
-  - "Track customer behavior on site and proactively offer help if they seem stuck\
-    \ (e.g., â€œHave a question about this item?â€\x9D)"
-  - Gather reviews and feedback after purchase via follow-up message
-  - Resolve simple payment or login issues (send password reset, etc.)
-- SMB: Etsy / Handmade Goods Shop (Independent maker online)
-  Usecases:
-  - Answer questions about custom orders or personalization options quickly (key in
-    handmade)
-  - Provide shipping estimates and options for various regions
-  - Inform about production lead time and materials used (transparency for handmade
-    items)
-  - 'Assist in applying for custom requests: chatbot collects initial details for
-    the artisan'
-  - Offer recommendations of other items in the shop that complement what the user
-    is viewing (e.g., matching earrings for a necklace)
-  - "Handle order status inquiries (â€œHas my custom painting shipped yet?â€\x9D)\
-    \ and update on delays if any"
-  - Manage simple issues like address changes or order modifications before shipping
-  - Upsell gift wrapping or note inclusion as an add-on at checkout
-  - Thank customers post-purchase and encourage reviews or sharing on social media
-  - For digital products, deliver the files or links instantly and help with download
-    issues
-- SMB: Dropshipping Store
-  Usecases:
-  - Assist with product questions despite not holding inventory (pull info from suppliers
-    and previous Q&A)
-  - Provide clarity on shipping times (often long in dropshipping) to set expectations
-  - Handle order tracking and status updates (integrating with supplierâ€™s info)
-  - Process returns or refunds by guiding through the steps and perhaps automating
-    supplier RMA requests
-  - Answer FAQs about product quality, variants, sizing (via a knowledge base or dynamic
-    learning from feedback)
-  - Upsell related trending items or bundle offers to increase average order value
-  - Address payment issues or alternative payment method queries
-  - Reassure customers on buyer protection, secure checkout â€“ important for trust
-    in dropship sites
-  - Gauge customer satisfaction post-delivery (especially to filter out if a product
-    is low quality â€“ feeding back data to store owner)
-  - Collect email/contacts via chat for remarketing if user didnâ€™t complete purchase,
-    offering an incentive
-- SMB: Online Course Business (Selling digital courses or coaching)
-  Usecases:
-  - Answer prospective student questions about course content, difficulty, prerequisites
-  - Provide information on pricing, bundles, any available discounts or payment plans
-  - Guide users on how the course is delivered (videos, live sessions, duration)
-  - Instantly deliver sample lessons or previews when asked (to entice sign-up)
-  - Handle account creation issues or login/password resets for the learning portal
-  - "Send reminders to sign up when enrollment periods are closing (â€œOnly 2 days\
-    \ left to join this cohortâ€\x9D)"
-  - Upsell one-on-one coaching or advanced courses after a user completes a basic
-    course
-  - "Provide progress tracking updates or encouragement (â€œYouâ€™re 50% done â€“\
-    \ keep going!â€\x9D) via chat"
-  - Address technical problems (video not playing, etc.) by troubleshooting or directing
-    to support articles
-  - Solicit feedback after course completion and reviews/testimonials
-- SMB: Influencer or Content Creation (monetizing via merch, events, etc.)
-  Usecases:
-  - Answer fan questions about merchandise (sizes, shipping for creatorâ€™s products)
-    or content (upload schedule, where to find something)
-  - "Manage subscription sign-ups if the influencer has premium content (like Patreon/OnlyFans\
-    \ style queries â€“ â€œwhat do I get at this tier?â€\x9D)"
-  - Handle booking inquiries for events, meet-and-greets, or sponsorship requests
-    by collecting details for the creatorâ€™s team
-  - "Deliver announcements or new content links automatically to fans who ask (â€œLatest\
-    \ podcast episode linkâ€\x9D)"
-  - "Provide a friendly â€œinteractive FAQâ€\x9D experience about the creator (instead\
-    \ of fans scouring old posts)"
-  - 'Upsell merch or tickets: if someone asks about a hoodie thatâ€™s sold out, offer
-    another design or a pre-order; or promote upcoming tour dates if region matches'
-  - Collect fan feedback or ideas via chat to funnel into content planning
-  - Address issues with orders (if selling directly), like tracking or returns for
-    merch
-  - Moderate basic community questions to reduce load on the creator (with guidelines
-    to not cross lines or at least flag issues)
-  - "Keep engagement high by maybe offering fun easter eggs in chat (â€œAsk me for\
-    \ a jokeâ€\x9D leads to a pre-loaded personal joke from the influencer)"
-- SMB: Substack/Newsletter Business
-  Usecases:
-  - Assist users with newsletter subscription management (sign up, change email, unsubscribe
-    issues) via chat quickly
-  - Answer FAQs about subscription tiers (free vs paid content differences) and pricing
-  - "Provide archive access or help find past newsletter issues by topic (â€œCan you\
-    \ send me the link to last monthâ€™s issue on AI?â€\x9D)"
-  - Collect user interests to recommend relevant newsletter editions or related content
-    (boost engagement)
-  - Handle advertising or sponsorship inquiries by gathering initial information for
-    the writer
-  - "Send notifications or quick summaries when a new issue is out, if asked (â€œWhat\
-    \ was todayâ€™s main story?â€\x9D â€“ possibly encouraging them to read the full\
-    \ thing)"
-  - Field common questions or feedback for the author (and possibly compile them)
-  - Provide tech support for login or platform issues
-  - "Upsell annual subscription (if monthly user: â€œYouâ€™ve read 5 issues â€“ get\
-    \ 2 months free with annual upgradeâ€\x9D)"
-  - Gather reader feedback on content preferences to help shape future issues
-- SMB: customer communication or social media)
-  Usecases:
-  - Answer product questions from potential customers in real-time on the brandâ€™s
-    site or social channels (pointing out features, compatibility, etc.)
-  - Direct customers to the Amazon listing or alternative buying options and track
-    if they made a purchase (maybe offering a small promo if bought direct)
-  - Handle post-purchase support that Amazon might not cover well â€“ troubleshooting
-    product usage, sending PDF manuals, etc.
-  - Manage warranty claims or replacements by collecting necessary info via chat (even
-    if final fulfillment goes through Amazon, the support can originate here)
-  - 'Solicit reviews: after purchase, engage customer to ensure satisfaction and gently
-    remind them to leave a review on Amazon if happy (which boosts future sales)'
-  - "Upsell newer models or related products to existing customers (â€œIf you liked\
-    \ our blender, we have a new attachment kit availableâ€¦â€\x9D)"
-  - Monitor for any mentions of issues in chat to alert seller to potential quality
-    problems (preventing bad reviews by proactive outreach)
-  - Provide shipping updates or policy info if customers ask pre-sale (even though
-    Amazon sends notifications, some might still have questions the bot can handle
-    to reassure them)
-  - Capture email or contact info from interested but not yet buying visitors for
-    later marketing (if the seller has their own site)
-  - Serve as an intermediary to boost customer confidence, emphasizing the brandâ€™s
-    own service commitment beyond Amazonâ€™s standard policies
-- SMB: Print-on-Demand Store (Custom t-shirts, mugs, etc.)
-  Usecases:
-  - "Help customers create or customize products via chat (â€œGenerate your design\
-    \ text hereâ€\x9D) and preview templates"
-  - Answer questions about product material, sizing, and print quality
-  - Provide shipping timelines (since POD can sometimes be a bit longer) and options
-  - Handle issues where a design might not meet content guidelines and suggest edits
-  - "Upsell bulk discounts if the user is ordering for a group/event (â€œOrdering\
-    \ 10+ shirts? Hereâ€™s a code for 15% off.â€\x9D)"
-  - "Track orders and update customers on production stage (â€œYour custom mug is\
-    \ being printedâ€\x9D)"
-  - Facilitate easy reorders if someone wants the same design again later
-  - Manage any complaints about print outcome by initiating reprint/refund process
-    smoothly
-  - Offer suggestions of popular designs or complementary items to add to cart
-  - Collect feedback on the design tool usability and final product satisfaction
+- Students: Undergraduate Student
+  Usecases:
+    - Review assignments before submission
+    - Improve clarity and structure of answers
+    - Ask questions using uploaded study material
+    - Summarize chapters or lectures
+    - Identify missing points in responses
+    - Organize study notes by subject
+    - Prepare quick revision summaries
+    - Validate references used
+    - Track assignment readiness
+    - Generate final submission drafts
+
+- Students: Graduate Student (Masters / PhD) & Researchers
+  Usecases:
+    - Review thesis or research drafts
+    - Identify gaps in arguments or methods
+    - Search papers, notes, and references
+    - Compare multiple research documents
+    - Summarize papers for quick recall
+    - Maintain structured research notes
+    - Validate citations and sources
+    - Track research progress milestones
+    - Generate supervisor-ready summaries
+    - Prepare chapter or paper drafts
+
+- Students: Professional Student (Law / Medicine / MBA)
+  Usecases:
+    - Review case studies or reports
+    - Ask questions using textbooks and notes
+    - Summarize complex material
+    - Identify weak reasoning or analysis gaps
+    - Prepare exam-ready answers
+    - Organize notes by topic or case
+    - Compare multiple case documents
+    - Validate conclusions against sources
+    - Track preparation readiness
+    - Generate presentation or submission drafts
+
+- Students: Vocational / Trade Student
+  Usecases:
+    - Review manuals and training material
+    - Ask questions using course documents
+    - Summarize procedures into steps
+    - Identify missing safety or process steps
+    - Organize practical notes
+    - Prepare task checklists
+    - Validate understanding of guidelines
+    - Track training progress
+    - Generate practice summaries
+    - Prepare assessment material
+
+- Professional Services: Cybersecurity & Privacy Consulting
+  Usecases:
+    - Review security assessments and reports
+    - Identify risks and control gaps
+    - Search policies and standards
+    - Compare client evidence sets
+    - Summarize findings for clients
+    - Maintain structured assessment notes
+    - Validate compliance evidence
+    - Track engagement readiness
+    - Generate client-ready reports
+    - Maintain defensible review records
+
+- Professional Services: Law Firm
+  Usecases:
+    - Review contracts and legal documents
+    - Identify risk clauses or omissions
+    - Search case notes and precedents
+    - Summarize long legal material
+    - Draft client communications
+    - Maintain structured case notes
+    - Validate consistency across filings
+    - Track case readiness
+    - Generate client legal summaries
+    - Maintain review and decision records
+
+- Professional Services: Growth & Marketing Strategy
+  Usecases:
+    - Review strategy and campaign documents
+    - Identify gaps in assumptions or plans
+    - Search past reports and data
+    - Summarize performance insights
+    - Draft strategy presentations
+    - Maintain structured planning notes
+    - Validate recommendations against data
+    - Track execution readiness
+    - Generate leadership summaries
+    - Maintain decision history
+
+- Professional Services: Business Consulting
+  Usecases:
+    - Review client inputs and documents
+    - Identify operational or strategic gaps
+    - Search internal frameworks and notes
+    - Summarize findings into insights
+    - Draft proposals or recommendations
+    - Maintain structured engagement notes
+    - Validate conclusions across sources
+    - Track project progress
+    - Generate client-ready reports
+    - Maintain review documentation
+
+- Professional Services: HR / Staffing Firm
+  Usecases:
+    - Review resumes and profiles
+    - Identify skill gaps or mismatches
+    - Search hiring policies and criteria
+    - Summarize candidate evaluations
+    - Draft client or candidate messages
+    - Maintain structured interview notes
+    - Validate hiring decisions
+    - Track recruitment stages
+    - Generate hiring summaries
+    - Maintain audit-ready records
+
+- Professional Services: Financial Consultant
+  Usecases:
+    - Review financial plans and data
+    - Identify risks or missing inputs
+    - Search internal policies and notes
+    - Summarize financial insights
+    - Draft client recommendations
+    - Maintain structured client notes
+    - Validate assumptions across documents
+    - Track engagement readiness
+    - Generate client summaries
+    - Maintain decision records
+
+- Professional Services: Architects
+  Usecases:
+    - Review design documents and drawings
+    - Identify missing requirements or risks
+    - Search standards and prior designs
+    - Summarize project documentation
+    - Draft design explanations
+    - Maintain structured project notes
+    - Validate consistency across drawings
+    - Track design readiness
+    - Generate client summaries
+    - Create RFPs
+
+- Professional Services: CPA (Certified Public Accountant)
+  Usecases:
+    - Review financial statements and disclosures
+    - Identify reporting or audit risks early
+    - Analyze client data for decision support
+    - Compare performance across periods
+    - Summarize financial insights for management
+    - Prepare advisory notes for boards
+    - Validate assumptions in forecasts or valuations
+    - Track audit or filing readiness
+    - Generate client-ready analysis reports
+    - Maintain defensible working papers
+
+- Professional Services: CA (Chartered Accountant)
+  Usecases:
+    - Review books, returns, and filings
+    - Identify tax exposure and compliance risks
+    - Analyze data for tax and structure decisions
+    - Compare multi-year filings for consistency
+    - Summarize financial position clearly
+    - Prepare tax and restructuring advisory notes
+    - Validate numbers across documents
+    - Track statutory deadlines
+    - Generate reports for authorities or lenders
+    - Maintain compliance-ready records
+
+- Professional Services: ESG Consultants
+  Usecases:
+    - Review ESG disclosures and datasets
+    - Identify gaps in ESG reporting
+    - Search ESG standards and frameworks
+    - Summarize sustainability metrics
+    - Draft ESG narratives and disclosures
+    - Maintain structured evidence notes
+    - Validate data across reports
+    - Track reporting readiness
+    - Generate ESG assessment reports
+    - Maintain audit-ready ESG records
+
+- Institution: Educational Institutions & Research Labs
+  Usecases:
+    - Review academic or research submissions
+    - Identify quality or compliance gaps
+    - Search institutional policies
+    - Summarize research outputs
+    - Draft academic communications
+    - Maintain structured institutional notes
+    - Validate alignment with guidelines
+    - Track review readiness
+    - Generate institutional reports
+    - Maintain audit and review records
+
+- Institution: Healthcare Services
+  Usecases:
+    - Review clinical or operational documents
+    - Identify process or compliance risks
+    - Search SOPs and guidelines
+    - Summarize case or workflow data
+    - Draft internal communications
+    - Maintain structured case notes
+    - Validate consistency across records
+    - Track review readiness
+    - Generate management summaries
+    - Maintain compliance documentation
+
+- Institution: Technology Services
+  Usecases:
+    - Review technical and project documents
+    - Identify risks or missing requirements
+    - Search internal documentation
+    - Summarize system or project status
+    - Draft stakeholder updates
+    - Maintain structured technical notes
+    - Validate consistency across artifacts
+    - Track delivery readiness
+    - Generate leadership reports
+    - Maintain review history
+- Others: Others
+  Usecases:
+    - Review documents, notes, or drafts for clarity and completeness
+    - Ask questions using uploaded files or internal knowledge
+    - Search across documents, emails, or records quickly
+    - Summarize long documents or discussions into key points
+    - Identify gaps, inconsistencies, or missing information
+    - Draft or rewrite emails, reports, or explanations
+    - Maintain structured notes for ongoing work
+    - Validate information across multiple sources
+    - Track progress and readiness of tasks or deliverables
+    - Generate clear summaries or reports for stakeholders

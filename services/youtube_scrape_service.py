@@ -156,7 +156,7 @@ class YouTubeScrapingClient:
             return None, None
 
         try:
-            print(f"[YOUTUBE] Trying PyTube extraction for: {youtube_url}")
+            # print(f"[YOUTUBE] Trying PyTube extraction for: {youtube_url}")
             yt = YouTube(youtube_url)
 
             # Get metadata
@@ -169,9 +169,9 @@ class YouTubeScrapingClient:
                 "upload_date": "",
             }
 
-            print(
-                f"[YOUTUBE] PyTube metadata: {metadata['title']} by {metadata['author']}"
-            )
+            # print(
+            #     f"[YOUTUBE] PyTube metadata: {metadata['title']} by {metadata['author']}"
+            # )
 
             # Download audio
             audio_stream = yt.streams.filter(only_audio=True).first()
@@ -192,17 +192,17 @@ class YouTubeScrapingClient:
 
             shutil.move(audio_file, clean_audio_path)
 
-            print(f"[YOUTUBE] PyTube audio downloaded: {clean_audio_path}")
+            # print(f"[YOUTUBE] PyTube audio downloaded: {clean_audio_path}")
             return metadata, clean_audio_path
 
         except Exception as e:
-            print(f"[YOUTUBE] PyTube extraction failed: {e}")
+            # print(f"[YOUTUBE] PyTube extraction failed: {e}")
             return None, None
 
     def get_video_metadata_and_audio_with_proxy(self, youtube_url):
         """Get video metadata and extract audio using yt-dlp with proxy"""
         try:
-            print(f"[YOUTUBE] Starting yt-dlp with proxy extraction for: {youtube_url}")
+            # print(f"[YOUTUBE] Starting yt-dlp with proxy extraction for: {youtube_url}")
             proxy = self.get_rotating_proxy()
 
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -238,10 +238,10 @@ class YouTubeScrapingClient:
                 # Add proxy if available
                 if proxy:
                     ydl_opts["proxy"] = proxy
-                    print(f"[YOUTUBE] Using proxy: {proxy}")
+                    # print(f"[YOUTUBE] Using proxy: {proxy}")
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    print(f"[YOUTUBE] Extracting video info with proxy...")
+                    # print(f"[YOUTUBE] Extracting video info with proxy...")
                     info = ydl.extract_info(youtube_url, download=False)
 
                     metadata = {
@@ -253,11 +253,11 @@ class YouTubeScrapingClient:
                         "upload_date": info.get("upload_date", ""),
                     }
 
-                    print(
-                        f"[YOUTUBE] Proxy extracted metadata: {metadata['title']} by {metadata['author']}"
-                    )
+                    # print(
+                    #     f"[YOUTUBE] Proxy extracted metadata: {metadata['title']} by {metadata['author']}"
+                    # )
 
-                    print(f"[YOUTUBE] Starting audio download with proxy...")
+                    # print(f"[YOUTUBE] Starting audio download with proxy...")
                     ydl.download([youtube_url])
 
                     # Find downloaded file
@@ -265,9 +265,9 @@ class YouTubeScrapingClient:
                     for file in os.listdir(temp_dir):
                         file_path = os.path.join(temp_dir, file)
                         if os.path.isfile(file_path):
-                            print(
-                                f"[YOUTUBE] Found file: {file} ({os.path.getsize(file_path)} bytes)"
-                            )
+                            # print(
+                            #     f"[YOUTUBE] Found file: {file} ({os.path.getsize(file_path)} bytes)"
+                            # )
                             audio_file = file_path
                             break
 
@@ -283,24 +283,24 @@ class YouTubeScrapingClient:
                         f"youtube_audio_proxy_{os.getpid()}{file_ext}",
                     )
                     shutil.copy2(audio_file, clean_audio_path)
-                    print(f"[YOUTUBE] Proxy audio copied to: {clean_audio_path}")
+                    # print(f"[YOUTUBE] Proxy audio copied to: {clean_audio_path}")
 
                     return metadata, clean_audio_path
 
         except Exception as e:
-            print(f"[YOUTUBE] yt-dlp with proxy extraction failed: {e}")
+            # print(f"[YOUTUBE] yt-dlp with proxy extraction failed: {e}")
             return None, None
 
     def get_transcript_with_proxy(self, video_id):
         """Get transcript using YouTube Transcript API with proxy simulation"""
         if not YOUTUBE_TRANSCRIPT_AVAILABLE:
-            print(f"[YOUTUBE] YouTube transcript API not available")
+            # print(f"[YOUTUBE] YouTube transcript API not available")
             return None
 
         try:
-            print(
-                f"[YOUTUBE] Trying transcript API with enhanced headers for {video_id}"
-            )
+            # print(
+            #     f"[YOUTUBE] Trying transcript API with enhanced headers for {video_id}"
+            # )
 
             # Simulate different session/headers to avoid blocking
 
@@ -319,7 +319,7 @@ class YouTubeScrapingClient:
             time.sleep(random.uniform(1, 3))
 
             transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
-            print(f"[YOUTUBE] Transcript API found {len(transcript_data)} segments")
+            # print(f"[YOUTUBE] Transcript API found {len(transcript_data)} segments")
 
             # Combine transcript segments
             full_transcript = ""
@@ -329,8 +329,8 @@ class YouTubeScrapingClient:
                     full_transcript += text + " "
 
             result = full_transcript.strip()
-            print(f"[YOUTUBE] Transcript extracted: {len(result)} characters")
-            print(f"[YOUTUBE] Transcript preview: {result[:200]}...")
+            # print(f"[YOUTUBE] Transcript extracted: {len(result)} characters")
+            # print(f"[YOUTUBE] Transcript preview: {result[:200]}...")
             return result
 
         except Exception as e:
@@ -339,18 +339,18 @@ class YouTubeScrapingClient:
                 "YouTube is blocking requests from your IP" in error_msg
                 or "cloud provider" in error_msg
             ):
-                print(
-                    f"[YOUTUBE] YouTube blocked transcript API (cloud provider restriction)"
-                )
+                # print(
+                #     f"[YOUTUBE] YouTube blocked transcript API (cloud provider restriction)"
+                # )
                 return None
             else:
-                print(f"[YOUTUBE] Transcript API with proxy simulation failed: {e}")
+                # print(f"[YOUTUBE] Transcript API with proxy simulation failed: {e}")
                 return None
 
     def extract_transcript_selenium(self, youtube_url):
         """Extract transcript using browser automation (Selenium)"""
         try:
-            print(f"[YOUTUBE] Trying Selenium transcript extraction for: {youtube_url}")
+            # print(f"[YOUTUBE] Trying Selenium transcript extraction for: {youtube_url}")
 
             # Setup Selenium driver (reuse existing setup)
             # driver = (
@@ -422,9 +422,9 @@ class YouTubeScrapingClient:
                             continue
 
                     if transcript_text:
-                        print(
-                            f"[YOUTUBE] Selenium transcript extracted: {len(transcript_text)} characters"
-                        )
+                        # print(
+                        #     f"[YOUTUBE] Selenium transcript extracted: {len(transcript_text)} characters"
+                        # )
                         return transcript_text
 
             except Exception as e:
@@ -454,113 +454,113 @@ class YouTubeScrapingClient:
                     driver.quit()
                 except:
                     pass
-        """Get video metadata and extract audio using yt-dlp"""
-        try:
-            print(f"[YOUTUBE] Starting yt-dlp extraction for: {youtube_url}")
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Use a clean filename template
-                output_template = os.path.join(temp_dir, "audio.%(ext)s")
+        # """Get video metadata and extract audio using yt-dlp"""
+        # try:
+        #     print(f"[YOUTUBE] Starting yt-dlp extraction for: {youtube_url}")
+        #     with tempfile.TemporaryDirectory() as temp_dir:
+        #         # Use a clean filename template
+        #         output_template = os.path.join(temp_dir, "audio.%(ext)s")
 
-                ydl_opts = {
-                    "format": "bestaudio",  # Just get best audio, no conversion
-                    "outtmpl": output_template,
-                    "quiet": False,  # Enable verbose output for debugging
-                    "no_warnings": False,
-                    # Enhanced headers to avoid bot detection
-                    "http_headers": {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "en-us,en;q=0.5",
-                        "Accept-Encoding": "gzip,deflate",
-                        "Accept-Charset": "ISO-8859-1,utf-8;q=0.7,*;q=0.7",
-                        "Keep-Alive": "300",
-                        "Connection": "keep-alive",
-                    },
-                    # Add extractor arguments for YouTube
-                    "extractor_args": {
-                        "youtube": {
-                            "skip": ["hls", "dash"],
-                            "player_skip": ["configs"],
-                        }
-                    },
-                    # Retry settings
-                    "retries": 5,
-                    "fragment_retries": 5,
-                    # Add some delay to avoid rate limiting
-                    "sleep_interval": 2,
-                    "max_sleep_interval": 10,
-                }
+        #         ydl_opts = {
+        #             "format": "bestaudio",  # Just get best audio, no conversion
+        #             "outtmpl": output_template,
+        #             "quiet": False,  # Enable verbose output for debugging
+        #             "no_warnings": False,
+        #             # Enhanced headers to avoid bot detection
+        #             "http_headers": {
+        #                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        #                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        #                 "Accept-Language": "en-us,en;q=0.5",
+        #                 "Accept-Encoding": "gzip,deflate",
+        #                 "Accept-Charset": "ISO-8859-1,utf-8;q=0.7,*;q=0.7",
+        #                 "Keep-Alive": "300",
+        #                 "Connection": "keep-alive",
+        #             },
+        #             # Add extractor arguments for YouTube
+        #             "extractor_args": {
+        #                 "youtube": {
+        #                     "skip": ["hls", "dash"],
+        #                     "player_skip": ["configs"],
+        #                 }
+        #             },
+        #             # Retry settings
+        #             "retries": 5,
+        #             "fragment_retries": 5,
+        #             # Add some delay to avoid rate limiting
+        #             "sleep_interval": 2,
+        #             "max_sleep_interval": 10,
+        #         }
 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    print(f"[YOUTUBE] Extracting video info...")
-                    # Get video info first
-                    info = ydl.extract_info(youtube_url, download=False)
+        #         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        #             print(f"[YOUTUBE] Extracting video info...")
+        #             # Get video info first
+        #             info = ydl.extract_info(youtube_url, download=False)
 
-                    # Extract metadata
-                    metadata = {
-                        "title": info.get("title", "YouTube Video"),
-                        "author": info.get("uploader", info.get("channel", "Unknown")),
-                        "duration": info.get("duration", None),
-                        "description": info.get("description", ""),
-                        "view_count": info.get("view_count", 0),
-                        "upload_date": info.get("upload_date", ""),
-                    }
+        #             # Extract metadata
+        #             metadata = {
+        #                 "title": info.get("title", "YouTube Video"),
+        #                 "author": info.get("uploader", info.get("channel", "Unknown")),
+        #                 "duration": info.get("duration", None),
+        #                 "description": info.get("description", ""),
+        #                 "view_count": info.get("view_count", 0),
+        #                 "upload_date": info.get("upload_date", ""),
+        #             }
 
-                    print(
-                        f"[YOUTUBE] Extracted metadata: {metadata['title']} by {metadata['author']} ({metadata['duration']}s)"
-                    )
+        #             print(
+        #                 f"[YOUTUBE] Extracted metadata: {metadata['title']} by {metadata['author']} ({metadata['duration']}s)"
+        #             )
 
-                    print(f"[YOUTUBE] Starting audio download...")
-                    # Download audio
-                    ydl.download([youtube_url])
+        #             print(f"[YOUTUBE] Starting audio download...")
+        #             # Download audio
+        #             ydl.download([youtube_url])
 
-                    # Find the downloaded audio file
-                    audio_file = None
-                    print(f"[YOUTUBE] Checking temp directory: {temp_dir}")
-                    for file in os.listdir(temp_dir):
-                        file_path = os.path.join(temp_dir, file)
-                        if os.path.isfile(file_path):
-                            print(
-                                f"[YOUTUBE] Found file: {file} ({os.path.getsize(file_path)} bytes)"
-                            )
-                            audio_file = file_path
-                            break
+        #             # Find the downloaded audio file
+        #             audio_file = None
+        #             print(f"[YOUTUBE] Checking temp directory: {temp_dir}")
+        #             for file in os.listdir(temp_dir):
+        #                 file_path = os.path.join(temp_dir, file)
+        #                 if os.path.isfile(file_path):
+        #                     print(
+        #                         f"[YOUTUBE] Found file: {file} ({os.path.getsize(file_path)} bytes)"
+        #                     )
+        #                     audio_file = file_path
+        #                     break
 
-                    if not audio_file:
-                        raise Exception("No audio file found after download")
+        #             if not audio_file:
+        #                 raise Exception("No audio file found after download")
 
-                    # Copy the file to a new location with a clean name since temp_dir will be deleted
-                    import shutil
+        #             # Copy the file to a new location with a clean name since temp_dir will be deleted
+        #             import shutil
 
-                    file_ext = os.path.splitext(audio_file)[1] or ".webm"
-                    clean_audio_path = os.path.join(
-                        tempfile.gettempdir(), f"youtube_audio_{os.getpid()}{file_ext}"
-                    )
-                    shutil.copy2(audio_file, clean_audio_path)
-                    print(f"[YOUTUBE] Audio copied to: {clean_audio_path}")
+        #             file_ext = os.path.splitext(audio_file)[1] or ".webm"
+        #             clean_audio_path = os.path.join(
+        #                 tempfile.gettempdir(), f"youtube_audio_{os.getpid()}{file_ext}"
+        #             )
+        #             shutil.copy2(audio_file, clean_audio_path)
+        #             print(f"[YOUTUBE] Audio copied to: {clean_audio_path}")
 
-                    return metadata, clean_audio_path
+        #             return metadata, clean_audio_path
 
-        except Exception as e:
-            print(f"[YOUTUBE] yt-dlp extraction failed: {e}")
-            import traceback
+        # except Exception as e:
+        #     print(f"[YOUTUBE] yt-dlp extraction failed: {e}")
+        #     import traceback
 
-            traceback.print_exc()
-            return None, None
+        #     traceback.print_exc()
+        #     return None, None
 
     def get_transcript_fallback(self, video_id):
         """Fallback to YouTube transcript API if yt-dlp fails"""
         if not YOUTUBE_TRANSCRIPT_AVAILABLE:
-            print(f"[YOUTUBE] YouTube transcript API not available")
+            # print(f"[YOUTUBE] YouTube transcript API not available")
             return None
 
         try:
-            print(f"[YOUTUBE] Trying fallback transcript API for {video_id}")
+            # print(f"[YOUTUBE] Trying fallback transcript API for {video_id}")
             # Use the correct API method
             transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
-            print(
-                f"[YOUTUBE] Found transcript data with {len(transcript_data)} segments"
-            )
+            # print(
+            #     f"[YOUTUBE] Found transcript data with {len(transcript_data)} segments"
+            # )
 
             # Combine transcript segments
             full_transcript = ""
@@ -570,8 +570,8 @@ class YouTubeScrapingClient:
                     full_transcript += text + " "
 
             result = full_transcript.strip()
-            print(f"[YOUTUBE] Transcript extracted: {len(result)} characters")
-            print(f"[YOUTUBE] Transcript preview: {result[:200]}...")
+            # print(f"[YOUTUBE] Transcript extracted: {len(result)} characters")
+            # print(f"[YOUTUBE] Transcript preview: {result[:200]}...")
             return result
 
         except Exception as e:
@@ -580,12 +580,12 @@ class YouTubeScrapingClient:
                 "YouTube is blocking requests from your IP" in error_msg
                 or "cloud provider" in error_msg
             ):
-                print(
-                    f"[YOUTUBE] YouTube blocked our server IP (cloud provider restriction)"
-                )
+                # print(
+                #     f"[YOUTUBE] YouTube blocked our server IP (cloud provider restriction)"
+                # )
                 return None
             else:
-                print(f"[YOUTUBE] Fallback transcript API failed for {video_id}: {e}")
+                # print(f"[YOUTUBE] Fallback transcript API failed for {video_id}: {e}")
                 import traceback
 
                 traceback.print_exc()
@@ -596,11 +596,11 @@ class YouTubeScrapingClient:
         try:
             # For now, return the original file since ffmpeg is not available
             # This will be enhanced when ffmpeg is installed
-            print(f"[YOUTUBE] ffmpeg not available, using original file (no splitting)")
+            # print(f"[YOUTUBE] ffmpeg not available, using original file (no splitting)")
             return [audio_file_path]
 
         except Exception as e:
-            print(f"[YOUTUBE] Error splitting audio: {e}")
+            # print(f"[YOUTUBE] Error splitting audio: {e}")
             return [audio_file_path]
 
     async def transcribe_audio_segments(self, audio_segments):
@@ -609,19 +609,19 @@ class YouTubeScrapingClient:
             all_transcripts = []
 
             for i, segment_file in enumerate(audio_segments):
-                print(
-                    f"[YOUTUBE] Transcribing segment {i+1}/{len(audio_segments)}: {segment_file}"
-                )
-                print(f"[YOUTUBE] File exists: {os.path.exists(segment_file)}")
-                if os.path.exists(segment_file):
-                    print(f"[YOUTUBE] File size: {os.path.getsize(segment_file)} bytes")
+                # print(
+                #     f"[YOUTUBE] Transcribing segment {i+1}/{len(audio_segments)}: {segment_file}"
+                # )
+                # print(f"[YOUTUBE] File exists: {os.path.exists(segment_file)}")
+                # if os.path.exists(segment_file):
+                # print(f"[YOUTUBE] File size: {os.path.getsize(segment_file)} bytes")
 
                 transcript = await self.speech_service.transcribe_audio(segment_file)
                 if transcript:
                     all_transcripts.append(transcript)
-                    print(f"[YOUTUBE] Segment {i+1} transcript: {transcript[:100]}...")
-                else:
-                    print(f"[YOUTUBE] No transcript for segment {i+1}")
+                    # print(f"[YOUTUBE] Segment {i+1} transcript: {transcript[:100]}...")
+                # else:
+                #     print(f"[YOUTUBE] No transcript for segment {i+1}")
 
                 # Clean up segment file if it's different from original
                 try:
@@ -632,14 +632,14 @@ class YouTubeScrapingClient:
 
             # Combine all transcripts
             combined_transcript = " ".join(all_transcripts)
-            print(
-                f"[YOUTUBE] Combined transcript length: {len(combined_transcript)} characters"
-            )
+            # print(
+            #     f"[YOUTUBE] Combined transcript length: {len(combined_transcript)} characters"
+            # )
 
             return combined_transcript if combined_transcript.strip() else None
 
         except Exception as e:
-            print(f"[YOUTUBE] Error transcribing segments: {e}")
+            # print(f"[YOUTUBE] Error transcribing segments: {e}")
             import traceback
 
             traceback.print_exc()
@@ -648,7 +648,7 @@ class YouTubeScrapingClient:
     async def transcribe_audio(self, audio_file_path):
         """Transcribe audio using the existing Speech2TextService with segmentation for long files"""
         try:
-            print(f"[YOUTUBE] Starting transcription for: {audio_file_path}")
+            # print(f"[YOUTUBE] Starting transcription for: {audio_file_path}")
 
             # Split audio if it's too long (currently returns original file)
             audio_segments = self.split_audio_file(
@@ -660,7 +660,7 @@ class YouTubeScrapingClient:
 
             return transcript
         except Exception as e:
-            print(f"[YOUTUBE] Error in transcribe_audio: {e}")
+            # print(f"[YOUTUBE] Error in transcribe_audio: {e}")
             import traceback
 
             traceback.print_exc()
@@ -694,27 +694,27 @@ class YouTubeScrapingClient:
             return None
 
         logger.info(f"[HYBRID] Starting YouTube processing for: {youtube_url}")
-        print(f"[HYBRID] Starting YouTube processing for: {youtube_url}")
+        # print(f"[HYBRID] Starting YouTube processing for: {youtube_url}")
 
         # Use only Selenium which works reliably
         # Skip yt-dlp (blocked by YouTube), pytube (400 errors), transcript API (requires auth)
         try:
             logger.info(f"[HYBRID] 🔄 Extracting with Selenium...")
-            print(f"[HYBRID] 🔄 Extracting with Selenium...")
+            # print(f"[HYBRID] 🔄 Extracting with Selenium...")
             result = self.extract_with_selenium(youtube_url)
 
             if result and isinstance(result, dict) and result.get("transcript_raw"):
                 logger.info(f"[HYBRID] ✅ Success with Selenium")
-                print(f"[HYBRID] ✅ Success with Selenium")
+                # print(f"[HYBRID] ✅ Success with Selenium")
                 return result
 
         except Exception as e:
             logger.error(f"[HYBRID] Selenium failed: {e}")
-            print(f"[HYBRID] Selenium failed: {e}")
+            # print(f"[HYBRID] Selenium failed: {e}")
 
         # If Selenium fails, return error
         logger.error(f"[HYBRID] 🚫 Failed to extract video for {youtube_url}")
-        print(f"[HYBRID] 🚫 Failed to extract video for {youtube_url}")
+        # print(f"[HYBRID] 🚫 Failed to extract video for {youtube_url}")
         return {
             "url": youtube_url,
             "video_id": video_id,
@@ -883,7 +883,7 @@ class YouTubeScrapingClient:
             }
 
         except Exception as e:
-            print(f"[HYBRID] Error processing audio to transcript: {e}")
+            # print(f"[HYBRID] Error processing audio to transcript: {e}")
             return None
         finally:
             # Cleanup temporary audio file

@@ -2474,6 +2474,31 @@ def create_external_app_endpoints_table():
         connection.close()
 
 
+def add_mail_sub_column():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed")
+        return False
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+            ALTER TABLE users
+            ADD COLUMN mail_sub JSON NOT NULL DEFAULT ('{}')
+        """)
+        connection.commit()
+        print("Column mail_sub added successfully")
+        return True
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()   
+        
+
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # print("HHSS")
@@ -2528,6 +2553,7 @@ if __name__ == "__main__":
     # recreate_subscriptions_table()
     # combo_create_credit_tables()
     # add_plan_type_columns()
-    create_external_apps_table()
-    create_external_app_endpoints_table()
+    # create_external_apps_table()
+    # create_external_app_endpoints_table()
+    add_mail_sub_column()
     print("ok")

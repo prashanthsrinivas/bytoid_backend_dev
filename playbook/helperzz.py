@@ -124,7 +124,7 @@ async def evallogic(templatedata, batch, userid, credits):
         credits,
         userid=userid,
     )
-    print("res jaw in eval", res_raw)
+    #print("res jaw in eval", res_raw)
     # Extract the JSON array block using regex
     if isinstance(res_raw, str):
         match = re.search(r"\[\s*{.*?}\s*\]", res_raw, re.DOTALL)
@@ -134,7 +134,7 @@ async def evallogic(templatedata, batch, userid, credits):
                 res_json = yaml.safe_load(json_block)
                 # print("✅ Extracted & parsed response block.")
             except Exception as e:
-                print(f"❌ YAML parsing error: {e}")
+                #print(f"❌ YAML parsing error: {e}")
                 res_json = []
         else:
             # print("❌ Could not extract JSON list from model output.")
@@ -145,7 +145,7 @@ async def evallogic(templatedata, batch, userid, credits):
     else:
         # print("❌ Unexpected type of response from evaluator.")
         res_json = []
-    print("✅ Extracted & parsed response block.", res_json)
+    #print("✅ Extracted & parsed response block.", res_json)
     # Evaluate results
     for original_item, eval_result in zip(batch, res_json):
         actual_q = original_item["query"]
@@ -167,7 +167,7 @@ async def triggeraicontextfinder(
     normalized = normalize_input(instruction_input)
 
     ques = await check_doc_context_needed(normalized, templatedata, userid, credits)
-    print("len of the questions made", len(ques), ques)
+    #print("len of the questions made", len(ques), ques)
 
     if not ques:
         return []
@@ -175,7 +175,7 @@ async def triggeraicontextfinder(
     content = await fetch_ques_with_docs(ques, userid, contacts, credits)
     batch_size = 10
 
-    print(len(content), "context length")
+    #print(len(content), "context length")
 
     async def run_batches(templatedata, content, batch_size, userid):
         tasks = [
@@ -305,7 +305,7 @@ async def needs_internal_data(instruction_input, template_data, user_id, credits
     """
     # Step 1: Regex gate
     if not cheap_internal_data_hint(instruction_input):
-        print("no need for llm")
+        #print("no need for llm")
         return False  # no LLM call needed, safe shortcut
 
     # Step 2: LLM authoritative check
@@ -341,7 +341,7 @@ async def minimize_functions(
     instruction_input, template_data, functions_ds, actual_social, userid, credits
 ):
     # functions_datas = read_function_jsons2(Full=True)
-    print("the functions data", len(functions_ds))
+    #print("the functions data", len(functions_ds))
 
     fn_temp_prompt = template_data.get("functions_checker")
     #  users_social_behaviour=actual_social,
@@ -382,7 +382,7 @@ async def minimize_functions(
 
     # ----------------------------
     required = validated.get("required_functions", [])
-    print("the required values", required)
+    #print("the required values", required)
 
     if not required:
         return functions_ds, None
@@ -471,7 +471,7 @@ async def create_playbook(
             user_id=userid,
             credits=credits,
         )
-        print("result -->", result)
+        #print("result -->", result)
 
         if result:
             ques = await triggeraicontextfinder(
@@ -492,7 +492,7 @@ async def create_playbook(
                 )
             else:
                 instruction_input["context_section"] = "[]"
-        print("before minimizing")
+        #print("before minimizing")
         functions_datas, checker_dict = await minimize_functions(
             instruction_input=instruction_input,
             template_data=template_data,
@@ -502,7 +502,7 @@ async def create_playbook(
             credits=credits,
         )
         if not functions_datas:
-            print("NO functions present")
+            #print("NO functions present")
             return (
                 jsonify(
                     {
@@ -524,7 +524,7 @@ async def create_playbook(
         try:
             base_prompt = template.format(**instruction_input)
         except Exception as e:
-            print("TEMPLATE ERROR:", e)
+            #print("TEMPLATE ERROR:", e)
             # print(template)
             raise
         # print("base prompt", base_prompt)
@@ -564,7 +564,7 @@ async def create_playbook(
         raw_response = await get_fireworks_response2(
             user_message=full_prompt, role="system", user_id=userid, credits=credits
         )
-        print("raw response", len(raw_response))
+        #print("raw response", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
         try:
@@ -584,7 +584,7 @@ async def create_playbook(
             user_id=userid,
             credits=credits,
         )
-        print("raw response eval", len(raw_response))
+        #print("raw response eval", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
         try:

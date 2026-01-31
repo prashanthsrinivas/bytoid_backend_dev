@@ -16,7 +16,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
     """
     emails_to_check = []
     if not all_results:
-        print("no results")
+        # print("no results")
         return None
 
     # 1️⃣ Collect emails from current messages
@@ -147,7 +147,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                         reason = f"revoked (dynamic AI-like message < {dynamic_threshold:.1f}s)"
                         break
 
-                print("returning analyze inbound outbound", time_diffs, revoked, reason)
+                # print("returning analyze inbound outbound", time_diffs, revoked, reason)
 
                 return time_diffs, revoked, reason
 
@@ -275,11 +275,11 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
             )
             connection.commit()
 
-            for r in results:
-                print(r)
+            # for r in results:
+            # print(r)
 
     except Exception as e:
-        print(f"ERROR in autoReplyhelper: {e}")
+        # print(f"ERROR in autoReplyhelper: {e}")
         return False
     finally:
         connection.close()

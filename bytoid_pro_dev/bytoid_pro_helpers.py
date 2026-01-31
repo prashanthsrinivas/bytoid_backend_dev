@@ -17,6 +17,14 @@ import tempfile
 from datetime import datetime
 import uuid
 from dataclasses import dataclass, field
+from cust_helpers import pathconfig
+from utils.normal import ensure_dir
+from utils.s3_utils import upload_any_file, read_json_from_s3
+from dataclasses import asdict
+from werkzeug.utils import secure_filename
+from agent_route.s_t_s import Speech2TextService
+import subprocess
+from flask import jsonify
 
 
 
@@ -102,12 +110,12 @@ def load_jobs():
                         return {}
                     return json.loads(content)
             except (json.JSONDecodeError, ValueError) as e:
-                print(f"Error loading jobs file: {e}. Resetting to empty dict.")
+               #print(f"Error loading jobs file: {e}. Resetting to empty dict.")
                 # Backup corrupted file
                 try:
                     backup_path = f"{JOBS_FILE}.backup.{int(time.time())}"
                     os.rename(JOBS_FILE, backup_path)
-                    print(f"Corrupted file backed up to: {backup_path}")
+                   #print(f"Corrupted file backed up to: {backup_path}")
                 except Exception:
                     pass
                 return {}
@@ -150,7 +158,7 @@ async def process_large_book(user_message: str, role: str, user_id: str, file_ur
         resp = requests.get(url)
         resp.raise_for_status()
         ext = os.path.splitext(url)[1].lower()
-        print(f"ext: {ext}")
+       #print(f"ext: {ext}")
 
         if ext not in extension_loader_map:
             continue  # unsupported file type
@@ -386,8 +394,8 @@ Image_summary:
 {image_response}
 """
 
-    print(f"files response : {files_response}")
-    print(f"image_response : {image_response}")
+   #print(f"files response : {files_response}")
+   #print(f"image_response : {image_response}")
     
     response = await get_fireworks_response2(user_id, final_prompt, role, credits)
 
@@ -505,7 +513,7 @@ async def get_think_fire_response_file_og(
         raise ValueError("No files provided")
 
     file_url = file_url[:5]  # max 5 files
-    print(f"file_url: {file_url}")
+   #print(f"file_url: {file_url}")
     FIREWORKS_MODEL = os.getenv("FIREWORKS_MODEL")
     
     system_message = """You are Bytoid Pro, a professional AI assistant designed for business, technical, and strategic use cases.
@@ -588,7 +596,7 @@ Avoid emojis, markdown fences, or meta explanations.
         resp = requests.get(url)
         resp.raise_for_status()
         ext = os.path.splitext(url)[1].lower()
-        print(f"ext: {ext}")
+       #print(f"ext: {ext}")
 
         if ext not in extension_loader_map:
             continue  # unsupported file type
@@ -682,7 +690,16 @@ File summaries:
 
     return final_response
 
-def save_conversation_to_json(chat_id, conversation):
+
+def chatvector_to_dict(chat_vector) -> dict:
+    return asdict(chat_vector)
+
+
+def serialize_chat(chat_vectors) -> list[dict]:
+    return [chatvector_to_dict(cv) for cv in chat_vectors]
+
+
+def save_conversation_to_json(user_id, chat_id, chat_vectors):
     """
     Saves a conversation to a JSON file named <chat_id>.json
 
@@ -695,25 +712,43 @@ def save_conversation_to_json(chat_id, conversation):
             ]
         folder_path (str): Directory to save JSON files. Defaults to "conversations".
     """
+    new_chat = serialize_chat(chat_vectors)
+
     # Ensure folder exists
-    conv_folder = os.path.join(pathconfig.basepath, "bytoid_pro", user_id, client_id)
-    # print(f"📁 [DEBUG] Conversation folder: {conv_folder}")
+    today_folder = datetime.now().strftime("%d_%m_%Y")
+    conv_folder = os.path.join(pathconfig.basepath, "bytoid_pro", user_id, today_folder)
     ensure_dir(conv_folder)
-    file_name = f"{conversation_id}.json"
+    file_name = f"{chat_id}.json"
     conv_filepath = os.path.join(conv_folder, file_name)
-    s3_conv_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
-    os.makedirs(folder_path, exist_ok=True)
 
-    # Construct file path
-    file_path = os.path.join(folder_path, f"{chat_id}.json")
+    s3_conv_key = f"{user_id}/bytoid_pro/{today_folder}/{chat_id}.json"
 
+    # ----- retrieve older conversation --------#
+    old_chat = read_json_from_s3(s3_conv_key)
+    if isinstance(old_chat, dict) and isinstance(old_chat.get("chat"), list):
+        old_chat = old_chat["chat"]
+    else:
+        old_chat = []
+
+    old_chat.extend(new_chat)
+
+    # ---- dump to local file -----#
+    with open(conv_filepath, "w", encoding="utf-8") as f:
+                json.dump({"chat": old_chat}, f, indent=2)
+
+    # ----- upload to s3 -------- #
     try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(conversation, f, ensure_ascii=False, indent=4)
-        print(f"Conversation saved to {file_path}")
-        return file_path
+        re = upload_any_file(
+                    conv_filepath,
+                    user_id,
+                    type="messages",
+                    s3_key_C=s3_conv_key,
+                )
+        if re.get("status") == "success":
+            os.remove(conv_filepath)
+        return chat_id
     except Exception as e:
-        print(f"Failed to save conversation: {str(e)}")
+       #print(f"Failed to save conversation: {str(e)}")
         return None
     
     
@@ -761,4 +796,43 @@ def build_chat(
             images=assistant_images or [],
         ),
     ]
- 
+
+def handle_audio(audio_file, userid):
+    try:
+                import tempfile
+                import os
+
+                # Get file extension
+                file_ext = ".webm"
+                if audio_file.filename:
+                    file_ext = os.path.splitext(audio_file.filename)[1] or ".webm"
+
+                # Save to temporary file
+                with tempfile.NamedTemporaryFile(
+                    suffix=file_ext, delete=False
+                ) as temp_file:
+                    audio_file.save(temp_file.name)
+                    temp_audio_path = temp_file.name
+
+                # Transcribe using Speech2TextService
+                speech_service = Speech2TextService(userid=userid)
+                import asyncio
+
+                # Run transcription
+                transcript = asyncio.run(
+                    speech_service.transcribe_audio(temp_audio_path)
+                )
+               #print(f"transcript:{transcript}")
+
+                # Clean up
+                if os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
+
+                if not transcript:
+                    return jsonify({"error": "Failed to transcribe audio"}), 500
+
+    except Exception as e:
+                return jsonify({"error": f"Audio processing failed: {str(e)}"}), 500
+
+    return transcript
+

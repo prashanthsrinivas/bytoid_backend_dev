@@ -22,15 +22,46 @@ import pymysql
 from utils.s3_utils import S3_BUCKET, load_yaml_from_s3, s3bucket, save_yaml_to_s3
 from request_context import current_user_id
 import asyncio
+from credits_route.route import Credits
+import threading
 
 
 logger = get_logger(__name__)
 
 
-def get_usecases_for_smb(smb_name, data):
+# def get_usecases_for_smb(smb_name, data):
+#     for entry in data:
+#         if entry.get("SMB") == smb_name:
+#             return entry.get("Usecases", [])
+#     return []
+
+
+def get_usecases_for_smb(industry: str, data: list) -> list:
+    """
+    industry examples:
+    - 'Undergraduate Student'
+    - 'Law Firm'
+    - 'Healthcare Services'
+    """
+
+    if not industry or not isinstance(data, list):
+        return []
+
+    industry = industry.strip().lower()
+
     for entry in data:
-        if entry.get("SMB") == smb_name:
-            return entry.get("Usecases", [])
+        if not isinstance(entry, dict):
+            continue
+
+        for key, value in entry.items():
+            # Skip the Usecases key
+            if key.lower() == "usecases":
+                continue
+
+            # value is the persona name
+            if isinstance(value, str) and value.strip().lower() == industry:
+                return entry.get("Usecases", [])
+
     return []
 
 
@@ -65,15 +96,6 @@ def normalize_question(entry):
             if isinstance(item, dict):
                 return item.get("User", "").strip().lower()
     return ""
-
-
-def log_removal(before_list, after_list):
-    """Logs how many items were removed."""
-    removed = len(before_list) - len(after_list)
-    if removed > 0:
-        print(f"✅ Removed {removed} matching entries from failed_entries")
-    else:
-        print("⚠️ No matching entries removed from failed_entries")
 
 
 def deletefilebasedData(filename, userid):
@@ -162,7 +184,7 @@ def normalize_url_for_comparison(url):
 
 
 async def process_and_update_yaml(
-    all_downloaded_paths, userid, provider, db, folderpath, credits
+    all_downloaded_paths, userid, provider, db, folderpath, credits=None
 ):
     """
     Process files, delete processed ones, and store/update metadata in a provider-based YAML structure.
@@ -173,7 +195,7 @@ async def process_and_update_yaml(
     :param folderpath: Temporary folder path containing files
     :param pathconfig: Config object containing basepath
     """
-
+    # print("inside process_and_update_yaml")
     processed_filenames = []
     connection = db or connect_to_rds()
     industry = None
@@ -212,11 +234,24 @@ async def process_and_update_yaml(
         industry = user_row["LineOfBusiness"]
     if not db:
         connection.close()
+    # print("before all_downloaded_paths ")
+    # print(f"all_downloaded_paths: {all_downloaded_paths}")
     for path in all_downloaded_paths:
         filename = os.path.basename(path)
+        credits = Credits()
         lance_client = LanceClient(user_id=userid, credits=credits)
-        result = await lance_client.process_document(file_path=path, filename=filename)
+        result = await lance_client.process_document(
+            file_path=path, filename=filename, credits=credits
+        )
 
+        if result.get("error") == "INSUFFICIENT_CREDITS":
+            return {
+                "status": "error",
+                "error": "INSUFFICIENT_CREDITS",
+                "message": "Credits exhausted. Please recharge to continue.",
+            }
+
+        # print(f"************** result: {result}")
         if result.get("vectors_made", 0) > 0:
             current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             processed_filenames.append(
@@ -230,9 +265,9 @@ async def process_and_update_yaml(
             os.remove(path)
             logger.info(f"[🗑] Deleted processed file: {path}")
 
-    print(f"processed_filenames : {processed_filenames}")
+    # print(f"processed_filenames : {processed_filenames}")
     if not processed_filenames:
-        return  # Nothing to merge
+        return {"message": "nothing to merge"}
 
     # Remove the folder after processing
     if os.path.isdir(folderpath):
@@ -241,7 +276,7 @@ async def process_and_update_yaml(
     # Ensure user directory exists
     yaml_path = f"{userid}/yaml/users_fileData.yaml"
 
-    print(f"yaml_path : {yaml_path}")
+    # print(f"yaml_path : {yaml_path}")
 
     # Load existing YAML or initialize structure
     # # if os.path.exists(yaml_path):
@@ -253,10 +288,10 @@ async def process_and_update_yaml(
     if existing_data is None:
         existing_data = {}
 
-    print("------------------------")
-    print(f"yaml_path: {yaml_path}")
-    print(f"existing_data: {existing_data}")
-    print("------------------------")
+    # print("------------------------")
+    # print(f"yaml_path: {yaml_path}")
+    # print(f"existing_data: {existing_data}")
+    # print("------------------------")
 
     if provider not in existing_data:
         existing_data[provider] = []
@@ -286,9 +321,9 @@ async def process_and_update_yaml(
     # Write back to YAML
     # with open(yaml_path, "w") as f:
     #     yaml.safe_dump(existing_data, f, sort_keys=False)
-    print("------------------------")
-    print(f"processed_filenames:{processed_filenames}")
-    print("------------------------")
+    # print("------------------------")
+    # print(f"processed_filenames:{processed_filenames}")
+    # print("------------------------")
 
     save_yaml_to_s3(existing_data, userid, "users_fileData.yaml")
     logger.info(
@@ -298,25 +333,24 @@ async def process_and_update_yaml(
     matched_industry = find_matching_industry(industry, indusries)
     if matched_industry:
         new_or_updated_files = [item["filename"] for item in processed_filenames]
-        # need to make this queue process
-        # result = run_background_task(
-        #     userid=userid,
-        #     industry=matched_industry,
-        #     filenames=new_or_updated_files,
-        #     func=preProcessDocWithUsecases,
-        # )
 
-        async def background_runner():
+        def run_background_task():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(
+                    preProcessDocWithUsecases(
+                        userid=userid,
+                        industry=matched_industry,
+                        filenames=new_or_updated_files,
+                    )
+                )
+            finally:
+                loop.close()
 
-            await preProcessDocWithUsecases(
-                userid=userid,
-                industry=matched_industry,
-                filenames=new_or_updated_files,
-                credits=credits,
-            )
+        threading.Thread(target=run_background_task, daemon=True).start()
 
-        asyncio.create_task(background_runner())
-        print(f"[DEBUG] Background task queued: {result}")
+        logger.info("[DEBUG] Background task queued")
     all_file_data = load_yaml_from_s3(yaml_path) or {}
     return all_file_data
 

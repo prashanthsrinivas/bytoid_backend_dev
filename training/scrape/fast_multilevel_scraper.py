@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 import re
 import requests
 
+from credits_route.route import Credits
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -37,7 +38,7 @@ load_dotenv()
 class FastMultilevelScraper:
     """Fast multi-level website scraper with concurrent processing"""
 
-    def __init__(self, user_id: str, max_workers: int = 2):
+    def __init__(self, user_id: str, credits, max_workers: int = 2):
         """
         Initialize scraper
 
@@ -47,6 +48,7 @@ class FastMultilevelScraper:
         """
         self.user_id = user_id
         self.max_workers = max_workers
+        self.credts = credits
         self.timeout = 12  # Page load timeout in seconds (reduced for faster fallback)
         self.max_depth = 2  # Maximum 2 levels (homepage + subpages, no deeper)
         self.max_links_per_level = 4  # Maximum 4 links per level
@@ -138,7 +140,9 @@ class FastMultilevelScraper:
             logger.error(f"[FAST] Failed to delete duplicate key: {e}")
             return False
 
-    def store_scraped_url(self, url: str, result: Dict, ttl_hours: int = 24) -> bool:
+    async def store_scraped_url(
+        self, url: str, result: Dict, ttl_hours: int = 24
+    ) -> bool:
         """
         Store URL in cache with expiration (24 hours by default)
 
@@ -165,9 +169,8 @@ class FastMultilevelScraper:
 
             # Set with expiration
             ttl_seconds = ttl_hours * 3600
-            asyncio.run(
-                self.service.set(cache_key, json.dumps(cache_data), ttl_seconds)
-            )
+
+            await self.service.set(cache_key, json.dumps(cache_data), ttl_seconds)
 
             logger.info(
                 f"[FAST] Stored scrape history for {url} (expires in {ttl_hours} hours)"
@@ -732,7 +735,7 @@ class FastMultilevelScraper:
         )
 
         # Store in cache for duplicate detection
-        self.store_scraped_url(url, result)
+        await self.store_scraped_url(url, result)
 
         return result
 
@@ -852,7 +855,10 @@ class FastMultilevelScraper:
             Keep the analysis concise, professional, and easy to understand. Format it nicely."""
 
             ai_response = await get_fireworks_response(
-                prompt, role="system", user_id=self.user_id
+                user_message=prompt,
+                role="system",
+                user_id=self.user_id,
+                credits=self.credts,
             )
 
             if ai_response:
@@ -1024,7 +1030,10 @@ class FastMultilevelScraper:
             # Send to AI (wrap call in try)
             try:
                 ai_summary = await get_fireworks_response(
-                    full_prompt, role="system", user_id=self.user_id
+                    user_message=full_prompt,
+                    role="system",
+                    user_id=self.user_id,
+                    credits=self.credts,
                 )
             except Exception as e:
                 logger.warning(f"[FAST] get_fireworks_response failed: {e}")
@@ -1139,7 +1148,7 @@ class FastMultilevelScraper:
         return summary.strip()
 
 
-async def scrape_website_fast(url: str, user_id: str, level) -> Optional[Dict]:
+async def scrape_website_fast(url: str, user_id: str, level, credits) -> Optional[Dict]:
     """
     Convenience function to scrape a website using fast multilevel scraper
 
@@ -1150,7 +1159,7 @@ async def scrape_website_fast(url: str, user_id: str, level) -> Optional[Dict]:
     Returns:
         Scraping result dict or None on failure
     """
-    scraper = FastMultilevelScraper(user_id=user_id, max_workers=3)
+    scraper = FastMultilevelScraper(user_id=user_id, credits=credits, max_workers=3)
 
     # Check for duplicate
     duplicate = await scraper.check_duplicate_scrape(url)
@@ -1182,8 +1191,10 @@ async def run_scrapper_links(url, user_id, level):
     # ---------- Background Saves: S3 + MySQL + LanceDB ----------
     from threading import Thread
 
+    credits = Credits()
+
     # ---- Perform fast scrape ----
-    scraped_data = await scrape_website_fast(url, user_id, level)
+    scraped_data = await scrape_website_fast(url, user_id, level, credits)
 
     if not scraped_data:
         return {"error": "Failed to scrape website"}

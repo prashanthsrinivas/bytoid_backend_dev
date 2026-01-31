@@ -490,20 +490,20 @@ class ASTGenerator:
     ):
 
         # print("=== retrieval_ast arguments ===")
-        print(f"decomposed_query: {decomposed_query}")
-        print(f"time_column: {time_column}")
-        print(f"entity_table: {entity_table}")
-        print(f"entity_columns: {entity_columns}")
-        print(f"filter_table: {filter_table}")
-        print(f"new_person_param: {new_person_param}")
-        print(f"time_sql_template: {time_sql_template}")
-        print(f"time_params: {time_params}")
-        print(f"filter_columns: {filter_columns}")
-        print(f"entity_primary_key: {entity_primary_key}")
-        print(f"grouping_table: {grouping_table}")
-        print(f"grouping_column: {grouping_column}")
-        print(f"select_table: {select_table}")
-        print(f"select_columns: {select_columns}")
+       #print(f"decomposed_query: {decomposed_query}")
+       #print(f"time_column: {time_column}")
+       #print(f"entity_table: {entity_table}")
+       #print(f"entity_columns: {entity_columns}")
+       #print(f"filter_table: {filter_table}")
+       #print(f"new_person_param: {new_person_param}")
+       #print(f"time_sql_template: {time_sql_template}")
+       #print(f"time_params: {time_params}")
+       #print(f"filter_columns: {filter_columns}")
+       #print(f"entity_primary_key: {entity_primary_key}")
+       #print(f"grouping_table: {grouping_table}")
+       #print(f"grouping_column: {grouping_column}")
+       #print(f"select_table: {select_table}")
+       #print(f"select_columns: {select_columns}")
         # print("===============================")
         retrieval_yaml = load_yaml_file(path=pathconfig.retrieval_path)
 
@@ -529,7 +529,7 @@ class ASTGenerator:
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 mapper_result parsing failed: {e}")
+           #print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
 
         metric_table = mapper_result.get("metric_table")
@@ -563,7 +563,7 @@ class ASTGenerator:
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 select_builder_result parsing failed: {e}")
+           #print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -587,7 +587,7 @@ class ASTGenerator:
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 from_join_result parsing failed: {e}")
+           #print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -647,7 +647,7 @@ class ASTGenerator:
             try:
                 group_order_result = parse_llm_response(modified_yaml)
             except ValueError as e:
-                print(f"🔥 group_order_limit_result parsing failed: {e}")
+               #print(f"🔥 group_order_limit_result parsing failed: {e}")
                 return (
                     jsonify(
                         {"error": "Failed to parse group_order_limit_result response"}
@@ -700,20 +700,20 @@ class ASTGenerator:
     ):
 
         # print("=== aggregation_ast arguments ===")
-        print(f"decomposed_query: {decomposed_query}")
-        print(f"time_column: {time_column}")
-        print(f"entity_table: {entity_table}")
-        print(f"entity_columns: {entity_columns}")
-        print(f"filter_table: {filter_table}")
-        print(f"new_person_param: {new_person_param}")
-        print(f"time_sql_template: {time_sql_template}")
-        print(f"time_params: {time_params}")
-        print(f"filter_columns: {filter_columns}")
-        print(f"entity_primary_key: {entity_primary_key}")
-        print(f"grouping_table: {grouping_table}")
-        print(f"grouping_column: {grouping_column}")
-        print(f"select_table: {select_table}")
-        print(f"select_columns: {select_columns}")
+       #print(f"decomposed_query: {decomposed_query}")
+       #print(f"time_column: {time_column}")
+       #print(f"entity_table: {entity_table}")
+       #print(f"entity_columns: {entity_columns}")
+       #print(f"filter_table: {filter_table}")
+       #print(f"new_person_param: {new_person_param}")
+       #print(f"time_sql_template: {time_sql_template}")
+       #print(f"time_params: {time_params}")
+       #print(f"filter_columns: {filter_columns}")
+       #print(f"entity_primary_key: {entity_primary_key}")
+       #print(f"grouping_table: {grouping_table}")
+       #print(f"grouping_column: {grouping_column}")
+       #print(f"select_table: {select_table}")
+       #print(f"select_columns: {select_columns}")
         # print("===============================")
 
         aggregation_yaml = load_yaml_file(path=pathconfig.aggregation_path)
@@ -739,7 +739,7 @@ class ASTGenerator:
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 mapper_result parsing failed: {e}")
+           #print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -777,7 +777,7 @@ class ASTGenerator:
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 select_builder_result parsing failed: {e}")
+           #print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -811,7 +811,7 @@ class ASTGenerator:
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 from_join_result parsing failed: {e}")
+           #print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -830,7 +830,7 @@ class ASTGenerator:
         # try:
         #     where_result = parse_llm_response(modified_yaml)
         # except ValueError as e:
-        #     print(f"🔥 where_result parsing failed: {e}")
+        #    #print(f"🔥 where_result parsing failed: {e}")
         #     return jsonify({"error": "Failed to parse where_result response"}), 500
         # where_node = where_result.get("WHERE")
 
@@ -855,9 +855,9 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-        print(
-            f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
-        )
+       #print(
+        #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
+        # )
         group_order_template = aggregation_yaml.get("ast_group_order_limit_builder")
         filled_prompt = (
             group_order_template.replace(
@@ -883,7 +883,7 @@ class ASTGenerator:
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 group_order_result parsing failed: {e}")
+           #print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -937,22 +937,22 @@ class ASTGenerator:
     ):
 
         # print("=== trend_ast arguments ===")
-        print(f"decomposed_query: {decomposed_query}")
-        print(f"time_column: {time_column}")
-        print(f"entity_table: {entity_table}")
-        print(f"entity_columns: {entity_columns}")
-        print(f"filter_table: {filter_table}")
-        print(f"new_person_param: {new_person_param}")
-        print(f"time_sql_template: {time_sql_template}")
-        print(f"time_params: {time_params}")
-        print(f"filter_columns: {filter_columns}")
-        print(f"entity_primary_key: {entity_primary_key}")
-        print(f"grouping_table: {grouping_table}")
-        print(f"grouping_column: {grouping_column}")
-        print(f"select_table: {select_table}")
-        print(f"select_columns: {select_columns}")
-        print(f"pivot_values_map: {pivot_values_map}")
-        print(f"pivot_col: {pivot_col}")
+       #print(f"decomposed_query: {decomposed_query}")
+       #print(f"time_column: {time_column}")
+       #print(f"entity_table: {entity_table}")
+       #print(f"entity_columns: {entity_columns}")
+       #print(f"filter_table: {filter_table}")
+       #print(f"new_person_param: {new_person_param}")
+       #print(f"time_sql_template: {time_sql_template}")
+       #print(f"time_params: {time_params}")
+       #print(f"filter_columns: {filter_columns}")
+       #print(f"entity_primary_key: {entity_primary_key}")
+       #print(f"grouping_table: {grouping_table}")
+       #print(f"grouping_column: {grouping_column}")
+       #print(f"select_table: {select_table}")
+       #print(f"select_columns: {select_columns}")
+       #print(f"pivot_values_map: {pivot_values_map}")
+       #print(f"pivot_col: {pivot_col}")
 
         # print("===============================")
 
@@ -979,7 +979,7 @@ class ASTGenerator:
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 mapper_result parsing failed: {e}")
+           #print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -994,7 +994,7 @@ class ASTGenerator:
         time_bucket_column = (
             f"DATE_TRUNC('{granularity}', {time_column}) AS time_bucket"
         )
-        print(f"time_bucket_column : {time_bucket_column}")
+       #print(f"time_bucket_column : {time_bucket_column}")
 
         # ----------------- select builder ----------------------#
 
@@ -1043,13 +1043,13 @@ class ASTGenerator:
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 select_builder_result parsing failed: {e}")
+           #print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
             )
         select = select_builder_result.get("SELECT")
-        print(f"select : {select}")
+       #print(f"select : {select}")
 
         # ---------------- FROM & JOIN builder ---------------- #
 
@@ -1072,7 +1072,7 @@ class ASTGenerator:
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 from_join_result parsing failed: {e}")
+           #print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1107,9 +1107,9 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-        print(
-            f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
-        )
+       #print(
+        #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
+        # )
         group_order_template = trend_yaml.get("ast_group_order_limit_builder")
         filled_prompt = group_order_template.replace(
             "{{limit}}", json.dumps(limit)
@@ -1120,7 +1120,7 @@ class ASTGenerator:
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 group_order_result parsing failed: {e}")
+           #print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1170,20 +1170,20 @@ class ASTGenerator:
     ):
 
         # print("=== ranking_ast arguments ===")
-        print(f"decomposed_query: {decomposed_query}")
-        print(f"time_column: {time_column}")
-        print(f"entity_table: {entity_table}")
-        print(f"entity_columns: {entity_columns}")
-        print(f"filter_table: {filter_table}")
-        print(f"new_person_param: {new_person_param}")
-        print(f"time_sql_template: {time_sql_template}")
-        print(f"time_params: {time_params}")
-        print(f"filter_columns: {filter_columns}")
-        print(f"entity_primary_key: {entity_primary_key}")
-        print(f"grouping_table: {grouping_table}")
-        print(f"grouping_column: {grouping_column}")
-        print(f"select_table: {select_table}")
-        print(f"select_columns: {select_columns}")
+       #print(f"decomposed_query: {decomposed_query}")
+       #print(f"time_column: {time_column}")
+       #print(f"entity_table: {entity_table}")
+       #print(f"entity_columns: {entity_columns}")
+       #print(f"filter_table: {filter_table}")
+       #print(f"new_person_param: {new_person_param}")
+       #print(f"time_sql_template: {time_sql_template}")
+       #print(f"time_params: {time_params}")
+       #print(f"filter_columns: {filter_columns}")
+       #print(f"entity_primary_key: {entity_primary_key}")
+       #print(f"grouping_table: {grouping_table}")
+       #print(f"grouping_column: {grouping_column}")
+       #print(f"select_table: {select_table}")
+       #print(f"select_columns: {select_columns}")
         # print("===============================")
 
         ranking_yaml = load_yaml_file(path=pathconfig.ranking_path)
@@ -1209,7 +1209,7 @@ class ASTGenerator:
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 mapper_result parsing failed: {e}")
+           #print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -1247,7 +1247,7 @@ class ASTGenerator:
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 select_builder_result parsing failed: {e}")
+           #print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -1275,7 +1275,7 @@ class ASTGenerator:
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 from_join_result parsing failed: {e}")
+           #print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1306,9 +1306,9 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-        print(
-            f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
-        )
+        # print(
+        #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
+        # )
         group_order_template = ranking_yaml.get("ast_group_order_limit_builder")
         filled_prompt = (
             group_order_template.replace(
@@ -1335,7 +1335,7 @@ class ASTGenerator:
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 group_order_result parsing failed: {e}")
+           #print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1387,20 +1387,20 @@ class ASTGenerator:
     ):
 
         # print("=== ranking_ast_temporal arguments ===")
-        print(f"decomposed_query: {decomposed_query}")
-        print(f"time_column: {time_column}")
-        print(f"entity_table: {entity_table}")
-        print(f"entity_columns: {entity_columns}")
-        print(f"filter_table: {filter_table}")
-        print(f"new_person_param: {new_person_param}")
-        print(f"time_sql_template: {time_sql_template}")
-        print(f"time_params: {time_params}")
-        print(f"filter_columns: {filter_columns}")
-        print(f"entity_primary_key: {entity_primary_key}")
-        print(f"grouping_table: {grouping_table}")
-        print(f"grouping_column: {grouping_column}")
-        print(f"select_table: {select_table}")
-        print(f"select_columns: {select_columns}")
+       #print(f"decomposed_query: {decomposed_query}")
+       #print(f"time_column: {time_column}")
+       #print(f"entity_table: {entity_table}")
+       #print(f"entity_columns: {entity_columns}")
+       #print(f"filter_table: {filter_table}")
+       #print(f"new_person_param: {new_person_param}")
+       #print(f"time_sql_template: {time_sql_template}")
+       #print(f"time_params: {time_params}")
+       #print(f"filter_columns: {filter_columns}")
+       #print(f"entity_primary_key: {entity_primary_key}")
+       #print(f"grouping_table: {grouping_table}")
+       #print(f"grouping_column: {grouping_column}")
+       #print(f"select_table: {select_table}")
+       #print(f"select_columns: {select_columns}")
         # print("===============================")
 
         ranking_temporal_yaml = load_yaml_file(path=pathconfig.ranking_temporal_path)
@@ -1426,7 +1426,7 @@ class ASTGenerator:
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 mapper_result parsing failed: {e}")
+           #print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -1434,7 +1434,7 @@ class ASTGenerator:
         metric_column = mapper_result.get("metric_column")
         if "." in metric_column:
             metric_column = metric_column.split(".")[-1]  # remove prefix
-        print(f"metric_table : {metric_table} | metric_column : {metric_column}")
+       #print(f"metric_table : {metric_table} | metric_column : {metric_column}")
         joins = mapper_result.get("joins")
         aggregation = decomposed_query.get("aggregation")
         grouping_dimension = decomposed_query.get("grouping_dimension")
@@ -1464,7 +1464,7 @@ class ASTGenerator:
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 select_builder_result parsing failed: {e}")
+           #print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -1492,7 +1492,7 @@ class ASTGenerator:
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 from_join_result parsing failed: {e}")
+           #print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1524,9 +1524,9 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-        print(
-            f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
-        )
+       #print(
+        #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
+        # )
         group_order_template = ranking_temporal_yaml.get(
             "ast_group_order_limit_builder"
         )
@@ -1555,7 +1555,7 @@ class ASTGenerator:
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 group_order_result parsing failed: {e}")
+           #print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1607,20 +1607,20 @@ class ASTGenerator:
     ):
 
         # print("=== ranking_ast_no_aggregate arguments ===")
-        print(f"decomposed_query: {decomposed_query}")
-        print(f"time_column: {time_column}")
-        print(f"entity_table: {entity_table}")
-        print(f"entity_columns: {entity_columns}")
-        print(f"filter_table: {filter_table}")
-        print(f"new_person_param: {new_person_param}")
-        print(f"time_sql_template: {time_sql_template}")
-        print(f"time_params: {time_params}")
-        print(f"filter_columns: {filter_columns}")
-        print(f"entity_primary_key: {entity_primary_key}")
-        print(f"grouping_table: {grouping_table}")
-        print(f"grouping_column: {grouping_column}")
-        print(f"select_table: {select_table}")
-        print(f"select_columns: {select_columns}")
+       #print(f"decomposed_query: {decomposed_query}")
+       #print(f"time_column: {time_column}")
+       #print(f"entity_table: {entity_table}")
+       #print(f"entity_columns: {entity_columns}")
+       #print(f"filter_table: {filter_table}")
+       #print(f"new_person_param: {new_person_param}")
+       #print(f"time_sql_template: {time_sql_template}")
+       #print(f"time_params: {time_params}")
+       #print(f"filter_columns: {filter_columns}")
+       #print(f"entity_primary_key: {entity_primary_key}")
+       #print(f"grouping_table: {grouping_table}")
+       #print(f"grouping_column: {grouping_column}")
+       #print(f"select_table: {select_table}")
+       #print(f"select_columns: {select_columns}")
         # print("===============================")
 
         ranking_no_aggregate_yaml = load_yaml_file(
@@ -1648,7 +1648,7 @@ class ASTGenerator:
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 mapper_result parsing failed: {e}")
+           #print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -1680,7 +1680,7 @@ class ASTGenerator:
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 select_builder_result parsing failed: {e}")
+           #print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -1708,7 +1708,7 @@ class ASTGenerator:
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 from_join_result parsing failed: {e}")
+           #print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1739,9 +1739,9 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-        print(
-            f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
-        )
+       #print(
+        #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
+        # )
         group_order_template = ranking_no_aggregate_yaml.get(
             "ast_group_order_limit_builder"
         )
@@ -1770,7 +1770,7 @@ class ASTGenerator:
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 group_order_result parsing failed: {e}")
+           #print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1823,9 +1823,9 @@ class ASTGenerator:
         # Filters
         filter_columns, pivot_col = self.get_filters(decomposed_query)
         if pivot_col:
-            print(f"pivot_col : {pivot_col}")
+           #print(f"pivot_col : {pivot_col}")
             pivot_values_map = self.build_pivot_values_map(pivot_col)
-            print(f"pivot_values_map : {pivot_values_map}")
+           #print(f"pivot_values_map : {pivot_values_map}")
 
         else:
             pivot_values_map = []
@@ -1858,7 +1858,7 @@ class ASTGenerator:
         )
 
         temporal_flag = decomposed_query["temporal_flag"]
-        print(f"temporal_flag in generate_ast: {temporal_flag}")
+       #print(f"temporal_flag in generate_ast: {temporal_flag}")
 
         # RANKING
         if sql_intent.lower() == "ranking":

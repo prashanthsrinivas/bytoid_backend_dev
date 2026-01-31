@@ -14,6 +14,7 @@ from services.redis_service import RedisService
 
 from umail_helper.asyn_functions import fetchnextmonthmails, v2all_continuous
 import json
+from umail_helper.mails_process import check_mailbox
 from umail_lance.umail_lance_agent import UmailLanceClient
 from utils.async_check import run_async
 from microsoft_route.get_microsoft_emails import v2all_continuous_outlook
@@ -114,7 +115,7 @@ def umail_sync(self, user_id):
 
         integration = None
 
-        print("inside umail sync")
+        # print("inside umail sync")
 
         cursor.execute(
             "SELECT social FROM users WHERE user_id = %s",
@@ -134,21 +135,22 @@ def umail_sync(self, user_id):
                 social = row[0]
                 integration = True
 
-        print(f"integration inside umail_sync : {integration}")
-
-        if social == "google":
-            result = asyncio.run(v2all_continuous(user_id, integration=integration))
-            return {"status": "completed", "user_id": user_id, "result": result}
-        elif social == "outlook":
-            result = asyncio.run(
-                v2all_continuous_outlook(user_id, integration=integration)
-            )
-            return {"status": "completed", "user_id": user_id, "result": result}
-        else:
-            result = asyncio.run(
-                v2all_continuous_zoho(user_id, integration=integration)
-            )
-            return {"status": "completed", "user_id": user_id, "result": result}
+        # print(f"integration inside umail_sync : {integration}")
+        mailbox_setting = check_mailbox(user_id)
+        if mailbox_setting:
+            if social == "google":
+                result = asyncio.run(v2all_continuous(user_id, integration=integration))
+                return {"status": "completed", "user_id": user_id, "result": result}
+            elif social == "outlook":
+                result = asyncio.run(
+                    v2all_continuous_outlook(user_id, integration=integration)
+                )
+                return {"status": "completed", "user_id": user_id, "result": result}
+            else:
+                result = asyncio.run(
+                    v2all_continuous_zoho(user_id, integration=integration)
+                )
+                return {"status": "completed", "user_id": user_id, "result": result}
     except Exception as exc:
         countdown = backoff(self.request.retries)
         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
@@ -161,23 +163,25 @@ def umail_sync(self, user_id):
 def web_umail_sync(self, user_id, channel=None, integration=None):
 
     try:
-        print(f"integration inside web_umail_sync : {integration}")
-        print(f"channel inside web_umail_sync : {channel}")
-        if channel == "google":
-            result = asyncio.run(v2all_continuous(user_id, integration=integration))
-            return {"status": "completed", "user_id": user_id, "result": result}
-        elif channel == "microsoft":
-            result = asyncio.run(
-                v2all_continuous_outlook(user_id, integration=integration)
-            )
-            print(f"results")
-            return {"status": "completed", "user_id": user_id, "result": result}
-        else:
-            result = asyncio.run(
-                v2all_continuous_zoho(user_id, integration=integration)
-            )
-            print(f"results")
-            return {"status": "completed", "user_id": user_id, "result": result}
+        # print(f"integration inside web_umail_sync : {integration}")
+        # print(f"channel inside web_umail_sync : {channel}")
+        mailbox_setting = check_mailbox(user_id)
+        if mailbox_setting:
+            if channel == "google":
+                result = asyncio.run(v2all_continuous(user_id, integration=integration))
+                return {"status": "completed", "user_id": user_id, "result": result}
+            elif channel == "microsoft":
+                result = asyncio.run(
+                    v2all_continuous_outlook(user_id, integration=integration)
+                )
+                # print(f"results")
+                return {"status": "completed", "user_id": user_id, "result": result}
+            else:
+                result = asyncio.run(
+                    v2all_continuous_zoho(user_id, integration=integration)
+                )
+                # print(f"results")
+                return {"status": "completed", "user_id": user_id, "result": result}
 
     except Exception as exc:
         countdown = backoff(self.request.retries)
@@ -192,7 +196,7 @@ def delayed_trigger(self, user_email, history_id, channel=None, integration=None
     import time
     from utils.delay_mails import DelayTrigger
 
-    print(f"inside delayed_trigger, cahnnel : {channel}")
+    # print(f"inside delayed_trigger, cahnnel : {channel}")
 
     lock_key = f"umail_delayed_lock:{user_email}"
     # Try to acquire lock for 10 minutes
@@ -363,7 +367,7 @@ async def send_bulk_emails(self, user_id: str, email_count: int, receiver_email:
                 sent += 1
             except Exception as send_err:
                 failed += 1
-                print(f"Email send failed ({i}):", send_err)
+                # print(f"Email send failed ({i}):", send_err)
 
         return {
             "status": "completed",
@@ -670,12 +674,8 @@ def run_scheduled_step_job(self, userid, filename, stepid):
         return result
 
     except Exception as e:
-        print("error", e)
+        # print("error", e)
         raise
-
-    finally:
-        # Remove Redis key after completion
-        print("run scheduled job")
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.lance_embedding")
@@ -690,9 +690,9 @@ async def run_lance_embedding(self, user_id, batch_count, lance_folder):
             folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
             if os.path.exists(folder_path):
                 shutil.rmtree(folder_path)
-                print(f"🗑️ Deleted folder and contents: {folder_path}")
-            else:
-                print(f"⚠️ Folder not found: {folder_path}")
+                # print(f"🗑️ Deleted folder and contents: {folder_path}")
+            # else:
+            # print(f"⚠️ Folder not found: {folder_path}")
             return {"status": "done", "batch": batch_count, "folder": lance_folder}
 
         finally:

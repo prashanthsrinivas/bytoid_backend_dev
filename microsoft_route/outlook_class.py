@@ -1,12 +1,10 @@
+from asyncio.log import logger
 from db.rds_db import connect_to_rds
 import requests
 import aiohttp
 import asyncio
 from bs4 import BeautifulSoup
 import re
-
-
-
 
 
 class OutlookService:
@@ -42,52 +40,15 @@ class OutlookService:
             logger.error(f"Error getting message count: {str(e)}")
             return 0
 
-    # async def process_conversations_batch_og(self, conv_ids, my_email, batch_count):
-    #     """
-    #     Fetch messages for each conversation ID in the batch using pagination.
-    #     Returns a dict: {conversation_id: (messages_list, error_or_None)}
-    #     """
-    #     results = {}
-    #     print(f"inside process_conversations_batch")
-
-    #     for conv_id in conv_ids:
-    #         try:
-    #             all_messages = []
-    #             url = "https://graph.microsoft.com/v1.0/me/messages"
-    #             params = {
-    #                 "$top": 100,  # fetch 100 messages per page
-    #                 "$select": "id,conversationId,from,subject,body,receivedDateTime,toRecipients,ccRecipients,bccRecipients",
-    #                 "$orderby": "receivedDateTime desc",
-    #             }
-
-    #             while url:
-    #                 response = await self.list_messages_with_body(params)
-    #                 messages = response.get("value", [])
-
-    #                 # Client-side filter for the conversation
-    #                 conv_messages = [
-    #                     m for m in messages if m.get("conversationId") == conv_id
-    #                 ]
-    #                 all_messages.extend(conv_messages)
-
-    #                 # Check for next page
-    #                 url = response.get("@odata.nextLink")
-    #                 if url:
-    #                     params = None  # nextLink contains all parameters
-
-    #             results[conv_id] = (all_messages, None)
-    #             print(
-    #                 f"📧 Fetched {len(all_messages)} messages for conversation {conv_id}"
-    #             )
-
-    #         except Exception as e:
-    #             print(f"⚠️ Error fetching conversation {conv_id}: {e}")
-    #             results[conv_id] = (None, e)
-
-    #     return results
-
     async def make_graph_request(
-        self, method, url, params=None, data=None, json_data=None, headers=None, integration = None
+        self,
+        method,
+        url,
+        params=None,
+        data=None,
+        json_data=None,
+        headers=None,
+        integration=None,
     ):
         """
         Universal Microsoft Graph API request handler.
@@ -98,7 +59,7 @@ class OutlookService:
         - 429 retry
         - JSON parsing
         """
-        print("inside make_graph_request")
+        #print("inside make_graph_request")
         if headers is None:
             headers = {}
 
@@ -107,11 +68,13 @@ class OutlookService:
             return
 
         cursor = connection.cursor()
-        print(f"integration inside : {integration}")
-        
+        #print(f"integration inside : {integration}")
 
         if integration:
-            cursor.execute("SELECT access_token FROM integrations WHERE user_id=%s", (self.user_id,))
+            cursor.execute(
+                "SELECT access_token FROM integrations WHERE user_id=%s",
+                (self.user_id,),
+            )
         else:
             cursor.execute("SELECT token FROM users WHERE user_id=%s", (self.user_id,))
 
@@ -176,26 +139,22 @@ class OutlookService:
 
         raise Exception("Graph request failed after retries")
 
-   
-    async def list_messages(self, params, integration = None):
+    async def list_messages(self, params, integration=None):
         """
         Minimal wrapper around Microsoft Graph /me/messages
         Only used for getting message metadata (conversationId, receivedDateTime)
         """
-        print("inside list_messages")
+        #print("inside list_messages")
         url = "https://graph.microsoft.com/v1.0/me/messages"
 
         response = await self.make_graph_request(
-            method="GET",
-            url=url,
-            params=params,
-            integration = integration        
+            method="GET", url=url, params=params, integration=integration
         )
 
         return response
 
     async def list_messages_with_body(self, params=None, top=50):
-        print("inside list_messages_with_body")
+        #print("inside list_messages_with_body")
 
         url = "https://graph.microsoft.com/v1.0/me/messages"
 
@@ -203,14 +162,10 @@ class OutlookService:
             params = {}
         params.setdefault("$top", top)
 
-        print(f"**********")
-        print(f"params : {params}")
+        #print(f"**********")
+        #print(f"params : {params}")
 
-        response = await self.make_graph_request(
-            method="GET",
-            url=url,
-            params=params
-        )
+        response = await self.make_graph_request(method="GET", url=url, params=params)
 
         if not response or "value" not in response:
             return []
@@ -248,12 +203,12 @@ class OutlookService:
 
         return result
 
-    async def list_messages_minimal(self, params=None, url=None, integration = None):
+    async def list_messages_minimal(self, params=None, url=None, integration=None):
         if url is None:
             url = "https://graph.microsoft.com/v1.0/me/messages"
 
         response = await self.make_graph_request_for_getting_messages(
-            method="GET", url=url, params=params, integration = integration
+            method="GET", url=url, params=params, integration=integration
         )
 
         return response
@@ -277,8 +232,7 @@ class OutlookService:
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
-
-    async def batch_fetch_message_bodies_og(self, message_ids, integration =None):
+    async def batch_fetch_message_bodies_og(self, message_ids, integration=None):
         """
         Fetch up to 20 message bodies using Graph Batch API.
         message_ids: list of message IDs (max 20)
@@ -298,7 +252,7 @@ class OutlookService:
         payload = {"requests": batch_requests}
 
         response = await self.make_graph_request_for_getting_messages(
-            method="POST", url=url, json_data=payload, integration = integration
+            method="POST", url=url, json_data=payload, integration=integration
         )
 
         results = []
@@ -323,39 +277,34 @@ class OutlookService:
                 plain_text = self.clean_invisible_chars(cleaned)
 
                 # Extract "from" email
-                body = response['responses'][0]['body']
+                body = response["responses"][0]["body"]
 
-                from_email = body['from']['emailAddress']['address']
+                from_email = body["from"]["emailAddress"]["address"]
 
-                from_name = body['from']['emailAddress']['name']
-
+                from_name = body["from"]["emailAddress"]["name"]
 
                 to_emails = [
-                    t['emailAddress']['address']
-                    for t in body.get('toRecipients', [])
+                    t["emailAddress"]["address"] for t in body.get("toRecipients", [])
                 ]
 
                 to_names = [
-                    t['emailAddress']['name']
-                    for t in body.get('toRecipients', [])
+                    t["emailAddress"]["name"] for t in body.get("toRecipients", [])
                 ]
 
                 cc_emails = [
-                    c['emailAddress']['address']
-                    for c in body.get('ccRecipients', [])
+                    c["emailAddress"]["address"] for c in body.get("ccRecipients", [])
                 ]
 
                 bcc_emails = [
-                    b['emailAddress']['address']
-                    for b in body.get('bccRecipients', [])
+                    b["emailAddress"]["address"] for b in body.get("bccRecipients", [])
                 ]
 
                 c = body.get("conversationId")
-                print("----------------------------")
-                print(f"in batch_fetch_messsage_bodies : {c}")
-                print("----------------------------")
+                #print("----------------------------")
+                #print(f"in batch_fetch_messsage_bodies : {c}")
+                #print("----------------------------")
 
-                print(f"id : {body.get('id')}")
+                #print(f"id : {body.get('id')}")
                 results.append(
                     {
                         "id": body.get("id"),
@@ -364,18 +313,18 @@ class OutlookService:
                         "receivedDateTime": body.get("receivedDateTime"),
                         "body": html_content,
                         "from": from_email,
-                        "from_name":from_name,
+                        "from_name": from_name,
                         "plain_text": plain_text,
                         "toRecipients": to_emails,
-                        "to_names":to_names,
-                        "cc":cc_emails,
-                        "bcc":bcc_emails
+                        "to_names": to_names,
+                        "cc": cc_emails,
+                        "bcc": bcc_emails,
                     }
                 )
 
         return results
 
-    async def batch_fetch_message_bodies(self, message_ids, integration =None):
+    async def batch_fetch_message_bodies(self, message_ids, integration=None):
         """
         Fetch up to 20 message bodies using Graph Batch API.
         message_ids: list of message IDs (max 20)
@@ -395,7 +344,7 @@ class OutlookService:
         payload = {"requests": batch_requests}
 
         response = await self.make_graph_request_for_getting_messages(
-            method="POST", url=url, json_data=payload, integration = integration
+            method="POST", url=url, json_data=payload, integration=integration
         )
 
         results = []
@@ -436,37 +385,32 @@ class OutlookService:
                 # Extract "from" email
                 body = item.get("body", {})
 
-                from_email = body['from']['emailAddress']['address']
+                from_email = body["from"]["emailAddress"]["address"]
 
-                from_name = body['from']['emailAddress']['name']
-
+                from_name = body["from"]["emailAddress"]["name"]
 
                 to_emails = [
-                    t['emailAddress']['address']
-                    for t in body.get('toRecipients', [])
+                    t["emailAddress"]["address"] for t in body.get("toRecipients", [])
                 ]
 
                 to_names = [
-                    t['emailAddress']['name']
-                    for t in body.get('toRecipients', [])
+                    t["emailAddress"]["name"] for t in body.get("toRecipients", [])
                 ]
 
                 cc_emails = [
-                    c['emailAddress']['address']
-                    for c in body.get('ccRecipients', [])
+                    c["emailAddress"]["address"] for c in body.get("ccRecipients", [])
                 ]
 
                 bcc_emails = [
-                    b['emailAddress']['address']
-                    for b in body.get('bccRecipients', [])
+                    b["emailAddress"]["address"] for b in body.get("bccRecipients", [])
                 ]
 
                 c = body.get("conversationId")
-                print("----------------------------")
-                print(f"in batch_fetch_messsage_bodies : {c}")
-                print("----------------------------")
+                #print("----------------------------")
+                #print(f"in batch_fetch_messsage_bodies : {c}")
+                #print("----------------------------")
 
-                print(f"id : {body.get('id')}")
+                #print(f"id : {body.get('id')}")
                 results.append(
                     {
                         "id": body.get("id"),
@@ -475,19 +419,20 @@ class OutlookService:
                         "receivedDateTime": body.get("receivedDateTime"),
                         "body": cleaned_html,
                         "from": from_email,
-                        "from_name":from_name,
+                        "from_name": from_name,
                         "plain_text": plain_text,
                         "toRecipients": to_emails,
-                        "to_names":to_names,
-                        "cc":cc_emails,
-                        "bcc":bcc_emails
+                        "to_names": to_names,
+                        "cc": cc_emails,
+                        "bcc": bcc_emails,
                     }
                 )
 
         return results
 
-
-    async def process_conversations_batch(self, conv_ids, my_email, batch_count, integration = None):
+    async def process_conversations_batch(
+        self, conv_ids, my_email, batch_count, integration=None
+    ):
         results = {}
 
         for conv_id in conv_ids:
@@ -505,7 +450,9 @@ class OutlookService:
 
                 # ---- STEP 1: Collect all message IDs for this conversation ----
                 while True:
-                    page = await self.list_messages_minimal(params=params, url=url, integration =integration)
+                    page = await self.list_messages_minimal(
+                        params=params, url=url, integration=integration
+                    )
 
                     if not page or "value" not in page:
                         break
@@ -523,15 +470,17 @@ class OutlookService:
                 # ---- STEP 2: Fetch message bodies in batches of 20 ----
                 for i in range(0, len(message_ids_to_fetch), 20):
                     batch_ids = message_ids_to_fetch[i : i + 20]
-                    batch_results = await self.batch_fetch_message_bodies(batch_ids, integration = integration )
+                    batch_results = await self.batch_fetch_message_bodies(
+                        batch_ids, integration=integration
+                    )
                     all_messages.extend(batch_results)
 
                 results[conv_id] = (all_messages, None)
 
-                print(f"✔️ Conversation {conv_id}: fetched {len(all_messages)} messages")
+                #print(f"✔️ Conversation {conv_id}: fetched {len(all_messages)} messages")
 
             except Exception as e:
-                print(f"⚠️ Error fetching conversation {conv_id}: {e}")
+                #print(f"⚠️ Error fetching conversation {conv_id}: {e}")
                 results[conv_id] = (None, e)
 
         return results
@@ -544,7 +493,7 @@ class OutlookService:
         data=None,
         json_data=None,
         headers=None,
-        integration = None
+        integration=None,
     ):
         """
         Unified Microsoft Graph API request function.
@@ -570,7 +519,10 @@ class OutlookService:
         cursor = connection.cursor()
 
         if integration:
-            cursor.execute("SELECT access_token FROM integrations WHERE user_id=%s", (self.user_id,))
+            cursor.execute(
+                "SELECT access_token FROM integrations WHERE user_id=%s",
+                (self.user_id,),
+            )
         else:
             cursor.execute("SELECT token FROM users WHERE user_id=%s", (self.user_id,))
 

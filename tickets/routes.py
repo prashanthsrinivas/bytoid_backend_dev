@@ -197,7 +197,7 @@ def filter_tickets(user_id):
         last_updated_in = request.args.get("last_updated_in")
         last_updated_in = last_updated_in.replace("T", " ")
 
-        print(f"****dates: {last_updated_in} : {start_date} : {end_date}")
+        #print(f"****dates: {last_updated_in} : {start_date} : {end_date}")
 
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -495,7 +495,7 @@ def search_tickets(user_id):
 
 def get_conversation_details(key):
     try:
-        print(f"key : {key}")
+        #print(f"key : {key}")
         data = read_json_from_s3(key)
 
         input_data = data.get("input_data", [])
@@ -515,24 +515,24 @@ def get_conversation_details(key):
         return {}
 
     except json.JSONDecodeError as e:
-        print(f"[ERROR] JSON decode failed for {key}: {e}")
+        #print(f"[ERROR] JSON decode failed for {key}: {e}")
         return {}
     except Exception as e:
-        print(f"[ERROR] Failed to read conversation file {key}: {e}")
+        #print(f"[ERROR] Failed to read conversation file {key}: {e}")
         return {}
 
 
 @tickets_bp.route("/get_status_priority/<ticket_id>/<user_id>", methods=["GET"])
 def get_status_priority(ticket_id, user_id):
     if not ticket_id:
-        print(f"no ticket_id")
+        #print(f"no ticket_id")
         return {"status": None, "priority": None, "ticket_name": None}
 
     conn = connect_to_rds()
     cursor = conn.cursor()
 
     try:
-        print(f"ticket_id : {ticket_id}, user_id : {user_id}")
+        #print(f"ticket_id : {ticket_id}, user_id : {user_id}")
         cursor.execute(
             "SELECT t.status, t.priority, t.ticket_name, t.conversation_id_fk, t.tickets_id "
             "FROM tickets t "
@@ -557,7 +557,7 @@ def get_status_priority(ticket_id, user_id):
 
         ticket_row = cursor.fetchone()
         if ticket_row:
-            print(f"{ticket_row[0]}, {ticket_row[1]}, {ticket_row[2]} {ticket_row[4]}")
+            #print(f"{ticket_row[0]}, {ticket_row[1]}, {ticket_row[2]} {ticket_row[4]}")
             return {
                 "status": ticket_row[0],
                 "priority": ticket_row[1],
@@ -579,7 +579,7 @@ def change_ticket_name():
 
     new_ticket_name = data.get("ticket_name")
     ticket_id = data.get("ticket_id")
-    print(f"ticket_id : {ticket_id}")
+    #print(f"ticket_id : {ticket_id}")
     conversation_id = data.get("conversation_id")
     user_id = data.get("user_id")
     if not new_ticket_name or not ticket_id:
@@ -608,7 +608,7 @@ def change_ticket_name():
             return jsonify({"error": "Conversation not found"}), 404
 
         conv_key = message_row[0]
-        print(f"conv_key is : {conv_key}")
+        #print(f"conv_key is : {conv_key}")
         client_id = message_row[1]
         conv_data = read_json_from_s3(conv_key)
         if conv_data:
@@ -656,7 +656,7 @@ def change_ticket_name():
             )
 
     except Exception as e:
-        print(f"❌ Error during ticket name update: {str(e)}")
+        #print(f"❌ Error during ticket name update: {str(e)}")
         return jsonify({"error": "Failed to update tickets name"}), 500
 
     finally:
@@ -674,7 +674,7 @@ def change_ticket_priority():
     priority = data.get("priority")
     ticket_id = data.get("ticket_id")
 
-    print(f"ticket_id :{ticket_id}")
+    #print(f"ticket_id :{ticket_id}")
 
     conn = connect_to_rds()
     cursor = conn.cursor()
@@ -688,7 +688,7 @@ def change_ticket_priority():
     # print("priority successfully updated")
 
     except Exception as e:
-        print(f"❌ Error during priority update: {str(e)}")
+        #print(f"❌ Error during priority update: {str(e)}")
         return jsonify({"error": "Failed to update priority"}), 500
 
     finally:
@@ -706,8 +706,8 @@ def change_ticket_status():
     status = data.get("status")
     ticket_id = data.get("ticket_id")
     channel = data.get("channel")
-    print(f"channel : {channel}")
-    print(f"status : {status}")
+    #print(f"channel : {channel}")
+    #print(f"status : {status}")
 
     conn = connect_to_rds()
     cursor = conn.cursor()
@@ -718,7 +718,7 @@ def change_ticket_status():
         )
 
         if channel == "website" and status == "Solved":
-            print(f"inside con")
+            #print(f"inside con")
             cursor.execute(
                 "SELECT user_id_fk,users_clients_id_fk from communication c JOIN tickets t WHERE t.communication_id_fk = c.communication_id AND t.tickets_id = %s",
                 (ticket_id,),
@@ -726,8 +726,8 @@ def change_ticket_status():
             message_row = cursor.fetchone()
             user_id = message_row[0]
             client_id = message_row[1]
-            print(f"user_id : {user_id}")
-            print(f"client_id : {client_id}")
+            #print(f"user_id : {user_id}")
+            #print(f"client_id : {client_id}")
 
             conversation_id = close_ticket(user_id, client_id)
 
@@ -735,7 +735,7 @@ def change_ticket_status():
 
     except Exception as e:
         conn.rollback()
-        print(f"❌ Error during status update: {str(e)}")
+        #print(f"❌ Error during status update: {str(e)}")
         return jsonify({"error": "Failed to update status"}), 500
 
     finally:

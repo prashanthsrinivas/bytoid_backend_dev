@@ -180,7 +180,7 @@ class WorkflowRunnerV2:
             for k in completed_steps.keys()
             if isinstance(k, (str, int)) and str(k).isdigit()
         }
-        print("completed ids", completed_ids)
+        #print("completed ids", completed_ids)
 
         # 🔹 Always respect workflow order
         ordered_steps = sorted(self.steps.values(), key=lambda s: int(s.get("id", 0)))
@@ -503,7 +503,7 @@ class WorkflowRunnerV2:
         ).strip()
 
         newresultds = await self.get_parsed_fireworks_response(prompt_text)
-        print("res workflow detector", newresultds)
+        #print("res workflow detector", newresultds)
         return newresultds
 
     def update_statuscount(self, count, status):
@@ -544,7 +544,7 @@ class WorkflowRunnerV2:
         # Detect next uncompleted step
         # =========================
         next_step_id = self._get_next_uncompleted_step()
-        print("next step", next_step_id)
+        #print("next step", next_step_id)
 
         # =========================
         # ✅ ALL STEPS COMPLETED
@@ -685,7 +685,7 @@ class WorkflowRunnerV2:
         chats_obj = self.get_current_chats()
         new_chat = chats_obj.get("chat", [])
         last_chat = new_chat[-1] if new_chat else []
-        print("exttacted id", extracted_id, userinput)
+        #print("exttacted id", extracted_id, userinput)
 
         # Base workflow data and previous execution context
         if extracted_id:
@@ -754,12 +754,12 @@ class WorkflowRunnerV2:
         ai_result = await self.get_parsed_fireworks_response(
             build_detect_prompt(modinput)
         )
-        print("ai detect initial:", ai_result)
+        #print("ai detect initial:", ai_result)
         if ai_result["step_id"] != extracted_id:
             ai_result = await self.get_eval_parsed_fireworks_response(
                 build_detect_prompt(modinput)
             )
-            print("ai_eval detect")
+            #print("ai_eval detect")
         # If AI detects a step but arguments missing, optionally use step_clarification_prompt
         if ai_result.get("clarification_needed") and clarification_prompt_template:
             step_id = ai_result.get("step_id")
@@ -796,7 +796,7 @@ class WorkflowRunnerV2:
             clarification_result = await self.get_parsed_fireworks_response(
                 clarification_prompt_text
             )
-            print("clarification AI result:", clarification_result)
+            #print("clarification AI result:", clarification_result)
             ai_result["clarification_message"] = clarification_result.get("message", "")
 
         return ai_result
@@ -921,7 +921,7 @@ class WorkflowRunnerV2:
         ).strip()
 
         newresultds = await self.get_parsed_fireworks_response(prompt_text)
-        print("res reset", newresultds)
+        #print("res reset", newresultds)
         return newresultds
 
     async def ai_pre_gather_details(self, userinput):
@@ -1080,7 +1080,7 @@ class WorkflowRunnerV2:
             )
 
             if not response_text:
-                print(f"[Retry {attempt+1}] Empty response from Fireworks. ")
+                #print(f"[Retry {attempt+1}] Empty response from Fireworks. ")
                 await asyncio.sleep(0.3)
                 continue
 
@@ -1092,7 +1092,7 @@ class WorkflowRunnerV2:
             try:
                 ai_result = json.loads(response_text)
                 if not ai_result:
-                    print(f"[Retry {attempt+1}] Empty JSON object from Fireworks.")
+                    #print(f"[Retry {attempt+1}] Empty JSON object from Fireworks.")
                     await asyncio.sleep(0.3)
                     continue
 
@@ -1126,7 +1126,7 @@ class WorkflowRunnerV2:
             )
 
             if not response_text:
-                print(f"[Retry {attempt+1}] Empty response from Fireworks. ")
+                #print(f"[Retry {attempt+1}] Empty response from Fireworks. ")
                 await asyncio.sleep(0.3)
                 continue
 
@@ -1138,7 +1138,7 @@ class WorkflowRunnerV2:
             try:
                 ai_result = json.loads(response_text)
                 if not ai_result:
-                    print(f"[Retry {attempt+1}] Empty JSON object from Fireworks.")
+                    #print(f"[Retry {attempt+1}] Empty JSON object from Fireworks.")
                     await asyncio.sleep(0.3)
                     continue
 
@@ -1279,7 +1279,7 @@ class WorkflowRunnerV2:
             # print("new executions or present",executions_for_day)
 
             if finished:
-                print("executions are finished", finished)
+                #print("executions are finished", finished)
                 executions_for_day[self.execution_id]["status"] = "completed"
 
                 current_schedule = original_json.get("current_schedule")
@@ -2051,10 +2051,10 @@ class WorkflowRunnerV2:
                 elif isinstance(v, str) and v.strip().lower() == "all":
                     args[k] = self.get_attendees("all")
 
-        print("method name", method_name)
-        print("instance", instance)
-        print("arguments", args)
-        print("step currently", step_id)
+        #print("method name", method_name)
+        #print("instance", instance)
+        #print("arguments", args)
+        #print("step currently", step_id)
 
         # Call the function
         import inspect
@@ -2109,7 +2109,7 @@ class WorkflowRunnerV2:
     async def check_input_tone(self, user_input: str):
         result = await self.ai_input_intent_classifier(userinput=user_input)
         ai_result = {}
-        print("result by input checker", result)
+        #print("result by input checker", result)
 
         if result and "intent" in result:
             intent = result["intent"]
@@ -2123,7 +2123,7 @@ class WorkflowRunnerV2:
                     "reset": False,
                     "log_status": "normal",
                 }
-                print("convo ai_result", "phase 2 normal")
+                #print("convo ai_result", "phase 2 normal")
 
             elif intent == "workflow":
                 ma_res = await self.ai_detect_trigger_type(userinput=user_input)
@@ -2166,7 +2166,7 @@ class WorkflowRunnerV2:
                     route = await self.ai_detect_and_route_input(
                         userinput=user_input, extracted_id=extracted_id
                     )
-                    print("base route workflow", route)
+                    #print("base route workflow", route)
                     ai_result = {
                         "response_message": route.get("response_message", ""),
                         "wf_single_runner": bool(route.get("wf_single_runner", False)),
@@ -2185,7 +2185,7 @@ class WorkflowRunnerV2:
                     if ai_result.get("wf_single_runner") and not ai_result.get(
                         "clarification_message"
                     ):
-                        print("ai result data", ai_result)
+                        #print("ai result data", ai_result)
                         return await self.execute_from_text_input(
                             user_input=user_input,
                             base_input=user_input,
@@ -2354,11 +2354,11 @@ class WorkflowRunnerV2:
         # ------------------------------------------------------------------
         # Call AI (ARGUMENT PREPARATION ONLY)
         # ------------------------------------------------------------------
-        print("user inputs", user_input, step_id)
+        #print("user inputs", user_input, step_id)
         ai_result = await self.get_parsed_fireworks_response(
             prompt_text=prompt_text, temp=0.2
         )
-        print("ai _ result", ai_result)
+        #print("ai _ result", ai_result)
 
         # ------------------------------------------------------------------
         # Process AI response

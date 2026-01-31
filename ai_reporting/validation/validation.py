@@ -28,7 +28,7 @@ class Validator:
             for key, value in filter_dict.items():
                 # Check if key exists and value is in the list of allowed values
                 if key not in reference_map or value not in reference_map[key]:
-                    print(f"key/value not in possible filters: {filter_list}")
+                   #print(f"key/value not in possible filters: {filter_list}")
                     return []
         return filter_list
 

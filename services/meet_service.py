@@ -79,7 +79,7 @@ class GoogleMeetService:
                 "https://www.googleapis.com/auth/gmail.modify",
                 "https://www.googleapis.com/auth/gmail.compose",
                 # Drive – READ ONLY
-                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
                 # Calendar – READ ONLY
                 "https://www.googleapis.com/auth/calendar",
@@ -94,7 +94,7 @@ class GoogleMeetService:
                 self.creds.refresh(
                     Request()
                 )  # You need to import google.auth.transport.requests.Request
-                print(f"✅ Token refreshed successfully for user {userid}")
+                # print(f"✅ Token refreshed successfully for user {userid}")
 
                 # 4. CRITICAL STEP: Save the NEW tokens and expiry back to the database
                 with get_cursor(self.conn) as cursor:
@@ -110,7 +110,7 @@ class GoogleMeetService:
 
             except Exception as e:
                 # Token refresh failed (e.g., refresh token revoked)
-                print(f"❌ Token refresh failed for user {userid}: {e}")
+                # print(f"❌ Token refresh failed for user {userid}: {e}")
                 raise ValueError(
                     f"Token refresh failed. User must re-authenticate: {e}"
                 )
@@ -256,7 +256,7 @@ class GoogleMeetService:
             effective_tz = timezone or self.organizer_tz
             tz = pytz.timezone(effective_tz)
             now_local = datetime.now(tz)
-            print("values", preferred_date, start_time, end_time, tz, now_local)
+            # print("values", preferred_date, start_time, end_time, tz, now_local)
 
             # -------------------------
             # 1. Normalize attendees
@@ -279,9 +279,9 @@ class GoogleMeetService:
                 date_is_future = preferred_date_dt > now_local.date()
 
             # Reject past date
-            print("peees", preferred_date_dt, attendees, start_time, end_time)
+            # print("peees", preferred_date_dt, attendees, start_time, end_time)
             if preferred_date_dt < now_local.date():
-                print("asd", preferred_date_dt, now_local.date())
+                # print("asd", preferred_date_dt, now_local.date())
                 return {
                     "success": False,
                     "reason": "No available slots in range (date is in past).",
@@ -444,7 +444,7 @@ class GoogleMeetService:
     ):
         """Find first free slot and schedule a meeting."""
         try:
-            print("started schedule_meeting_on_first_available")
+            # print("started schedule_meeting_on_first_available")
             nattendees = self.get_attendees_or_contacts(attendees)
             # print("attendes1", nattendees)
             slots = self.get_all_available_slots(
@@ -460,7 +460,7 @@ class GoogleMeetService:
                 return {"success": False, "reason": "No available slots in range."}
 
             first_slot = slots[0]
-            print("first slot", first_slot)
+            # print("first slot", first_slot)
             created = self.createbasemeet(
                 summary=summary,
                 start_time=first_slot["start"],
@@ -469,7 +469,7 @@ class GoogleMeetService:
                 description=description,
                 timezone=timezone,
             )
-            print("created", created)
+            # print("created", created)
 
             return created
         except Exception as e:
@@ -488,7 +488,7 @@ class GoogleMeetService:
         timezone: str = None,
     ):
         """Create a Google Calendar event with Meet link."""
-        print("got into createbasemeet")
+        # print("got into createbasemeet")
 
         # Normalize attendees
         if not isinstance(attendees, list):
@@ -632,9 +632,9 @@ class GoogleMeetService:
                         delta = timedelta(days=1)
                         start_dt += delta
                         end_dt += delta
-                        print(
-                            f"[update_meeting] Times were in the past — rescheduled to tomorrow: {start_dt} → {end_dt}"
-                        )
+                        # print(
+                        #     f"[update_meeting] Times were in the past — rescheduled to tomorrow: {start_dt} → {end_dt}"
+                        # )
 
                     # ✅ convert final times to ISO strings
                     start_time_std = start_dt.isoformat()
@@ -1178,7 +1178,7 @@ class GoogleMeetService:
         time_min = from_dt.isoformat() + "Z"
         time_max = to_dt.isoformat() + "Z"
 
-        print(f"Fetching events from {time_min} to {time_max}")
+        # print(f"Fetching events from {time_min} to {time_max}")
 
         # ------------ Fetch all calendars ------------
         try:
@@ -1214,7 +1214,7 @@ class GoogleMeetService:
                 continue
             # (When show_holidays=True → do not filter anything)
 
-            print(f"Fetching events from calendar: {cal_name}")
+            # print(f"Fetching events from calendar: {cal_name}")
 
             page_token = None
 
@@ -1237,7 +1237,7 @@ class GoogleMeetService:
                     )
 
                     items = result.get("items", [])
-                    print(f"  Got {len(items)} events")
+                    # print(f"  Got {len(items)} events")
 
                     for ev in items:
                         all_events.append(
@@ -1261,7 +1261,7 @@ class GoogleMeetService:
                         break
 
             except Exception as e:
-                print(f"Error in calendar {cal['id']}: {e}")
+                # print(f"Error in calendar {cal['id']}: {e}")
                 continue
 
         # ------------ Return Result ------------

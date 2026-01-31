@@ -15,6 +15,8 @@ from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response, get_fireworks_response2
 from utils.normal import can_reply_to_email, ensure_dir, load_yaml_file
 import json
+from credits_route.route import Credits
+
 
 from utils.s3_utils import read_json_from_s3, upload_any_file
 from zoho_routes.routes import send_zoho_email
@@ -27,7 +29,7 @@ def umail_get_sorted_lance_emails(connection, user_id, client_id):
     client = UmailLanceClient(user_id)
     recent_msg = client.get_selected_conv_from_lance(user_id, client_id)
     if not recent_msg:
-        print("NO RECENT MSG")
+        # print("NO RECENT MSG")
         return None
 
     all_messages = []
@@ -90,7 +92,7 @@ def umail_get_sorted_lance_emails(connection, user_id, client_id):
                     }
                 )
             except Exception as e:
-                print(f"❌ Failed to read or parse {e}")
+                # print(f"❌ Failed to read or parse {e}")
                 continue
 
     if all_messages:
@@ -103,7 +105,7 @@ def umail_get_sorted_lance_emails(connection, user_id, client_id):
             ),
             reverse=False,
         )
-    print("len ofumail_get_sorted_lance_emails ", len(sorted_conversations))
+    # print("len ofumail_get_sorted_lance_emails ", len(sorted_conversations))
     return sorted_conversations
 
 
@@ -186,14 +188,21 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
         business_name = businessdata.get("BusinessName") if businessdata else ""
         business_address = businessdata.get("BillingAddress") if businessdata else ""
         business_website = businessdata.get("WebsiteUrl") if businessdata else ""
-        print("before ai check on suggest")
+        # print("before ai check on suggest")
         try:
 
             # Call model to generate retrieval question
+
+            task_db = connect_to_rds()
+            task_credits = Credits(task_db)
+
             base_query = await get_fireworks_response(
-                user_message=filled_prompt, role="system", user_id=userid
+                user_message=filled_prompt,
+                role="system",
+                credits=task_credits,
+                user_id=userid,
             )
-            print("basequery", type(base_query), base_query)
+            # print("basequery", type(base_query), base_query)
 
             # Parse retrieval question safely
             try:
@@ -210,7 +219,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
                 question_data.get("question", "").strip() if question_data else ""
             )
             # print("queston text", question_text)
-            print("len of question", len(question_text))
+            # print("len of question", len(question_text))
             base_doc_ans = []
             if question_text:
                 top_k = 3
@@ -218,7 +227,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
                     user_id=userid, query_text=question_text, top_k=top_k
                 )
                 lance_client = LanceClient(user_id=userid)
-                print("lanceclient", lance_client)
+                # print("lanceclient", lance_client)
                 # results = run_async(lance_client.query_vector(query_input))
                 results = await lance_client.mixed_query_vector(
                     query_input=query_input, sender_email=sender_email
@@ -250,20 +259,24 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
                 .replace("{{sender_name}}", str(sender_name or ""))
             )
 
-            print("base docs ans", base_doc_ans)
+            # print("base docs ans", base_doc_ans)
 
             # ai_reply = get_fireworks_response(filled_prompt, "system")
             ##print("print filled prompt",filled_prompt)
             ai_reply = normalize_ai_response(
                 await get_fireworks_response2(
-                    user_id=userid, user_message=filled_prompt, role="system"
+                    user_id=userid,
+                    user_message=filled_prompt,
+                    role="system",
+                    credits=task_credits,
                 )
             )
 
         except Exception as e:
-            print(f"error in suggest_helper_base:{e} ")
+            # print(f"error in suggest_helper_base:{e} ")
+            return None
 
-        print("AOI RTEPLy", ai_reply)
+        # print("AOI RTEPLy", ai_reply)
         if not ai_reply or ai_reply.lower() in ["none", "null", ""]:
             return None
         return ai_reply
@@ -277,7 +290,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
 
 async def ai_suggest_helper(userid, currentmsg, conversation_id):
     umail_conversations = getselectedconv(conv_id=conversation_id, userid=userid)
-    print("umial", len(umail_conversations))
+    # print("umial", len(umail_conversations))
     umail_bodies = [item.get("body", "") for item in umail_conversations]
     ai_reply = await suggest_helper_base(
         userid=userid,
@@ -329,7 +342,7 @@ async def send_pilot_messages(
             input_data = raw_data.get("input_data", [])
             # print(f"📖 [DEBUG] Loaded {len(input_data)} existing messages")
         except Exception as e:
-            print(f"📖 [DEBUG] No existing conversation found, starting fresh: {e}")
+            # print(f"📖 [DEBUG] No existing conversation found, starting fresh: {e}")
             input_data = []
 
         # print(f"📖 [DEBUG] input_data length: {len(input_data)}")
@@ -355,7 +368,7 @@ async def send_pilot_messages(
             "ticket_id": ticket_id,
             "ticket_name": ticket_name,
         }
-        print(f"📧 [DEBUG] Final message object created: {message}")
+        # print(f"📧 [DEBUG] Final message object created: {message}")
 
         # Send the message via appropriate channel
         sent_message_id, sent_thread_id = None, None
@@ -385,7 +398,7 @@ async def send_pilot_messages(
                 # print("❌ [DEBUG] input_data is neither dict nor list")
                 return {"error": "Invalid input_data format"}, 400
             latest_id = latest_msg["id"]
-            print(f"📧 [DEBUG] Latest message ID: {latest_id}")
+            # print(f"📧 [DEBUG] Latest message ID: {latest_id}")
 
             # Getting the reply subject
             latest_subject = latest_msg["subject"].strip()
@@ -393,10 +406,10 @@ async def send_pilot_messages(
                 reply_subject = f"Re: {latest_subject}"
             else:
                 reply_subject = latest_subject
-            print(f"📧 [DEBUG] Reply subject: {reply_subject}")
+            # print(f"📧 [DEBUG] Reply subject: {reply_subject}")
 
             try:
-                print(f"📧 [DEBUG] Calling gmail_reply()...")
+                # print(f"📧 [DEBUG] Calling gmail_reply()...")
                 sent_message_id = gmail_reply(
                     user_id,
                     to=client_email,
@@ -410,18 +423,18 @@ async def send_pilot_messages(
                     return {"error": "Gmail send failed"}, 500
                 msg_id = sent_message_id
                 message["id"] = sent_message_id
-                print(
-                    f"✅ [DEBUG] Gmail reply sent successfully, message_id: {sent_message_id}"
-                )
+                # print(
+                #     f"✅ [DEBUG] Gmail reply sent successfully, message_id: {sent_message_id}"
+                # )
 
             except Exception as e:
-                print(f"❌ [DEBUG] Gmail reply failed: {e}")
+                # print(f"❌ [DEBUG] Gmail reply failed: {e}")
                 return {"error": "Gmail send failed"}, 500
 
         elif channel == "zoho":
             # print("📧 [DEBUG] Processing Zoho send...")
             try:
-                print(f"📧 [DEBUG] Calling send_zoho_email()...")
+                # print(f"📧 [DEBUG] Calling send_zoho_email()...")
                 response_payload, status_code = send_zoho_email(
                     user_id=user_id,
                     to_email=client_email,
@@ -429,30 +442,30 @@ async def send_pilot_messages(
                     body_text=text,
                     from_user_email=user_email,
                 )
-                print(
-                    f"📧 [DEBUG] Zoho response - status: {status_code}, payload: {response_payload}"
-                )
+                # print(
+                #     f"📧 [DEBUG] Zoho response - status: {status_code}, payload: {response_payload}"
+                # )
 
                 if status_code in [200, 201]:
                     message_id = response_payload.get("message_id")
-                    print(
-                        f"✅ [DEBUG] Zoho message sent successfully, message_id: {message_id}"
-                    )
+                    # print(
+                    #     f"✅ [DEBUG] Zoho message sent successfully, message_id: {message_id}"
+                    # )
                 else:
-                    print(
-                        f"❌ [DEBUG] Zoho send failed: {response_payload.get('error')}"
-                    )
+                    # print(
+                    #     f"❌ [DEBUG] Zoho send failed: {response_payload.get('error')}"
+                    # )
                     return (
                         {"error": response_payload.get("error")},
                         status_code,
                     )
 
             except Exception as e:
-                print(f"❌ [DEBUG] Zoho send failed: {e}")
+                # print(f"❌ [DEBUG] Zoho send failed: {e}")
                 return {"error": "Zoho send failed"}, 500
 
         else:
-            print(f"❌ [DEBUG] Unsupported channel: {channel}")
+            # print(f"❌ [DEBUG] Unsupported channel: {channel}")
             return {"error": "Unsupported channel"}, 400
 
         # Database updates
@@ -515,7 +528,7 @@ async def send_pilot_messages(
 
         except Exception as e:
             connection.rollback()
-            print(f"❌ [DEBUG] Database operation failed — rolled back: {e}")
+            # print(f"❌ [DEBUG] Database operation failed — rolled back: {e}")
             return {"error": "Database operation failed"}, 500
 
         # Update Conversation File
@@ -525,13 +538,13 @@ async def send_pilot_messages(
                 input_data = [input_data]
             input_data.append(message)
             conversation_data = {"input_data": input_data}
-            print(f"📄 [DEBUG] Total messages in conversation: {len(input_data)}")
+            # print(f"📄 [DEBUG] Total messages in conversation: {len(input_data)}")
             # print(f"conversation_data : {conversation_data}")
-            print(f"💾 [DEBUG] Writing to local file: {conv_filepath}")
+            # print(f"💾 [DEBUG] Writing to local file: {conv_filepath}")
             with open(conv_filepath, "w", encoding="utf-8") as f:
                 json.dump(conversation_data, f, indent=2)
 
-            print(f"☁️ [DEBUG] Uploading to S3: {s3_conv_key}")
+            # print(f"☁️ [DEBUG] Uploading to S3: {s3_conv_key}")
             upload_any_file(
                 conv_filepath,
                 user_id,
@@ -541,7 +554,7 @@ async def send_pilot_messages(
         # print("✅ [DEBUG] Conversation file updated successfully")
 
         except Exception as e:
-            print(f"❌ [DEBUG] Failed to update conversation file: {e}")
+            # print(f"❌ [DEBUG] Failed to update conversation file: {e}")
             return {"error": "Failed to save conversation"}, 500
 
         # updating lancedb
@@ -563,11 +576,11 @@ async def send_pilot_messages(
         s3_config_key = f"{user_id}/messages/{client_id}/config.json"
         try:
             config_data = read_json_from_s3(s3_config_key)
-            print(
-                f"⚙️ [DEBUG] Existing config loaded with {len(config_data.get('conversations', []))} conversations"
-            )
+            # print(
+            #     f"⚙️ [DEBUG] Existing config loaded with {len(config_data.get('conversations', []))} conversations"
+            # )
         except Exception as e:
-            print(f"⚙️ [DEBUG] No config file found — creating new: {e}")
+            # print(f"⚙️ [DEBUG] No config file found — creating new: {e}")
             config_data = {"userclients_id": client_id, "conversations": []}
 
         # Parse timestamp
@@ -576,9 +589,9 @@ async def send_pilot_messages(
                 parsed_ts = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
             else:
                 parsed_ts = datetime.fromisoformat(updated_date)
-            print(f"⚙️ [DEBUG] Parsed timestamp: {parsed_ts.isoformat()}")
+            # print(f"⚙️ [DEBUG] Parsed timestamp: {parsed_ts.isoformat()}")
         except Exception as e:
-            print(f"⚠️ [DEBUG] Could not parse updated_date '{updated_date}': {e}")
+            # print(f"⚠️ [DEBUG] Could not parse updated_date '{updated_date}': {e}")
             parsed_ts = datetime.now(timezone.utc)
 
         # Create updated entry
@@ -591,19 +604,19 @@ async def send_pilot_messages(
             "updated_date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "parsed_timestamp": parsed_ts.isoformat(),
         }
-        print(f"*****ticket_id 2 : {ticket_id}")
+        # print(f"*****ticket_id 2 : {ticket_id}")
         if channel == "gmail":
             if sent_thread_id:
                 updated_entry["thread_id"] = sent_thread_id
-                print(f"⚙️ [DEBUG] Using sent_thread_id: {sent_thread_id}")
+                # print(f"⚙️ [DEBUG] Using sent_thread_id: {sent_thread_id}")
             else:
                 updated_entry["thread_id"] = thread_id
-                print(f"⚙️ [DEBUG] Using existing thread_id: {thread_id}")
+                # print(f"⚙️ [DEBUG] Using existing thread_id: {thread_id}")
         else:
             updated_entry["thread_id"] = ""
         # print("⚙️ [DEBUG] Non-Gmail channel, no thread_id")
 
-        print(f"⚙️ [DEBUG] Updated entry: {updated_entry}")
+        # print(f"⚙️ [DEBUG] Updated entry: {updated_entry}")
 
         # Update or add conversation in config
         conversation_exists = False
@@ -611,7 +624,7 @@ async def send_pilot_messages(
             if conv.get("conv_id") == conversation_id:
                 config_data["conversations"][i] = updated_entry
                 conversation_exists = True
-                print(f"⚙️ [DEBUG] Updated existing conversation at index {i}")
+                # print(f"⚙️ [DEBUG] Updated existing conversation at index {i}")
                 break
 
         if not conversation_exists:
@@ -619,7 +632,7 @@ async def send_pilot_messages(
         # print("⚙️ [DEBUG] Added new conversation to config")
 
         config_data["userclients_id"] = client_id
-        print(f"⚙️ [DEBUG] Calling update_config_file()...")
+        # print(f"⚙️ [DEBUG] Calling update_config_file()...")
         update_config_file(user_id, client_id, config_data)
         # print("✅ [DEBUG] Config file updated successfully")
 
@@ -631,14 +644,14 @@ async def send_pilot_messages(
             "conversationId": conversation_id,
             "is_reply": is_reply,
         }
-        print(f"🎉 [DEBUG] Function completed successfully - Response: {response_data}")
+        # print(f"🎉 [DEBUG] Function completed successfully - Response: {response_data}")
         return response_data
 
     except Exception as e:
-        print(f"❌ [DEBUG] Unexpected error in send_messages(): {e}")
+        # print(f"❌ [DEBUG] Unexpected error in send_messages(): {e}")
         import traceback
 
-        print(f"❌ [DEBUG] Full traceback: {traceback.format_exc()}")
+        # print(f"❌ [DEBUG] Full traceback: {traceback.format_exc()}")
         return {"error": "Internal server error"}
     finally:
         if b_connection is None and connection:
@@ -669,7 +682,7 @@ async def helper_make_reply_email(userid=None, from_email=None, n_connection=Non
             connection=connection, user_id=userid, client_id=clientid
         )
         if not sorted_conversations:
-            print("No sorted conversations")
+            # print("No sorted conversations")
             return None
 
         # collect all messages
@@ -677,7 +690,7 @@ async def helper_make_reply_email(userid=None, from_email=None, n_connection=Non
         for conv in sorted_conversations:
             all_messages.extend(conv.get("messages", []))
         if not all_messages:
-            print("no all messages")
+            # print("no all messages")
             return None
         # print("all msg", all_messages)
 

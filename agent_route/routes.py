@@ -385,7 +385,7 @@ def checkquerywithApiKeyog():
                 return jsonify({"error": "Invalid API key"}), 401
 
             userid, userwebsite = user_row
-            if website != userwebsite and website != "dev.bytoid.ai":
+            if website != userwebsite and website != "app.bytoid.ai":
                 return (
                     jsonify({"error": "API key does not match the provided website"}),
                     401,
@@ -482,7 +482,7 @@ def parse_llm_response(response_text):
         raise ValueError("Empty response from LLM")
 
     cleaned = response_text.strip()
-    print(f"****cleaned : {cleaned}")
+    # print(f"****cleaned : {cleaned}")
 
     # Strategy 1: Extract content between code fences
     code_fence_pattern = r"```(?:json|yaml|yml)?\s*\n(.*?)\n```"
@@ -569,7 +569,7 @@ async def generate_fallback_response(
 
     # If this specific user has asked the same question 2+ times, give repeat response
     if repeated_len >= 1:
-        print(f"repeated_len : {repeated_len}")
+        # print(f"repeated_len : {repeated_len}")
         fallback_respone = load_yaml_file(path=pathconfig.query_validation)
         prompt_template = fallback_respone.get("fallback_repeated_question")
         filled_prompt = (
@@ -589,7 +589,7 @@ async def generate_fallback_response(
         try:
             parsed_yaml = parse_llm_response(modified_yaml)
         except ValueError as e:
-            print(f"🔥 Fallback response parsing failed: {e}")
+            # print(f"🔥 Fallback response parsing failed: {e}")
             return jsonify({"error": "Failed to parse fallback response"}), 500
 
         fallback_response = parsed_yaml.get("response")
@@ -641,7 +641,7 @@ async def semantically_repeated_response(
     try:
         parsed_yaml = parse_llm_response(modified_yaml)
     except ValueError as e:
-        print(f"🔥 Fallback response parsing failed: {e}")
+        # print(f"🔥 Fallback response parsing failed: {e}")
         return jsonify({"error": "Failed to parse fallback response"}), 500
 
     fallback_response = parsed_yaml.get("response")
@@ -661,7 +661,7 @@ async def checkquerywithApiKey():
         previous_response = data.get("previous_response").strip()
         querytext = data.get("query", "").strip()
         conversation_summary = data.get("conversation_summary")
-        print(f"conversation_summary received: {conversation_summary}")
+        # print(f"conversation_summary received: {conversation_summary}")
         api_key = data.get("api_key")
         if not api_key:
             return jsonify({"error": "API key is required"}), 400
@@ -686,7 +686,7 @@ async def checkquerywithApiKey():
                 return jsonify({"error": "Invalid API key"}), 401
 
             userid, userwebsite = user_row
-            if website != userwebsite and website != "dev.bytoid.ai":
+            if website != userwebsite and website != "app.bytoid.ai":
                 return (
                     jsonify({"error": "API key does not match the provided website"}),
                     401,
@@ -733,7 +733,7 @@ async def checkquerywithApiKey():
             try:
                 result = parse_llm_response(modified_yaml)
             except ValueError as e:
-                print(f"🔥 Query validation parsing failed: {e}")
+                # print(f"🔥 Query validation parsing failed: {e}")
                 return (
                     jsonify({"error": "Failed to parse query validation response"}),
                     500,
@@ -741,8 +741,8 @@ async def checkquerywithApiKey():
             validated_query = result.get("question")
             type = result.get("type")
             summary_generated = result.get("summary_generated")
-            print(f"type : {type}")
-            print(f"summary : {summary_generated}")
+            # print(f"type : {type}")
+            # print(f"summary : {summary_generated}")
 
             if (
                 type == "general"
@@ -811,12 +811,12 @@ async def checkquerywithApiKey():
                     )
                     lance_client = LanceClient(user_id=userid, credits=credits)
                     # results = run_async(lance_client.mixed_query_vector(query_input))
-                    print("***** before calling query_vector")
+                    # print("***** before calling query_vector")
                     results = await lance_client.query_vector(query_input)
                     for r in results:
                         clean_text = r.get("text", "").encode().decode("unicode_escape")
                         base_doc_ans.append(clean_text)
-                    print("***** after calling query_vector")
+                    # print("***** after calling query_vector")
 
                 # Fetch business info
                 businessdata = get_business_info(connection=connection, userid=userid)
@@ -859,7 +859,7 @@ async def checkquerywithApiKey():
                 try:
                     result = parse_llm_response(modified_yaml)
                 except ValueError as e:
-                    print(f"🔥 Base evaluation parsing failed: {e}")
+                    # print(f"🔥 Base evaluation parsing failed: {e}")
                     return (
                         jsonify({"error": "Failed to parse base evaluation response"}),
                         500,
@@ -878,8 +878,8 @@ async def checkquerywithApiKey():
                     no_answer_found = "Partial"
                 else:
                     no_answer_found = False
-                print(f"base_response : {base_response}")
-                print(f"no_answer_found : {no_answer_found}")
+                # print(f"base_response : {base_response}")
+                # print(f"no_answer_found : {no_answer_found}")
 
                 if not no_answer_found:
                     response_data.append(
@@ -896,13 +896,13 @@ async def checkquerywithApiKey():
 
                 elif no_answer_found == "Partial":
                     # genereate fall back response when no_answer_found is true or partial
-                    print(f"inside partial part")
+                    # print(f"inside partial part")
 
                     website_urls = get_website_url(api_key)
                     youtube_urls = get_youtube_url(api_key)
 
-                    print(f"website_urls: {website_urls}")
-                    print(f"youtube_urls: {youtube_urls}")
+                    # print(f"website_urls: {website_urls}")
+                    # print(f"youtube_urls: {youtube_urls}")
 
                     fallback_respone = load_yaml_file(path=pathconfig.query_validation)
                     template = fallback_respone.get("fallback_partial_answer")
@@ -929,7 +929,7 @@ async def checkquerywithApiKey():
                     try:
                         parsed_yaml = parse_llm_response(modified_yaml)
                     except ValueError as e:
-                        print(f"🔥 Fallback response parsing failed: {e}")
+                        # print(f"🔥 Fallback response parsing failed: {e}")
                         return (
                             jsonify({"error": "Failed to parse fallback response"}),
                             500,
@@ -937,7 +937,7 @@ async def checkquerywithApiKey():
 
                     fallback_response = parsed_yaml.get("response")
 
-                    print(f"fallback response: {fallback_response}")
+                    # print(f"fallback response: {fallback_response}")
 
                     response_data.append(
                         {
@@ -952,10 +952,10 @@ async def checkquerywithApiKey():
                     return jsonify(response_data), 200
 
                 else:
-                    print(f"inside true part")
+                    # print(f"inside true part")
                     fallback_respone = load_yaml_file(path=pathconfig.query_validation)
                     prompt = fallback_respone.get("fallback_no_answer")
-                    print(f"str(querytext) : {str(querytext)}")
+                    # print(f"str(querytext) : {str(querytext)}")
                     filled_prompt = (
                         prompt.replace("{{user_query}}", str(querytext))
                         .replace("{{previous_query}}", str(previous_query))
@@ -971,7 +971,7 @@ async def checkquerywithApiKey():
                     try:
                         parsed_yaml = parse_llm_response(modified_yaml)
                     except ValueError as e:
-                        print(f"🔥 Fallback response parsing failed: {e}")
+                        # print(f"🔥 Fallback response parsing failed: {e}")
                         return (
                             jsonify({"error": "Failed to parse fallback response"}),
                             500,
@@ -979,7 +979,7 @@ async def checkquerywithApiKey():
 
                     fallback_response = parsed_yaml.get("response")
 
-                    print(f"summary_generated send : {summary_generated}")
+                    # print(f"summary_generated send : {summary_generated}")
 
                     response_data.append(
                         {
@@ -993,7 +993,8 @@ async def checkquerywithApiKey():
                     connection.commit()
                     return jsonify(response_data), 200
         except Exception as e:
-            print(f"error in cehckquerywithApiKey:{e} ")
+            # print(f"error in cehckquerywithApiKey:{e} ")
+            return jsonify({"error": str(e)}), 400
 
     except Exception as e:
         # print("❌ Error during query processing:", e)
@@ -1091,7 +1092,7 @@ def makeuserDocClarifications(userid=None, industry=None):
                 credits=credits,
                 func=pre_process_wrapper,
             )
-            print(f"[DEBUG] Background task queued: {result}")
+            # print(f"[DEBUG] Background task queued: {result}")
             return (
                 jsonify(
                     {"message": "Currently generating clarifications for the user."}
@@ -1146,7 +1147,7 @@ async def updateClarifications(userid=None, industry=None):
         failed_entries = [item for sublist in failed_entries for item in sublist]
     if passed_entries and isinstance(passed_entries[0], list):
         passed_entries = [item for sublist in passed_entries for item in sublist]
-    print(len(failed_entries), "failed entries length")
+    # print(len(failed_entries), "failed entries length")
 
     prompts = load_yaml_file(path=pathconfig.agent_template)
     # Create mapping from rephrased question → original user question
@@ -1323,7 +1324,7 @@ async def updateClarifications(userid=None, industry=None):
         )
     except Exception as e:
         db.rollback()
-        print("error in update clarification", e)
+        # print("error in update clarification", e)
     finally:
         db.close()
 
@@ -1371,7 +1372,8 @@ async def get_ai_suggestion():
                 user_message=full_prompt, role="user", user_id=userid, credits=credits
             )
         except Exception as e:
-            print(f"error in get_ai_suggestion:{e} ")
+            # print(f"error in get_ai_suggestion:{e} ")
+            return jsonify({"error", e}), 500
 
         # return jsonify({"suggestion": ai_suggestion, "scraped_file": json_path}), 200
         db.commit()

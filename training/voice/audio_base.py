@@ -139,8 +139,9 @@ def process_audio_stream():
                     "id": str(uuid.uuid4().hex[:8]),
                     "filename": filename,
                     "date": datetime.utcnow().isoformat(timespec="seconds"),
-                    "text": val["clean_text"],
-                    "summary": val["summary"],
+                    "summary": val["clean_text"],
+                    "transcript":transcript_text,
+                    "heading": val["summary"],
                     "contacts": "All",
                 }
                 with open(transcript_local_path, "w", encoding="utf-8") as f:
@@ -150,7 +151,7 @@ def process_audio_stream():
                 # Embed transcript (async)
                 ser = TrainLanceAgent(user_id=userid)
                 await ser.embed_single_audio_json(
-                    file_path=transcript_local_path, filename=transcript_filename
+                    file_path=transcript_local_path, filename=transcript_filename, credits = task_credits
                 )
                 yield "data: Embedding complete\n\n"
 
@@ -330,8 +331,8 @@ async def update_transcript():
 
         update_loc = None
         for rec in config.get("recordings", []):
-            print("values", type(rec))
-            print("values", rec.get("title"), filename)
+            #print("values", type(rec))
+            #print("values", rec.get("title"), filename)
             if rec.get("title") == filename:
                 update_loc = rec.get("transcript_location")
                 rec["updated_date"] = datetime.utcnow().isoformat(timespec="seconds")
@@ -521,7 +522,7 @@ def get_audio_config():
         return jsonify({"error": "Invalid access"}), 404
 
     config_filename = fetch_document_link(agentid)
-    print("config filename", config_filename)
+    #print("config filename", config_filename)
     if not config_filename:
         return jsonify({"error": "No audios found for this user"}), 404
     try:

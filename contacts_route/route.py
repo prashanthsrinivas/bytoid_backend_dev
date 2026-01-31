@@ -26,7 +26,7 @@ def save_contact():
         data = request.get_json() or {}
 
         user_id = data.get("user_id")
-        print(f"user is is:{user_id}")
+       #print(f"user is is:{user_id}")
         first_name = data.get("firstName")
         last_name = data.get("lastName") or None
         phone_number = data.get("phone") or None
@@ -237,7 +237,7 @@ def save_edit_contact():
         data = request.get_json() or {}
 
         user_id = data.get("user_id")
-        print(f"user is is:{user_id}")
+       #print(f"user is is:{user_id}")
         first_name = data.get("firstName")
         last_name = data.get("lastName") or None
         phone_number = data.get("phone") or None
@@ -249,7 +249,7 @@ def save_edit_contact():
         slack_workspace = data.get("slackWorkspace") or None
         isLead = data.get("isLead")
         type = "Lead" if isLead else "Customer"
-        print(f"type : {type}")
+       #print(f"type : {type}")
         company = data.get("company") or None
         subject = data.get("subject") or None
         status = data.get("status") or None
@@ -566,15 +566,15 @@ def delete_contacts():
             # remove from outlook sync file
             result = delete_user_sync_time(user_id)
             if not result:
-                print(f"could not delete using delete_user_sync_time")
+               #print(f"could not delete using delete_user_sync_time")
                 return jsonify({"error : unable to delete contact"}), 500
 
             #remove the contact messages from redis 
             result = delete_from_cache_sync(user_id)
-            if result == 1:
-                print("Cache deleted")
-            else:
-                print("No cache found")
+            # if result == 1:
+            #    #print("Cache deleted")
+            # else:
+            #    #print("No cache found")
                         
             return jsonify({
                 "message": "Contacts deleted successfully",
@@ -583,7 +583,7 @@ def delete_contacts():
 
         except Exception as e:
             traceback.print_exc()
-            print(f"error: {str(e)}")
+           #print(f"error: {str(e)}")
             return jsonify({"error : unable to delete contact"}), 500
 
         finally:

@@ -115,5 +115,5 @@ def create_invited_user(email, connection, permission, launch_id_fk):
             return True
 
     except Exception as e:
-        print(f"❌ Error creating invited user: {e}")
+        #print(f"❌ Error creating invited user: {e}")
         return False

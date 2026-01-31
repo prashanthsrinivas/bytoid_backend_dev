@@ -85,7 +85,7 @@ def main():
     rows_dicts = [dict(zip(cols_desc, r)) for r in rows]
 
     if not rows_dicts:
-        print(f"No tables/columns found in schema '{TARGET_SCHEMA}'. Exiting.")
+        # print(f"No tables/columns found in schema '{TARGET_SCHEMA}'. Exiting.")
         cursor.close()
         conn.close()
         return
@@ -99,7 +99,7 @@ def main():
         if key not in tables_seen:
             tables_seen.append(key)
 
-    print(f"Discovered {len(tables_seen)} tables in schema '{TARGET_SCHEMA}'.")
+    # print(f"Discovered {len(tables_seen)} tables in schema '{TARGET_SCHEMA}'.")
 
     # build mapping with random uuid-based names, ensure uniqueness across tables+cols
     used_names = set()
@@ -130,7 +130,7 @@ def main():
         for (schema, tbl), info in mapping.items():
             for orig_col, obf_col in info["columns"].items():
                 w.writerow([schema, tbl, info["new_table"], orig_col, obf_col])
-    print(f"Mapping written to: {OUTPUT_MAPPING_CSV}  (KEEP THIS FILE SAFE!)")
+    # print(f"Mapping written to: {OUTPUT_MAPPING_CSV}  (KEEP THIS FILE SAFE!)")
 
     # build DDL commands: rename tables first, then rename columns using RENAME COLUMN (MySQL 8+)
     commands = []
@@ -157,12 +157,12 @@ def main():
 
     # preview
     # print("\n=== PREVIEW DDL COMMANDS ===")
-    for kind, a, b, sql in commands:
-        if kind == "TABLE_RENAME":
-            print(f"-- Table rename: {a} -> {b}")
-        else:
-            print(f"-- Column rename: {a} -> {b}")
-        print(sql)
+    # for kind, a, b, sql in commands:
+    #     if kind == "TABLE_RENAME":
+    #         #print(f"-- Table rename: {a} -> {b}")
+    #     else:
+    #         #print(f"-- Column rename: {a} -> {b}")
+    #     #print(sql)
     # print("=== END PREVIEW ===\n")
 
     if not APPLY_RENAMES:

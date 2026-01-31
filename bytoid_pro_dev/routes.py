@@ -9,12 +9,26 @@ from typing import Optional, Dict, Any, List, Tuple
 from credits_route.route import Credits
 from db.rds_db import connect_to_rds
 from flask import request, jsonify, Blueprint
-from utils.fireworkzz import get_coder_fire_response, get_think_fire_response_image, get_fireworks_response2
+from utils.fireworkzz import (
+    get_coder_fire_response,
+    get_think_fire_response_image,
+    get_fireworks_response2,
+    get_think_fire_response_og,
+)
 from utils.s3_utils import upload_any_file_and_get_url, upload_think_image_and_get_url
 from io import BytesIO
 import base64
 from io import BytesIO
-from .bytoid_pro_helpers import load_jobs, save_jobs, process_large_book, mixed_response, get_think_fire_response_file, build_chat
+from .bytoid_pro_helpers import (
+    load_jobs,
+    save_jobs,
+    process_large_book,
+    mixed_response,
+    get_think_fire_response_file,
+    build_chat,
+    save_conversation_to_json,
+    handle_audio,
+)
 from .bytoid_pro_lance import Bytoid_pro_lance
 
 bytoid_dev_pro_bp = Blueprint("bytoid_dev_pro", __name__, url_prefix="/bytoid-pro-dev")
@@ -85,7 +99,7 @@ def bytoid_pro_upload():
             content_type=file.mimetype or "application/octet-stream",
         )
 
-        print(f"url : {url}")
+        # print(f"url : {url}")
 
         uploaded.append(
             {
@@ -113,7 +127,7 @@ async def fireworks_think_og():
     message = json_body.get("message") or request.form.get("message")
     image_links = json_body.get("file_links") or request.form.get("file_links")
 
-    print(message)
+    # print(message)
 
     if not user_id or not message:
         db.close()
@@ -145,9 +159,8 @@ async def fireworks_think_og():
 
             image_url = image_links or json_body.get("image_url", "")
 
-
         # Call model
-        response = await get_think_fire_response(
+        response = await get_think_fire_response_og(
             user_message=message,
             role="system",
             user_id=user_id,
@@ -181,6 +194,24 @@ async def fireworks_think_og():
         db.close()
 
 
+@bytoid_dev_pro_bp.route("/bytoidpro/handle_audio_fallback", methods=["POST"])
+def handle_audio_fallback():
+    try:
+        json_body = request.get_json(silent=True) or {}
+        audio_file = request.files.get("audio")
+        user_id = json_body.get("user_id") or request.form.get("user_id")
+
+        if not audio_file or not user_id:
+            return jsonify({"error": "Missing audio or user_id"}), 400
+
+        # print("audio received")
+        transcript = handle_audio(audio_file, user_id)  # returns string
+
+        return {"transcript": transcript} if transcript else {"transcript": ""}
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think", methods=["POST"])
 async def fireworks_think():
@@ -196,14 +227,16 @@ async def fireworks_think():
 
         if not user_id or not message:
             return jsonify({"error": "user_id and message required"}), 400
-        
+
         if not chat_id:
             chat_id = str(uuid.uuid4())
 
         db.begin()  # start transaction
         total_input_chars = 8000
 
-        if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        if not await credits.has_ai_credits(
+            total_chars=total_input_chars, user_id=user_id
+        ):
             db.rollback()
             return "INSUFFICIENT", 402
 
@@ -245,7 +278,10 @@ async def fireworks_think():
                     )
                 except Exception as e:
                     db.rollback()
-                    return jsonify({"error": f"Failed to process base64 image: {str(e)}"}), 400
+                    return (
+                        jsonify({"error": f"Failed to process base64 image: {str(e)}"}),
+                        400,
+                    )
             elif image_data.startswith("http://") or image_data.startswith("https://"):
                 uploaded_image_urls.append(image_data)  # valid URL
 
@@ -262,9 +298,15 @@ async def fireworks_think():
                     header, encoded = file_data.split(",", 1)
                     content_type = header.split(";")[0].replace("data:", "")
                     ext = content_type.split("/")[-1]
-                    if ext == "vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    if (
+                        ext
+                        == "vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ):
                         ext = "docx"
-                    elif ext == "vnd.openxmlformats-officedocument.presentationml.presentation":
+                    elif (
+                        ext
+                        == "vnd.openxmlformats-officedocument.presentationml.presentation"
+                    ):
                         ext = "pptx"
                     elif ext == "vnd.openxmlformats-officedocument.spreadsheetml.sheet":
                         ext = "xlsx"
@@ -281,7 +323,10 @@ async def fireworks_think():
                     )
                 except Exception as e:
                     db.rollback()
-                    return jsonify({"error": f"Failed to process base64 file: {str(e)}"}), 400
+                    return (
+                        jsonify({"error": f"Failed to process base64 file: {str(e)}"}),
+                        400,
+                    )
             elif file_data.startswith("http://") or file_data.startswith("https://"):
                 uploaded_file_urls.append(file_data)  # valid URL
 
@@ -295,7 +340,7 @@ async def fireworks_think():
             "user_id": user_id,
             "status": "PENDING",
             "progress": 0,
-            "result": None
+            "result": None,
         }
         save_jobs(jobs)
 
@@ -303,138 +348,133 @@ async def fireworks_think():
 
         def task_wrapper():
 
-                # Create new DB connection for background task
-                task_db = connect_to_rds()
-                task_credits = Credits(task_db)
-                
-                print(f"uploaded_file_urls : {uploaded_file_urls}")
-                print(f"uploaded_image_urls : {uploaded_image_urls}")
+            # Create new DB connection for background task
+            task_db = connect_to_rds()
+            task_credits = Credits(task_db)
 
-                loop = asyncio.new_event_loop()  # create one loop for everything
-                asyncio.set_event_loop(loop)
+            # print(f"uploaded_file_urls : {uploaded_file_urls}")
+            # print(f"uploaded_image_urls : {uploaded_image_urls}")
 
-                try:
-                        jobs = load_jobs()
-                        jobs[job_id]["status"] = "PROCESSING"
-                        save_jobs(jobs)
+            loop = asyncio.new_event_loop()  # create one loop for everything
+            asyncio.set_event_loop(loop)
 
-                        task_db.begin()
+            try:
+                jobs = load_jobs()
+                jobs[job_id]["status"] = "PROCESSING"
+                save_jobs(jobs)
 
-                        # create context
-                        lance = Bytoid_pro_lance(user_id)
-                        context = loop.run_until_complete(lance.get_context(message, chat_id))
-                    
-                        # Call AI model
+                task_db.begin()
 
-                        if has_images and has_files:
-                            response = loop.run_until_complete(
-                                mixed_response(
-                                    user_message = message, 
-                                    role = "system", 
-                                    user_id = user_id, 
-                                    file_url = uploaded_file_urls,
-                                    image_url = uploaded_image_urls, 
-                                    credits= task_credits, 
-                                    context = context)
-                            )
+                # create context
+                lance = Bytoid_pro_lance(user_id)
+                context = loop.run_until_complete(lance.get_context(message, chat_id))
 
-                        elif has_images:
-                            response = loop.run_until_complete(
-                                get_think_fire_response_image(
-                                    user_message=message,
-                                    role="system",
-                                    user_id=user_id,
-                                    image_url=uploaded_image_urls,
-                                    credits=task_credits,
-                                    context = context,
-                                )
-                            )
-                        elif has_files:
-                            response = loop.run_until_complete(
-                                process_large_book(
-                                    user_message=message,
-                                    role="system",
-                                    user_id=user_id,
-                                    file_url=uploaded_file_urls,
-                                    credits=task_credits,
-                                    context = context,
-                                )
-                            )
-                        else:
-                            response = loop.run_until_complete(
-                                get_think_fire_response_file(
-                                    user_message=message,
-                                    role="system",
-                                    user_id=user_id,
-                                    credits=task_credits,
-                                    file_url=[],
-                                    context = context,
+                # Call AI model
 
-                                )
-                            )
-
-                        if response == "INSUFFICIENT":
-                            task_db.rollback()
-                            jobs = load_jobs()
-                            jobs[job_id]["status"] = "FAILED"
-                            jobs[job_id]["error"] = "Insufficient credits"
-                            save_jobs(jobs)
-                            return
-
-                        task_db.commit()
-
-                        # --- save to lance ----- #
-
-                        chat = build_chat(
-                            chat_id=chat_id,
+                if has_images and has_files:
+                    response = loop.run_until_complete(
+                        mixed_response(
                             user_message=message,
-                            assistant_message=response,
-                            user_files=uploaded_file_urls,
-                            user_images=uploaded_image_urls,
+                            role="system",
+                            user_id=user_id,
+                            file_url=uploaded_file_urls,
+                            image_url=uploaded_image_urls,
+                            credits=task_credits,
+                            context=context,
                         )
+                    )
 
+                elif has_images:
+                    response = loop.run_until_complete(
+                        get_think_fire_response_image(
+                            user_message=message,
+                            role="system",
+                            user_id=user_id,
+                            image_url=uploaded_image_urls,
+                            credits=task_credits,
+                            context=context,
+                        )
+                    )
+                elif has_files:
+                    response = loop.run_until_complete(
+                        process_large_book(
+                            user_message=message,
+                            role="system",
+                            user_id=user_id,
+                            file_url=uploaded_file_urls,
+                            credits=task_credits,
+                            context=context,
+                        )
+                    )
+                else:
+                    response = loop.run_until_complete(
+                        get_think_fire_response_file(
+                            user_message=message,
+                            role="system",
+                            user_id=user_id,
+                            credits=task_credits,
+                            file_url=[],
+                            context=context,
+                        )
+                    )
 
-                        
-                        lance_response = loop.run_until_complete(lance.insert_to_lance(chat))
-                        print(f"lance_reponse : {lance_response}")
-
-                        # --- save to jobs_file ---- # 
-                        jobs = load_jobs()
-                        jobs[job_id]["status"] = "COMPLETED"
-                        jobs[job_id]["progress"] = 100
-                        jobs[job_id]["result"] = response
-                        jobs[job_id]["chat_id"] = chat_id
-                        save_jobs(jobs)
-
-    
-                except Exception as e:
+                if response == "INSUFFICIENT":
                     task_db.rollback()
                     jobs = load_jobs()
                     jobs[job_id]["status"] = "FAILED"
-                    jobs[job_id]["error"] = str(e)
-                    jobs[job_id]["chat_id"] = chat_id
+                    jobs[job_id]["error"] = "Insufficient credits"
                     save_jobs(jobs)
-                    print(f"Job {job_id} failed: {str(e)}")
+                    return
 
-                finally:
-                    loop.close()      # close loop only here
-                    task_db.close()
+                task_db.commit()
 
-            # ✅ Start background thread
+                # --- save to lance ----- #
+
+                chat = build_chat(
+                    chat_id=chat_id,
+                    user_message=message,
+                    assistant_message=response,
+                    user_files=uploaded_file_urls,
+                    user_images=uploaded_image_urls,
+                )
+
+                s3_response = save_conversation_to_json(user_id, chat_id, chat)
+                lance_response = loop.run_until_complete(lance.insert_to_lance(chat))
+                # print(f"lance_reponse : {lance_response}")
+
+                # --- save to jobs_file ---- #
+                jobs = load_jobs()
+                jobs[job_id]["status"] = "COMPLETED"
+                jobs[job_id]["progress"] = 100
+                jobs[job_id]["result"] = response
+                jobs[job_id]["chat_id"] = chat_id
+                save_jobs(jobs)
+
+            except Exception as e:
+                task_db.rollback()
+                jobs = load_jobs()
+                jobs[job_id]["status"] = "FAILED"
+                jobs[job_id]["error"] = str(e)
+                jobs[job_id]["chat_id"] = chat_id
+                save_jobs(jobs)
+            # print(f"Job {job_id} failed: {str(e)}")
+
+            finally:
+                loop.close()  # close loop only here
+                task_db.close()
+
+        # ✅ Start background thread
         thread = threading.Thread(target=task_wrapper, daemon=True)
         thread.start()
 
-            # ---- Immediately return job ID ----
-        return jsonify({
-                "status": "PROCESSING",
-                "job_id": job_id
-            }), 202
+        # ---- Immediately return job ID ----
+        return jsonify({"status": "PROCESSING", "job_id": job_id}), 202
 
     except Exception as e:
-            return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
     finally:
-            db.close()
+        db.close()
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think/status", methods=["POST"])
@@ -457,7 +497,7 @@ def check_job_status():
         "result": job.get("result"),
         "error": job.get("error"),
         "user_id": job.get("user_id"),
-        "chat_id":job.get("chat_id")
+        "chat_id": job.get("chat_id"),
     }
     return jsonify(response)
 
@@ -467,7 +507,6 @@ def chat_history():
     json_body = request.get_json()
     user_id = json_body.get("user_id")
     last_timestamp = json_body.get("last_timestamp", "")  # pagination pending
-
 
     lance = Bytoid_pro_lance(user_id)
     rows = lance.get_history(last_timestamp)
@@ -513,27 +552,26 @@ def get_a_chat():
 
         # Convert to dict
         chat_messages = [
-                {
-                    "id": row["id"],
-                    "chat_id": row["chat_id"],
-                    "role": row["role"],
-                    "content": row["content"],
-                    "timestamp": row["timestamp"],
-                    "images":row["images"],
-                    "files": row["files"],
-                }
-                for row in rows
-            ]
+            {
+                "id": row["id"],
+                "chat_id": row["chat_id"],
+                "role": row["role"],
+                "content": row["content"],
+                "timestamp": row["timestamp"],
+                "images": row["images"],
+                "files": row["files"],
+            }
+            for row in rows
+        ]
 
-            # Sort by timestamp ascending
+        # Sort by timestamp ascending
         chat_messages.sort(key=lambda x: x["timestamp"])
         return chat_messages
-    
+
     except Exception as e:
-        print(f"Error fetching chat: {str(e)}")
+        # print(f"Error fetching chat: {str(e)}")
         return []
 
-    
 
 @bytoid_dev_pro_bp.route("/bytoidpro/delete", methods=["POST"])
 def delete_table():
@@ -544,7 +582,6 @@ def delete_table():
     lance = Bytoid_pro_lance(user_id)
     reponse = lance.delete_table()
     return jsonify(reponse)
-
 
 
 @bytoid_dev_pro_bp.route("/bytoid/coder", methods=["POST"])

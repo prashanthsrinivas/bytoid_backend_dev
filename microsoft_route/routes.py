@@ -23,6 +23,8 @@ from services.gmail_service import GmailService
 import base64
 from google_route.routes import refresh_expired_microsoft_tokens_for_integrations
 from request_context import current_user_id
+from umail_helper.mails_process import check_mailbox
+from services.credit_system import CreditManager
 
 
 # Third-party imports
@@ -286,7 +288,7 @@ def is_microsoft_allowed_origin(origin):
 
     # Allowed origins (expandable for global access)
     allowed_patterns = [
-        "https://dev.bytoid.ai",
+        "https://app.bytoid.ai",
         "https://bytoid.ai",
         "https://www.bytoid.ai",
         "http://localhost:3000",
@@ -426,7 +428,7 @@ def microsoft_login():
 @microsoft_bp.route("/auth/microsoft/callback", methods=["GET"])
 async def microsoft_callback():
     """Simple Microsoft callback - like Google oauth2callback"""
-    print(f"********* microsoft_callback ************")
+    # print(f"********* microsoft_callback ************")
 
     try:
         # Get parameters
@@ -438,17 +440,17 @@ async def microsoft_callback():
 
         if error:
             logger.error(f"❌ OAuth error: {error}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error={error}")
 
         if not auth_code:
             logger.error("❌ No authorization code")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error=missing_code")
 
         if not state:
             logger.error("❌ No state parameter in callback")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error=missing_state")
 
         logger.info(f"✅ Callback received with state: {state[:20]}...")
@@ -458,14 +460,14 @@ async def microsoft_callback():
 
         if not stored_state:
             logger.error(f"❌ No auth state found in Redis for state: {state[:20]}...")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error=no_flow")
 
         code_verifier = stored_state.get("code_verifier")
 
         if not code_verifier:
             logger.error(f"❌ No code_verifier found in stored state")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error=no_verifier")
 
         # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
@@ -492,19 +494,19 @@ async def microsoft_callback():
                 logger.error(
                     f"❌ Token exchange failed: {token_response.status_code} - {token_response.text}"
                 )
-                frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+                frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
                 return redirect(f"{frontend_url}/login?error=token_failed")
 
             result = token_response.json()
 
         except Exception as e:
             logger.error(f"❌ Token acquisition failed: {str(e)}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error=token_failed")
 
         if not result or "access_token" not in result:
             logger.error(f"❌ No access token in result: {result}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error=no_token")
 
         # Get user info (like Google does)
@@ -517,7 +519,7 @@ async def microsoft_callback():
 
         if userinfo_response.status_code != 200:
             logger.error(f"❌ Failed to get user info: {userinfo_response.status_code}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
             return redirect(f"{frontend_url}/login?error=userinfo_failed")
 
         userinfo = userinfo_response.json()
@@ -545,7 +547,7 @@ async def microsoft_callback():
             # print("exising valus", existing_user)
 
             if existing_user:
-                print(f"***** existing user")
+                # print(f"***** existing user")
                 # Update existing user
                 user_type = existing_user["user_type"]
                 # print("usertype", user_type)
@@ -600,7 +602,7 @@ async def microsoft_callback():
                         True,
                     ),
                 )
-                print(f"******** created new user")
+                # print(f"******** created new user")
 
                 # Auto-generate API key for new Microsoft users (like we do in users/generate-website-api-key)
                 new_api_key = str(uuid.uuid4())
@@ -659,38 +661,38 @@ async def microsoft_callback():
         # service = OutlookService(user_id=user_id)
         # service.create_subscription(access_token, email)
 
-        manager = OutlookSubscriptionManager()
-        future = manager.create_subscription_async(access_token, email)
+        connection = connect_to_rds()
+
+        mailbox_setting = check_mailbox(user_id)
+        if mailbox_setting:
+            manager = OutlookSubscriptionManager()
+            future = manager.create_subscription_async(access_token, email)
 
         # # get all integrations for this user and store it in redis
         integrations_data, status_code = get_all_integrations(user_id)
         integrations = integrations_data.get("integrations")
 
-        print(f"integrations_data : {integrations_data}")
+        # print(f"integrations_data : {integrations_data}")
         if integrations_data:
             redis_response = await store_integrations_in_redis(
                 user_id, integrations_data
             )
-            if redis_response:
-                print(f"integrations stored in redis")
-            else:
-                print(f"integrations not stored in redis")
+            # if redis_response:
+            #     #print(f"integrations stored in redis")
+            # else:
+            #     #print(f"integrations not stored in redis")
 
             exists = any(
                 item["platform"] == "google"
                 for item in integrations_data.get("integrations", [])
             )
             if exists:
-                print(f"goole in integratiosn")
-                connection = connect_to_rds()
+                # print(f"goole in integratiosn")
                 google_user_id = refresh_expired_google_tokens_for_integrations(
                     user_id, connection
                 )
 
-                cursor.close()
-                connection.close()
-
-                print(f"calling watch servoce using : {google_user_id}")
+                # print(f"calling watch servoce using : {google_user_id}")
                 service = GmailService(user_id=google_user_id, integration=True)
                 service.create_watch_req()
 
@@ -698,6 +700,15 @@ async def microsoft_callback():
         session_id, access_token_session, refresh_token_session = await session_login(
             user_id
         )
+
+        # check if credits are available
+        credits = CreditManager(connection)
+        avail_credits = credits.check_if_remaining(user_id=user_id)
+        credit_status = avail_credits.get("status")
+        message = avail_credits.get("message")
+
+        cursor.close()
+        connection.close()
 
         response = make_response(
             jsonify(
@@ -707,6 +718,8 @@ async def microsoft_callback():
                     "user_onboarded": newuser,
                     "api_key": apikey or "",
                     "service": "microsoft",
+                    "credit_status": credit_status,
+                    "message": message,
                 }
             )
         )
@@ -742,7 +755,7 @@ async def microsoft_callback():
     except Exception as e:
         logger.error(f"❌ Microsoft callback error: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        frontend_url = os.getenv("BASE_FRNT_URL", "https://dev.bytoid.ai")
+        frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
         return redirect(f"{frontend_url}/login?error=callback_failed")
 
 
@@ -1353,7 +1366,7 @@ def microsoft_get_email():
         cursor = conn.cursor()
 
         email = session.get("user", {}).get("email")
-        print(f"Fetching emails for: {email}")
+        # print(f"Fetching emails for: {email}")
 
         if not email:
             return redirect("https://bytoid.ai/login")
@@ -2330,7 +2343,7 @@ def save_outlook_message_to_db(
 def send_outlook_email(to_email, subject, body_text, from_user_email, conversation_id):
 
     # print("Sending Outlook email...")
-    print(f"To: {to_email}, Subject: {subject}, Body: {body_text}")
+    # print(f"To: {to_email}, Subject: {subject}, Body: {body_text}")
 
     # email = session.get("user", {}).get("email")  # remove after session is working
     email = from_user_email
@@ -2366,7 +2379,7 @@ def send_outlook_email(to_email, subject, body_text, from_user_email, conversati
 
     if from_user_email:
         url = f"https://graph.microsoft.com/v1.0/users/{from_user_email}/sendMail"
-        print(f"Using from_user_email: {from_user_email}")
+        # print(f"Using from_user_email: {from_user_email}")
     else:
         url = "https://graph.microsoft.com/v1.0/me/sendMail"
     # print("Using current user's email for sending.")
@@ -2415,9 +2428,9 @@ def send_outlook_email(to_email, subject, body_text, from_user_email, conversati
             "conversation_id": conversation_id,
         }
 
-        print(
-            f"✅ Saved Outlook message. Conversation ID: {conversation_id} messages:{MESSAGES[real_message_id]}"
-        )
+        # print(
+        #     f"✅ Saved Outlook message. Conversation ID: {conversation_id} messages:{MESSAGES[real_message_id]}"
+        # )
 
         return {"id": message_id, "conversation_id": conversation_id}
 
@@ -2441,9 +2454,9 @@ def send_outlook_email(to_email, subject, body_text, from_user_email, conversati
             "message_id": fallback_id,
         }
 
-        print(
-            f"⚠️ Could not find sent mail. Saved fallback message with no conversation ID."
-        )
+        # print(
+        #     f"⚠️ Could not find sent mail. Saved fallback message with no conversation ID."
+        # )
         return {"id": fallback_id}
 
 
@@ -2669,17 +2682,17 @@ def outlook_send_mail(
         "Content-Type": "application/json",
     }
 
-    print(f"message at line 1729 :{message}")
+    # print(f"message at line 1729 :{message}")
 
     res = requests.post(url, json=message, headers=headers)
 
     if res.status_code not in [200, 202]:
-        print("Outlook send error:", res.text)
+        # print("Outlook send error:", res.text)
         raise Exception("Failed to send Outlook message.")
 
     # Outlook does NOT return message ID.
     # You must fetch latest sent messages if you want ID.
-    print(f"----success :{res}")
+    # print(f"----success :{res}")
     return {"status": "sent", "conversation_id": thread_id}
 
 
@@ -2699,7 +2712,7 @@ def download_onedrive_file(session, file_id, local_path):
     url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_id}/content"
 
     response = session.get(url, stream=True)
-    print(f"reponse code from url :{response.status_code}")
+    # print(f"reponse code from url :{response.status_code}")
 
     if response.status_code != 200:
         return False
@@ -2730,10 +2743,10 @@ def process_outlook():
         id = data.get("user_id")
         primary_provider = data.get("primary_provider")
 
-        print("----------------------------")
-        print(f"primary_provider:{primary_provider}")
-        print(f"id: {id}")
-        print("----------------------------")
+        # print("----------------------------")
+        # print(f"primary_provider:{primary_provider}")
+        # print(f"id: {id}")
+        # print("----------------------------")
 
         if primary_provider:
             access_token = get_outlook_token(id)
@@ -2746,10 +2759,10 @@ def process_outlook():
         # if user signed in through google and selected file from onedrive, then -
         #  - userid is microsoft userid,  id is google user id. (id of the primary user is "id")
 
-        print("--------------------------")
-        print(f"userid:{userid}")
-        print(f"id:{id}")
-        print("--------------------------")
+        # print("--------------------------")
+        # print(f"userid:{userid}")
+        # print(f"id:{id}")
+        # print("--------------------------")
 
         def event_stream():
             yield "event: start\ndata: Starting Outlook file processing...\n\n"
@@ -2768,9 +2781,9 @@ def process_outlook():
                     file_id = file["id"]
                     file_name = file.get("name", f"file_{index}")
                     local_path = os.path.join("data", file_name)
-                    print(f"file_id:{file_id}")
-                    print(f"file_name:{file_name}")
-                    print(f"local_path:{local_path}")
+                    # print(f"file_id:{file_id}")
+                    # print(f"file_name:{file_name}")
+                    # print(f"local_path:{local_path}")
 
                     success = download_onedrive_file(graph_client, file_id, local_path)
                     if not success:
@@ -3075,7 +3088,7 @@ def get_outlook_token(inuser=None, value=None, in_connection=None):
 
             # Refresh if expiring soon (same 10 min rule as Google)
             if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
-                print(f"** expired**")
+                # print(f"** expired**")
                 # new_token = refresh_expired_microsoft_tokens(
                 #     client_id,
                 #     client_secret,
@@ -3095,7 +3108,7 @@ def get_outlook_token(inuser=None, value=None, in_connection=None):
             return token
 
     except Exception as e:
-        print(f"Microsoft token error: {e}")
+        # print(f"Microsoft token error: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
     finally:
@@ -3131,7 +3144,7 @@ def check_microsoft_user():
             return jsonify({"exists": False}), 200
 
     except Exception as e:
-        print(f"Error in check_microsoft_user: {str(e)}")
+        # print(f"Error in check_microsoft_user: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -3167,7 +3180,7 @@ def get_microsoft_client_id():
         return jsonify(response_data), 200
 
     except Exception as e:
-        print(f"Error in get_microsoft_client_id: {str(e)}")
+        # print(f"Error in get_microsoft_client_id: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -3175,7 +3188,7 @@ def get_microsoft_client_id():
 
 
 def check_and_refresh_token(user_id, cursor, conn):
-    print(f"[INFO] Checking Microsoft token for user_id: {user_id}")
+    # print(f"[INFO] Checking Microsoft token for user_id: {user_id}")
 
     cursor.execute(
         """
@@ -3186,30 +3199,30 @@ def check_and_refresh_token(user_id, cursor, conn):
         (str(user_id),),
     )
     row = cursor.fetchone()
-    print(f"[DEBUG] Fetched expiry row: {row}")
+    # print(f"[DEBUG] Fetched expiry row: {row}")
 
     if not row:
-        print(f"[ERROR] Microsoft user not found for user_id: {user_id}")
+        # print(f"[ERROR] Microsoft user not found for user_id: {user_id}")
         return jsonify({"error": "Microsoft user not found"}), 404
 
     expiry = row[0]
-    print(f"[DEBUG] Current expiry: {expiry}")
+    # print(f"[DEBUG] Current expiry: {expiry}")
 
     # Convert expiry from string if needed
     if isinstance(expiry, str):
         try:
             expiry = datetime.fromisoformat(expiry)
-            print(f"[DEBUG] Converted expiry to datetime: {expiry}")
+            # print(f"[DEBUG] Converted expiry to datetime: {expiry}")
         except Exception as e:
-            print(f"[ERROR] Failed to convert expiry string to datetime: {e}")
+            # print(f"[ERROR] Failed to convert expiry string to datetime: {e}")
             return False
 
     time_to_expiry = expiry - datetime.now()
-    print(f"[DEBUG] Time to expiry: {time_to_expiry}")
+    # print(f"[DEBUG] Time to expiry: {time_to_expiry}")
 
     # Refresh if expiring soon (10 min rule)
     if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
-        print(f"[INFO] Token expired or about to expire, refreshing...")
+        # print(f"[INFO] Token expired or about to expire, refreshing...")
 
         # get refresh token
         cursor.execute(
@@ -3254,7 +3267,7 @@ def check_and_refresh_token(user_id, cursor, conn):
             # print(f"[DEBUG] Refresh response status: {response.status_code}")
 
             if response.status_code != 200:
-                print(f"[ERROR] Refresh failed: {response.text}")
+                # print(f"[ERROR] Refresh failed: {response.text}")
                 return redirect("https://bytoid.ai/login")
 
             new_data = response.json()
@@ -3279,15 +3292,15 @@ def check_and_refresh_token(user_id, cursor, conn):
                 (new_token, new_refresh, new_expiry.isoformat(), user_id),
             )
             conn.commit()
-            print("[INFO] Successfully refreshed Microsoft token")
+            # print("[INFO] Successfully refreshed Microsoft token")
             return True
 
         except Exception as e:
-            print(f"[ERROR] Microsoft token refresh failed: {e}")
+            # print(f"[ERROR] Microsoft token refresh failed: {e}")
             return False
 
     else:
-        print("[INFO] Microsoft token is valid, no refresh needed")
+        # print("[INFO] Microsoft token is valid, no refresh needed")
         return True
 
 
@@ -3301,7 +3314,7 @@ async def outlook_webhook():
     notification = request.json
     for change in notification.get("value", []):
         if change.get("clientState") != "secretClientValue123":
-            print("Invalid clientState, ignoring notification")
+            # print("Invalid clientState, ignoring notification")
             continue
 
     resource = change.get("resource", "")
@@ -3358,9 +3371,9 @@ async def outlook_webhook():
         # check if it is expired and refresh if expired
         if integration:
             check_result = check_and_refresh_token(user_id, cursor, conn)  # TODO ....
-            print(f"check_result : {check_result}")
+            # print(f"check_result : {check_result}")
             if not check_result:
-                print("cannot refresh token")
+                # print("cannot refresh token")
                 return ("Token refresh failed", 400)
 
         else:
@@ -3368,7 +3381,7 @@ async def outlook_webhook():
                 cursor, conn, user_id
             )
             if not check_result:
-                print("cannot refresh token")
+                # print("cannot refresh token")
                 return ("Could not refresh token ", 401)
 
         delayed_trigger.delay(
@@ -3443,9 +3456,9 @@ async def outlook_webhook():
 def refresh_expired_google_tokens_for_integrations(user_id, connection):
     try:
         with connection.cursor() as cursor:
-            print(
-                f"user_id inside refresh_expired_google_tokens_for_integrations : {user_id}"
-            )
+            # print(
+            #     f"user_id inside refresh_expired_google_tokens_for_integrations : {user_id}"
+            # )
             cursor.execute(
                 """
                 SELECT user_id, client_id, client_secret, access_token, refresh_token, expiry
@@ -3461,12 +3474,12 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
 
             google_user_id, client_id, client_secret, token, refresh_token, expiry = row
 
-            print("google_user_id:", google_user_id)
-            print("client_id:", client_id)
-            print("client_secret:", client_secret)
-            print("token:", token)
-            print("refresh_token:", refresh_token)
-            print("expiry:", expiry)
+            # print("google_user_id:", google_user_id)
+            # print("client_id:", client_id)
+            # print("client_secret:", client_secret)
+            # print("token:", token)
+            # print("refresh_token:", refresh_token)
+            # print("expiry:", expiry)
 
             # Ensure expiry is a datetime object
             if isinstance(expiry, str):
@@ -3510,7 +3523,7 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
                             "https://www.googleapis.com/auth/gmail.modify",
                             "https://www.googleapis.com/auth/gmail.compose",
                             # Drive – READ ONLY
-                            "https://www.googleapis.com/auth/drive.readonly",
+                            "https://www.googleapis.com/auth/drive",
                             "https://www.googleapis.com/auth/drive.metadata.readonly",
                             # Calendar – READ ONLY
                             "https://www.googleapis.com/auth/calendar",
@@ -3530,11 +3543,11 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
                         (creds.token, creds.expiry.isoformat(), user_id),
                     )
                     connection.commit()
-                    print(f"expired and refreshed")
+                    # print(f"expired and refreshed")
                     return google_user_id
 
                 except Exception as e:
-                    print(f"Token refresh failed: {e}")
+                    # print(f"Token refresh failed: {e}")
                     return redirect("https://bytoid.ai/login")
 
             # Return existing token if not refreshed
@@ -3543,7 +3556,7 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
                 (user_id,),
             )
             user_row = cursor.fetchone()
-            print(f"google not expired")
+            # print(f"google not expired")
 
             if user_row is None:
                 return jsonify({"error": "Token missing after fallback"}), 400
@@ -3552,5 +3565,5 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
             return user_row[0]
 
     except Exception as e:
-        print(f"Error occurred: {e}")
+        # print(f"Error occurred: {e}")
         return jsonify({"error": "Internal server error"}), 500

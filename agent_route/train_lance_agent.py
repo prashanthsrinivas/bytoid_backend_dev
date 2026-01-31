@@ -84,7 +84,7 @@ class TrainLanceAgent:
             "foldername": str(filename),
         }
 
-    async def embed_single_audio_json(self, file_path, filename):
+    async def embed_single_audio_json(self, file_path, filename, credits):
         """
         Embeds a single transcript JSON created by /process_audio.
         """
@@ -146,7 +146,6 @@ class TrainLanceAgent:
         # ---------- calculate credits -------------------------
         total_chars = total_input_chars + total_output_chars
 
-        credits = Credits()
         await credits.update_ai_credits_redis(
             credit_type="embedding",
             total_chars=total_chars,

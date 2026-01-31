@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 import json
 from create_db import connect_to_rds
+from db.db_checkers import get_email_by_id
 from flask import Blueprint, request, jsonify
 from services.redis_service import RedisService
 import pymysql
@@ -115,7 +116,7 @@ def log_payment_event(data):
 
         logs.append({**data, "logged_at": datetime.utcnow().isoformat()})
         with open(PAYMENTS_LOG_FILE, "w") as f:
-            print("saving to log file", PAYMENTS_LOG_FILE)
+            # print("saving to log file", PAYMENTS_LOG_FILE)
             json.dump(logs, f, indent=4, default=str)
     except Exception as e:
         print("❌ Failed to log payment event:", e)
@@ -191,8 +192,8 @@ def subscribe():
                 return jsonify({"error": "Current plan not found"}), 400
 
             current_price_cents = current_plan[0]
-            print("current price", current_price_cents)
-            print("new price cents", new_price_cents)
+            # print("current price", current_price_cents)
+            # print("new price cents", new_price_cents)
 
             # 2.2 Prevent downgrade here
             if new_price_cents <= current_price_cents:
@@ -305,6 +306,8 @@ def paymenttopup():
         return jsonify({"error": "user_id & plan_code required"}), 400
 
     connection = connect_to_rds()
+    if not email:
+        email = get_email_by_id(user_id, connection=connection)
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
@@ -360,16 +363,16 @@ def cancel_subscription():
         # Cancel in Stripe — webhook will handle DB update
         stripe.Subscription.delete(subscription_id)
 
-        log_payment_event(
-            {
-                "action": "cancel_subscription",
-                "subscription_id": subscription_id,
-                "user_id": user_id,
-            }
-        )
+        # log_payment_event(
+        #     {
+        #         "action": "cancel_subscription",
+        #         "subscription_id": subscription_id,
+        #         "user_id": user_id,
+        #     }
+        # )
         return jsonify({"status": "cancellation_requested"})
     except Exception as e:
-        print("❌ Error cancelling subscription:", e)
+        # print("❌ Error cancelling subscription:", e)
         return jsonify({"error": str(e)}), 400
 
 
@@ -385,7 +388,7 @@ def stripe_webhook():
     try:
         event = verify_webhook(payload, sig)
     except Exception as e:
-        print("❌ Webhook signature verification failed:", e)
+        # print("❌ Webhook signature verification failed:", e)
         return jsonify({"error": str(e)}), 400
 
     handler = StripeWebhookHandler(event)

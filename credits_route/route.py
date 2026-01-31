@@ -3,7 +3,7 @@ from db.rds_db import connect_to_rds
 from db.db_checkers import check_onboarding_user
 import uuid
 import pymysql
-from services.credit_system import CreditManager
+from services.credit_system import CreditManager, InsufficientCreditsError
 from services.redis_service import RedisService
 import json
 from request_context import current_user_id
@@ -84,11 +84,11 @@ class Credits:
 
         if not user_id or not total_chars:
             return None
-        print(f"credit type: {credit_type}")
-        print("actual chars", total_chars)
+       #print(f"credit type: {credit_type}")
+       #print("actual chars", total_chars)
 
         credits_to_consume = int(total_chars * self.CREDIT_MULTIPLIER)
-        print("credits needed to decrease", credits_to_consume)
+       #print("credits needed to decrease", credits_to_consume)
         if credits_to_consume <= 0:
             return None
 
@@ -109,6 +109,14 @@ class Credits:
                 "credit_type": credit_type,
                 "chars": total_chars,
                 "credits_used": credits_to_consume,
+            }
+
+        except InsufficientCreditsError:
+            if self.owns_db:
+                self.db.rollback()
+            return {
+                "status": "error",
+                "error": "INSUFFICIENT_CREDITS",
             }
 
         except Exception:
@@ -139,10 +147,10 @@ def update_ai_credits_to_db(user_id: str, credit_type: str, total_chars: int):
     """
     connection = connect_to_rds()
 
-    print(f"called update_ai_credits:")
-    print(f"user_id : {user_id}")
-    print(f"credit_type : {credit_type}")
-    print(f"total_chars : {total_chars}")
+   #print(f"called update_ai_credits:")
+   #print(f"user_id : {user_id}")
+   #print(f"credit_type : {credit_type}")
+   #print(f"total_chars : {total_chars}")
 
     query = """
         UPDATE users
@@ -187,7 +195,7 @@ async def get_credits():
 
     # cached = await redis.hgetall(key)
     # if cached:
-    #     print("cached credits data")
+    #    #print("cached credits data")
     #     return jsonify(cached)
 
     conn = connect_to_rds()

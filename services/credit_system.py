@@ -33,6 +33,8 @@ class CreditUsageResult:
 # CREDIT MANAGER
 # ---------------------------------------------------------
 
+class InsufficientCreditsError(Exception):
+    pass
 
 class CreditManager:
     """
@@ -93,11 +95,11 @@ class CreditManager:
     # -----------------------------------------------------
 
     async def get_available_credits(self, user_id: str) -> int:
-        if self.redis:
-            cached = await self.redis.hget(self._redis_key(user_id), "total_available")
-            if cached is not None:
-                print("cached data credits", cached)
-                return int(cached)
+        # if self.redis:
+        #     cached = await self.redis.hget(self._redis_key(user_id), "total_available")
+        #     if cached is not None:
+        #         print("cached data credits", cached)
+        #         return int(cached)
 
         return await self.sync_credits_to_redis(user_id)
 
@@ -268,7 +270,8 @@ class CreditManager:
                 remaining -= consume
 
             if remaining > 0:
-                raise Exception("INSUFFICIENT_CREDITS")
+                raise InsufficientCreditsError("Not enough credits")
+
 
             # self.db.commit()
 
@@ -409,6 +412,72 @@ class CreditManager:
                 for k, v in usage_breakdown.items()
             ],
             "next_expiry": next_expiry,
+        }
+
+
+    def check_if_remaining(self, user_id: str) -> Dict:
+        cur = self.db.cursor(pymysql.cursors.DictCursor)
+
+        cur.execute(
+            """
+            SELECT
+                credits_total,
+                credits_used,
+                expires_at,
+                is_expired
+            FROM credit_buckets
+            WHERE user_id = %s
+            ORDER BY expires_at ASC
+            """,
+            (user_id,),
+        )
+
+        rows = cur.fetchall()
+        cur.close()
+
+        # 1️⃣ No credit buckets
+        if not rows:
+            return {
+                "user_id": user_id,
+                "available": "False",
+                "status": "NO_CREDITS",
+                "message": "No credits found. Please purchase or subscribe.",
+            }
+
+        found_non_expired_bucket = False
+
+        for r in rows:
+            remaining = r["credits_total"] - r["credits_used"]
+
+            # Skip expired buckets
+            if r["is_expired"]:
+                continue
+
+            found_non_expired_bucket = True
+
+            # If any valid remaining credits exist → SUCCESS
+            if remaining > 2500:
+                return {
+                    "user_id": user_id,
+                    "available": "True",
+                    "status": "HAS_CREDITS",
+                    "message": "User has enough credits",
+                }
+
+        # 2️⃣ No usable credits found
+        if found_non_expired_bucket:
+            return {
+                "user_id": user_id,
+                "available": "False",
+                "status": "NO_CREDITS",
+                "message": "All available credits are exhausted.",
+            }
+
+        return {
+            "user_id": user_id,
+            "available": "False",
+            "status": "CREDITS_EXPIRED",
+            "message": "All credits are expired. Please purchase or subscribe.",
         }
 
     # -----------------------------------------------------
