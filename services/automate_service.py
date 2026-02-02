@@ -1,6 +1,6 @@
 from datetime import datetime
 import json
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from cust_helpers import pathconfig
 from db.db_checkers import get_business_info
 import uuid, re

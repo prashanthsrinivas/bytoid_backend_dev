@@ -17,9 +17,9 @@ from langchain_community.document_loaders import (
     UnstructuredPowerPointLoader,
     UnstructuredExcelLoader,
 )
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_fireworks import ChatFireworks
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from utils.fireworkzz import get_firework_embedding, get_fireworks_response
 from db.lance_db_service import LanceDBServer
 from utils.normal import load_yaml_file

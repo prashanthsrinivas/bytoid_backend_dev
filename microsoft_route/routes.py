@@ -43,7 +43,7 @@ import requests
 import pymysql
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from glide import GlideClusterClient
+# from glide import GlideClusterClient
 from services.redis_service import RedisService
 from integrations.google_integration import get_integration_access_token
 from umail_helper.ticketalloc import TicketAllocator

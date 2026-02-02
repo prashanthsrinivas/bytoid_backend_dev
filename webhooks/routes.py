@@ -11,7 +11,7 @@ from data import MESSAGES  # delete this later, this is just for testing
 import requests
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from typing import Dict, Any
 
 twilio_bp = Blueprint("twilio_webhook", __name__)

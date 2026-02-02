@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from db.db_checkers import get_users_clients_id
 from flask import jsonify
 import pymysql

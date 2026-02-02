@@ -42,7 +42,7 @@ import tempfile
 
 # from session_middleware import register_session_check
 
-load_dotenv()
+load_dotenv("/home/ec2-user/bytoid_python/.env")
 app = Flask(__name__)
 Compress(app)
 app.secret_key = os.getenv(
@@ -56,6 +56,7 @@ BASE_ORGINS = [
     "https://www.bytoid.ai",
     "https://bytoid.ai",
     "https://app.bytoid.ai",
+    "https://api.bytoid.ai",
     "http://localhost:8081",
     "bytoid://",
     "user-app://",

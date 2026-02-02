@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, Blueprint, Response
 from utils.s3_utils import read_json_from_s3, list_all_files, upload_any_file
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 import json
 import os
 from cust_helpers import pathconfig

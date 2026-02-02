@@ -39,13 +39,6 @@ def login():
     session.pop("user_id", None)
     session.pop("state", None)  # Optional, but clean
     ga = GoogleAuth()
-
-    # EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
-    # WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
-
-    # use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
-    # redirect_uri = EXPO_REDIRECT_URI if use_expo else WEB_REDIRECT_URI
-
     # Get the mobile app's redirect URI from query params
     mobile_redirect_uri = request.args.get("redirect_uri")
     platform = request.args.get("platform")
@@ -61,20 +54,6 @@ def login():
 
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
-        # scopes=(
-        #     "https://www.googleapis.com/auth/userinfo.profile",
-        #     "https://www.googleapis.com/auth/userinfo.email",
-        #     "https://www.googleapis.com/auth/gmail.readonly",
-        #     "https://www.googleapis.com/auth/gmail.send",
-        #     "https://www.googleapis.com/auth/gmail.modify",
-        #     "https://www.googleapis.com/auth/gmail.compose",
-        #     "https://www.googleapis.com/auth/drive",
-        #     "https://www.googleapis.com/auth/drive.metadata.readonly",
-        #     "https://www.googleapis.com/auth/calendar",
-        #     "https://www.googleapis.com/auth/contacts",
-        #     # "https://www.googleapis.com/auth/docs",
-        #     "openid",
-        # ),
         scopes=(
             # Identity
             "openid",
@@ -85,7 +64,7 @@ def login():
             "https://www.googleapis.com/auth/gmail.send",
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/gmail.compose",
-            # Drive – READ ONLY
+            # Drive – Full Access
             "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/drive.metadata.readonly",
             # Calendar – READ ONLY
@@ -124,20 +103,6 @@ def oauth2callback(url, state):
 
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
-        # scopes=(
-        #     "https://www.googleapis.com/auth/userinfo.profile",
-        #     "https://www.googleapis.com/auth/userinfo.email",
-        #     "https://www.googleapis.com/auth/gmail.readonly",
-        #     "https://www.googleapis.com/auth/gmail.send",
-        #     "https://www.googleapis.com/auth/gmail.modify",
-        #     "https://www.googleapis.com/auth/gmail.compose",
-        #     "https://www.googleapis.com/auth/drive",
-        #     "https://www.googleapis.com/auth/drive.metadata.readonly",
-        #     "https://www.googleapis.com/auth/calendar",
-        #     "https://www.googleapis.com/auth/contacts",
-        #     # "https://www.googleapis.com/auth/docs",
-        #     "openid",
-        # ),
         scopes=(
             # Identity
             "openid",
@@ -164,18 +129,13 @@ def oauth2callback(url, state):
         # flow.fetch_token(code=code)
         flow.fetch_token(authorization_response=url)
         credentials = flow.credentials
-        # google_bp.logger.info(f"{credentials}")
 
         # delete this line later
         with open("credentials.json", "w") as f:
             f.write(credentials.to_json())
 
-        # actual_creds = credentials.to_json()
-        # json_creds = json.loads(actual_creds)
-
         # Correct way to access the token
         access_token = credentials.token
-        # print("access : ", access_token)
         userinfo_response = requests.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {credentials.token}"},
@@ -349,10 +309,10 @@ async def receive_browser_url():
         # print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
 
-        mailbox_setting = check_mailbox(user_id)
-        if mailbox_setting:
-            service = GmailService(user_id=user_id)
-            service.create_watch_req()
+        # mailbox_setting = check_mailbox(user_id)
+        # if mailbox_setting:
+        #     service = GmailService(user_id=user_id)
+        #     service.create_watch_req()
 
         connection = connect_to_rds()
         cursor = connection.cursor()
@@ -1099,46 +1059,6 @@ def sendCredits():
 
     else:
         return jsonify({"error": f"Unknown pr value: {pr}"}), 400
-
-
-# --- Flask Route ---
-# @google_bp
-
-
-# @google_bp.route("/check-user", methods=["POST"])
-# def check_user():
-#     """
-#     here we check weather the user present or not
-#     """
-#     data = request.json
-#     userid = data["userid"]
-#     connection = connect_to_rds()
-#     try:
-#         with connection.cursor() as cursor:
-#             cursor.execute(
-#                 """
-#                 SELECT social
-#                 FROM users
-#                 WHERE user_id = %s
-#             """,
-#                 (str(userid),),
-#             )
-#             row = cursor.fetchone()
-
-#             if not row:
-#                 return jsonify({"error": "User not found"}), 404
-
-#             social = row[0]
-#             if social == "google":
-#                 # print("google based account")
-#                 get_token(userid)
-#                 return {"message": "user found"}, 200
-#             return {"message": "user found"}, 200
-
-#     except Exception as e:
-#         return jsonify({"error": f"Failed to check user: {e}"}), 500
-#     finally:
-#         connection.close()
 
 
 def refresh_expired_microsoft_tokens_for_integrations(

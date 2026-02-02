@@ -4,10 +4,6 @@ import hashlib
 import secrets
 from datetime import datetime, timezone, timedelta
 import os
-from glide import (
-    GlideClusterClient,
-    ClusterScanCursor,
-)
 from services.redis_service import RedisService
 from utils.base_logger import get_logger
 
@@ -15,13 +11,6 @@ from utils.base_logger import get_logger
 load_dotenv()
 
 logger = get_logger(__name__)
-
-
-# addresses = [
-#     NodeAddress("bytoidcache-w2ofwh.serverless.cac1.cache.amazonaws.com", 6379)
-# ]
-
-# config = GlideClusterClientConfiguration(addresses=addresses, use_tls=True)
 
 
 def hash_sha256(text: str) -> str:
@@ -34,7 +23,6 @@ def verify_sha256(text: str, given_hash: str) -> bool:
 
 async def session_login_redis(user_id, request_data):  # during login
 
-    # print("inside session_login_redis")
     # 1. Generate session_id
     session_id = str(uuid.uuid4())
 

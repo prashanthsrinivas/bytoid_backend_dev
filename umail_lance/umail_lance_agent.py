@@ -15,8 +15,8 @@ from datetime import (
     timezone,
 )  # from werkzeug.exceptions import HTTPException
 import numpy as np
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 import time
 from functools import lru_cache
 from credits_route.route import Credits

@@ -5,19 +5,15 @@ from datetime import datetime
 import uuid
 import logging
 from db.rds_db import connect_to_rds
+from dotenv import load_dotenv
+import os
+load_dotenv()
+client_id = os.getenv("CLIENTID")
 class GoogleAuth:
     def __init__(self):
         # Google OAuth configuration
-        self.GOOGLE_CLIENT_ID = "175288252503-akekmnkgaagpfc3ld7u0r1v5g40ik30c.apps.googleusercontent.com"
+        self.GOOGLE_CLIENT_ID = client_id
         self.GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
-
-        # Database configuration
-        # self.db_config = {
-        #     'host': 'database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
-        #     'user': 'skilbyt_db',
-        #     'password': 'JesusChristIsLord$1',
-        #     'database': 'ai_support'
-        # }
         self.conn=connect_to_rds()
 
         # Configure logging
@@ -63,7 +59,7 @@ class GoogleAuth:
                 return {"message": "Invalid token"}, 403
 
             # Restrict access to specific email domain
-            if email.split("@")[1] != "skilbyt.com":
+            if email.split("@")[1] != "bytoid.ai":
                 logging.warning(f"Unauthorized domain access attempt: {email}")
                 return {"message": "Unauthorized user"}, 403
 

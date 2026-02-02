@@ -18,7 +18,7 @@ import requests
 import json
 from utils.base_logger import get_logger
 from services.redis_service import RedisService
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 
 
 

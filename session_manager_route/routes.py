@@ -1,13 +1,12 @@
 from flask import Blueprint, request, jsonify, make_response, session, redirect
 from functools import wraps
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from datetime import datetime
 import os
 from dotenv import load_dotenv
 from session_manager_route.session_redis import session_login_redis, get_session, delete_all_session_cookies
 load_dotenv()
 import asyncio
-from glide import GlideClusterClient, GlideClusterClientConfiguration, NodeAddress
 from utils.base_logger import get_logger
 
 session_bp = Blueprint("session", __name__)

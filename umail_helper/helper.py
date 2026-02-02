@@ -1,5 +1,5 @@
 import re
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from services.redis_service import RedisService
 import json
 from datetime import datetime

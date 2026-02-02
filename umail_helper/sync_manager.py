@@ -7,7 +7,7 @@ import asyncio
 import time
 import json
 from datetime import datetime, timedelta, timezone
-from glide import GlideClusterClient
+# from glide import GlideClusterClient
 from services.redis_service import RedisService
 from utils.base_logger import get_logger
 

@@ -1,7 +1,7 @@
 import inspect
 from cust_helpers import pathconfig
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 import json
 import re
 from dotenv import load_dotenv
@@ -30,7 +30,7 @@ def evaluator(prompt, model, query, context, industry):
 # Initialize the GPT-4 model
 
 
-from langchain.schema import SystemMessage
+from langchain_core.messages import SystemMessage
 
 
 def get_evaluator_gpt4(prompt: str) -> str:

@@ -8,7 +8,7 @@ from utils.base_logger import get_logger
 from cust_helpers import pathconfig
 from utils.normal import ensure_dir
 import json
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 import os
 from utils.s3_utils import upload_any_file, read_json_from_s3
 import uuid

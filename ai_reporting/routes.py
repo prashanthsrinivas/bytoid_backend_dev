@@ -1,6 +1,6 @@
 from flask import request, jsonify, Blueprint
 import logging
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 import json
 from utils.normal import load_yaml_file
 from cust_helpers import pathconfig

@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, Blueprint, Response
 import re
 
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from umail_lance.umail_lance_agent import UmailLanceClient
 from cust_helpers import pathconfig
 from utils.normal import load_yaml_file

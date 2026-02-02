@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 import json
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from db.db_checkers import get_email_by_id
 from flask import Blueprint, request, jsonify
 from services.redis_service import RedisService

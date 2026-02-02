@@ -1,7 +1,7 @@
-from glide import (
-    GlideClusterClient,
-    ClusterScanCursor,
-)
+# from glide import (
+#     GlideClusterClient,
+#     ClusterScanCursor,
+# )
 from services.redis_service import RedisService
 
 import json

@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 import json
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from db.db_checkers import (
     get_existing_autopilot_json,
     get_existing_umail_json,
@@ -28,9 +28,6 @@ from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 from utils.base_logger import get_logger
 
-from glide import (
-    GlideClusterClient,
-)
 from request_context import current_user_id
 
 logger = get_logger(__name__)
@@ -70,7 +67,7 @@ def to_datetime_safe(val, default=None):
 
 
 async def get_datewise_info_base(
-    userid, connection, endDate=None, startDate=None, months=3, integration=None
+    userid, connection, endDate=None, startDate=None, months=1, integration=None
 ):
 
     try:
@@ -84,8 +81,6 @@ async def get_datewise_info_base(
 
         enddate_str = enddate.strftime("%Y-%m-%d")
         startdate_str = startdate.strftime("%Y-%m-%d")
-        # print(f"----------------")
-        # print(f"inside get_datewise_info_base : {userid} : {integration}")
         gmail_service = GmailService(userid, connection, integration=integration)
         inbox_count = await gmail_service.get_inbox_date_wise_stats_dynamic(
             start_date=startdate_str, end_date=enddate_str

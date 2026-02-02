@@ -1,7 +1,7 @@
 from db.rds_db import safe_execute
 from flask import Flask, request, jsonify, Blueprint, Response
 import socket
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 import uuid
 from datetime import datetime, timezone
 from utils.s3_utils import (

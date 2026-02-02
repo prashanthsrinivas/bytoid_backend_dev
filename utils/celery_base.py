@@ -18,7 +18,7 @@ from umail_helper.mails_process import check_mailbox
 from umail_lance.umail_lance_agent import UmailLanceClient
 from utils.async_check import run_async
 from microsoft_route.get_microsoft_emails import v2all_continuous_outlook
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from request_context import current_user_id
 from playbook.helperzz import returnconfigandpath
 from utils.s3_utils import read_json_from_s3, upload_any_file
@@ -72,16 +72,6 @@ def make_celery(app_name=__name__):
         backend=base_ip,
     )
 
-    # celery.conf.update(
-    #     task_serializer="json",
-    #     result_serializer="json",
-    #     accept_content=["json"],
-    #     task_acks_late=True,
-    #     task_reject_on_worker_lost=True,
-    #     worker_prefetch_multiplier=1,
-    #     broker_transport_options={"visibility_timeout": 3600},
-    #     worker_hijack_root_logger=False,
-    # )
     celery.conf.update(
         task_serializer="json",
         result_serializer="json",

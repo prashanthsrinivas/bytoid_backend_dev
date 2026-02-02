@@ -22,11 +22,13 @@ import re
 from bs4 import BeautifulSoup
 import email
 from lxml import html as lxml_html
-
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = get_logger(__name__)
 
-
+topic_name=os.getenv("GMAIL_TOPIC_NAME")
 def to_epoch_days(date_str: str) -> int:
     """
     Convert 'YYYY-MM-DD' to Unix timestamp (epoch seconds).
@@ -100,19 +102,6 @@ class GmailService:
             token_uri="https://oauth2.googleapis.com/token",
             client_id=client_id,
             client_secret=client_secret,
-            # scopes=[
-            #     "https://www.googleapis.com/auth/userinfo.profile",
-            #     "https://www.googleapis.com/auth/userinfo.email",
-            #     "https://www.googleapis.com/auth/gmail.readonly",
-            #     "https://www.googleapis.com/auth/gmail.send",
-            #     "https://www.googleapis.com/auth/gmail.modify",
-            #     "https://www.googleapis.com/auth/gmail.compose",
-            #     "https://www.googleapis.com/auth/drive.metadata.readonly",
-            #     "https://www.googleapis.com/auth/drive",
-            #     "https://www.googleapis.com/auth/calendar",
-            #     "openid",
-            #     "https://www.googleapis.com/auth/contacts",
-            # ],
             scopes=(
                 # Identity
                 "openid",
@@ -260,7 +249,7 @@ class GmailService:
         logger.info("making watch log for user %s", self.user_email)
         watch_request = {
             "labelIds": ["INBOX"],  # optional
-            "topicName": "projects/bytoid-engineering/topics/gmailSync",  # your Pub/Sub topic
+            "topicName": topic_name,  # your Pub/Sub topic
         }
 
         response = self.service.users().watch(userId="me", body=watch_request).execute()

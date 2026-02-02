@@ -5,7 +5,7 @@ from utils.normal import ensure_dir, load_yaml_file
 from datetime import datetime, timezone
 import os
 import json
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from utils.fireworkzz import get_fireworks_response
 import yaml
 from utils.s3_utils import upload_any_file, read_json_from_s3

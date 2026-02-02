@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify, session
 import asyncio
 from microsoft_route.routes import microsoft_list_drafts
 from gmail_route.routes import list_drafts
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from utils.s3_utils import read_json_from_s3
 from datetime import datetime
 import json

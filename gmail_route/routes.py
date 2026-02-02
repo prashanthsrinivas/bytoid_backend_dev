@@ -21,7 +21,7 @@ from utils.s3_utils import (
     upload_any_file,
     read_json_from_s3,
 )
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 from umail_helper.helper import get_users_client_id, extract_reply_content
 from collections import defaultdict
 import traceback

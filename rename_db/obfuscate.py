@@ -1,4 +1,4 @@
-from create_db import connect_to_rds
+from db.rds_db import connect_to_rds
 
 
 """
