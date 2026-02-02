@@ -1,43 +1,7 @@
 import pymysql
 import boto3
 import json
-
-rd_host = "bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
-rd_name = "bytoid_support_agent"
-
-
-def get_secret():
-    secret_name = "rds!db-9db402d8-3595-4048-bf23-979d5e5985e4"
-    region_name = "ca-central-1"
-
-    client = boto3.client("secretsmanager", region_name=region_name)
-    response = client.get_secret_value(SecretId=secret_name)
-
-    if "SecretString" in response:
-        return json.loads(response["SecretString"])
-    else:
-        import base64
-
-        return json.loads(base64.b64decode(response["SecretBinary"]))
-
-
-def connect_to_rds():
-    creds = get_secret()
-    try:
-        connection = pymysql.connect(
-            host=rd_host,
-            user=creds["username"],
-            password=creds["password"],
-            db=rd_name,
-            port=3306,
-            connect_timeout=10,
-        )
-        ##print("\u2705 Connection successful!")
-        return connection
-    except pymysql.MySQLError as e:
-        # print("\u274c Error connecting to RDS:", e)
-        return None
-
+from db.rds_db import connect_to_rds
 
 def create_tables():
     connection = connect_to_rds()

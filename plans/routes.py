@@ -87,26 +87,20 @@ def normalize_for_json(data):
 @plans_bp.route("/plans/", methods=["GET"])
 def get_all_plans():
     # 1️⃣ Try Redis
-    # try:
-    #     cached = asyncio.run(redis_service.get(REDIS_PLANS_KEY))
-    #     if cached:
-    #         print("from cached",cached)
-    #         return jsonify({"plans": cached})
-    # except Exception as e:
-    #     print("Redis GET error:", e)
+    try:
+        cached = asyncio.run(redis_service.get(REDIS_PLANS_KEY))
+        if cached:
+            print("from cached",cached)
+            return jsonify({"plans": cached})
+    except Exception as e:
+        print("Redis GET error:", e)
 
     connection = connect_to_rds()
-    print("connection from polans",connection)
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
         cursor.execute("SELECT * FROM plans WHERE is_active=TRUE ORDER BY id ASC")
         plans = cursor.fetchall()
-        print("plans here",plans)
-        # cursor.execute("SELECT email from users")
-        # users=cursor.fetchall()
-        # print("all users",users)
-
         updated = False
 
         for plan in plans:
