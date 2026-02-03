@@ -65,7 +65,6 @@ def get_all_plans():
     try:
         cached = asyncio.run(redis_service.get(REDIS_PLANS_KEY))
         if cached:
-            print("from cached",cached)
             return jsonify({"plans": cached})
     except Exception as e:
         print("Redis GET error:", e)
