@@ -633,8 +633,6 @@ def get_token(inuser=None, value=None, in_connection=None):
                 expiry = datetime.fromisoformat(expiry)
 
             time_to_expiry = expiry - datetime.now()
-            ##print("expiry from db",expiry)
-            ##print("current time", datetime.now())
 
             # Refresh only if token is close to expiring
             if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
@@ -646,19 +644,6 @@ def get_token(inuser=None, value=None, in_connection=None):
                         token_uri="https://oauth2.googleapis.com/token",
                         client_id=client_id,
                         client_secret=client_secret,
-                        # scopes=[
-                        #     "https://www.googleapis.com/auth/userinfo.profile",
-                        #     "https://www.googleapis.com/auth/userinfo.email",
-                        #     "https://www.googleapis.com/auth/gmail.readonly",
-                        #     "https://www.googleapis.com/auth/gmail.send",
-                        #     "https://www.googleapis.com/auth/gmail.modify",
-                        #     "https://www.googleapis.com/auth/gmail.compose",
-                        #     "https://www.googleapis.com/auth/drive.metadata.readonly",
-                        #     "https://www.googleapis.com/auth/drive",
-                        #     "https://www.googleapis.com/auth/calendar",
-                        #     "https://www.googleapis.com/auth/contacts",
-                        #     "openid",
-                        # ],
                         scopes=(
                             # Identity
                             "openid",
@@ -697,7 +682,7 @@ def get_token(inuser=None, value=None, in_connection=None):
 
                 except Exception as e:
                     # print(f"Token refresh failed: {e}")
-                    return redirect("https://bytoid.ai/login")
+                    return redirect("https://app.bytoid.ai/login")
 
             # Return existing token if not refreshed
             cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))

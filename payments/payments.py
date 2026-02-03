@@ -139,6 +139,8 @@ def subscribe():
 
     conn = connect_to_rds()
     cur = conn.cursor()
+    if not email:
+        email=get_email_by_id(user_id)
 
     try:
         # -----------------------------
@@ -379,7 +381,7 @@ def cancel_subscription():
 # -------------------------------------------------
 # STRIPE WEBHOOK
 # -------------------------------------------------
-@payments_bp.route("/stripe_webook", methods=["POST"])
+@payments_bp.route("/stripe_webhook", methods=["POST"])
 def stripe_webhook():
     payload = request.data
     # print("paylod on webhook", payload)
@@ -388,7 +390,7 @@ def stripe_webhook():
     try:
         event = verify_webhook(payload, sig)
     except Exception as e:
-        # print("❌ Webhook signature verification failed:", e)
+        print("❌ Webhook signature verification failed:", e)
         return jsonify({"error": str(e)}), 400
 
     handler = StripeWebhookHandler(event)

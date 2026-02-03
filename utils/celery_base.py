@@ -72,18 +72,38 @@ def make_celery(app_name=__name__):
         backend=base_ip,
     )
 
+    # celery.conf.update(
+    #     task_serializer="json",
+    #     result_serializer="json",
+    #     accept_content=["json"],
+    #     task_acks_late=True,
+    #     task_reject_on_worker_lost=True,
+    #     worker_prefetch_multiplier=1,
+    #     broker_transport_options={"visibility_timeout": 3600},
+    #     broker_use_ssl={"ssl_cert_reqs": "none"},  # required for AWS ElastiCache TLS
+    #     redis_backend_use_ssl={"ssl_cert_reqs": "none"},
+    #     worker_hijack_root_logger=False,
+    # )
     celery.conf.update(
-        task_serializer="json",
-        result_serializer="json",
-        accept_content=["json"],
-        task_acks_late=True,
-        task_reject_on_worker_lost=True,
-        worker_prefetch_multiplier=1,
-        broker_transport_options={"visibility_timeout": 3600},
-        broker_use_ssl={"ssl_cert_reqs": "none"},  # required for AWS ElastiCache TLS
-        redis_backend_use_ssl={"ssl_cert_reqs": "none"},
-        worker_hijack_root_logger=False,
-    )
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    worker_prefetch_multiplier=1,
+    broker_transport_options={"visibility_timeout": 3600},
+
+    broker_use_ssl={
+        "ssl_ca_certs": "/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 ADD HERE
+        "ssl_cert_reqs": "required",
+    },
+    redis_backend_use_ssl={
+        "ssl_ca_certs": "/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 ADD HERE
+        "ssl_cert_reqs": "required",
+    },
+
+    worker_hijack_root_logger=False,
+)
 
     return celery
 

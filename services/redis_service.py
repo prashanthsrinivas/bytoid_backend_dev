@@ -21,7 +21,8 @@ class RedisService:
             host=self.redis_host,
             port=6379,
             ssl=True,
-            ssl_cert_reqs=None,  # required for ElastiCache TLS
+            ssl_ca_certs="/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 CA cert here
+            ssl_cert_reqs="required",                      # 👈 enforce validation
             decode_responses=True,
             socket_connect_timeout=5,
         )

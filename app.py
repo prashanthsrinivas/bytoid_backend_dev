@@ -52,7 +52,7 @@ app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 BASE_ORGINS = [
     # "http://localhost:3001",
     # "http://127.0.0.1:3001",
-    "http://172.31.12.212",
+    "http://172.31.5.214",
     "https://www.bytoid.ai",
     "https://bytoid.ai",
     "https://app.bytoid.ai",
