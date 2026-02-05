@@ -400,6 +400,7 @@ async def run_radar_review_redis(
             .replace("{{reference_sources}}", json.dumps(reference_RWA or {}, indent=2))
             .replace("{{last_radar_response}}", last_radar_response)
         )
+        print("file links",INP_LINKS)
 
         result = await get_think_fire_response2_og(
             user_message=base_prompt,
@@ -1076,19 +1077,15 @@ async def radar_knowledge_analyze():
     )
 
 
-@radar_bp.route("/radar/fileout", methods=["POST"])
+@radar_bp.route("/radar/delete", methods=["POST"])
 async def download_radar_files():
     data = request.get_json(force=True)
 
     user_id = data.get("userid")
     review_id = data.get("review_id")
-    filetype = data.get("filetype")
 
     dbserver = LanceDBServer()
 
-    record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
+    await dbserver.radar_delete_review(user_id=user_id, review_id=review_id)
 
-    if not record or not record.get("result"):
-        return jsonify({"error": "RADAR review not found"}), 404
-
-    updated_json = record["result"]
+    return jsonify({"message":"file deleted"}),200
