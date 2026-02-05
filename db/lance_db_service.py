@@ -2913,7 +2913,37 @@ class LanceDBServer:
     # ------------------------------------------------------------------
     async def radar_delete_review(self, user_id: str, review_id: str):
         table = await self._open_or_create_radar_table(user_id)
-        await asyncio.to_thread(lambda: table.delete(f'review_id == "{review_id}"'))
+
+        def _delete_and_verify():
+            # 1️⃣ Check before delete
+            before_count = table.count_rows(f'review_id == "{review_id}"')
+
+            if before_count == 0:
+                return {
+                    "deleted": False,
+                    "reason": "review_id not found",
+                    "before": 0,
+                    "after": 0,
+                }
+
+            # 2️⃣ Delete
+            table.delete(f'review_id == "{review_id}"')
+
+            # 3️⃣ Physically remove
+            table.compact_files()
+
+            # 4️⃣ Verify after delete
+            after_count = table.count_rows(f'review_id == "{review_id}"')
+
+            return {
+                "deleted": after_count == 0,
+                "before": before_count,
+                "after": after_count,
+            }
+
+        result = await asyncio.to_thread(_delete_and_verify)
+        return result
+
 
     # ------------------------------------------------------------------
     # Lists

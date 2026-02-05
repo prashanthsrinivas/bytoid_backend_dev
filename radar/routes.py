@@ -1078,14 +1078,22 @@ async def radar_knowledge_analyze():
 
 
 @radar_bp.route("/radar/delete", methods=["POST"])
-async def download_radar_files():
+async def delete_radar_files():
     data = request.get_json(force=True)
 
     user_id = data.get("userid")
     review_id = data.get("review_id")
 
     dbserver = LanceDBServer()
+    result = await dbserver.radar_delete_review(user_id, review_id)
 
-    await dbserver.radar_delete_review(user_id=user_id, review_id=review_id)
+    if not result["deleted"]:
+        return jsonify({
+            "message": "review not found",
+            "details": result
+        }), 404
 
-    return jsonify({"message":"file deleted"}),200
+    return jsonify({
+        "message": "file deleted successfully",
+        "details": result
+    }), 200
