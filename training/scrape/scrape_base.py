@@ -234,87 +234,65 @@ async def scrape_youtube_route():
         traceback.print_exc()
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
+def fetch_youtube_summaries(user_id):
+    youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
+    videos_data = load_yaml_from_s3(youtube_metadata_path)
+
+    if not videos_data:
+        return []
+
+    active_videos = []
+    for v in videos_data:
+        if v.get("status") == "active":
+            v["type"] = "youtube"
+            active_videos.append(v)
+
+    return active_videos
+def fetch_website_summaries(user_id):
+    website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
+    websites_data = load_yaml_from_s3(website_metadata_path)
+
+    if not websites_data:
+        logger.info(f"No scraped websites file found for user {user_id}")
+        return []
+
+    active_websites = []
+    for w in websites_data:
+        if w.get("status"):
+            if "pages_by_level" in w and isinstance(w["pages_by_level"], dict):
+                w["pages_by_level"] = {str(k): v for k, v in w["pages_by_level"].items()}
+
+            w["type"] = "web"
+            active_websites.append(w)
+
+    return active_websites
 
 # Add route to get YouTube summaries
 # Add route to get YouTube summaries
 @scrape_agent_bps.route("/get-youtube-summaries", methods=["GET"])
-def get_youtube_summaries(normal=False, user_id=None):
-    """Get all YouTube video summaries for a user"""
-    try:
-        if not user_id:
-            api_key = request.args.get("api_key")
-            if not api_key:
-                return jsonify({"error": "api_key is required"}), 400
+def get_youtube_summaries():
+    api_key = request.args.get("api_key")
+    if not api_key:
+        return jsonify({"error": "api_key is required"}), 400
 
-            user_id = fetch_userid_from_launch(api_key)
-            if not user_id:
-                return jsonify({"error": "Invalid API Key"}), 401
+    user_id = fetch_userid_from_launch(api_key)
+    if not user_id:
+        return jsonify({"error": "Invalid API Key"}), 401
 
-        youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
-        videos_data = load_yaml_from_s3(youtube_metadata_path)
-
-        if videos_data is None:
-            return jsonify([]), 200
-
-        active_videos = []
-
-        for v in videos_data:
-            if v.get("status") == "active":
-                v["type"] = "youtube"
-                active_videos.append(v)
-
-        if normal:
-            return active_videos
-
-        return jsonify(active_videos), 200
-
-    except Exception as e:
-        logger.error(f"Error fetching YouTube summaries: {e}")
-        return jsonify({"error": str(e)}), 500
+    return jsonify(fetch_youtube_summaries(user_id)), 200
 
 
 @scrape_agent_bps.route("/get-website-summaries", methods=["GET"])
-def get_website_summaries(normal=False, user_id=None):
-    """Fetches all saved website summaries for a given user."""
-    try:
-        if not user_id:
-            api_key = request.args.get("api_key")
-            if not api_key:
-                return jsonify({"error": "api_key is required"}), 400
+def get_website_summaries():
+    api_key = request.args.get("api_key")
+    if not api_key:
+        return jsonify({"error": "api_key is required"}), 400
 
-            user_id = fetch_userid_from_launch(api_key)
-            if not user_id:
-                return jsonify({"error": "Invalid API Key"}), 401
+    user_id = fetch_userid_from_launch(api_key)
+    if not user_id:
+        return jsonify({"error": "Invalid API Key"}), 401
 
-        website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
-        websites_data = load_yaml_from_s3(website_metadata_path)
-
-        if websites_data is None:
-            logger.info(f"No scraped websites file found for user {user_id}")
-            return jsonify([]), 200
-
-        active_websites = []
-
-        for w in websites_data:
-            if w.get("status"):
-                # Normalize pages_by_level integer keys to string keys
-                if "pages_by_level" in w and isinstance(w["pages_by_level"], dict):
-                    normalized = {str(k): v for k, v in w["pages_by_level"].items()}
-                    w["pages_by_level"] = normalized
-
-                # ADD TYPE FIELD
-                w["type"] = "web"
-
-                active_websites.append(w)
-
-        if normal:
-            return active_websites
-
-        return jsonify(active_websites), 200
-
-    except Exception as e:
-        logger.error(f"Error fetching summaries: {e}")
-        return jsonify({"error": str(e)}), 500
+    return jsonify(fetch_website_summaries(user_id)), 200
 
 
 def _unwrap_response(res):
@@ -342,7 +320,6 @@ def get_active_scrape_status(user_id):
 
 @scrape_agent_bps.route("/get-web-summaries", methods=["GET"])
 def get_web_summaries():
-    """Get all YouTube + Website summaries for a user including in-progress web scrapes."""
     try:
         api_key = request.args.get("api_key")
         if not api_key:
@@ -353,18 +330,9 @@ def get_web_summaries():
             return jsonify({"error": "Invalid API Key"}), 401
 
         comp_web = []
+        comp_web.extend(fetch_youtube_summaries(user_id))
+        comp_web.extend(fetch_website_summaries(user_id))
 
-        # ---- unwrap results ----
-        yts = _unwrap_response(get_youtube_summaries(normal=True, user_id=user_id))
-        webs = _unwrap_response(get_website_summaries(normal=True, user_id=user_id))
-
-        if isinstance(yts, list):
-            comp_web.extend(yts)
-
-        if isinstance(webs, list):
-            comp_web.extend(webs)
-
-        # ---- Check if a scrape is running ----
         active_scrape = get_active_scrape_status(user_id)
         if active_scrape:
             comp_web.append(active_scrape)
@@ -372,7 +340,7 @@ def get_web_summaries():
         return jsonify(comp_web), 200
 
     except Exception as e:
-        logger.error(f"Error fetching summaries: {e}")
+        logger.exception("Error fetching summaries")
         return jsonify({"error": str(e)}), 500
 
 

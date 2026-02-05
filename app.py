@@ -58,6 +58,7 @@ BASE_ORGINS = [
     "https://app.bytoid.ai",
     "https://api.bytoid.ai",
     "http://localhost:8081",
+    "https://id-preview--e09b701d-e411-4e19-93aa-00da532d56e1.lovable.app",
     "bytoid://",
     "user-app://",
     "http://localhost:19000",

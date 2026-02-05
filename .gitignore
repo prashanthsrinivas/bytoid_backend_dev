@@ -66,3 +66,4 @@ cloned.py
 uploads/*
 uploads_*
 jobs_file.json
+awsredis.pem
