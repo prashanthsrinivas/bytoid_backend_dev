@@ -84,11 +84,11 @@ class Credits:
 
         if not user_id or not total_chars:
             return None
-       #print(f"credit type: {credit_type}")
-       #print("actual chars", total_chars)
+        # print(f"credit type: {credit_type}")
+        # print("actual chars", total_chars)
 
         credits_to_consume = int(total_chars * self.CREDIT_MULTIPLIER)
-       #print("credits needed to decrease", credits_to_consume)
+        # print("credits needed to decrease", credits_to_consume)
         if credits_to_consume <= 0:
             return None
 
@@ -147,10 +147,10 @@ def update_ai_credits_to_db(user_id: str, credit_type: str, total_chars: int):
     """
     connection = connect_to_rds()
 
-   #print(f"called update_ai_credits:")
-   #print(f"user_id : {user_id}")
-   #print(f"credit_type : {credit_type}")
-   #print(f"total_chars : {total_chars}")
+    # print(f"called update_ai_credits:")
+    # print(f"user_id : {user_id}")
+    # print(f"credit_type : {credit_type}")
+    # print(f"total_chars : {total_chars}")
 
     query = """
         UPDATE users
@@ -189,6 +189,8 @@ def update_ai_credits_to_db(user_id: str, credit_type: str, total_chars: int):
 async def get_credits():
     user_id = request.args.get("user_id")
     if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    if user_id == "failure" or "None" or None or "":
         return jsonify({"error": "user_id is required"}), 400
     # redis = RedisService()
     # key = CreditManager.summary_key.format(user_id)

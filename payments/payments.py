@@ -140,7 +140,7 @@ def subscribe():
     conn = connect_to_rds()
     cur = conn.cursor()
     if not email:
-        email=get_email_by_id(user_id)
+        email = get_email_by_id(user_id)
 
     try:
         # -----------------------------
@@ -417,6 +417,8 @@ def format_subscription(sub, plan):
 # -------------------------------------------------
 @payments_bp.route("/payments/subscriptions/<user_id>", methods=["GET"])
 def get_user_subscriptions(user_id):
+    if user_id == "failure" or "None" or None or "":
+        return jsonify({"error": "user_id is required"}), 400
     conn = connect_to_rds()
     if not conn:
         return jsonify({"error": "DB connection failed"}), 500

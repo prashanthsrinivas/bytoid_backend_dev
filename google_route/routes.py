@@ -369,17 +369,17 @@ async def receive_browser_url():
                         None,
                         microsoft_user_id,
                     )
-                    data = resp.get_json()
-                    microsoft_access_token = data["token"]
+                    # data = resp.get_json()
+                    # microsoft_access_token = data["token"]
                     # if microsoft_access_token:
                     # print(f"new token created")
 
-                manager = OutlookSubscriptionManager()
+                # manager = OutlookSubscriptionManager()
 
-                # print(f"creating subscription for {microsoft_email}")
-                future = manager.create_subscription_async(
-                    microsoft_access_token, microsoft_email
-                )
+                # # print(f"creating subscription for {microsoft_email}")
+                # future = manager.create_subscription_async(
+                #     microsoft_access_token, microsoft_email
+                # )
 
         # check if credits are available
         credits = CreditManager(connection)
