@@ -190,7 +190,7 @@ async def get_credits():
     user_id = request.args.get("user_id")
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
-    if user_id == "failure" or "None" or None or "":
+    if not user_id or user_id in ("failure", "None"):
         return jsonify({"error": "user_id is required"}), 400
     # redis = RedisService()
     # key = CreditManager.summary_key.format(user_id)

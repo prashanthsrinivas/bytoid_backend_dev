@@ -417,7 +417,7 @@ def format_subscription(sub, plan):
 # -------------------------------------------------
 @payments_bp.route("/payments/subscriptions/<user_id>", methods=["GET"])
 def get_user_subscriptions(user_id):
-    if user_id == "failure" or "None" or None or "":
+    if not user_id or user_id in ("failure", "None"):
         return jsonify({"error": "user_id is required"}), 400
     conn = connect_to_rds()
     if not conn:
