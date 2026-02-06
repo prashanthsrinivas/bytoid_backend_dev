@@ -10,7 +10,7 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 frontend_url = os.getenv("BASE_FRNT_URL")
 STRIPE_SUCCESS_URL = f"{frontend_url}/billing/success"
 
-STRIPE_CANCEL_URL = (f"{frontend_url}/billing/cancelled",)
+STRIPE_CANCEL_URL = f"{frontend_url}/billing/cancelled"
 
 
 # -------------------------------------------------

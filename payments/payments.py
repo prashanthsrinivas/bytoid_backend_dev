@@ -198,11 +198,11 @@ def subscribe():
             # print("new price cents", new_price_cents)
 
             # 2.2 Prevent downgrade here
-            if new_price_cents <= current_price_cents:
-                return (
-                    jsonify({"error": "New plan must be higher than current plan"}),
-                    400,
-                )
+            # if new_price_cents <= current_price_cents:
+            #     return (
+            #         jsonify({"error": "New plan must be higher than current plan"}),
+            #         400,
+            #     )
 
             # -----------------------------
             # 3️⃣ Check if card exists

@@ -196,6 +196,81 @@ def oauth2callback(url, state):
                         True,
                     ),
                 )
+                # 3️⃣ Fetch STARTER plan
+                cursor.execute(
+                    """
+                    SELECT plan_code, monthly_token_limit
+                    FROM plans
+                    WHERE plan_code = 'STARTER'
+                    AND is_active = 1
+                    LIMIT 1
+                    """
+                )
+                starter_plan = cursor.fetchone()
+
+                if not starter_plan:
+                    raise Exception("STARTER plan not found")
+
+                # 4️⃣ Create FREE subscription (internal, no Stripe)
+                cursor.execute(
+                    """
+                    INSERT INTO subscriptions (
+                        user_id,
+                        stripe_subscription_id,
+                        stripe_customer_id,
+                        stripe_price_id,
+                        status,
+                        current_period_start,
+                        current_period_end,
+                        created_at
+                    ) VALUES (
+                        %s,
+                        %s,
+                        NULL,
+                        NULL,
+                        'active',
+                        NOW(),
+                        NULL,
+                        NOW()
+                    )
+                    """,
+                    (
+                        user_id,
+                        "STARTER",  # internal reference
+                    ),
+                )
+
+                # 5️⃣ Create credit bucket (250,000 credits)
+                cursor.execute(
+                    """
+                    INSERT INTO credit_buckets (
+                        bucket_id,
+                        user_id,
+                        source_type,
+                        source_ref,
+                        credits_total,
+                        credits_used,
+                        expires_at,
+                        is_expired,
+                        created_at
+                    ) VALUES (
+                        UUID(),
+                        %s,
+                        'SUBSCRIPTION',
+                        %s,
+                        %s,
+                        0,
+                        DATE_ADD(NOW(), INTERVAL 60 DAY),
+                        0,
+                        NOW()
+                    )
+                    """,
+                    (
+                        user_id,
+                        "STARTER",
+                        starter_plan["monthly_token_limit"],
+                    ),
+                )
 
             else:
                 logger.info("users update data")
@@ -295,7 +370,7 @@ def oauth2callback(url, state):
 
     except Exception as e:
         logger.error("OAuth error: %s", str(e))
-        return "Failure", 500
+        return None, 500
 
 
 @google_bp.route("/browser_url", methods=["POST"])
@@ -307,6 +382,8 @@ async def receive_browser_url():
 
         # This function should return the user ID (e.g., Google account ID)
         user_id, newuser = oauth2callback(browser_url, state)
+        if not user_id:
+            return jsonify({"error": "cant process google login"}), 500
         session_id, access_token, refresh_token = await session_login(user_id)
         # print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
