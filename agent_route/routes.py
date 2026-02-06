@@ -100,15 +100,15 @@ def save_training_settings():
         if not user_id:
             # print("no userid")
             return jsonify({"error": "User not logged in"}), 400
-        if voice_type not in ["Man", "Woman"]:
-            # print("no voice")
-            return jsonify({"error": "Invalid voice type"}), 400
-        if not assistant_name:
+        # if voice_type not in ["Man", "Woman"]:
+        #     # print("no voice")
+        #     return jsonify({"error": "Invalid voice type"}), 400
+        if not assistant_name and not sync_website:
             # print("no name")
-            return jsonify({"error": "Assistant name is required"}), 400
-        if not sync_website:
-            # print("no website")
-            return jsonify({"error": "Website is required"}), 400
+            return jsonify({"error": "Assistant name / website is required"}), 400
+        # if not sync_website:
+        #     # print("no website")
+        #     return jsonify({"error": "Website is required"}), 400
         if not check_userid_valid(user_id):
             # print("not a valid")
             return jsonify({"error": "Invalid access"}), 404

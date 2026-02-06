@@ -8,6 +8,7 @@ from datetime import datetime
 from utils.base_logger import get_logger
 from werkzeug.utils import secure_filename
 from utils.s3_utils import attach_CLDFRNT_url, generate_presigned_url, upload_any_file
+from flask_bcrypt import Bcrypt
 
 users_bp = Blueprint("users", __name__)
 
@@ -684,3 +685,136 @@ def get_account_info(userid):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@users_bp.route("/user/create_new_user",methods = ["POST"])
+def create_new_user():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    
+    first_name = data.get("first_name")
+    last_name = data.get("last_name")
+    email = data.get("email")
+    password = data.get("password")
+    phone = data.get("phone")
+    user_type = "User"
+    location = data.get("location")
+    
+    #password hashing
+    bcrypt = Bcrypt()
+    hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
+
+    #Get value for social based on email domain
+    provider_domains = {
+            "Google" : {"gmail.com","googlemail.com","google.com"},
+            "Microsoft" : {"outlook.com","hotmail.com","live.com"},
+            "Zoho" : {"zoho.com","zohomail.com"}
+    }
+    social = ""
+    domain = email.split("@")[-1].lower()
+    for providers,domains in provider_domains.items():
+        if domain in domains:
+            social = providers
+        
+    social = social or "Custom"
+
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute(
+                "SELECT user_id,user_type FROM users WHERE email = %s", (email,)
+            )
+        user_exists = cursor.fetchone()
+
+        if not user_exists:
+            logger.info("creating a new user")
+
+            cursor.execute(
+                """INSERT INTO users(user_id,user_type,launch_id_fk, first_name, last_name, email,phone,
+                location,social,password_hash)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)                
+                """,
+                (
+                    "",
+                    user_type,
+                    "",
+                    first_name,
+                    last_name,
+                    email,
+                    phone,
+                    location,
+                    social,
+                    hashed_password
+                )
+            )
+        
+        #conn.commit()
+        #conn.close()
+        else:
+            logger.info("User already exist")
+        
+
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+#update the user_type based on user_id
+@users_bp.route("/user/update_user_type")
+def update_user_type(user_id,user_type):
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute(
+            """UPDATE users SET user_type = %s where user_id = %s """,
+            (user_type,user_id),
+        )
+        #conn.commit()
+        #conn.close()
+    
+    except Exception as e:
+        return jsonify({"error" : str(e)}),500
+
+#update old password
+@users_bp.route("/user/update_password")
+def update_password(user_id,oldPassword,newPassword):
+
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        password = cursor.execute(
+            """SELECT password_hash FROM users WHERE user_id = %s""",
+            (user_id),
+        )
+        bcrypt = Bcrypt()
+        if not bcrypt.check_password_hash(password,oldPassword):
+            return jsonify({"message" : "Old password is incorrect"}),400
+        
+        new_hashed_password = bcrypt.generate_password_hash(newPassword).decode("utf-8")
+
+        cursor.execute(
+            """UPDATE users SET password_hash = %s,updated_in = NOW() WHERE user_id = %s""",
+            (new_hashed_password,user_id),
+        )
+
+        #conn.commit()
+        #conn.close()
+    except Exception as e:
+        return jsonify({"error" : str(e)}),500
+    
+#update first name and last name of the user
+@users_bp.route("/user/update_name")
+def update_name(user_id,first_name,last_name):
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute(
+            """UPDATE users SET first_name = %s, last_name = %s, updated_in = NOW()
+            WHERE user_id = %s""",
+            (first_name,last_name,user_id)
+        )
+    except Exception as e :
+        return jsonify({"error" : str(e)}),500
+
+#def email_verification():

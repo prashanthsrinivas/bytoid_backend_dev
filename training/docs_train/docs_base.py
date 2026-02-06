@@ -330,13 +330,13 @@ async def delete_file():
 
     for entry in all_file_data[source]:
         if isinstance(entry, dict) and entry.get("filename") == filename:
-            if entry.get("FileStatus", "").lower() != "deleted":
+            # if entry.get("FileStatus", "").lower() != "deleted":
                 entry["FileStatus"] = "Deleted"
                 entry["updated_date"] = current_time
                 file_found = True
-            else:
-                return jsonify({"error": "File is already marked as deleted"}), 400
-            break
+            # else:
+            #     return jsonify({"error": "File is already marked as deleted"}), 400
+                break
 
     if not file_found:
         return jsonify({"error": "Filename not found in specified source"}), 404

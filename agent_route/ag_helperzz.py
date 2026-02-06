@@ -303,6 +303,13 @@ async def process_and_update_yaml(
         fname = item["filename"]
         file_status = item["FileStatus"]
 
+        # If a deleted entry exists for this filename, remove it
+        provider_files[:] = [
+            entry for entry in provider_files
+            if not (entry["filename"] == fname and entry["FileStatus"] == "Deleted")
+        ]
+
+
         existing_non_deleted = next(
             (
                 entry
@@ -317,6 +324,9 @@ async def process_and_update_yaml(
             existing_non_deleted["FileStatus"] = file_status
         else:
             provider_files.append(item)
+
+        
+
 
     # Write back to YAML
     # with open(yaml_path, "w") as f:
