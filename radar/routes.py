@@ -235,8 +235,12 @@ from concurrent.futures import ThreadPoolExecutor
 radar_executor = ThreadPoolExecutor(max_workers=4)
 
 
-def run_radar_review_sync(user_id, review_id, data, date_uniqueid, type,files=None):
-    asyncio.run(run_radar_review_redis(user_id, review_id, data, date_uniqueid, type,files=files))
+def run_radar_review_sync(user_id, review_id, data, date_uniqueid, type, files=None):
+    asyncio.run(
+        run_radar_review_redis(
+            user_id, review_id, data, date_uniqueid, type, files=files
+        )
+    )
 
 
 def extract_json(text: str) -> str:
@@ -295,12 +299,7 @@ def _safe_json_parse(value):
 
 
 async def run_radar_review_redis(
-    user_id,
-    review_id,
-    data,
-    date_uniqueid,
-    btype,
-    files=None
+    user_id, review_id, data, date_uniqueid, btype, files=None
 ):
     redis = RedisService()
 
@@ -324,8 +323,8 @@ async def run_radar_review_redis(
         await redis.set(key, state, ex=1800)
 
     conn = None
-    data_checked=[]
-    reference_RWA=[]
+    data_checked = []
+    reference_RWA = []
 
     try:
         await update(status="running")
@@ -361,7 +360,9 @@ async def run_radar_review_redis(
         credits = Credits(db=conn)
 
         payload = None
-        if (main_source and main_source == "knowledge" )or(refernce_main_source and refernce_main_source == "knowledge"):
+        if (main_source and main_source == "knowledge") or (
+            refernce_main_source and refernce_main_source == "knowledge"
+        ):
             embedding = await get_firework_embedding()
             vector = embedding.embed_query(user_analyze_input)
 
@@ -387,20 +388,18 @@ async def run_radar_review_redis(
         last_radar_response = ""
         if date_uniqueid:
             val = await dbserver.radar_get_review_last_response(
-                user_id=user_id,
-                radar_id=date_uniqueid
+                user_id=user_id, radar_id=date_uniqueid
             )
             last_radar_response = json.dumps(val) if val else ""
 
         base_prompt = (
-            review_temp
-            .replace("{{analyze_input}}", user_analyze_input)
+            review_temp.replace("{{analyze_input}}", user_analyze_input)
             .replace("{{file_links}}", json.dumps(INP_LINKS, indent=2))
             .replace("{{data_sources}}", json.dumps(data_checked, indent=2))
             .replace("{{reference_sources}}", json.dumps(reference_RWA or {}, indent=2))
             .replace("{{last_radar_response}}", last_radar_response)
         )
-        print("file links",INP_LINKS)
+        print("file links", INP_LINKS)
 
         result = await get_think_fire_response2_og(
             user_message=base_prompt,
@@ -461,11 +460,13 @@ async def radar_review():
         if not f or not f.filename:
             continue
 
-        files_data.append({
-            "filename": f.filename,
-            "content_type": f.mimetype,
-            "data": f.read(),  # ✅ consume before request ends
-        })
+        files_data.append(
+            {
+                "filename": f.filename,
+                "content_type": f.mimetype,
+                "data": f.read(),  # ✅ consume before request ends
+            }
+        )
 
     if not files_data:
         files_data = None
@@ -488,11 +489,13 @@ async def radar_review():
             if now - started_at <= 180:
                 return jsonify(existing)
 
-            existing.update({
-                "status": "failed",
-                "error": "Review execution timed out",
-                "ended_at": now,
-            })
+            existing.update(
+                {
+                    "status": "failed",
+                    "error": "Review execution timed out",
+                    "ended_at": now,
+                }
+            )
             await redis.delete(key)
             return jsonify(existing)
 
@@ -529,7 +532,7 @@ async def radar_review():
         data,
         date_uniqueid,
         "review",
-        files_data,   # ✅ bytes, not FileStorage
+        files_data,  # ✅ bytes, not FileStorage
     )
 
     return jsonify(state)
@@ -612,11 +615,13 @@ async def radar_analyze():
         if not f or not f.filename:
             continue
 
-        files_data.append({
-            "filename": f.filename,
-            "content_type": f.mimetype,
-            "data": f.read(),  # ✅ consume before request ends
-        })
+        files_data.append(
+            {
+                "filename": f.filename,
+                "content_type": f.mimetype,
+                "data": f.read(),  # ✅ consume before request ends
+            }
+        )
 
     if not files_data:
         files_data = None
@@ -681,7 +686,13 @@ async def radar_analyze():
     await redis.set(key, state, ex=1800)
 
     radar_executor.submit(
-        run_radar_review_sync, userid, review_id, data, date_uniqueid, "analyze",files_data
+        run_radar_review_sync,
+        userid,
+        review_id,
+        data,
+        date_uniqueid,
+        "analyze",
+        files_data,
     )
 
     return jsonify(state)
@@ -705,11 +716,13 @@ async def radar_decide():
         if not f or not f.filename:
             continue
 
-        files_data.append({
-            "filename": f.filename,
-            "content_type": f.mimetype,
-            "data": f.read(),  # ✅ consume before request ends
-        })
+        files_data.append(
+            {
+                "filename": f.filename,
+                "content_type": f.mimetype,
+                "data": f.read(),  # ✅ consume before request ends
+            }
+        )
 
     if not files_data:
         files_data = None
@@ -780,7 +793,13 @@ async def radar_decide():
     await redis.set(key, state, ex=1800)
 
     radar_executor.submit(
-        run_radar_review_sync, userid, review_id, data, date_uniqueid, "decide",files_data
+        run_radar_review_sync,
+        userid,
+        review_id,
+        data,
+        date_uniqueid,
+        "decide",
+        files_data,
     )
 
     return jsonify(state)
@@ -1081,19 +1100,13 @@ async def radar_knowledge_analyze():
 async def delete_radar_files():
     data = request.get_json(force=True)
 
-    user_id = data.get("userid")
+    user_id = data.get("user_id")
     review_id = data.get("review_id")
 
     dbserver = LanceDBServer()
     result = await dbserver.radar_delete_review(user_id, review_id)
 
     if not result["deleted"]:
-        return jsonify({
-            "message": "review not found",
-            "details": result
-        }), 404
+        return jsonify({"message": "review not found", "details": result}), 404
 
-    return jsonify({
-        "message": "file deleted successfully",
-        "details": result
-    }), 200
+    return jsonify({"message": "file deleted successfully", "details": result}), 200
