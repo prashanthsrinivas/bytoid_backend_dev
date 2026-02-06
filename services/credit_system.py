@@ -33,8 +33,10 @@ class CreditUsageResult:
 # CREDIT MANAGER
 # ---------------------------------------------------------
 
+
 class InsufficientCreditsError(Exception):
     pass
+
 
 class CreditManager:
     """
@@ -272,7 +274,6 @@ class CreditManager:
             if remaining > 0:
                 raise InsufficientCreditsError("Not enough credits")
 
-
             # self.db.commit()
 
         # except Exception:
@@ -414,7 +415,6 @@ class CreditManager:
             "next_expiry": next_expiry,
         }
 
-
     def check_if_remaining(self, user_id: str) -> Dict:
         cur = self.db.cursor(pymysql.cursors.DictCursor)
 
@@ -456,7 +456,7 @@ class CreditManager:
             found_non_expired_bucket = True
 
             # If any valid remaining credits exist → SUCCESS
-            if remaining > 2500:
+            if remaining > 500:
                 return {
                     "user_id": user_id,
                     "available": "True",

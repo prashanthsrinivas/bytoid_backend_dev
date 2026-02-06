@@ -67,7 +67,7 @@ from request_context import current_user_id
 #     PYTUBE_AVAILABLE = True
 # except ImportError:
 #     PYTUBE_AVAILABLE = False
-
+import os
 
 agent_bps = Blueprint("agents", __name__)
 logger = get_logger(__name__)
@@ -75,6 +75,7 @@ logger = get_logger(__name__)
 load_dotenv()
 
 user_query_history = defaultdict(list)
+dev_val = os.getenv("BASE_FRNT_URL", "")
 
 
 @agent_bps.route("/save-training-settings", methods=["POST"])
@@ -385,7 +386,7 @@ def checkquerywithApiKeyog():
                 return jsonify({"error": "Invalid API key"}), 401
 
             userid, userwebsite = user_row
-            if website != userwebsite and website != "app.bytoid.ai":
+            if website != userwebsite or website != dev_val:
                 return (
                     jsonify({"error": "API key does not match the provided website"}),
                     401,
@@ -686,7 +687,7 @@ async def checkquerywithApiKey():
                 return jsonify({"error": "Invalid API key"}), 401
 
             userid, userwebsite = user_row
-            if website != userwebsite and website != "app.bytoid.ai":
+            if website != userwebsite or website != dev_val:
                 return (
                     jsonify({"error": "API key does not match the provided website"}),
                     401,

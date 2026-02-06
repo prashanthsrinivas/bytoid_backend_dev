@@ -12,7 +12,7 @@ from agent_route.lance_agent import LanceClient
 from microsoft_route.microsoft_helpers import OutlookSubscriptionManager
 from umail_helper.helper import delete_user_sync_time
 from .integrations_helpers import get_all_integrations
-
+from dotenv import load_dotenv
 
 # import request
 
@@ -27,6 +27,9 @@ import requests
 from datetime import datetime
 import os
 import uuid
+
+load_dotenv()
+dev_val = os.getenv("BASE_FRNT_URL")
 
 
 @integrations_bp.route("/check_integrations", methods=["POST"])
@@ -507,7 +510,7 @@ def google_integration_callback():
                 # Contacts – READ ONLY
                 "https://www.googleapis.com/auth/contacts.readonly",
             ),
-            redirect_uri="https://app.bytoid.ai/integration/google/callback",
+            redirect_uri=f"{dev_val}/integration/google/callback",
         )
 
         flow.fetch_token(authorization_response=decoded_url)
@@ -660,7 +663,7 @@ def microsoft_integration_callback():
 
         # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
         # redirect_uri = get_microsoft_redirect_uri(request)
-        redirect_uri = "https://app.bytoid.ai/integration/microsoft/callback"
+        redirect_uri = f"{dev_val}/integration/microsoft/callback"
 
         token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 

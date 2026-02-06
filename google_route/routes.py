@@ -33,6 +33,8 @@ load_dotenv()  # Load from .env into environment variables
 google_bp = Blueprint("auth", __name__)
 logger = get_logger(__name__)
 
+dev_val = os.getenv("BASE_FRNT_URL", "")
+
 
 @google_bp.route("/login")
 def login():
@@ -682,7 +684,7 @@ def get_token(inuser=None, value=None, in_connection=None):
 
                 except Exception as e:
                     # print(f"Token refresh failed: {e}")
-                    return redirect("https://app.bytoid.ai/login")
+                    return redirect(f"{dev_val}/login")
 
             # Return existing token if not refreshed
             cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))

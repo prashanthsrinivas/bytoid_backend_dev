@@ -4,6 +4,10 @@ import redis
 from redis.cluster import RedisCluster
 import asyncio
 from typing import Any, Optional
+from utils.app_configs import IS_DEV
+
+base_ip = os.getenv("CELERY_BROKER_URL")
+dev_val = os.getenv("DEV", "")
 
 
 class RedisService:
@@ -16,16 +20,28 @@ class RedisService:
         self.redis_host = os.getenv("REDIS_HOST_DEV")
         if not self.redis_host:
             raise ValueError("Missing REDIS_HOST_DEV")
+        if IS_DEV or dev_val == "true":
+            print("connecting to Dev Redis")
 
-        self.client = redis.Redis(
-            host=self.redis_host,
-            port=6379,
-            ssl=True,
-            ssl_ca_certs="/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 CA cert here
-            ssl_cert_reqs="required",                      # 👈 enforce validation
-            decode_responses=True,
-            socket_connect_timeout=5,
-        )
+            self.client = redis.Redis(
+                host=self.redis_host,  # ElastiCache primary endpoint
+                port=6379,  # or 6380 if configured
+                ssl=True,
+                ssl_cert_reqs=None,  # ✅ important
+                decode_responses=True,
+                socket_connect_timeout=5,
+            )
+        else:
+            print("connecting to Prod Redis")
+            self.client = redis.Redis(
+                host=self.redis_host,
+                port=6379,
+                ssl=True,
+                ssl_ca_certs="/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 CA cert here
+                ssl_cert_reqs="required",  # 👈 enforce validation
+                decode_responses=True,
+                socket_connect_timeout=5,
+            )
 
     async def _run(self, func, *args, **kwargs):
         """Run any blocking Redis command in a background thread."""
@@ -121,7 +137,6 @@ class RedisService:
 
     async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
         return await self._run(self.client.hincrby, name, key, amount)
-
 
     async def expire(self, key: str, seconds: int) -> bool:
         return bool(await self._run(self.client.expire, key, seconds))

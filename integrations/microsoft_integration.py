@@ -8,8 +8,12 @@ import pymysql
 from microsoft_route.routes import initialize_msal, store_auth_state_in_redis
 from utils.base_logger import get_logger
 import asyncio
+from dotenv import load_dotenv
 
 logger = get_logger(__name__)
+
+load_dotenv()
+dev_val = os.getenv("BASE_FRNT_URL")
 
 
 def microsoft_integration_login():
@@ -37,7 +41,7 @@ def microsoft_integration_login():
 
     try:
 
-        redirect_uri = "https://app.bytoid.ai/integration/microsoft/callback"
+        redirect_uri = f"{dev_val}/integration/microsoft/callback"
 
         logger.info(f"🌍 Using  redirect URI: {redirect_uri}")
 

@@ -37,7 +37,8 @@ zoho_bp = Blueprint("zoho", __name__)
 
 CLIENT_ID = os.environ.get("ZOHO_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("ZOHO_CLIENT_SECRET")
-REDIRECT_URI = "https://app.bytoid.ai/auth/zoho/callback"
+frontend_url = os.getenv("BASE_FRNT_URL")
+REDIRECT_URI = f"{frontend_url}/auth/zoho/callback"
 ZOHO_AUTH_URL = "https://accounts.zoho.in/oauth/v2/auth"
 ZOHO_TOKEN_URL = "https://accounts.zoho.in/oauth/v2/token"
 

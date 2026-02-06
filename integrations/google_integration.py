@@ -8,6 +8,10 @@ import json
 from db.rds_db import connect_to_rds
 import pymysql
 from google.auth.transport.requests import Request as g_request
+from dotenv import load_dotenv
+
+load_dotenv()
+dev_val = os.getenv("BASE_FRNT_URL", "")
 
 
 # --- Step 1: Redirect user to Google login ---
@@ -45,7 +49,7 @@ def google_integration_login():
             # Contacts – READ ONLY
             "https://www.googleapis.com/auth/contacts.readonly",
         ),
-        redirect_uri="https://app.bytoid.ai/integration/google/callback",
+        redirect_uri=f"{dev_val}/integration/google/callback",
     )
 
     auth_url, state = flow.authorization_url(

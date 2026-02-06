@@ -43,6 +43,7 @@ import requests
 import pymysql
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+
 # from glide import GlideClusterClient
 from services.redis_service import RedisService
 from integrations.google_integration import get_integration_access_token
@@ -66,7 +67,7 @@ from utils.delay_mails import read_status_file, write_status_file
 
 # Load environment variables
 load_dotenv()
-
+frontend_url = os.getenv("BASE_FRNT_URL")
 # Add project root to path for imports
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
@@ -440,17 +441,17 @@ async def microsoft_callback():
 
         if error:
             logger.error(f"❌ OAuth error: {error}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error={error}")
 
         if not auth_code:
             logger.error("❌ No authorization code")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error=missing_code")
 
         if not state:
             logger.error("❌ No state parameter in callback")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error=missing_state")
 
         logger.info(f"✅ Callback received with state: {state[:20]}...")
@@ -460,14 +461,14 @@ async def microsoft_callback():
 
         if not stored_state:
             logger.error(f"❌ No auth state found in Redis for state: {state[:20]}...")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error=no_flow")
 
         code_verifier = stored_state.get("code_verifier")
 
         if not code_verifier:
             logger.error(f"❌ No code_verifier found in stored state")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error=no_verifier")
 
         # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
@@ -494,19 +495,19 @@ async def microsoft_callback():
                 logger.error(
                     f"❌ Token exchange failed: {token_response.status_code} - {token_response.text}"
                 )
-                frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
                 return redirect(f"{frontend_url}/login?error=token_failed")
 
             result = token_response.json()
 
         except Exception as e:
             logger.error(f"❌ Token acquisition failed: {str(e)}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error=token_failed")
 
         if not result or "access_token" not in result:
             logger.error(f"❌ No access token in result: {result}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error=no_token")
 
         # Get user info (like Google does)
@@ -519,7 +520,7 @@ async def microsoft_callback():
 
         if userinfo_response.status_code != 200:
             logger.error(f"❌ Failed to get user info: {userinfo_response.status_code}")
-            frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
             return redirect(f"{frontend_url}/login?error=userinfo_failed")
 
         userinfo = userinfo_response.json()
@@ -755,7 +756,7 @@ async def microsoft_callback():
     except Exception as e:
         logger.error(f"❌ Microsoft callback error: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        frontend_url = os.getenv("BASE_FRNT_URL", "https://app.bytoid.ai")
+
         return redirect(f"{frontend_url}/login?error=callback_failed")
 
 

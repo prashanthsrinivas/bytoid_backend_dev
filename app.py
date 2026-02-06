@@ -39,6 +39,7 @@ import os
 from dotenv import load_dotenv
 from flask_cors import CORS
 import tempfile
+from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
 
 # from session_middleware import register_session_check
 
@@ -49,46 +50,30 @@ app.secret_key = os.getenv(
     "SECRETKEY"
 )  # set a secret key as an enviornmental variable later
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
-BASE_ORGINS = [
-    # "http://localhost:3001",
-    # "http://127.0.0.1:3001",
-    "http://172.31.5.214",
-    "https://www.bytoid.ai",
-    "https://bytoid.ai",
-    "https://app.bytoid.ai",
-    "https://api.bytoid.ai",
-    "http://localhost:8081",
-    "https://id-preview--e09b701d-e411-4e19-93aa-00da532d56e1.lovable.app",
-    "bytoid://",
-    "user-app://",
-    "http://localhost:19000",
-    "http://localhost:19006",
-    "https://auth.expo.io",
-]
-# register_session_check(app)
 
-ALLOWED_ORIGINS = {o.rstrip("/") for o in BASE_ORGINS}
+app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 
 ALLOWED_SCHEMES = ["bytoid", "user-app", "exp"]
 
 
-def is_origin_allowed(origin):
-    """Check if origin is allowed"""
-    # No origin header = native mobile app making API request
+def is_origin_allowed(origin: str | None) -> bool:
+    # Native mobile app (no Origin header)
     if not origin:
         return True
 
-    # Check exact matches (web/development)
+    origin = origin.rstrip("/")
+
+    # Exact match only
     if origin in ALLOWED_ORIGINS:
         return True
 
-    # Check if origin starts with allowed scheme (mobile OAuth)
+    # Mobile app schemes (OAuth / deep links)
     for scheme in ALLOWED_SCHEMES:
         if origin.startswith(f"{scheme}://"):
             return True
 
-    # Allow any localhost port (development)
-    if origin.startswith("http://localhost:"):
+    # DEV only: allow any localhost port
+    if IS_DEV and origin.startswith("http://localhost:"):
         return True
 
     return False
@@ -160,7 +145,7 @@ for print in blueprints:
     CORS(
         print,
         supports_credentials=True,
-        origins=BASE_ORGINS,
+        origins=ALLOWED_ORIGINS,
     )
 app.config["SESSION_FILE_DIR"] = os.path.join(tempfile.gettempdir(), "flask_sessions")
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)

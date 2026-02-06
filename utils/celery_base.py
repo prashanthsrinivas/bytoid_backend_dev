@@ -16,6 +16,7 @@ from umail_helper.asyn_functions import fetchnextmonthmails, v2all_continuous
 import json
 from umail_helper.mails_process import check_mailbox
 from umail_lance.umail_lance_agent import UmailLanceClient
+from utils.app_configs import IS_DEV
 from utils.async_check import run_async
 from microsoft_route.get_microsoft_emails import v2all_continuous_outlook
 from db.rds_db import connect_to_rds
@@ -24,15 +25,13 @@ from playbook.helperzz import returnconfigandpath
 from utils.s3_utils import read_json_from_s3, upload_any_file
 from zoho_routes.routes import v2all_continuous_zoho
 
-
 # from umail_helper.auto_rep import autoReplyhelper
 
 logger = get_task_logger(__name__)
 load_dotenv()
 
-
+dev_val = os.getenv("DEV", "")
 base_ip = os.getenv("CELERY_BROKER_URL")
-
 # lock_client = redis.StrictRedis.from_url(base_ip)  # or your broker Redis
 lock_client = RedisService()
 
@@ -71,39 +70,42 @@ def make_celery(app_name=__name__):
         broker=base_ip,
         backend=base_ip,
     )
-
-    # celery.conf.update(
-    #     task_serializer="json",
-    #     result_serializer="json",
-    #     accept_content=["json"],
-    #     task_acks_late=True,
-    #     task_reject_on_worker_lost=True,
-    #     worker_prefetch_multiplier=1,
-    #     broker_transport_options={"visibility_timeout": 3600},
-    #     broker_use_ssl={"ssl_cert_reqs": "none"},  # required for AWS ElastiCache TLS
-    #     redis_backend_use_ssl={"ssl_cert_reqs": "none"},
-    #     worker_hijack_root_logger=False,
-    # )
-    celery.conf.update(
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    task_acks_late=True,
-    task_reject_on_worker_lost=True,
-    worker_prefetch_multiplier=1,
-    broker_transport_options={"visibility_timeout": 3600},
-
-    broker_use_ssl={
-        "ssl_ca_certs": "/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 ADD HERE
-        "ssl_cert_reqs": "required",
-    },
-    redis_backend_use_ssl={
-        "ssl_ca_certs": "/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 ADD HERE
-        "ssl_cert_reqs": "required",
-    },
-
-    worker_hijack_root_logger=False,
-)
+    if IS_DEV or dev_val == "true":
+        print("connecting to Dev Redis")
+        celery.conf.update(
+            task_serializer="json",
+            result_serializer="json",
+            accept_content=["json"],
+            task_acks_late=True,
+            task_reject_on_worker_lost=True,
+            worker_prefetch_multiplier=1,
+            broker_transport_options={"visibility_timeout": 3600},
+            broker_use_ssl={
+                "ssl_cert_reqs": "none"
+            },  # required for AWS ElastiCache TLS
+            redis_backend_use_ssl={"ssl_cert_reqs": "none"},
+            worker_hijack_root_logger=False,
+        )
+    else:
+        print("connecting to Prod Redis")
+        celery.conf.update(
+            task_serializer="json",
+            result_serializer="json",
+            accept_content=["json"],
+            task_acks_late=True,
+            task_reject_on_worker_lost=True,
+            worker_prefetch_multiplier=1,
+            broker_transport_options={"visibility_timeout": 3600},
+            broker_use_ssl={
+                "ssl_ca_certs": "/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 ADD HERE
+                "ssl_cert_reqs": "required",
+            },
+            redis_backend_use_ssl={
+                "ssl_ca_certs": "/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 ADD HERE
+                "ssl_cert_reqs": "required",
+            },
+            worker_hijack_root_logger=False,
+        )
 
     return celery
 

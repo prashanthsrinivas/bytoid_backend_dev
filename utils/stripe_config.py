@@ -4,23 +4,14 @@ import stripe
 # -------------------------------------------------
 # STRIPE ENV CONFIG
 # -------------------------------------------------
-STRIPE_SECRET_KEY = os.getenv(
-    "STRIPE_SECRET_KEY",
-    "rk_test_51SnhSV6AY73BJLxH1O57fpiXhOCSar0QrRs9WcD9asarReTpP344d4cKa6EmtocUsL6zwWnTbg1B8ta5lz2NBWL600ZVYCUSMl",
-)
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 
-STRIPE_WEBHOOK_SECRET = os.getenv(
-    "STRIPE_WEBHOOK_SECRET", "whsec_yH8SDet1nSgbAGeP2AsTuSGnBQxABNiO"
-)
-STRIPE_SUCCESS_URL = os.getenv(
-    "STRIPE_SUCCESS_URL",
-    "https://app.bytoid.ai/billing/success",
-)
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+frontend_url = os.getenv("BASE_FRNT_URL")
+STRIPE_SUCCESS_URL = f"{frontend_url}/billing/success"
 
-STRIPE_CANCEL_URL = os.getenv(
-    "STRIPE_CANCEL_URL",
-    "https://app.bytoid.ai/billing/cancelled",
-)
+STRIPE_CANCEL_URL = (f"{frontend_url}/billing/cancelled",)
+
 
 # -------------------------------------------------
 # INITIALIZE STRIPE
