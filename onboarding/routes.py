@@ -1912,11 +1912,6 @@ def get_fireworks_llama_response(conversation_history, current_message):
 
         # Use Fireworks AI only - enhanced error handling
         fireworks_api_key = os.getenv("FIREWORKS_KEY")
-        if not fireworks_api_key:
-            # Note: Update this with a valid API key
-            fireworks_api_key = "fw_3IRjUMnSb8IofJ8iD1zA4V4O"
-            logger.warning("⚠️ Using fallback Fireworks API key - may be invalid")
-
         # Try different API endpoint format
         url = "https://api.fireworks.ai/inference/v1/chat/completions"
 
