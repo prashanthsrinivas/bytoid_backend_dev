@@ -73,6 +73,8 @@ def save_contact():
                 ),
                 400,
             )
+        connection = connect_to_rds()
+        cursor=connection.cursor()
 
         cursor.execute(
                 "SELECT 1 FROM integration WHERE email = %s",
@@ -94,7 +96,7 @@ def save_contact():
         created_date = dt_utc.strftime("%Y-%m-%d %H:%M:%S")  # For database (string)
         updated_date = dt_utc.isoformat()  # For parsing (ISO format with timezone)
 
-        connection = connect_to_rds()
+        
 
         with connection.cursor() as cursor:
             check_contact_sql = """
