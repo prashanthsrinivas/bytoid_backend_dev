@@ -349,9 +349,15 @@ async def delete_file():
     # Step 4: Delete related passed/failed Q&A entries
     success = deletefilebasedData(filename, userid)
     if not success:
-        logger.warning(
-            f"Failed to delete question entries for user {userid}, file {filename}"
-        )
+        return (
+        jsonify(
+            {
+                "message": f"Failed to delete question entries for user {userid}, file {filename}"
+            }
+        ),
+        400,
+    )
+        
 
     # # Reload for returning updated data
     # all_file_data
