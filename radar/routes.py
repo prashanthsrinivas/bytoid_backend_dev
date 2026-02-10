@@ -406,6 +406,8 @@ async def run_radar_review_redis(
             user_id=userid,
             credits=credits,
         )
+        if result == "INSUFFICIENT":
+            await update(status="failed", error="Insufficient credits")
 
         refactor_result = _safe_json_parse(result)
 
@@ -442,19 +444,23 @@ async def run_radar_review_redis(
 @radar_bp.route("/radar/review", methods=["POST"])
 async def radar_review():
     # ---- Parse input safely ----
-    if request.is_json:
-        data = request.get_json(silent=True) or {}
-    else:
-        data = request.form or {}
+    # if request.is_json:
+    #     data = request.get_json(silent=True) or {}
+    # else:
+    #     data = request.form or {}
+    data = request.get_json(silent=True)
 
     # print("data", data)
-    # print("files", request.files)
+    if "files" in data:
+        print("files", len(data.get("files")))
+    print("files", request.files)
 
     userid = data.get("userid")
     if not userid:
         return jsonify({"error": "userid is required"}), 400
 
     # ---- READ FILES INSIDE REQUEST CONTEXT (CRITICAL FIX) ----
+    print("files from request", request.files.getlist("files"))
     files_data = []
     for f in request.files.getlist("files"):
         if not f or not f.filename:
@@ -470,6 +476,7 @@ async def radar_review():
 
     if not files_data:
         files_data = None
+    print("files data", files_data)
 
     # ---- Redis de-dup / state handling (unchanged logic) ----
     redis = RedisService()
@@ -804,6 +811,7 @@ async def radar_decide():
 
     return jsonify(state)
 
+
 @radar_bp.route("/radar/changeblock", methods=["POST"])
 async def radar_change_block_preview():
     data = request.get_json(force=True)
@@ -895,6 +903,7 @@ async def radar_change_block_preview():
             jsonify({"error": "Failed to generate block preview", "details": str(e)}),
             500,
         )
+
 
 @radar_bp.route("/radar/changeblock/confirm", methods=["POST"])
 async def radar_change_block_confirm():

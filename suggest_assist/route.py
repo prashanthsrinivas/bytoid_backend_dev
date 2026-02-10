@@ -2,7 +2,9 @@ import base64
 from datetime import datetime, timedelta
 import json
 import os
+from db.db_checkers import get_userid
 from flask import Blueprint, request, jsonify
+from services.redis_service import RedisService
 from services.uamil_auto_service import UmailAutoService
 from umail_helper.mails_process import check_mailbox_email
 from utils.base_logger import get_logger
@@ -38,6 +40,13 @@ async def receive_gmail_notification():
     history_id = decoded_data.get("historyId")
     if not user_email or not history_id:
         return "Invalid Pub/Sub message data", 400
+    print("got hook from", user_email)
+    redis = RedisService()
+    user_id = get_userid(user_email)
+    val = await redis.exists(f"user_alive:{user_id}")
+    if not val:
+        print("user skipped not alive")
+        return "user skipped not alive", 200
     mailcheck = check_mailbox_email(user_email)
     if not mailcheck:
         return "ok", 200

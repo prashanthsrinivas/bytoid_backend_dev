@@ -21,6 +21,7 @@ DEV_ORIGINS = {
     "http://localhost:19000",
     "http://localhost:19006",
     "http://172.31.5.214",
+    "https://dev.bytoid.ai",
 }
 
 ALLOWED_ORIGINS = PROD_ORIGINS | (DEV_ORIGINS if IS_DEV else set())

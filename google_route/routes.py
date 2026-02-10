@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify, session, redirect, make_response
+from google_route.google_helpers import update_user_alive
 from services.gmail_service import GmailService
 from pydrive.auth import GoogleAuth
 from google_auth_oauthlib.flow import Flow
@@ -16,7 +17,12 @@ import pymysql
 import base64
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as g_request
-from db.db_checkers import check_onboarding_user, ensure_starter_credits_for_user, fetch_apikey_from_launch
+from db.db_checkers import (
+    check_onboarding_user,
+    ensure_starter_credits_for_user,
+    fetch_apikey_from_launch,
+)
+from services.redis_service import RedisService
 from utils.base_logger import get_logger
 from session_manager_route.routes import session_login
 from integrations.integrations_helpers import get_all_integrations
@@ -338,7 +344,7 @@ def oauth2callback(url, state):
                             email,
                         ),
                     )
-                    ensure_starter_credits_for_user(user_id,conn)
+                    ensure_starter_credits_for_user(user_id, conn)
             conn.commit()
             conn.close()
 
@@ -374,6 +380,27 @@ def oauth2callback(url, state):
         return None, 500
 
 
+@google_bp.route("/user/alive", methods=["POST"])
+async def user_alive():
+    body = request.json or {}
+    user_id = body.get("user_id")
+    is_alive = body.get("is_alive", True)
+
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+
+    redis = RedisService()
+
+    await update_user_alive(redis, user_id, is_alive)
+
+    return jsonify(
+        {
+            "user_id": user_id,
+            "is_alive": is_alive,
+        }
+    )
+
+
 @google_bp.route("/browser_url", methods=["POST"])
 async def receive_browser_url():
     try:
@@ -389,10 +416,10 @@ async def receive_browser_url():
         # print("sdaas", user_id, newuser)
         apikey = fetch_apikey_from_launch(user_id)
 
-        # mailbox_setting = check_mailbox(user_id)
-        # if mailbox_setting:
-        #     service = GmailService(user_id=user_id)
-        #     service.create_watch_req()
+        mailbox_setting = check_mailbox(user_id)
+        if mailbox_setting:
+            service = GmailService(user_id=user_id)
+            service.create_watch_req()
 
         connection = connect_to_rds()
         cursor = connection.cursor()
@@ -447,17 +474,17 @@ async def receive_browser_url():
                         None,
                         microsoft_user_id,
                     )
-                    # data = resp.get_json()
-                    # microsoft_access_token = data["token"]
+                    data = resp.get_json()
+                    microsoft_access_token = data["token"]
                     # if microsoft_access_token:
                     # print(f"new token created")
 
-                # manager = OutlookSubscriptionManager()
+                manager = OutlookSubscriptionManager()
 
-                # # print(f"creating subscription for {microsoft_email}")
-                # future = manager.create_subscription_async(
-                #     microsoft_access_token, microsoft_email
-                # )
+                # print(f"creating subscription for {microsoft_email}")
+                future = manager.create_subscription_async(
+                    microsoft_access_token, microsoft_email
+                )
 
         # check if credits are available
         credits = CreditManager(connection)
@@ -484,6 +511,8 @@ async def receive_browser_url():
             )
         )
         # print("response from browser_url", response)
+        redis = RedisService()
+        await update_user_alive(redis, user_id, True)
 
         # Set secure session cookie (HttpOnly, Secure)
         response.set_cookie(
@@ -548,7 +577,7 @@ def sync_drive():
         ga.LoadCredentialsFile("credentials.json")
         # ga.LoadCredentialsFile("client_secrets.json")
         if ga.credentials is None:
-            return redirect("https://bytoid.ai/login")
+            return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
         elif ga.access_token_expired:
             ga.Refresh()
         else:
@@ -1155,7 +1184,7 @@ def refresh_expired_microsoft_tokens_for_integrations(
         response = requests.post(token_url, data=payload)
         if response.status_code != 200:
             # print("Refresh failed:", response.text)
-            return redirect("https://bytoid.ai/login")
+            return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
         new_data = response.json()
 
@@ -1183,4 +1212,4 @@ def refresh_expired_microsoft_tokens_for_integrations(
 
     except Exception as e:
         # print(f"Microsoft token refresh failed: {e}")
-        return redirect("https://bytoid.ai/login")
+        return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")

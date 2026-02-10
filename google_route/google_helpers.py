@@ -1,5 +1,6 @@
 from flask import jsonify
 from datetime import datetime, timedelta
+import time
 
 
 def check_google_token_expiry(cursor, user_id):
@@ -30,3 +31,25 @@ def check_google_token_expiry(cursor, user_id):
         return True
 
     return False
+
+
+async def update_user_alive(redis, user_id, is_alive):
+    """
+    Marks user as alive or dead in Redis using TTL-based heartbeat.
+    """
+    key = f"user_alive:{user_id}"
+    expiry_l = 12 * 60
+
+    if is_alive:
+        return await redis.set(
+            key,
+            {"user_id": user_id, "is_alive": True, "last_seen": int(time.time())},
+            ex=expiry_l,
+        )
+    else:
+        await redis.delete(key)
+        return True
+
+
+async def should_continue(redis, user_id):
+    return await redis.exists(f"user_alive:{user_id}")

@@ -212,7 +212,7 @@ def get_integration_access_token(user_id, provider):
 
                 except Exception as e:
                     # print(f"Token refresh failed: {e}")
-                    return redirect("https://bytoid.ai/login")
+                    return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
             return access_token, userid
 

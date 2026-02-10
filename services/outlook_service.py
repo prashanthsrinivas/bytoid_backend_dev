@@ -14,8 +14,12 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import base64
 from utils.s3_utils import attach_CLDFRNT_url
+from dotenv import load_dotenv
+import os
 
 logger = get_logger(__name__)
+load_dotenv()
+basefrntpath = f"{os.getenv('BASE_FRNT_URL')}"
 
 
 def to_epoch_days(date_str: str) -> int:
@@ -101,7 +105,7 @@ class OutlookService:
             # Ensure both datetimes are timezone-aware for comparison
             if expiry_dt.tzinfo is None:
                 expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-            
+
             current_time = datetime.now(timezone.utc)
             if expiry_dt < current_time:
                 self._refresh_access_token()
@@ -398,7 +402,9 @@ class OutlookService:
                     )
 
                     # Fetch batch of messages with larger batch size for efficiency
-                    batch_size = min(100, max_results - total_fetched if max_results else 100)
+                    batch_size = min(
+                        100, max_results - total_fetched if max_results else 100
+                    )
                     batch_result = await self._fetch_messages_batch(
                         skip=skip_count, top=batch_size, months=months
                     )
@@ -410,7 +416,9 @@ class OutlookService:
                         break
 
                     messages = batch_result["messages"]
-                    logger.info(f"📬 Batch {batch_count}: Retrieved {len(messages)} messages")
+                    logger.info(
+                        f"📬 Batch {batch_count}: Retrieved {len(messages)} messages"
+                    )
 
                     if not messages:
                         logger.info("📭 No more messages found")
@@ -472,10 +480,14 @@ class OutlookService:
                         return all_messages, None
 
                 except Exception as e:
-                    logger.error(f"❌ Error fetching message batch {batch_count}: {str(e)}")
+                    logger.error(
+                        f"❌ Error fetching message batch {batch_count}: {str(e)}"
+                    )
                     break
 
-            logger.info(f"✅ Completed! Total messages fetched: {len(all_messages)} across {batch_count} batches")
+            logger.info(
+                f"✅ Completed! Total messages fetched: {len(all_messages)} across {batch_count} batches"
+            )
             return all_messages, None
 
         except Exception as e:
@@ -591,7 +603,7 @@ class OutlookService:
 
         # Fallback invite link
         if not invite_link:
-            invite_link = f"https://bytoid.ai/invite/{role.get('id')}"
+            invite_link = f"{basefrntpath}/invite/{role.get('id')}"
 
         # HTML body
         body_html = f"""
@@ -613,7 +625,7 @@ class OutlookService:
             {extra_html}
             <hr style="margin:24px 0; border:none; border-top:1px solid #e5e7eb;">
             <p style="font-size:12px; color:#9ca3af; text-align:center;">
-                Made with ❤️ by <a href="https://bytoid.io" style="color:#2563eb; text-decoration:none;">Bytoid.io</a>
+                Made with ❤️ by <a href="{basefrntpath}" style="color:#2563eb; text-decoration:none;">Bytoid.io</a>
             </p>
             </div>
         </body>

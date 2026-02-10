@@ -24,11 +24,14 @@ import email
 from lxml import html as lxml_html
 import os
 from dotenv import load_dotenv
-load_dotenv()
 
+load_dotenv()
+basefrntpath = f"{os.getenv('BASE_FRNT_URL')}"
 logger = get_logger(__name__)
 
-topic_name=os.getenv("GMAIL_TOPIC_NAME")
+topic_name = os.getenv("GMAIL_TOPIC_NAME")
+
+
 def to_epoch_days(date_str: str) -> int:
     """
     Convert 'YYYY-MM-DD' to Unix timestamp (epoch seconds).
@@ -2823,7 +2826,7 @@ class GmailService:
 
         # fallback invite link
         if not invite_link:
-            invite_link = f"https://bytoid.ai/invite/{role.get('id')}"
+            invite_link = f"{basefrntpath}/invite/{role.get('id')}"
 
         # HTML body
         body_html = f"""
@@ -2845,7 +2848,7 @@ class GmailService:
             {extra_html}
             <hr style="margin:24px 0; border:none; border-top:1px solid #e5e7eb;">
             <p style="font-size:12px; color:#9ca3af; text-align:center;">
-                Made with ❤️ by <a href="https://bytoid.io" style="color:#2563eb; text-decoration:none;">Bytoid.io</a>
+                Made with ❤️ by <a href="{basefrntpath}" style="color:#2563eb; text-decoration:none;">Bytoid.io</a>
             </p>
             </div>
         </body>

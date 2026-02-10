@@ -238,7 +238,7 @@ def update_role():
         conn.close()
         return jsonify({"message": "Role updated successfully"}), 200
     except Exception as e:
-        #print(e)
+        # print(e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -580,7 +580,7 @@ def resend_invite():
 
             # generate fresh invite link
             invite_link = generate_hashed_url(
-                base_url="https://www.bytoid.ai/invite",
+                base_url=f"{os.getenv('BASE_FRNT_URL')}/invite",
                 invited_to=invited_email,
                 invited_by=inviter_email,
             )
@@ -630,7 +630,7 @@ def validate_invite(token):
 
     try:
         invited_by, invited_to, expiry = dehashed_url(token)
-        #print(invited_by, invited_to, expiry)
+        # print(invited_by, invited_to, expiry)
 
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:

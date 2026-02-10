@@ -17,7 +17,7 @@ from db.db_checkers import ensure_starter_credits_for_user
 from .microsoft_helpers import retrieve_auth_state_from_redis
 from integrations.integrations_helpers import get_all_integrations
 from umail_helper.helper import store_integrations_in_redis
-from google_route.google_helpers import check_google_token_expiry
+from google_route.google_helpers import check_google_token_expiry, update_user_alive
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as g_request
 from services.gmail_service import GmailService
@@ -801,6 +801,8 @@ async def microsoft_callback():
                 }
             )
         )
+        redis = RedisService()
+        await update_user_alive(redis, user_id, True)
 
         # Set secure cookies
         response.set_cookie(
@@ -1447,7 +1449,7 @@ def microsoft_get_email():
         # print(f"Fetching emails for: {email}")
 
         if not email:
-            return redirect("https://bytoid.ai/login")
+            return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
         cursor.execute("SELECT token, user_id FROM users WHERE email = %s", (email,))
         row = cursor.fetchone()
@@ -2545,7 +2547,7 @@ def send_mail_microsoft():
     email = user.get("email")
 
     if not email:
-        return redirect("https://bytoid.ai/login")
+        return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
     #################################
     # data = request.get_json()
@@ -2937,7 +2939,7 @@ def microsoft_sent_items():
     try:
         email = session.get("user", {}).get("email")
         if not email:
-            return redirect("https://bytoid.ai/login")
+            return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -3008,7 +3010,7 @@ def microsoft_list_drafts():
     try:
         email = session.get("user", {}).get("email")
         if not email:
-            return redirect("https://bytoid.ai/login")
+            return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -3046,7 +3048,7 @@ def microsoft_list_spam():
     try:
         email = session.get("user", {}).get("email")
         if not email:
-            return redirect("https://bytoid.ai/login")
+            return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -3086,7 +3088,7 @@ def microsoft_list_trash():
     try:
         email = session.get("user", {}).get("email")
         if not email:
-            return redirect("https://bytoid.ai/login")
+            return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -3346,7 +3348,7 @@ def check_and_refresh_token(user_id, cursor, conn):
 
             if response.status_code != 200:
                 # print(f"[ERROR] Refresh failed: {response.text}")
-                return redirect("https://bytoid.ai/login")
+                return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
             new_data = response.json()
             # print(f"[DEBUG] Refresh response JSON: {new_data}")
@@ -3399,6 +3401,11 @@ async def outlook_webhook():
     user_id = resource.split("Users/")[1].split("/Messages")[0]
     message_id = change.get("resourceData", {}).get("id")
     received_at = datetime.now(timezone.utc).isoformat()
+    redis = RedisService()
+
+    val = await redis.exists(f"user_alive:{user_id}")
+    if not val:
+        return "user skipped not alive", 200
 
     # -------------------------
     # 1. Extract historyId from Outlook webhook (equivalent to Gmail historyId)
@@ -3626,7 +3633,7 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
 
                 except Exception as e:
                     # print(f"Token refresh failed: {e}")
-                    return redirect("https://bytoid.ai/login")
+                    return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
 
             # Return existing token if not refreshed
             cursor.execute(

@@ -400,7 +400,7 @@ async def v2all_continuous(user_id, integration=None):
         #         "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
         #     )
         if not newly_creation and any_new_messages:
-            # print("Triggering this api autopilot check")
+            print("Triggering this api autopilot check")
             pilotvalues = get_existing_autopilot_json(
                 user_id=user_id, connection=connection
             )
