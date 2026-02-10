@@ -567,9 +567,9 @@ def delete_contacts():
 
             # remove from outlook sync file
             result = delete_user_sync_time(user_id)
-            if not result:
-               #print(f"could not delete using delete_user_sync_time")
-                return jsonify({"error": "unable to delete contact"}), 500
+            # if not result:
+            #    #print(f"could not delete using delete_user_sync_time")
+            #     return jsonify({"error": "unable to delete contact"}), 500
 
             #remove the contact messages from redis 
             # result = delete_from_cache_sync(user_id)
