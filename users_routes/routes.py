@@ -842,7 +842,7 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SENDGRID_FROM_EMAIL = os.getenv("TEST_EMAIL")
 serializer = URLSafeTimedSerializer(SECRET_KEY)
 
-@users_bp.route("/user/email_verification/<token>",methods="GET")
+@users_bp.route("/user/email_verification/<token>",methods=["GET"])
 def email_verification(token):
     try:
         email = serializer.loads(token,salt="email_verification", max_age=86400)
