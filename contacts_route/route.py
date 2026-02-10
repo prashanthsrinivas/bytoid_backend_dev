@@ -77,10 +77,10 @@ def save_contact():
         cursor=connection.cursor()
 
         cursor.execute(
-                "SELECT 1 FROM integration WHERE email = %s",
+                "SELECT 1 FROM integrations WHERE email = %s",
                 (email_id,),
             )
-        row = cursor.fethcone()
+        row = cursor.fetchone()
         if row:
             return (
                 jsonify(
@@ -569,10 +569,10 @@ def delete_contacts():
             result = delete_user_sync_time(user_id)
             if not result:
                #print(f"could not delete using delete_user_sync_time")
-                return jsonify({"error : unable to delete contact"}), 500
+                return jsonify({"error": "unable to delete contact"}), 500
 
             #remove the contact messages from redis 
-            result = delete_from_cache_sync(user_id)
+            # result = delete_from_cache_sync(user_id)
             # if result == 1:
             #    #print("Cache deleted")
             # else:
@@ -586,7 +586,7 @@ def delete_contacts():
         except Exception as e:
             traceback.print_exc()
            #print(f"error: {str(e)}")
-            return jsonify({"error : unable to delete contact"}), 500
+            return jsonify({"error": "unable to delete contact"}), 500
 
         finally:
             if connection:

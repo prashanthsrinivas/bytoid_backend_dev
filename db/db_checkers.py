@@ -1,3 +1,4 @@
+from asyncio.log import logger
 import json
 
 from .rds_db import connect_to_rds, get_cursor
@@ -1148,3 +1149,118 @@ def get_notes_data(user_id):
             cursor.close()
         if connection:
             connection.close()
+
+
+def ensure_starter_credits_for_user(user_id: str, conn):
+    """
+    Ensures the user has an active STARTER subscription and credit bucket.
+    Safe to call multiple times.
+    """
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+    # 1️⃣ Check existing active credit bucket
+    cursor.execute(
+        """
+        SELECT bucket_id
+        FROM credit_buckets
+        WHERE user_id = %s
+        """,
+        (user_id,),
+    )
+    existing_bucket = cursor.fetchone()
+
+    if existing_bucket:
+        logger.info(f"ℹ️ User {user_id} already has active credits")
+        return False  # no new credits created
+
+    logger.info(f"⚠️ No active credits found for user {user_id}, creating STARTER credits")
+
+    # 2️⃣ Fetch STARTER plan
+    cursor.execute(
+        """
+        SELECT plan_code, monthly_token_limit
+        FROM plans
+        WHERE plan_code = 'STARTER'
+          AND is_active = 1
+        LIMIT 1
+        """
+    )
+    starter_plan = cursor.fetchone()
+
+    if not starter_plan:
+        raise Exception("STARTER plan not found")
+
+    # 3️⃣ Ensure subscription exists
+    cursor.execute(
+        """
+        SELECT id
+        FROM subscriptions
+        WHERE user_id = %s
+          AND stripe_subscription_id = 'STARTER'
+          AND status = 'active'
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    subscription = cursor.fetchone()
+
+    if not subscription:
+        cursor.execute(
+    """
+    INSERT IGNORE INTO subscriptions (
+        user_id,
+        stripe_subscription_id,
+        status,
+        current_period_start,
+        created_at
+    ) VALUES (
+        %s,
+        'STARTER',
+        'active',
+        NOW(),
+        NOW()
+    )
+    """,
+    (user_id,),
+)
+
+        logger.info(f"✅ STARTER subscription created for user {user_id}")
+    else:
+        logger.info(f"ℹ️ STARTER subscription already exists for user {user_id}")
+
+    # 4️⃣ Create credit bucket
+    cursor.execute(
+        """
+        INSERT INTO credit_buckets (
+            bucket_id,
+            user_id,
+            source_type,
+            source_ref,
+            credits_total,
+            credits_used,
+            expires_at,
+            is_expired,
+            created_at
+        ) VALUES (
+            UUID(),
+            %s,
+            'SUBSCRIPTION',
+            'STARTER',
+            %s,
+            0,
+            DATE_ADD(NOW(), INTERVAL 60 DAY),
+            0,
+            NOW()
+        )
+        """,
+        (
+            user_id,
+            starter_plan["monthly_token_limit"],
+        ),
+    )
+
+    logger.info(
+        f"🎉 STARTER credits ({starter_plan['monthly_token_limit']}) created for user {user_id}"
+    )
+
+    return True

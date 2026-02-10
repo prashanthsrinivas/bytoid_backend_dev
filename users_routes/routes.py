@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, url_for
 import pymysql
 import os
 import uuid
@@ -8,7 +8,12 @@ from datetime import datetime
 from utils.base_logger import get_logger
 from werkzeug.utils import secure_filename
 from utils.s3_utils import attach_CLDFRNT_url, generate_presigned_url, upload_any_file
-from flask_bcrypt import Bcrypt
+from werkzeug.security import generate_password_hash,check_password_hash
+import re
+from dotenv import load_dotenv
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail, Email, To, Content
+from itsdangerous import URLSafeTimedSerializer,SignatureExpired, BadSignature
 
 users_bp = Blueprint("users", __name__)
 
@@ -699,24 +704,17 @@ def create_new_user():
     phone = data.get("phone")
     user_type = "User"
     location = data.get("location")
-    
-    #password hashing
-    bcrypt = Bcrypt()
-    hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
+    password_pattern = r'^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$'
+    email_patter = r'^[^@]+@[^@]+/.[^@]$'
+    email_verified = False
+   
+    if not email or not password or not location:
+            return jsonify({"error" : "Missing required fields : email, password, location"}),400
 
-    #Get value for social based on email domain
-    provider_domains = {
-            "Google" : {"gmail.com","googlemail.com","google.com"},
-            "Microsoft" : {"outlook.com","hotmail.com","live.com"},
-            "Zoho" : {"zoho.com","zohomail.com"}
-    }
-    social = ""
-    domain = email.split("@")[-1].lower()
-    for providers,domains in provider_domains.items():
-        if domain in domains:
-            social = providers
-        
-    social = social or "Custom"
+    if not re.match(password_pattern,password):
+        return jsonify({"error":"Password does not meets the requirement"})
+    if not re.match(email_patter,email):
+        return jsonify({"error":"invalid mail format"})
 
     try:
         conn = connect_to_rds()
@@ -727,16 +725,39 @@ def create_new_user():
             )
         user_exists = cursor.fetchone()
 
-        if not user_exists:
-            logger.info("creating a new user")
+        if user_exists:
+            logger.info("User already exist with this email address")
+            return jsonify({"error":"User already exist.Please login"})
+        logger.info("creating a new user")
+        #Get value for social based on email domain
+        provider_domains = {
+                "Google" : {"gmail.com","googlemail.com","google.com"},
+                "Microsoft" : {"outlook.com","hotmail.com","live.com"},
+                "Zoho" : {"zoho.com","zohomail.com"}
+                    }
+        social = ""
+        domain = email.split("@")[-1].lower()
+        for providers,domains in provider_domains.items():
+                if domain in domains:
+                    social = providers
 
-            cursor.execute(
+        social = social or "Custom"
+        #hash the password
+        hashed_password = generate_password_hash(password).decode("utf-8")
+        #generate user_id
+        user_id = str(uuid.uuid4().hex)
+
+        #Generate token
+        token = serializer.dumps(email,salt="email_verification")
+        token_expiry = datetime.utcnow() + timedelta(hours=24)
+
+        cursor.execute(
                 """INSERT INTO users(user_id,user_type,launch_id_fk, first_name, last_name, email,phone,
-                location,social,password_hash)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)                
+                location,social,password_hash,token,refresh_token,expiry)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)                
                 """,
                 (
-                    "",
+                    user_id,
                     user_type,
                     "",
                     first_name,
@@ -745,76 +766,135 @@ def create_new_user():
                     phone,
                     location,
                     social,
-                    hashed_password
+                    hashed_password,
+                    token,
+                    "",
+                    token_expiry
                 )
             )
         
-        #conn.commit()
-        #conn.close()
-        else:
-            logger.info("User already exist")
+        conn.commit()
+        conn.close()
+        send_verification(email,token)
         
-
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
 #update the user_type based on user_id
-@users_bp.route("/user/update_user_type")
+@users_bp.route("/user/update_user_type", methods=["POST"])
 def update_user_type(user_id,user_type):
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
-        cursor.execute(
-            """UPDATE users SET user_type = %s where user_id = %s """,
-            (user_type,user_id),
-        )
-        #conn.commit()
-        #conn.close()
+        if not user_id or not user_type:
+            return jsonify({"error" : "Missing required fields : user_id,user_type"}),400
+        
+        query = "UPDATE users SET user_type = %s where user_id = %s "
+        cursor.execute(query,(user_type,user_id),)
+        conn.commit()
+        conn.close()
     
     except Exception as e:
         return jsonify({"error" : str(e)}),500
 
 #update old password
-@users_bp.route("/user/update_password")
+@users_bp.route("/user/update_password", methods=["POST"])
 def update_password(user_id,oldPassword,newPassword):
 
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
-        password = cursor.execute(
+        if not user_id or not oldPassword or not newPassword:
+            return jsonify({"error" : "Missing required fields : user_id, OldPassword, NewPassword"}),400
+        password_hash = cursor.execute(
             """SELECT password_hash FROM users WHERE user_id = %s""",
             (user_id),
         )
-        bcrypt = Bcrypt()
-        if not bcrypt.check_password_hash(password,oldPassword):
+        
+        if not check_password_hash(password_hash,oldPassword):
             return jsonify({"message" : "Old password is incorrect"}),400
         
-        new_hashed_password = bcrypt.generate_password_hash(newPassword).decode("utf-8")
+        new_hashed_password = generate_password_hash(newPassword).decode("utf-8")
 
-        cursor.execute(
-            """UPDATE users SET password_hash = %s,updated_in = NOW() WHERE user_id = %s""",
-            (new_hashed_password,user_id),
-        )
+        query = "UPDATE users SET password_hash = %s,updated_in = NOW() WHERE user_id = %s"
+        cursor.execute(query,(new_hashed_password,user_id),)
 
-        #conn.commit()
-        #conn.close()
+        conn.commit()
+        conn.close()
     except Exception as e:
         return jsonify({"error" : str(e)}),500
     
 #update first name and last name of the user
-@users_bp.route("/user/update_name")
+@users_bp.route("/user/update_name", methods=["POST"])
 def update_name(user_id,first_name,last_name):
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        cursor.execute(
-            """UPDATE users SET first_name = %s, last_name = %s, updated_in = NOW()
-            WHERE user_id = %s""",
-            (first_name,last_name,user_id)
-        )
+        query = "UPDATE users SET first_name = %s, last_name = %s, updated_in = NOW() WHERE user_id = %s"
+        cursor.execute(query,(first_name,last_name,user_id))
+
     except Exception as e :
         return jsonify({"error" : str(e)}),500
 
-#def email_verification():
+SECRET_KEY = os.getenv("SECRETKEY")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+SENDGRID_FROM_EMAIL = os.getenv("TEST_EMAIL")
+serializer = URLSafeTimedSerializer(SECRET_KEY)
+
+@users_bp.route("/user/email_verification/<token>",methods="GET")
+def email_verification(token):
+    try:
+        email = serializer.loads(token,salt="email_verification", max_age=86400)
+
+    except SignatureExpired:
+        return jsonify({"message": "Token expired"}), 400
+    except BadSignature:
+        return jsonify({"message": "Invalid token"}), 400
+
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        #check token exist in DB
+        cursor.execute(
+            """SELECT user_id FROM users WHERE email=%s and token=%s""",(email,token)
+        )
+        user_exist = cursor.fetchone()
+
+        if not user_exist:
+            return jsonify({"error": "Invalid token"})
+        
+        query = "UPDATE users SET token=null, referesh_token = %s WHERE email=%s"
+        cursor.execute(query,(token,email))
+        
+        return jsonify({
+        "message": f"Email {email} verified successfully"
+    }), 200
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}),500
+   
+
+def send_verification(email,token):
+
+    verify_url = url_for("users_bp.email_verification", token = token, _external = True)
+    send_email(email,"Verify your email", f"Click to verify your email : {verify_url}")
+
+def send_email(to_email,subject,text):
+    message = Mail(
+        from_email = SENDGRID_FROM_EMAIL,
+        to_emails = to_email,
+        subject = subject,
+        plain_text_content = text
+    )
+    try:
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        return response.status_code
+    except Exception as e:
+        raise
+
+    
+
+

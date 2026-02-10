@@ -804,11 +804,9 @@ async def radar_decide():
 
     return jsonify(state)
 
-
 @radar_bp.route("/radar/changeblock", methods=["POST"])
 async def radar_change_block_preview():
     data = request.get_json(force=True)
-    # print("data from frontend for change block", data)
 
     user_id = data.get("userid")
     review_id = data.get("review_id")
@@ -826,17 +824,18 @@ async def radar_change_block_preview():
         )
 
     dbserver = LanceDBServer()
-
     record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
-    # print("record", type(record), record)
 
     if not record or not record.get("result"):
         return jsonify({"error": "RADAR review not found"}), 404
 
     original_json = record["result"]
-    review_temp = RADAR_TEMPLATE["radar_change_block_prompt"]
 
-    # Build PREVIEW prompt (returns only changed block)
+    try:
+        review_temp = RADAR_TEMPLATE["radar_change_block_prompt"]
+    except KeyError:
+        return jsonify({"error": "Missing radar_change_block_prompt template"}), 500
+
     prompt = (
         review_temp.replace("{{original_json}}", json.dumps(original_json, indent=2))
         .replace("{{block_change}}", block_id)
@@ -851,14 +850,31 @@ async def radar_change_block_preview():
             credits=credits,
         )
 
-        payload = _safe_json_parse(llm_response)
-        # print("payload", payload)
+        if llm_response == "INSUFFICIENT":
+            return jsonify({"error": "Insufficient AI credits"}), 402
 
-        # Explicit LLM rejection
-        if payload.get("status") == "error":
+        # Try strict parse first, then extract JSON from text
+        payload = _safe_json_parse(llm_response)
+        if not payload:
+            try:
+                json_text = extract_json(llm_response)
+                payload = json.loads(json_text)
+            except Exception as parse_err:
+                return (
+                    jsonify(
+                        {
+                            "error": "Invalid model response",
+                            "details": str(parse_err),
+                            "raw_preview": llm_response[:1000],
+                        }
+                    ),
+                    502,
+                )
+
+        # If model rejects the change, pass it through cleanly
+        if payload.get("status") in {"rejected", "error"}:
             return jsonify(payload), 400
 
-        # Must return ONLY block preview
         required_keys = {"block_id", "block_type", "changed_block"}
         if not required_keys.issubset(payload.keys()):
             return (
@@ -866,9 +882,10 @@ async def radar_change_block_preview():
                     {
                         "error": "Invalid model response",
                         "details": "Missing required preview keys",
+                        "raw_preview": llm_response[:1000],
                     }
                 ),
-                500,
+                502,
             )
 
         return jsonify(payload)
@@ -878,7 +895,6 @@ async def radar_change_block_preview():
             jsonify({"error": "Failed to generate block preview", "details": str(e)}),
             500,
         )
-
 
 @radar_bp.route("/radar/changeblock/confirm", methods=["POST"])
 async def radar_change_block_confirm():

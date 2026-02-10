@@ -16,7 +16,7 @@ import pymysql
 import base64
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as g_request
-from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch
+from db.db_checkers import check_onboarding_user, ensure_starter_credits_for_user, fetch_apikey_from_launch
 from utils.base_logger import get_logger
 from session_manager_route.routes import session_login
 from integrations.integrations_helpers import get_all_integrations
@@ -338,6 +338,7 @@ def oauth2callback(url, state):
                             email,
                         ),
                     )
+                    ensure_starter_credits_for_user(user_id,conn)
             conn.commit()
             conn.close()
 

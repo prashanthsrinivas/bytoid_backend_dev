@@ -1359,16 +1359,65 @@ def get_tables(start, end):
     return path, joins
 
 
-def get_enum_columns(table_names):
-    enum_path = os.path.join(base_dir, "enum_columns.json")
-    with open(enum_path, "r", encoding="utf-8") as f:
-        enum_schema = json.load(f)
+import os
+import json
+import re
 
-    result = {}
+_SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+def _safe_identifier(value: str):
+    if isinstance(value, str) and _SAFE_IDENTIFIER.match(value):
+        return value
+    return None
+
+
+def _sanitize_enum_value(v):
+    # Only allow safe primitives
+    if isinstance(v, (str, int, float, bool)):
+        return v
+    return None
+
+
+def get_enum_columns(table_names):
+    if not isinstance(table_names, (list, tuple)):
+        return {}
+
+    enum_path = os.path.abspath(os.path.join(base_dir, "enum_columns.json"))
+    base = os.path.abspath(base_dir)
+
+    if not enum_path.startswith(base):
+        return {}
+
+    try:
+        with open(enum_path, "r", encoding="utf-8") as f:
+            enum_schema = json.load(f)
+    except Exception:
+        return {}
+
+    enum_results = {}
+
     for table in table_names:
-        if table in enum_schema:
-            result[table] = enum_schema[table]
-    return result
+        # 🔥 TAINT BREAK
+        safe_table = _safe_identifier(table)
+        if not safe_table or safe_table not in enum_schema:
+            continue
+
+        table_data = enum_schema[safe_table]
+        if not isinstance(table_data, dict):
+            continue
+
+        # Defensive deep copy + sanitization
+        enum_results[safe_table] = {
+            col: [
+                _sanitize_enum_value(v)
+                for v in values
+                if _sanitize_enum_value(v) is not None
+            ]
+            for col, values in table_data.items()
+            if isinstance(col, str) and isinstance(values, list)
+        }
+
+    return enum_results
 
 
 async def find_sql_intent(original_query, reporting_yaml, userid):

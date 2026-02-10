@@ -13,6 +13,7 @@ from agent_route.ag_helperzz import (
     process_and_update_yaml,
     remove_https_prefix,
 )
+from db.db_checkers import ensure_starter_credits_for_user
 from .microsoft_helpers import retrieve_auth_state_from_redis
 from integrations.integrations_helpers import get_all_integrations
 from umail_helper.helper import store_integrations_in_redis
@@ -570,6 +571,7 @@ async def microsoft_callback():
                         email,
                     ),
                 )
+                ensure_starter_credits_for_user(user_id, conn)
             else:
                 # Create new user - EXACTLY like Google does
                 cursor.execute(
@@ -641,6 +643,81 @@ async def microsoft_callback():
 
                 logger.info(
                     f"✅ Auto-generated API key {str(new_api_key)[:20]}... for new Microsoft user {email}"
+                )
+                # 3️⃣ Fetch STARTER plan
+                cursor.execute(
+                    """
+                    SELECT plan_code, monthly_token_limit
+                    FROM plans
+                    WHERE plan_code = 'STARTER'
+                    AND is_active = 1
+                    LIMIT 1
+                    """
+                )
+                starter_plan = cursor.fetchone()
+
+                if not starter_plan:
+                    raise Exception("STARTER plan not found")
+
+                # 4️⃣ Create FREE subscription (internal, no Stripe)
+                cursor.execute(
+                    """
+                    INSERT INTO subscriptions (
+                        user_id,
+                        stripe_subscription_id,
+                        stripe_customer_id,
+                        stripe_price_id,
+                        status,
+                        current_period_start,
+                        current_period_end,
+                        created_at
+                    ) VALUES (
+                        %s,
+                        %s,
+                        NULL,
+                        NULL,
+                        'active',
+                        NOW(),
+                        NULL,
+                        NOW()
+                    )
+                    """,
+                    (
+                        user_id,
+                        "STARTER",  # internal reference
+                    ),
+                )
+
+                # 5️⃣ Create credit bucket (250,000 credits)
+                cursor.execute(
+                    """
+                    INSERT INTO credit_buckets (
+                        bucket_id,
+                        user_id,
+                        source_type,
+                        source_ref,
+                        credits_total,
+                        credits_used,
+                        expires_at,
+                        is_expired,
+                        created_at
+                    ) VALUES (
+                        UUID(),
+                        %s,
+                        'SUBSCRIPTION',
+                        %s,
+                        %s,
+                        0,
+                        DATE_ADD(NOW(), INTERVAL 60 DAY),
+                        0,
+                        NOW()
+                    )
+                    """,
+                    (
+                        user_id,
+                        "STARTER",
+                        starter_plan["monthly_token_limit"],
+                    ),
                 )
 
             conn.commit()

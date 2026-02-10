@@ -38,7 +38,6 @@ pool = PooledDB(
     charset="utf8mb4",
 )
 
-
 def connect_to_rds():
     # creds = get_secret()
     try:
@@ -95,4 +94,3 @@ def safe_execute(cursor, query, params=None, retries=3, delay=0.2):
                 continue
             raise
     raise RuntimeError("Deadlock retry limit reached")
-

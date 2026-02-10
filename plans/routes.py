@@ -2,7 +2,7 @@ import requests
 import asyncio
 from datetime import datetime, date
 from db.rds_db import connect_to_rds
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, make_response
 import pymysql
 import json
 from services.redis_service import RedisService
@@ -12,6 +12,7 @@ from utils.stripe_config import (
     create_new_price_and_disable_old,
     create_stripe_product_and_price,
 )
+
 
 load_dotenv()
 plans_bp = Blueprint("plans_bp", __name__)
@@ -59,13 +60,27 @@ def normalize_for_json(data):
 # GET ALL PLANS (CACHED)
 # =====================================================
 
+def _with_plans_cors(response):
+    # Public endpoint used by https://app.bytoid.ai/pricing
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
+@plans_bp.route("/plans/", methods=["OPTIONS"])
+def plans_preflight():
+    response = make_response("", 204)
+    return _with_plans_cors(response)
+
+
 @plans_bp.route("/plans/", methods=["GET"])
 def get_all_plans():
     # 1️⃣ Try Redis cache
     try:
         cached = asyncio.run(redis_service.get(REDIS_PLANS_KEY))
         if cached:
-            return jsonify({"plans": cached})
+            return _with_plans_cors(jsonify({"plans": cached}))
     except Exception as e:
         print("Redis GET error:", e)
 
@@ -138,7 +153,7 @@ def get_all_plans():
         # 5️⃣ Cache
         asyncio.run(redis_service.set(REDIS_PLANS_KEY, safe_plans, ex=300))
 
-        return jsonify({"plans": safe_plans})
+        return _with_plans_cors(jsonify({"plans": safe_plans}))
 
     except Exception as e:
         connection.rollback()
