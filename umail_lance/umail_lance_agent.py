@@ -98,7 +98,7 @@ class UmailLanceClient:
                 all_vectors.extend(vectors)
             except Exception as e:
                 # fallback: maybe chunk too long → embed individually
-                #print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
+                # print(f"⚠️ Batch embedding failed: {e}, embedding individually...")
                 for chunk in batch:
                     try:
                         vec = self.embeddings.embed_query(chunk)
@@ -608,10 +608,12 @@ class UmailLanceClient:
             user_id = f["user_id"]
             client_id = f["client_id"]
             conv_id = f["conv_id"]
-            flattened = f["flattened_texts"].strip()
+            flattened = f["flattened_texts"]
             original_data = f["original_data"]
             timestamp = f["timestamp"]
             plain_text = f.get("plain_text", "")
+            print("len of plain text", plain_text)
+            print("len of flattended", len(flattened))
 
             # print(f"user_id : {user_id}")
             # -------------------------------
@@ -907,7 +909,7 @@ class UmailLanceClient:
                 "user_id": user_id,
                 "folder_name": folder_name,
             }
-            #print("payload", payload)
+            # print("payload", payload)
             response = requests.post(
                 f"{self.lancedb_url}/fetch_conv_file",
                 params=payload,
@@ -917,12 +919,12 @@ class UmailLanceClient:
                 # print("successfully fetched the results")
                 return response.json().get("results", [])
             else:
-                #print(f"HTTP Error: {response.status_code}")
-                #print(f"Response text: {response.text}")
+                # print(f"HTTP Error: {response.status_code}")
+                # print(f"Response text: {response.text}")
                 return []
 
         except Exception as e:
-            #print(f"Error in search_email_from_lance: {e}")
+            # print(f"Error in search_email_from_lance: {e}")
             return []
 
     # ---------------------Creating index for umail----------------#
@@ -937,10 +939,10 @@ class UmailLanceClient:
                 # print("successfully created index for umail table")
                 return response.json()
             else:
-                #print(f"HTTP Error: {response.status_code}")
-                #print(f"Response text: {response.text}")
+                # print(f"HTTP Error: {response.status_code}")
+                # print(f"Response text: {response.text}")
                 return []
 
         except Exception as e:
-            #print(f"Error in creating_index: {e}")
+            # print(f"Error in creating_index: {e}")
             return []

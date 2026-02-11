@@ -6,6 +6,7 @@ from db.db_checkers import get_userid
 from flask import Blueprint, request, jsonify
 from services.redis_service import RedisService
 from services.uamil_auto_service import UmailAutoService
+from suggest_assist.suggest_helper import helper_make_reply_email
 from umail_helper.mails_process import check_mailbox_email
 from utils.base_logger import get_logger
 from utils.celery_base import delayed_trigger, lock_client
@@ -132,7 +133,7 @@ async def receive_gmail_notification():
 
 
 @assist_suggest_bp.route("/ai_autopilot", methods=["POST"])
-def triggerassist():
+async def triggerassist():
     data = request.json
     userid = data.get("user_id")
     from_email = data.get("email")
@@ -142,7 +143,7 @@ def triggerassist():
         return jsonify({"error": "Missing required fields"}), 400
 
     with UmailAutoService(userid) as service:
-        return service.activate_autopilot(from_email, selected_agent)
+        return await service.activate_autopilot(from_email, selected_agent)
 
 
 @assist_suggest_bp.route("/ai_autopilot-revoke", methods=["POST"])
@@ -206,7 +207,7 @@ def update_selected_agent():
 
 
 @assist_suggest_bp.route("/auto-reply-email", methods=["POST"])
-def make_reply_email():
+async def make_reply_email():
     data = request.json
     userid = data.get("user_id")
     from_email = data.get("email")
@@ -215,13 +216,20 @@ def make_reply_email():
         return jsonify({"error": "Missing required fields"}), 400
 
     with UmailAutoService(userid) as service:
-        success = service.auto_reply_umail_email(from_email)
+        success = await service.auto_reply_umail_email(from_email)
         if success is True:
             return jsonify({"status": "sent"}), 200
         elif success is False:
             return jsonify({"status": "already_replied"}), 200
         else:
             return jsonify({"error": "Unable to process auto-reply"}), 500
+    # success, msg = await helper_make_reply_email(userid=userid, from_email=from_email)
+    # if success is True:
+    #     return jsonify({"status": msg}), 200
+    # elif success is False:
+    #     return jsonify({"status": msg}), 200
+    # else:
+    #     return jsonify({"error": "Unable to process auto-reply"}), 500
 
 
 @assist_suggest_bp.route("/ai_suggest", methods=["POST"])

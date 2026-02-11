@@ -1,8 +1,10 @@
+import asyncio
 from datetime import datetime, timezone
 from db.rds_db import connect_to_rds, get_cursor
 from suggest_assist.suggest_helper import helper_make_reply_email
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from utils.async_check import run_async
 from utils.normal import can_reply_to_email
 import statistics
 from dateutil.parser import parse  # pip install python-dateutil if needed
@@ -16,7 +18,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
     """
     emails_to_check = []
     if not all_results:
-        # print("no results")
+        print("no results")
         return None
 
     # 1️⃣ Collect emails from current messages
@@ -41,7 +43,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                         emails_to_check.append((conv_id, first_from, msgs_sorted))
 
     if not emails_to_check:
-        # print("No messages found in all_results.")
+        print("No messages found in all_results.")
         return False
 
     logs = pilotvalues.get("logs", [])
@@ -152,7 +154,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                 return time_diffs, revoked, reason
 
             # --- Process single email ---
-            async def process_email(conv_id, from_email, msgs):
+            def process_email(conv_id, from_email, msgs):
                 normalized_email = from_email.strip().lower()
                 ##print("normal", normalized_email)
                 existing_entry = logs_dict.get(normalized_email)
@@ -165,7 +167,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                 #     ##print("already replied")
                 #     return f"Last message already replied for {from_email}"
                 if latest_msg.get("direction") != "inbound":
-                    ##print("skipping value outbound")
+                    print("skipping value outbound")
                     return f"Last msg from {from_email} is outbound, skipping"
 
                 # Skip or add new email
@@ -225,8 +227,14 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
                         f"⚠️ {from_email} revoked due to AI-like fast inbound messages"
                     )
                 # # ✅ FIX: Send ONE reply for all the new messages (latest inbound message triggers reply)
-                send_val, rtmsg = await helper_make_reply_email(
-                    userid=user_id, from_email=from_email, n_connection=connection
+                # send_val, rtmsg = await helper_make_reply_email(
+                #     userid=user_id, from_email=from_email, n_connection=connection
+                # )
+                print("before sending auto email")
+                send_val, rtmsg = run_async(
+                    helper_make_reply_email(
+                        userid=user_id, from_email=from_email, n_connection=connection
+                    )
                 )
 
                 if not send_val:
@@ -258,7 +266,7 @@ def autoReplyhelper(all_results, user_id, my_email, pilotvalues, max_workers=5):
 
             # --- Parallel processing ---
             results = []
-            # print("the emails for autopilot ", emails_to_check)
+            print("the emails for autopilot ", emails_to_check)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(process_email, conv_id, email, msgs): email

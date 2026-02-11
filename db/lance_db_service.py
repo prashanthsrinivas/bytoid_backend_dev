@@ -265,14 +265,14 @@ class LanceDBServer:
 
         if self.db is None:
             try:
-               #print("going to create new instance of lance")
+                # print("going to create new instance of lance")
                 self.db = lancedb.connect(
                     uri=self.db_uri, api_key=self.db_key, region=self.region
                 )
-               #print("CONNECTED:", self.db)
+            # print("CONNECTED:", self.db)
             except Exception as e:
-               #print("LanceDB CONNECT ERROR:", e)
-               return e
+                # print("LanceDB CONNECT ERROR:", e)
+                return e
         return self.db
 
     async def _create_schema_dummy(self) -> pa.Schema:
@@ -360,7 +360,7 @@ class LanceDBServer:
         """
         table_name = f"u_{user_id}"
         self.db = self._connect_if_needed()
-       #print("deleting db tables started", table_name)
+        # print("deleting db tables started", table_name)
 
         def _drop():
             return self.db.drop_table(table_name)
@@ -564,7 +564,7 @@ class LanceDBServer:
         if isinstance(query, dict):
             query = QueryData(**query)
         start = time.time()
-       #print("len values", len(query.embedding))
+        # print("len values", len(query.embedding))
         try:
             if len(query.embedding) > self.EMBEDDING_DIM:
                 raise ValueError(
@@ -924,14 +924,14 @@ class LanceDBServer:
 
     def _get_umail_table(self, user_id, folder_name=None):
         table_name = f"u_{user_id}"
-       #print("in get umail table")
+        # print("in get umail table")
 
         try:
             self.db = self._connect_if_needed()
-           #print("self.db", self.db)
+            # print("self.db", self.db)
             return self.db.open_table(table_name)
         except Exception:
-           #print(f"[DEBUG] Creating new table {table_name}")
+            # print(f"[DEBUG] Creating new table {table_name}")
 
             schema = pa.schema(
                 [
@@ -984,18 +984,18 @@ class LanceDBServer:
         return [{"id": r.get("id"), "text": r.get("text")} for r in rows]
 
     def insert_umail_vectors(self, vectors):
-       #print("in the insert umail")
+        # print("in the insert umail")
         if not vectors:
             return {"inserted_count": 0}
 
         user_id = vectors[0].user_id
-       #print(f"********user id inside lance: {user_id}")
+        # print(f"********user id inside lance: {user_id}")
         # folder_name = vectors[0].folder_name
         id = vectors[0].id
-       #print(f"********id inside lance: {id}")
+        # print(f"********id inside lance: {id}")
 
         table = self._get_umail_table(user_id)
-       #print("table", table)
+        # print("table", table)
 
         # === DELETE once per folder (FAST, not per ID) ===
         # table.delete(f"folder_name == '{folder_name}'")
@@ -1077,9 +1077,9 @@ class LanceDBServer:
 
     def serverless_get_umail_page(self, user_id: str, next_cursor=None, page_size=1000):
         table = self._get_umail_table(user_id)
-       #print(f"[SERVERLESS] user_id:{user_id} next_cursor:{next_cursor}")
+        # print(f"[SERVERLESS] user_id:{user_id} next_cursor:{next_cursor}")
 
-       #print("----------------------------")
+        # print("----------------------------")
 
         # Normalize timestamp cursor
         current_dt = (
@@ -1271,8 +1271,8 @@ class LanceDBServer:
         connection.close()
 
         result = []
-       #print(f"rows:")
-       #print({rows})
+        # print(f"rows:")
+        # print({rows})
         collected = []
         for row in rows:
             conversation_id, client_id, timestamp = row
@@ -1353,9 +1353,9 @@ class LanceDBServer:
         connection.close()
 
         result = []
-       #print(f"rows:")
-       #print({rows})
-       #print(f"lenght : {len(rows)}")
+        # print(f"rows:")
+        # print({rows})
+        # print(f"lenght : {len(rows)}")
 
         collected = []
         for row in rows:
@@ -1371,10 +1371,10 @@ class LanceDBServer:
                 # Sort by timestamp in Python
                 text_rows.sort(key=lambda x: x["timestamp"], reverse=True)
                 collected.append(text_rows[0])
-               #print(f"****** {text_rows[0]['folder_name']}  | {text_rows[0]['id']}")
+            # print(f"****** {text_rows[0]['folder_name']}  | {text_rows[0]['id']}")
 
-                # latest_text = text_rows[0]["text"]
-                # latest_timestamp = text_rows[0]["timestamp"]
+            # latest_text = text_rows[0]["text"]
+            # latest_timestamp = text_rows[0]["timestamp"]
             # else:
             #    #print(f"not found:")
             #    #print(f"client_id : {client_id} | conversation_id : {conversation_id}")
@@ -1393,8 +1393,8 @@ class LanceDBServer:
         #     "timestamp": latest_timestamp,
         #     "text": latest_text
         # })
-       #print(f"lenght of collected: {len(collected)}")
-       #print(f"next_cursor: {next_cursor}")
+        # print(f"lenght of collected: {len(collected)}")
+        # print(f"next_cursor: {next_cursor}")
         return collected, next_cursor
 
     # -------------------SCRAPE FUNCTIONALITY-------------------------------#
@@ -1408,7 +1408,7 @@ class LanceDBServer:
             return self.db.open_table(table_name)
 
         except Exception as e:
-           #print(
+            # print(
             #     f"[DEBUG] Scrape table not found for user {user_id}, creating new one"
             # )
 
@@ -1597,7 +1597,7 @@ class LanceDBServer:
             return {"status": "success", "url": data.url}
 
         except Exception as e:
-           #print(f"Error inserting scraped data: {e}")
+            # print(f"Error inserting scraped data: {e}")
             raise e
 
     def delete_scraped_data(self, user_id, url):
@@ -1612,7 +1612,7 @@ class LanceDBServer:
             return {"status": "success", "url": url}
 
         except Exception as e:
-           #print(f"Error inserting scraped data: {e}")
+            # print(f"Error inserting scraped data: {e}")
             raise e
 
     def update_scraped_contacts(self, user_id, url, contacts):
@@ -1687,7 +1687,7 @@ class LanceDBServer:
                 elif sender_email and sender_email in contacts:
                     results.append(result)
             if not results:
-               #print("no results found in base search")
+                # print("no results found in base search")
                 return None
             # for i in results:
             #    #print("title", i["title"])
@@ -1696,16 +1696,16 @@ class LanceDBServer:
             best = min(results, key=lambda x: x.get("_distance", 999999))
             best_distance = best.get("_distance", 1)
             if len(results) >= 1 and best_distance > 0.8:
-               #print("result found and score > 0.8 → rejecting")
+                # print("result found and score > 0.8 → rejecting")
                 return None
             pages_by_level = best.get("pages_by_level")
             main_content = best.get("content", "")
-           #print("len of main content", len(main_content))
+            # print("len of main content", len(main_content))
 
             # Try to generate from pages_by_level
             full_context = None
             if pages_by_level and isinstance(pages_by_level, (list, dict)):
-               #print("checking the internal pages of the site")
+                # print("checking the internal pages of the site")
                 full_context = generate_level_context(pages_by_level)
 
             # If invalid or empty, fallback to 'content'
@@ -1713,14 +1713,14 @@ class LanceDBServer:
                 logger.warning(
                     "[FAST] pages_by_level invalid or empty; falling back to best.content"
                 )
-               #print("--", type(main_content))
+                # print("--", type(main_content))
                 if isinstance(main_content, str):
-                   #print("1111")
+                    # print("1111")
                     full_context = main_content.strip()
                 else:
-                   #print("2222")
+                    # print("2222")
                     full_context = str(main_content)
-           #print("len of retun text length", len(full_context))
+            # print("len of retun text length", len(full_context))
             # Format output
             result = {
                 "url": best.get("url"),
@@ -1733,7 +1733,7 @@ class LanceDBServer:
             return result
 
         except Exception as e:
-           #print(f"Error searching scraped data: {e}")
+            # print(f"Error searching scraped data: {e}")
             raise e
 
     def debug_list_scrape_urls(self, user_id: str, limit=50):
@@ -1749,106 +1749,19 @@ class LanceDBServer:
                 .to_list()
             )
 
-           #print(f"\n[SCRAPE TABLE] Showing up to {limit} rows\n")
+        # print(f"\n[SCRAPE TABLE] Showing up to {limit} rows\n")
 
-            # for i, row in enumerate(rows):
-            #    #print(
-            #         f"{i+1}. url={row.get('url')} | title={row.get('title')} | metadata={row.get('metadata')}"
-            #     )
+        # for i, row in enumerate(rows):
+        #    #print(
+        #         f"{i+1}. url={row.get('url')} | title={row.get('title')} | metadata={row.get('metadata')}"
+        #     )
 
-            # if not rows:
-            #    #print("Table is empty")
+        # if not rows:
+        #    #print("Table is empty")
 
         except Exception as e:
             # print("Failed to read scrape table:", e)
             return e
-
-    # def search_scraped_data_by_url(
-    #     self, query: "QueryData", url: str, sender_email="All"
-    # ):
-    #     from training.scrape.helper import generate_level_context
-
-    #     if isinstance(query, dict):
-    #         query = QueryData(**query)
-
-    #     try:
-    #         if len(query.embedding) != EMBEDDING_DIM:
-    #             raise ValueError(f"Embedding must be {EMBEDDING_DIM} dimensions")
-
-    #         table = self._get_scrape_table(query.user_id)
-
-    #         # 🔥 Remote LanceDB requires filter AFTER search()
-    #         base_results = (
-    #             table.search(query.embedding, vector_column_name="embedding")
-    #             .where(f'url == "{url}"')
-    #             .limit(query.top_k)
-    #             .to_list()
-    #         )
-
-    #         if not base_results:
-    #             print(f"No scraped data found for URL: {url}")
-    #             return None
-
-    #         results = []
-    #         for result in base_results:
-    #             contacts = result.get("contacts", [])
-
-    #             metadata = result.get("metadata") or {}
-    #             if isinstance(metadata, str):
-    #                 try:
-    #                     metadata = json.loads(metadata)
-    #                 except Exception:
-    #                     continue
-
-    #             # Only active pages
-    #             if metadata.get("status") != "active":
-    #                 continue
-
-    #             # Contact filtering
-    #             if "All" in contacts:
-    #                 results.append(result)
-    #             elif isinstance(sender_email, list):
-    #                 if any(email in contacts for email in sender_email):
-    #                     results.append(result)
-    #             elif sender_email and sender_email in contacts:
-    #                 results.append(result)
-
-    #         if not results:
-    #             print("No valid results after filtering")
-    #             return None
-
-    #         # Pick best match
-    #         best = min(results, key=lambda x: x.get("_distance", 999999))
-    #         best_distance = best.get("_distance", 1)
-    #         print("distance is", best_distance)
-
-    #         if best_distance > 0.8:
-    #             print("Weak match – rejecting")
-    #             return None
-
-    #         pages_by_level = best.get("pages_by_level")
-    #         main_content = best.get("content", "")
-
-    #         full_context = None
-    #         if pages_by_level and isinstance(pages_by_level, (list, dict)):
-    #             full_context = generate_level_context(pages_by_level)
-
-    #         if not full_context:
-    #             full_context = (
-    #                 main_content if isinstance(main_content, str) else str(main_content)
-    #             )
-
-    #         return {
-    #             "url": best.get("url"),
-    #             "title": best.get("title"),
-    #             "text": full_context,
-    #             "contacts": best.get("contacts"),
-    #             "score": best_distance,
-    #         }
-
-    #     except Exception as e:
-    #         print(f"Error searching scraped data by URL: {e}")
-    #         raise
 
     def search_scraped_data_by_url(
         self, query: "QueryData", url: str, sender_email="All"
@@ -1876,7 +1789,7 @@ class LanceDBServer:
             )
 
             if not candidates:
-               #print(f"No scraped data found for URL: {url}")
+                # print(f"No scraped data found for URL: {url}")
                 return None
 
             # Cosine distance
@@ -1929,17 +1842,17 @@ class LanceDBServer:
                 reranked.append(row)
 
             if not reranked:
-               #print("No valid results after filtering")
+                # print("No valid results after filtering")
                 return None
 
             # Pick best match using chunk-aware score
             best = min(reranked, key=lambda x: x["_effective_distance"])
             best_distance = best["_effective_distance"]
 
-           #print("Best semantic distance:", best_distance)
+            # print("Best semantic distance:", best_distance)
 
             if best_distance > 0.8:
-               #print("Weak match – rejecting")
+                # print("Weak match – rejecting")
                 return None
 
             pages_by_level = best.get("pages_by_level")
@@ -1963,17 +1876,17 @@ class LanceDBServer:
             }
 
         except Exception as e:
-           #print(f"Error searching scraped data by URL: {e}")
+            # print(f"Error searching scraped data by URL: {e}")
             raise
 
     # -----------------SEARCH EMAIL-------------------------#
     def search_email(self, data: SearchEmailQueryData):
 
-       #print("inside search_emails")
+        # print("inside search_emails")
 
         table = self._get_umail_table(data.user_id)
-       #print(f"schema : {table.schema}")
-       #print(f"indices : {table.list_indices()}")
+        # print(f"schema : {table.schema}")
+        # print(f"indices : {table.list_indices()}")
         # for idx in table.list_indices():
         #     print(idx)
 
@@ -2002,13 +1915,13 @@ class LanceDBServer:
             query_embeddings, vector_column_name="plain_text_embedding"
         ).metric("cosine")
         if filter_condition:
-           #print(f"filter_condition: {filter_condition}")
+            # print(f"filter_condition: {filter_condition}")
             search_obj = search_obj.where(filter_condition)
 
         results = search_obj.to_pandas()
-       #print(f"results: {results}")
+        # print(f"results: {results}")
         results = results[results["_distance"] < 1.5]
-       #print(results[["_distance", "text"]])
+        # print(results[["_distance", "text"]])
         text_results = results["text"].tolist()
 
         return text_results
@@ -2016,7 +1929,7 @@ class LanceDBServer:
     # -------------------FETCHING CONV FILE FOR AI ASSISTANT---------------#
     def get_conv_file(self, id, user_id, folder_name):
 
-       #print(f"DEBUG: id={id}, user_id={user_id}, folder_name={folder_name}")
+        # print(f"DEBUG: id={id}, user_id={user_id}, folder_name={folder_name}")
         table = self._get_umail_table(user_id)
         results = (
             table.search()
@@ -2169,7 +2082,7 @@ class LanceDBServer:
         if isinstance(query, dict):
             query = QueryData(**query)
         start = time.time()
-       #print("len values", len(query.embedding))
+        # print("len values", len(query.embedding))
         try:
             if len(query.embedding) > self.EMBEDDING_DIM:
                 raise ValueError(
@@ -2427,7 +2340,7 @@ class LanceDBServer:
 
             # 🚨 Detect schema drift
             if table.schema.names != required_cols:
-               #print(f"⚠️ Schema mismatch for {table_name}, recreating")
+                # print(f"⚠️ Schema mismatch for {table_name}, recreating")
                 await asyncio.to_thread(lambda: self.db.drop_table(table_name))
                 raise Exception("Schema mismatch")
 
@@ -2462,10 +2375,10 @@ class LanceDBServer:
                     lambda: table.create_index(column="embedding", metric="cosine")
                 )
             except Exception as e:
-               #print("Index creation warning:", e)
+                # print("Index creation warning:", e)
                 return e
 
-           #print(f"Created LanceDB table {table_name}")
+            # print(f"Created LanceDB table {table_name}")
             return table
 
     async def get_app_runs(
@@ -2554,14 +2467,14 @@ class LanceDBServer:
 
     def _get_bytoid_pro_table(self, user_id):
         table_name = f"bytoid_pro_chat{user_id}"
-       #print("in bytoid pro chat table")
+        # print("in bytoid pro chat table")
 
         try:
             self.db = self._connect_if_needed()
-           #print("self.db", self.db)
+            # print("self.db", self.db)
             return self.db.open_table(table_name)
         except Exception:
-           #print(f"[DEBUG] Creating new table {table_name}")
+            # print(f"[DEBUG] Creating new table {table_name}")
 
             schema = pa.schema(
                 [
@@ -2594,18 +2507,18 @@ class LanceDBServer:
             )
 
     async def insert_chat(self, chat, user_id):
-       #print("in the insert chat")
+        # print("in the insert chat")
         if not chat:
             return {"inserted_count": 0}
 
         chat_id = chat[0].chat_id
-       #print(f"********user id inside lance: {user_id}")
+        # print(f"********user id inside lance: {user_id}")
         # folder_name = chat[0].folder_name
         id = chat[0].id
-       #print(f"********id inside lance: {id}")
+        # print(f"********id inside lance: {id}")
 
         table = self._get_bytoid_pro_table(user_id)
-       #print("table", table)
+        # print("table", table)
 
         records = []
         for v in chat:
@@ -2664,7 +2577,7 @@ class LanceDBServer:
 
     def find_semantic_matches(self, vector, user_id, chat_id, top_k: int = 5):
         try:
-           #print("inside find_semantic_matches")
+            # print("inside find_semantic_matches")
             table = self._get_bytoid_pro_table(user_id)
 
             # 1️⃣ Create search object and filter by chat_id
@@ -2698,11 +2611,11 @@ class LanceDBServer:
                     }
                 )
 
-           #print(f"matched_content : {matched_content}")
+            # print(f"matched_content : {matched_content}")
             return matched_content
 
         except Exception as e:
-           #print(f"Semantic search failed: {str(e)}")
+            # print(f"Semantic search failed: {str(e)}")
             return []
 
     # ------------------------------------------------------------------
@@ -2944,7 +2857,6 @@ class LanceDBServer:
         result = await asyncio.to_thread(_delete_and_verify)
         return result
 
-
     # ------------------------------------------------------------------
     # Lists
     # ------------------------------------------------------------------
@@ -2979,11 +2891,12 @@ class LanceDBServer:
 
         reviews.sort(key=lambda r: r["started_at"], reverse=True)
         return reviews
+
     async def radar_update_result(
-    self,
-    user_id: str,
-    review_id: str,
-    new_result: dict,
+        self,
+        user_id: str,
+        review_id: str,
+        new_result: dict,
     ):
         table = await self._open_or_create_radar_table(user_id)
 
@@ -2994,9 +2907,6 @@ class LanceDBServer:
         }
 
         def _update():
-            table.update(
-                where=f'review_id == "{review_id}"',
-                values=payload
-            )
+            table.update(where=f'review_id == "{review_id}"', values=payload)
 
         await asyncio.to_thread(_update)

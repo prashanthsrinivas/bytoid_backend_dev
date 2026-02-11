@@ -86,7 +86,7 @@ class UmailAutoService:
             return jsonify({"error": "Cannot generate AI suggestion"}), 500
 
     # -------------------- AI Suggestion & Auto-reply --------------------
-    def auto_reply_umail_email(self, from_email):
+    async def auto_reply_umail_email(self, from_email):
         try:
             clientid = get_users_clients_id(email=from_email, user_id=self.userid)
             if not clientid:
@@ -106,14 +106,14 @@ class UmailAutoService:
                 return jsonify({"status": "cannot_reply"}), 200
 
             if latest_msg.get("direction") == "inbound":
-                ai_reply = suggest_helper_base(
+                ai_reply = await suggest_helper_base(
                     userid=self.userid,
                     email_msg=latest_msg["body"],
                     umail_conversations=all_messages,
                     umail_bodies=[msg.get("body") for msg in all_messages],
                 )
                 if ai_reply:
-                    send_pilot_messages(
+                    await send_pilot_messages(
                         user_id=self.userid,
                         channel="gmail",
                         text=ai_reply,
@@ -136,7 +136,7 @@ class UmailAutoService:
             return None
 
     # -------------------- Autopilot Operations --------------------
-    def activate_autopilot(self, from_email, selected_agents=None):
+    async def activate_autopilot(self, from_email, selected_agents=None):
         autopilot_data, err, code = self.fetch_autopilot()
         if err:
             return jsonify(err), code
@@ -172,7 +172,7 @@ class UmailAutoService:
                     autopilot_data["logs"].append(update_data)
                 already_active = False
 
-            helper_make_reply_email(
+            await helper_make_reply_email(
                 userid=self.userid, from_email=email, n_connection=self.connection
             )
 

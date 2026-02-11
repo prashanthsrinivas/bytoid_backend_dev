@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import inspect
 import json
 import time
@@ -451,17 +452,20 @@ async def radar_review():
     data = request.get_json(silent=True)
 
     # print("data", data)
-    if "files" in data:
-        print("files", len(data.get("files")))
-    print("files", request.files)
+    # if "files" in data:
+    #     print("files", len(data.get("files")))
+    # print("files", request.files)
 
     userid = data.get("userid")
     if not userid:
         return jsonify({"error": "userid is required"}), 400
 
     # ---- READ FILES INSIDE REQUEST CONTEXT (CRITICAL FIX) ----
-    print("files from request", request.files.getlist("files"))
+    # print("files from request", request.files.getlist("files"))
+    # ---- READ FILES INSIDE REQUEST CONTEXT (MULTIPART + JSON BASE64) ----
     files_data = []
+
+    # 1️⃣ Multipart/form-data files (request.files)
     for f in request.files.getlist("files"):
         if not f or not f.filename:
             continue
@@ -470,13 +474,64 @@ async def radar_review():
             {
                 "filename": f.filename,
                 "content_type": f.mimetype,
-                "data": f.read(),  # ✅ consume before request ends
+                "data": f.read(),
             }
         )
 
+    # 2️⃣ JSON base64 files (data.get("files"))
+    json_files = data.get("files")
+
+    if isinstance(json_files, list):
+        for idx, file_item in enumerate(json_files):
+            if not file_item:
+                continue
+
+            # Case A: frontend sends full data URL string
+            if isinstance(file_item, str) and file_item.startswith("data:"):
+                header, b64data = file_item.split(",", 1)
+                content_type = header.split(";")[0].replace("data:", "")
+
+                files_data.append(
+                    {
+                        "filename": f"file_{idx}",
+                        "content_type": content_type,
+                        "data": base64.b64decode(b64data),
+                    }
+                )
+
+            # Case B: structured JSON object
+            elif isinstance(file_item, dict) and "data" in file_item:
+                files_data.append(
+                    {
+                        "filename": file_item.get("filename", f"file_{idx}"),
+                        "content_type": file_item.get("content_type"),
+                        "data": base64.b64decode(file_item["data"]),
+                    }
+                )
+
     if not files_data:
         files_data = None
-    print("files data", files_data)
+    # print("files data", files_data)
+    # ---- VALIDATION: At least one input source is required ----
+    data_sources = data.get("data_sources")
+    reference_sources = data.get("reference_sources")
+
+    has_files = bool(files_data)
+    has_data_sources = bool(data_sources)
+    has_reference_sources = bool(reference_sources)
+
+    if not (has_files or has_data_sources or has_reference_sources):
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "At least one input source is required. "
+                        "Provide either files, data_sources, or reference_sources."
+                    )
+                }
+            ),
+            400,
+        )
 
     # ---- Redis de-dup / state handling (unchanged logic) ----
     redis = RedisService()
@@ -524,9 +579,9 @@ async def radar_review():
         "error": None,
         "started_at": now,
         "main_source": data.get("main_source"),
-        "data_sources": data.get("data_sources"),
+        "data_sources": data_sources,
         "reference_sources": data.get("reference_sources"),
-        "refernce_main_source": data.get("refernce_main_source"),
+        "refernce_main_source": reference_sources,
     }
 
     await redis.set(key, state, ex=1800)

@@ -400,6 +400,7 @@ async def v2all_continuous(user_id, integration=None):
         #         "ℹ️ No new messages in any batch → skipping umail_json update/finalize"
         #     )
         if not newly_creation and any_new_messages:
+            # if not newly_creation:
             print("Triggering this api autopilot check")
             pilotvalues = get_existing_autopilot_json(
                 user_id=user_id, connection=connection
@@ -430,6 +431,9 @@ async def v2all_continuous(user_id, integration=None):
     finally:
         try:
             connection.close()
+            folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
         except Exception:
             pass
 
@@ -680,6 +684,9 @@ async def fetchnextmonthmails(user_id, startDate):
     finally:
         try:
             connection.close()
+            folder_path = os.path.join(pathconfig.basepath, "messages", user_id)
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
         except Exception:
             pass
 

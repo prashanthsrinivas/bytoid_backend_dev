@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 import yaml
 import io
 from werkzeug.utils import secure_filename
+from utils.app_configs import IS_DEV
 
 load_dotenv()
 S3_BUCKET = os.getenv("S3_BUCKET")
@@ -204,6 +205,8 @@ def generate_presigned_url(s3_key, expiration=3600):
 
 def attach_CLDFRNT_url(link):
     clrf = os.getenv("CLOUDFRNT")
+    if IS_DEV:
+        return f"{clrf}/dev/{link}"
     return f"{clrf}/{link}"
 
 

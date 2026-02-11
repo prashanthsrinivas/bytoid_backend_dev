@@ -109,7 +109,7 @@ class AppQueryData(BaseModel):
 # LanceClient Class
 # ────────────────────────
 class LanceClient:
-    def __init__(self, user_id: str, credits):
+    def __init__(self, user_id: str, credits=None):
         load_dotenv()
         self.user_id = user_id
         self.dimension = 2880
@@ -666,7 +666,7 @@ class LanceClient:
                 user_message=full_prompt,
                 role="system",
                 user_id=user_id,
-                credits=credits,
+                credits=self.credits,
             )
 
             if ai_response:

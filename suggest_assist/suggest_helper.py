@@ -192,9 +192,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
         try:
 
             # Call model to generate retrieval question
-
-            task_db = connect_to_rds()
-            task_credits = Credits(task_db)
+            task_credits = Credits(connection)
 
             base_query = await get_fireworks_response(
                 user_message=filled_prompt,
@@ -226,7 +224,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
                 query_input = QueryInput(
                     user_id=userid, query_text=question_text, top_k=top_k
                 )
-                lance_client = LanceClient(user_id=userid)
+                lance_client = LanceClient(user_id=userid, credits=task_credits)
                 # print("lanceclient", lance_client)
                 # results = run_async(lance_client.query_vector(query_input))
                 results = await lance_client.mixed_query_vector(
@@ -259,7 +257,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
                 .replace("{{sender_name}}", str(sender_name or ""))
             )
 
-            # print("base docs ans", base_doc_ans)
+            print("base docs ans", len(base_doc_ans))
 
             # ai_reply = get_fireworks_response(filled_prompt, "system")
             ##print("print filled prompt",filled_prompt)
@@ -273,7 +271,7 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
             )
 
         except Exception as e:
-            # print(f"error in suggest_helper_base:{e} ")
+            print(f"error in suggest_helper_base:{e} ")
             return None
 
         # print("AOI RTEPLy", ai_reply)
@@ -429,7 +427,7 @@ async def send_pilot_messages(
 
             except Exception as e:
                 # print(f"❌ [DEBUG] Gmail reply failed: {e}")
-                return {"error": "Gmail send failed"}, 500
+                return {"error": f"Gmail send failed {e}"}, 500
 
         elif channel == "zoho":
             # print("📧 [DEBUG] Processing Zoho send...")
@@ -644,7 +642,7 @@ async def send_pilot_messages(
             "conversationId": conversation_id,
             "is_reply": is_reply,
         }
-        # print(f"🎉 [DEBUG] Function completed successfully - Response: {response_data}")
+        print(f"🎉 [DEBUG] Function completed successfully - Response: {response_data}")
         return response_data
 
     except Exception as e:
@@ -665,7 +663,7 @@ async def helper_make_reply_email(userid=None, from_email=None, n_connection=Non
 
         if n_connection is None and connection is None:
             connection = connect_to_rds()
-        # print("make connection creation", connection)
+            # print("make connection creation", connection)
         else:
             # print("conn", connection)
             connection = n_connection
@@ -704,7 +702,7 @@ async def helper_make_reply_email(userid=None, from_email=None, n_connection=Non
         if latest_msg.get("direction") == "inbound":
             serv = GmailService(user_id=userid)
             thread_id = latest_msg.get("thread_id")
-            res = run_async(serv.get_thread_last_message_direction(thread_id=thread_id))
+            res = await serv.get_thread_last_message_direction(thread_id=thread_id)
             if res.get("direction") != "inbound":
                 return False, "cant send because last message of user is outbound"
             msgs_same_thread = (
@@ -725,7 +723,7 @@ async def helper_make_reply_email(userid=None, from_email=None, n_connection=Non
             # logger.info("apa reply %s", ai_reply)
             # print("values", latest_msg["to"], latest_msg["from"])
             if ai_reply:
-                send_val = send_pilot_messages(
+                send_val = await send_pilot_messages(
                     user_id=userid,
                     channel="gmail",
                     text=ai_reply,

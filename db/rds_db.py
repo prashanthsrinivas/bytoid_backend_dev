@@ -4,13 +4,22 @@ import json
 import os, time
 from dotenv import load_dotenv
 from dbutils.pooled_db import PooledDB
+from utils.app_configs import IS_DEV
 
 load_dotenv()
-rds_host="bytoidprod.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
+
+if IS_DEV:
+    rd_host = "bytoiddb.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
+    rd_name = "bytoid_support_agent"
+    secret_name = "rds!db-9db402d8-3595-4048-bf23-979d5e5985e4"
+else:
+    secret_name = "rds!db-cd57e951-659a-43b3-8cff-6c32510e6d4d"
+    rds_host = "bytoidprod.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
+    rd_name = "bytoid"
 
 
 def get_secret():
-    secret_name = "rds!db-cd57e951-659a-43b3-8cff-6c32510e6d4d"
+
     region_name = "ca-central-1"
 
     client = boto3.client("secretsmanager", region_name=region_name)
@@ -30,13 +39,17 @@ pool = PooledDB(
     maxconnections=120,
     mincached=10,
     blocking=True,
-    host=rds_host,
+    host=rd_host,
     user=creds["username"],
     password=creds["password"],
-    database="bytoid",
+    database=rd_name,
     port=3306,
     charset="utf8mb4",
 )
+
+
+# print("creds", creds)
+
 
 def connect_to_rds():
     # creds = get_secret()
