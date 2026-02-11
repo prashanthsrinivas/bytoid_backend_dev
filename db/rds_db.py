@@ -14,7 +14,7 @@ if IS_DEV:
     secret_name = "rds!db-9db402d8-3595-4048-bf23-979d5e5985e4"
 else:
     secret_name = "rds!db-cd57e951-659a-43b3-8cff-6c32510e6d4d"
-    rds_host = "bytoidprod.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
+    rd_host = "bytoidprod.c9ek8228ux41.ca-central-1.rds.amazonaws.com"
     rd_name = "bytoid"
 
 
