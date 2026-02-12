@@ -52,13 +52,21 @@ def get_industry_names_from_yaml(file_path: str) -> set:
     with open(file_path, "r", encoding="utf-8") as file:
         data = yaml.safe_load(file)
 
-    industry_names = set()
-    for entry in data:
-        industry = entry.get("SMB")
-        if industry:
-            industry_names.add(industry)
+    names = set()
 
-    return industry_names
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+
+        for key, value in entry.items():
+            if key == "Usecases":
+                continue
+
+            # key = category (Students, Professional Services, Institution, Others)
+            # value = specific name
+            names.add(f"{key}: {value}")
+
+    return names
 
 
 # Flatten nested lists if any
@@ -81,10 +89,9 @@ def flatten_list(lst):
 
 def get_usecases_for_smb(industry: str, data: list) -> list:
     """
-    industry examples:
-    - 'Undergraduate Student'
-    - 'Law Firm'
-    - 'Healthcare Services'
+    industry examples (both supported):
+    - 'Technology Services'
+    - 'Institution: Technology Services'
     """
 
     if not industry or not isinstance(data, list):
@@ -92,26 +99,39 @@ def get_usecases_for_smb(industry: str, data: list) -> list:
 
     industry = industry.strip().lower()
 
+    # ✅ If category is included, extract only the name
+    if ":" in industry:
+        _, industry = industry.split(":", 1)
+        industry = industry.strip()
+
     for entry in data:
         if not isinstance(entry, dict):
             continue
 
+        # Extract persona name from entry
+        persona_name = None
         for key, value in entry.items():
-            # Skip the Usecases key
             if key.lower() == "usecases":
                 continue
+            if isinstance(value, str):
+                persona_name = value.strip().lower()
+                break
 
-            # value is the persona name
-            if isinstance(value, str) and value.strip().lower() == industry:
-                return entry.get("Usecases", [])
+        if persona_name == industry:
+            return entry.get("Usecases", [])
 
     return []
 
 
+
 def find_matching_industry(extracted_text: str, industries: set) -> str:
     matches = difflib.get_close_matches(
-        extracted_text.lower(), [i.lower() for i in industries], n=1, cutoff=0.5
+        extracted_text.lower(),
+        [i.lower() for i in industries],
+        n=1,
+        cutoff=0.5
     )
+
     if matches:
         matched_lower = matches[0]
         # Return original-cased industry from set
@@ -120,7 +140,14 @@ def find_matching_industry(extracted_text: str, industries: set) -> str:
                 return industry
 
     logger.warning(f"No matching industry found for: {extracted_text}")
-    return None
+
+    # ✅ Fallback to Others
+    for industry in industries:
+        if industry.lower() == "others: others":
+            return industry
+
+    # Absolute fallback (should not happen)
+    return "Others: Others"
 
 
 def save_yaml_file(entries, filepath):

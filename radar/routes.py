@@ -20,10 +20,11 @@ from utils.fireworkzz import get_firework_embedding, get_think_fire_response2_og
 import os,io
 from utils.normal import load_yaml_file
 from utils.s3_utils import upload_any_file_and_get_url
-
+from utils.base_logger import get_logger
 radar_bp = Blueprint("radar", __name__)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
 
+logger=get_logger(__name__)
 
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
 def radarapp(userid):
@@ -153,6 +154,19 @@ async def retreval_from_sources(
                                 "data": str(item.get("text", "")),
                             }
                         )
+                else:
+                    newdas = await dbserver.fetch_by_filename(
+                        user_id=userid,filename=fname
+                    )
+                    if newdas:
+                        for item in newdas:
+                            data_for_review.append(
+                                {
+                                    "type": "docs",
+                                    "source": fname,
+                                    "data": str(item.get("text", "")),
+                                }
+                            )
 
             elif file.get("type") == "aud":
                 bfname = file.get("filename")
@@ -233,7 +247,7 @@ async def run_radar_review_redis(
 
     try:
         await update(status="running")
-        print("🚀 RADAR START", review_id)
+        logger.info("🚀 RADAR START %s", review_id)
 
         userid = data.get("userid")
         name = data.get("name")
@@ -320,7 +334,8 @@ async def run_radar_review_redis(
         )
 
         # print("file links", INP_LINKS)
-        # print("file data",file_data_payload)
+        logger.info("file data %s",len(file_data_payload))
+        logger.info("data sources %s",len(data_checked))
 
         result = await get_think_fire_response2_og(
             user_message=base_prompt,
@@ -350,7 +365,7 @@ async def run_radar_review_redis(
                 refernce_main_source=refernce_main_source,
             )
 
-            print("✅ RADAR DONE", review_id)
+            print("✅ RADAR DONE %s", review_id)
             await update(status="completed", result=refactor_result)
 
     except Exception as e:

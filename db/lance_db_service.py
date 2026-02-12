@@ -696,6 +696,72 @@ class LanceDBServer:
                     logger.debug("error_hook raised an exception")
 
             raise
+    @retry_async(attempts=3, initial_delay=0.2, factor=2.0, max_delay=4.0, jitter=0.1)
+    async def fetch_by_filename(
+        self, user_id: str, filename: str
+    ) -> List[Dict[str, Any]]:
+
+        start = time.time()
+
+        try:
+            table = await self._open_or_create_table(user_id)
+
+            def _fetch():
+                return (
+                    table.search()
+                    .where(f'foldername == "{filename}"')  # 🔥 filter by file
+                    .to_list()
+                )
+
+            results = await asyncio.to_thread(_fetch)
+
+            latency = time.time() - start
+            logger.debug(
+                "fetch_by_filename user=%s filename=%s results=%d latency=%.3fs",
+                user_id,
+                filename,
+                len(results),
+                latency,
+            )
+
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.fetch.success")
+                    self.metrics.timing("lancedb.fetch.latency", latency)
+                except Exception:
+                    logger.debug("metrics client call failed on fetch_by_filename")
+
+            return results
+
+        except Exception as e:
+            logger.exception(
+                "fetch_by_filename failed user=%s filename=%s: %s",
+                user_id,
+                filename,
+                e,
+            )
+
+            if self.metrics:
+                try:
+                    self.metrics.increment("lancedb.fetch.failure")
+                except Exception:
+                    logger.debug("metrics client increment failed on fetch failure")
+
+            if self.error_hook:
+                try:
+                    self.error_hook(
+                        e,
+                        {
+                            "action": "fetch_by_filename",
+                            "user_id": user_id,
+                            "filename": filename,
+                        },
+                    )
+                except Exception:
+                    logger.debug("error_hook raised an exception")
+
+            raise
+
 
     async def query_vector_batch(
         self, query: "BatchQueryData"
