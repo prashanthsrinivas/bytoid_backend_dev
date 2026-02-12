@@ -13,11 +13,11 @@ from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request
 from db.rds_db import connect_to_rds
 import uuid
+from radar.radar_helpers import _safe_json_parse, build_file_data_payload, extract_files_content, extract_json
 from services.redis_service import RedisService
 from umail.routes import get_sorted_lance_emails
 from utils.fireworkzz import get_firework_embedding, get_think_fire_response2_og
-import os
-
+import os,io
 from utils.normal import load_yaml_file
 from utils.s3_utils import upload_any_file_and_get_url
 
@@ -71,28 +71,6 @@ def radarapp(userid):
             apps[app_id]["endpoints"].append(endpoint)
 
     return jsonify(list(apps.values()))
-
-
-import json, html, re
-
-
-def normalize_text(x):
-    try:
-        if x is None:
-            return ""
-        if isinstance(x, str):
-            s = x
-        else:
-            s = json.dumps(x, ensure_ascii=False, indent=2)
-    except:
-        s = str(x)
-
-    s = html.unescape(s)
-    s = re.sub(r"<script.*?>.*?</script>", "", s, flags=re.S)
-    s = re.sub(r"<style.*?>.*?</style>", "", s, flags=re.S)
-    s = re.sub(r"<[^>]+>", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s[:120000]
 
 
 async def retreval_from_sources(
@@ -210,26 +188,6 @@ async def retreval_from_sources(
     return data_for_review
 
 
-def build_documents(sources):
-    if not sources:
-        return "No evidence found."
-
-    docs = []
-    for i, s in enumerate(sources, 1):
-        src = s.get("source") or s.get("endpoint_id") or s.get("note_id") or "unknown"
-        raw = s.get("data", s)
-
-        docs.append(
-            f"""
-            DOCUMENT {i}
-            Source: {src}
-            Type: {s.get("type","unknown")}
-            Content:
-            {normalize_text(raw)}
-            """
-        )
-    return "\n".join(docs)
-
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -243,60 +201,6 @@ def run_radar_review_sync(user_id, review_id, data, date_uniqueid, type, files=N
         )
     )
 
-
-def extract_json(text: str) -> str:
-    """
-    Extract the first valid JSON object from LLM output.
-    """
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        raise ValueError("No JSON object found in LLM output")
-
-    json_text = match.group(0)
-
-    # Remove trailing commas (very common LLM issue)
-    json_text = re.sub(r",\s*}", "}", json_text)
-    json_text = re.sub(r",\s*]", "]", json_text)
-
-    return json_text.strip()
-
-
-def _safe_json_parse(value):
-    if value is None:
-        return {}
-
-    # Already parsed
-    if isinstance(value, (dict, list)):
-        return value
-
-    if not isinstance(value, str):
-        return {}
-
-    s = value.strip()
-
-    # 🔑 ONLY CASE WE HANDLE:
-    # "\"{ ... }\""  or "\"[ ... ]\""
-    if s.startswith('"') and s.endswith('"'):
-        inner = s[1:-1]
-
-        # unescape quotes
-        inner = inner.replace('\\"', '"')
-
-        # must now be valid JSON
-        if inner.startswith("{") or inner.startswith("["):
-            try:
-                return json.loads(inner)
-            except Exception:
-                return {}
-
-    # If string already starts with JSON directly
-    if s.startswith("{") or s.startswith("["):
-        try:
-            return json.loads(s)
-        except Exception:
-            return {}
-
-    return {}
 
 
 async def run_radar_review_redis(
@@ -340,22 +244,33 @@ async def run_radar_review_redis(
         refernce_main_source = data.get("refernce_main_source")
 
         # ---- Upload files from BYTES (SAFE) ----
-        import io
+        INP_LINKS = []          # image URLs only
+        file_data_payload = [] # extracted document content
 
-        INP_LINKS = []
+        IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
         if files:
             for f in files:
-                file_obj = io.BytesIO(f["data"])
-                file_obj.name = f["filename"]
+                ext = os.path.splitext(f["filename"])[1].lower()
 
-                url = upload_any_file_and_get_url(
-                    user_id=user_id,
-                    file_obj=file_obj,
-                    filename=f["filename"],
-                    content_type=f["content_type"] or "application/octet-stream",
-                )
-                INP_LINKS.append(url)
+                # ---- IMAGE → upload & link ----
+                if ext in IMAGE_EXTENSIONS:
+                    file_obj = io.BytesIO(f["data"])
+                    file_obj.name = f["filename"]
 
+                    url = upload_any_file_and_get_url(
+                        user_id=user_id,
+                        file_obj=file_obj,
+                        filename=f["filename"],
+                        content_type=f.get("content_type") or "application/octet-stream",
+                    )
+                    INP_LINKS.append(url)
+                    continue
+
+                # ---- DOCUMENT → extract locally ----
+                extracted = extract_files_content([f])
+                if extracted:
+                    file_data_payload.extend(extracted)
         conn = connect_to_rds()
         dbserver = LanceDBServer()
         credits = Credits(db=conn)
@@ -393,14 +308,19 @@ async def run_radar_review_redis(
             )
             last_radar_response = json.dumps(val) if val else ""
 
+
         base_prompt = (
-            review_temp.replace("{{analyze_input}}", user_analyze_input)
+            review_temp
+            .replace("{{analyze_input}}", user_analyze_input)
+            .replace("{{file_data}}", json.dumps(file_data_payload))
             .replace("{{file_links}}", json.dumps(INP_LINKS, indent=2))
             .replace("{{data_sources}}", json.dumps(data_checked, indent=2))
             .replace("{{reference_sources}}", json.dumps(reference_RWA or {}, indent=2))
             .replace("{{last_radar_response}}", last_radar_response)
         )
-        print("file links", INP_LINKS)
+
+        # print("file links", INP_LINKS)
+        # print("file data",file_data_payload)
 
         result = await get_think_fire_response2_og(
             user_message=base_prompt,
@@ -444,40 +364,13 @@ async def run_radar_review_redis(
 
 @radar_bp.route("/radar/review", methods=["POST"])
 async def radar_review():
-    # ---- Parse input safely ----
-    # if request.is_json:
-    #     data = request.get_json(silent=True) or {}
-    # else:
-    #     data = request.form or {}
-    data = request.get_json(silent=True)
 
-    # print("data", data)
-    # if "files" in data:
-    #     print("files", len(data.get("files")))
-    # print("files", request.files)
+    data = request.get_json(silent=True)
 
     userid = data.get("userid")
     if not userid:
         return jsonify({"error": "userid is required"}), 400
-
-    # ---- READ FILES INSIDE REQUEST CONTEXT (CRITICAL FIX) ----
-    # print("files from request", request.files.getlist("files"))
-    # ---- READ FILES INSIDE REQUEST CONTEXT (MULTIPART + JSON BASE64) ----
     files_data = []
-
-    # 1️⃣ Multipart/form-data files (request.files)
-    for f in request.files.getlist("files"):
-        if not f or not f.filename:
-            continue
-
-        files_data.append(
-            {
-                "filename": f.filename,
-                "content_type": f.mimetype,
-                "data": f.read(),
-            }
-        )
-
     # 2️⃣ JSON base64 files (data.get("files"))
     json_files = data.get("files")
 
@@ -512,7 +405,6 @@ async def radar_review():
     if not files_data:
         files_data = None
     # print("files data", files_data)
-    # ---- VALIDATION: At least one input source is required ----
     data_sources = data.get("data_sources")
     reference_sources = data.get("reference_sources")
 
@@ -580,8 +472,8 @@ async def radar_review():
         "started_at": now,
         "main_source": data.get("main_source"),
         "data_sources": data_sources,
-        "reference_sources": data.get("reference_sources"),
-        "refernce_main_source": reference_sources,
+        "reference_sources": reference_sources,
+        "refernce_main_source": data.get("refernce_main_source"),
     }
 
     await redis.set(key, state, ex=1800)
