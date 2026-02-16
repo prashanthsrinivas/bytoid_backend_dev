@@ -452,11 +452,10 @@ async def get_think_fire_response_og(
         messages.append({"role": "user", "content": user_message})
 
     print(f"messages : {messages}")
-    QWEN3_VL_INSTRUCT = "fireworks/qwen3-vl-235b-a22b-instruct"
 
     chat = await asyncio.to_thread(
         fw.chat.completions.create,
-        model=QWEN3_VL_INSTRUCT,
+        model=THINK_FIRE,
         messages=messages,
         temperature=0.1,
     )
@@ -485,13 +484,11 @@ async def get_think_fire_response2_og(user_message: str, user_id, credits):
         print("No sufficient credits for THINK_FIRE model")
         return "INSUFFICIENT"
 
-    QWEN3_VL_INSTRUCT = "fireworks/qwen3-vl-235b-a22b-instruct"
-
     messages = [{"role": "user", "content": user_message}]
 
     chat = await asyncio.to_thread(
         fw.chat.completions.create,
-        model=QWEN3_VL_INSTRUCT,
+        model=THINK_FIRE,
         messages=messages,
         temperature=0.1,
         max_tokens=16384,
@@ -652,11 +649,10 @@ Avoid emojis, markdown fences, or meta explanations.
         messages.append({"role": "user", "content": message})
 
     # 7️⃣ Call AI model (async thread-safe)
-    QWEN3_VL_INSTRUCT = "fireworks/qwen3-vl-235b-a22b-instruct"
 
     chat = await asyncio.to_thread(
         fw.chat.completions.create,
-        model=QWEN3_VL_INSTRUCT,
+        model=THINK_FIRE,
         messages=messages,
         temperature=0.1,
     )
@@ -693,7 +689,7 @@ async def get_coder_fire_response(user_message: str, role: str, credits, user_id
 
     chat = await asyncio.to_thread(
         fw.chat.completions.create,
-        model=CODER_FIRE,
+        model=THINK_FIRE,
         messages=[{"role": role, "content": user_message}],
         temperature=0,
         top_p=1,
