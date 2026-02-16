@@ -15,6 +15,9 @@ from typing import List, Optional, Union
 
 load_dotenv()
 
+import boto3
+
+bedrock_runtime = boto3.client("bedrock-runtime", region_name="us-east-2")
 
 FIREWORKS_KEY = os.getenv("FIREWORKS_KEY")
 FIREWORKS_MODEL = os.getenv("FIREWORKS_MODEL")
@@ -24,31 +27,61 @@ THINK_FIRE = os.getenv("THINNKMODEL")
 CODER_FIRE = os.getenv("BYCODERMODEL")
 fw = Fireworks(api_key=FIREWORKS_KEY)
 
+NORMAL_MODEL = "qwen.qwen3-235b-a22b-2507-v1:0"
+THINK_MODEL = "qwen.qwen3-vl-235b-a22b"
+
+
+def extract_bedrock_text(response_body: dict) -> str:
+    """
+    Robust extractor for Qwen on Bedrock (OpenAI-style).
+    """
+    if "choices" in response_body:
+        return (
+            response_body.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+    return ""
+
 
 async def get_fireworks_response(user_message: str, role: str, credits, user_id) -> str:
 
     total_input_chars = len(user_message)
+
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
-        print("No sufficient credits for normal fireworks")
+        print("No sufficient credits for normal bedrock")
         return "INSUFFICIENT"
 
-    chat = fw.chat.completions.create(
-        model=EVAL_FIREWORKS,
-        messages=[{"role": role, "content": user_message}],
-        temperature=0.7,
+    payload = {
+        "messages": [
+            {"role": role, "content": [{"type": "text", "text": user_message}]}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 4096,
+    }
+
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=NORMAL_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
     )
 
-    response_text = chat.choices[0].message.content.strip()
+    raw_body = response["body"].read()
+    response_body = json.loads(raw_body)
+
+    response_text = extract_bedrock_text(response_body)
 
     total_output_chars = len(response_text)
-
     total_chars = total_input_chars + total_output_chars
 
     await credits.update_ai_credits_redis(
         credit_type="normal",
         total_chars=total_chars,
         user_id=user_id,
-        reference_id="get_fireworks_response",
+        reference_id="get_bedrock_response",
     )
 
     return response_text
@@ -63,39 +96,40 @@ async def get_fireworks_response2(
 ) -> str:
 
     total_input_chars = len(user_message)
+
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
-        print("No sufficient credits for normal fireworks")
+        print("No sufficient credits for normal bedrock")
         return "INSUFFICIENT"
 
-    chat = fw.chat.completions.create(
-        model=FIREWORKS_MODEL,
-        messages=[{"role": role, "content": user_message}],
-        temperature=temp,
+    payload = {
+        "messages": [
+            {"role": role, "content": [{"type": "text", "text": user_message}]}
+        ],
+        "temperature": temp,
+        "max_tokens": 4096,
+    }
+
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=NORMAL_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
     )
-    content = chat.choices[0].message.content
 
-    if isinstance(content, dict):
-        # Fireworks structured response
-        response_text = content.get("text", "")
-    elif isinstance(content, list):
-        # Rare but possible
-        response_text = " ".join(
-            part.get("text", "") for part in content if isinstance(part, dict)
-        )
-    else:
-        response_text = str(content)
+    raw_body = response["body"].read()
+    response_body = json.loads(raw_body)
 
-    response_text = response_text.strip()
+    response_text = extract_bedrock_text(response_body)
 
     total_output_chars = len(response_text)
-
     total_chars = total_input_chars + total_output_chars
 
     await credits.update_ai_credits_redis(
         user_id=user_id,
         credit_type="normal",
         total_chars=total_chars,
-        reference_id="get_fireworks_response2",
+        reference_id="get_bedrock_response2",
     )
 
     return response_text
@@ -117,27 +151,6 @@ async def get_firework_embedding():
     return embeddings
 
 
-##print("Using Fireworks model =", EVAL_FIREWORKS)
-
-
-# def get_evaluator_fireworks(user_message: str, role: str) -> str:
-#     chat = fw.chat.completions.create(
-#         model=EVAL_FIREWORKS,
-#         messages=[{"role": role, "content": user_message}],
-#         temperature=0.5,
-#     )
-#     val = chat.choices[0].message.content.strip()
-#     if not val:
-#         chat = fw.chat.completions.create(
-#             model=EMBEDMODEL,
-#             messages=[{"role": role, "content": user_message}],
-#             temperature=0.5,
-#         )
-#         val = chat.choices[0].message.content.strip()
-#        #print("using alternate gpt oss")
-#     return val
-
-
 async def get_evaluator_fireworks(
     user_message: str,
     role: str,
@@ -147,45 +160,46 @@ async def get_evaluator_fireworks(
 ) -> str:
     # credits = Credits()
     total_input_chars = len(user_message)
+
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
-        print("No sufficient credits for evaluator fireworks")
+        print("No sufficient credits for evaluator bedrock")
         return "INSUFFICIENT"
 
-    url = "https://api.fireworks.ai/inference/v1/chat/completions"
-
+    # 2️⃣ Bedrock payload (Qwen requires messages)
     payload = {
-        "model": EVAL_FIREWORKS,
+        "messages": [
+            {"role": role, "content": [{"type": "text", "text": user_message}]}
+        ],
         "temperature": temp,
-        "messages": [{"role": role, "content": user_message}],
-    }
-
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {FIREWORKS_KEY}",
+        "max_tokens": 4096,
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status()
+        # 3️⃣ Invoke Bedrock (async-safe)
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=THINK_MODEL,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
 
-        data = response.json()
+        # 4️⃣ Parse response
+        raw_body = response["body"].read()
+        response_body = json.loads(raw_body)
 
-        # Return the LLM text response
-        output = data["choices"][0]["message"]["content"]
+        output = extract_bedrock_text(response_body)
 
+        # 5️⃣ Credit accounting
         total_output_chars = len(output)
-
         total_chars = total_input_chars + total_output_chars
 
-        # credits = Credits()
         await credits.update_ai_credits_redis(
             user_id=user_id,
             credit_type="evaluator",
             total_chars=total_chars,
-            reference_id="get_evaluator_fireworks",
+            reference_id="get_evaluator_bedrock",
         )
-
         return output
 
     except requests.exceptions.RequestException as e:
@@ -416,52 +430,37 @@ async def get_think_fire_response_og(
 
         """
 
-    def normalize_image_urls(image_url) -> List[str]:
-        # Accept None, str, list[str]; reject everything else
-        if image_url is None:
-            return []
-
-        if isinstance(image_url, str):
-            # Treat as single URL, not iterable characters
-            return [image_url]
-
-        if isinstance(image_url, list):
-            # Keep only string items (fail loudly if non-strings appear)
-            out = []
-            for i, u in enumerate(image_url):
-                if not isinstance(u, str):
-                    raise ValueError(f"Invalid image_urls[{i}] type: {type(u)}")
-                out.append(u)
-            return out
-
-        raise ValueError(f"image_url must be str or list[str], got {type(image_url)}")
-
     messages = [{"role": role, "content": system_message}]
     print(role)
-    # Image classification support
-    if image_url:
 
+    # Image classification / vision support
+    if image_url:
         content = [{"type": "text", "text": user_message}]
 
+        # Bedrock Qwen supports image_url
         for url in image_url[:5]:
-
             content.append({"type": "image_url", "image_url": {"url": url}})
-        messages.append({"role": "user", "content": content})
 
+        messages.append({"role": "user", "content": content})
     else:
-        messages.append({"role": "user", "content": user_message})
+        messages.append(
+            {"role": "user", "content": [{"type": "text", "text": user_message}]}
+        )
 
     print(f"messages : {messages}")
 
-    chat = await asyncio.to_thread(
-        fw.chat.completions.create,
-        model=THINK_FIRE,
-        messages=messages,
-        temperature=0.1,
+    payload = {"messages": messages, "temperature": 0.1, "max_tokens": 16384}
+
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=THINK_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
     )
-
-    response_text = chat.choices[0].message.content.strip()
-
+    raw_body = response["body"].read()
+    response_body = json.loads(raw_body)
+    response_text = extract_bedrock_text(response_body)
     total_output_chars = len(response_text)
     total_chars = total_input_chars + total_output_chars
 
@@ -471,8 +470,6 @@ async def get_think_fire_response_og(
         user_id=user_id,
         reference_id="get_think_fire_response",
     )
-
-    print(response_text)
 
     return response_text
 
@@ -484,26 +481,30 @@ async def get_think_fire_response2_og(user_message: str, user_id, credits):
         print("No sufficient credits for THINK_FIRE model")
         return "INSUFFICIENT"
 
-    messages = [{"role": "user", "content": user_message}]
+    # 2️⃣ Qwen payload
+    payload = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": user_message}]}
+        ],
+        "temperature": 0.1,
+        "top_p": 0.95,
+        "max_tokens": 16384,
+    }
 
-    chat = await asyncio.to_thread(
-        fw.chat.completions.create,
-        model=THINK_FIRE,
-        messages=messages,
-        temperature=0.1,
-        max_tokens=16384,
-        stream=True,
+    # 3️⃣ Invoke Bedrock (non-blocking)
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=THINK_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
     )
 
-    response_chunks = []
+    # 4️⃣ Parse response
+    raw_body = response["body"].read()
+    response_body = json.loads(raw_body)
 
-    for event in chat:
-        if event.choices and event.choices[0].delta:
-            delta = event.choices[0].delta
-            if hasattr(delta, "content") and delta.content:
-                response_chunks.append(delta.content)
-
-    response_text = "".join(response_chunks).strip()
+    response_text = extract_bedrock_text(response_body)
 
     total_output_chars = len(response_text)
     total_chars = total_input_chars + total_output_chars
@@ -634,34 +635,68 @@ Avoid emojis, markdown fences, or meta explanations.
 
 """
 
-    message = f"User message : {user_message}; Context : {context}"
+    # message = f"User message : {user_message}; Context : {context}"
 
-    # 6️⃣ Build messages for model
+    # # 6️⃣ Build messages for model
+    # messages = [{"role": role, "content": system_message}]
+
+    # if image_urls:
+    #     # User content with images
+    #     content = [{"type": "text", "text": message}]
+    #     for url in image_urls:
+    #         content.append({"type": "image_url", "image_url": {"url": url}})
+    #     messages.append({"role": "user", "content": content})
+    # else:
+    #     messages.append({"role": "user", "content": message})
+
+    # # 7️⃣ Call AI model (async thread-safe)
+
+    # chat = await asyncio.to_thread(
+    #     fw.chat.completions.create,
+    #     model=THINK_FIRE,
+    #     messages=messages,
+    #     temperature=0.1,
+    # )
+
+    # response_text = chat.choices[0].message.content.strip()
+
+    # # 8️⃣ Update credits
+    # total_output_chars = len(response_text)
+    # total_chars = total_input_chars + total_output_chars
     messages = [{"role": role, "content": system_message}]
+    # print(role)
 
-    if image_urls:
-        # User content with images
-        content = [{"type": "text", "text": message}]
-        for url in image_urls:
+    # Image classification / vision support
+    if image_url:
+        content = [{"type": "text", "text": user_message}]
+
+        # Bedrock Qwen supports image_url
+        for url in image_url[:5]:
             content.append({"type": "image_url", "image_url": {"url": url}})
+
         messages.append({"role": "user", "content": content})
     else:
-        messages.append({"role": "user", "content": message})
+        messages.append(
+            {"role": "user", "content": [{"type": "text", "text": user_message}]}
+        )
 
-    # 7️⃣ Call AI model (async thread-safe)
+    # print(f"messages : {messages}")
 
-    chat = await asyncio.to_thread(
-        fw.chat.completions.create,
-        model=THINK_FIRE,
-        messages=messages,
-        temperature=0.1,
+    payload = {"messages": messages, "temperature": 0.1, "max_tokens": 16384}
+
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=THINK_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
     )
-
-    response_text = chat.choices[0].message.content.strip()
-
-    # 8️⃣ Update credits
+    raw_body = response["body"].read()
+    response_body = json.loads(raw_body)
+    response_text = extract_bedrock_text(response_body)
     total_output_chars = len(response_text)
     total_chars = total_input_chars + total_output_chars
+
     await credits.update_ai_credits_redis(
         credit_type="think",
         total_chars=total_chars,
@@ -680,24 +715,53 @@ def download_file(url: str) -> bytes:
 
 async def get_coder_fire_response(user_message: str, role: str, credits, user_id):
 
-    # credits = Credits()
     total_input_chars = len(user_message)
 
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
         print("No sufficient credits for CODER_FIRE model")
         return "INSUFFICIENT"
 
-    chat = await asyncio.to_thread(
-        fw.chat.completions.create,
-        model=THINK_FIRE,
-        messages=[{"role": role, "content": user_message}],
-        temperature=0,
-        top_p=1,
+    # 🧠 Small coder system prompt (minimal, effective)
+    coder_system_prompt = (
+        "You are a senior software engineer. "
+        "Respond with production-quality code, "
+        "clear reasoning, and best practices. "
+        "Assume the user is a developer."
     )
 
-    response_text = chat.choices[0].message.content.strip()
-    print("len of text", len(response_text))
+    # 2️⃣ Qwen payload (Bedrock format)
+    payload = {
+        "messages": [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": coder_system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": user_message}],
+            },
+        ],
+        "temperature": 0.1,
+        "top_p": 0.95,
+        "max_tokens": 16384,
+    }
 
+    # 3️⃣ Invoke Bedrock (non-blocking)
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=NORMAL_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
+    )
+
+    # 4️⃣ Parse response
+    raw_body = response["body"].read()
+    response_body = json.loads(raw_body)
+
+    response_text = extract_bedrock_text(response_body)
+
+    # 5️⃣ Credit accounting
     total_output_chars = len(response_text)
     total_chars = total_input_chars + total_output_chars
 

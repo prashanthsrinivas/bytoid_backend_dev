@@ -338,7 +338,7 @@ async def run_radar_review_redis(
         )
 
         # print("file links", INP_LINKS)
-        logger.info("file data %s %s", len(file_data_payload), file_data_payload)
+        logger.info("file data %s", len(file_data_payload))
         logger.info("data sources %s", len(data_checked))
 
         result = await get_think_fire_response2_og(
@@ -392,6 +392,7 @@ async def radar_review():
     files_data = []
     # 2️⃣ JSON base64 files (data.get("files"))
     json_files = data.get("files")
+    structure_file = data.get("structure_file")
 
     if isinstance(json_files, list):
         for idx, file_item in enumerate(json_files):
@@ -420,6 +421,32 @@ async def radar_review():
                         "data": base64.b64decode(file_item["data"]),
                     }
                 )
+    # 3️⃣ structure_file (single file)
+    if structure_file:
+        # Case A: frontend sends full data URL string
+        if isinstance(structure_file, str) and structure_file.startswith("data:"):
+            header, b64data = structure_file.split(",", 1)
+            content_type = header.split(";")[0].replace("data:", "")
+
+            files_data.append(
+                {
+                    "filename": "structure_file",
+                    "content_type": content_type,
+                    "data": base64.b64decode(b64data),
+                    "role": "structure",  # optional but VERY useful
+                }
+            )
+
+        # Case B: structured JSON object
+        elif isinstance(structure_file, dict) and "data" in structure_file:
+            files_data.append(
+                {
+                    "filename": structure_file.get("filename", "structure_file"),
+                    "content_type": structure_file.get("content_type"),
+                    "data": base64.b64decode(structure_file["data"]),
+                    "role": "structure",
+                }
+            )
 
     if not files_data:
         files_data = None
@@ -584,17 +611,62 @@ async def radar_analyze():
     now = int(time.time())
     # ---- READ FILES INSIDE REQUEST CONTEXT (CRITICAL FIX) ----
     files_data = []
-    for f in request.files.getlist("files"):
-        if not f or not f.filename:
-            continue
+    json_files = data.get("files")
+    structure_file = data.get("structure_file")
 
-        files_data.append(
-            {
-                "filename": f.filename,
-                "content_type": f.mimetype,
-                "data": f.read(),  # ✅ consume before request ends
-            }
-        )
+    if isinstance(json_files, list):
+        for idx, file_item in enumerate(json_files):
+            if not file_item:
+                continue
+
+            # Case A: frontend sends full data URL string
+            if isinstance(file_item, str) and file_item.startswith("data:"):
+                header, b64data = file_item.split(",", 1)
+                content_type = header.split(";")[0].replace("data:", "")
+
+                files_data.append(
+                    {
+                        "filename": f"file_{idx}",
+                        "content_type": content_type,
+                        "data": base64.b64decode(b64data),
+                    }
+                )
+
+            # Case B: structured JSON object
+            elif isinstance(file_item, dict) and "data" in file_item:
+                files_data.append(
+                    {
+                        "filename": file_item.get("filename", f"file_{idx}"),
+                        "content_type": file_item.get("content_type"),
+                        "data": base64.b64decode(file_item["data"]),
+                    }
+                )
+    # 3️⃣ structure_file (single file)
+    if structure_file:
+        # Case A: frontend sends full data URL string
+        if isinstance(structure_file, str) and structure_file.startswith("data:"):
+            header, b64data = structure_file.split(",", 1)
+            content_type = header.split(";")[0].replace("data:", "")
+
+            files_data.append(
+                {
+                    "filename": "structure_file",
+                    "content_type": content_type,
+                    "data": base64.b64decode(b64data),
+                    "role": "structure",  # optional but VERY useful
+                }
+            )
+
+        # Case B: structured JSON object
+        elif isinstance(structure_file, dict) and "data" in structure_file:
+            files_data.append(
+                {
+                    "filename": structure_file.get("filename", "structure_file"),
+                    "content_type": structure_file.get("content_type"),
+                    "data": base64.b64decode(structure_file["data"]),
+                    "role": "structure",
+                }
+            )
 
     if not files_data:
         files_data = None
@@ -685,17 +757,62 @@ async def radar_decide():
 
     # ---- READ FILES INSIDE REQUEST CONTEXT (CRITICAL FIX) ----
     files_data = []
-    for f in request.files.getlist("files"):
-        if not f or not f.filename:
-            continue
+    json_files = data.get("files")
+    structure_file = data.get("structure_file")
 
-        files_data.append(
-            {
-                "filename": f.filename,
-                "content_type": f.mimetype,
-                "data": f.read(),  # ✅ consume before request ends
-            }
-        )
+    if isinstance(json_files, list):
+        for idx, file_item in enumerate(json_files):
+            if not file_item:
+                continue
+
+            # Case A: frontend sends full data URL string
+            if isinstance(file_item, str) and file_item.startswith("data:"):
+                header, b64data = file_item.split(",", 1)
+                content_type = header.split(";")[0].replace("data:", "")
+
+                files_data.append(
+                    {
+                        "filename": f"file_{idx}",
+                        "content_type": content_type,
+                        "data": base64.b64decode(b64data),
+                    }
+                )
+
+            # Case B: structured JSON object
+            elif isinstance(file_item, dict) and "data" in file_item:
+                files_data.append(
+                    {
+                        "filename": file_item.get("filename", f"file_{idx}"),
+                        "content_type": file_item.get("content_type"),
+                        "data": base64.b64decode(file_item["data"]),
+                    }
+                )
+    # 3️⃣ structure_file (single file)
+    if structure_file:
+        # Case A: frontend sends full data URL string
+        if isinstance(structure_file, str) and structure_file.startswith("data:"):
+            header, b64data = structure_file.split(",", 1)
+            content_type = header.split(";")[0].replace("data:", "")
+
+            files_data.append(
+                {
+                    "filename": "structure_file",
+                    "content_type": content_type,
+                    "data": base64.b64decode(b64data),
+                    "role": "structure",  # optional but VERY useful
+                }
+            )
+
+        # Case B: structured JSON object
+        elif isinstance(structure_file, dict) and "data" in structure_file:
+            files_data.append(
+                {
+                    "filename": structure_file.get("filename", "structure_file"),
+                    "content_type": structure_file.get("content_type"),
+                    "data": base64.b64decode(structure_file["data"]),
+                    "role": "structure",
+                }
+            )
 
     if not files_data:
         files_data = None

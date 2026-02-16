@@ -15,6 +15,7 @@ PROD_ORIGINS = {
 # Dev-only origins
 DEV_ORIGINS = {
     "https://preview--bytoid-45.lovable.app",
+    "https://preview--bytoiddev.lovable.app",
     "http://localhost:8080",
     "http://127.0.0.1:8080",
     "http://localhost:8081",
