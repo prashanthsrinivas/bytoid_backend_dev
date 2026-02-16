@@ -13,7 +13,7 @@ import re
 from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
-
+from db.db_checkers import check_onboarding_user
 users_bp = Blueprint("users", __name__)
 
 logger = get_logger(__name__)
@@ -691,7 +691,7 @@ def get_account_info(userid):
         return jsonify({"error": str(e)}), 500
 
 
-@users_bp.route("/user/create_new_user", methods=["POST"])
+@users_bp.route("/create_new_user", methods=["POST"])
 def create_new_user():
     data = request.get_json()
     if not data:
@@ -702,7 +702,6 @@ def create_new_user():
     email = data.get("email")
     password = data.get("password")
     phone = data.get("phone")
-    user_type = "User"
     location = data.get("location")
     password_pattern = r'^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$'
     email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
@@ -715,9 +714,9 @@ def create_new_user():
         )
 
     if not re.fullmatch(password_pattern, password):
-        return jsonify({"error": "Password does not meets the requirement"})
+        return jsonify({"error": "Password does not meets the requirement"}),401
     if not re.fullmatch(email_pattern, email):
-        return jsonify({"error": "Invalid mail format"})
+        return jsonify({"error": "Invalid mail format"}),401
 
     try:
         conn = connect_to_rds()
@@ -728,7 +727,7 @@ def create_new_user():
 
         if user_exists:
             logger.info("User already exist with this email address")
-            return jsonify({"error": "User already exist.Please login"})
+            return jsonify({"error": "User already exist.Please login"}),401
         logger.info("creating a new user")
         # Get value for social based on email domain
         provider_domains = {
@@ -744,27 +743,27 @@ def create_new_user():
 
         social = social or "Custom"
         # hash the password
-        hashed_password = generate_password_hash(password).decode("utf-8")
+        hashed_password = generate_password_hash(password)
         # generate user_id
         user_id = str(uuid.uuid4().hex)
         # Generate verification url
         verify_url = generate_hashed_url(
-            base_url=f"{os.getenv('BASE_FRNT_URL')}/user/email_verification",
+            base_url=f"{os.getenv('BASE_FRNT_URL')}/login",
             invited_to=email,
             invited_by=os.getenv("TEST_EMAIL2"),
         )
 
         token = verify_url.rstrip("/").split("/")[-1]
-        email_verification(email, user_id, verify_url)
+        email_verification(email, verify_url)
 
         cursor.execute(
             """INSERT INTO users(user_id,user_type,launch_id_fk, first_name, last_name, email,phone,
-                location,social,password_hash,token)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)                
+                location,social,password_hash,created_in)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,Now())                
                 """,
             (
                 user_id,
-                user_type,
+                "user",
                 "",
                 first_name,
                 last_name,
@@ -772,24 +771,66 @@ def create_new_user():
                 phone,
                 location,
                 social,
-                hashed_password,
-                token,
+                hashed_password
             ),
         )
 
         conn.commit()
         conn.close()
+        return jsonify({"message":f"New user created successfully with user_id : {user_id}"}),200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@users_bp.route("/user_login",methods=["POST"])
+def user_login():
+    data = request.get_json()
+    email = data.get("email")
+    password = data.get("password")
 
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        if not email or not password:
+            return jsonify({"error":"Email and password are required"}),401
+        
+        query = "SELECT * FROM users WHERE email=%s"
+        cursor.execute(query,(email))
+        user = cursor.fetchone()
+        password_hash = user["password_hash"]
+
+        if not user:
+            return jsonify({"error":"Invalid email address"}),401
+        if not check_password_hash(password_hash,password):
+            return jsonify({"error":"Incorrect password"}),401
+    
+         # onboarding check
+        newuser = check_onboarding_user(user["user_id"])
+        logger.info("new user %s", newuser)
+
+        response = jsonify({
+            "message": "Login successful",
+            "user": {
+                "user_id": user["user_id"],
+                "email": user["email"],
+                "first_name": user["first_name"],
+                "last_name": user["last_name"],
+                "user_type": user["user_type"],
+                
+            },
+            "betaAgreementAccepted": newuser
+        })
+        conn.close()
+        return response, 200
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
 # Email verification method
-def email_verification(email, user_id, verify_url):
+def email_verification(email, verify_url):
 
     html = f"""<p>Click the link below to verify your email:</p>
                 <p><b>{verify_url}</b></p>"""
-    gmail_service = GmailService(user_id)
+    gmail_service = GmailService("109161866299858012556")
     gmail_service.send_email(
         receipent_emails=email,
         subject="Verification for new user creation",
@@ -798,7 +839,7 @@ def email_verification(email, user_id, verify_url):
 
 
 # update the user_type based on user_id
-@users_bp.route("/user/update_user_type", methods=["POST"])
+@users_bp.route("/update_user_type", methods=["POST"])
 def update_user_type():
     data = request.get_json()
     user_id = data.get("user_id")
@@ -812,20 +853,21 @@ def update_user_type():
                 400,
             )
 
-        query = "UPDATE users SET user_type = %s where user_id = %s "
+        query = "UPDATE users SET user_type = %s,updated_in = Now() where user_id = %s "
         cursor.execute(
             query,
             (user_type, user_id),
         )
         conn.commit()
         conn.close()
+        return jsonify({"message":"User type updated successsfully"}),200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # update old password
-@users_bp.route("/user/update_password", methods=["POST"])
+@users_bp.route("/update_password", methods=["POST"])
 def update_password():
     data = request.get_json()
     user_id = data.get("user_id")
@@ -843,15 +885,17 @@ def update_password():
                 ),
                 400,
             )
-        password_hash = cursor.execute(
+        cursor.execute(
             """SELECT password_hash FROM users WHERE user_id = %s""",
-            (user_id),
+            (user_id)
         )
+        row = cursor.fetchone()
+        password_hash = row["password_hash"]
 
         if not check_password_hash(password_hash, oldPassword):
             return jsonify({"message": "Old password is incorrect"}), 400
 
-        new_hashed_password = generate_password_hash(newPassword).decode("utf-8")
+        new_hashed_password = generate_password_hash(newPassword)
 
         query = (
             "UPDATE users SET password_hash = %s,updated_in = NOW() WHERE user_id = %s"
@@ -863,17 +907,21 @@ def update_password():
 
         conn.commit()
         conn.close()
+        return jsonify({"message":"Password updated successsfully"}),200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # update first name and last name of the user
-@users_bp.route("/user/update_name", methods=["POST"])
+@users_bp.route("/update_name", methods=["POST"])
 def update_name():
     data = request.get_json()
     user_id = data.get("user_id")
     first_name = data.get("first_name")
     last_name = data.get("last_name")
+    if not user_id:
+            return (jsonify({"error": "Missing required fields : user_id"}),400,)
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -883,6 +931,8 @@ def update_name():
 
         conn.commit()
         conn.close()
+        return jsonify({"message":"User name updated successsfully"}),200
+
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

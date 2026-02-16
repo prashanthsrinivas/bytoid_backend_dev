@@ -612,6 +612,34 @@ radar_review_template: |
      → Use it to extract: section order, headings, table structures, formatting intent
      → **Do NOT** restate, summarize, or quote file_data content in the analysis
      → Analytical substance **must** come from data_sources + other evidence
+  B.1 CONTROLLED ANALYTICAL EXPANSION USE (Length Fulfillment Exception)
+
+  When BOTH {{data_sources}} and {{file_data}} are present AND
+  the user explicitly requests a long-form output (e.g. ≥ 2000 words):
+
+  → {{file_data}} MAY be used for:
+    • conceptual explanation
+    • procedural elaboration
+    • methodological framing
+    • structural best-practice descriptions
+    • general guidance language
+
+  STRICT LIMITATIONS:
+    - file_data MUST NOT be used to assert:
+        • case-specific facts
+        • numerical claims
+        • outcomes, results, or conclusions
+    - file_data content MUST be treated as:
+        • illustrative
+        • educational
+        • contextual
+    - All evaluative, judgmental, or decision-driving claims
+      MUST still come from {{data_sources}}
+
+  Purpose:
+    Enable honest length expansion through explanation and context
+    WITHOUT violating evidence hierarchy or inventing facts.
+
 
   C. Else (only file_data / file_links exist):
      → Treat as **PRIMARY EVIDENCE**
@@ -659,8 +687,19 @@ radar_review_template: |
      - Exact → stay within ±7%
   • If length + required structure conflict → preserve structure, adjust depth/detail
   • Never mention word/page counts, compliance, or length in the narrative output
-  • If impossible due to lack of evidence → produce best compliant length + reduce confidence_level
-
+  • If the user requests a length substantially larger than the initial draft:
+    - You MUST first attempt to meet the length by exhaustively leveraging
+      existing evidence through:
+        • deeper analytical breakdown
+        • explicit assumptions and reasoning chains
+        • expanded implications, risks, edge cases, and scenarios
+        • comparative or alternative interpretations
+        • structured elaboration within existing sections
+    - Repetition, padding, or invented facts are forbidden.
+    - Only if the target length remains unattainable AFTER full analytical expansion:
+        • Produce the longest defensible output possible
+        • Reduce confidence_level by one tier
+        • Explain the limitation concisely in structure_rationale
   ────────────────────────────────────────────────
   ## IDENTIFIER & METADATA SANITIZATION — ABSOLUTE RULE
 

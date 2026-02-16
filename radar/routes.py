@@ -13,18 +13,25 @@ from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request
 from db.rds_db import connect_to_rds
 import uuid
-from radar.radar_helpers import _safe_json_parse, build_file_data_payload, extract_files_content, extract_json
+from radar.radar_helpers import (
+    _safe_json_parse,
+    build_file_data_payload,
+    extract_files_content,
+    extract_json,
+)
 from services.redis_service import RedisService
 from umail.routes import get_sorted_lance_emails
 from utils.fireworkzz import get_firework_embedding, get_think_fire_response2_og
-import os,io
+import os, io
 from utils.normal import load_yaml_file
 from utils.s3_utils import upload_any_file_and_get_url
 from utils.base_logger import get_logger
+
 radar_bp = Blueprint("radar", __name__)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
 
-logger=get_logger(__name__)
+logger = get_logger(__name__)
+
 
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
 def radarapp(userid):
@@ -156,7 +163,7 @@ async def retreval_from_sources(
                         )
                 else:
                     newdas = await dbserver.fetch_by_filename(
-                        user_id=userid,filename=fname
+                        user_id=userid, filename=fname
                     )
                     if newdas:
                         for item in newdas:
@@ -202,7 +209,6 @@ async def retreval_from_sources(
     return data_for_review
 
 
-
 from concurrent.futures import ThreadPoolExecutor
 
 radar_executor = ThreadPoolExecutor(max_workers=4)
@@ -214,7 +220,6 @@ def run_radar_review_sync(user_id, review_id, data, date_uniqueid, type, files=N
             user_id, review_id, data, date_uniqueid, type, files=files
         )
     )
-
 
 
 async def run_radar_review_redis(
@@ -258,8 +263,8 @@ async def run_radar_review_redis(
         refernce_main_source = data.get("refernce_main_source")
 
         # ---- Upload files from BYTES (SAFE) ----
-        INP_LINKS = []          # image URLs only
-        file_data_payload = [] # extracted document content
+        INP_LINKS = []  # image URLs only
+        file_data_payload = []  # extracted document content
 
         IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
@@ -276,7 +281,8 @@ async def run_radar_review_redis(
                         user_id=user_id,
                         file_obj=file_obj,
                         filename=f["filename"],
-                        content_type=f.get("content_type") or "application/octet-stream",
+                        content_type=f.get("content_type")
+                        or "application/octet-stream",
                     )
                     INP_LINKS.append(url)
                     continue
@@ -322,10 +328,8 @@ async def run_radar_review_redis(
             )
             last_radar_response = json.dumps(val) if val else ""
 
-
         base_prompt = (
-            review_temp
-            .replace("{{analyze_input}}", user_analyze_input)
+            review_temp.replace("{{analyze_input}}", user_analyze_input)
             .replace("{{file_data}}", json.dumps(file_data_payload))
             .replace("{{file_links}}", json.dumps(INP_LINKS, indent=2))
             .replace("{{data_sources}}", json.dumps(data_checked, indent=2))
@@ -334,8 +338,8 @@ async def run_radar_review_redis(
         )
 
         # print("file links", INP_LINKS)
-        logger.info("file data %s",len(file_data_payload))
-        logger.info("data sources %s",len(data_checked))
+        logger.info("file data %s %s", len(file_data_payload), file_data_payload)
+        logger.info("data sources %s", len(data_checked))
 
         result = await get_think_fire_response2_og(
             user_message=base_prompt,
