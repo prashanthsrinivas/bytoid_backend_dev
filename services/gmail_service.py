@@ -20,6 +20,7 @@ import random
 from typing import Optional, Tuple, List
 import re
 from bs4 import BeautifulSoup
+from utils.g_scopes import g_basescopes
 import email
 from lxml import html as lxml_html
 import os
@@ -105,24 +106,7 @@ class GmailService:
             token_uri="https://oauth2.googleapis.com/token",
             client_id=client_id,
             client_secret=client_secret,
-            scopes=(
-                # Identity
-                "openid",
-                "https://www.googleapis.com/auth/userinfo.profile",
-                "https://www.googleapis.com/auth/userinfo.email",
-                # Gmail – FULL access
-                "https://www.googleapis.com/auth/gmail.readonly",
-                "https://www.googleapis.com/auth/gmail.send",
-                "https://www.googleapis.com/auth/gmail.modify",
-                "https://www.googleapis.com/auth/gmail.compose",
-                # Drive – READ ONLY
-                "https://www.googleapis.com/auth/drive",
-                "https://www.googleapis.com/auth/drive.metadata.readonly",
-                # Calendar – READ ONLY
-                "https://www.googleapis.com/auth/calendar",
-                # Contacts – READ ONLY
-                "https://www.googleapis.com/auth/contacts.readonly",
-            ),
+            scopes=g_basescopes,
             expiry=expiryed,
         )
         if self.creds.expired and self.creds.refresh_token:

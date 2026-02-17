@@ -26,7 +26,7 @@ from google_route.routes import refresh_expired_microsoft_tokens_for_integration
 from request_context import current_user_id
 from umail_helper.mails_process import check_mailbox
 from services.credit_system import CreditManager
-
+from utils.g_scopes import g_basescopes
 
 # Third-party imports
 from flask import (
@@ -3584,37 +3584,7 @@ def refresh_expired_google_tokens_for_integrations(user_id, connection):
                         token_uri="https://oauth2.googleapis.com/token",
                         client_id=client_id,
                         client_secret=client_secret,
-                        # scopes=[
-                        #     "https://www.googleapis.com/auth/userinfo.profile",
-                        #     "https://www.googleapis.com/auth/userinfo.email",
-                        #     "https://www.googleapis.com/auth/gmail.readonly",
-                        #     "https://www.googleapis.com/auth/gmail.send",
-                        #     "https://www.googleapis.com/auth/gmail.modify",
-                        #     "https://www.googleapis.com/auth/gmail.compose",
-                        #     "https://www.googleapis.com/auth/drive.metadata.readonly",
-                        #     "https://www.googleapis.com/auth/drive",
-                        #     "https://www.googleapis.com/auth/calendar",
-                        #     "https://www.googleapis.com/auth/contacts",
-                        #     "openid",
-                        # ],
-                        scopes=(
-                            # Identity
-                            "openid",
-                            "https://www.googleapis.com/auth/userinfo.profile",
-                            "https://www.googleapis.com/auth/userinfo.email",
-                            # Gmail – FULL access
-                            "https://www.googleapis.com/auth/gmail.readonly",
-                            "https://www.googleapis.com/auth/gmail.send",
-                            "https://www.googleapis.com/auth/gmail.modify",
-                            "https://www.googleapis.com/auth/gmail.compose",
-                            # Drive – READ ONLY
-                            "https://www.googleapis.com/auth/drive",
-                            "https://www.googleapis.com/auth/drive.metadata.readonly",
-                            # Calendar – READ ONLY
-                            "https://www.googleapis.com/auth/calendar",
-                            # Contacts – READ ONLY
-                            "https://www.googleapis.com/auth/contacts.readonly",
-                        ),
+                        scopes=g_basescopes,
                     )
 
                     creds.refresh(g_request())

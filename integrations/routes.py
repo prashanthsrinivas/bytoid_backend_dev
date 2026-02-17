@@ -9,6 +9,7 @@ from microsoft_route.microsoft_helpers import retrieve_auth_state_from_redis
 import asyncio
 from utils.s3_utils import S3_BUCKET, load_yaml_from_s3, s3bucket, save_yaml_to_s3
 from agent_route.lance_agent import LanceClient
+from utils.g_scopes import g_basescopes
 from microsoft_route.microsoft_helpers import OutlookSubscriptionManager
 from umail_helper.helper import delete_user_sync_time
 from .integrations_helpers import get_all_integrations
@@ -479,37 +480,7 @@ def google_integration_callback():
         # OAuth Flow
         flow = Flow.from_client_secrets_file(
             "client_secrets.json",
-            # scopes=[
-            #                 "https://www.googleapis.com/auth/userinfo.profile",
-            #                 "https://www.googleapis.com/auth/userinfo.email",
-            #                 "https://www.googleapis.com/auth/gmail.readonly",
-            #                 "https://www.googleapis.com/auth/gmail.send",
-            #                 "https://www.googleapis.com/auth/gmail.modify",
-            #                 "https://www.googleapis.com/auth/gmail.compose",
-            #                 "https://www.googleapis.com/auth/drive.metadata.readonly",
-            #                 "https://www.googleapis.com/auth/drive",
-            #                 "https://www.googleapis.com/auth/calendar",
-            #                 "https://www.googleapis.com/auth/contacts",
-            #                 "openid",
-            # ],
-            scopes=(
-                # Identity
-                "openid",
-                "https://www.googleapis.com/auth/userinfo.profile",
-                "https://www.googleapis.com/auth/userinfo.email",
-                # Gmail – FULL access
-                "https://www.googleapis.com/auth/gmail.readonly",
-                "https://www.googleapis.com/auth/gmail.send",
-                "https://www.googleapis.com/auth/gmail.modify",
-                "https://www.googleapis.com/auth/gmail.compose",
-                # Drive – READ ONLY
-                "https://www.googleapis.com/auth/drive",
-                "https://www.googleapis.com/auth/drive.metadata.readonly",
-                # Calendar – READ ONLY
-                "https://www.googleapis.com/auth/calendar",
-                # Contacts – READ ONLY
-                "https://www.googleapis.com/auth/contacts.readonly",
-            ),
+            scopes=g_basescopes,
             redirect_uri=f"{dev_val}/integration/google/callback",
         )
 

@@ -14,11 +14,16 @@ from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
 from db.db_checkers import check_onboarding_user
+from cryptography.fernet import Fernet
+import base64
+import time
+
 users_bp = Blueprint("users", __name__)
 
 logger = get_logger(__name__)
 
-
+SECRET_KEY = os.getenv("SECRETKEY")
+fernet = Fernet(base64.urlsafe_b64encode(SECRET_KEY.encode("utf-8").ljust(32)[:32]))
 # def get_db_connection():
 #     connection = pymysql.connect(
 #         host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
@@ -627,7 +632,7 @@ def get_user_permissions(userid):
         if not row:
             return jsonify({"error": "User not found"}), 404
 
-        if row["user_type"] != "user":
+        if row["user_type"] != "":
             return jsonify({"permissions": "ALL"}), 200
 
         # Non-admin → parse JSON
@@ -690,7 +695,7 @@ def get_account_info(userid):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
+#creating new user
 @users_bp.route("/create_new_user", methods=["POST"])
 def create_new_user():
     data = request.get_json()
@@ -703,8 +708,8 @@ def create_new_user():
     password = data.get("password")
     phone = data.get("phone")
     location = data.get("location")
-    password_pattern = r'^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$'
-    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    password_pattern = r"^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$"
+    email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
     email_verified = False
 
     if not email or not password or not location:
@@ -714,9 +719,9 @@ def create_new_user():
         )
 
     if not re.fullmatch(password_pattern, password):
-        return jsonify({"error": "Password does not meets the requirement"}),401
+        return jsonify({"error": "Password does not meets the requirement"}), 401
     if not re.fullmatch(email_pattern, email):
-        return jsonify({"error": "Invalid mail format"}),401
+        return jsonify({"error": "Invalid mail format"}), 401
 
     try:
         conn = connect_to_rds()
@@ -727,7 +732,7 @@ def create_new_user():
 
         if user_exists:
             logger.info("User already exist with this email address")
-            return jsonify({"error": "User already exist.Please login"}),401
+            return jsonify({"error": "User already exist.Please login"}), 401
         logger.info("creating a new user")
         # Get value for social based on email domain
         provider_domains = {
@@ -754,7 +759,7 @@ def create_new_user():
         )
 
         token = verify_url.rstrip("/").split("/")[-1]
-        email_verification(email, verify_url)
+        send_email_link(email, verify_url)
 
         cursor.execute(
             """INSERT INTO users(user_id,user_type,launch_id_fk, first_name, last_name, email,phone,
@@ -771,18 +776,60 @@ def create_new_user():
                 phone,
                 location,
                 social,
-                hashed_password
+                hashed_password,
             ),
         )
 
         conn.commit()
         conn.close()
-        return jsonify({"message":f"New user created successfully with user_id : {user_id}"}),200
+        return (
+            jsonify(
+                {"message": "New user created successfully",
+                 "user_id":f"{user_id}"}
+            ),
+            200,
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@users_bp.route("/user_login",methods=["POST"])
+# Email sending method
+def send_email_link(email, verify_url):
+
+    html = f"""<p>Click the link below to verify your email:</p>
+                <p><b>{verify_url}</b></p>
+                <p>The link will expire in 1 hour</p>"""
+    gmail_service = GmailService("109161866299858012556")
+    gmail_service.send_email(
+        receipent_emails=email,
+        subject="Verification for new user creation",
+        body_text=html,
+    )
+
+@users_bp.route("/verify_email",methods=["POST"])
+def verify_email():
+    data = request.get_json()
+    token = data.get("token")
+    try:
+        decrypted = fernet.decrypt(token.encode()).decode()
+        invited_by, invited_to, expiry_time = decrypted.split("|")
+        if int(expiry_time) < int(time.time()):
+            return jsonify({
+                "valid": False,
+                "error": "Verify link has expired"
+            }), 400
+        
+        return jsonify({
+            "emailVerified":True,
+            "email":invited_to
+        }),200
+
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
+
+
+
+@users_bp.route("/user_login", methods=["POST"])
 def user_login():
     data = request.get_json()
     email = data.get("email")
@@ -793,49 +840,39 @@ def user_login():
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         if not email or not password:
-            return jsonify({"error":"Email and password are required"}),401
-        
+            return jsonify({"error": "Email and password are required"}), 401
+
         query = "SELECT * FROM users WHERE email=%s"
-        cursor.execute(query,(email))
+        cursor.execute(query, (email))
         user = cursor.fetchone()
         password_hash = user["password_hash"]
 
         if not user:
-            return jsonify({"error":"Invalid email address"}),401
-        if not check_password_hash(password_hash,password):
-            return jsonify({"error":"Incorrect password"}),401
-    
-         # onboarding check
+            return jsonify({"error": "Invalid email address"}), 401
+        if not check_password_hash(password_hash, password):
+            return jsonify({"error": "Incorrect password"}), 401
+
+        # onboarding check
         newuser = check_onboarding_user(user["user_id"])
         logger.info("new user %s", newuser)
 
-        response = jsonify({
-            "message": "Login successful",
-            "user": {
-                "user_id": user["user_id"],
-                "email": user["email"],
-                "first_name": user["first_name"],
-                "last_name": user["last_name"],
-                "user_type": user["user_type"],
-                
-            },
-            "betaAgreementAccepted": newuser
-        })
+        response = jsonify(
+            {
+                "message": "Login successful",
+                "user": {
+                    "user_id": user["user_id"],
+                    "email": user["email"],
+                    "first_name": user["first_name"],
+                    "last_name": user["last_name"],
+                    "user_type": user["user_type"],
+                },
+                "betaAgreementAccepted": newuser,
+            }
+        )
         conn.close()
         return response, 200
     except Exception as e:
-        return jsonify({"error":str(e)}),500
-# Email verification method
-def email_verification(email, verify_url):
-
-    html = f"""<p>Click the link below to verify your email:</p>
-                <p><b>{verify_url}</b></p>"""
-    gmail_service = GmailService("109161866299858012556")
-    gmail_service.send_email(
-        receipent_emails=email,
-        subject="Verification for new user creation",
-        body_text=html,
-    )
+        return jsonify({"error": str(e)}), 500
 
 
 # update the user_type based on user_id
@@ -860,7 +897,7 @@ def update_user_type():
         )
         conn.commit()
         conn.close()
-        return jsonify({"message":"User type updated successsfully"}),200
+        return jsonify({"message": "User type updated successsfully"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -886,8 +923,7 @@ def update_password():
                 400,
             )
         cursor.execute(
-            """SELECT password_hash FROM users WHERE user_id = %s""",
-            (user_id)
+            """SELECT password_hash FROM users WHERE user_id = %s""", (user_id)
         )
         row = cursor.fetchone()
         password_hash = row["password_hash"]
@@ -907,7 +943,7 @@ def update_password():
 
         conn.commit()
         conn.close()
-        return jsonify({"message":"Password updated successsfully"}),200
+        return jsonify({"message": "Password updated successsfully"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -921,7 +957,10 @@ def update_name():
     first_name = data.get("first_name")
     last_name = data.get("last_name")
     if not user_id:
-            return (jsonify({"error": "Missing required fields : user_id"}),400,)
+        return (
+            jsonify({"error": "Missing required fields : user_id"}),
+            400,
+        )
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -931,8 +970,107 @@ def update_name():
 
         conn.commit()
         conn.close()
-        return jsonify({"message":"User name updated successsfully"}),200
-
+        return jsonify({"message": "User name updated successsfully"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+#Logic for forgot password
+@users_bp.route("/forgot_password", methods=["POST"])
+def forgot_password():
+    data = request.get_json()
+    email = data.get("email")
+    if not email:
+        return jsonify({"error": "Email is required"}), 401
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute("SELECT user_id FROM users WHERE email=%s", (email,))
+        user = cursor.fetchone()
+
+        if not user:
+            return jsonify({"error": "User with this email is not exists"})
+
+        reset_url = generate_hashed_url(base_url=f"{os.getenv('BASE_FRNT_URL')}/ResetPassword",
+            invited_to=email,
+            invited_by=os.getenv("TEST_EMAIL2"),)
+
+        send_password_reset_email(email,reset_url)
+        return jsonify({"message":"Reset link sent to email"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+def send_password_reset_email(email,reset_url):
+    html = f"""
+    <p>You requested a password reset.</p>
+    <p>Click the link below to reset your password:</p>
+    <p><b>{reset_url}</b></p>
+    <p>This link will expire in 1 hour.</p>
+    """
+
+    gmail_service = GmailService("109161866299858012556")
+    gmail_service.send_email(
+        receipent_emails=email,
+        subject="Reset your password",
+        body_text=html,
+    )
+
+
+@users_bp.route("/validateResetToken",methods=["POST"])
+def validate_reset_token():
+    data = request.get_json()
+    token = data.get("token")
+    try:
+        decrypted = fernet.decrypt(token.encode()).decode()
+        invited_by, invited_to, expiry_time = decrypted.split("|")
+        if int(expiry_time) < int(time.time()):
+            return jsonify({
+                "valid": False,
+                "error": "Reset link has expired"
+            }), 400
+        
+        return jsonify({
+            "valid":True,
+            "email":invited_to
+        }),200
+
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
+    
+@users_bp.route("/reset_password",methods=["POST"])
+def reset_password():
+    data = request.get_json()
+    email = data.get("email")
+    newPassword = data.get("newPassword")
+    password_pattern = r'^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$'
+
+    if not newPassword:
+        return jsonify({"error":"New password is required"}),401
+    
+    if not re.match(password_pattern,newPassword):
+        return jsonify({"error":"Password does not meet the requirement. Should contain atleast 8 characters,one uppercase letter,one numeric character and one special character",
+                        }),401
+    try:
+        new_hashed_password = generate_password_hash(newPassword)
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute("SELECT * FROM users WHERE email = %s",(email,))
+        user = cursor.fetchone()
+
+        if not user:
+            logger.warning("User not found with this email")
+            return jsonify({"error":"User not found"})
+
+        logger.info("Updating the new hashed password through reset link")
+        cursor.execute("""UPDATE users
+                    SET password_hash = %s, updated_in = NOW() where email=%s""",
+                    (new_hashed_password,email,))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"message":"Password reset successfully"})
+    except Exception as e:
+        return jsonify({"error":str(e)}),500

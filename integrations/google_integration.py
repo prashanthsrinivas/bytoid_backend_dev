@@ -9,6 +9,7 @@ from db.rds_db import connect_to_rds
 import pymysql
 from google.auth.transport.requests import Request as g_request
 from dotenv import load_dotenv
+from utils.g_scopes import g_basescopes
 
 load_dotenv()
 dev_val = os.getenv("BASE_FRNT_URL", "")
@@ -18,37 +19,7 @@ dev_val = os.getenv("BASE_FRNT_URL", "")
 def google_integration_login():
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
-        # scopes=[
-        #                     "https://www.googleapis.com/auth/userinfo.profile",
-        #                     "https://www.googleapis.com/auth/userinfo.email",
-        #                     "https://www.googleapis.com/auth/gmail.readonly",
-        #                     "https://www.googleapis.com/auth/gmail.send",
-        #                     "https://www.googleapis.com/auth/gmail.modify",
-        #                     "https://www.googleapis.com/auth/gmail.compose",
-        #                     "https://www.googleapis.com/auth/drive.metadata.readonly",
-        #                     "https://www.googleapis.com/auth/drive",
-        #                     "https://www.googleapis.com/auth/calendar",
-        #                     "https://www.googleapis.com/auth/contacts",
-        #                     "openid",
-        # ],
-        scopes=(
-            # Identity
-            "openid",
-            "https://www.googleapis.com/auth/userinfo.profile",
-            "https://www.googleapis.com/auth/userinfo.email",
-            # Gmail – FULL access
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.send",
-            "https://www.googleapis.com/auth/gmail.modify",
-            "https://www.googleapis.com/auth/gmail.compose",
-            # Drive – READ ONLY
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/drive.metadata.readonly",
-            # Calendar – READ ONLY
-            "https://www.googleapis.com/auth/calendar",
-            # Contacts – READ ONLY
-            "https://www.googleapis.com/auth/contacts.readonly",
-        ),
+        scopes=g_basescopes,
         redirect_uri=f"{dev_val}/integration/google/callback",
     )
 
@@ -77,11 +48,7 @@ def refresh_google_token(user_id, db_connection):
         token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id,
         client_secret=client_secret,
-        scopes=[
-            "https://www.googleapis.com/auth/userinfo.profile",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/drive",
-        ],
+        scopes=g_basescopes,
     )
 
     if creds.expired:
@@ -154,37 +121,7 @@ def get_integration_access_token(user_id, provider):
                         token_uri="https://oauth2.googleapis.com/token",
                         client_id=client_id,
                         client_secret=client_secret,
-                        # scopes=[
-                        #     "https://www.googleapis.com/auth/userinfo.profile",
-                        #     "https://www.googleapis.com/auth/userinfo.email",
-                        #     "https://www.googleapis.com/auth/gmail.readonly",
-                        #     "https://www.googleapis.com/auth/gmail.send",
-                        #     "https://www.googleapis.com/auth/gmail.modify",
-                        #     "https://www.googleapis.com/auth/gmail.compose",
-                        #     "https://www.googleapis.com/auth/drive.metadata.readonly",
-                        #     "https://www.googleapis.com/auth/drive",
-                        #     "https://www.googleapis.com/auth/calendar",
-                        #     "https://www.googleapis.com/auth/contacts",
-                        #     "openid",
-                        # ],
-                        scopes=(
-                            # Identity
-                            "openid",
-                            "https://www.googleapis.com/auth/userinfo.profile",
-                            "https://www.googleapis.com/auth/userinfo.email",
-                            # Gmail – FULL access
-                            "https://www.googleapis.com/auth/gmail.readonly",
-                            "https://www.googleapis.com/auth/gmail.send",
-                            "https://www.googleapis.com/auth/gmail.modify",
-                            "https://www.googleapis.com/auth/gmail.compose",
-                            # Drive – READ ONLY
-                            "https://www.googleapis.com/auth/drive",
-                            "https://www.googleapis.com/auth/drive.metadata.readonly",
-                            # Calendar – READ ONLY
-                            "https://www.googleapis.com/auth/calendar",
-                            # Contacts – READ ONLY
-                            "https://www.googleapis.com/auth/contacts.readonly",
-                        ),
+                        scopes=g_basescopes,
                     )
 
                     creds.refresh(g_request())

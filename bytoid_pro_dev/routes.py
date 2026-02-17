@@ -213,127 +213,366 @@ def handle_audio_fallback():
         return jsonify({"error": str(e)}), 500
 
 
+# @bytoid_dev_pro_bp.route("/bytoidpro/think", methods=["POST"])
+# async def fireworks_think():
+#     db = connect_to_rds()
+#     credits = Credits(db)
+
+#     try:
+#         # 1️⃣ Read request JSON or form
+#         json_body = request.get_json(silent=True) or {}
+#         user_id = json_body.get("user_id") or request.form.get("user_id")
+#         message = json_body.get("message") or request.form.get("message")
+#         chat_id = json_body.get("chat_id", "")
+
+#         if not user_id or not message:
+#             return jsonify({"error": "user_id and message required"}), 400
+
+#         if not chat_id:
+#             chat_id = str(uuid.uuid4())
+
+#         db.begin()  # start transaction
+#         total_input_chars = 8000
+
+#         if not await credits.has_ai_credits(
+#             total_chars=total_input_chars, user_id=user_id
+#         ):
+#             db.rollback()
+#             return "INSUFFICIENT", 402
+
+#         uploaded_image_urls = []
+
+#         # 2️⃣ Handle file uploads if any
+#         files = request.files.getlist("file") or request.files.getlist("image")
+#         for file in files:
+#             uploaded_image_urls.append(
+#                 upload_think_image_and_get_url(
+#                     user_id=user_id,
+#                     file_obj=file,
+#                     filename=file.filename,
+#                     content_type=file.content_type,
+#                 )
+#             )
+
+#         # 3️⃣ Handle base64 images from JSON/form
+#         image_urls_payload = json_body.get("image_urls") or []
+#         if not image_urls_payload and request.form.getlist("image_urls"):
+#             image_urls_payload = request.form.getlist("image_urls")
+
+#         for image_data in image_urls_payload:
+#             if image_data.startswith("data:"):
+#                 try:
+#                     header, encoded = image_data.split(",", 1)
+#                     content_type = header.split(";")[0].replace("data:", "")
+#                     ext = content_type.split("/")[-1]
+#                     binary = base64.b64decode(encoded)
+#                     file_obj = BytesIO(binary)
+
+#                     uploaded_image_urls.append(
+#                         upload_think_image_and_get_url(
+#                             user_id=user_id,
+#                             file_obj=file_obj,
+#                             filename=f"upload.{ext}",
+#                             content_type=content_type,
+#                         )
+#                     )
+#                 except Exception as e:
+#                     db.rollback()
+#                     return (
+#                         jsonify({"error": f"Failed to process base64 image: {str(e)}"}),
+#                         400,
+#                     )
+#             elif image_data.startswith("http://") or image_data.startswith("https://"):
+#                 uploaded_image_urls.append(image_data)  # valid URL
+
+#         # check for files
+#         uploaded_file_urls = []
+
+#         file_urls_payload = json_body.get("file_urls") or []
+#         if not file_urls_payload and request.form.getlist("file_urls"):
+#             file_urls_payload = request.form.getlist("file_urls")
+
+#         for file_data in file_urls_payload:
+#             if file_data.startswith("data:"):
+#                 try:
+#                     header, encoded = file_data.split(",", 1)
+#                     content_type = header.split(";")[0].replace("data:", "")
+#                     ext = content_type.split("/")[-1]
+#                     if (
+#                         ext
+#                         == "vnd.openxmlformats-officedocument.wordprocessingml.document"
+#                     ):
+#                         ext = "docx"
+#                     elif (
+#                         ext
+#                         == "vnd.openxmlformats-officedocument.presentationml.presentation"
+#                     ):
+#                         ext = "pptx"
+#                     elif ext == "vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+#                         ext = "xlsx"
+#                     binary = base64.b64decode(encoded)
+#                     file_obj = BytesIO(binary)
+
+#                     uploaded_file_urls.append(
+#                         upload_any_file_and_get_url(
+#                             user_id=user_id,
+#                             file_obj=file_obj,
+#                             filename=f"upload.{ext}",
+#                             content_type=content_type,
+#                         )
+#                     )
+#                 except Exception as e:
+#                     db.rollback()
+#                     return (
+#                         jsonify({"error": f"Failed to process base64 file: {str(e)}"}),
+#                         400,
+#                     )
+#             elif file_data.startswith("http://") or file_data.startswith("https://"):
+#                 uploaded_file_urls.append(file_data)  # valid URL
+
+#         has_images = bool(uploaded_image_urls)
+#         has_files = bool(uploaded_file_urls)
+
+#         # ---- Create job ID and job entry ----
+#         job_id = str(uuid.uuid4())
+#         jobs = load_jobs()
+#         jobs[job_id] = {
+#             "user_id": user_id,
+#             "status": "PENDING",
+#             "progress": 0,
+#             "result": None,
+#         }
+#         save_jobs(jobs)
+
+#         # ---- Background task function (non-async version) ----
+
+#         def task_wrapper():
+
+#             # Create new DB connection for background task
+#             task_db = connect_to_rds()
+#             task_credits = Credits(task_db)
+
+#             # print(f"uploaded_file_urls : {uploaded_file_urls}")
+#             # print(f"uploaded_image_urls : {uploaded_image_urls}")
+
+#             loop = asyncio.new_event_loop()  # create one loop for everything
+#             asyncio.set_event_loop(loop)
+
+#             try:
+#                 jobs = load_jobs()
+#                 jobs[job_id]["status"] = "PROCESSING"
+#                 save_jobs(jobs)
+
+#                 task_db.begin()
+
+#                 # create context
+#                 lance = Bytoid_pro_lance(user_id)
+#                 context = loop.run_until_complete(lance.get_context(message, chat_id))
+
+#                 # Call AI model
+
+#                 if has_images and has_files:
+#                     response = loop.run_until_complete(
+#                         mixed_response(
+#                             user_message=message,
+#                             role="system",
+#                             user_id=user_id,
+#                             file_url=uploaded_file_urls,
+#                             image_url=uploaded_image_urls,
+#                             credits=task_credits,
+#                             context=context,
+#                         )
+#                     )
+
+#                 elif has_images:
+#                     response = loop.run_until_complete(
+#                         get_think_fire_response_image(
+#                             user_message=message,
+#                             role="system",
+#                             user_id=user_id,
+#                             image_url=uploaded_image_urls,
+#                             credits=task_credits,
+#                             context=context,
+#                         )
+#                     )
+#                 elif has_files:
+#                     response = loop.run_until_complete(
+#                         process_large_book(
+#                             user_message=message,
+#                             role="system",
+#                             user_id=user_id,
+#                             file_url=uploaded_file_urls,
+#                             credits=task_credits,
+#                             context=context,
+#                         )
+#                     )
+#                 else:
+#                     response = loop.run_until_complete(
+#                         get_think_fire_response_file(
+#                             user_message=message,
+#                             role="system",
+#                             user_id=user_id,
+#                             credits=task_credits,
+#                             file_url=[],
+#                             context=context,
+#                         )
+#                     )
+
+#                 if response == "INSUFFICIENT":
+#                     task_db.rollback()
+#                     jobs = load_jobs()
+#                     jobs[job_id]["status"] = "FAILED"
+#                     jobs[job_id]["error"] = "Insufficient credits"
+#                     save_jobs(jobs)
+#                     return
+
+#                 task_db.commit()
+
+#                 # --- save to lance ----- #
+
+#                 chat = build_chat(
+#                     chat_id=chat_id,
+#                     user_message=message,
+#                     assistant_message=response,
+#                     user_files=uploaded_file_urls,
+#                     user_images=uploaded_image_urls,
+#                 )
+
+#                 s3_response = save_conversation_to_json(user_id, chat_id, chat)
+#                 lance_response = loop.run_until_complete(lance.insert_to_lance(chat))
+#                 # print(f"lance_reponse : {lance_response}")
+
+#                 # --- save to jobs_file ---- #
+#                 jobs = load_jobs()
+#                 jobs[job_id]["status"] = "COMPLETED"
+#                 jobs[job_id]["progress"] = 100
+#                 jobs[job_id]["result"] = response
+#                 jobs[job_id]["chat_id"] = chat_id
+#                 save_jobs(jobs)
+
+#             except Exception as e:
+#                 task_db.rollback()
+#                 jobs = load_jobs()
+#                 jobs[job_id]["status"] = "FAILED"
+#                 jobs[job_id]["error"] = str(e)
+#                 jobs[job_id]["chat_id"] = chat_id
+#                 save_jobs(jobs)
+#             # print(f"Job {job_id} failed: {str(e)}")
+
+#             finally:
+#                 loop.close()  # close loop only here
+#                 task_db.close()
+
+#         # ✅ Start background thread
+#         thread = threading.Thread(target=task_wrapper, daemon=True)
+#         thread.start()
+
+#         # ---- Immediately return job ID ----
+#         return jsonify({"status": "PROCESSING", "job_id": job_id}), 202
+
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+#     finally:
+#         db.close()
+
+
 @bytoid_dev_pro_bp.route("/bytoidpro/think", methods=["POST"])
-async def fireworks_think():
+async def bytoidpro_think():
     db = connect_to_rds()
     credits = Credits(db)
 
     try:
-        # 1️⃣ Read request JSON or form
+        # -------------------------------
+        # 1️⃣ Read request
+        # -------------------------------
         json_body = request.get_json(silent=True) or {}
         user_id = json_body.get("user_id") or request.form.get("user_id")
         message = json_body.get("message") or request.form.get("message")
-        chat_id = json_body.get("chat_id", "")
+        chat_id = json_body.get("chat_id") or str(uuid.uuid4())
 
         if not user_id or not message:
             return jsonify({"error": "user_id and message required"}), 400
 
-        if not chat_id:
-            chat_id = str(uuid.uuid4())
+        db.begin()
 
-        db.begin()  # start transaction
-        total_input_chars = 8000
-
-        if not await credits.has_ai_credits(
-            total_chars=total_input_chars, user_id=user_id
-        ):
+        if not await credits.has_ai_credits(total_chars=8000, user_id=user_id):
             db.rollback()
             return "INSUFFICIENT", 402
 
-        uploaded_image_urls = []
+        inline_images = []
+        inline_files = []
 
-        # 2️⃣ Handle file uploads if any
+        # -------------------------------
+        # 2️⃣ Handle uploaded IMAGE files
+        # → convert to inline base64
+        # -------------------------------
         files = request.files.getlist("file") or request.files.getlist("image")
-        for file in files:
-            uploaded_image_urls.append(
-                upload_think_image_and_get_url(
-                    user_id=user_id,
-                    file_obj=file,
-                    filename=file.filename,
-                    content_type=file.content_type,
-                )
-            )
 
-        # 3️⃣ Handle base64 images from JSON/form
-        image_urls_payload = json_body.get("image_urls") or []
-        if not image_urls_payload and request.form.getlist("image_urls"):
-            image_urls_payload = request.form.getlist("image_urls")
+        for file in files:
+            binary = file.read()
+            encoded = base64.b64encode(binary).decode("utf-8")
+            content_type = file.content_type or "image/png"
+
+            if not content_type.startswith("image/"):
+                return (
+                    jsonify({"error": "Only image files allowed for inline images"}),
+                    400,
+                )
+
+            inline_images.append(f"data:{content_type};base64,{encoded}")
+
+        # -------------------------------
+        # 3️⃣ Inline images from JSON
+        # -------------------------------
+        image_urls_payload = json_body.get("image_urls") or request.form.getlist(
+            "image_urls"
+        )
 
         for image_data in image_urls_payload:
-            if image_data.startswith("data:"):
-                try:
-                    header, encoded = image_data.split(",", 1)
-                    content_type = header.split(";")[0].replace("data:", "")
-                    ext = content_type.split("/")[-1]
-                    binary = base64.b64decode(encoded)
-                    file_obj = BytesIO(binary)
+            if not image_data.startswith("data:image/"):
+                return (
+                    jsonify(
+                        {
+                            "error": "Invalid image input. Only data:image/* base64 allowed."
+                        }
+                    ),
+                    400,
+                )
+            inline_images.append(image_data)
 
-                    uploaded_image_urls.append(
-                        upload_think_image_and_get_url(
-                            user_id=user_id,
-                            file_obj=file_obj,
-                            filename=f"upload.{ext}",
-                            content_type=content_type,
-                        )
-                    )
-                except Exception as e:
-                    db.rollback()
-                    return (
-                        jsonify({"error": f"Failed to process base64 image: {str(e)}"}),
-                        400,
-                    )
-            elif image_data.startswith("http://") or image_data.startswith("https://"):
-                uploaded_image_urls.append(image_data)  # valid URL
-
-        # check for files
-        uploaded_file_urls = []
-
-        file_urls_payload = json_body.get("file_urls") or []
-        if not file_urls_payload and request.form.getlist("file_urls"):
-            file_urls_payload = request.form.getlist("file_urls")
+        # -------------------------------
+        # 4️⃣ Inline FILES (PDF / DOCX / PPTX / XLSX)
+        # -------------------------------
+        file_urls_payload = json_body.get("file_urls") or request.form.getlist(
+            "file_urls"
+        )
 
         for file_data in file_urls_payload:
-            if file_data.startswith("data:"):
-                try:
-                    header, encoded = file_data.split(",", 1)
-                    content_type = header.split(";")[0].replace("data:", "")
-                    ext = content_type.split("/")[-1]
-                    if (
-                        ext
-                        == "vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    ):
-                        ext = "docx"
-                    elif (
-                        ext
-                        == "vnd.openxmlformats-officedocument.presentationml.presentation"
-                    ):
-                        ext = "pptx"
-                    elif ext == "vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                        ext = "xlsx"
-                    binary = base64.b64decode(encoded)
-                    file_obj = BytesIO(binary)
+            if not file_data.startswith("data:"):
+                return (
+                    jsonify(
+                        {"error": "Invalid file input. Only inline base64 allowed."}
+                    ),
+                    400,
+                )
 
-                    uploaded_file_urls.append(
-                        upload_any_file_and_get_url(
-                            user_id=user_id,
-                            file_obj=file_obj,
-                            filename=f"upload.{ext}",
-                            content_type=content_type,
-                        )
-                    )
-                except Exception as e:
-                    db.rollback()
-                    return (
-                        jsonify({"error": f"Failed to process base64 file: {str(e)}"}),
-                        400,
-                    )
-            elif file_data.startswith("http://") or file_data.startswith("https://"):
-                uploaded_file_urls.append(file_data)  # valid URL
+            inline_files.append(file_data)
 
-        has_images = bool(uploaded_image_urls)
-        has_files = bool(uploaded_file_urls)
+        # -------------------------------
+        # 5️⃣ HARD VALIDATION (CRITICAL)
+        # -------------------------------
+        for img in inline_images:
+            if not img.startswith("data:image/"):
+                raise ValueError("Only inline base64 images are allowed")
 
-        # ---- Create job ID and job entry ----
+        for f in inline_files:
+            if not f.startswith("data:"):
+                raise ValueError("Only inline base64 files are allowed")
+
+        # -------------------------------
+        # 6️⃣ Create Job
+        # -------------------------------
         job_id = str(uuid.uuid4())
         jobs = load_jobs()
         jobs[job_id] = {
@@ -344,18 +583,13 @@ async def fireworks_think():
         }
         save_jobs(jobs)
 
-        # ---- Background task function (non-async version) ----
-
+        # -------------------------------
+        # 7️⃣ Background Task
+        # -------------------------------
         def task_wrapper():
-
-            # Create new DB connection for background task
             task_db = connect_to_rds()
             task_credits = Credits(task_db)
-
-            # print(f"uploaded_file_urls : {uploaded_file_urls}")
-            # print(f"uploaded_image_urls : {uploaded_image_urls}")
-
-            loop = asyncio.new_event_loop()  # create one loop for everything
+            loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
             try:
@@ -365,20 +599,23 @@ async def fireworks_think():
 
                 task_db.begin()
 
-                # create context
                 lance = Bytoid_pro_lance(user_id)
                 context = loop.run_until_complete(lance.get_context(message, chat_id))
 
-                # Call AI model
+                has_images = bool(inline_images)
+                has_files = bool(inline_files)
 
+                # -------------------------------
+                # 8️⃣ SAFE MODEL CALLS (INLINE ONLY)
+                # -------------------------------
                 if has_images and has_files:
                     response = loop.run_until_complete(
                         mixed_response(
                             user_message=message,
                             role="system",
                             user_id=user_id,
-                            file_url=uploaded_file_urls,
-                            image_url=uploaded_image_urls,
+                            image_url=inline_images,
+                            file_url=inline_files,
                             credits=task_credits,
                             context=context,
                         )
@@ -390,37 +627,38 @@ async def fireworks_think():
                             user_message=message,
                             role="system",
                             user_id=user_id,
-                            image_url=uploaded_image_urls,
+                            image_url=inline_images,
                             credits=task_credits,
                             context=context,
                         )
                     )
+
                 elif has_files:
                     response = loop.run_until_complete(
                         process_large_book(
                             user_message=message,
                             role="system",
                             user_id=user_id,
-                            file_url=uploaded_file_urls,
+                            file_url=inline_files,
                             credits=task_credits,
                             context=context,
                         )
                     )
+
                 else:
                     response = loop.run_until_complete(
                         get_think_fire_response_file(
                             user_message=message,
                             role="system",
                             user_id=user_id,
-                            credits=task_credits,
                             file_url=[],
+                            credits=task_credits,
                             context=context,
                         )
                     )
 
                 if response == "INSUFFICIENT":
                     task_db.rollback()
-                    jobs = load_jobs()
                     jobs[job_id]["status"] = "FAILED"
                     jobs[job_id]["error"] = "Insufficient credits"
                     save_jobs(jobs)
@@ -428,47 +666,50 @@ async def fireworks_think():
 
                 task_db.commit()
 
-                # --- save to lance ----- #
-
                 chat = build_chat(
                     chat_id=chat_id,
                     user_message=message,
                     assistant_message=response,
-                    user_files=uploaded_file_urls,
-                    user_images=uploaded_image_urls,
+                    user_files=[],
+                    user_images=inline_images,
                 )
 
-                s3_response = save_conversation_to_json(user_id, chat_id, chat)
-                lance_response = loop.run_until_complete(lance.insert_to_lance(chat))
-                # print(f"lance_reponse : {lance_response}")
+                save_conversation_to_json(user_id, chat_id, chat)
+                loop.run_until_complete(lance.insert_to_lance(chat))
 
-                # --- save to jobs_file ---- #
-                jobs = load_jobs()
-                jobs[job_id]["status"] = "COMPLETED"
-                jobs[job_id]["progress"] = 100
-                jobs[job_id]["result"] = response
-                jobs[job_id]["chat_id"] = chat_id
+                jobs[job_id].update(
+                    {
+                        "status": "COMPLETED",
+                        "progress": 100,
+                        "result": response,
+                        "chat_id": chat_id,
+                    }
+                )
                 save_jobs(jobs)
 
             except Exception as e:
                 task_db.rollback()
-                jobs = load_jobs()
                 jobs[job_id]["status"] = "FAILED"
                 jobs[job_id]["error"] = str(e)
                 jobs[job_id]["chat_id"] = chat_id
                 save_jobs(jobs)
-            # print(f"Job {job_id} failed: {str(e)}")
 
             finally:
-                loop.close()  # close loop only here
+                loop.close()
                 task_db.close()
 
-        # ✅ Start background thread
-        thread = threading.Thread(target=task_wrapper, daemon=True)
-        thread.start()
+        threading.Thread(target=task_wrapper, daemon=True).start()
 
-        # ---- Immediately return job ID ----
-        return jsonify({"status": "PROCESSING", "job_id": job_id}), 202
+        return (
+            jsonify(
+                {
+                    "status": "PROCESSING",
+                    "job_id": job_id,
+                    "chat_id": chat_id,
+                }
+            ),
+            202,
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

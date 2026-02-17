@@ -12,6 +12,8 @@ from credits_route.route import Credits
 from request_context import current_user_id
 from typing import List, Optional, Union
 
+from utils.img_tokens import image_credit_cost
+
 
 load_dotenv()
 
@@ -354,8 +356,15 @@ async def get_think_fire_response_og(
     # credits = Credits()
     print(user_message)
     total_input_chars = len(user_message)
+    # if image_url:
+    #     total_input_chars += sum(len(u) for u in image_url)
+    # if image_url:
+    #     total_input_chars += 100 * len(image_url)
     if image_url:
-        total_input_chars += sum(len(u) for u in image_url)
+        for img in image_url:
+            tokens = image_credit_cost(img)
+            print("token by img", tokens)
+            total_input_chars += tokens
 
     image_url = image_url or []
 
@@ -429,7 +438,7 @@ async def get_think_fire_response_og(
         Avoid emojis, markdown fences, or meta explanations.
 
         """
-
+    total_input_chars += len(system_message)
     messages = [{"role": role, "content": system_message}]
     print(role)
 
@@ -474,8 +483,11 @@ async def get_think_fire_response_og(
     return response_text
 
 
-async def get_think_fire_response2_og(user_message: str, user_id, credits):
-    total_input_chars = len(user_message)
+async def get_think_fire_response2_og(
+    user_message: str, user_id, credits, total_input_chars=None
+):
+    if not total_input_chars:
+        total_input_chars = len(user_message)
 
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
         print("No sufficient credits for THINK_FIRE model")
@@ -562,8 +574,13 @@ async def get_think_fire_response_image(
     print(f"image_urls : {image_urls}")
 
     # 3️⃣ Count total input characters (message + URLs)
-    total_input_chars += sum(len(u) for u in image_urls)
-
+    # total_input_chars += sum(len(u) for u in image_urls)
+    # total_input_chars += 100 * len(image_urls)
+    if image_url:
+        for img in image_url:
+            tokens = image_credit_cost(img)
+            print("token by img", tokens)
+            total_input_chars += tokens
     # 4️⃣ Check user credits
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
         print("No sufficient credits for THINK_FIRE model")
@@ -635,34 +652,6 @@ Avoid emojis, markdown fences, or meta explanations.
 
 """
 
-    # message = f"User message : {user_message}; Context : {context}"
-
-    # # 6️⃣ Build messages for model
-    # messages = [{"role": role, "content": system_message}]
-
-    # if image_urls:
-    #     # User content with images
-    #     content = [{"type": "text", "text": message}]
-    #     for url in image_urls:
-    #         content.append({"type": "image_url", "image_url": {"url": url}})
-    #     messages.append({"role": "user", "content": content})
-    # else:
-    #     messages.append({"role": "user", "content": message})
-
-    # # 7️⃣ Call AI model (async thread-safe)
-
-    # chat = await asyncio.to_thread(
-    #     fw.chat.completions.create,
-    #     model=THINK_FIRE,
-    #     messages=messages,
-    #     temperature=0.1,
-    # )
-
-    # response_text = chat.choices[0].message.content.strip()
-
-    # # 8️⃣ Update credits
-    # total_output_chars = len(response_text)
-    # total_chars = total_input_chars + total_output_chars
     messages = [{"role": role, "content": system_message}]
     # print(role)
 

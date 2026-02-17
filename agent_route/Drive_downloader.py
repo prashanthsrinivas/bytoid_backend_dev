@@ -14,7 +14,7 @@ import json
 
 load_dotenv()
 DOWNLOAD_DIR = "data"
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 SERVICE_ACCOUNT_FILE = "new_service_secrets.json"
 # SERVICE_ACCOUNT_FILE = 'service_secret.json'
 SERVICE_ACCOUNT_EMAIL = os.getenv("SERVICE_CLIENT_EMAIL")  # Replace this
@@ -249,7 +249,6 @@ def GetEmailandDriveService(access_token):
     except Exception as e:
         logger.info(f"Exception in GetEmailandDriveService: {e}")
         return None
-
 
 
 def Mediatorservice(data, userid, user_service):
