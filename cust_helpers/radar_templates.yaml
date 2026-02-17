@@ -64,7 +64,6 @@ radar_review_template: |
      • ambiguity and risk
      • domain and audience
 
-
   ────────────────────────────────────────────────
   ## STRUCTURE-DRIVEN LENGTH CONTRACT (ADDITIVE)
 
@@ -102,34 +101,82 @@ radar_review_template: |
     inside the narrative output.
 
   ────────────────────────────────────────────────
+  ## 🔹 ANALYTICAL EXPANSION RULES (ADDITIVE — NON-FABRICATIVE)
+
+  When expanding length or depth, you may ONLY use:
+  - decomposition of existing evidence
+  - explicit assumption articulation
+  - conditional reasoning (if / then / unless)
+  - implications analysis (operational, financial, legal, reputational)
+  - uncertainty and sensitivity analysis
+  - scenario exploration strictly bounded by evidence
+  - comparison of alternative interpretations of the same data
+  - second-order and third-order effects logically derived from evidence
+
+  You may NOT:
+  - introduce new facts or sources
+  - estimate missing numeric values
+  - generalize beyond evidence scope
+  - convert absence of evidence into negative claims
+
+  ────────────────────────────────────────────────
+  ## 🔹 SECTION DEPTH LADDER (ADDITIVE)
+
+  Each section may expand through the following depth levels when evidence allows:
+
+  Level 1 — Summary finding (what is known)
+  Level 2 — Reasoned explanation (why it matters)
+  Level 3 — Implications (what it affects)
+  Level 4 — Risks, constraints, and failure modes
+  Level 5 — Decision relevance for executive action
+
+  Stop at the highest defensible level.
+  If limited to Levels 1–2, explicitly state the limitation.
+
+  ────────────────────────────────────────────────
+  ## 🔹 UNCERTAINTY & EVIDENCE QUALITY DISCLOSURE (ADDITIVE)
+
+  For each major conclusion, explicitly surface:
+  - evidence strength (strong | moderate | weak)
+  - coverage gaps or unknowns
+  - sensitivity (what assumptions would materially change conclusions)
+
+  Failure to disclose uncertainty → reduce confidence_level by one tier.
+
+  ────────────────────────────────────────────────
+  ## 🔹 SCENARIO FRAMING (ADDITIVE — NON-PREDICTIVE)
+
+  Scenarios must:
+  - remain qualitative unless numeric evidence exists
+  - be conditional, not predictive
+  - clearly state which evidence supports each scenario
+
+  Use language such as:
+  - "If current conditions persist…"
+  - "If constraints are mitigated…"
+  - "Under an alternative interpretation of the same evidence…"
+
+  ────────────────────────────────────────────────
+  ## 🔹 DECISION IMPACT MAPPING (ADDITIVE)
+
+  Where appropriate, map conclusions to:
+  - affected stakeholders
+  - time horizon (short / medium / long)
+  - reversibility (high / medium / low)
+  - decision criticality (informational / directional / commitment-level)
+
+  Use narrative or structured blocks depending on data sufficiency.
+
+  ────────────────────────────────────────────────
   ## LENGTH & VOLUME CONSTRAINTS
 
   Length & volume constraints are enforced when:
   • the user explicitly specifies word or page limits
-  • OR {{structure_file_data}} provides section-level or document-level
-    word targets (constraints.total_target or sections[].target_length)
-
+  • OR {{structure_file_data}} provides section-level or document-level targets
 
   • Page estimation: ~450–500 words per page unless user specifies otherwise
-  • Enforcement:
-     - Minimum → at least that length (or closest possible with available evidence)
-     - Maximum → do not exceed
-     - Exact → stay within ±7%
-  • If length + required structure conflict → preserve structure, adjust depth/detail
-  • Never mention word/page counts, compliance, or length in the narrative output
-  • If the user requests a length substantially larger than the initial draft:
-    - You MUST first attempt to meet the length by exhaustively leveraging
-      existing evidence through:
-        • deeper analytical breakdown
-        • explicit assumptions and reasoning chains
-        • expanded implications, risks, edge cases, and scenarios
-        • comparative or alternative interpretations
-        • structured elaboration within existing sections
-    - Repetition, padding, or invented facts are forbidden.
-    - Only if the target length remains unattainable AFTER full analytical expansion:
-        • Produce the longest defensible output possible
-        • Reduce confidence_level by one tier
-        • Explain the limitation concisely in structure_rationale
+  • Preserve structure over verbosity
+  • Never mention word/page counts in narrative output
   ────────────────────────────────────────────────
   ## IDENTIFIER & METADATA SANITIZATION — ABSOLUTE RULE
 

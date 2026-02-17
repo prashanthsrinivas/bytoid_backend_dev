@@ -492,11 +492,11 @@ async def radar_review():
         status = existing.get("status")
         started_at = existing.get("started_at", now)
 
-        if status == "pending" and now - started_at <= 180:
+        if status == "pending" and now - started_at <= 600:
             return jsonify(existing)
 
         if status == "running":
-            if now - started_at <= 180:
+            if now - started_at <= 600:
                 return jsonify(existing)
 
             existing.update(
@@ -670,11 +670,11 @@ async def radar_analyze():
         status = existing.get("status")
         started_at = existing.get("started_at", now)
 
-        if status == "pending" and now - started_at <= 180:
+        if status == "pending" and now - started_at <= 600:
             return jsonify(existing)
 
         if status == "running":
-            if now - started_at <= 180:
+            if now - started_at <= 600:
                 return jsonify(existing)
 
             existing.update(
@@ -810,13 +810,13 @@ async def radar_decide():
         started_at = existing.get("started_at", now)
 
         # ⛔ Pending but still valid → return it
-        if status == "pending" and now - started_at <= 180:
+        if status == "pending" and now - started_at <= 600:
             return jsonify(existing)
 
         # ⛔ Running → always return it
         if status == "running":
             # 🕒 Check for running timeout
-            if now - started_at <= 180:
+            if now - started_at <= 600:
                 return jsonify(existing)
 
             # ⛔ Running but timed out → mark failed
@@ -841,7 +841,7 @@ async def radar_decide():
             return jsonify(existing)
 
         # create new below as pending gone too overtime
-        if status == "pending" and now - started_at > 180:
+        if status == "pending" and now - started_at > 600:
             pass
 
     # ✅ Create NEW review
