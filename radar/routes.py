@@ -16,13 +16,16 @@ import uuid
 from radar.radar_helpers import (
     _safe_json_parse,
     build_file_data_payload,
+    extract_file_payload,
     extract_files_content,
     extract_json,
+    process_file_payloads,
 )
 from services.redis_service import RedisService
 from umail.routes import get_sorted_lance_emails
 from utils.fireworkzz import get_firework_embedding, get_think_fire_response2_og
 import os, io
+from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file
 from utils.s3_utils import upload_any_file_and_get_url
 from utils.base_logger import get_logger
@@ -214,16 +217,24 @@ from concurrent.futures import ThreadPoolExecutor
 radar_executor = ThreadPoolExecutor(max_workers=4)
 
 
-def run_radar_review_sync(user_id, review_id, data, date_uniqueid, type, files=None):
+def run_radar_review_sync(
+    user_id, review_id, data, date_uniqueid, type, files=None, structure_file_data=None
+):
     asyncio.run(
         run_radar_review_redis(
-            user_id, review_id, data, date_uniqueid, type, files=files
+            user_id,
+            review_id,
+            data,
+            date_uniqueid,
+            type,
+            files=files,
+            structure_file=structure_file_data,
         )
     )
 
 
 async def run_radar_review_redis(
-    user_id, review_id, data, date_uniqueid, btype, files=None
+    user_id, review_id, data, date_uniqueid, btype, files=None, structure_file=None
 ):
     redis = RedisService()
 
@@ -249,6 +260,9 @@ async def run_radar_review_redis(
     conn = None
     data_checked = []
     reference_RWA = []
+    conn = connect_to_rds()
+    dbserver = LanceDBServer()
+    credits = Credits(db=conn)
 
     try:
         await update(status="running")
@@ -262,38 +276,57 @@ async def run_radar_review_redis(
         reference_sources = data.get("reference_sources", {})
         refernce_main_source = data.get("refernce_main_source")
 
-        # ---- Upload files from BYTES (SAFE) ----
-        INP_LINKS = []  # image URLs only
+        # ---- Unified file handling ----
+        INP_LINKS = []  # image URLs
+        STR_LINKS = []
         file_data_payload = []  # extracted document content
-
-        IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-
+        structure_file_payload = []  # extracted structure content
         if files:
-            for f in files:
-                ext = os.path.splitext(f["filename"])[1].lower()
+            process_file_payloads(
+                user_id=user_id,
+                files=files,
+                inp_links=INP_LINKS,
+                extracted_payload=file_data_payload,
+            )
 
-                # ---- IMAGE → upload & link ----
-                if ext in IMAGE_EXTENSIONS:
-                    file_obj = io.BytesIO(f["data"])
-                    file_obj.name = f["filename"]
+        # ---- Structure file (same logic, separate bucket) ----
+        if structure_file:
+            process_file_payloads(
+                user_id=user_id,
+                files=[structure_file],
+                inp_links=STR_LINKS,
+                extracted_payload=structure_file_payload,
+            )
+        if structure_file_payload:
+            structure_prompt_template = RADAR_TEMPLATE["structure_prompt_template"]
+            base_struc_prompt = (
+                structure_prompt_template.replace(
+                    "{{document_file_data}}", json.dumps(structure_file_payload) or ""
+                )
+                .replace(
+                    "{{file_links}}",
+                    json.dumps(STR_LINKS, indent=2) if STR_LINKS else "",
+                )
+                .replace(
+                    "{{user_original_prompt_or_context}}", user_analyze_input or ""
+                )
+            )
+            base_str_chars = len(base_struc_prompt)
+            if STR_LINKS:
+                for img in STR_LINKS:
+                    base_str_chars -= len(img)
+                    tokens = image_credit_cost(img)
+                    base_str_chars += tokens
 
-                    url = upload_any_file_and_get_url(
-                        user_id=user_id,
-                        file_obj=file_obj,
-                        filename=f["filename"],
-                        content_type=f.get("content_type")
-                        or "application/octet-stream",
-                    )
-                    INP_LINKS.append(url)
-                    continue
+            result = await get_think_fire_response2_og(
+                user_message=base_struc_prompt,
+                user_id=user_id,
+                credits=credits,
+                total_input_chars=base_str_chars,
+            )
 
-                # ---- DOCUMENT → extract locally ----
-                extracted = extract_files_content([f])
-                if extracted:
-                    file_data_payload.extend(extracted)
-        conn = connect_to_rds()
-        dbserver = LanceDBServer()
-        credits = Credits(db=conn)
+            structure_blueprint = json.loads(result)
+            structure_file_payload = structure_blueprint
 
         payload = None
         if (main_source and main_source == "knowledge") or (
@@ -331,6 +364,7 @@ async def run_radar_review_redis(
         base_prompt = (
             review_temp.replace("{{analyze_input}}", user_analyze_input)
             .replace("{{file_data}}", json.dumps(file_data_payload))
+            .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
             .replace("{{file_links}}", json.dumps(INP_LINKS, indent=2))
             .replace("{{data_sources}}", json.dumps(data_checked, indent=2))
             .replace("{{reference_sources}}", json.dumps(reference_RWA or {}, indent=2))
@@ -340,11 +374,20 @@ async def run_radar_review_redis(
         # print("file links", INP_LINKS)
         logger.info("file data %s", len(file_data_payload))
         logger.info("data sources %s", len(data_checked))
+        # base_chars = len(base_prompt) - len(INP_LINKS)
+        # base_chars += 100 * len(INP_LINKS)
+        base_chars = len(base_prompt)
+        if INP_LINKS:
+            for img in INP_LINKS:
+                base_chars -= len(img)
+                tokens = image_credit_cost(img)
+                base_chars += tokens
 
         result = await get_think_fire_response2_og(
             user_message=base_prompt,
             user_id=userid,
             credits=credits,
+            total_input_chars=base_chars,
         )
         if result == "INSUFFICIENT":
             await update(status="failed", error="Insufficient credits")
@@ -389,68 +432,35 @@ async def radar_review():
     userid = data.get("userid")
     if not userid:
         return jsonify({"error": "userid is required"}), 400
+
     files_data = []
-    # 2️⃣ JSON base64 files (data.get("files"))
+
     json_files = data.get("files")
     structure_file = data.get("structure_file")
 
+    # -------------------------------
+    # Parse normal files
+    # -------------------------------
     if isinstance(json_files, list):
         for idx, file_item in enumerate(json_files):
-            if not file_item:
-                continue
-
-            # Case A: frontend sends full data URL string
-            if isinstance(file_item, str) and file_item.startswith("data:"):
-                header, b64data = file_item.split(",", 1)
-                content_type = header.split(";")[0].replace("data:", "")
-
-                files_data.append(
-                    {
-                        "filename": f"file_{idx}",
-                        "content_type": content_type,
-                        "data": base64.b64decode(b64data),
-                    }
-                )
-
-            # Case B: structured JSON object
-            elif isinstance(file_item, dict) and "data" in file_item:
-                files_data.append(
-                    {
-                        "filename": file_item.get("filename", f"file_{idx}"),
-                        "content_type": file_item.get("content_type"),
-                        "data": base64.b64decode(file_item["data"]),
-                    }
-                )
-    # 3️⃣ structure_file (single file)
-    if structure_file:
-        # Case A: frontend sends full data URL string
-        if isinstance(structure_file, str) and structure_file.startswith("data:"):
-            header, b64data = structure_file.split(",", 1)
-            content_type = header.split(";")[0].replace("data:", "")
-
-            files_data.append(
-                {
-                    "filename": "structure_file",
-                    "content_type": content_type,
-                    "data": base64.b64decode(b64data),
-                    "role": "structure",  # optional but VERY useful
-                }
+            extracted = extract_file_payload(
+                file_item,
+                default_filename=f"file_{idx}",
             )
-
-        # Case B: structured JSON object
-        elif isinstance(structure_file, dict) and "data" in structure_file:
-            files_data.append(
-                {
-                    "filename": structure_file.get("filename", "structure_file"),
-                    "content_type": structure_file.get("content_type"),
-                    "data": base64.b64decode(structure_file["data"]),
-                    "role": "structure",
-                }
-            )
+            if extracted:
+                files_data.append(extracted)
 
     if not files_data:
         files_data = None
-    # print("files data", files_data)
+
+    # -------------------------------
+    # Parse structure_file (single)
+    # -------------------------------
+    structure_file_data = extract_file_payload(
+        structure_file,
+        default_filename="structure_file",
+    )
+
     data_sources = data.get("data_sources")
     reference_sources = data.get("reference_sources")
 
@@ -471,7 +481,7 @@ async def radar_review():
             400,
         )
 
-    # ---- Redis de-dup / state handling (unchanged logic) ----
+    # ---- Redis logic unchanged ----
     redis = RedisService()
     key = f"radar:review:{userid}"
 
@@ -524,7 +534,7 @@ async def radar_review():
 
     await redis.set(key, state, ex=1800)
 
-    # ---- Submit background task with SAFE payload ----
+    # ---- Submit background task ----
     radar_executor.submit(
         run_radar_review_sync,
         userid,
@@ -532,7 +542,8 @@ async def radar_review():
         data,
         date_uniqueid,
         "review",
-        files_data,  # ✅ bytes, not FileStorage
+        files_data,
+        structure_file_data,  # ✅ may be None
     )
 
     return jsonify(state)
@@ -594,123 +605,94 @@ async def get_radar_doc_byid():
 
 @radar_bp.route("/radar/analyze", methods=["POST"])
 async def radar_analyze():
-    if request.is_json:
-        data = request.get_json(silent=True) or {}
-    else:
-        data = request.form or {}
-    # print("analyze input request", data)
-    userid = data.get("userid")
 
+    data = request.get_json(silent=True) or {}
+
+    userid = data.get("userid")
     if not userid:
         return jsonify({"error": "userid is required"}), 400
+
+    files_data = []
+
+    json_files = data.get("files")
+    structure_file = data.get("structure_file")
+
+    # -------------------------------
+    # Parse normal files
+    # -------------------------------
+    if isinstance(json_files, list):
+        for idx, file_item in enumerate(json_files):
+            extracted = extract_file_payload(
+                file_item,
+                default_filename=f"file_{idx}",
+            )
+            if extracted:
+                files_data.append(extracted)
+
+    if not files_data:
+        files_data = None
+
+    # -------------------------------
+    # Parse structure_file (single)
+    # -------------------------------
+    structure_file_data = extract_file_payload(
+        structure_file,
+        default_filename="structure_file",
+    )
+
+    data_sources = data.get("data_sources")
+    reference_sources = data.get("reference_sources")
+
+    has_files = bool(files_data)
+    has_data_sources = bool(data_sources)
+    has_reference_sources = bool(reference_sources)
+
+    if not (has_files or has_data_sources or has_reference_sources):
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "At least one input source is required. "
+                        "Provide either files, data_sources, or reference_sources."
+                    )
+                }
+            ),
+            400,
+        )
 
     redis = RedisService()
     key = f"radar:analyze:{userid}"
 
     existing = await redis.get(key)
     now = int(time.time())
-    # ---- READ FILES INSIDE REQUEST CONTEXT (CRITICAL FIX) ----
-    files_data = []
-    json_files = data.get("files")
-    structure_file = data.get("structure_file")
 
-    if isinstance(json_files, list):
-        for idx, file_item in enumerate(json_files):
-            if not file_item:
-                continue
-
-            # Case A: frontend sends full data URL string
-            if isinstance(file_item, str) and file_item.startswith("data:"):
-                header, b64data = file_item.split(",", 1)
-                content_type = header.split(";")[0].replace("data:", "")
-
-                files_data.append(
-                    {
-                        "filename": f"file_{idx}",
-                        "content_type": content_type,
-                        "data": base64.b64decode(b64data),
-                    }
-                )
-
-            # Case B: structured JSON object
-            elif isinstance(file_item, dict) and "data" in file_item:
-                files_data.append(
-                    {
-                        "filename": file_item.get("filename", f"file_{idx}"),
-                        "content_type": file_item.get("content_type"),
-                        "data": base64.b64decode(file_item["data"]),
-                    }
-                )
-    # 3️⃣ structure_file (single file)
-    if structure_file:
-        # Case A: frontend sends full data URL string
-        if isinstance(structure_file, str) and structure_file.startswith("data:"):
-            header, b64data = structure_file.split(",", 1)
-            content_type = header.split(";")[0].replace("data:", "")
-
-            files_data.append(
-                {
-                    "filename": "structure_file",
-                    "content_type": content_type,
-                    "data": base64.b64decode(b64data),
-                    "role": "structure",  # optional but VERY useful
-                }
-            )
-
-        # Case B: structured JSON object
-        elif isinstance(structure_file, dict) and "data" in structure_file:
-            files_data.append(
-                {
-                    "filename": structure_file.get("filename", "structure_file"),
-                    "content_type": structure_file.get("content_type"),
-                    "data": base64.b64decode(structure_file["data"]),
-                    "role": "structure",
-                }
-            )
-
-    if not files_data:
-        files_data = None
     if existing:
         status = existing.get("status")
         started_at = existing.get("started_at", now)
 
-        # ⛔ Pending but still valid → return it
         if status == "pending" and now - started_at <= 180:
             return jsonify(existing)
 
-        # ⛔ Running → always return it
         if status == "running":
-            # 🕒 Check for running timeout
             if now - started_at <= 180:
                 return jsonify(existing)
 
-            # ⛔ Running but timed out → mark failed
             existing.update(
                 {
                     "status": "failed",
-                    "error": "Review execution timed out",
+                    "error": "Analyze execution timed out",
                     "ended_at": now,
                 }
             )
-            await redis.delete(key)  # short TTL for failed
-            return jsonify(existing)
-
-        # ⛔ Completed → return same result
-        if status == "completed":
             await redis.delete(key)
             return jsonify(existing)
 
-        # ❌ Failed OR stale pending → overwrite
-        if status == "failed":
+        if status in ("completed", "failed"):
             await redis.delete(key)
             return jsonify(existing)
 
-        # create new below as pending gone too overtime
-        if status == "pending" and now - started_at > 180:
-            pass
-
-    # ✅ Create NEW review
-    review_id = f"analyze_{str(uuid.uuid4().hex[:8])}"
+    # ---- Create new job ----
+    review_id = f"analyze_{uuid.uuid4().hex[:8]}"
     date_uniqueid = data.get("id") or f"radar_{now}"
 
     state = {
@@ -723,8 +705,8 @@ async def radar_analyze():
         "error": None,
         "started_at": now,
         "main_source": data.get("main_source"),
-        "data_sources": data.get("data_sources", {}),
-        "reference_sources": data.get("reference_sources", {}),
+        "data_sources": data_sources,
+        "reference_sources": reference_sources,
         "refernce_main_source": data.get("refernce_main_source"),
     }
 
@@ -738,6 +720,7 @@ async def radar_analyze():
         date_uniqueid,
         "analyze",
         files_data,
+        structure_file_data,  # ✅ consistent with review
     )
 
     return jsonify(state)

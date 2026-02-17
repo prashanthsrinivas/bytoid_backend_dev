@@ -1,3 +1,5 @@
+import base64
+import io
 import tempfile
 from langchain_community.document_loaders import (
     TextLoader,
@@ -12,6 +14,8 @@ import json
 import time
 import re
 import html
+
+from utils.s3_utils import upload_any_file_and_get_url
 
 
 def build_documents(sources):
@@ -33,6 +37,7 @@ def build_documents(sources):
             """
         )
     return "\n".join(docs)
+
 
 def normalize_text(x):
     try:
@@ -107,7 +112,10 @@ def _safe_json_parse(value):
 
     return {}
 
+
 import mimetypes
+
+
 def extract_files_content(files):
     all_file_data = []
 
@@ -169,6 +177,8 @@ def extract_files_content(files):
                 pass
 
     return all_file_data
+
+
 def build_file_data_payload(file_data):
     if not file_data:
         return ""
@@ -185,3 +195,94 @@ def build_file_data_payload(file_data):
             """
         )
     return "\n".join(blocks)
+
+
+def extract_file_payload(file_item, default_filename: str):
+    """
+    Extracts a file payload into a normalized dict:
+    {
+        filename,
+        content_type,
+        data (bytes)
+    }
+    Returns None if invalid.
+    """
+
+    if not file_item:
+        return None
+
+    # Case A: data URL string
+    if isinstance(file_item, str) and file_item.startswith("data:"):
+        header, b64data = file_item.split(",", 1)
+        content_type = header.split(";")[0].replace("data:", "")
+
+        return {
+            "filename": default_filename,
+            "content_type": content_type,
+            "data": base64.b64decode(b64data),
+        }
+
+    # Case B: structured JSON object
+    if isinstance(file_item, dict) and "data" in file_item:
+        return {
+            "filename": file_item.get("filename", default_filename),
+            "content_type": file_item.get("content_type"),
+            "data": base64.b64decode(file_item["data"]),
+        }
+
+    return None
+
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def process_file_payloads(
+    *,
+    user_id,
+    files,
+    inp_links,
+    extracted_payload,
+):
+    """
+    files: list[dict] or None
+    inp_links: list (mutated)
+    extracted_payload: list (mutated)
+    """
+
+    if not files:
+        return
+
+    for f in files:
+        if not f or "data" not in f:
+            continue
+
+        filename = f.get("filename", "file")
+        ext = os.path.splitext(filename)[1].lower()
+
+        # ---- IMAGE → upload & link ----
+        # if ext in IMAGE_EXTENSIONS:
+        #     file_obj = io.BytesIO(f["data"])
+        #     file_obj.name = filename
+
+        #     url = upload_any_file_and_get_url(
+        #         user_id=user_id,
+        #         file_obj=file_obj,
+        #         filename=filename,
+        #         content_type=f.get("content_type") or "application/octet-stream",
+        #     )
+        #     inp_links.append(url)
+        #     continue
+        if ext in IMAGE_EXTENSIONS:
+            # Convert binary → inline base64
+            encoded = base64.b64encode(f["data"]).decode("utf-8")
+            content_type = f.get("content_type") or "image/png"
+
+            inline_data = f"data:{content_type};base64,{encoded}"
+
+            inp_links.append(inline_data)
+            continue
+
+        # ---- DOCUMENT → extract ----
+        extracted = extract_files_content([f])
+        if extracted:
+            extracted_payload.extend(extracted)
