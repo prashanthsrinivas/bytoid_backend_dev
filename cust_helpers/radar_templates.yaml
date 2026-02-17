@@ -49,6 +49,7 @@ radar_review_template: |
      - DO NOT add, reorder, rename, or merge sections
      - Only populate content within the given structure
      - Respect any visual / block hints contained in it
+     - Any length, depth, or volume requirements contained in the structure blueprint are considered authoritative execution constraints.
 
   3. USER-REQUESTED CONTENT SCOPE
      If the user says:
@@ -62,13 +63,52 @@ radar_review_template: |
      • decision criticality
      • ambiguity and risk
      • domain and audience
+
+
+  ────────────────────────────────────────────────
+  ## STRUCTURE-DRIVEN LENGTH CONTRACT (ADDITIVE)
+
+  When {{structure_file_data}} is present and non-empty:
+
+  1. Treat the following fields as EXECUTION CONSTRAINTS:
+    - constraints.total_target.min_words
+    - constraints.total_target.max_words
+    - constraints.total_target.expected_pages
+    - sections[].expected_depth
+    - sections[].target_length.min_words
+    - sections[].target_length.max_words
+
+  2. You MUST attempt to satisfy section-level and document-level
+    minimum word targets through legitimate analytical expansion:
+    - deeper breakdown of arguments
+    - explicit reasoning chains and assumptions
+    - implications, risks, edge cases, and scenarios
+    - comparative or alternative interpretations
+    - structured elaboration within the SAME section
+
+  3. You MAY NOT:
+    - compress sections below their minimum target
+    - merge sections
+    - omit analytical depth to shorten output
+    - repeat content or pad with generic filler
+
+  4. If, after exhausting all evidence-based expansion,
+    the minimum word targets cannot be met:
+    - Produce the longest defensible output possible
+    - Reduce confidence_level by one tier
+    - Explain the limitation concisely in structure_rationale
+
+  5. Never mention word counts, page counts, or compliance
+    inside the narrative output.
+
   ────────────────────────────────────────────────
   ## LENGTH & VOLUME CONSTRAINTS
 
-  Enforced **only** when user explicitly states:
-  • word count: "max 1200 words", "at least 1800 words", "exactly 1000 words"
-  • page count: "2–3 pages", "maximum 5 pages"
-  • other: "short executive summary", "brief one-pager"
+  Length & volume constraints are enforced when:
+  • the user explicitly specifies word or page limits
+  • OR {{structure_file_data}} provides section-level or document-level
+    word targets (constraints.total_target or sections[].target_length)
+
 
   • Page estimation: ~450–500 words per page unless user specifies otherwise
   • Enforcement:
@@ -175,6 +215,10 @@ radar_review_template: |
   - [ ] No mixed-content micro_blocks (html + data in same micro)
   - [ ] document_meta fields populated sensibly (no IDs, no leaks)
   - [ ] JSON is syntactically valid & UI-render-ready
+  - [ ] Section-level and document-level minimum word targets
+      from structure_file_data have been reasonably satisfied
+      or explicitly justified in structure_rationale
+
 
   If any validation failure on a block:
   - Remove that block entirely
@@ -691,12 +735,12 @@ structure_prompt_template: |
   You are a DOCUMENT STRUCTURE ANALYST.
 
   Your task is to analyze the provided INPUT (document text, file links, or user context)
-  and infer a clean, execution-ready STRUCTURE BLUEPRINT that can later be used by another AI
-  to generate a full professional report.
+  and infer a clean, execution-ready STRUCTURE BLUEPRINT that will be used by another AI
+  to generate a full professional document.
 
-  You are NOT writing the report.
+  You are NOT writing the document.
   You are NOT filling content.
-  You are ONLY defining structure, intent, and requirements.
+  You are ONLY defining structure, intent, constraints, and size requirements.
 
   ────────────────────────────────────────────────
   INPUTS (one or more may be present)
@@ -711,46 +755,108 @@ structure_prompt_template: |
   {{user_original_prompt_or_context}}
 
   ────────────────────────────────────────────────
-  STRUCTURE INFERENCE RULES (NON-NEGOTIABLE)
+  CORE INTERPRETATION RULES (NON-NEGOTIABLE)
 
   1. Infer the intended:
-     - document_type (report, proposal, research paper, pitch deck, spreadsheet, etc.)
-     - primary audience (e.g., CFO, auditor, student, researcher, regulator)
+     - document_type (e.g., professional report, research paper, proposal, review, pitch)
+     - primary audience (e.g., executives, academics, regulators, clients)
      - business or academic context
-     - tone & rigor level
+     - expected tone and rigor
 
-  2. Identify REQUIRED SECTIONS in logical order
-     (e.g., Executive Summary, Methodology, Analysis, Findings, Risks, Recommendations)
+  2. Detect USER INTENT REGARDING LENGTH:
+     - If the user explicitly asks for:
+       • "brief", "summary", "short", "overview" → compact document
+       • "detailed", "full report", "in-depth", "comprehensive" → extended document
+       • a specific word count or page count → treat as strict requirement
+     - If no length preference is stated:
+       → DEFAULT to a standard professional report suitable for submission or presentation.
 
-  3. Detect explicit or implicit CONSTRAINTS:
-     - word/page limits
-     - formatting requirements
-     - regulatory or academic standards
-     - submission purpose
+  3. Apply DEFAULT SIZE ASSUMPTIONS (unless overridden):
+     - Professional report:
+       • 3,000–4,500 words
+       • 8–12 pages (standard formatting)
+     - Brief report / memo:
+       • 1,000–1,800 words
+       • 3–5 pages
+     - Extended / comprehensive report:
+       • 4,500–7,000+ words
+       • 12–20 pages
 
-  4. Detect VISUAL / STRUCTURED NEEDS:
-     - tables
-     - charts (type if inferable)
-     - matrices
-     - scorecards
-     - appendices
-     Only include visuals if clearly justified by the input.
+  4. REQUIRED SECTIONS:
+     - Identify all logically required sections
+     - Order them professionally
+     - Sections must be realistic for the inferred document type
+     - Do NOT invent unnecessary sections
+  4.1 REPORT STRUCTURE COMPLETENESS CHECK (MANDATORY):
 
-  5. Be conservative:
-     - If uncertain → mark confidence as "low"
-     - Prefer narrative over visuals when data availability is unclear
-     - Never invent requirements
+   - If the inferred document_type is a professional or analytical report:
+     • The structure MUST include at least:
+       - One section with a table
+       - One section with a chart or matrix or scorecard
 
-  6. This output must be usable as DIRECT INPUT
-     for another AI to generate the final report.
+   - If this is not achievable due to unclear evidence:
+     • Downgrade confidence_level
+     • Explicitly limit visuals rather than omitting structure
+
+
+  5. SECTION DEPTH & SIZE CONTROL (MANDATORY):
+     - Every section MUST include:
+       • expected_depth (brief | moderate | detailed)
+       • target_length with min_words and max_words
+     - The sum of all section min_words MUST meet or exceed
+       constraints.total_target.min_words
+
+  6. VISUAL / STRUCTURED ELEMENTS (REPORT-AWARE):
+
+   - If the inferred document_type is a professional report, analytical report,
+     evaluation, review, assessment, or due diligence document:
+
+     • You SHOULD include structured elements where they are standard and expected,
+       even if exact data values are not yet known.
+
+     • At minimum, consider the following mappings:
+
+       - Executive Summary:
+         • Optional summary table or scorecard (high-level only)
+
+       - Methodology / Approach:
+         • Table (methods, data sources, assumptions)
+
+       - Analysis / Findings:
+         • Charts (bar, line, or pie depending on comparison or distribution)
+         • Tables for structured findings
+
+       - Risks / Issues:
+         • Risk matrix (likelihood × impact)
+         • Table of risks with mitigation notes
+
+       - Recommendations:
+         • Scorecard or prioritization matrix (impact vs effort)
+
+     • If numeric precision is uncertain:
+       → Use qualitative or ordinal scales (e.g., Low / Medium / High, 1–5).
+
+   - If the document_type is NOT a report (e.g., memo, brief, overview):
+     • Visuals remain optional and must be conservative.
+
+   - If evidence is clearly insufficient for a visual:
+     • Mark required_visuals.type as "none"
+     • Do NOT force visuals artificially
+
+
+  7. CONSERVATISM RULE:
+     - If any inference is uncertain → set confidence_level to "medium" or "low"
+     - Never assume regulatory or academic standards unless clearly implied
 
   ────────────────────────────────────────────────
   OUTPUT REQUIREMENTS (STRICT)
 
-  - Output MUST be pure JSON
-  - No markdown, no explanations, no comments
-  - The structure must be complete, coherent, and realistic
-  - Do NOT include report content, only structure & requirements
+  - Output MUST be valid JSON only
+  - No markdown
+  - No explanations
+  - No comments
+  - No report content
+  - This output MUST be directly usable as input for a document-generation AI
 
   ────────────────────────────────────────────────
   REQUIRED OUTPUT JSON SHAPE
@@ -764,6 +870,11 @@ structure_prompt_template: |
       "confidence_level": "high | medium | low"
     },
     "constraints": {
+      "total_target": {
+        "min_words": 0,
+        "max_words": 0,
+        "expected_pages": ""
+      },
       "word_limit": null,
       "page_limit": null,
       "formatting_notes": []
@@ -773,6 +884,10 @@ structure_prompt_template: |
         "section_title": "",
         "purpose": "",
         "expected_depth": "brief | moderate | detailed",
+        "target_length": {
+          "min_words": 0,
+          "max_words": 0
+        },
         "required_visuals": [
           {
             "type": "table | chart | matrix | scorecard | none",
