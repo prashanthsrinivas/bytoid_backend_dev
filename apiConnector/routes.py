@@ -1,22 +1,56 @@
 from datetime import datetime
 import json
 import pymysql
-
-from apiConnector.helpers import (
-    _execute_app_internal,
-    _execute_endpoint_internal,
-    expand_custom_dates,
-    get_schedule_endpointdetails,
-    resolve_schedule_from_activation,
-    save_endpoint_schedule,
-)
 from db.rds_db import connect_to_rds
 from flask import request, jsonify, Blueprint
 from services.apiconnectors import APIConnector
 from services.scheduler_service import APIConnectorScheduler
 from utils.s3_utils import get_filedata_endp, getallendpointdetails
+from apiConnector.helpers import (
+    _execute_app_internal,
+    _execute_endpoint_internal,
+    _get_effective_auth_config,
+    expand_custom_dates,
+    get_schedule_endpointdetails,
+    resolve_schedule_from_activation,
+    save_endpoint_schedule,
+)
+
 
 apiconnector_bp = Blueprint("apiconnector", __name__, url_prefix="/apiconnector/apps")
+
+GLOBAL_APP_CREATOR_EMAIL = "beta@bytoid.ai"
+
+def extract_user_id(payload=None):
+    payload = payload or {}
+    return (
+        payload.get("user_id")
+        or payload.get("userid")
+        or request.args.get("user_id")
+        or request.args.get("userid")
+    )
+
+def normalize_role(value):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    value = value.strip().lower()
+    return value or None
+
+
+def get_onboarding_role(cursor, user_id):
+    cursor.execute(
+        """
+        SELECT LineOfBusiness
+        FROM business_info
+        WHERE user_id_fk = %s
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone() or {}
+    return normalize_role(row.get("LineOfBusiness"))
 
 
 def ensure_dict(value):
@@ -86,6 +120,10 @@ def test_online_external_link():
     try:
         data = request.get_json(force=True)
 
+        user_id = extract_user_id(data)
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 400
+
         base_url = data["base_url"].rstrip("/")
         userid = data["user_id"]
         if not userid:
@@ -124,6 +162,154 @@ def test_online_external_link():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+#@apiconnector_bp.route("", methods=["POST"])
+#def create_external_app():
+#    conn = None
+#    cur = None
+#
+#    try:
+#        data = request.get_json(force=True)
+#       #print("data from frontend", data)
+#
+#        # ------------------------
+#        # Required fields
+#        # ------------------------
+#        user_id = data["user_id"]
+#        app_name = data["app_name"]
+#        provider = data.get("provider", "custom")
+#        base_url = data["base_url"].rstrip("/")
+#        auth = data.get("auth") or {"type": "none"}
+#
+#        # ------------------------
+#        # Universal request normalizer
+#        # Supports BOTH:
+#        #  - flat payload
+#        #  - test_request payload
+#        # ------------------------
+#        test_req = data.get("test_request") or {
+#            "path": data.get("path", "/"),
+#            "method": data.get("method", "GET"),
+#            "headers": data.get("headers"),
+#            "query_params": data.get("query_params"),
+#        }
+#
+#        path = test_req.get("path") or "/"
+#        method = test_req.get("method") or "GET"
+#        headers = test_req.get("headers") or {}
+#        query_params = test_req.get("query_params") or {}
+#
+#        # ------------------------
+#        # DB connection
+#        # ------------------------
+#        conn = connect_to_rds()
+#        cur = conn.cursor(pymysql.cursors.DictCursor)
+#
+#        # ------------------------
+#        # Duplicate app check
+#        # ------------------------
+#        cur.execute(
+#            """
+#            SELECT id FROM external_apps
+#            WHERE user_id=%s AND app_name=%s
+#            """,
+#            (user_id, app_name),
+#        )
+#
+#        if cur.fetchone():
+#            return jsonify({"success": False, "error": "App name already exists"}), 409
+#
+#        # ------------------------
+#        # Test API Connection
+#        # ------------------------
+#        connector = APIConnector(
+#            userid=user_id,
+#            config={
+#                "auth": auth,
+#                "request": {
+#                    "url": f"{base_url}{path}",
+#                    "method": method,
+#                    "headers": headers,
+#                    "query_params": query_params,
+#                },
+#                "timeout": data.get("timeout_seconds", 10),
+#                "retry": {"count": 2, "backoff": 1},
+#            },
+#        )
+#
+#        result = connector.execute()
+#
+#        if not result.get("success"):
+#            return (
+#                jsonify(
+#                    {
+#                        "success": False,
+#                        "error": "Connection test failed",
+#                        "details": result,
+#                    }
+#                ),
+#                400,
+#            )
+#
+#        # ------------------------
+#        # Insert App
+#        # ------------------------
+#        cur.execute(
+#            """
+#            INSERT INTO external_apps
+#            (
+#                user_id,
+#                app_name,
+#                provider,
+#                base_url,
+#                headers,
+#                method,
+#                query_params,
+#                auth_type,
+#                auth_config
+#            )
+#            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+#            """,
+#            (
+#                user_id,
+#                app_name,
+#                provider,
+#                base_url,
+#                json.dumps(headers),  # stored as JSON
+#                method,
+#                json.dumps(query_params),  # stored as JSON
+#                auth.get("type", "none"),
+#                json.dumps(auth),
+#            ),
+#        )
+#
+#        conn.commit()
+#
+#        return jsonify(
+#            {
+#                "success": True,
+#                "message": "App registered successfully!",
+#                "tested_endpoint": {
+#                    "url": f"{base_url}{path}",
+#                    "method": method,
+#                    "headers": headers,
+#                    "query_params": query_params,
+#                },
+#            }
+#        )
+#
+#    except Exception as e:
+#       #print("error", e)
+#        if conn:
+#            conn.rollback()
+#        return jsonify({"success": False, "error": str(e)}), 500
+#
+#    finally:
+#        if cur:
+#            cur.close()
+#        if conn:
+#            conn.close()
+#
+
 @apiconnector_bp.route("", methods=["POST"])
 def create_external_app():
     conn = None
@@ -131,23 +317,18 @@ def create_external_app():
 
     try:
         data = request.get_json(force=True)
-       #print("data from frontend", data)
 
-        # ------------------------
-        # Required fields
-        # ------------------------
+        user_id = extract_user_id(data)
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 400
+
+
         user_id = data["user_id"]
         app_name = data["app_name"]
         provider = data.get("provider", "custom")
         base_url = data["base_url"].rstrip("/")
         auth = data.get("auth") or {"type": "none"}
 
-        # ------------------------
-        # Universal request normalizer
-        # Supports BOTH:
-        #  - flat payload
-        #  - test_request payload
-        # ------------------------
         test_req = data.get("test_request") or {
             "path": data.get("path", "/"),
             "method": data.get("method", "GET"),
@@ -160,15 +341,52 @@ def create_external_app():
         headers = test_req.get("headers") or {}
         query_params = test_req.get("query_params") or {}
 
-        # ------------------------
-        # DB connection
-        # ------------------------
         conn = connect_to_rds()
         cur = conn.cursor(pymysql.cursors.DictCursor)
 
-        # ------------------------
-        # Duplicate app check
-        # ------------------------
+#        creator_email = (get_user_email(cur, user_id) or "").strip().lower()
+
+        cur.execute("SELECT email FROM users WHERE user_id=%s", (user_id,))
+        creator_row = cur.fetchone() or {}
+        creator_email = (creator_row.get("email") or "").strip().lower()
+
+        is_global_creator = creator_email == GLOBAL_APP_CREATOR_EMAIL
+
+        requested_role = (
+            data.get("target_onboarding_role")
+            or data.get("onboarding_role")
+            or data.get("role")
+        )
+        normalized_requested_role = normalize_role(requested_role)
+        requested_universal = bool(data.get("is_universal")) or (
+            is_global_creator and bool(normalized_requested_role)
+        )
+
+        if requested_universal and not is_global_creator:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "Only beta@bytoid.ai can create universal apps",
+                    }
+                ),
+                403,
+            )
+
+        if requested_universal and not normalized_requested_role:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "target_onboarding_role is required for universal apps",
+                    }
+                ),
+                400,
+            )
+
+        is_universal = 1 if (is_global_creator and normalized_requested_role) else 0
+        target_onboarding_role = normalized_requested_role if is_universal else None
+
         cur.execute(
             """
             SELECT id FROM external_apps
@@ -180,9 +398,6 @@ def create_external_app():
         if cur.fetchone():
             return jsonify({"success": False, "error": "App name already exists"}), 409
 
-        # ------------------------
-        # Test API Connection
-        # ------------------------
         connector = APIConnector(
             userid=user_id,
             config={
@@ -212,9 +427,6 @@ def create_external_app():
                 400,
             )
 
-        # ------------------------
-        # Insert App
-        # ------------------------
         cur.execute(
             """
             INSERT INTO external_apps
@@ -227,20 +439,24 @@ def create_external_app():
                 method,
                 query_params,
                 auth_type,
-                auth_config
+                auth_config,
+                is_universal,
+                target_onboarding_role
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 user_id,
                 app_name,
                 provider,
                 base_url,
-                json.dumps(headers),  # stored as JSON
+                json.dumps(headers),
                 method,
-                json.dumps(query_params),  # stored as JSON
+                json.dumps(query_params),
                 auth.get("type", "none"),
                 json.dumps(auth),
+                is_universal,
+                target_onboarding_role,
             ),
         )
 
@@ -256,11 +472,12 @@ def create_external_app():
                     "headers": headers,
                     "query_params": query_params,
                 },
+                "is_universal": bool(is_universal),
+                "target_onboarding_role": target_onboarding_role,
             }
         )
 
     except Exception as e:
-       #print("error", e)
         if conn:
             conn.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -278,48 +495,45 @@ def update_external_app(app_id):
     cur = None
 
     try:
+
         data = request.get_json(force=True)
-       #print("update payload", data)
+        user_id = extract_user_id(data if 'data' in locals() else None)
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 400
 
-        user_id = data["user_id"]
 
-        # ----------------------------
-        # DB connect
-        # ----------------------------
         conn = connect_to_rds()
         cur = conn.cursor(pymysql.cursors.DictCursor)
 
-        # ----------------------------
-        # Ownership check
-        # ----------------------------
-        cur.execute(
-            "SELECT * FROM external_apps WHERE id=%s AND user_id=%s",
-            (app_id, user_id),
-        )
+        # Load app
+        cur.execute("SELECT * FROM external_apps WHERE id=%s", (app_id,))
         app = cur.fetchone()
         if not app:
             return jsonify({"success": False, "error": "App not found"}), 404
 
-        # ----------------------------
-        # Duplicate name check
-        # ----------------------------
-        if "app_name" in data:
+        is_owner = app["user_id"] == user_id
+        is_universal = int(app.get("is_universal") or 0) == 1
+
+        # Non-owner can edit only if same-role universal app
+        if not is_owner:
+            requester_role = get_onboarding_role(cur, user_id)
+            target_role = normalize_role(app.get("target_onboarding_role"))
+            if not (is_universal and requester_role and target_role and requester_role == target_role):
+                return jsonify({"success": False, "error": "App not found"}), 404
+
+        # Duplicate name check only when owner changes name
+        if is_owner and "app_name" in data:
             cur.execute(
                 """
                 SELECT id FROM external_apps
                 WHERE user_id=%s AND app_name=%s AND id!=%s
                 """,
-                (user_id, data["app_name"], app_id),
+                (app["user_id"], data["app_name"], app_id),
             )
             if cur.fetchone():
-                return (
-                    jsonify({"success": False, "error": "App name already exists"}),
-                    409,
-                )
+                return jsonify({"success": False, "error": "App name already exists"}), 409
 
-        # ----------------------------
-        # Universal request normalizer
-        # ----------------------------
+        # Normalized request fields
         test_req = data.get("test_request") or {
             "path": data.get("path"),
             "method": data.get("method"),
@@ -327,117 +541,121 @@ def update_external_app(app_id):
             "query_params": data.get("query_params"),
         }
 
-        path = test_req.get("path") or "/"
-        method = test_req.get("method") or "GET"
-        headers = test_req.get("headers") or {}
-        query_params = test_req.get("query_params") or {}
+        method = (test_req.get("method") or data.get("method") or "GET").upper()
+        headers = test_req.get("headers") if "test_request" in data else data.get("headers")
+        query_params = test_req.get("query_params") if "test_request" in data else data.get("query_params")
 
-        # Use existing base_url if not updated
+        # fallback to existing if caller didn't send
+        if headers is None:
+            try:
+                headers = json.loads(app["headers"] or "{}")
+            except Exception:
+                headers = {}
+        if query_params is None:
+            try:
+                query_params = json.loads(app["query_params"] or "{}")
+            except Exception:
+                query_params = {}
+
         base_url = data.get("base_url", app["base_url"]).rstrip("/")
 
-        # Use existing auth if not updated
-        auth = data.get("auth") or json.loads(app["auth_config"])
+        # Optional connection test using effective auth
+        auth_for_test = data.get("auth")
+        if auth_for_test is None:
+            auth_for_test = _get_effective_auth_config(cur, app_id, user_id, app.get("auth_config"))
 
-        # ----------------------------
-        # Test updated connection
-        # ----------------------------
         connector = APIConnector(
             userid=user_id,
             config={
-                "auth": auth,
+                "auth": auth_for_test,
                 "request": {
-                    "url": f"{base_url}{path}",
+                    "url": f"{base_url}{(test_req.get('path') or '/')}",
                     "method": method,
-                    "headers": headers,
-                    "query_params": query_params,
+                    "headers": headers or {},
+                    "query_params": query_params or {},
                 },
-                "timeout": data.get("timeout_seconds", 10),
+                "timeout": data.get("timeout_seconds", app.get("timeout_seconds") or 10),
                 "retry": {"count": 2, "backoff": 1},
             },
         )
-
         result = connector.execute()
-
         if not result.get("success"):
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "Connection test failed",
-                        "details": result,
-                    }
+            return jsonify({"success": False, "error": "Connection test failed", "details": result}), 400
+
+        # -------- Global fields (owner only): app_name, base_url --------
+        if is_owner:
+            global_update_fields = []
+            global_params = []
+
+            if "app_name" in data:
+                global_update_fields.append("app_name=%s")
+                global_params.append(data["app_name"])
+
+            if "base_url" in data:
+                global_update_fields.append("base_url=%s")
+                global_params.append(base_url)
+
+            if global_update_fields:
+                global_update_fields.append("updated_at=NOW()")
+                global_params.append(app_id)
+                cur.execute(
+                    f"""
+                    UPDATE external_apps
+                    SET {', '.join(global_update_fields)}
+                    WHERE id=%s
+                    """,
+                    tuple(global_params),
+                )
+
+        # -------- Local-per-user fields (all users) --------
+        auth_local = data.get("auth")
+        method_local = method if ("method" in data or "test_request" in data) else None
+        headers_local = headers if ("headers" in data or "test_request" in data) else None
+        query_params_local = query_params if ("query_params" in data or "test_request" in data) else None
+        timeout_local = data.get("timeout_seconds")
+        retry_count_local = data.get("retry_count")
+        retry_backoff_local = data.get("retry_backoff_seconds")
+
+        if any(v is not None for v in [
+            auth_local, method_local, headers_local, query_params_local,
+            timeout_local, retry_count_local, retry_backoff_local
+        ]):
+            cur.execute(
+                """
+                INSERT INTO external_app_user_config
+                    (app_id, user_id, auth_type, auth_config, method, headers, query_params,
+                     timeout_seconds, retry_count, retry_backoff_seconds)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    auth_type = COALESCE(VALUES(auth_type), auth_type),
+                    auth_config = COALESCE(VALUES(auth_config), auth_config),
+                    method = COALESCE(VALUES(method), method),
+                    headers = COALESCE(VALUES(headers), headers),
+                    query_params = COALESCE(VALUES(query_params), query_params),
+                    timeout_seconds = COALESCE(VALUES(timeout_seconds), timeout_seconds),
+                    retry_count = COALESCE(VALUES(retry_count), retry_count),
+                    retry_backoff_seconds = COALESCE(VALUES(retry_backoff_seconds), retry_backoff_seconds),
+                    updated_at = NOW()
+                """,
+                (
+                    app_id,
+                    user_id,
+                    (auth_local or {}).get("type", "none") if auth_local is not None else None,
+                    json.dumps(auth_local) if auth_local is not None else None,
+                    method_local,
+                    json.dumps(headers_local) if headers_local is not None else None,
+                    json.dumps(query_params_local) if query_params_local is not None else None,
+                    timeout_local,
+                    retry_count_local,
+                    retry_backoff_local,
                 ),
-                400,
             )
 
-        # ----------------------------
-        # Build UPDATE
-        # ----------------------------
-        update_fields = []
-        params = []
-
-        if "app_name" in data:
-            update_fields.append("app_name=%s")
-            params.append(data["app_name"])
-
-        if "method" in data:
-            update_fields.append("method=%s")
-            params.append(method)
-
-        if "provider" in data:
-            update_fields.append("provider=%s")
-            params.append(data["provider"])
-
-        if "base_url" in data:
-            update_fields.append("base_url=%s")
-            params.append(base_url)
-
-        if "auth" in data:
-            update_fields.append("auth_type=%s")
-            update_fields.append("auth_config=%s")
-            params.append(auth.get("type", "none"))
-            params.append(json.dumps(auth))
-
-        if "headers" in data or "test_request" in data:
-            update_fields.append("headers=%s")
-            params.append(json.dumps(headers))
-
-        if "query_params" in data or "test_request" in data:
-            update_fields.append("query_params=%s")
-            params.append(json.dumps(query_params))
-
-        if not update_fields:
-            return jsonify({"success": True, "message": "Nothing to update"})
-
-        update_fields.append("updated_at=NOW()")
-        params.append(app_id)
-
-        cur.execute(
-            f"""
-            UPDATE external_apps
-            SET {', '.join(update_fields)}
-            WHERE id=%s
-            """,
-            tuple(params),
-        )
-
         conn.commit()
-
-        return jsonify(
-            {
-                "success": True,
-                "message": "App updated and verified",
-                "tested_endpoint": {
-                    "url": f"{base_url}{path}",
-                    "method": method,
-                    "headers": headers,
-                    "query_params": query_params,
-                },
-            }
-        )
+        return jsonify({"success": True, "message": "App updated and verified"})
 
     except Exception as e:
-       #print("update error", e)
         if conn:
             conn.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -447,6 +665,7 @@ def update_external_app(app_id):
             cur.close()
         if conn:
             conn.close()
+
 
 
 @apiconnector_bp.route("/<int:app_id>", methods=["DELETE"])
@@ -526,42 +745,206 @@ def hard_delete_external_app(app_id):
         conn.close()
 
 
+#@apiconnector_bp.route("/<user_id>", methods=["GET"])
+#def list_external_apps(user_id):
+#    conn = connect_to_rds()
+#    cur = conn.cursor(pymysql.cursors.DictCursor)
+#
+#    cur.execute(
+#        """
+#        SELECT *
+#        FROM external_apps
+#        WHERE user_id = %s
+#    """,
+#        (user_id,),
+#    )
+#
+#    apps = cur.fetchall()
+#    app = [normalize_row_dynamic(app) for app in apps]
+#
+    # print("all apps", app)
+#    cur.close()
+#    conn.close()
+#
+#    return jsonify({"success": True, "apps": app})
+
+
 @apiconnector_bp.route("/<user_id>", methods=["GET"])
 def list_external_apps(user_id):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        onboarding_role = None
+        try:
+            cur.execute(
+                """
+                SELECT LineOfBusiness
+                FROM business_info
+                WHERE user_id_fk = %s
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+            onboarding_role = ((row or {}).get("LineOfBusiness") or "").strip().lower() or None
+        except Exception:
+            onboarding_role = None
 
-    cur.execute(
-        """
-        SELECT *
-        FROM external_apps
-        WHERE user_id = %s
-    """,
-        (user_id,),
-    )
+        try:
 
-    apps = cur.fetchall()
-    app = [normalize_row_dynamic(app) for app in apps]
+            if onboarding_role:
+                cur.execute(
+                    """
+                    SELECT
+                        a.id,
+                        a.user_id,
+                        a.app_name,
+                        a.provider,
+                        a.base_url,
+                        COALESCE(uac.auth_type, a.auth_type) AS auth_type,
+                        COALESCE(uac.auth_config, a.auth_config) AS auth_config,
+                        COALESCE(uac.headers, a.headers) AS headers,
+                        COALESCE(uac.method, a.method) AS method,
+                        COALESCE(uac.query_params, a.query_params) AS query_params,
+                        COALESCE(uac.timeout_seconds, a.timeout_seconds) AS timeout_seconds,
+                        COALESCE(uac.retry_count, a.retry_count) AS retry_count,
+                        COALESCE(uac.retry_backoff_seconds, a.retry_backoff_seconds) AS retry_backoff_seconds,
+                        a.status,
+                        a.last_test_status,
+                        a.last_error,
+                        a.last_tested_at,
+                        a.schedules,
+                        a.created_at,
+                        a.updated_at,
+                        a.is_universal,
+                        a.target_onboarding_role
+                    FROM external_apps a
+                    LEFT JOIN external_app_user_config uac
+                      ON uac.app_id = a.id AND uac.user_id = %s
+                    WHERE a.user_id = %s
+                       OR (a.is_universal = 1 AND LOWER(TRIM(a.target_onboarding_role)) = %s)
+                    ORDER BY a.updated_at DESC
 
-    # print("all apps", app)
-    cur.close()
-    conn.close()
+                    """,
+                    (user_id, user_id, onboarding_role),
+                )
 
-    return jsonify({"success": True, "apps": app})
+
+            else:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM external_apps
+                    WHERE user_id = %s
+                    ORDER BY updated_at DESC
+                    """,
+                    (user_id,),
+                )
+        except Exception:
+            # backward-compatible fallback
+            cur.execute(
+                """
+                SELECT *
+                FROM external_apps
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            )
+
+        apps = cur.fetchall()
+        app = [normalize_row_dynamic(a) for a in apps]
+        return jsonify({"success": True, "apps": app})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@apiconnector_bp.route("/<int:app_id>/auth", methods=["PUT"])
+def upsert_user_app_auth(app_id):
+    conn = None
+    cur = None
+    try:
+        data = request.get_json(force=True) or {}
+        user_id = extract_user_id(data)
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 400
+
+        auth = data.get("auth") or {"type": "none"}
+        auth_type = auth.get("type", "none")
+
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 400
+
+        conn = connect_to_rds()
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+
+        cur.execute(
+            """
+            SELECT user_id, is_universal, target_onboarding_role
+            FROM external_apps
+            WHERE id = %s
+            """,
+            (app_id,),
+        )
+        app = cur.fetchone()
+        if not app:
+            return jsonify({"success": False, "error": "App not found"}), 404
+
+        is_owner = app["user_id"] == user_id
+        can_access = is_owner
+
+        if not can_access and int(app.get("is_universal") or 0) == 1:
+            onboarding_role = get_onboarding_role(cur, user_id)
+            target_role = normalize_role(app.get("target_onboarding_role"))
+            can_access = bool(onboarding_role and target_role and onboarding_role == target_role)
+
+        if not can_access:
+            return jsonify({"success": False, "error": "Access denied"}), 403
+
+        cur.execute(
+            """
+            INSERT INTO external_app_user_auth (app_id, user_id, auth_type, auth_config)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                auth_type = VALUES(auth_type),
+                auth_config = VALUES(auth_config),
+                updated_at = NOW()
+            """,
+            (app_id, user_id, auth_type, json.dumps(auth)),
+        )
+        conn.commit()
+
+        return jsonify({"success": True, "message": "User auth saved"})
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 @apiconnector_bp.route("/<int:app_id>/endpoints", methods=["POST"])
 def create_endpoint(app_id):
     data = request.get_json(force=True)
 
+    user_id = extract_user_id(data if 'data' in locals() else None)
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id required"}), 400
+
+
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # 1️⃣ Load parent app
         cur.execute(
             """
-            SELECT headers, query_params, timeout_seconds
+            SELECT headers, query_params, timeout_seconds, user_id, is_universal, target_onboarding_role
             FROM external_apps
             WHERE id=%s AND status='active'
             """,
@@ -571,44 +954,39 @@ def create_endpoint(app_id):
         if not app:
             return jsonify({"success": False, "error": "App not found"}), 404
 
-        # 2️⃣ Merge defaults
-        headers = merge_json(app["headers"], data.get("headers"))
-
-        query_params = merge_json(app["query_params"], data.get("query_params"))
-
-        timeout_seconds = data.get("timeout_seconds") or app["timeout_seconds"]
+        is_owner = app["user_id"] == user_id
+        if not is_owner:
+            requester_role = get_onboarding_role(cur, user_id)
+            target_role = normalize_role(app.get("target_onboarding_role"))
+            if not (int(app.get("is_universal") or 0) == 1 and requester_role and target_role and requester_role == target_role):
+                return jsonify({"success": False, "error": "Access denied"}), 403
 
         method = data.get("method", "GET").upper()
+        headers = merge_json(app["headers"], data.get("headers"))
+        query_params = merge_json(app["query_params"], data.get("query_params"))
+        timeout_seconds = data.get("timeout_seconds") or app["timeout_seconds"]
 
-        # 3️⃣ Prevent duplicates
         cur.execute(
             """
             SELECT id FROM external_app_endpoints
-            WHERE app_id=%s AND path=%s AND method=%s
+            WHERE app_id=%s AND user_id=%s AND path=%s AND method=%s
             """,
-            (app_id, data["path"], method),
+            (app_id, user_id, data["path"], method),
         )
         if cur.fetchone():
             return jsonify({"success": False, "error": "Endpoint already exists"}), 409
 
-        # 4️⃣ Insert endpoint
         cur.execute(
             """
             INSERT INTO external_app_endpoints
             (
-                app_id,
-                name,
-                path,
-                method,
-                headers,
-                query_params,
-                body_template,
-                timeout_seconds
+                app_id, user_id, name, path, method, headers, query_params, body_template, timeout_seconds
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 app_id,
+                user_id,
                 data["name"],
                 data["path"],
                 method,
@@ -620,16 +998,9 @@ def create_endpoint(app_id):
         )
 
         conn.commit()
-
-        return jsonify(
-            {
-                "success": True,
-                "message": "Endpoint created",
-            }
-        )
+        return jsonify({"success": True, "message": "Endpoint created"})
 
     except Exception as e:
-       #print("err", e)
         conn.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -637,10 +1008,16 @@ def create_endpoint(app_id):
         cur.close()
         conn.close()
 
-
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>", methods=["PUT"])
 def update_endpoint(endpoint_id):
     data = request.get_json(force=True)
+
+
+    user_id = extract_user_id(data if 'data' in locals() else None)
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id required"}), 400
+
+
     conn = connect_to_rds()
     cur = conn.cursor()
 
@@ -661,9 +1038,9 @@ def update_endpoint(endpoint_id):
         if not update_fields:
             return jsonify({"success": True, "message": "Nothing to update"})
 
-        params.append(endpoint_id)
+        params.extend([endpoint_id, user_id])
         cur.execute(
-            f"UPDATE external_app_endpoints SET {', '.join(update_fields)} WHERE id=%s",
+            f"UPDATE external_app_endpoints SET {', '.join(update_fields)} WHERE id=%s AND user_id=%s",
             tuple(params),
         )
 
@@ -677,33 +1054,45 @@ def update_endpoint(endpoint_id):
         cur.close()
         conn.close()
 
-
 @apiconnector_bp.route("/<int:app_id>/endpoints", methods=["GET"])
 def list_endpoints(app_id):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        user_id = request.args.get("user_id") or request.args.get("userid")
 
-    cur.execute(
-        """
-        SELECT *
-        FROM external_app_endpoints
-        WHERE app_id=%s
-        """,
-        (app_id,),
-    )
+        # backward-compatible fallback
+        if not user_id:
+            cur.execute("SELECT user_id FROM external_apps WHERE id=%s", (app_id,))
+            row = cur.fetchone() or {}
+            user_id = row.get("user_id")
 
-    endpoints = cur.fetchall()
-    app = [normalize_row_dynamic(app) for app in endpoints]
-    cur.close()
-    conn.close()
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 400
 
-    return jsonify({"success": True, "endpoints": app})
+        cur.execute(
+            """
+            SELECT *
+            FROM external_app_endpoints
+            WHERE app_id=%s AND user_id=%s
+            """,
+            (app_id, user_id),
+        )
+
+        endpoints = cur.fetchall()
+        app = [normalize_row_dynamic(a) for a in endpoints]
+        return jsonify({"success": True, "endpoints": app})
+    finally:
+        cur.close()
+        conn.close()
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/test", methods=["POST"])
 def test_endpoint(endpoint_id, userid=None):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
+
+
 
     cur.execute(
         """
@@ -722,7 +1111,7 @@ def test_endpoint(endpoint_id, userid=None):
         return jsonify({"success": False, "error": "Endpoint not found"}), 404
 
     config = {
-        "auth": json.loads(row["auth_config"]),
+        "auth": _get_effective_auth_config(cur, row["app_id"], userid, row["auth_config"]),
         "request": {
             "url": row["base_url"] + row["path"],
             "method": row["method"],
@@ -790,8 +1179,11 @@ def test_external_app(app_id):
         # -----------------------------------
         # BUILD REQUEST
         # -----------------------------------
+        
         path = test_config.get("path", "/")
         userid = test_config.get("user_id")
+        if not userid:
+            return jsonify({"success": False, "error": "user_id required"}), 400
         method = test_config.get("method", "GET")
         headers = test_config.get("headers", {})
         query_params = test_config.get("query_params", {})
@@ -801,7 +1193,7 @@ def test_external_app(app_id):
         full_url = f"{base_url}{path}"
 
         config = {
-            "auth": auth,
+            "auth": _get_effective_auth_config(cur, app["id"], userid, app["auth_config"]),
             "request": {
                 "url": full_url,
                 "method": method,
@@ -886,37 +1278,38 @@ def delete_endpoint(endpoint_id):
     cur = None
 
     try:
+
+        user_id = (
+            request.args.get("user_id")
+            or request.args.get("userid")
+        )
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 400
+
+
         conn = connect_to_rds()
         cur = conn.cursor()
 
-        # -----------------------------------
-        # CHECK EXISTS
-        # -----------------------------------
         cur.execute(
             """
             SELECT id
             FROM external_app_endpoints
-            WHERE id = %s
+            WHERE id = %s AND user_id = %s
             """,
-            (endpoint_id,),
+            (endpoint_id, user_id),
         )
-
         if not cur.fetchone():
             return jsonify({"success": False, "error": "Endpoint not found"}), 404
 
-        # -----------------------------------
-        # DELETE
-        # -----------------------------------
         cur.execute(
             """
             DELETE FROM external_app_endpoints
-            WHERE id = %s
+            WHERE id = %s AND user_id = %s
             """,
-            (endpoint_id,),
+            (endpoint_id, user_id),
         )
 
         conn.commit()
-
         return jsonify({"success": True, "message": "Endpoint deleted permanently"})
 
     except Exception as e:

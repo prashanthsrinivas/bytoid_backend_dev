@@ -44,6 +44,48 @@ async def save_app_run_to_s3(
 
     return val
 
+def _get_effective_auth_config(cur, app_id, userid, app_auth_config):
+    """
+    Prefer user-scoped auth from external_app_user_config, then legacy table,
+    then fallback to app-level auth.
+    """
+    # 1) New per-user config table
+    try:
+        cur.execute(
+            """
+            SELECT auth_config
+            FROM external_app_user_config
+            WHERE app_id = %s AND user_id = %s
+            LIMIT 1
+            """,
+            (app_id, userid),
+        )
+        row = cur.fetchone()
+        if row and row.get("auth_config"):
+            return json.loads(row["auth_config"])
+    except Exception:
+        pass
+
+    # 2) Legacy per-user auth table (if present)
+    try:
+        cur.execute(
+            """
+            SELECT auth_config
+            FROM external_app_user_auth
+            WHERE app_id = %s AND user_id = %s
+            LIMIT 1
+            """,
+            (app_id, userid),
+        )
+        row = cur.fetchone()
+        if row and row.get("auth_config"):
+            return json.loads(row["auth_config"])
+    except Exception:
+        pass
+
+    # 3) Global fallback
+    return json.loads(app_auth_config or "{}")
+
 
 def _execute_app_internal(app_id, userid):
     conn = connect_to_rds()
@@ -62,7 +104,7 @@ def _execute_app_internal(app_id, userid):
     query_params = json.loads(app["query_params"] or "{}")
 
     config = {
-        "auth": json.loads(app["auth_config"]),
+        "auth": _get_effective_auth_config(cur, app_id, userid, app["auth_config"]),
         "request": {
             "url": app["base_url"].rstrip("/"),
             "method": "GET",
@@ -127,7 +169,11 @@ async def _execute_endpoint_internal(endpoint_id, userid, context=None):
         headers = json.loads(row["headers"] or "{}")
         query_params = json.loads(row["query_params"] or "{}")
         body = json.loads(row["body_template"] or "null")
-        auth_config = json.loads(row["auth_config"] or "{}")
+        #auth_config = json.loads(row["auth_config"] or "{}")
+        auth_config = _get_effective_auth_config(
+            cur, row["app_id"], userid, row["auth_config"]
+        )
+
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in DB: {e}")
 

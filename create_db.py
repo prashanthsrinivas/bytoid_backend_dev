@@ -182,6 +182,49 @@ def create_tables():
         cursor.close()
         connection.close()
 
+def create_external_app_user_auth_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS external_app_user_auth (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_id BIGINT NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
+                auth_type ENUM('bearer', 'api_key', 'basic', 'oauth2', 'none') NOT NULL DEFAULT 'none',
+                auth_config JSON NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+                UNIQUE KEY uq_external_app_user_auth (app_id, user_id),
+                INDEX idx_external_app_user_auth_user (user_id),
+
+                CONSTRAINT fk_external_app_user_auth_app
+                    FOREIGN KEY (app_id)
+                    REFERENCES external_apps(id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+
+        connection.commit()
+        print("✅ external_app_user_auth table created")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create external_app_user_auth table:", str(e))
+        raise
+
+    finally:
+        cursor.close()
+        connection.close()
+
 
 def alter_tokens():
     connection = connect_to_rds()
@@ -2341,6 +2384,11 @@ def create_external_apps_table():
 
                 -- DEFAULT REQUEST CONFIG
                 headers JSON DEFAULT NULL,
+                method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                is_universal BOOLEAN NOT NULL DEFAULT FALSE,
+                target_onboarding_role VARCHAR(255) DEFAULT NULL,
+                INDEX idx_external_apps_universal_role (is_universal, target_onboarding_role)
+
                 query_params JSON DEFAULT NULL,
 
                 timeout_seconds INT DEFAULT 10,
@@ -2460,6 +2508,98 @@ def add_mail_sub_column():
         cursor.close()
         connection.close()   
         
+def update_external_apps_for_universal_visibility():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'external_apps'
+              AND COLUMN_NAME = 'method'
+            """
+        )
+        (method_exists,) = cursor.fetchone()
+        if method_exists == 0:
+            cursor.execute(
+                """
+                ALTER TABLE external_apps
+                ADD COLUMN method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET'
+                    AFTER headers
+                """
+            )
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'external_apps'
+              AND COLUMN_NAME = 'is_universal'
+            """
+        )
+        (is_universal_exists,) = cursor.fetchone()
+        if is_universal_exists == 0:
+            cursor.execute(
+                """
+                ALTER TABLE external_apps
+                ADD COLUMN is_universal BOOLEAN NOT NULL DEFAULT FALSE
+                    AFTER updated_at
+                """
+            )
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'external_apps'
+              AND COLUMN_NAME = 'target_onboarding_role'
+            """
+        )
+        (target_role_exists,) = cursor.fetchone()
+        if target_role_exists == 0:
+            cursor.execute(
+                """
+                ALTER TABLE external_apps
+                ADD COLUMN target_onboarding_role VARCHAR(255) DEFAULT NULL
+                    AFTER is_universal
+                """
+            )
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'external_apps'
+              AND INDEX_NAME = 'idx_external_apps_universal_role'
+            """
+        )
+        (role_idx_exists,) = cursor.fetchone()
+        if role_idx_exists == 0:
+            cursor.execute(
+                """
+                CREATE INDEX idx_external_apps_universal_role
+                ON external_apps (is_universal, target_onboarding_role)
+                """
+            )
+
+        connection.commit()
+        print("✅ external_apps universal visibility migration complete")
+    except Exception as e:
+        connection.rollback()
+        print(f"❌ Failed to migrate external_apps for universal visibility: {e}")
+        raise
+    finally:
+        cursor.close()
+        connection.close()
 
 
 

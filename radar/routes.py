@@ -36,6 +36,54 @@ RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
 logger = get_logger(__name__)
 
 
+# @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
+# def radarapp(userid):
+#     conn = connect_to_rds()
+#     cur = conn.cursor(pymysql.cursors.DictCursor)
+
+#     cur.execute(
+#         """
+#         SELECT 
+#             a.id AS app_id,
+#             a.app_name,
+
+#             e.id   AS endpoint_id,
+#             e.name,
+#             e.path,
+#             e.updated_at
+
+#         FROM external_apps a
+#         LEFT JOIN external_app_endpoints e
+#             ON a.id = e.app_id
+#         WHERE a.user_id = %s
+#         ORDER BY a.id, e.id
+#     """,
+#         (userid,),
+#     )
+
+#     rows = cur.fetchall()
+#     apps = {}
+
+#     for row in rows:
+#         app_id = row["app_id"]
+
+#         if app_id not in apps:
+#             apps[app_id] = {"id": app_id, "app_name": row["app_name"], "endpoints": []}
+
+#         # Only add endpoint if it exists
+#         if row["endpoint_id"] is not None:
+#             endpoint = {
+#                 "id": row["endpoint_id"],
+#                 "name": row["name"],
+#                 "path": row["path"],
+#                 "updated_at": row["updated_at"],
+#             }
+
+#             apps[app_id]["endpoints"].append(endpoint)
+
+#     return jsonify(list(apps.values()))
+
+
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
 def radarapp(userid):
     conn = connect_to_rds()
@@ -43,23 +91,62 @@ def radarapp(userid):
 
     cur.execute(
         """
-        SELECT 
-            a.id AS app_id,
-            a.app_name,
-
-            e.id   AS endpoint_id,
-            e.name,
-            e.path,
-            e.updated_at
-
-        FROM external_apps a
-        LEFT JOIN external_app_endpoints e
-            ON a.id = e.app_id
-        WHERE a.user_id = %s
-        ORDER BY a.id, e.id
-    """,
+        SELECT LineOfBusiness
+        FROM business_info
+        WHERE user_id_fk = %s
+        LIMIT 1
+        """,
         (userid,),
     )
+    role_row = cur.fetchone()
+    onboarding_role = (
+        (role_row.get("LineOfBusiness") or "").strip().lower() if role_row else None
+    )
+
+    if onboarding_role:
+        cur.execute(
+            """
+            SELECT
+                a.id AS app_id,
+                a.app_name,
+
+                e.id   AS endpoint_id,
+                e.name,
+                e.path,
+                e.updated_at
+
+            FROM external_apps a
+            LEFT JOIN external_app_endpoints e
+                ON a.id = e.app_id
+            WHERE a.user_id = %s
+               OR (
+                    a.is_universal = 1
+                    AND LOWER(TRIM(a.target_onboarding_role)) = %s
+               )
+            ORDER BY a.id, e.id
+        """,
+            (userid, onboarding_role),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT
+                a.id AS app_id,
+                a.app_name,
+
+                e.id   AS endpoint_id,
+                e.name,
+                e.path,
+                e.updated_at
+
+            FROM external_apps a
+            LEFT JOIN external_app_endpoints e
+                ON a.id = e.app_id
+            WHERE a.user_id = %s
+            ORDER BY a.id, e.id
+        """,
+            (userid,),
+        )
 
     rows = cur.fetchall()
     apps = {}
@@ -70,7 +157,6 @@ def radarapp(userid):
         if app_id not in apps:
             apps[app_id] = {"id": app_id, "app_name": row["app_name"], "endpoints": []}
 
-        # Only add endpoint if it exists
         if row["endpoint_id"] is not None:
             endpoint = {
                 "id": row["endpoint_id"],
@@ -78,10 +164,11 @@ def radarapp(userid):
                 "path": row["path"],
                 "updated_at": row["updated_at"],
             }
-
             apps[app_id]["endpoints"].append(endpoint)
 
     return jsonify(list(apps.values()))
+
+
 
 
 async def retreval_from_sources(
