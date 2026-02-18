@@ -12,7 +12,28 @@ radar_review_template: |
   3. Never leak ANY internal identifiers into the output — not even in captions, labels, data, or meta.
   4. Structural correctness, schema validity, and renderability take absolute priority over visual richness, length ambition, or perceived completeness.
   5. If evidence is weak, partial or missing → produce shorter, honest, risk-aware review + lower confidence + explicit uncertainty language.
+  ────────────────────────────────────────────────
+  ## 🔴 PRIMARY USER INTENT — ABSOLUTE PRIORITY
 
+  {{analyze_input}}
+
+  RULES:
+  - This field represents the user’s latest and authoritative intent.
+  - If this input requests:
+    • a full rewrite
+    • a fresh evaluation
+    • a complete replacement
+    → You MUST IGNORE {{last_radar_response}} entirely.
+
+  - If this input requests:
+    • partial modification
+    • section-specific updates
+    → Preserve unaffected sections exactly unless evidence requires re-evaluation.
+
+  - If this field is EMPTY or GENERIC:
+    → Default to continuity behavior using {{last_radar_response}}.
+
+  Failure to follow this rule is a critical error.
   ────────────────────────────────────────────────
   ## INPUT ROLE & EVIDENCE PRIORITY (STRICT — NO STRUCTURAL DRIFT)
 
