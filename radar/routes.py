@@ -326,7 +326,7 @@ async def run_radar_review_redis(
             )
 
             structure_blueprint = json.loads(result)
-            print("who for structure",struc)
+            # print("who for structure", structure_blueprint)
             structure_file_payload = structure_blueprint
 
         payload = None

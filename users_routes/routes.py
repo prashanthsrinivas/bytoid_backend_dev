@@ -694,7 +694,26 @@ def get_account_info(userid):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+#Email existance check
+@users_bp.route("/email_exist/<path:email>",methods=["GET"])
+def email_exist(email):
+    # data = request.get_json()
+    # email = data.get("email")
+    if not email:
+        return jsonify({"error":"Email is required"}),400
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("SELECT * FROM users WHERE email=%s",(email,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"emailExist": bool(user)}),200
+        password = user["password_hash"]
+        return jsonify({"emailExist": bool(user),
+                        "passwordExist":bool(password)}),200
 
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
 #creating new user
 @users_bp.route("/create_new_user", methods=["POST"])
 def create_new_user():
@@ -719,9 +738,9 @@ def create_new_user():
         )
 
     if not re.fullmatch(password_pattern, password):
-        return jsonify({"error": "Password does not meets the requirement"}), 401
+        return jsonify({"message": "Password does not meets the requirement"}), 401
     if not re.fullmatch(email_pattern, email):
-        return jsonify({"error": "Invalid mail format"}), 401
+        return jsonify({"message": "Invalid mail format"}), 401
 
     try:
         conn = connect_to_rds()
@@ -732,7 +751,7 @@ def create_new_user():
 
         if user_exists:
             logger.info("User already exist with this email address")
-            return jsonify({"error": "User already exist.Please login"}), 401
+            return jsonify({"message": "User already exists. Please login"}), 401
         logger.info("creating a new user")
         # Get value for social based on email domain
         provider_domains = {
@@ -782,6 +801,7 @@ def create_new_user():
 
         conn.commit()
         conn.close()
+        logger.info("New user created")
         return (
             jsonify(
                 {"message": "New user created successfully",
@@ -806,6 +826,7 @@ def send_email_link(email, verify_url):
         body_text=html,
     )
 
+#verification of email
 @users_bp.route("/verify_email",methods=["POST"])
 def verify_email():
     data = request.get_json()
@@ -828,7 +849,7 @@ def verify_email():
         return jsonify({"error":str(e)}),500
 
 
-
+#user sign in method
 @users_bp.route("/user_login", methods=["POST"])
 def user_login():
     data = request.get_json()
@@ -845,10 +866,12 @@ def user_login():
         query = "SELECT * FROM users WHERE email=%s"
         cursor.execute(query, (email))
         user = cursor.fetchone()
-        password_hash = user["password_hash"]
+        
 
         if not user:
-            return jsonify({"error": "Invalid email address"}), 401
+            return jsonify({"error": "Incorrect email address"}), 401
+        
+        password_hash = user["password_hash"]
         if not check_password_hash(password_hash, password):
             return jsonify({"error": "Incorrect password"}), 401
 
@@ -1002,6 +1025,7 @@ def forgot_password():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
+#method to send reset link
 def send_password_reset_email(email,reset_url):
     html = f"""
     <p>You requested a password reset.</p>
@@ -1017,7 +1041,7 @@ def send_password_reset_email(email,reset_url):
         body_text=html,
     )
 
-
+#validation of reset link
 @users_bp.route("/validateResetToken",methods=["POST"])
 def validate_reset_token():
     data = request.get_json()
@@ -1039,6 +1063,7 @@ def validate_reset_token():
     except Exception as e:
         return jsonify({"error":str(e)}),500
     
+#Updating the new password through forgot password
 @users_bp.route("/reset_password",methods=["POST"])
 def reset_password():
     data = request.get_json()

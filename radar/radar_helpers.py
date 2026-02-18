@@ -197,32 +197,41 @@ def build_file_data_payload(file_data):
     return "\n".join(blocks)
 
 
+import base64
+from werkzeug.datastructures import FileStorage
+
 def extract_file_payload(file_item, default_filename: str):
     """
-    Extracts a file payload into a normalized dict:
+    Normalizes file payload into:
     {
         filename,
         content_type,
         data (bytes)
     }
-    Returns None if invalid.
     """
 
     if not file_item:
         return None
 
-    # Case A: data URL string
+    # ✅ Case A: multipart/form-data file (Postman, browser upload)
+    if isinstance(file_item, FileStorage):
+        return {
+            "filename": file_item.filename or default_filename,
+            "content_type": file_item.content_type,
+            "data": file_item.read(),   # RAW BYTES (important)
+        }
+
+    # Case B: data URL string
     if isinstance(file_item, str) and file_item.startswith("data:"):
         header, b64data = file_item.split(",", 1)
         content_type = header.split(";")[0].replace("data:", "")
-
         return {
             "filename": default_filename,
             "content_type": content_type,
             "data": base64.b64decode(b64data),
         }
 
-    # Case B: structured JSON object
+    # Case C: structured JSON object
     if isinstance(file_item, dict) and "data" in file_item:
         return {
             "filename": file_item.get("filename", default_filename),

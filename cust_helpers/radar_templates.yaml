@@ -822,6 +822,34 @@ structure_prompt_template: |
   USER CONTEXT / ORIGINAL REQUEST:
   {{user_original_prompt_or_context}}
 
+  PRIMARY EVIDENCE RULE (NON-NEGOTIABLE)
+
+  - The DOCUMENT TEXT and FILE LINKS are the PRIMARY SOURCE OF TRUTH.
+  - You MUST analyze the actual contents of the file(s) to infer:
+    • Required sections
+    • Presence or absence of tables, charts, matrices, scorecards
+    • Level of analytical depth implied by the data
+    • Whether visuals are essential, optional, or unsupported
+
+  - If the file includes:
+    • Tabular data, comparisons, metrics, lists of variables, evaluations, scores, or rankings
+      → You MUST reflect this by requiring tables and/or scorecards in the structure.
+    • Quantitative or categorical comparisons
+      → You SHOULD require appropriate charts or matrices.
+    • Narrative-only or descriptive content with no structured data
+      → You MUST limit visuals conservatively.
+
+  - You are STRICTLY FORBIDDEN from inventing visuals, sections, or analytical depth
+    that are not justified by evidence in the provided file(s).
+
+  - If the file clearly implies how the report should be structured
+    (section names, flow, analytical framing):
+    → You MUST follow that structure as closely as possible.
+
+  - If evidence is partial or ambiguous:
+    → Lower confidence_level
+    → Reduce or qualify required_visuals
+
   ────────────────────────────────────────────────
   CORE INTERPRETATION RULES (NON-NEGOTIABLE)
 
