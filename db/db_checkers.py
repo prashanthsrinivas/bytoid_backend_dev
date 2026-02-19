@@ -803,6 +803,7 @@ def get_userid(email, connection=None):
         if own_conn:
             connection.close()
 
+
 def get_email_by_id(userid, connection=None):
     """Get the user_id for a given email."""
     own_conn = False
@@ -823,6 +824,7 @@ def get_email_by_id(userid, connection=None):
     finally:
         if own_conn:
             connection.close()
+
 
 def get_users_clients_id(email, user_id, connection=None):
     """
@@ -1173,22 +1175,29 @@ def ensure_starter_credits_for_user(user_id: str, conn):
         logger.info(f"ℹ️ User {user_id} already has active credits")
         return False  # no new credits created
 
-    logger.info(f"⚠️ No active credits found for user {user_id}, creating STARTER credits")
+    logger.info(
+        f"⚠️ No active credits found for user {user_id}, creating STARTER credits"
+    )
 
     # 2️⃣ Fetch STARTER plan
     cursor.execute(
         """
         SELECT plan_code, monthly_token_limit
         FROM plans
-        WHERE plan_code = 'STARTER'
-          AND is_active = 1
+        WHERE plan_code IN ('STARTER', 'FREE')
+        AND is_active = 1
+        ORDER BY CASE plan_code
+            WHEN 'STARTER' THEN 1
+            WHEN 'FREE' THEN 2
+        END
         LIMIT 1
         """
     )
+
     starter_plan = cursor.fetchone()
 
     if not starter_plan:
-        raise Exception("STARTER plan not found")
+        raise Exception("Neither STARTER nor FREE plan found")
 
     # 3️⃣ Ensure subscription exists
     cursor.execute(
@@ -1206,7 +1215,7 @@ def ensure_starter_credits_for_user(user_id: str, conn):
 
     if not subscription:
         cursor.execute(
-    """
+            """
     INSERT IGNORE INTO subscriptions (
         user_id,
         stripe_subscription_id,
@@ -1221,8 +1230,8 @@ def ensure_starter_credits_for_user(user_id: str, conn):
         NOW()
     )
     """,
-    (user_id,),
-)
+            (user_id,),
+        )
 
         logger.info(f"✅ STARTER subscription created for user {user_id}")
     else:

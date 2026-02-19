@@ -649,15 +649,20 @@ async def microsoft_callback():
                     """
                     SELECT plan_code, monthly_token_limit
                     FROM plans
-                    WHERE plan_code = 'STARTER'
+                    WHERE plan_code IN ('STARTER', 'FREE')
                     AND is_active = 1
+                    ORDER BY CASE plan_code
+                        WHEN 'STARTER' THEN 1
+                        WHEN 'FREE' THEN 2
+                    END
                     LIMIT 1
                     """
                 )
+
                 starter_plan = cursor.fetchone()
 
                 if not starter_plan:
-                    raise Exception("STARTER plan not found")
+                    raise Exception("Neither STARTER nor FREE plan found")
 
                 # 4️⃣ Create FREE subscription (internal, no Stripe)
                 cursor.execute(
