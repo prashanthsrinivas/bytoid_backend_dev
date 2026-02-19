@@ -954,7 +954,7 @@ def refresh_microsoft_if_needed(
             return jsonify({"message": "user found"})
 
         except Exception as e:
-            # print("Microsoft refresh failed:", e)
+            logger.info("Microsoft refresh failed:", e)
             return jsonify({"login_required": True}), 401
 
     return jsonify({"message": "user found"})
