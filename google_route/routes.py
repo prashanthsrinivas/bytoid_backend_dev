@@ -906,11 +906,23 @@ def refresh_microsoft_if_needed(
     refresh_token,
     expiry,
 ):
-    time_to_expiry = expiry - datetime.utcnow()
+    # logger.info("in the refresh_microsoft_if_needed")
 
-    if expiry <= datetime.utcnow() or time_to_expiry <= timedelta(minutes=10):
+    now = datetime.utcnow()
+
+    # ✅ FIX: handle None expiry
+    if expiry is None:
+        logger.info("expiry is None → forcing refresh")
+        expiry = now - timedelta(seconds=1)
+
+    time_to_expiry = expiry - now
+
+    if expiry <= now or time_to_expiry <= timedelta(minutes=10):
+        logger.info("into expired state of microsoft")
+
         client_id = os.environ.get("MICROSOFT_CLIENT_ID")
         client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET")
+
         try:
             response = requests.post(
                 "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -924,23 +936,24 @@ def refresh_microsoft_if_needed(
             )
 
             data = response.json()
+            logger.info("Microsoft refresh response: %s", data)
 
             if "access_token" not in data:
                 raise Exception(data)
 
             new_access_token = data["access_token"]
-            new_refresh_token = data["refresh_token"]  # ALWAYS rotated
-            expires_in = int(data["expires_in"])
 
+            # refresh_token may not always come
+            new_refresh_token = data.get("refresh_token", refresh_token)
+
+            expires_in = int(data["expires_in"])
             new_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
 
             cursor.execute(
                 """
                 UPDATE users
-                SET token = %s,
-                    refresh_token = %s,
-                    expiry = %s
-                WHERE user_id = %s
+                SET token=%s, refresh_token=%s, expiry=%s
+                WHERE user_id=%s
                 """,
                 (
                     new_access_token,
@@ -949,76 +962,19 @@ def refresh_microsoft_if_needed(
                     user_id,
                 ),
             )
+
             connection.commit()
+
+            logger.info("Microsoft token refreshed successfully")
 
             return jsonify({"message": "user found"})
 
-        except Exception as e:
-            logger.info("Microsoft refresh failed:", e)
+        except Exception:
+            logger.exception("Microsoft refresh failed")
             return jsonify({"login_required": True}), 401
 
+    logger.info("no need of microsoft refresh")
     return jsonify({"message": "user found"})
-
-
-def refresh_microsoft_if_needed(
-    cursor,
-    connection,
-    user_id,
-    refresh_token,
-    expiry,
-):
-    time_to_expiry = expiry - datetime.utcnow()
-
-    if expiry <= datetime.utcnow() or time_to_expiry <= timedelta(minutes=10):
-        client_id = os.environ.get("MICROSOFT_CLIENT_ID")
-        client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET")
-        try:
-            response = requests.post(
-                "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "scope": "offline_access https://graph.microsoft.com/.default",
-                },
-            )
-
-            data = response.json()
-
-            if "access_token" not in data:
-                raise Exception(data)
-
-            new_access_token = data["access_token"]
-            new_refresh_token = data["refresh_token"]  # ALWAYS rotated
-            expires_in = int(data["expires_in"])
-
-            new_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
-
-            cursor.execute(
-                """
-                UPDATE users
-                SET token = %s,
-                    refresh_token = %s,
-                    expiry = %s
-                WHERE user_id = %s
-                """,
-                (
-                    new_access_token,
-                    new_refresh_token,
-                    new_expiry.isoformat(),
-                    user_id,
-                ),
-            )
-            connection.commit()
-
-            return jsonify({"success": True})
-
-        except Exception as e:
-            # print("Microsoft refresh failed:", e)
-            return jsonify({"login_required": True}), 401
-
-    return jsonify({"success": True})
 
 
 def xor_encrypt(data, key):

@@ -430,10 +430,8 @@ def microsoft_login():
 @microsoft_bp.route("/auth/microsoft/callback", methods=["GET"])
 async def microsoft_callback():
     """Simple Microsoft callback - like Google oauth2callback"""
-    # print(f"********* microsoft_callback ************")
 
     try:
-        # Get parameters
         auth_code = request.args.get("code")
         error = request.args.get("error")
         state = request.args.get("state")
@@ -442,51 +440,43 @@ async def microsoft_callback():
 
         if error:
             logger.error(f"❌ OAuth error: {error}")
-
             return redirect(f"{frontend_url}/login?error={error}")
 
         if not auth_code:
             logger.error("❌ No authorization code")
-
             return redirect(f"{frontend_url}/login?error=missing_code")
 
         if not state:
             logger.error("❌ No state parameter in callback")
-
             return redirect(f"{frontend_url}/login?error=missing_state")
 
         logger.info(f"✅ Callback received with state: {state[:20]}...")
 
-        # ✅ Retrieve the stored PKCE verifier from Redis using state
         stored_state = await retrieve_auth_state_from_redis(state)
 
         if not stored_state:
-            logger.error(f"❌ No auth state found in Redis for state: {state[:20]}...")
-
+            logger.error(f"❌ No auth state found in Redis")
             return redirect(f"{frontend_url}/login?error=no_flow")
 
         code_verifier = stored_state.get("code_verifier")
 
         if not code_verifier:
-            logger.error(f"❌ No code_verifier found in stored state")
-
+            logger.error(f"❌ No code_verifier found")
             return redirect(f"{frontend_url}/login?error=no_verifier")
 
-        # Use direct HTTP call to Microsoft token endpoint with PKCE code_verifier
-        # redirect_uri = get_microsoft_redirect_uri(request)
-        redirect_uri = redirect_uri = (
-            f"{os.getenv('BASE_FRNT_URL')}/auth/microsoft/callback"
-        )
+        redirect_uri = f"{os.getenv('BASE_FRNT_URL')}/auth/microsoft/callback"
+
         token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 
         try:
+
             token_data = {
                 "client_id": CLIENT_ID,
                 "client_secret": CLIENT_SECRET,
                 "code": auth_code,
                 "redirect_uri": redirect_uri,
                 "grant_type": "authorization_code",
-                "code_verifier": code_verifier,  # ✅ Send PKCE verifier directly
+                "code_verifier": code_verifier,
                 "scope": " ".join(SCOPES),
             }
 
@@ -496,23 +486,28 @@ async def microsoft_callback():
                 logger.error(
                     f"❌ Token exchange failed: {token_response.status_code} - {token_response.text}"
                 )
-
                 return redirect(f"{frontend_url}/login?error=token_failed")
 
             result = token_response.json()
 
         except Exception as e:
             logger.error(f"❌ Token acquisition failed: {str(e)}")
-
             return redirect(f"{frontend_url}/login?error=token_failed")
 
         if not result or "access_token" not in result:
             logger.error(f"❌ No access token in result: {result}")
-
             return redirect(f"{frontend_url}/login?error=no_token")
 
-        # Get user info (like Google does)
+        # Get tokens
         access_token = result["access_token"]
+        refresh_token = result.get("refresh_token", "")
+
+        # ✅ ADDED: Calculate expiry
+        expires_in = int(result.get("expires_in", 3600))
+        expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+
+        logger.info(f"✅ Microsoft token expiry calculated: {expiry}")
+
         headers = {"Authorization": f"Bearer {access_token}"}
 
         userinfo_response = requests.get(
@@ -520,66 +515,91 @@ async def microsoft_callback():
         )
 
         if userinfo_response.status_code != 200:
-            logger.error(f"❌ Failed to get user info: {userinfo_response.status_code}")
-
+            logger.error(f"❌ Failed to get user info")
             return redirect(f"{frontend_url}/login?error=userinfo_failed")
 
         userinfo = userinfo_response.json()
+
         email = userinfo.get("mail") or userinfo.get("userPrincipalName")
         given_name = userinfo.get("givenName", "")
         family_name = userinfo.get("surname", "")
         user_id = userinfo.get("id")
 
-        # Store user in session (like Google does)
         session["user"] = {
             "id": user_id,
             "name": f"{given_name} {family_name}".strip(),
             "email": email,
         }
 
-        # Save to database (simplified like Google)
         try:
+
             conn = connect_to_rds()
             cursor = conn.cursor(pymysql.cursors.DictCursor)
 
             cursor.execute(
                 "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
             )
+
             existing_user = cursor.fetchone()
-            # print("exising valus", existing_user)
 
             if existing_user:
-                # print(f"***** existing user")
-                # Update existing user
+
                 user_type = existing_user["user_type"]
-                # print("usertype", user_type)
+
+                # ✅ FIXED: expiry added here
                 cursor.execute(
                     """
                     UPDATE users SET 
-                        user_id = %s, first_name = %s, last_name = %s,
-                        token = %s, refresh_token = %s, social = %s,
-                        logged_in_at = NOW(), updated_in = NOW()
+                        user_id = %s,
+                        first_name = %s,
+                        last_name = %s,
+                        token = %s,
+                        refresh_token = %s,
+                        expiry = %s,
+                        social = %s,
+                        logged_in_at = NOW(),
+                        updated_in = NOW()
                     WHERE email = %s
-                """,
+                    """,
                     (
                         user_id,
                         given_name,
                         family_name,
                         access_token,
-                        result.get("refresh_token", ""),
+                        refresh_token,
+                        expiry.isoformat(),  # ✅ ADDED
                         "microsoft",
                         email,
                     ),
                 )
+
                 ensure_starter_credits_for_user(user_id, conn)
+
             else:
-                # Create new user - EXACTLY like Google does
+
                 cursor.execute(
-                    """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
-                    client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                    created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
-                """,
+                    """INSERT INTO users (
+                        user_id, user_type, launch_id_fk,
+                        first_name, last_name, email, phone,
+                        client_id, client_secret,
+                        token, refresh_token, expiry,
+                        password_hash, profile_pic, location,
+                        social, created_in, updated_in,
+                        logged_in_at, logged_out_at,
+                        sociallinks, subscribe_id,
+                        roles_creation, permissions, special_access
+                    )
+                    VALUES (
+                        %s,%s,%s,
+                        %s,%s,%s,%s,
+                        %s,%s,
+                        %s,%s,%s,
+                        %s,%s,%s,
+                        %s,NOW(),NOW(),
+                        NOW(),%s,
+                        %s,%s,%s,%s,%s
+                    )
+                    """,
                     (
                         user_id,
                         "admin",
@@ -591,8 +611,8 @@ async def microsoft_callback():
                         CLIENT_ID,
                         CLIENT_SECRET,
                         access_token,
-                        result.get("refresh_token", ""),
-                        None,
+                        refresh_token,
+                        expiry.isoformat(),  # ✅ FIXED HERE
                         "",
                         "",
                         "",
@@ -605,9 +625,8 @@ async def microsoft_callback():
                         True,
                     ),
                 )
-                # print(f"******** created new user")
 
-                # Auto-generate API key for new Microsoft users (like we do in users/generate-website-api-key)
+                # KEEP ALL YOUR EXISTING CODE BELOW UNCHANGED
                 new_api_key = str(uuid.uuid4())
                 new_launch_id = str(uuid.uuid4())
                 new_sub_agent_id = str(uuid.uuid4())
@@ -730,7 +749,7 @@ async def microsoft_callback():
             conn.close()
 
         except Exception as db_error:
-            logger.error(f"❌ Database error: {str(db_error)}")
+            logger.error(f"Database error: {str(db_error)}")
             # Continue anyway - don't fail login for DB issues
 
         # Check if user needs onboarding
