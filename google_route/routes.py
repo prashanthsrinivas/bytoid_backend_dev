@@ -779,7 +779,10 @@ def token_update_and_check():
     data = request.json or {}
 
     user_id = (
-        session.get("user_id") or session.get("userState_id") or data.get("user_id")
+        session.get("user_id")
+        or session.get("userState_id")
+        or data.get("user_id")
+        or data.get("userid")
     )
     # print(f"user_id: {user_id}")
 
@@ -809,6 +812,7 @@ def token_update_and_check():
                 expiry = datetime.fromisoformat(expiry)
 
             # print(f"{social} | {client_id} | {expiry}")
+            logger.info("social got is %s - %s", social, client_id)
 
             # 🔹 Google
             if social == "google":
