@@ -1385,232 +1385,102 @@ radar_change_block_prompt: |
   - Mark the chart as a qualitative estimate in the caption
 
 structure_prompt_template: |
-  You are a DOCUMENT STRUCTURE ANALYST.
+  You are a RADAR DOCUMENT STRUCTURE ARCHITECT.
 
-  Your task is to analyze the provided INPUT (document text, file links, or user context)
-  and infer a clean, execution-ready STRUCTURE BLUEPRINT that will be used by another AI
-  to generate a full professional document.
+  Your task is to analyze the input and produce a RADAR STRUCTURE BLUEPRINT.
+  You are defining structure only — NOT writing content.
 
-  You are NOT writing the document.
-  You are NOT filling content.
-  You are ONLY defining structure, intent, constraints, and size requirements.
-
-  ────────────────────────────────────────────────
-  INPUTS (one or more may be present)
-
+  INPUTS:
   DOCUMENT TEXT:
   {{document_file_data}}
 
-  FILE LINKS (if any):
+  FILE LINKS:
   {{file_links}}
 
-  USER CONTEXT / ORIGINAL REQUEST:
+  USER CONTEXT:
   {{user_original_prompt_or_context}}
 
-  PRIMARY EVIDENCE RULE (NON-NEGOTIABLE)
+  ────────────────────────────────────────────────
+  CORE RULES
 
-  - The DOCUMENT TEXT and FILE LINKS are the PRIMARY SOURCE OF TRUTH.
-  - You MUST analyze the actual contents of the file(s) to infer:
-    • Required sections
-    • Presence or absence of tables, charts, matrices, scorecards
-    • Level of analytical depth implied by the data
-    • Whether visuals are essential, optional, or unsupported
+  • Output MUST use RADAR block format.
+  • Output MUST contain:
+    - document_meta
+    - estimated_word_count
+    - structure_rationale
+    - blocks[]
 
-  - If the file includes:
-    • Tabular data, comparisons, metrics, lists of variables, evaluations, scores, or rankings
-      → You MUST reflect this by requiring tables and/or scorecards in the structure.
-    • Quantitative or categorical comparisons
-      → You SHOULD require appropriate charts or matrices.
-    • Narrative-only or descriptive content with no structured data
-      → You MUST limit visuals conservatively.
-
-  - You are STRICTLY FORBIDDEN from inventing visuals, sections, or analytical depth
-    that are not justified by evidence in the provided file(s).
-
-  - If the file clearly implies how the report should be structured
-    (section names, flow, analytical framing):
-    → You MUST follow that structure as closely as possible.
-
-  - If evidence is partial or ambiguous:
-    → Lower confidence_level
-    → Reduce or qualify required_visuals
+  • DO NOT output sections[], constraints[], or content.
 
   ────────────────────────────────────────────────
-  LANGUAGE ENFORCEMENT — HARD RULE
+  BLOCK RULES
 
-  REQUIRED OUTPUT LANGUAGE: {{output_language}}
+  Each block represents a major section and MUST include:
 
-  You MUST generate the ENTIRE output exclusively in: {{output_language}}
+  - block_id (semantic-readable)
+  - block_type: narrative | table | chart | matrix | scorecard | list | appendix
+  - title
+  - editable: true
+  - exportable: true
+  - micro_blocks: []
 
-  This includes:
-  - titles
-  - paragraphs
-  - bullet points
-  - table content
-  - explanations
+  Use block_type based on evidence:
+  - narrative → default
+  - table → structured comparisons
+  - chart → trends/distributions
+  - matrix → risk or multi-factor evaluation
+  - scorecard → scoring/rating
+  - list → enumerations
+
+  If uncertain → use narrative.
+
+  ────────────────────────────────────────────────
+  DEFAULT BLOCKS (use unless clearly inappropriate)
+
+  - executive-summary
+  - scope-and-objectives
+  - methodology
+  - key-findings
+  - detailed-analysis
+  - risks-and-limitations
   - recommendations
-  - rationales
-
-  NEVER output English unless {{output_language}} is English.
-
-  NEVER mix languages.
-
-  NEVER default to English.
-
-  If {{output_language}} is:
-  - Spanish → output Spanish
-  - Hindi → output Hindi
-  - Arabic → output Arabic
-  - Japanese → output Japanese
-  - French → output French
-  - German → output German
-  - Chinese → output Chinese
-  - Telugu → output Telugu
-  - Tamil → output Tamil
-  - etc.
-
-  This rule is mandatory and absolute.
+  - conclusion
 
   ────────────────────────────────────────────────
-  CORE INTERPRETATION RULES (NON-NEGOTIABLE)
+  WORD COUNT RULE
 
-  1. Infer the intended:
-     - document_type (e.g., professional report, research paper, proposal, review, pitch)
-     - primary audience (e.g., executives, academics, regulators, clients)
-     - business or academic context
-     - expected tone and rigor
+  Choose realistic size:
 
-  2. Detect USER INTENT REGARDING LENGTH:
-     - If the user explicitly asks for:
-       • "brief", "summary", "short", "overview" → compact document
-       • "detailed", "full report", "in-depth", "comprehensive" → extended document
-       • a specific word count or page count → treat as strict requirement
-     - If no length preference is stated:
-       → DEFAULT to a standard professional report suitable for submission or presentation.
-
-  3. Apply DEFAULT SIZE ASSUMPTIONS (unless overridden):
-     - Professional report:
-       • 3,000–4,500 words
-       • 8–12 pages (standard formatting)
-     - Brief report / memo:
-       • 1,000–1,800 words
-       • 3–5 pages
-     - Extended / comprehensive report:
-       • 4,500–7,000+ words
-       • 12–20 pages
-
-  4. REQUIRED SECTIONS:
-     - Identify all logically required sections
-     - Order them professionally
-     - Sections must be realistic for the inferred document type
-     - Do NOT invent unnecessary sections
-  4.1 REPORT STRUCTURE COMPLETENESS CHECK (MANDATORY):
-
-   - If the inferred document_type is a professional or analytical report:
-     • The structure MUST include at least:
-       - One section with a table
-       - One section with a chart or matrix or scorecard
-
-   - If this is not achievable due to unclear evidence:
-     • Downgrade confidence_level
-     • Explicitly limit visuals rather than omitting structure
-
-
-  5. SECTION DEPTH & SIZE CONTROL (MANDATORY):
-     - Every section MUST include:
-       • expected_depth (brief | moderate | detailed)
-       • target_length with min_words and max_words
-     - The sum of all section min_words MUST meet or exceed
-       constraints.total_target.min_words
-
-  6. VISUAL / STRUCTURED ELEMENTS (REPORT-AWARE):
-
-   - If the inferred document_type is a professional report, analytical report,
-     evaluation, review, assessment, or due diligence document:
-
-     • You SHOULD include structured elements where they are standard and expected,
-       even if exact data values are not yet known.
-
-     • At minimum, consider the following mappings:
-
-       - Executive Summary:
-         • Optional summary table or scorecard (high-level only)
-
-       - Methodology / Approach:
-         • Table (methods, data sources, assumptions)
-
-       - Analysis / Findings:
-         • Charts (bar, line, or pie depending on comparison or distribution)
-         • Tables for structured findings
-
-       - Risks / Issues:
-         • Risk matrix (likelihood × impact)
-         • Table of risks with mitigation notes
-
-       - Recommendations:
-         • Scorecard or prioritization matrix (impact vs effort)
-
-     • If numeric precision is uncertain:
-       → Use qualitative or ordinal scales (e.g., Low / Medium / High, 1–5).
-
-   - If the document_type is NOT a report (e.g., memo, brief, overview):
-     • Visuals remain optional and must be conservative.
-
-   - If evidence is clearly insufficient for a visual:
-     • Mark required_visuals.type as "none"
-     • Do NOT force visuals artificially
-
-
-  7. CONSERVATISM RULE:
-     - If any inference is uncertain → set confidence_level to "medium" or "low"
-     - Never assume regulatory or academic standards unless clearly implied
+  - standard → 1500–3000
+  - extended → 3000–5000
+  - comprehensive → 5000–8000
 
   ────────────────────────────────────────────────
-  OUTPUT REQUIREMENTS (STRICT)
+  LANGUAGE RULE
 
-  - Output MUST be valid JSON only
-  - No markdown
-  - No explanations
-  - No comments
-  - No report content
-  - This output MUST be directly usable as input for a document-generation AI
+  Output MUST be in: {{output_language}}
 
   ────────────────────────────────────────────────
-  REQUIRED OUTPUT JSON SHAPE
+  OUTPUT FORMAT — JSON ONLY
 
   {
     "document_meta": {
-      "document_type": "",
-      "intended_audience": "",
-      "business_context": "",
-      "tone": "",
+      "persona": "",
+      "domain": "",
+      "use_case": "",
+      "review_depth": "standard | extended | comprehensive",
       "confidence_level": "high | medium | low"
     },
-    "constraints": {
-      "total_target": {
-        "min_words": 0,
-        "max_words": 0,
-        "expected_pages": ""
-      },
-      "word_limit": null,
-      "page_limit": null,
-      "formatting_notes": []
-    },
-    "sections": [
+    "estimated_word_count": number,
+    "structure_rationale": "",
+    "blocks": [
       {
-        "section_title": "",
-        "purpose": "",
-        "expected_depth": "brief | moderate | detailed",
-        "target_length": {
-          "min_words": 0,
-          "max_words": 0
-        },
-        "required_visuals": [
-          {
-            "type": "table | chart | matrix | scorecard | none",
-            "notes": ""
-          }
-        ]
+        "block_id": "",
+        "block_type": "narrative | table | chart | matrix | scorecard | list | appendix",
+        "title": "",
+        "editable": true,
+        "exportable": true,
+        "micro_blocks": []
       }
     ]
   }
@@ -1642,6 +1512,7 @@ language_wordcount_extractor: |
     "language": "English",
     "word_count": null
   }
+
 correct_radar_json_prompt: |
   You are RADAR-JSON-MERGER AI. 
 

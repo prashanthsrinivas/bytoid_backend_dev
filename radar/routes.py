@@ -519,15 +519,6 @@ async def run_radar_review_redis(
 
     review_temp = None
     conn = None
-    if files:
-        logger.info("files %s", len(files))
-    else:
-        logger.info("files %s", files)
-    if structure_file:
-        logger.info("structuree file %s", len(structure_file))
-    else:
-        logger.info("structure file %s", structure_file)
-
     try:
 
         # ---------------------------------
@@ -682,7 +673,7 @@ async def run_radar_review_redis(
                 )
 
                 structure_file_payload = json.loads(result)
-                print("structrure file payload", structure_file_payload)
+                # print("structrure file payload", structure_file_payload)
                 logger.info("✅ STRUCTURE GENERATED")
 
             except Exception:
@@ -752,12 +743,12 @@ async def run_radar_review_redis(
 
             if val:
                 last_radar_response = json.dumps(val)
-            if not output_word_count:
-                output_word_count = (
-                    val.get("estimated_word_count")
-                    or val.get("document_meta", {}).get("estimated_word_count")
-                    or 300  # fallback default
-                )
+                if not output_word_count:
+                    output_word_count = (
+                        val.get("estimated_word_count")
+                        or val.get("document_meta", {}).get("estimated_word_count")
+                        or 300  # fallback default
+                    )
 
         # REVIEW
         if btype == "review":
