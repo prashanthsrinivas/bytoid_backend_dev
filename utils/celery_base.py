@@ -121,23 +121,30 @@ def backoff(retries):
 @new_celery.task(bind=True, name="tasks.umailSync")
 def umail_sync(self, user_id):
 
+    connection = None
+    cursor = None
+
     try:
         connection = connect_to_rds()
+
+        # FIX: validate connection
+        if connection is None:
+            raise Exception("Database connection failed (connect_to_rds returned None)")
+
         cursor = connection.cursor()
 
         integration = None
-
-        # print("inside umail sync")
+        social = None
 
         cursor.execute(
             "SELECT social FROM users WHERE user_id = %s",
             (user_id,),
         )
         row = cursor.fetchone()
+
         if row:
             social = row[0]
         else:
-            # try getting it from the integration table
             cursor.execute(
                 "SELECT platform FROM integrations WHERE user_id = %s",
                 (user_id,),
@@ -147,27 +154,41 @@ def umail_sync(self, user_id):
                 social = row[0]
                 integration = True
 
-        # print(f"integration inside umail_sync : {integration}")
         mailbox_setting = check_mailbox(user_id)
+
         if mailbox_setting:
+
             if social == "google":
                 result = asyncio.run(v2all_continuous(user_id, integration=integration))
-                return {"status": "completed", "user_id": user_id, "result": result}
+
             elif social == "outlook":
                 result = asyncio.run(
                     v2all_continuous_outlook(user_id, integration=integration)
                 )
-                return {"status": "completed", "user_id": user_id, "result": result}
+
             else:
                 result = asyncio.run(
                     v2all_continuous_zoho(user_id, integration=integration)
                 )
-                return {"status": "completed", "user_id": user_id, "result": result}
+
+            return {"status": "completed", "user_id": user_id, "result": result}
+
     except Exception as exc:
+
         countdown = backoff(self.request.retries)
+
         raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+
     finally:
-        # always release lock at end so new task can start
+
+        # close cursor safely
+        if cursor:
+            cursor.close()
+
+        # close connection safely
+        if connection:
+            connection.close()
+
         release_user_lock(user_id)
 
 
@@ -523,67 +544,6 @@ def update_playbook_runtime(userid, filename, runtime_updates):
 
     os.remove(local_path)
     return True
-
-
-# @celery.task(bind=True, max_retries=3, name="tasks.workflow_scheduler")
-# def run_scheduled_job(self, userid, filename, contacts):
-#     from services.workflow_service import WorkflowRunnerV2
-#     from services.scheduler_service import SchedulerService
-#     import asyncio
-
-#     execution_id = generate_execution_id()
-#     redis_key = f"scheduled:{userid}:{filename}:all"
-
-#     if not try_acquire_workflow_lock(userid, filename, execution_id):
-#         return {"status": "skipped", "reason": "workflow_already_running"}
-
-#     loop = asyncio.new_event_loop()
-#     asyncio.set_event_loop(loop)
-
-#     try:
-#         runner = WorkflowRunnerV2(
-#             userid=userid,
-#             filename=filename,
-#             contacts=contacts,
-#             testing=False,
-#             execution_id=execution_id,
-#         )
-
-#         result = loop.run_until_complete(runner.execute())
-
-#         update_playbook_runtime(
-#             userid,
-#             filename,
-#             {"last_execution_id": execution_id, "last_execution_status": "success"},
-#         )
-
-#         return {"status": "completed", "execution_id": execution_id, "result": result}
-
-#     except Exception as e:
-#         update_playbook_runtime(
-#             userid,
-#             filename,
-#             {
-#                 "last_execution_id": execution_id,
-#                 "last_execution_status": "failed",
-#                 "last_error": str(e),
-#             },
-#         )
-#         # loop.run_until_complete(SchedulerService.redis_service.delete(redis_key))
-#         raise
-
-#     finally:
-#         update_playbook_runtime(
-#             userid,
-#             filename,
-#             {
-#                 "is_running": False,
-#                 "current_execution_id": None,
-#                 "last_execution_status": "failed",
-#             },
-#         )
-#         # loop.run_until_complete(SchedulerService.redis_service.delete(redis_key))
-#         loop.close()
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.workflow_scheduler")

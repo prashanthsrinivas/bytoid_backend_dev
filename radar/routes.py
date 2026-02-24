@@ -13,8 +13,11 @@ from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request
 from db.rds_db import connect_to_rds
 import uuid
+
+# from radar.lang_maps import run_language_tests
 from radar.radar_helpers import (
     _safe_json_parse,
+    _safe_json_parse2,
     build_file_data_payload,
     extract_file_payload,
     extract_files_content,
@@ -23,7 +26,11 @@ from radar.radar_helpers import (
 )
 from services.redis_service import RedisService
 from umail.routes import get_sorted_lance_emails
-from utils.fireworkzz import get_firework_embedding, get_think_fire_response2_og
+from utils.fireworkzz import (
+    get_firework_embedding,
+    get_think_fire_response2_og,
+    get_think_fire_response2_og2,
+)
 import os, io
 from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file
@@ -32,56 +39,11 @@ from utils.base_logger import get_logger
 
 radar_bp = Blueprint("radar", __name__)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
-
+print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
 logger = get_logger(__name__)
 
-
-# @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
-# def radarapp(userid):
-#     conn = connect_to_rds()
-#     cur = conn.cursor(pymysql.cursors.DictCursor)
-
-#     cur.execute(
-#         """
-#         SELECT 
-#             a.id AS app_id,
-#             a.app_name,
-
-#             e.id   AS endpoint_id,
-#             e.name,
-#             e.path,
-#             e.updated_at
-
-#         FROM external_apps a
-#         LEFT JOIN external_app_endpoints e
-#             ON a.id = e.app_id
-#         WHERE a.user_id = %s
-#         ORDER BY a.id, e.id
-#     """,
-#         (userid,),
-#     )
-
-#     rows = cur.fetchall()
-#     apps = {}
-
-#     for row in rows:
-#         app_id = row["app_id"]
-
-#         if app_id not in apps:
-#             apps[app_id] = {"id": app_id, "app_name": row["app_name"], "endpoints": []}
-
-#         # Only add endpoint if it exists
-#         if row["endpoint_id"] is not None:
-#             endpoint = {
-#                 "id": row["endpoint_id"],
-#                 "name": row["name"],
-#                 "path": row["path"],
-#                 "updated_at": row["updated_at"],
-#             }
-
-#             apps[app_id]["endpoints"].append(endpoint)
-
-#     return jsonify(list(apps.values()))
+# # Run tests
+# run_language_tests()
 
 
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
@@ -91,62 +53,23 @@ def radarapp(userid):
 
     cur.execute(
         """
-        SELECT LineOfBusiness
-        FROM business_info
-        WHERE user_id_fk = %s
-        LIMIT 1
-        """,
+        SELECT
+            a.id AS app_id,
+            a.app_name,
+
+            e.id   AS endpoint_id,
+            e.name,
+            e.path,
+            e.updated_at
+
+        FROM external_apps a
+        LEFT JOIN external_app_endpoints e
+            ON a.id = e.app_id
+        WHERE a.user_id = %s
+        ORDER BY a.id, e.id
+    """,
         (userid,),
     )
-    role_row = cur.fetchone()
-    onboarding_role = (
-        (role_row.get("LineOfBusiness") or "").strip().lower() if role_row else None
-    )
-
-    if onboarding_role:
-        cur.execute(
-            """
-            SELECT
-                a.id AS app_id,
-                a.app_name,
-
-                e.id   AS endpoint_id,
-                e.name,
-                e.path,
-                e.updated_at
-
-            FROM external_apps a
-            LEFT JOIN external_app_endpoints e
-                ON a.id = e.app_id
-            WHERE a.user_id = %s
-               OR (
-                    a.is_universal = 1
-                    AND LOWER(TRIM(a.target_onboarding_role)) = %s
-               )
-            ORDER BY a.id, e.id
-        """,
-            (userid, onboarding_role),
-        )
-    else:
-        cur.execute(
-            """
-            SELECT
-                a.id AS app_id,
-                a.app_name,
-
-                e.id   AS endpoint_id,
-                e.name,
-                e.path,
-                e.updated_at
-
-            FROM external_apps a
-            LEFT JOIN external_app_endpoints e
-                ON a.id = e.app_id
-            WHERE a.user_id = %s
-            ORDER BY a.id, e.id
-        """,
-            (userid,),
-        )
 
     rows = cur.fetchall()
     apps = {}
@@ -157,6 +80,7 @@ def radarapp(userid):
         if app_id not in apps:
             apps[app_id] = {"id": app_id, "app_name": row["app_name"], "endpoints": []}
 
+        # Only add endpoint if it exists
         if row["endpoint_id"] is not None:
             endpoint = {
                 "id": row["endpoint_id"],
@@ -164,11 +88,95 @@ def radarapp(userid):
                 "path": row["path"],
                 "updated_at": row["updated_at"],
             }
+
             apps[app_id]["endpoints"].append(endpoint)
 
     return jsonify(list(apps.values()))
 
 
+# @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
+# def radarapp(userid):
+#     conn = connect_to_rds()
+#     cur = conn.cursor(pymysql.cursors.DictCursor)
+
+#     cur.execute(
+#         """
+#         SELECT LineOfBusiness
+#         FROM business_info
+#         WHERE user_id_fk = %s
+#         LIMIT 1
+#         """,
+#         (userid,),
+#     )
+#     role_row = cur.fetchone()
+#     onboarding_role = (
+#         (role_row.get("LineOfBusiness") or "").strip().lower() if role_row else None
+#     )
+
+#     if onboarding_role:
+#         cur.execute(
+#             """
+#             SELECT
+#                 a.id AS app_id,
+#                 a.app_name,
+
+#                 e.id   AS endpoint_id,
+#                 e.name,
+#                 e.path,
+#                 e.updated_at
+
+#             FROM external_apps a
+#             LEFT JOIN external_app_endpoints e
+#                 ON a.id = e.app_id
+#             WHERE a.user_id = %s
+#                OR (
+#                     a.is_universal = 1
+#                     AND LOWER(TRIM(a.target_onboarding_role)) = %s
+#                )
+#             ORDER BY a.id, e.id
+#         """,
+#             (userid, onboarding_role),
+#         )
+#     else:
+#         cur.execute(
+#             """
+#             SELECT
+#                 a.id AS app_id,
+#                 a.app_name,
+
+#                 e.id   AS endpoint_id,
+#                 e.name,
+#                 e.path,
+#                 e.updated_at
+
+#             FROM external_apps a
+#             LEFT JOIN external_app_endpoints e
+#                 ON a.id = e.app_id
+#             WHERE a.user_id = %s
+#             ORDER BY a.id, e.id
+#         """,
+#             (userid,),
+#         )
+
+#     rows = cur.fetchall()
+#     apps = {}
+
+#     for row in rows:
+#         app_id = row["app_id"]
+
+#         if app_id not in apps:
+#             apps[app_id] = {"id": app_id, "app_name": row["app_name"], "endpoints": []}
+
+#         if row["endpoint_id"] is not None:
+#             endpoint = {
+#                 "id": row["endpoint_id"],
+#                 "name": row["name"],
+#                 "path": row["path"],
+#                 "updated_at": row["updated_at"],
+#             }
+#             apps[app_id]["endpoints"].append(endpoint)
+
+#     return jsonify(list(apps.values()))
 
 
 async def retreval_from_sources(
@@ -305,70 +313,298 @@ radar_executor = ThreadPoolExecutor(max_workers=4)
 
 
 def run_radar_review_sync(
-    user_id, review_id, data, date_uniqueid, type, files=None, structure_file_data=None
+    user_id, job_id, data, date_uniqueid, btype, files=None, structure_file=None
 ):
-    asyncio.run(
-        run_radar_review_redis(
-            user_id,
-            review_id,
-            data,
-            date_uniqueid,
-            type,
-            files=files,
-            structure_file=structure_file_data,
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        loop.run_until_complete(
+            run_radar_review_redis(
+                user_id,
+                job_id,
+                data,
+                date_uniqueid,
+                btype,
+                files,
+                structure_file,
+            )
         )
+    except Exception:
+        logger.exception("Thread runner crashed")
+    finally:
+        loop.close()
+
+
+import asyncio
+
+
+async def merge_radar(raw_chunks, user_id, credits, output_language="english"):
+
+    if not raw_chunks:
+        return {}
+
+    prompt = f"""
+        You are a deterministic JSON merger.
+
+        Combine ALL input JSON objects into ONE valid JSON.
+
+        STRICT REQUIREMENTS:
+
+        1. Keep ALL blocks from ALL chunks
+        2. NEVER delete anything
+        3. NEVER summarize
+        4. NEVER rewrite
+        5. ONLY merge
+        6. Preserve exact content
+        7. make sure that output language is {output_language}
+
+        Final format:
+
+        {{
+        "document_meta": {{...}},
+        "structure_rationale": "...",
+        "blocks": [...],
+        "estimated_word_count": number
+        }}
+
+        INPUT JSON:
+
+        {json.dumps(raw_chunks, ensure_ascii=False)}
+
+        OUTPUT ONLY VALID JSON.
+        """
+
+    response = await get_think_fire_response2_og(
+        user_id=user_id,
+        user_message=prompt,
+        credits=credits,
+        total_input_chars=len(prompt),
     )
+    return json.loads(response)
 
 
+import copy
+
+
+def merge_radar_chunks_deterministic(raw_chunks, output_language="english"):
+
+    if not raw_chunks:
+        return {}
+
+    merged = {
+        "document_meta": {},
+        "structure_rationale": "",
+        "analysis_depth": None,
+        "analysis_depth_rationale": None,
+        "recommendation_depth": None,
+        "recommendation_depth_rationale": None,
+        "recommendation_intent": [],
+        "confidence_level": None,
+        "core_objective": None,
+        "intent_type": None,
+        "blocks": [],
+        "estimated_word_count": 0,
+    }
+
+    block_index = {}
+
+    for chunk in raw_chunks:
+
+        # document_meta merge safely
+        if "document_meta" in chunk:
+            merged["document_meta"].update(chunk["document_meta"])
+
+        # structure rationale
+        if chunk.get("structure_rationale") and not merged["structure_rationale"]:
+            merged["structure_rationale"] = chunk["structure_rationale"]
+
+        # analysis
+        merged["analysis_depth"] = chunk.get("analysis_depth", merged["analysis_depth"])
+
+        merged["analysis_depth_rationale"] = chunk.get(
+            "analysis_depth_rationale", merged["analysis_depth_rationale"]
+        )
+
+        # recommendation
+        merged["recommendation_depth"] = chunk.get(
+            "recommendation_depth", merged["recommendation_depth"]
+        )
+
+        merged["recommendation_depth_rationale"] = chunk.get(
+            "recommendation_depth_rationale",
+            merged["recommendation_depth_rationale"],
+        )
+
+        # recommendation intent
+        for intent in chunk.get("recommendation_intent", []):
+            if intent not in merged["recommendation_intent"]:
+                merged["recommendation_intent"].append(intent)
+
+        # intent/core/confidence
+        merged["intent_type"] = chunk.get("intent_type", merged["intent_type"])
+
+        merged["core_objective"] = chunk.get("core_objective", merged["core_objective"])
+
+        merged["confidence_level"] = (
+            chunk.get("confidence_level")
+            or chunk.get("document_meta", {}).get("confidence_level")
+            or merged["confidence_level"]
+        )
+
+        # word count fix
+        if "estimated_word_count" in chunk:
+            merged["estimated_word_count"] += chunk["estimated_word_count"]
+        elif "document_meta" in chunk:
+            merged["estimated_word_count"] += chunk["document_meta"].get(
+                "estimated_word_count", 0
+            )
+
+        # blocks merge
+        for block in chunk.get("blocks", []):
+
+            block_id = block.get("block_id")
+
+            if not block_id:
+                continue
+
+            block.setdefault("micro_blocks", [])
+
+            if block_id not in block_index:
+
+                new_block = copy.deepcopy(block)
+
+                merged["blocks"].append(new_block)
+
+                block_index[block_id] = new_block
+
+            else:
+
+                existing_block = block_index[block_id]
+
+                existing_block.setdefault("micro_blocks", [])
+
+                existing_micro_ids = {
+                    mb.get("micro_id") for mb in existing_block["micro_blocks"]
+                }
+
+                for micro in block["micro_blocks"]:
+
+                    micro_id = micro.get("micro_id")
+
+                    if micro_id not in existing_micro_ids:
+                        existing_block["micro_blocks"].append(copy.deepcopy(micro))
+
+    # cleanup
+    merged = {k: v for k, v in merged.items() if v not in [None, "", [], {}]}
+
+    return merged
+
+
+# Example usage
+# merged_report = await merge_radar_chunks([chunk1, chunk2, chunk3], user_id, credits)
 async def run_radar_review_redis(
-    user_id, review_id, data, date_uniqueid, btype, files=None, structure_file=None
+    user_id,
+    job_id,
+    data,
+    date_uniqueid,
+    btype,
+    files=None,
+    structure_file=None,
 ):
     redis = RedisService()
 
-    if btype == "review":
-        key = f"radar:review:{user_id}"
-        review_temp = RADAR_TEMPLATE["radar_review_template"]
-    elif btype == "analyze":
-        key = f"radar:analyze:{user_id}"
-        review_temp = RADAR_TEMPLATE["radar_analysis_prompt"]
-    elif btype == "decide":
-        key = f"radar:decide:{user_id}"
-        review_temp = RADAR_TEMPLATE["radar_recommendations_prompt"]
+    job_key = f"radar:job:{job_id}"
+    user_lock_key = f"radar:user_lock:{user_id}"
 
-    async def update(**kwargs):
-        state = await redis.get(key)
-        if not state:
-            return
-        if state.get("review_id") != review_id or state.get("id") != date_uniqueid:
-            return
-        state.update(kwargs)
-        await redis.set(key, state, ex=1800)
-
+    review_temp = None
     conn = None
-    data_checked = []
-    reference_RWA = []
-    conn = connect_to_rds()
-    dbserver = LanceDBServer()
-    credits = Credits(db=conn)
+    if files:
+        logger.info("files %s", len(files))
+    else:
+        logger.info("files %s", files)
+    if structure_file:
+        logger.info("structuree file %s", len(structure_file))
+    else:
+        logger.info("structure file %s", structure_file)
 
     try:
+
+        # ---------------------------------
+        # SAFE JOB UPDATE FUNCTION
+        # ---------------------------------
+        async def update(**kwargs):
+            try:
+                state = await redis.get(job_key)
+
+                if not state:
+                    return
+
+                state.update(kwargs)
+
+                # mark end time if finished
+                if kwargs.get("status") in ("completed", "failed"):
+                    state["ended_at"] = int(time.time())
+
+                    # release lock
+                    # await redis.delete(user_lock_key)
+
+                await redis.set(job_key, state, ex=7200)
+
+            except Exception:
+                logger.exception("❌ JOB REDIS UPDATE FAILED")
+
+        # ---------------------------------
+        # MARK RUNNING
+        # ---------------------------------
         await update(status="running")
-        logger.info("🚀 RADAR START %s", review_id)
+        logger.info("🚀 RADAR START job_id=%s", job_id)
 
-        userid = data.get("userid")
-        name = data.get("name")
-        user_analyze_input = data.get("analyze_input")
-        main_source = data.get("main_source")
-        data_sources = data.get("data_sources", {})
-        reference_sources = data.get("reference_sources", {})
-        refernce_main_source = data.get("refernce_main_source")
+        # ---------------------------------
+        # DB CONNECTION
+        # ---------------------------------
+        try:
+            conn = connect_to_rds()
+            dbserver = LanceDBServer()
+            credits = Credits(db=conn)
 
-        # ---- Unified file handling ----
-        INP_LINKS = []  # image URLs
+        except Exception:
+            logger.exception("❌ DB CONNECTION FAILED")
+            raise
+
+        # ---------------------------------
+        # INPUT EXTRACTION
+        # ---------------------------------
+        try:
+
+            userid = data.get("userid")
+            name = data.get("name")
+            user_analyze_input = data.get("analyze_input")
+
+            main_source = data.get("main_source")
+            data_sources = data.get("data_sources", {})
+
+            reference_sources = data.get("reference_sources", {})
+            refernce_main_source = data.get("refernce_main_source")
+
+        except Exception:
+            logger.exception("❌ INPUT EXTRACTION FAILED")
+            raise
+
+        INP_LINKS = []
         STR_LINKS = []
-        file_data_payload = []  # extracted document content
-        structure_file_payload = []  # extracted structure content
+
+        file_data_payload = []
+        structure_file_payload = []
+
+        data_checked = []
+        reference_RWA = []
+
+        # ---------------------------------
+        # FILE PROCESSING
+        # ---------------------------------
         if files:
+
             process_file_payloads(
                 user_id=user_id,
                 files=files,
@@ -376,121 +612,248 @@ async def run_radar_review_redis(
                 extracted_payload=file_data_payload,
             )
 
-        # ---- Structure file (same logic, separate bucket) ----
+        # ---------------------------------
+        # STRUCTURE FILE PROCESSING
+        # ---------------------------------
         if structure_file:
+
             process_file_payloads(
                 user_id=user_id,
                 files=[structure_file],
                 inp_links=STR_LINKS,
                 extracted_payload=structure_file_payload,
             )
+        # ---------------------------------
+        # TEMPLATE RESOLUTION
+        # ---------------------------------
+        lang_prmot = RADAR_TEMPLATE["language_wordcount_extractor"]
+        lang_check = lang_prmot.replace(
+            "{{analyze_input}}",
+            user_analyze_input or "",
+        )
+        result = await get_think_fire_response2_og(
+            user_message=lang_check,
+            user_id=user_id,
+            credits=credits,
+            total_input_chars=len(lang_check),
+        )
+
+        langs_word = json.loads(result)
+        output_language = langs_word.get("language", "English")
+        output_word_count = langs_word.get("word_count")
+        print("language word", langs_word)
+
+        # ---------------------------------
+        # STRUCTURE BLUEPRINT GENERATION
+        # ---------------------------------
         if structure_file_payload:
-            structure_prompt_template = RADAR_TEMPLATE["structure_prompt_template"]
-            base_struc_prompt = (
-                structure_prompt_template.replace(
-                    "{{document_file_data}}", json.dumps(structure_file_payload) or ""
+
+            try:
+
+                structure_prompt_template = RADAR_TEMPLATE["structure_prompt_template"]
+
+                base_struc_prompt = (
+                    structure_prompt_template.replace(
+                        "{{document_file_data}}",
+                        json.dumps(structure_file_payload),
+                    )
+                    .replace(
+                        "{{file_links}}",
+                        json.dumps(STR_LINKS),
+                    )
+                    .replace(
+                        "{{user_original_prompt_or_context}}",
+                        user_analyze_input or "",
+                    )
+                    .replace("{{output_language}}", output_language)
                 )
-                .replace(
-                    "{{file_links}}",
-                    json.dumps(STR_LINKS, indent=2) if STR_LINKS else "",
-                )
-                .replace(
-                    "{{user_original_prompt_or_context}}", user_analyze_input or ""
-                )
-            )
-            base_str_chars = len(base_struc_prompt)
-            if STR_LINKS:
+
+                base_chars = len(base_struc_prompt)
+
                 for img in STR_LINKS:
-                    base_str_chars -= len(img)
-                    tokens = image_credit_cost(img)
-                    base_str_chars += tokens
+                    base_chars -= len(img)
+                    base_chars += image_credit_cost(img)
 
-            result = await get_think_fire_response2_og(
-                user_message=base_struc_prompt,
-                user_id=user_id,
-                credits=credits,
-                total_input_chars=base_str_chars,
-            )
+                result = await get_think_fire_response2_og(
+                    user_message=base_struc_prompt,
+                    user_id=user_id,
+                    credits=credits,
+                    total_input_chars=base_chars,
+                )
 
-            structure_blueprint = json.loads(result)
-            # print("who for structure", structure_blueprint)
-            structure_file_payload = structure_blueprint
+                structure_file_payload = json.loads(result)
+                print("structrure file payload", structure_file_payload)
+                logger.info("✅ STRUCTURE GENERATED")
 
+            except Exception:
+                logger.exception("❌ STRUCTURE GENERATION FAILED")
+                raise
+
+        # ---------------------------------
+        # EMBEDDING GENERATION
+        # ---------------------------------
         payload = None
-        if (main_source and main_source == "knowledge") or (
-            refernce_main_source and refernce_main_source == "knowledge"
-        ):
+
+        if main_source == "knowledge" or refernce_main_source == "knowledge":
+
             embedding = await get_firework_embedding()
+
             vector = embedding.embed_query(user_analyze_input)
 
-            payload = QueryData(user_id=userid, embedding=vector, top_k=3)
+            payload = QueryData(
+                user_id=userid,
+                embedding=vector,
+                top_k=3,
+            )
 
-            total_chars = len(user_analyze_input) + len(vector)
             await credits.update_ai_credits_redis(
                 user_id=userid,
                 credit_type="embedding",
-                total_chars=total_chars,
-                reference_id=inspect.stack()[0].function,
+                total_chars=len(user_analyze_input),
+                reference_id="embedding_generation",
             )
+
+        # ---------------------------------
+        # DATA RETRIEVAL
+        # ---------------------------------
         if main_source:
 
             data_checked = await retreval_from_sources(
-                conn, dbserver, main_source, data_sources, userid, payload
+                conn,
+                dbserver,
+                main_source,
+                data_sources,
+                userid,
+                payload,
             )
+
         if refernce_main_source:
+
             reference_RWA = await retreval_from_sources(
-                conn, dbserver, refernce_main_source, reference_sources, userid, payload
+                conn,
+                dbserver,
+                refernce_main_source,
+                reference_sources,
+                userid,
+                payload,
             )
 
+        # ---------------------------------
+        # LAST RESPONSE FETCH
+        # ---------------------------------
         last_radar_response = ""
+
         if date_uniqueid:
+
             val = await dbserver.radar_get_review_last_response(
-                user_id=user_id, radar_id=date_uniqueid
+                user_id=user_id,
+                radar_id=date_uniqueid,
             )
-            last_radar_response = json.dumps(val) if val else ""
 
+            if val:
+                last_radar_response = json.dumps(val)
+            if not output_word_count:
+                output_word_count = (
+                    val.get("estimated_word_count")
+                    or val.get("document_meta", {}).get("estimated_word_count")
+                    or 300  # fallback default
+                )
+
+        # REVIEW
+        if btype == "review":
+
+            if structure_file_payload:
+                review_temp = RADAR_TEMPLATE["radar_review_template_structure"]
+                logger.info("using structure-based template: review")
+            else:
+                review_temp = RADAR_TEMPLATE["radar_review_template_no_structure"]
+                logger.info("using no-structure template: review")
+
+        # ANALYSIS
+        elif btype == "analyze":
+
+            if structure_file_payload:
+                review_temp = RADAR_TEMPLATE["radar_analysis_prompt_structure"]
+                logger.info("using structure-based template: analysis")
+            else:
+                review_temp = RADAR_TEMPLATE["radar_analysis_prompt_no_structure"]
+                logger.info("using no-structure template: analysis")
+
+        # RECOMMENDATIONS
+        elif btype == "decide":
+
+            if structure_file_payload:
+                review_temp = RADAR_TEMPLATE["radar_recommendations_prompt_structure"]
+                logger.info("using structure-based template: recommendations")
+            else:
+                review_temp = RADAR_TEMPLATE[
+                    "radar_recommendations_prompt_no_structure"
+                ]
+                logger.info("using no-structure template: recommendations")
+
+        # ---------------------------------
+        # PROMPT BUILD
+        # ---------------------------------
         base_prompt = (
-            review_temp.replace("{{analyze_input}}", user_analyze_input)
+            review_temp.replace(
+                "{{analyze_input}}",
+                user_analyze_input or "",
+            )
             .replace("{{file_data}}", json.dumps(file_data_payload))
-            .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
-            .replace("{{file_links}}", json.dumps(INP_LINKS, indent=2))
-            .replace("{{data_sources}}", json.dumps(data_checked, indent=2))
-            .replace("{{reference_sources}}", json.dumps(reference_RWA or {}, indent=2))
-            .replace("{{last_radar_response}}", last_radar_response)
+            .replace(
+                "{{structure_file_data}}",
+                json.dumps(structure_file_payload),
+            )
+            .replace("{{file_links}}", json.dumps(INP_LINKS))
+            .replace("{{data_sources}}", json.dumps(data_checked))
+            .replace(
+                "{{reference_sources}}",
+                json.dumps(reference_RWA),
+            )
+            .replace(
+                "{{last_radar_response}}",
+                last_radar_response,
+            )
+            .replace("{{output_language}}", output_language)
+            .replace("{{requested_word_count}}", str(output_word_count))
         )
+        print("output word count", output_word_count)
 
-        # print("file links", INP_LINKS)
-        logger.info("file data %s", len(file_data_payload))
-        logger.info("data sources %s", len(data_checked))
-        # base_chars = len(base_prompt) - len(INP_LINKS)
-        # base_chars += 100 * len(INP_LINKS)
+        # ---------------------------------
+        # LLM CALL
+        # ---------------------------------
         base_chars = len(base_prompt)
-        if INP_LINKS:
-            for img in INP_LINKS:
-                base_chars -= len(img)
-                tokens = image_credit_cost(img)
-                base_chars += tokens
 
-        result = await get_think_fire_response2_og(
+        for img in INP_LINKS:
+            base_chars -= len(img)
+            base_chars += image_credit_cost(img)
+
+        result = await get_think_fire_response2_og2(
             user_message=base_prompt,
-            user_id=userid,
+            user_id=user_id,
             credits=credits,
             total_input_chars=base_chars,
+            language=output_language,
+            words_count=output_word_count,
         )
-        if result == "INSUFFICIENT":
-            await update(status="failed", error="Insufficient credits")
+        # print("result raw", result)
+        merged_report = merge_radar_chunks_deterministic(raw_chunks=result)
+        # print("result2", merged_report)
+        # ---------------------------------
+        # PARSE RESULT
+        # ---------------------------------
+        refactor_result = _safe_json_parse(merged_report)
+        # logger.info("refactored,result %s", refactor_result)
 
-        refactor_result = _safe_json_parse(result)
-
-        if not name or name.strip() in ("", "Untitled Report"):
-            name = refactor_result.get("document_meta", {}).get("persona", review_id)
-
+        # ---------------------------------
+        # SAVE RESULT
+        # ---------------------------------
         if refactor_result:
             await dbserver.radar_upsert_review(
                 user_id=user_id,
                 name=name,
                 radar_id=date_uniqueid,
-                review_id=review_id,
+                review_id=job_id,
                 user_input=user_analyze_input,
                 new_result=refactor_result,
                 status="completed",
@@ -500,141 +863,93 @@ async def run_radar_review_redis(
                 refernce_main_source=refernce_main_source,
             )
 
-            print("✅ RADAR DONE %s", review_id)
-            await update(status="completed", result=refactor_result)
+        await update(
+            status="completed",
+            result=refactor_result,
+        )
+
+        logger.info("✅ RADAR COMPLETE job_id=%s", job_id)
 
     except Exception as e:
-        print("❌ RADAR ERROR", review_id, str(e))
-        await update(status="failed", error=str(e))
+
+        logger.exception("❌ RADAR FAILED job_id=%s", job_id)
+
+        await update(
+            status="failed",
+            error="Error Occured in Generation",
+        )
 
     finally:
         if conn:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("❌ DB CLOSE FAILED")
 
 
-@radar_bp.route("/radar/review", methods=["POST"])
-async def radar_review():
+async def create_radar_job(userid, data, mode):
 
-    data = request.get_json(silent=True)
-
-    userid = data.get("userid")
-    if not userid:
-        return jsonify({"error": "userid is required"}), 400
-
-    files_data = []
-
-    json_files = data.get("files")
-    structure_file = data.get("structure_file")
-
-    # -------------------------------
-    # Parse normal files
-    # -------------------------------
-    if isinstance(json_files, list):
-        for idx, file_item in enumerate(json_files):
-            extracted = extract_file_payload(
-                file_item,
-                default_filename=f"file_{idx}",
-            )
-            if extracted:
-                files_data.append(extracted)
-
-    if not files_data:
-        files_data = None
-
-    # -------------------------------
-    # Parse structure_file (single)
-    # -------------------------------
-    structure_file_data = extract_file_payload(
-        structure_file,
-        default_filename="structure_file",
-    )
-
-    data_sources = data.get("data_sources")
-    reference_sources = data.get("reference_sources")
-
-    has_files = bool(files_data)
-    has_data_sources = bool(data_sources)
-    has_reference_sources = bool(reference_sources)
-
-    if not (has_files or has_data_sources or has_reference_sources):
-        return (
-            jsonify(
-                {
-                    "error": (
-                        "At least one input source is required. "
-                        "Provide either files, data_sources, or reference_sources."
-                    )
-                }
-            ),
-            400,
-        )
-
-    # ---- Redis logic unchanged ----
     redis = RedisService()
-    key = f"radar:review:{userid}"
 
-    existing = await redis.get(key)
     now = int(time.time())
-
-    if existing:
-        status = existing.get("status")
-        started_at = existing.get("started_at", now)
-
-        if status == "pending" and now - started_at <= 600:
-            return jsonify(existing)
-
-        if status == "running":
-            if now - started_at <= 600:
-                return jsonify(existing)
-
-            existing.update(
-                {
-                    "status": "failed",
-                    "error": "Review execution timed out",
-                    "ended_at": now,
-                }
-            )
-            await redis.delete(key)
-            return jsonify(existing)
-
-        if status in ("completed", "failed"):
-            await redis.delete(key)
-            return jsonify(existing)
-
-    # ---- Create new job ----
-    review_id = f"review_{uuid.uuid4().hex[:8]}"
+    job_id = f"{mode}_{uuid.uuid4().hex[:8]}"
     date_uniqueid = data.get("id") or f"radar_{now}"
 
+    job_key = f"radar:job:{job_id}"
+    user_lock_key = f"radar:user_lock:{userid}"
+
+    # check lock
+    # existing = await redis.get(user_lock_key)
+
+    # if existing:
+    #     return None, existing
+
+    # extract files
+    files_data = None
+    json_files = data.get("files")
+
+    if isinstance(json_files, list):
+        files_data = [
+            extract_file_payload(f, default_filename=f"file_{i}")
+            for i, f in enumerate(json_files)
+            if extract_file_payload(f)
+        ] or None
+
+    structure_file_data = None
+    if data.get("structure_file"):
+        structure_file_data = extract_file_payload(
+            data.get("structure_file"),
+            default_filename="structure_file",
+        )
+
+    if not (files_data or data.get("data_sources") or data.get("reference_sources")):
+        return None, {"error": "At least one input source required"}
+
     state = {
-        "review_id": review_id,
+        "job_id": job_id,
         "id": date_uniqueid,
+        "review_id": job_id,
+        "userid": userid,
+        "mode": mode,
+        "status": "pending",
         "user_input": data.get("analyze_input"),
         "name": data.get("name"),
-        "status": "pending",
+        "files_data": files_data,
+        "structure_file_data": structure_file_data,
+        "data_sources": data.get("data_sources"),
+        "reference_sources": data.get("reference_sources"),
+        "main_source": data.get("main_source"),
+        "reference_main_source": data.get("reference_main_source"),
         "result": None,
         "error": None,
         "started_at": now,
-        "main_source": data.get("main_source"),
-        "data_sources": data_sources,
-        "reference_sources": reference_sources,
-        "refernce_main_source": data.get("refernce_main_source"),
+        "ended_at": None,
     }
 
-    await redis.set(key, state, ex=1800)
+    await redis.set(job_key, state, ex=7200)
+    await redis.set(user_lock_key, {"job_id": job_id}, ex=1800)
 
-    # ---- Submit background task ----
-    radar_executor.submit(
-        run_radar_review_sync,
-        userid,
-        review_id,
-        data,
-        date_uniqueid,
-        "review",
-        files_data,
-        structure_file_data,  # ✅ may be None
-    )
-
-    return jsonify(state)
+    return job_id, state
 
 
 def group_radars(rows: list[dict]):
@@ -691,124 +1006,57 @@ async def get_radar_doc_byid():
     return jsonify(data)
 
 
-@radar_bp.route("/radar/analyze", methods=["POST"])
-async def radar_analyze():
+@radar_bp.route("/radar/review", methods=["POST"])
+async def radar_review():
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json()
 
     userid = data.get("userid")
+
     if not userid:
-        return jsonify({"error": "userid is required"}), 400
+        return jsonify({"error": "userid required"}), 400
 
-    files_data = []
+    job_id, state = await create_radar_job(userid, data, "review")
 
-    json_files = data.get("files")
-    structure_file = data.get("structure_file")
+    if not job_id:
 
-    # -------------------------------
-    # Parse normal files
-    # -------------------------------
-    if isinstance(json_files, list):
-        for idx, file_item in enumerate(json_files):
-            extracted = extract_file_payload(
-                file_item,
-                default_filename=f"file_{idx}",
-            )
-            if extracted:
-                files_data.append(extracted)
-
-    if not files_data:
-        files_data = None
-
-    # -------------------------------
-    # Parse structure_file (single)
-    # -------------------------------
-    structure_file_data = extract_file_payload(
-        structure_file,
-        default_filename="structure_file",
-    )
-
-    data_sources = data.get("data_sources")
-    reference_sources = data.get("reference_sources")
-
-    has_files = bool(files_data)
-    has_data_sources = bool(data_sources)
-    has_reference_sources = bool(reference_sources)
-
-    if not (has_files or has_data_sources or has_reference_sources):
-        return (
-            jsonify(
-                {
-                    "error": (
-                        "At least one input source is required. "
-                        "Provide either files, data_sources, or reference_sources."
-                    )
-                }
-            ),
-            400,
-        )
-
-    redis = RedisService()
-    key = f"radar:analyze:{userid}"
-
-    existing = await redis.get(key)
-    now = int(time.time())
-
-    if existing:
-        status = existing.get("status")
-        started_at = existing.get("started_at", now)
-
-        if status == "pending" and now - started_at <= 600:
-            return jsonify(existing)
-
-        if status == "running":
-            if now - started_at <= 600:
-                return jsonify(existing)
-
-            existing.update(
-                {
-                    "status": "failed",
-                    "error": "Analyze execution timed out",
-                    "ended_at": now,
-                }
-            )
-            await redis.delete(key)
-            return jsonify(existing)
-
-        if status in ("completed", "failed"):
-            await redis.delete(key)
-            return jsonify(existing)
-
-    # ---- Create new job ----
-    review_id = f"analyze_{uuid.uuid4().hex[:8]}"
-    date_uniqueid = data.get("id") or f"radar_{now}"
-
-    state = {
-        "review_id": review_id,
-        "id": date_uniqueid,
-        "user_input": data.get("analyze_input"),
-        "name": data.get("name"),
-        "status": "pending",
-        "result": None,
-        "error": None,
-        "started_at": now,
-        "main_source": data.get("main_source"),
-        "data_sources": data_sources,
-        "reference_sources": reference_sources,
-        "refernce_main_source": data.get("refernce_main_source"),
-    }
-
-    await redis.set(key, state, ex=1800)
+        return jsonify({"error": "Another job running", "job": state}), 409
 
     radar_executor.submit(
         run_radar_review_sync,
         userid,
-        review_id,
+        job_id,
         data,
-        date_uniqueid,
+        state["id"],
+        "review",
+        state.get("files_data"),
+        state.get("structure_file_data"),
+    )
+
+    return jsonify(state)
+
+
+@radar_bp.route("/radar/analyze", methods=["POST"])
+async def radar_analyze():
+
+    data = request.get_json()
+
+    userid = data.get("userid")
+
+    job_id, state = await create_radar_job(userid, data, "analyze")
+
+    if not job_id:
+        return jsonify(state), 409
+
+    radar_executor.submit(
+        run_radar_review_sync,
+        userid,
+        job_id,
+        data,
+        state["id"],
         "analyze",
-        files_data,
-        structure_file_data,  # ✅ consistent with review
+        state.get("files_data"),
+        state.get("structure_file_data"),
     )
 
     return jsonify(state)
@@ -816,154 +1064,63 @@ async def radar_analyze():
 
 @radar_bp.route("/radar/decide", methods=["POST"])
 async def radar_decide():
-    if request.is_json:
-        data = request.get_json(silent=True) or {}
-    else:
-        data = request.form or {}
-    # print("the input request", data)
+
+    data = request.get_json()
+
     userid = data.get("userid")
 
-    if not userid:
-        return jsonify({"error": "userid is required"}), 400
+    job_id, state = await create_radar_job(userid, data, "decide")
 
-    # ---- READ FILES INSIDE REQUEST CONTEXT (CRITICAL FIX) ----
-    files_data = []
-    json_files = data.get("files")
-    structure_file = data.get("structure_file")
-
-    if isinstance(json_files, list):
-        for idx, file_item in enumerate(json_files):
-            if not file_item:
-                continue
-
-            # Case A: frontend sends full data URL string
-            if isinstance(file_item, str) and file_item.startswith("data:"):
-                header, b64data = file_item.split(",", 1)
-                content_type = header.split(";")[0].replace("data:", "")
-
-                files_data.append(
-                    {
-                        "filename": f"file_{idx}",
-                        "content_type": content_type,
-                        "data": base64.b64decode(b64data),
-                    }
-                )
-
-            # Case B: structured JSON object
-            elif isinstance(file_item, dict) and "data" in file_item:
-                files_data.append(
-                    {
-                        "filename": file_item.get("filename", f"file_{idx}"),
-                        "content_type": file_item.get("content_type"),
-                        "data": base64.b64decode(file_item["data"]),
-                    }
-                )
-    # 3️⃣ structure_file (single file)
-    if structure_file:
-        # Case A: frontend sends full data URL string
-        if isinstance(structure_file, str) and structure_file.startswith("data:"):
-            header, b64data = structure_file.split(",", 1)
-            content_type = header.split(";")[0].replace("data:", "")
-
-            files_data.append(
-                {
-                    "filename": "structure_file",
-                    "content_type": content_type,
-                    "data": base64.b64decode(b64data),
-                    "role": "structure",  # optional but VERY useful
-                }
-            )
-
-        # Case B: structured JSON object
-        elif isinstance(structure_file, dict) and "data" in structure_file:
-            files_data.append(
-                {
-                    "filename": structure_file.get("filename", "structure_file"),
-                    "content_type": structure_file.get("content_type"),
-                    "data": base64.b64decode(structure_file["data"]),
-                    "role": "structure",
-                }
-            )
-
-    if not files_data:
-        files_data = None
-    redis = RedisService()
-    key = f"radar:decide:{userid}"
-
-    existing = await redis.get(key)
-    now = int(time.time())
-
-    if existing:
-        status = existing.get("status")
-        started_at = existing.get("started_at", now)
-
-        # ⛔ Pending but still valid → return it
-        if status == "pending" and now - started_at <= 600:
-            return jsonify(existing)
-
-        # ⛔ Running → always return it
-        if status == "running":
-            # 🕒 Check for running timeout
-            if now - started_at <= 600:
-                return jsonify(existing)
-
-            # ⛔ Running but timed out → mark failed
-            existing.update(
-                {
-                    "status": "failed",
-                    "error": "Review execution timed out",
-                    "ended_at": now,
-                }
-            )
-            await redis.delete(key)  # short TTL for failed
-            return jsonify(existing)
-
-        # ⛔ Completed → return same result
-        if status == "completed":
-            await redis.delete(key)
-            return jsonify(existing)
-
-        # ❌ Failed OR stale pending → overwrite
-        if status == "failed":
-            await redis.delete(key)
-            return jsonify(existing)
-
-        # create new below as pending gone too overtime
-        if status == "pending" and now - started_at > 600:
-            pass
-
-    # ✅ Create NEW review
-    review_id = f"decide_{str(uuid.uuid4().hex[:8])}"
-    date_uniqueid = data.get("id") or f"radar_{now}"
-
-    state = {
-        "review_id": review_id,
-        "id": date_uniqueid,
-        "user_input": data.get("analyze_input"),
-        "name": data.get("name"),
-        "status": "pending",
-        "result": None,
-        "error": None,
-        "started_at": now,
-        "main_source": data.get("main_source"),
-        "data_sources": data.get("data_sources", {}),
-        "reference_sources": data.get("reference_sources", {}),
-        "refernce_main_source": data.get("refernce_main_source"),
-    }
-
-    await redis.set(key, state, ex=1800)
+    if not job_id:
+        return jsonify(state), 409
 
     radar_executor.submit(
         run_radar_review_sync,
         userid,
-        review_id,
+        job_id,
         data,
-        date_uniqueid,
+        state["id"],
         "decide",
-        files_data,
+        state.get("files_data"),
+        state.get("structure_file_data"),
     )
 
     return jsonify(state)
+
+
+@radar_bp.route("/radar/status", methods=["GET"])
+async def radar_status():
+
+    job_id = request.args.get("job_id")
+
+    if not job_id:
+        return jsonify({"error": "job_id required"}), 400
+
+    redis = RedisService()
+
+    job = await redis.get(f"radar:job:{job_id}")
+
+    if not job:
+        return jsonify({"job_id": job_id, "status": "not_found"}), 404
+
+    return jsonify(job)
+
+
+@radar_bp.route("/radar/current", methods=["GET"])
+async def radar_current():
+
+    userid = request.args.get("userid")
+
+    redis = RedisService()
+
+    job_id = await redis.get(f"radar:user_lock:{userid}")
+
+    if not job_id:
+        return jsonify({"status": "idle"})
+
+    job = await redis.get(f"radar:job:{job_id}")
+
+    return jsonify(job)
 
 
 @radar_bp.route("/radar/changeblock", methods=["POST"])
