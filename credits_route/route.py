@@ -94,6 +94,7 @@ class Credits:
             return None
 
         try:
+            # print("before consumption of credits", user_id)
             await self.cm.consume_credits(
                 user_id=user_id,
                 credits_needed=credits_to_consume,
@@ -103,8 +104,9 @@ class Credits:
 
             # ✅ Commit ONLY if Credits owns DB
             if self.owns_db:
+                # print("commiting db")
                 self.db.commit()
-
+            # print("returning creed")
             return {
                 "status": "ok",
                 "credit_type": credit_type,

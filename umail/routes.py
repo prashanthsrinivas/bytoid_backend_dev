@@ -760,10 +760,10 @@ async def get_selected_conv(conversation_id, user_id):
                     # print(
                     #     "⚠️ Cache miss or conversation not found, falling back to Lance"
                     # )
-                    return None
+                    return jsonify({"message": "Conversation not found"}), 200
             else:
                 # print("⚠️ No cache or invalid cache format, falling back to Lance")
-                return None
+                return jsonify({"message": "Conversation not found"}), 200
 
         if not existing_json:
             # --- Step 3: Fetch from RedisService cache ---
@@ -776,6 +776,7 @@ async def get_selected_conv(conversation_id, user_id):
             try:
                 connection = connect_to_rds()
                 if connection is None:
+                    print("Database connection failed")
                     return jsonify({"error": "Database connection failed"}), 500
                 cursor = connection.cursor()
                 cursor.execute(
@@ -833,12 +834,12 @@ async def get_selected_conv(conversation_id, user_id):
                 200,
             )
 
-        cursor.close()
-        connection.close()
-        return jsonify({"error": "Conversation not found"}), 404
+        # cursor.close()
+        # connection.close()
+        # return jsonify({"error": "Conversation not found"}), 404
 
     except Exception as e:
-        # print(f"❌ Unexpected error in get_selected_conv(): {e}")
+        print(f"❌ Unexpected error in get_selected_conv(): {e}")
         cursor.close()
         connection.close()
         return jsonify({"error": "Internal server error"}), 500
@@ -1043,7 +1044,7 @@ async def send_messages():
         client_id = None
         connection = connect_to_rds()
         if connection is None:
-            # print("❌ [DEBUG] Database connection failed")
+            print("❌ [DEBUG] Database connection failed")
             return jsonify({"error": "Database connection failed"}), 500
         # print("✅ [DEBUG] Database connection successful")
 
@@ -1058,7 +1059,7 @@ async def send_messages():
             c_id = ticket_conversation_id
             # print(f"🎯 [DEBUG] Falling back to ticket_conversation_id: {c_id}")
         else:
-            # print(f"❌ [DEBUG] No conversation_id or ticket_conversation_id provided")
+            print(f"❌ [DEBUG] No conversation_id or ticket_conversation_id provided")
             return jsonify({"error": "Missing conversation_id"}), 400
 
         # print(f"🔍 [DEBUG] Querying for sender_id with conversation_id: {c_id}")
@@ -1087,7 +1088,7 @@ async def send_messages():
                     missing_fields.append("text")
                 if not status:
                     missing_fields.append("status")
-                # print(f"❌ [DEBUG] Missing required fields: {missing_fields}")
+                print(f"❌ [DEBUG] Missing required fields: {missing_fields}")
                 return jsonify({"error": "Missing required payload fields"}), 400
 
             ##print("✅ [DEBUG] All required fields present")
@@ -1455,14 +1456,14 @@ async def send_messages():
                             if isinstance(msg, dict) and "timestamp" in msg
                         ]
                         if not valid_messages:
-                            ##print("❌ [DEBUG] No valid messages found in input_data")
+                            print("❌ [DEBUG] No valid messages found in input_data")
                             return jsonify({"error": "No valid messages found"}), 400
                         latest_msg = max(
                             valid_messages,
                             key=lambda msg: datetime.fromisoformat(msg["timestamp"]),
                         )
                     else:
-                        ##print("❌ [DEBUG] input_data is neither dict nor list")
+                        print("❌ [DEBUG] input_data is neither dict nor list")
                         return jsonify({"error": "Invalid input_data format"}), 400
                     latest_id = latest_msg["id"]
                     # print(f"📧 [DEBUG] Latest message ID: {latest_id}")
@@ -1589,7 +1590,7 @@ async def send_messages():
                     return jsonify({"error": "Zoho send failed"}), 500
 
             else:
-                # print(f"❌ [DEBUG] Unsupported channel: {channel}")
+                print(f"❌ [DEBUG] Unsupported channel: {channel}")
                 return jsonify({"error": "Unsupported channel"}), 400
 
             # Database updates
@@ -1885,7 +1886,7 @@ async def send_messages_test():
             c_id = ticket_conversation_id
             # print(f"🎯 [DEBUG] Falling back to ticket_conversation_id: {c_id}")
         else:
-            # print(f"❌ [DEBUG] No conversation_id or ticket_conversation_id provided")
+            print(f"❌ [DEBUG] No conversation_id or ticket_conversation_id provided")
             return jsonify({"error": "Missing conversation_id"}), 400
 
         # print(f"🔍 [DEBUG] Querying for sender_id with conversation_id: {c_id}")

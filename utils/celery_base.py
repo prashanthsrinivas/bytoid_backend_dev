@@ -54,8 +54,8 @@ def acquire_scrape_lock(user_id, url):
     return run_async(lock_client.set(f"scrape_lock:{user_id}", str(url), ex=LOCK_TTL))
 
 
-def get_scrape_lock(user_id):
-    return run_async(lock_client.get(f"scrape_lock:{user_id}"))
+async def get_scrape_lock(user_id):
+    return await lock_client.get(f"scrape_lock:{user_id}")
 
 
 def release_scrape_lock(user_id):

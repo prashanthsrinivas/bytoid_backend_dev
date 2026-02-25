@@ -123,13 +123,9 @@ def get_usecases_for_smb(industry: str, data: list) -> list:
     return []
 
 
-
 def find_matching_industry(extracted_text: str, industries: set) -> str:
     matches = difflib.get_close_matches(
-        extracted_text.lower(),
-        [i.lower() for i in industries],
-        n=1,
-        cutoff=0.5
+        extracted_text.lower(), [i.lower() for i in industries], n=1, cutoff=0.5
     )
 
     if matches:
@@ -209,12 +205,15 @@ async def fetch_ques_with_docs(
 
     try:
         # credits = Credits()
+        # print("inside fetch_ques_with_docs", userid)
 
         total_input_chars = sum(len(u) for u in usecases)
+        if not credits:
+            credits = Credits()
 
         # total_output_chars = 0
         # total_output_chars += sum(len(vec) for vec in vectors)
-        embeddings = await get_firework_embedding(userid=userid)
+        embeddings = await get_firework_embedding()
         vectors = embeddings.embed_documents(usecases)
         total_output_chars = len(vectors)
         total_chars = total_input_chars + total_output_chars
@@ -226,8 +225,13 @@ async def fetch_ques_with_docs(
             reference_id=inspect.stack()[0].function,
         )
     except Exception as e:
-        # print(f"error in fetch_ques_with_docs:{e} ")
-        return {"error": e}
+        print("error in fetch_ques_with_docs:", str(e))
+
+        import traceback
+
+        traceback.print_exc()
+
+        return [{"error": str(e)}]
 
     res = LanceClient(user_id=userid, credits=credits)
 
@@ -261,9 +265,11 @@ async def fetch_usecases_with_docs(
 
     total_input_chars = 0
     total_output_chars = 0
+    print("inside fetch_usecases_with_docs")
     embeddings = await get_firework_embedding()
+    print("is embeddings", embeddings)
     vectors = embeddings.embed_documents(usecases)
-
+    print("ves", len(vectors))
     total_input_chars = sum(len(u) for u in usecases)
     # total_output_chars += sum(len(vec) for vec in vectors)
     total_output_chars = len(vectors)
@@ -287,6 +293,7 @@ async def fetch_usecases_with_docs(
 
     try:
         res = LanceDBServer()
+        print("beore query vector batch")
         batch_results = await res.query_vector_batch(batch_payload)
     except Exception as e:
         logger.error(f"[!] Batch query failed: {e}")
@@ -423,6 +430,7 @@ async def preProcessDocWithUsecases(
     # Determine if all files are new
     all_new = all(is_new_file(fn, passed_data, failed_data) for fn in filenames)
     # print("all new data", all_new)
+    # logger.info("is new file %s", all_new)
 
     # print(f"---------after all_new")
 
@@ -437,6 +445,7 @@ async def preProcessDocWithUsecases(
         usecases_with_docs = await fetch_usecases_with_docs(
             usecases=usecases, userid=userid, filenames=filenames, credits=credits
         )
+        # logger.info("usecases_with_docs %s", len(usecases_with_docs))
 
         all_entries = await generate_yaml_ques_batch(
             usecases_with_docs, prompts, industry, userid=userid, credits=credits
@@ -454,10 +463,10 @@ async def preProcessDocWithUsecases(
                     all_ques.append(actual)
                     actual_to_rephrased[actual] = rephrased
                     actual_to_quote[actual] = quote
-
+        # print("before fetch_ques_with_docs", credits)
         # Step 3: Get answers & evaluate
         content = await fetch_ques_with_docs(
-            all_ques, userid, filenames=filenames, credits=credits
+            usecases=all_ques, userid=userid, contacts=filenames, credits=credits
         )
         batch_size = 10
 

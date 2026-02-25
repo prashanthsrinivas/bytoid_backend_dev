@@ -3,6 +3,7 @@ import boto3
 import json
 from db.rds_db import connect_to_rds
 
+
 def create_tables():
     connection = connect_to_rds()
     if connection is None:
@@ -181,6 +182,7 @@ def create_tables():
     finally:
         cursor.close()
         connection.close()
+
 
 def create_external_app_user_auth_table():
     connection = connect_to_rds()
@@ -2494,10 +2496,12 @@ def add_mail_sub_column():
 
     cursor = connection.cursor()
     try:
-        cursor.execute("""
+        cursor.execute(
+            """
             ALTER TABLE users
             ADD COLUMN mail_sub JSON NOT NULL DEFAULT ('{}')
-        """)
+        """
+        )
         connection.commit()
         print("Column mail_sub added successfully")
         return True
@@ -2506,8 +2510,9 @@ def add_mail_sub_column():
         return False
     finally:
         cursor.close()
-        connection.close()   
-        
+        connection.close()
+
+
 def update_external_apps_for_universal_visibility():
     connection = connect_to_rds()
     if connection is None:
@@ -2602,6 +2607,30 @@ def update_external_apps_for_universal_visibility():
         connection.close()
 
 
+def add_tTop_users():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed")
+        return False
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            ALTER TABLE users
+            ADD COLUMN totp_secret VARCHAR(128) DEFAULT NULL
+        """
+        )
+        connection.commit()
+        print("Column totp_secret added successfully")
+        return True
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
 
 # Run this when ready to create tables
 if __name__ == "__main__":
@@ -2659,5 +2688,6 @@ if __name__ == "__main__":
     # add_plan_type_columns()
     # create_external_apps_table()
     # create_external_app_endpoints_table()
-    add_mail_sub_column()
+    # add_mail_sub_column()
+    add_tTop_users()
     print("ok")

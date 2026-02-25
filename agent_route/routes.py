@@ -283,6 +283,7 @@ def get_training_settings():
     and returns the subagent settings including assistant name, voice type, sync website, and api key.
     If no launch record is found (e.g., for Outlook/Microsoft users), return default settings.
     """
+    connection = None
     try:
         user_id = str(session.get("user_id") or request.args.get("user_id"))
         if not user_id:

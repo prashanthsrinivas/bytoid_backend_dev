@@ -269,10 +269,13 @@ class LanceClient:
         # print("inside process_document ")
         await self._ensure_embeddings()
         documents = self.langchainprocessDocs(file_path)
+        if not documents:
+            return {"error": "unable to vectorize documents"}
         vector_batch = []
 
         total_input_chars = 0
         total_output_chars = 0
+        logger.info("documents processed %s", len(documents))
 
         for doc in documents:
             text = doc.page_content.strip()

@@ -238,7 +238,6 @@ async def process_and_update_yaml(
     # print(f"all_downloaded_paths: {all_downloaded_paths}")
     for path in all_downloaded_paths:
         filename = os.path.basename(path)
-        credits = Credits()
         lance_client = LanceClient(user_id=userid, credits=credits)
         result = await lance_client.process_document(
             file_path=path, filename=filename, credits=credits
@@ -305,10 +304,10 @@ async def process_and_update_yaml(
 
         # If a deleted entry exists for this filename, remove it
         provider_files[:] = [
-            entry for entry in provider_files
+            entry
+            for entry in provider_files
             if not (entry["filename"] == fname and entry["FileStatus"] == "Deleted")
         ]
-
 
         existing_non_deleted = next(
             (
@@ -324,9 +323,6 @@ async def process_and_update_yaml(
             existing_non_deleted["FileStatus"] = file_status
         else:
             provider_files.append(item)
-
-        
-
 
     # Write back to YAML
     # with open(yaml_path, "w") as f:
@@ -353,6 +349,7 @@ async def process_and_update_yaml(
                         userid=userid,
                         industry=matched_industry,
                         filenames=new_or_updated_files,
+                        credits=credits,
                     )
                 )
             finally:

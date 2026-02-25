@@ -234,6 +234,7 @@ async def scrape_youtube_route():
         traceback.print_exc()
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
+
 def fetch_youtube_summaries(user_id):
     youtube_metadata_path = f"{user_id}/yaml/scraped_youtube.yaml"
     videos_data = load_yaml_from_s3(youtube_metadata_path)
@@ -248,6 +249,8 @@ def fetch_youtube_summaries(user_id):
             active_videos.append(v)
 
     return active_videos
+
+
 def fetch_website_summaries(user_id):
     website_metadata_path = f"{user_id}/yaml/scraped_websites.yaml"
     websites_data = load_yaml_from_s3(website_metadata_path)
@@ -260,12 +263,15 @@ def fetch_website_summaries(user_id):
     for w in websites_data:
         if w.get("status"):
             if "pages_by_level" in w and isinstance(w["pages_by_level"], dict):
-                w["pages_by_level"] = {str(k): v for k, v in w["pages_by_level"].items()}
+                w["pages_by_level"] = {
+                    str(k): v for k, v in w["pages_by_level"].items()
+                }
 
             w["type"] = "web"
             active_websites.append(w)
 
     return active_websites
+
 
 # Add route to get YouTube summaries
 # Add route to get YouTube summaries
@@ -305,11 +311,11 @@ def _unwrap_response(res):
     return res
 
 
-def get_active_scrape_status(user_id):
+async def get_active_scrape_status(user_id):
     """
     Returns: { "url": <url>, "status": "processing" } or None
     """
-    active_url = get_scrape_lock(user_id)
+    active_url = await get_scrape_lock(user_id)
     if active_url:
         return {
             "url": active_url.decode() if isinstance(active_url, bytes) else active_url,
@@ -319,7 +325,7 @@ def get_active_scrape_status(user_id):
 
 
 @scrape_agent_bps.route("/get-web-summaries", methods=["GET"])
-def get_web_summaries():
+async def get_web_summaries():
     try:
         api_key = request.args.get("api_key")
         if not api_key:
@@ -333,7 +339,7 @@ def get_web_summaries():
         comp_web.extend(fetch_youtube_summaries(user_id))
         comp_web.extend(fetch_website_summaries(user_id))
 
-        active_scrape = get_active_scrape_status(user_id)
+        active_scrape = await get_active_scrape_status(user_id)
         if active_scrape:
             comp_web.append(active_scrape)
 
@@ -761,7 +767,7 @@ def delete_website_summary():
 
 
 @scrape_agent_bps.route("/scrape-website-fast", methods=["POST"])
-def scrape_website_fast_stream():
+async def scrape_website_fast_stream():
     try:
         data = request.json
         api_key = data.get("api_key")
@@ -779,7 +785,7 @@ def scrape_website_fast_stream():
             return jsonify({"error": "Invalid access"}), 404
 
         # ---- Check if user has an active scrape in-progress ----
-        active_url = get_scrape_lock(user_id)
+        active_url = await get_scrape_lock(user_id)
         if active_url:
             active_url = (
                 active_url.decode() if isinstance(active_url, bytes) else active_url

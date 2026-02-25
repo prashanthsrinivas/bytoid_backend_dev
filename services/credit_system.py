@@ -5,6 +5,7 @@ import pymysql
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional
+from db.rds_db import connect_to_rds
 from services.redis_service import RedisService
 
 # ---------------------------------------------------------
@@ -78,17 +79,17 @@ class CreditManager:
 
         total = int(row["total"] or 0)
 
-        if self.redis:
-            await self.redis.hset(
-                self._redis_key(user_id),
-                {
-                    "total_available": total,
-                    "last_synced_at": int(datetime.utcnow().timestamp()),
-                },
-            )
+        # if self.redis:
+        #     await self.redis.hset(
+        #         self._redis_key(user_id),
+        #         {
+        #             "total_available": total,
+        #             "last_synced_at": int(datetime.utcnow().timestamp()),
+        #         },
+        #     )
 
-            await self.redis.expire(self._redis_key(user_id), 3600)
-            await self._write_credit_summary_to_redis(user_id)
+        #     await self.redis.expire(self._redis_key(user_id), 3600)
+        #     await self._write_credit_summary_to_redis(user_id)
 
         return total
 
@@ -112,37 +113,37 @@ class CreditManager:
     async def has_sufficient_credits(self, user_id: str, needed: int) -> bool:
         return await self.get_available_credits(user_id) >= needed
 
-    async def _write_credit_summary_to_redis(self, user_id: str):
-        print("_write_credit_summary_to_redis")
+    # async def _write_credit_summary_to_redis(self, user_id: str):
+    #     print("_write_credit_summary_to_redis")
 
-        summary = self.get_credit_summary(user_id)
+    #     summary = self.get_credit_summary(user_id)
 
-        if not self.redis:
-            return summary
+    #     if not self.redis:
+    #         return summary
 
-        redis_payload = {
-            "status": summary["status"],
-            "message": summary.get("message"),
-            "available_total": summary.get("available_total", 0),
-            "available_breakdown": json.dumps(summary.get("available_breakdown", [])),
-            "usage_breakdown": json.dumps(summary.get("usage_breakdown", [])),
-            "next_expiry": (
-                json.dumps(summary.get("next_expiry"))
-                if summary.get("next_expiry")
-                else None
-            ),
-            "last_updated_at": int(datetime.utcnow().timestamp()),
-        }
+    #     redis_payload = {
+    #         "status": summary["status"],
+    #         "message": summary.get("message"),
+    #         "available_total": summary.get("available_total", 0),
+    #         "available_breakdown": json.dumps(summary.get("available_breakdown", [])),
+    #         "usage_breakdown": json.dumps(summary.get("usage_breakdown", [])),
+    #         "next_expiry": (
+    #             json.dumps(summary.get("next_expiry"))
+    #             if summary.get("next_expiry")
+    #             else None
+    #         ),
+    #         "last_updated_at": int(datetime.utcnow().timestamp()),
+    #     }
 
-        # Remove None values (Redis doesn't like them)
-        redis_payload = {k: v for k, v in redis_payload.items() if v is not None}
+    #     # Remove None values (Redis doesn't like them)
+    #     redis_payload = {k: v for k, v in redis_payload.items() if v is not None}
 
-        await self.redis.hset(
-            self.summary_key.format(user_id),
-            redis_payload,
-        )
+    #     await self.redis.hset(
+    #         self.summary_key.format(user_id),
+    #         redis_payload,
+    #     )
 
-        return summary
+    #     return summary
 
     # -----------------------------------------------------
     # ADD CREDITS
@@ -208,16 +209,35 @@ class CreditManager:
         remaining = credits_needed
         breakdown = []
 
-        cur = self.db.cursor(pymysql.cursors.DictCursor)
+        cur = None
 
         try:
+            try:
+                cur = self.db.cursor(pymysql.cursors.DictCursor)
+                print("Cursor created from existing connection")
+
+            except Exception as conn_error:
+                print("Existing DB connection failed, reconnecting...")
+                print("Connection error:", conn_error)
+
+                import traceback
+
+                traceback.print_exc()
+
+                # reconnect
+                self.db = connect_to_rds()
+
+                cur = self.db.cursor(pymysql.cursors.DictCursor)
+
+                print("New DB connection created")
+
             cur.execute(
                 """
                 SELECT *
                 FROM credit_buckets
                 WHERE user_id = %s
-                  AND is_expired = 0
-                  AND credits_used < credits_total
+                AND is_expired = 0
+                AND credits_used < credits_total
                 ORDER BY expires_at ASC
                 FOR UPDATE
                 """,
@@ -225,13 +245,17 @@ class CreditManager:
             )
 
             buckets = cur.fetchall()
+            # print("Buckets fetched:", buckets)
 
             for b in buckets:
+
                 if remaining <= 0:
                     break
 
                 available = b["credits_total"] - b["credits_used"]
                 consume = min(available, remaining)
+
+                # print(f"Consuming {consume} from bucket {b['bucket_id']}")
 
                 cur.execute(
                     """
@@ -272,30 +296,28 @@ class CreditManager:
                 remaining -= consume
 
             if remaining > 0:
+                print("Error: Not enough credits")
                 raise InsufficientCreditsError("Not enough credits")
 
-            # self.db.commit()
+            print("Credits consumed successfully")
 
-        # except Exception:
-        #     self.db.rollback()
-        #     raise
+            return CreditUsageResult(
+                requested=credits_needed,
+                consumed=credits_needed,
+                breakdown=breakdown,
+            )
+
+        except Exception as e:
+            print("Error in consume_credits:", str(e))
+            import traceback
+
+            traceback.print_exc()
+            raise
 
         finally:
-            cur.close()
-
-        # # # Redis decrement AFTER COMMIT
-        # if self.redis:
-        #     await self.redis.hincrby(
-        #         self._redis_key(user_id),
-        #         "total_available",
-        #         -credits_needed,
-        #     )
-        # await self._write_credit_summary_to_redis(user_id)
-        return CreditUsageResult(
-            requested=credits_needed,
-            consumed=credits_needed,
-            breakdown=breakdown,
-        )
+            if cur:
+                cur.close()
+                print("Cursor closed")
 
     def get_credit_summary(self, user_id: str) -> Dict:
         cur = self.db.cursor(pymysql.cursors.DictCursor)
