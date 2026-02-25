@@ -783,7 +783,7 @@ async def get_think_fire_response2_og2(
     credits,
     total_input_chars=None,
     language="english",
-    words_count=250,
+    words_count=800,
 ):
 
     import json
@@ -822,6 +822,7 @@ async def get_think_fire_response2_og2(
                 8. Ignore CSS.
                 9. Ignore tag names like <p>, <div>, etc.
                 10. Count ONLY human-readable words.
+                11. the language must be used was {language}
 
                 Generate part {i+1}/{num_chunks}.
                 """
@@ -845,6 +846,7 @@ async def get_think_fire_response2_og2(
                 8. Ignore HTML tags.
                 9. Ignore CSS.
                 10. Ignore markup.
+                11. the language must be used was {language}
 
                 Generate part {i+1}/{num_chunks}.
                 """

@@ -747,7 +747,7 @@ async def run_radar_review_redis(
                     output_word_count = (
                         val.get("estimated_word_count")
                         or val.get("document_meta", {}).get("estimated_word_count")
-                        or 300  # fallback default
+                        or 800  # fallback default
                     )
 
         # REVIEW
@@ -785,6 +785,8 @@ async def run_radar_review_redis(
         # ---------------------------------
         # PROMPT BUILD
         # ---------------------------------
+        if not output_word_count:
+            output_word_count = 800
         base_prompt = (
             review_temp.replace(
                 "{{analyze_input}}",
