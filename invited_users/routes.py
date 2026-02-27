@@ -99,15 +99,22 @@ def get_roles(userid):
             roles = (
                 json.loads(row["roles_creation"]) if row.get("roles_creation") else []
             )
-            permissions = (
-                json.loads(row["permissions"]) if row.get("permissions") else []
-            )
+            # permissions = (
+            #     json.loads(row["permissions"]) if row.get("permissions") else []
+            # )
 
-            # Get shared emails from permissions
+            # # Get shared emails from permissions
+            # emails = [
+            #     entry["email"]
+            #     for entry in permissions.get("shared", [])
+            #     if "email" in entry
+            # ]
+            permissions = json.loads(row["permissions"]) if row.get("permissions") else []
+
             emails = [
                 entry["email"]
-                for entry in permissions.get("shared", [])
-                if "email" in entry
+                for entry in permissions
+                if isinstance(entry, dict) and "email" in entry
             ]
 
             # Fetch special access for each invited user

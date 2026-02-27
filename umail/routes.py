@@ -1035,7 +1035,7 @@ async def send_messages():
     try:
         # Parse request data
         data = request.json
-        # print(f"📥 [DEBUG] Request data: {data}")
+        print(f"📥 [DEBUG] Request data: {data}")
 
         user_id = data.get("user_id")
         channel = data.get("channel")
@@ -1128,26 +1128,26 @@ async def send_messages():
         token = current_user_id.set(user_id)
         try:
             if status == "existing":
-                # print("🔍 [DEBUG] Processing existing conversation")
+                print("🔍 [DEBUG] Processing existing conversation")
 
                 try:
                     s3_config_key = f"{user_id}/messages/{client_id}/config.json"
                     # print(f"🔍 [DEBUG] Reading config from S3 key: {s3_config_key}")
                     config_data = read_json_from_s3(s3_config_key)
-                    # print(
-                    #     f"🔍 [DEBUG] Config data retrieved: {len(config_data.get('conversations', []))} conversations found"
-                    # )
+                    print(
+                        f"🔍 [DEBUG] Config data retrieved: {len(config_data.get('conversations', []))} conversations found"
+                    )
 
                     # Checking if it is a reply and getting reply info
                     conv_list = config_data.get("conversations", [])
-                    # print(
-                    #     f"🔍 [DEBUG] Searching for conversation in {len(conv_list)} conversations"
-                    # )
+                    print(
+                        f"🔍 [DEBUG] Searching for conversation in {len(conv_list)} conversations"
+                    )
 
                     for i, conv in enumerate(conv_list):
-                        # print(
-                        #     f"🔍 [DEBUG] Checking conversation {i}: conv_id={conv.get('conv_id')}"
-                        # )
+                        print(
+                            f"🔍 [DEBUG] Checking conversation {i}: conv_id={conv.get('conv_id')}"
+                        )
                         if conv.get("conv_id") == c_id:
                             thread_id = conv.get("thread_id") or ""
                             ticket_id = conv.get("ticket_id") or ""
@@ -1156,12 +1156,12 @@ async def send_messages():
                             subject = conv.get("subject")
                             conversation_id = c_id
                             is_reply = True
-                            # print(
-                            #     f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}"
-                            # )
-                            # print(
-                            #     f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}"
-                            # )
+                            print(
+                                f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}"
+                            )
+                            print(
+                                f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}"
+                            )
                             break
                         elif conv.get("conv_id") == ticket_conversation_id:
                             thread_id = conv.get("thread_id") or ""
@@ -1171,12 +1171,12 @@ async def send_messages():
                             subject = conv.get("subject")
                             conversation_id = ticket_conversation_id
                             is_reply = True
-                            # print(
-                            #     f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}"
-                            # )
-                            # print(
-                            #     f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}"
-                            # )
+                            print(
+                                f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}"
+                            )
+                            print(
+                                f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}"
+                            )
                             break
 
                     if not is_reply:

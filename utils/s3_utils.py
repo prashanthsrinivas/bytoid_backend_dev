@@ -165,7 +165,7 @@ def read_json_from_s3(filepath):
         return data
 
     except Exception as e:
-        # logger.error(f"Error reading JSON: {e}", exc_info=True)
+        logger.error(f"Error reading JSON: {e}", exc_info=True)
         return None
 
 

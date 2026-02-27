@@ -13,10 +13,14 @@ import re
 from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
+from services.totp_service import TOTPService
 from db.db_checkers import check_onboarding_user
 from cryptography.fernet import Fernet
 import base64
 import time
+from utils.g_scopes import g_basescopes
+from google_auth_oauthlib.flow import Flow
+import requests
 
 users_bp = Blueprint("users", __name__)
 
@@ -24,6 +28,8 @@ logger = get_logger(__name__)
 
 SECRET_KEY = os.getenv("SECRETKEY")
 fernet = Fernet(base64.urlsafe_b64encode(SECRET_KEY.encode("utf-8").ljust(32)[:32]))
+
+
 # def get_db_connection():
 #     connection = pymysql.connect(
 #         host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
@@ -663,7 +669,8 @@ def get_account_info(userid):
                     u.user_id,
                     u.first_name, 
                     u.last_name, 
-                    u.email, 
+                    u.email,
+                    u.social,
                     l.api_id 
                 FROM users u
                 LEFT JOIN launch l 
@@ -687,6 +694,7 @@ def get_account_info(userid):
                     "last_name": row.get("last_name") or "",
                     "email": row.get("email") or None,
                     "api_key": row.get("api_id") or None,
+                    "social": row.get("social"),
                 }
             ),
             200,
@@ -694,27 +702,30 @@ def get_account_info(userid):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-#Email existance check
-@users_bp.route("/email_exist/<path:email>",methods=["GET"])
+
+
+# Email existance check
+@users_bp.route("/email_exist/<path:email>", methods=["GET"])
 def email_exist(email):
     # data = request.get_json()
     # email = data.get("email")
     if not email:
-        return jsonify({"error":"Email is required"}),400
+        return jsonify({"error": "Email is required"}), 400
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
-        cursor.execute("SELECT * FROM users WHERE email=%s",(email,))
+        cursor.execute("SELECT * FROM users WHERE email=%s", (email,))
         user = cursor.fetchone()
         if not user:
-            return jsonify({"emailExist": bool(user)}),200
+            return jsonify({"emailExist": bool(user)}), 200
         password = user["password_hash"]
-        return jsonify({"emailExist": bool(user),
-                        "passwordExist":bool(password)}),200
+        return jsonify({"emailExist": bool(user), "passwordExist": bool(password)}), 200
 
     except Exception as e:
-        return jsonify({"error":str(e)}),500
-#creating new user
+        return jsonify({"error": str(e)}), 500
+
+
+# creating new user
 @users_bp.route("/create_new_user", methods=["POST"])
 def create_new_user():
     data = request.get_json()
@@ -738,9 +749,9 @@ def create_new_user():
         )
 
     if not re.fullmatch(password_pattern, password):
-        return jsonify({"message": "Password does not meets the requirement"}), 401
+        return jsonify({"message": "Password does not meets the requirement"}), 400
     if not re.fullmatch(email_pattern, email):
-        return jsonify({"message": "Invalid mail format"}), 401
+        return jsonify({"message": "Invalid mail format"}), 400
 
     try:
         conn = connect_to_rds()
@@ -751,7 +762,7 @@ def create_new_user():
 
         if user_exists:
             logger.info("User already exist with this email address")
-            return jsonify({"message": "User already exists. Please login"}), 401
+            return jsonify({"message": "User already exists. Please login"}), 400
         logger.info("creating a new user")
         # Get value for social based on email domain
         provider_domains = {
@@ -759,42 +770,35 @@ def create_new_user():
             "Microsoft": {"outlook.com", "hotmail.com", "live.com"},
             "Zoho": {"zoho.com", "zohomail.com"},
         }
-        social = ""
+        user_domain = ""
         domain = email.split("@")[-1].lower()
         for providers, domains in provider_domains.items():
             if domain in domains:
-                social = providers
+                user_domain = providers
 
-        social = social or "Custom"
+        user_domain = user_domain or domain
         # hash the password
         hashed_password = generate_password_hash(password)
         # generate user_id
         user_id = str(uuid.uuid4().hex)
-        # Generate verification url
-        verify_url = generate_hashed_url(
-            base_url=f"{os.getenv('BASE_FRNT_URL')}/login",
-            invited_to=email,
-            invited_by=os.getenv("TEST_EMAIL2"),
-        )
 
-        token = verify_url.rstrip("/").split("/")[-1]
-        send_email_link(email, verify_url)
+        # send_email_link(email, verify_url)
 
         cursor.execute(
             """INSERT INTO users(user_id,user_type,launch_id_fk, first_name, last_name, email,phone,
-                location,social,password_hash,created_in)
+                location,domain,password_hash,created_in)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,Now())                
                 """,
             (
                 user_id,
-                "user",
+                "admin",
                 "",
                 first_name,
                 last_name,
                 email,
                 phone,
                 location,
-                social,
+                json.dumps([user_domain]),
                 hashed_password,
             ),
         )
@@ -804,30 +808,50 @@ def create_new_user():
         logger.info("New user created")
         return (
             jsonify(
-                {"message": "New user created successfully",
-                 "user_id":f"{user_id}"}
+                {"message": "New user created successfully", "user_id": f"{user_id}"}
             ),
             200,
         )
 
     except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+
 # Email sending method
-def send_email_link(email, verify_url):
+@users_bp.route("/send_email_link", methods=["POST"])
+def send_email_link():
+    data = request.get_json()
+    email = data.get("email")
+    if not email:
+        logger.error("Email is required")
+        return jsonify({"error": "Email is required"}), 400
+    try:
+        # Generate verification url
+        verify_url = generate_hashed_url(
+            base_url=f"{os.getenv('BASE_FRNT_URL')}/verify-email",
+            invited_to=email,
+            invited_by=os.getenv("TEST_EMAIL2"),
+        )
+        html = f"""<p>Click the link below to verify your email:</p>
+                    <p><a href="{verify_url}">Verify Email</a></p>
+                    <p>The link will expire in 1 hour</p>"""
+        gmail_service = GmailService("109161866299858012556")
+        # send email
+        gmail_service.send_email(
+            receipent_emails=email,
+            subject="Verification for new user creation",
+            body_text=html,
+        )
+        logger.info("Email sent successfully")
+        return jsonify({"message": "Email sent successfully"}), 200
+    except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
-    html = f"""<p>Click the link below to verify your email:</p>
-                <p><b>{verify_url}</b></p>
-                <p>The link will expire in 1 hour</p>"""
-    gmail_service = GmailService("109161866299858012556")
-    gmail_service.send_email(
-        receipent_emails=email,
-        subject="Verification for new user creation",
-        body_text=html,
-    )
 
-#verification of email
-@users_bp.route("/verify_email",methods=["POST"])
+# verification of email
+@users_bp.route("/verify_email", methods=["POST"])
 def verify_email():
     data = request.get_json()
     token = data.get("token")
@@ -835,21 +859,17 @@ def verify_email():
         decrypted = fernet.decrypt(token.encode()).decode()
         invited_by, invited_to, expiry_time = decrypted.split("|")
         if int(expiry_time) < int(time.time()):
-            return jsonify({
-                "valid": False,
-                "error": "Verify link has expired"
-            }), 400
-        
-        return jsonify({
-            "emailVerified":True,
-            "email":invited_to
-        }),200
+            logger.error("Email verification link expired")
+            return jsonify({"valid": False, "error": "Verify link has expired"}), 400
+        logger.info("Email verifies successfully")
+        return jsonify({"emailVerified": True, "email": invited_to}), 200
 
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        logger.error(f"Unexpected error occured : {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
-#user sign in method
+# user sign in method
 @users_bp.route("/user_login", methods=["POST"])
 def user_login():
     data = request.get_json()
@@ -861,19 +881,21 @@ def user_login():
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         if not email or not password:
-            return jsonify({"error": "Email and password are required"}), 401
+            logger.error("Email and password are required")
+            return jsonify({"error": "Email and password are required"}), 400
 
         query = "SELECT * FROM users WHERE email=%s"
         cursor.execute(query, (email))
         user = cursor.fetchone()
-        
 
         if not user:
-            return jsonify({"error": "Incorrect email address"}), 401
-        
+            logger.error("Incorrect email address")
+            return jsonify({"error": "Incorrect email address"}), 400
+
         password_hash = user["password_hash"]
         if not check_password_hash(password_hash, password):
-            return jsonify({"error": "Incorrect password"}), 401
+            logger.error("Incorrect password")
+            return jsonify({"error": "Incorrect password"}), 400
 
         # onboarding check
         newuser = check_onboarding_user(user["user_id"])
@@ -890,11 +912,88 @@ def user_login():
                     "user_type": user["user_type"],
                 },
                 "betaAgreementAccepted": newuser,
+                "has_totp": bool(user["totp_secret"]),
             }
         )
         conn.close()
+        logger.info("Login successfull")
         return response, 200
     except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# TOTP setup
+@users_bp.route("/totp_setup", methods=["POST"])
+def totp_setup():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+        user = cursor.fetchone()
+
+        if not user.get("totp_secret"):
+            logger.info("Generating TOTP secret")
+            secret = TOTPService.generate_secret()
+            cursor.execute(
+                "UPDATE users SET totp_secret = %s WHERE user_id = %s",
+                (secret, user_id),
+            )
+            conn.commit()
+            user["totp_secret"] = secret
+        email = user["email"]
+        # secret = user["totp_secret"]
+        uri = TOTPService.provisioning_uri(user["totp_secret"], user_id, email)
+
+        conn.close()
+        logger.info("TOTP URI sent for verification")
+        return (
+            jsonify(
+                {
+                    "totp_uri": uri,
+                    "totp_secret": user["totp_secret"],
+                    "is_totp_enabled": bool(user["totp_secret"]),
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# TOtP verify
+@users_bp.route("/totp_verify", methods=["POST"])
+def totp_verify():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    code = data.get("code")
+    if not code:
+        logger.error("Code is required")
+        return jsonify({"error": "Code is required "}), 400
+    try:
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+        user = cursor.fetchone()
+        totp_secret = user["totp_secret"]
+        email = user["email"]
+        code = str(code).strip()
+        if not totp_secret:
+            logger.error("TOTP secret is required")
+            return jsonify({"error": "TOTP secret is required"}), 400
+        logger.info("Verifying TOTP secret")
+        verify = TOTPService.verify_totp(totp_secret, code)
+        if not verify:
+            logger.error("TOTP verification failed")
+            return jsonify({"error": "TOTP not verified"}), 400
+        logger.info("TOTP verified successfully")
+        return jsonify({"message": "TOTP verified successfully", "verified": True}), 200
+    except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -908,11 +1007,12 @@ def update_user_type():
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
         if not user_id or not user_type:
+            logger.error("Missing required fields : user_id and user_type")
             return (
                 jsonify({"error": "Missing required fields : user_id,user_type"}),
                 400,
             )
-
+        logger.info("Updating the user_type")
         query = "UPDATE users SET user_type = %s,updated_in = Now() where user_id = %s "
         cursor.execute(
             query,
@@ -920,6 +1020,7 @@ def update_user_type():
         )
         conn.commit()
         conn.close()
+        logger.info("user_type updated successfully")
         return jsonify({"message": "User type updated successsfully"}), 200
 
     except Exception as e:
@@ -933,18 +1034,17 @@ def update_password():
     user_id = data.get("user_id")
     oldPassword = data.get("oldPassword")
     newPassword = data.get("newPassword")
+    if not user_id or not oldPassword or not newPassword:
+        return (
+            jsonify(
+                {"error": "Missing required fields : user_id, OldPassword, NewPassword"}
+            ),
+            400,
+        )
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
-        if not user_id or not oldPassword or not newPassword:
-            return (
-                jsonify(
-                    {
-                        "error": "Missing required fields : user_id, OldPassword, NewPassword"
-                    }
-                ),
-                400,
-            )
+
         cursor.execute(
             """SELECT password_hash FROM users WHERE user_id = %s""", (user_id)
         )
@@ -955,7 +1055,7 @@ def update_password():
             return jsonify({"message": "Old password is incorrect"}), 400
 
         new_hashed_password = generate_password_hash(newPassword)
-
+        logger.info("Updating new password")
         query = (
             "UPDATE users SET password_hash = %s,updated_in = NOW() WHERE user_id = %s"
         )
@@ -966,9 +1066,11 @@ def update_password():
 
         conn.commit()
         conn.close()
+        logger.info("New password updated successfully")
         return jsonify({"message": "Password updated successsfully"}), 200
 
     except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -993,18 +1095,21 @@ def update_name():
 
         conn.commit()
         conn.close()
+        logger.info("First name and last name are updated successfully")
         return jsonify({"message": "User name updated successsfully"}), 200
 
     except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-#Logic for forgot password
+
+# Logic for forgot password
 @users_bp.route("/forgot_password", methods=["POST"])
 def forgot_password():
     data = request.get_json()
     email = data.get("email")
     if not email:
-        return jsonify({"error": "Email is required"}), 401
+        return jsonify({"error": "Email is required"}), 400
     try:
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -1013,20 +1118,26 @@ def forgot_password():
         user = cursor.fetchone()
 
         if not user:
+            logger.error("User with this email is not exists")
             return jsonify({"error": "User with this email is not exists"})
 
-        reset_url = generate_hashed_url(base_url=f"{os.getenv('BASE_FRNT_URL')}/ResetPassword",
+        reset_url = generate_hashed_url(
+            base_url=f"{os.getenv('BASE_FRNT_URL')}/ResetPassword",
             invited_to=email,
-            invited_by=os.getenv("TEST_EMAIL2"),)
+            invited_by=os.getenv("TEST_EMAIL2"),
+        )
 
-        send_password_reset_email(email,reset_url)
-        return jsonify({"message":"Reset link sent to email"})
+        send_password_reset_email(email, reset_url)
+        logger.info("Reset link sent to email")
+        return jsonify({"message": "Reset link sent to email"})
 
     except Exception as e:
+        logger.error(f"Unexpected error occured : {str(e)}")
         return jsonify({"error": str(e)}), 500
-    
-#method to send reset link
-def send_password_reset_email(email,reset_url):
+
+
+# method to send reset link
+def send_password_reset_email(email, reset_url):
     html = f"""
     <p>You requested a password reset.</p>
     <p>Click the link below to reset your password:</p>
@@ -1041,8 +1152,9 @@ def send_password_reset_email(email,reset_url):
         body_text=html,
     )
 
-#validation of reset link
-@users_bp.route("/validateResetToken",methods=["POST"])
+
+# validation of reset link
+@users_bp.route("/validateResetToken", methods=["POST"])
 def validate_reset_token():
     data = request.get_json()
     token = data.get("token")
@@ -1050,52 +1162,200 @@ def validate_reset_token():
         decrypted = fernet.decrypt(token.encode()).decode()
         invited_by, invited_to, expiry_time = decrypted.split("|")
         if int(expiry_time) < int(time.time()):
-            return jsonify({
-                "valid": False,
-                "error": "Reset link has expired"
-            }), 400
-        
-        return jsonify({
-            "valid":True,
-            "email":invited_to
-        }),200
+            return jsonify({"valid": False, "error": "Reset link has expired"}), 400
+
+        return jsonify({"valid": True, "email": invited_to}), 200
 
     except Exception as e:
-        return jsonify({"error":str(e)}),500
-    
-#Updating the new password through forgot password
-@users_bp.route("/reset_password",methods=["POST"])
+        return jsonify({"error": str(e)}), 500
+
+
+# Updating the new password through forgot password
+@users_bp.route("/reset_password", methods=["POST"])
 def reset_password():
     data = request.get_json()
     email = data.get("email")
     newPassword = data.get("newPassword")
-    password_pattern = r'^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$'
+    password_pattern = r"^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$"
 
     if not newPassword:
-        return jsonify({"error":"New password is required"}),401
-    
-    if not re.match(password_pattern,newPassword):
-        return jsonify({"error":"Password does not meet the requirement. Should contain atleast 8 characters,one uppercase letter,one numeric character and one special character",
-                        }),401
+        logger.error("New password is required")
+        return jsonify({"error": "New password is required"}), 400
+
+    if not re.match(password_pattern, newPassword):
+        logger.error("password does not meet the basic re")
+        return (
+            jsonify(
+                {
+                    "error": "Password does not meet the requirement. Should contain atleast 8 characters,one uppercase letter,one numeric character and one special character",
+                }
+            ),
+            400,
+        )
     try:
         new_hashed_password = generate_password_hash(newPassword)
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        cursor.execute("SELECT * FROM users WHERE email = %s",(email,))
+        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
 
         if not user:
             logger.warning("User not found with this email")
-            return jsonify({"error":"User not found"})
+            return jsonify({"error": "User not found"})
 
         logger.info("Updating the new hashed password through reset link")
-        cursor.execute("""UPDATE users
+        cursor.execute(
+            """UPDATE users
                     SET password_hash = %s, updated_in = NOW() where email=%s""",
-                    (new_hashed_password,email,))
-        
+            (
+                new_hashed_password,
+                email,
+            ),
+        )
+
         conn.commit()
         conn.close()
-        return jsonify({"message":"Password reset successfully"})
+        logger.info("Password reset successfully")
+        return jsonify({"message": "Password reset successfully"})
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        logger.error(f"Unexpected error occured : {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@users_bp.route("/connect_with_google", methods=["GET"])
+def connect_with_google():
+    user_id = session.get("user_id")
+    # if not user_id:
+    #     return jsonify({"error": "Unauthorized"}), 401
+
+    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/google_connection/callback"
+
+    flow = Flow.from_client_secrets_file(
+        "client_secrets.json",
+        scopes=g_basescopes,
+        redirect_uri=WEB_REDIRECT_URI,
+    )
+    auth_url, state = flow.authorization_url(
+        access_type="offline", prompt="consent", include_granted_scopes="false"
+    )
+    session["google_connection_state"] = state
+    return jsonify({"auth_url": auth_url})
+
+
+@users_bp.route("/google_connection/callback", methods=["GET"])
+def google_connection_callback():
+
+    user_id = session.get("user_id")
+
+    if not user_id:
+        return jsonify({"connected": False, "error": "Unauthorized"}), 401
+
+    state = request.args.get("state")
+    saved_state = session.pop("google_connection_state", None)
+
+    if not state or state != saved_state:
+        return jsonify({"connected": False, "error": "Invalide state"}), 400
+
+    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/google_connection/callback"
+
+    flow = Flow.from_client_secrets_file(
+        "client_secrets.json",
+        scopes=g_basescopes,
+        redirect_uri=WEB_REDIRECT_URI,
+    )
+    try:
+        flow.fetch_token(authorization_response=request.url)
+        credentials = flow.credentials
+
+        access_token = credentials.token
+        refresh_token = credentials.refresh_token
+        expiry = credentials.expiry.strftime("%Y-%m-%d %H:%M:%S")
+        client_id = credentials.client_id
+        client_secret = credentials.client_secret
+        granted_scopes = ",".join(credentials.scopes)
+        userinfo_response = requests.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {credentials.token}"},
+        )
+        user_info = userinfo_response.json()
+        google_user_id = user_info.get("sub")
+        google_email = user_info.get("email")
+
+        if not google_user_id:
+            return (
+                jsonify({"connected": False, "error": "Google user info failed"}),
+                400,
+            )
+
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute(
+            """
+            SELECT primary_user_id_fk
+            FROM integrations
+            WHERE platform = 'google' AND user_id = %s
+            """,
+            (google_user_id,),
+        )
+        existing = cursor.fetchone()
+
+        if existing and existing["primary_user_id_fk"] != user_id:
+            return (
+                jsonify(
+                    {
+                        "connected": False,
+                        "error": "This Google account is already connected to another user",
+                    }
+                ),
+                409,
+            )
+        cursor.execute(
+            """
+            INSERT INTO integrations
+                (
+                    integration_id,
+                    user_id,
+                    platform,
+                    client_id,
+                    client_secret,
+                    access_token,
+                    refresh_token,
+                    expiry,
+                    status,
+                    primary_user_id_fk,
+                    email,
+                    created_at,
+                    updated_at,
+                )
+            VALUES
+                (%s, %s, 'google', %s, %s, %s, %s, %s,'active', %s, %s, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                access_token = %s,
+                refresh_token = %s,
+                expiry = %s,
+                status = 'active',
+                updated_at = NOW()
+            """,
+            (
+                str(uuid.uuid4()),
+                google_user_id,
+                client_id,
+                client_secret,
+                access_token,
+                refresh_token,
+                expiry,
+                user_id,
+                google_email,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        return (
+            jsonify({"connected": True, "platform": "google", "email": google_email}),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"connected": False, "error": str(e)}), 500

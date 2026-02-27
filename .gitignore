@@ -15,7 +15,6 @@ instance/
 .env
 *.env
 *.flaskenv
-
 # Virtual Environment
 venv/
 env/
