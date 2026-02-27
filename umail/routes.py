@@ -1,6 +1,6 @@
 import asyncio
 import time
-from db.db_checkers import get_existing_umail_json
+from db.db_checkers import get_email_by_id, get_existing_umail_json
 from flask import request, jsonify, Blueprint
 from datetime import datetime, timezone
 from services.redis_service import RedisService
@@ -269,71 +269,92 @@ def handle_cache_data(groupedmessages, disp_messages, next_cursor, source):
     return {"disp_messages": disp_messages, "next_cursor": next_cursor}
 
 
-def handle_lance_data(convo_messages, disp_messages, next_cursor, source):
+def handle_lance_data(convo_messages, next_cursor, userid, source):
 
     if not convo_messages:
         return {"disp_messages": [], "next_cursor": None}
 
     connection = connect_to_rds()
     if connection is None:
-        # print("❌ [DEBUG] Database connection failed")
         return jsonify({"error": "Database connection failed"}), 500
-    cursor = connection.cursor()
 
-    for folder, data in convo_messages.items():
-        ts = normalize_timestamp(data["ts"])
-        if not ts:
-            continue
+    disp_messages = []
+    main_email = get_email_by_id(userid)
 
-        relative_time = format_relative_time(ts)
-        conv_id = data["conv_id"]
-        latest_msg_in_conv = data["latest_message"]
+    try:
+        with connection.cursor() as cursor:
 
-        user_email = latest_msg_in_conv.get("user_id", "Unknown")
-        from_email = latest_msg_in_conv.get("from", "")
-        to_email = latest_msg_in_conv.get("to", "")
-        contact_email = from_email if from_email != user_email else to_email
+            for folder, data in convo_messages.items():
 
-        cursor.execute(
-            """
-            SELECT uc.first_name
-            FROM users_clients uc
-            JOIN messages m ON uc.users_clients_id = m.sender_id
-            WHERE m.conversation_id_fk = %s
-            LIMIT 1
-            """,
-            (conv_id,),
-        )
-        client_name_row = cursor.fetchone()
-        # client_name = client_name_row[0] if client_name_row else contact_email
-        client_name = (
-            client_name_row[0]
-            if client_name_row and client_name_row[0].strip()
-            else contact_email
-        )
+                ts = normalize_timestamp(data.get("ts"))
+                if not ts:
+                    continue
 
-        disp_message = {
-            "contact_id": contact_email,
-            "name": client_name,
-            "lastMessage": latest_msg_in_conv.get("body", "")[:100],
-            "timestamp": relative_time,
-            "isoTimestamp": ts.isoformat(),
-            "channel": latest_msg_in_conv.get("source"),
-            "subject": latest_msg_in_conv.get("subject"),
-            "conv_id": conv_id,
-            "ticket_id": latest_msg_in_conv.get("ticket_id"),
-            "ticket_name": latest_msg_in_conv.get("ticket_name"),
-            # "full_conversation": convo_messages,
-            "source": source,
-        }
-        # print(f"{conv_id} fetched time {relative_time}")
-        disp_messages.append(disp_message)
+                conv_id = data.get("conv_id")
+                latest_msg = data.get("latest_message", {})
+                from_email = latest_msg.get("from", "")
+                to_email = latest_msg.get("to", "")
 
-    connection.close()
-    disp_messages.sort(key=lambda x: x["isoTimestamp"], reverse=True)
+                # Determine contact email correctly
+                contact_email = from_email if from_email != main_email else to_email
 
-    # print(f"next_cursor returned to api :{next_cursor}")
-    return {"disp_messages": disp_messages, "next_cursor": next_cursor}
+                # Fetch client name
+                cursor.execute(
+                    """
+                    SELECT uc.first_name
+                    FROM users_clients uc
+                    JOIN messages m
+                      ON uc.users_clients_id = m.sender_id
+                    WHERE m.conversation_id_fk = %s
+                    LIMIT 1
+                    """,
+                    (conv_id,),
+                )
+
+                row = cursor.fetchone()
+                client_name = (
+                    row[0].strip()
+                    if row and row[0] and row[0].strip()
+                    else contact_email
+                )
+
+                message_data = {
+                    "contact_id": contact_email,
+                    "name": client_name,
+                    "lastMessage": latest_msg.get("body", "")[:100],
+                    "timestamp": format_relative_time(ts),
+                    "isoTimestamp": ts.isoformat(),
+                    "channel": latest_msg.get("source"),
+                    "subject": latest_msg.get("subject"),
+                    "conv_id": conv_id,
+                    "ticket_id": latest_msg.get("ticket_id"),
+                    "ticket_name": latest_msg.get("ticket_name"),
+                    "source": source,
+                }
+
+                disp_messages.append(message_data)
+
+    finally:
+        connection.close()
+
+    # 🔥 Global sort (newest first)
+    disp_messages.sort(
+        key=lambda x: datetime.fromisoformat(x["isoTimestamp"]),
+        reverse=True,
+    )
+
+    # 🔥 Proper next cursor = oldest item in this page
+    new_next_cursor = None
+    if disp_messages:
+        new_next_cursor = min(
+            disp_messages,
+            key=lambda x: datetime.fromisoformat(x["isoTimestamp"]),
+        )["isoTimestamp"]
+
+    return {
+        "disp_messages": disp_messages,
+        "next_cursor": new_next_cursor,
+    }
 
 
 def parse_cursor_to_datetime(cursor):
@@ -453,8 +474,8 @@ def get_latest_conversations_og(user_id, next_cursor):
         # print(f"return data lenght from get_latest: {len(display_messages)}")
         return handle_lance_data(
             convo_messages=convo_messages,
-            disp_messages=display_messages,
             next_cursor=bnext_cursor,
+            userid=user_id,
             source=source,
         )
 
@@ -494,7 +515,7 @@ def get_latest_conversations(user_id, next_cursor):
         def get_from_cache_sync(user_id):
             async def _inner():
                 ## client = await GlideClusterClient.create(redis_config_glide)
-                # print("fetching from cache ")
+                print("fetching from cache ")
                 client = RedisService()
                 return await client.get(f"umail_{user_id}")
 
@@ -534,13 +555,13 @@ def get_latest_conversations(user_id, next_cursor):
         return rediscync()
 
     else:
-        # print("before calling lance")
+        print("before calling lance")
         # ✅ Step 3: Lance fallback
         client = UmailLanceClient(user_id)
         convo_messages, bnext_cursor = client.latest_messages_from_lance(
             user_id, next_cursor
         )
-        # print("convo messages length", len(convo_messages))
+        print("convo messages length", len(convo_messages))
         # print("in lance fetch next cursor", bnext_cursor)
         # getall_route(user_id)
         if not convo_messages:
@@ -562,8 +583,8 @@ def get_latest_conversations(user_id, next_cursor):
 
             return handle_lance_data(
                 convo_messages=[],
-                disp_messages=[],
                 next_cursor=None,
+                userid=user_id,
                 source=None,
             )
 
@@ -572,8 +593,8 @@ def get_latest_conversations(user_id, next_cursor):
         # print(f"return data lenght from get_latest: {len(display_messages)}")
         return handle_lance_data(
             convo_messages=convo_messages,
-            disp_messages=display_messages,
             next_cursor=bnext_cursor,
+            userid=user_id,
             source=source,
         )
 
@@ -958,8 +979,11 @@ def start_conversation():
                 messages = []
                 for message in messages_list:
                     messages.append(message)
-
-                    channel = messages[0].get("source") if messages else "unknown"
+                    if messages:
+                        first_msg = messages[0]
+                        channel = first_msg.get("source") or first_msg.get("channel")
+                    else:
+                        channel = "unknown"
 
                 all_messages.append(
                     {
@@ -1062,7 +1086,7 @@ async def send_messages():
             print(f"❌ [DEBUG] No conversation_id or ticket_conversation_id provided")
             return jsonify({"error": "Missing conversation_id"}), 400
 
-        # print(f"🔍 [DEBUG] Querying for sender_id with conversation_id: {c_id}")
+        print(f"🔍 [DEBUG] Querying for sender_id with conversation_id: {c_id}")
         cursor.execute(
             "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
             (c_id,),
@@ -1074,7 +1098,7 @@ async def send_messages():
         else:
             status = "existing"
             client_id = client_id_row[0]
-            # print(f"🔍 [DEBUG] Using client_id from database: {client_id}")
+            print(f"🔍 [DEBUG] Using client_id from database: {client_id}")
 
         if status == "existing":
             # Validate required fields
@@ -1135,7 +1159,24 @@ async def send_messages():
                             # print(
                             #     f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}"
                             # )
-                            # print(f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}")
+                            # print(
+                            #     f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}"
+                            # )
+                            break
+                        elif conv.get("conv_id") == ticket_conversation_id:
+                            thread_id = conv.get("thread_id") or ""
+                            ticket_id = conv.get("ticket_id") or ""
+                            # print(f"*******ticket_id : {ticket_id}")
+                            ticket_name = conv.get("ticket_name") or ""
+                            subject = conv.get("subject")
+                            conversation_id = ticket_conversation_id
+                            is_reply = True
+                            # print(
+                            #     f"✅ [DEBUG] Found matching conversation - thread_id: {thread_id}, ticket_id: {ticket_id}"
+                            # )
+                            # print(
+                            #     f"✅ [DEBUG] subject: {subject}, is_reply: {is_reply}"
+                            # )
                             break
 
                     if not is_reply:
@@ -3409,3 +3450,247 @@ def set_mailbox_setting():
     finally:
         cursor.close()
         connection.close()
+
+
+@umail_bp.route("/send-mail", methods=["POST"])
+async def send_mail_api():
+    try:
+        data = request.json
+        print(data)
+        user_id = data.get("user_id")
+        client_id = data.get("client_id")
+        channel = data.get("channel")
+        text = data.get("text")
+        attachments = data.get("attachments", [])
+        if not all([user_id, client_id, text]):
+            return jsonify({"error": "Missing required fields"}), 400
+
+        connection = connect_to_rds()
+        if connection is None:
+            return jsonify({"error": "Database connection failed"}), 500
+
+        cursor = connection.cursor()
+
+        # ---------------------------------
+        # Get user email
+        # ---------------------------------
+        cursor.execute("SELECT email,social FROM users WHERE user_id = %s", (user_id,))
+        bases = cursor.fetchone()
+        # print("bases", bases)
+        user_email = bases[0]
+        # channel = bases[1]
+
+        # ---------------------------------
+        # Get client email
+        # ---------------------------------
+        cursor.execute(
+            "SELECT email_id FROM users_clients WHERE users_clients_id = %s",
+            (client_id,),
+        )
+        c_email = cursor.fetchone()
+        client_email = c_email[0]
+
+        if not client_email:
+            return jsonify({"error": "Client email not found"}), 404
+
+        # ---------------------------------
+        # Generate subject (optional AI)
+        # ---------------------------------
+        subject = f"New Message from {user_email}"
+
+        # ---------------------------------
+        # Send email (NEW THREAD)
+        # ---------------------------------
+        sent_message_id = None
+        sent_thread_id = None
+
+        if channel == "gmail" or channel == "google":
+            result = send_mail(
+                user_id=user_id,
+                to=client_email,
+                subject=subject,
+                body_text=text,
+                attachments=attachments or [],
+            )
+            if result.get("status") != "success":
+                return jsonify({"error": "Gmail send failed"}), 500
+            print("result", result)
+
+            sent_message_id = result.get("message_id")
+            sent_thread_id = result.get("thread_id")
+
+        elif channel == "outlook":
+            sent = outlook_send_mail(
+                user_id=user_id,
+                to=client_email,
+                subject=subject,
+                body_text=text,
+                attachments=attachments or [],
+            )
+
+            if not sent:
+                return jsonify({"error": "Outlook send failed"}), 500
+            sent_message_id = sent.get("message_id")
+            sent_thread_id = sent.get("thread_id")
+
+        # elif channel == "zoho":
+        #     response_payload, status_code = send_zoho_email(
+        #         user_id=user_id,
+        #         to_email=client_email,
+        #         subject=subject,
+        #         body_text=text,
+        #         from_user_email=user_email,
+        #     )
+
+        #     if status_code not in [200, 201]:
+        #         return jsonify({"error": response_payload.get("error")}), status_code
+
+        else:
+            return jsonify({"error": "Unsupported channel"}), 400
+        # ---------------------------------
+        # Generate new conversation ID
+        # ---------------------------------
+        if sent_thread_id:
+            conversation_id = f"{user_id}_{sent_thread_id}"
+        else:
+            conversation_id = str(uuid.uuid4())
+        # ---------------------------------
+        # Save conversation in DB
+        # ---------------------------------
+        now_utc = datetime.now(timezone.utc).isoformat()
+
+        cursor.execute(
+            """
+            INSERT INTO threads (conversation_id, started_at, status, last_message_at,external_user_id )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (conversation_id, now_utc, "Open", now_utc, user_id),
+        )
+
+        # ---------------------------------
+        # Save message in DB
+        # ---------------------------------
+        if not sent_message_id:
+            return {"error": "error storing"}, 402
+        msg_id = sent_message_id
+
+        cursor.execute(
+            """
+            INSERT INTO messages (
+                message_id,
+                conversation_id_fk,
+                sender_id,
+                content_ref,
+                message_type,
+                is_summary,
+                created_at,
+                update_at,
+                sender_type
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                msg_id,
+                conversation_id,
+                client_id,
+                f"{user_id}/messages/{client_id}/{conversation_id}.json",
+                "outbound",
+                subject,
+                now_utc,
+                now_utc,
+                channel,
+            ),
+        )
+
+        connection.commit()
+
+        # ---------------------------------
+        # Create S3 config.json entry
+        # ---------------------------------
+        s3_config_key = f"{user_id}/messages/{client_id}/config.json"
+        config_data = read_json_from_s3(s3_config_key) or {"conversations": []}
+
+        config_data["conversations"].append(
+            {
+                "conv_id": conversation_id,
+                "subject": subject,
+                "thread_id": sent_thread_id,
+                "created_at": now_utc,
+            }
+        )
+
+        local_config_path = f"/tmp/{client_id}_config.json"
+        with open(local_config_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2)
+
+        upload_any_file(
+            local_config_path,
+            user_id,
+            type="messages",
+            s3_key_C=s3_config_key,
+        )
+
+        # ---------------------------------
+        # Create conversation file in S3
+        # ---------------------------------
+        message = {
+            "id": msg_id,
+            "user_id": user_id,
+            "client_id": client_id,
+            "from": user_email,
+            "to": client_email,
+            "body": text,
+            "timestamp": now_utc,
+            "channel": channel,
+            "direction": "outbound",
+            "subject": subject,
+            "thread_id": sent_thread_id,
+            "conversation_id": conversation_id,
+        }
+
+        conversation_payload = {"input_data": [message]}
+
+        local_folder = f"/tmp/{conversation_id}"
+        os.makedirs(local_folder, exist_ok=True)
+
+        local_conv_path = f"{local_folder}/{conversation_id}.json"
+        with open(local_conv_path, "w", encoding="utf-8") as f:
+            json.dump(conversation_payload, f, indent=2)
+
+        s3_conv_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
+
+        upload_any_file(
+            local_conv_path,
+            user_id,
+            type="messages",
+            s3_key_C=s3_conv_key,
+        )
+
+        # ---------------------------------
+        # LanceDB Embed
+        # ---------------------------------
+        client = UmailLanceClient(user_id)
+        # await client.embed_json_file_for_reply(
+        #     conversation_payload["input_data"], user_id, client_id, conversation_id
+        # )
+        await client.embed_both_json_and_plain(folder_path=local_folder)
+
+        return (
+            jsonify(
+                {
+                    "status": "sent",
+                    "conversation_id": conversation_id,
+                    "message_id": msg_id,
+                    "channel": channel,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print("ERROR", e)
+        return jsonify({"error": "Internal server error"}), 500
+
+    finally:
+        if "connection" in locals():
+            connection.close()

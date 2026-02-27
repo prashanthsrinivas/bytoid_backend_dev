@@ -2,15 +2,19 @@ import base64
 from datetime import datetime, timedelta
 import json
 import os
-from db.db_checkers import get_userid
+from credits_route.route import Credits
+from cust_helpers import pathconfig
+from db.db_checkers import get_business_info, get_userid
 from flask import Blueprint, request, jsonify
 from services.redis_service import RedisService
 from services.uamil_auto_service import UmailAutoService
-from suggest_assist.suggest_helper import helper_make_reply_email
+from suggest_assist.suggest_helper import helper_make_reply_email, normalize_ai_response
 from umail_helper.mails_process import check_mailbox_email
 from utils.base_logger import get_logger
 from utils.celery_base import delayed_trigger, lock_client
 from db.rds_db import connect_to_rds
+from utils.fireworkzz import get_fireworks_response2
+from utils.normal import load_yaml_file
 
 
 assist_suggest_bp = Blueprint("assistsuggest", __name__)
@@ -239,11 +243,60 @@ async def triggersuggest():
     msg_body = data.get("msg_body")
     conv_id = data.get("conversation_id")
 
-    if not all([userid, msg_body, conv_id]):
+    if not all([userid, conv_id]):
         return jsonify({"error": "Missing required fields"}), 400
 
-    with UmailAutoService(userid) as service:
-        return await service.suggest_umail_reply(msg_body, conv_id)
+    if msg_body:
+        with UmailAutoService(userid) as service:
+            return await service.suggest_umail_reply(msg_body, conv_id)
+    else:
+        connection = connect_to_rds()
+        businessdata = get_business_info(connection=connection, userid=userid)
+        task_credits = Credits(db=connection)
+
+        business_name = businessdata.get("BusinessName") if businessdata else ""
+        business_address = businessdata.get("BillingAddress") if businessdata else ""
+        business_website = businessdata.get("WebsiteUrl") if businessdata else ""
+        pr_file = load_yaml_file(path=pathconfig.conv_template)
+        prompt_template = pr_file.get("ai_cold_outreach_email")
+        query = """
+            SELECT first_name, last_name
+            FROM users_clients
+            WHERE users_clients_id = %s
+        """
+
+        cursor = connection.cursor()
+        cursor.execute(query, (conv_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return jsonify({"error": "Client not found"}), 404
+
+        # If your cursor returns tuple:
+        first_name = row[0]
+        last_name = row[1]
+
+        sender_name = f"{first_name or ''} {last_name or ''}".strip()
+        filled_prompt = (
+            (prompt_template or "")
+            .replace("{{business_name}}", str(business_name or ""))
+            .replace("{{business_address}}", str(business_address or ""))
+            .replace("{{business_website}}", str(business_website or ""))
+            .replace("{{sender_name}}", str(sender_name or ""))
+        )
+        ai_reply = normalize_ai_response(
+            await get_fireworks_response2(
+                user_id=userid,
+                user_message=filled_prompt,
+                role="system",
+                credits=task_credits,
+            )
+        )
+        connection.commit()
+        connection.close()
+        if ai_reply:
+            return jsonify({"message": ai_reply.strip()}), 200
+        return jsonify({"error": "Cannot generate AI suggestion"}), 400
 
 
 @assist_suggest_bp.route("/test_functions", methods=["POST"])

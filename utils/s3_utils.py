@@ -102,7 +102,7 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
         return {"status": "success", "s3_key": s3_key}
 
     except Exception as e:
-        logger.error(f"Upload failed: {e}", exc_info=True)
+        # logger.error(f"Upload failed: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
 
@@ -165,7 +165,7 @@ def read_json_from_s3(filepath):
         return data
 
     except Exception as e:
-        logger.error(f"Error reading JSON: {e}", exc_info=True)
+        # logger.error(f"Error reading JSON: {e}", exc_info=True)
         return None
 
 

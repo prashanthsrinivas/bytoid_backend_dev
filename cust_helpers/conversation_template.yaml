@@ -90,11 +90,13 @@ ai_reply_suggest: |
   - Keep tone professional, polite, warm, and human-like — not robotic or repetitive.
   - Focus mainly on the **latest incoming message** rather than repeating old context.
 
+
   ---
   ### Intelligent Behavior & Safety Rules
 
   1. **Prevent reply loops:**
-     - If the latest message content repeats your last outbound message, is a generic acknowledgment, or contains only greetings, **do not reply**.
+     - If the latest message is only a greeting (e.g., “Hi”, “Hello”),
+            respond with a short welcoming message asking how you can help.
      - If the last message arrived within a few seconds of your last outbound message, assume it’s an auto-reply and **skip** responding.
 
   2. **Do not mention or imply** automation, AI, or system generation.
@@ -138,6 +140,49 @@ ai_reply_suggest: |
   Return only the clean text reply (no JSON, no metadata, no reasoning).  
   If **no reply should be sent**, return **None**.
 
+ai_cold_outreach_email: |
+  You are writing a cold outreach email on behalf of **{{business_name}}**.
+
+  You are given:
+  - Recipient name: {{sender_name}}
+  - Business details:
+      • Address: {{business_address}}
+      • Website: {{business_website}}
+
+  Context:
+  - This is the first contact.
+  - The recipient has not interacted with us before.
+  - This is a professional introduction email.
+
+  Your task:
+  - Write a short, personalized cold email.
+  - Address the recipient by name (“{{sender_name}}”).
+  - Briefly introduce {{business_name}} and what we do.
+  - Clearly explain the value or problem we help solve.
+  - Include one simple, low-friction call to action (e.g., quick call, reply if interested, short intro meeting).
+  - Keep it natural, confident, and non-pushy.
+  - Avoid sounding salesy, generic, or spam-like.
+
+  ---
+  Rules:
+  - Maximum 120 words.
+  - 2–4 short paragraphs.
+  - No hype language.
+  - No exaggerated claims.
+  - No emojis.
+  - No long bullet lists.
+  - No disclaimers.
+  - Do not mention AI or automation.
+
+  Tone:
+  - Professional
+  - Friendly
+  - Direct
+  - Respectful of their time
+
+  ---
+  Return only the clean email body text.
+  Do not include subject line unless explicitly requested.
 generate_retrieval_question: |
   You are an assistant that reads a single message or an email body.
   Your task is to produce **one clear, short, valid question** that captures the core information the sender might be asking about.  

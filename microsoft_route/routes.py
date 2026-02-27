@@ -2647,12 +2647,21 @@ def outlook_send_mail(
 ):
     """
     Sends an Outlook email using Microsoft Graph.
-    Matches gmail_reply() signature and behavior.
+    Returns:
+        {
+            "status": "success",
+            "message_id": "...",
+            "thread_id": "...",
+            "internet_message_id": "..."
+        }
     """
 
-    # ---------------------------
-    # 1. Fetch OAuth Tokens From DB
-    # ---------------------------
+    import uuid
+    import time
+
+    # ---------------------------------
+    # 1. Fetch OAuth Tokens
+    # ---------------------------------
     conn = connect_to_rds()
     cursor = conn.cursor()
 
@@ -2660,34 +2669,31 @@ def outlook_send_mail(
         if outlook_integration:
             cursor.execute(
                 """
-                SELECT user_id,access_token, refresh_token, email
+                SELECT user_id, access_token, refresh_token, email
                 FROM integrations
                 WHERE primary_user_id_fk = %s
                 AND platform = 'microsoft'
                 AND status = 'active'
                 LIMIT 1;
-            """,
+                """,
                 (user_id,),
             )
-            row = cursor.fetchone()
-            if not row:
-                raise Exception("No active Microsoft integration found.")
-
         else:
             cursor.execute(
                 """
-                SELECT user_id,access_token, refresh_token, email
+                SELECT user_id, access_token, refresh_token, email
                 FROM integrations
                 WHERE user_id = %s
                 AND platform = 'microsoft'
                 AND status = 'active'
                 LIMIT 1;
-            """,
+                """,
                 (user_id,),
             )
-            row = cursor.fetchone()
-            if not row:
-                raise Exception("No active Microsoft integration found.")
+
+        row = cursor.fetchone()
+        if not row:
+            raise Exception("No active Microsoft integration found.")
 
         integration_user_id, access_token, refresh_token, mail = row
 
@@ -2697,7 +2703,7 @@ def outlook_send_mail(
             SELECT token, refresh_token, email
             FROM users
             WHERE user_id = %s;
-        """,
+            """,
             (user_id,),
         )
         row = cursor.fetchone()
@@ -2705,46 +2711,43 @@ def outlook_send_mail(
             raise Exception("No active Microsoft user found.")
         access_token, refresh_token, mail = row
 
-    # sender_email = row["email"]  # Outlook email ID
+    # ---------------------------------
+    # 2. Deterministic Internal ID
+    # ---------------------------------
+    internal_uuid = str(uuid.uuid4())
 
-    # ---------------------------
-    # 2. Build Message Body
-    # ---------------------------
+    headers_list = [{"name": "X-Umail-Internal-Id", "value": internal_uuid}]
+
+    if in_reply_to:
+        headers_list.append({"name": "In-Reply-To", "value": in_reply_to})
+        headers_list.append({"name": "References", "value": in_reply_to})
+
+    # ---------------------------------
+    # 3. Build Message
+    # ---------------------------------
     message = {
         "message": {
             "subject": subject,
             "body": {"contentType": "Text", "content": body_text},
             "toRecipients": [{"emailAddress": {"address": to}}],
+            "internetMessageHeaders": headers_list,
         },
         "saveToSentItems": "true",
     }
 
-    # CC
     if cc:
         message["message"]["ccRecipients"] = [
             {"emailAddress": {"address": c}} for c in cc
         ]
 
-    # BCC
     if bcc:
         message["message"]["bccRecipients"] = [
             {"emailAddress": {"address": b}} for b in bcc
         ]
 
-    # Threading / Reply
-    if in_reply_to:
-        message["message"]["internetMessageHeaders"] = [
-            {"name": "In-Reply-To", "value": in_reply_to},
-            {"name": "References", "value": in_reply_to},
-        ]
-
-    # Conversation (thread_id)
     if thread_id:
         message["message"]["conversationId"] = thread_id
 
-    # ---------------------------
-    # 3. Attachments
-    # ---------------------------
     if attachments:
         formatted = []
         for file in attachments:
@@ -2757,20 +2760,16 @@ def outlook_send_mail(
             )
         message["message"]["attachments"] = formatted
 
-    # ---------------------------
-    # 4. Hit Microsoft Send API
-    # ---------------------------
-
-    # check if tokens are expired. If expired, refresh them
+    # ---------------------------------
+    # 4. Token Refresh Check
+    # ---------------------------------
     if integration:
         expired = check_microsoft_token_expiry(cursor, user_id)
         if expired:
             resp = refresh_expired_microsoft_tokens_for_integrations(
                 refresh_token, cursor, conn, None, integration_user_id
             )
-            data = resp.get_json()
-            access_token = data["token"]
-
+            access_token = resp.get_json()["token"]
     else:
         expired, access_token = check_microsoft_token_expiry_normal(
             cursor, conn, user_id
@@ -2779,25 +2778,62 @@ def outlook_send_mail(
     cursor.close()
     conn.close()
 
-    url = "https://graph.microsoft.com/v1.0/me/sendMail"
-
-    headers = {
+    graph_headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
 
-    # print(f"message at line 1729 :{message}")
-
-    res = requests.post(url, json=message, headers=headers)
+    # ---------------------------------
+    # 5. Send Email
+    # ---------------------------------
+    send_url = "https://graph.microsoft.com/v1.0/me/sendMail"
+    res = requests.post(send_url, json=message, headers=graph_headers)
 
     if res.status_code not in [200, 202]:
-        # print("Outlook send error:", res.text)
-        raise Exception("Failed to send Outlook message.")
+        raise Exception(f"Failed to send Outlook message: {res.text}")
 
-    # Outlook does NOT return message ID.
-    # You must fetch latest sent messages if you want ID.
-    # print(f"----success :{res}")
-    return {"status": "sent", "conversation_id": thread_id}
+    # ---------------------------------
+    # 6. Fetch Sent Item Deterministically
+    # ---------------------------------
+    time.sleep(1.2)  # allow Graph to persist
+
+    fetch_url = (
+        "https://graph.microsoft.com/v1.0/me/mailFolders/SentItems/messages"
+        "?$top=5&$orderby=sentDateTime desc"
+    )
+
+    res = requests.get(fetch_url, headers=graph_headers)
+
+    if res.status_code != 200:
+        raise Exception("Failed to fetch sent message.")
+
+    data = res.json()
+    messages = data.get("value", [])
+
+    matched = None
+
+    for msg in messages:
+        headers = msg.get("internetMessageHeaders", [])
+        for h in headers:
+            if (
+                h.get("name") == "X-Umail-Internal-Id"
+                and h.get("value") == internal_uuid
+            ):
+                matched = msg
+                break
+        if matched:
+            break
+
+    if not matched:
+        raise Exception("Sent message not found via internal header.")
+    val2 = matched.get("id")
+    val = f"{user_id}_{val2}"
+    return {
+        "status": "success",
+        "message_id": val,
+        "thread_id": matched.get("conversationId"),
+        "internet_message_id": matched.get("internetMessageId"),
+    }
 
 
 # ---------------- related to onedrive ----------------------- #

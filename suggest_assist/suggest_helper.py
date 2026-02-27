@@ -184,10 +184,6 @@ async def suggest_helper_base(userid, email_msg, umail_conversations, umail_bodi
         business_name = businessdata.get("BusinessName") if businessdata else ""
         business_address = businessdata.get("BillingAddress") if businessdata else ""
         business_website = businessdata.get("WebsiteUrl") if businessdata else ""
-
-        business_name = businessdata.get("BusinessName") if businessdata else ""
-        business_address = businessdata.get("BillingAddress") if businessdata else ""
-        business_website = businessdata.get("WebsiteUrl") if businessdata else ""
         # print("before ai check on suggest")
         try:
 

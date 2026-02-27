@@ -696,6 +696,7 @@ class LanceDBServer:
                     logger.debug("error_hook raised an exception")
 
             raise
+
     @retry_async(attempts=3, initial_delay=0.2, factor=2.0, max_delay=4.0, jitter=0.1)
     async def fetch_by_filename(
         self, user_id: str, filename: str
@@ -761,7 +762,6 @@ class LanceDBServer:
                     logger.debug("error_hook raised an exception")
 
             raise
-
 
     async def query_vector_batch(
         self, query: "BatchQueryData"
@@ -1253,79 +1253,33 @@ class LanceDBServer:
         connection = connect_to_rds()
         table = self._get_umail_table(user_id)
 
+        # Cursor logic
         if next_cursor:
             end_date = parse_ts(next_cursor)
         else:
             end_date = datetime.now(timezone.utc)
 
-        start_date = end_date - timedelta(days=5)
-
-        # print(
-        #     f"params -> "
-        #     f"start_date={start_date}, "
-        #     f"end_date={end_date}, "
-        #     f"user_id={user_id}, "
-        #     f"cursor={end_date}, "
-        #     f"user_id_again={user_id}, "
-        #     f"page_size={page_size}"
-        # )
-
-        # query = """
-        # SELECT m.conversation_id_fk, m.sender_id, m.created_at
-        # FROM messages m
-        # JOIN (
-        #     SELECT m2.sender_id,
-        #         MAX(m2.created_at) AS latest_created_at
-        #     FROM messages m2
-        #     JOIN communication c
-        #     ON m2.sender_id = c.users_clients_id_fk
-        #     WHERE m2.created_at >= %s
-        #     AND m2.created_at < %s
-        #     AND c.user_id_fk = %s
-        #     GROUP BY m2.sender_id
-        # ) latest
-        # ON m.sender_id = latest.sender_id
-        # AND m.created_at = latest.latest_created_at
-        # JOIN communication c2
-        # ON m.sender_id = c2.users_clients_id_fk
-        # WHERE m.created_at < %s
-        # AND c2.user_id_fk = %s
-        # ORDER BY m.created_at DESC
-        # LIMIT %s;
-        # """
-
         query = """
-        SELECT m.conversation_id_fk, m.sender_id, m.created_at
-        FROM messages m
-        JOIN (
-            SELECT m2.sender_id,
-                MAX(m2.created_at) AS latest_created_at
-            FROM messages m2
-            JOIN communication c
-            ON m2.sender_id = c.users_clients_id_fk
-            WHERE m2.created_at >= %s
-            AND m2.created_at < %s
-            AND c.user_id_fk = %s
-            GROUP BY m2.sender_id
-        ) latest
-        ON m.sender_id = latest.sender_id
-        AND m.created_at = latest.latest_created_at
-        WHERE m.created_at < %s
-        AND EXISTS (
-            SELECT 1
-            FROM communication c2
-            WHERE c2.users_clients_id_fk = m.sender_id
-                AND c2.user_id_fk = %s
-        )
-        ORDER BY m.created_at DESC
-        LIMIT %s;
+            SELECT m.conversation_id_fk, m.sender_id, m.created_at
+            FROM messages m
+            JOIN (
+                SELECT m2.sender_id,
+                    MAX(m2.created_at) AS latest_created_at
+                FROM messages m2
+                JOIN communication c
+                ON m2.sender_id = c.users_clients_id_fk
+                WHERE m2.created_at < %s
+                AND c.user_id_fk = %s
+                GROUP BY m2.sender_id
+            ) latest
+            ON m.sender_id = latest.sender_id
+            AND m.created_at = latest.latest_created_at
+            ORDER BY m.created_at DESC
+            LIMIT %s;
         """
 
         params = (
-            start_date,  # window start
-            end_date,  # window end
-            user_id,
-            end_date,  # ✅ cursor
+            end_date,  # cursor upper bound
             user_id,
             page_size,
         )
@@ -1336,13 +1290,11 @@ class LanceDBServer:
 
         connection.close()
 
-        result = []
-        # print(f"rows:")
-        # print({rows})
         collected = []
-        for row in rows:
-            conversation_id, client_id, timestamp = row
-            # text_row = table.search().where(f"id == '{conversation_id}' and folder_name == '{client_id}'").select(["text"]).to_list()
+
+        for conversation_id, client_id, timestamp in rows:
+            # print("Searching Lance for:", conversation_id, client_id)
+
             text_rows = (
                 table.search()
                 .where(f"id == '{conversation_id}' and folder_name == '{client_id}'")
@@ -1350,19 +1302,15 @@ class LanceDBServer:
             )
 
             if text_rows:
-                # Sort by timestamp in Python
                 text_rows.sort(key=lambda x: x["timestamp"], reverse=True)
                 collected.append(text_rows[0])
-                # latest_text = text_rows[0]["text"]
-                # latest_timestamp = text_rows[0]["timestamp"]
 
+        # Set next cursor = oldest item in this page
         next_cursor = None
+        if collected:
+            oldest_item = min(collected, key=lambda x: x["timestamp"])
+            next_cursor = oldest_item.get("timestamp")
 
-        for item in reversed(collected):
-            ts = item.get("timestamp")
-            if ts:
-                next_cursor = ts
-                break
         return collected, next_cursor
 
     def serverless_get_umail_page_test_test(

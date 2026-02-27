@@ -198,6 +198,8 @@ async def process_and_update_yaml(
     # print("inside process_and_update_yaml")
     processed_filenames = []
     connection = db or connect_to_rds()
+    if not credits:
+        credits = Credits(connection)
     industry = None
     selected_id = None
     with connection.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -238,29 +240,31 @@ async def process_and_update_yaml(
     # print(f"all_downloaded_paths: {all_downloaded_paths}")
     for path in all_downloaded_paths:
         filename = os.path.basename(path)
-        lance_client = LanceClient(user_id=userid, credits=credits)
-        result = await lance_client.process_document(
-            file_path=path, filename=filename, credits=credits
-        )
-
-        if result.get("error") == "INSUFFICIENT_CREDITS":
-            return {
-                "status": "error",
-                "error": "INSUFFICIENT_CREDITS",
-                "message": "Credits exhausted. Please recharge to continue.",
-            }
-
-        # print(f"************** result: {result}")
-        if result.get("vectors_made", 0) > 0:
-            current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            processed_filenames.append(
-                {
-                    "filename": filename,
-                    "FileStatus": "Present",
-                    "upload_date": current_date,
-                    "updated_date": None,
-                }
+        try:
+            lance_client = LanceClient(user_id=userid, credits=credits)
+            result = await lance_client.process_document(
+                file_path=path, filename=filename, credits=credits
             )
+
+            if result.get("error") == "INSUFFICIENT_CREDITS":
+                return {
+                    "status": "error",
+                    "error": "INSUFFICIENT_CREDITS",
+                    "message": "Credits exhausted. Please recharge to continue.",
+                }
+
+            # print(f"************** result: {result}")
+            if result.get("vectors_made", 0) > 0:
+                current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                processed_filenames.append(
+                    {
+                        "filename": filename,
+                        "FileStatus": "Present",
+                        "upload_date": current_date,
+                        "updated_date": None,
+                    }
+                )
+        finally:
             os.remove(path)
             logger.info(f"[🗑] Deleted processed file: {path}")
 

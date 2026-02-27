@@ -68,6 +68,12 @@ def get_latest_msg(content_dict, user_id):
 
         s3_conv_key = content_ref
         raw_data = read_json_from_s3(s3_conv_key)
+
+        # ✅ Fix: Skip if S3 returned None
+        if not raw_data:
+            print(f"[WARNING] No data found for key: {s3_conv_key}")
+            continue
+
         input_data = raw_data.get("input_data", [])
         if isinstance(input_data, list) and input_data:
             messages.append(input_data[-1])
@@ -251,7 +257,7 @@ def get_dormant_leads():
             content_ref = row[1]
             content_dict[msg_id] = content_ref
 
-    # print(f"content_dict lenght : {len(content_dict)}")
+    print(f"content_dict lenght : {len(content_dict)}")
     messages = get_latest_msg(content_dict, user_id)
 
     return jsonify(messages)

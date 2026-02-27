@@ -372,7 +372,7 @@ class LanceClient:
             )
 
             results = await self.service.query_vector(payload.dict())
-            logger.info(f"[🔍] Retrieved doc {len(results)} results.")
+            # logger.info(f"[🔍] Retrieved doc {len(results)} results.")
 
             # ------------------------------------------------
 
@@ -417,7 +417,7 @@ class LanceClient:
             )
 
             results = await self.service.query_app_endpoint(payload.dict())
-            logger.info(f"[🔍] Retrieved doc {len(results)} results.")
+            # logger.info(f"[🔍] Retrieved doc {len(results)} results.")
 
             # ------------------------------------------------
 
@@ -513,7 +513,7 @@ class LanceClient:
             )
 
             results = await self.service.rec_query_vector(payload.dict())
-            logger.info(f"[🔍] Retrieved audio {len(results)} results.")
+            # logger.info(f"[🔍] Retrieved audio {len(results)} results.")
 
             # ------------------------------------------------
 
@@ -592,7 +592,7 @@ class LanceClient:
             result = self.service.search_scraped_data(
                 payload.dict(), sender_email=sender_email
             )
-            logger.info(f"[🔍] Retrieved scrape {len(result)} results.")
+            # logger.info(f"[🔍] Retrieved scrape {len(result)} results.")
 
             return result
 

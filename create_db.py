@@ -2632,6 +2632,221 @@ def add_tTop_users():
         connection.close()
 
 
+import json
+
+
+def export_all_table_schemas():
+    conn = connect_to_rds()
+    if not conn:
+        print("DB connection failed")
+        return
+
+    try:
+        with conn.cursor() as cursor:
+            # Get all tables
+            cursor.execute("SHOW TABLES;")
+            tables = cursor.fetchall()
+
+            schemas = {}
+
+            for (table_name,) in tables:
+                cursor.execute(f"SHOW CREATE TABLE `{table_name}`;")
+                result = cursor.fetchone()
+                schemas[table_name] = result[1]
+
+        # Save to file
+        with open("db_schema_backup.json", "w") as f:
+            json.dump(schemas, f, indent=4)
+
+        print("✅ Schema exported successfully")
+
+    finally:
+        conn.close()
+
+
+# def add_user_foreign_keys():
+#     connection = connect_to_rds()
+#     if connection is None:
+#         print("DB connection failed")
+#         return False
+
+#     tables = [
+#         ("credits", "user_id_fk"),
+#         ("credit_buckets", "user_id"),
+#         ("credit_usage_log", "user_id"),
+#         ("payments", "user_id"),
+#         ("subscriptions", "user_id"),
+#         ("subscribe", "user_id"),
+#         ("scraped_websites", "user_id_fk"),
+#         ("session", "user_id_fk"),
+#         ("tour_progress", "user_id"),
+#         ("user_workflows", "user_id_fk"),
+#         ("launch", "user_id_fk"),
+#         ("communication", "user_id_fk"),
+#         ("conversation_notes", "user_id"),
+#         ("business_info", "user_id_fk"),
+#     ]
+
+#     try:
+#         with connection.cursor() as cursor:
+
+#             for table, column in tables:
+#                 try:
+#                     print(f"\nProcessing {table}...")
+
+#                     # 1️⃣ Delete orphan rows
+#                     delete_query = f"""
+#                         DELETE t FROM {table} t
+#                         LEFT JOIN users u ON t.{column} = u.user_id
+#                         WHERE u.user_id IS NULL
+#                     """
+#                     cursor.execute(delete_query)
+
+#                     # 2️⃣ Check if FK already exists
+#                     cursor.execute(
+#                         """
+#                         SELECT CONSTRAINT_NAME
+#                         FROM information_schema.KEY_COLUMN_USAGE
+#                         WHERE TABLE_SCHEMA = DATABASE()
+#                         AND TABLE_NAME = %s
+#                         AND COLUMN_NAME = %s
+#                         AND REFERENCED_TABLE_NAME = 'users'
+#                     """,
+#                         (table, column),
+#                     )
+
+#                     if cursor.fetchone():
+#                         print(f"FK already exists on {table}")
+#                         continue
+
+#                     # 3️⃣ Add FK
+#                     constraint_name = f"fk_{table}_user"
+
+#                     alter_query = f"""
+#                         ALTER TABLE {table}
+#                         ADD CONSTRAINT {constraint_name}
+#                         FOREIGN KEY ({column})
+#                         REFERENCES users(user_id)
+#                         ON DELETE CASCADE
+#                     """
+#                     cursor.execute(alter_query)
+
+#                     print(f"FK added to {table}")
+
+#                 except Exception as table_error:
+#                     print(f"Error processing {table}: {table_error}")
+
+#         connection.commit()
+#         print("\nAll tables processed successfully ✅")
+#         return True
+
+#     except Exception as e:
+#         connection.rollback()
+#         print(f"Migration failed: {e}")
+#         return False
+
+
+#     finally:
+#         connection.close()
+def add_all_foreign_keys():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed")
+        return False
+
+    direct_user_tables = [
+        ("credits", "user_id_fk", "users", "user_id"),
+        ("credit_buckets", "user_id", "users", "user_id"),
+        ("credit_usage_log", "user_id", "users", "user_id"),
+        ("payments", "user_id", "users", "user_id"),
+        ("subscriptions", "user_id", "users", "user_id"),
+        ("subscribe", "user_id", "users", "user_id"),
+        ("scraped_websites", "user_id_fk", "users", "user_id"),
+        ("session", "user_id_fk", "users", "user_id"),
+        ("tour_progress", "user_id", "users", "user_id"),
+        ("user_workflows", "user_id_fk", "users", "user_id"),
+        ("launch", "user_id_fk", "users", "user_id"),
+        ("communication", "user_id_fk", "users", "user_id"),
+        ("conversation_notes", "user_id", "users", "user_id"),
+        ("business_info", "user_id_fk", "users", "user_id"),
+    ]
+
+    indirect_tables = [
+        ("subagents", "launch_id_fk", "launch", "launch_id"),
+        ("playbook", "sub_agent_id", "subagents", "sub_agent_id"),
+        ("instructions", "sub_agent_id_fk", "subagents", "sub_agent_id"),
+        ("integrations", "sub_agent_id_fk", "subagents", "sub_agent_id"),
+        ("connect", "sub_agent_id_fk", "subagents", "sub_agent_id"),
+        ("users_clients", "communication_id_fk", "communication", "communication_id"),
+        ("messages", "conversation_id_fk", "threads", "conversation_id"),
+        ("feedback", "conversation_id_fk", "threads", "conversation_id"),
+        ("tickets", "conversation_id_fk", "threads", "conversation_id"),
+    ]
+
+    all_tables = direct_user_tables + indirect_tables
+
+    try:
+        with connection.cursor() as cursor:
+
+            for table, column, ref_table, ref_column in all_tables:
+                try:
+                    print(f"\nProcessing {table}...")
+
+                    # Delete orphan rows
+                    delete_query = f"""
+                        DELETE t FROM {table} t
+                        LEFT JOIN {ref_table} r
+                        ON t.{column} = r.{ref_column}
+                        WHERE r.{ref_column} IS NULL
+                    """
+                    cursor.execute(delete_query)
+
+                    # Check if FK exists
+                    cursor.execute(
+                        """
+                        SELECT CONSTRAINT_NAME
+                        FROM information_schema.KEY_COLUMN_USAGE
+                        WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = %s
+                        AND COLUMN_NAME = %s
+                        AND REFERENCED_TABLE_NAME = %s
+                    """,
+                        (table, column, ref_table),
+                    )
+
+                    if cursor.fetchone():
+                        print(f"FK already exists on {table}")
+                        continue
+
+                    constraint_name = f"fk_{table}_{ref_table}"
+
+                    alter_query = f"""
+                        ALTER TABLE {table}
+                        ADD CONSTRAINT {constraint_name}
+                        FOREIGN KEY ({column})
+                        REFERENCES {ref_table}({ref_column})
+                        ON DELETE CASCADE
+                    """
+
+                    cursor.execute(alter_query)
+                    print(f"FK added to {table}")
+
+                except Exception as table_error:
+                    print(f"Error processing {table}: {table_error}")
+
+        connection.commit()
+        print("\nAll foreign keys processed successfully ✅")
+        return True
+
+    except Exception as e:
+        connection.rollback()
+        print(f"Migration failed: {e}")
+        return False
+
+    finally:
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # print("HHSS")
@@ -2689,5 +2904,7 @@ if __name__ == "__main__":
     # create_external_apps_table()
     # create_external_app_endpoints_table()
     # add_mail_sub_column()
-    add_tTop_users()
+    # add_tTop_users()
+    # export_all_table_schemas()
+    add_all_foreign_keys()
     print("ok")

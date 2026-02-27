@@ -255,6 +255,7 @@ class UmailLanceClient:
             folder = row.get("folder_name")
             text_data = row.get("text")
             conv_id = row.get("id")
+            # print("rows keys", text_data)
             if not text_data:
                 continue
 
@@ -408,40 +409,92 @@ class UmailLanceClient:
 
     def process_json_files(self, folder_path):
         """
-        Reads all JSON files in a folder, flattens each JSON into a list of "key: value" strings,
-        and returns a combined list of all flattened strings.
+        Reads all JSON files in a folder, extracts metadata from either:
+        1) Filename format: user:client:conv.json   (old format)
+        2) JSON body fields                         (new format)
+
+        Flattens each JSON into a list of "key: value" strings
+        and returns a combined list of structured rows.
         """
+
         results = []
-        # print(f"processing folderpath : {folder_path}")
+        print(f"processing folderpath : {folder_path}")
+
+        # Safety check
+        if not os.path.isdir(folder_path):
+            logger.error(f"Provided path is not a directory: {folder_path}")
+            return results
 
         for filename in os.listdir(folder_path):
-            # print(f"filename : {filename}")
+
             if not filename.lower().endswith(".json"):
-                # print(f"no filename")
                 continue
 
             file_path = os.path.join(folder_path, filename)
+
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except Exception as e:
-                # print(f"[!] Failed to read JSON file {filename}: {e}")
                 logger.error(f"[!] Failed to read JSON file {filename}: {e}")
                 continue
 
+            user_id = None
+            client_id = None
+            conv_id = None
+
+            # ==================================================
+            # CASE 1: OLD FORMAT (user:client:conv.json)
+            # ==================================================
             parts = filename.split(":")
-            user_id = parts[0]
-            client_id = parts[1]
-            conv_id = os.path.splitext(parts[2])[0]
+            if len(parts) >= 3:
+                try:
+                    user_id = parts[0]
+                    client_id = parts[1]
+                    conv_id = os.path.splitext(parts[2])[0]
+                except Exception as e:
+                    logger.warning(
+                        f"Filename metadata parsing failed for {filename}: {e}"
+                    )
 
-            # print(f"---------")
-            # print(f"user_id : {user_id}")
-            # print(f"client_id : {client_id}")
-            # print(f"conv_id : {conv_id}")
-            # print(f"---------")
+            # ==================================================
+            # CASE 2: NEW FORMAT (metadata inside JSON)
+            # ==================================================
+            if not all([user_id, client_id, conv_id]):
+                try:
+                    # Handle {"input_data": [...]} format
+                    if isinstance(data, dict) and "input_data" in data:
+                        items = data.get("input_data", [])
+                    elif isinstance(data, list):
+                        items = data
+                    else:
+                        items = [data]
 
+                    if not items:
+                        logger.warning(f"No usable data found in {filename}")
+                        continue
+
+                    first_item = items[0]
+
+                    user_id = first_item.get("user_id")
+                    client_id = first_item.get("client_id")
+                    conv_id = first_item.get("conversation_id")
+
+                except Exception as e:
+                    logger.error(f"JSON metadata extraction failed for {filename}: {e}")
+                    continue
+
+            # Final safety check
+            if not all([user_id, client_id, conv_id]):
+                logger.warning(f"Skipping file {filename} due to missing metadata")
+                continue
+
+            # ==================================================
+            # Row Builder
+            # ==================================================
             def make_row(d):
                 flattened_texts = self.flatten_json(d)
+
                 return {
                     "user_id": user_id,
                     "client_id": client_id,
@@ -452,12 +505,26 @@ class UmailLanceClient:
                     "plain_text": d.get("plain_text", ""),
                 }
 
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, dict):
-                        results.append(make_row(item))
-            elif isinstance(data, dict):
-                results.append(make_row(data))
+            # ==================================================
+            # Data Handling
+            # ==================================================
+            try:
+                if isinstance(data, dict) and "input_data" in data:
+                    for item in data.get("input_data", []):
+                        if isinstance(item, dict):
+                            results.append(make_row(item))
+
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            results.append(make_row(item))
+
+                elif isinstance(data, dict):
+                    results.append(make_row(data))
+
+            except Exception as e:
+                logger.error(f"Row processing failed for {filename}: {e}")
+                continue
 
         return results
 
@@ -597,8 +664,8 @@ class UmailLanceClient:
         return np.mean(np.array(valid), axis=0).astype(np.float32).tolist()
 
     async def embed_both_json_and_plain(self, folder_path, batch_size=100):
-        # print(f"inside embed_both_json_and_plain")
-        # print(f"folder_path : {folder_path}")
+        print(f"inside embed_both_json_and_plain")
+        print(f"folder_path : {folder_path}")
         data = self.process_json_files(folder_path)
 
         vector_batch = []
@@ -612,7 +679,7 @@ class UmailLanceClient:
             original_data = f["original_data"]
             timestamp = f["timestamp"]
             plain_text = f.get("plain_text", "")
-            print("len of plain text", plain_text)
+            print("len of plain text", len(plain_text))
             print("len of flattended", len(flattened))
 
             # print(f"user_id : {user_id}")

@@ -1264,8 +1264,7 @@ def send_mail(user_id, to, subject, body_text, attachments=None):
             raise ValueError("No message ID returned from Gmail API")
         sendid = sent["id"]
         message_id = f"{user_id}_{sendid}"
-        thread_id = sent.get("thread_id")
-
+        thread_id = sent.get("threadId") or sent.get("thread_id")
         return {"status": "success", "message_id": message_id, "thread_id": thread_id}
 
     except Exception as e:
