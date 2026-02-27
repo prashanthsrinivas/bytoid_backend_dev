@@ -137,8 +137,7 @@ ai_reply_suggest: |
      - Avoid extra line breaks, signatures, or disclaimers.
 
   ---
-  Return only the clean text reply (no JSON, no metadata, no reasoning).  
-  If **no reply should be sent**, return **None**.
+  Return only the clean text reply (no JSON, no metadata, no reasoning).
 
 ai_cold_outreach_email: |
   You are writing a cold outreach email on behalf of **{{business_name}}**.

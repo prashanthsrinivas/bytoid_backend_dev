@@ -2667,7 +2667,7 @@ class GmailService:
                 "status": "sent",
                 "source": "gmail",
                 "direction": "outbound",
-                "user_id": "user_id",
+                "user_id": self.user_id,
                 "message_id": message_id,
             }
             if self.workflow or self.current_wf_id:
