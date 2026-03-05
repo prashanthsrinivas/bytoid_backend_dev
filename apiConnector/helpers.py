@@ -1,8 +1,9 @@
 import asyncio
 from datetime import datetime, timedelta
 import json
+from pkg_resources import normalize_path
 import pymysql
-
+import re
 from db.rds_db import connect_to_rds
 from services.apiconnectors import APIConnector
 from utils.s3_utils import save_app_runbase_S3
@@ -43,6 +44,7 @@ async def save_app_run_to_s3(
         )
 
     return val
+
 
 def _get_effective_auth_config(cur, app_id, userid, app_auth_config):
     """
@@ -102,6 +104,7 @@ def _execute_app_internal(app_id, userid):
 
     headers = json.loads(app["headers"] or "{}")
     query_params = json.loads(app["query_params"] or "{}")
+    path_params = json.loads(app["path_params"] or "{}")
 
     config = {
         "auth": _get_effective_auth_config(cur, app_id, userid, app["auth_config"]),
@@ -110,6 +113,7 @@ def _execute_app_internal(app_id, userid):
             "method": "GET",
             "headers": headers,
             "query_params": query_params,
+            "path_params": path_params,
             "body": None,
         },
         "timeout": app.get("timeout_seconds") or 10,
@@ -137,17 +141,38 @@ def _execute_app_internal(app_id, userid):
     return result
 
 
-async def _execute_endpoint_internal(endpoint_id, userid, context=None):
+async def _execute_endpoint_internal(
+    endpoint_id,
+    userid,
+    context=None,
+    runtime_params=None,
+):
+    """
+    runtime_params can contain:
+        {
+            "headers": {},
+            "query_params": {},
+            "path_params": {},
+            "body": {},
+            "timeout": 20
+        }
+    """
+
+    runtime_params = runtime_params or {}
+
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
-    # Load endpoint + app
+
+    # ---------------------------
+    # 1️⃣ Load endpoint + app
+    # ---------------------------
     cur.execute(
         """
         SELECT
             e.*,
             a.base_url,
             a.auth_config,
-            a.timeout_seconds,
+            a.timeout_seconds as app_timeout,
             a.retry_count,
             a.retry_backoff_seconds
         FROM external_app_endpoints e
@@ -158,58 +183,106 @@ async def _execute_endpoint_internal(endpoint_id, userid, context=None):
     )
 
     row = cur.fetchone()
+
     if not row:
-        return ValueError("App endpoint not Found")
+        cur.close()
+        conn.close()
+        raise ValueError("App endpoint not found")
 
-    # Build request ONLY from DB
-    base_url = row["base_url"].rstrip("/")
-    full_url = f"{base_url}{row['path']}"
-
+    # ---------------------------
+    # 2️⃣ Parse stored JSON
+    # ---------------------------
     try:
-        headers = json.loads(row["headers"] or "{}")
-        query_params = json.loads(row["query_params"] or "{}")
-        body = json.loads(row["body_template"] or "null")
-        #auth_config = json.loads(row["auth_config"] or "{}")
+        db_headers = json.loads(row["headers"] or "{}")
+        db_query_params = json.loads(row["query_params"] or "{}")
+        db_path_params = json.loads(row["path_params"] or "{}")
+        db_body = json.loads(row["body_template"] or "null")
+
         auth_config = _get_effective_auth_config(
             cur, row["app_id"], userid, row["auth_config"]
         )
 
     except json.JSONDecodeError as e:
+        cur.close()
+        conn.close()
         raise ValueError(f"Invalid JSON in DB: {e}")
+
+    # ---------------------------
+    # 3️⃣ Merge runtime overrides
+    # ---------------------------
+    final_headers = {**db_headers, **runtime_params.get("headers", {})}
+    final_query_params = {**db_query_params, **runtime_params.get("query_params", {})}
+    final_path_params = {**db_path_params, **runtime_params.get("path_params", {})}
+
+    # Body merging (deep merge optional — simple override here)
+    final_body = runtime_params.get("body", db_body)
+
+    # ---------------------------
+    # 4️⃣ Replace path variables
+    # ---------------------------
+    base_url = row["base_url"].rstrip("/")
+    path = row["path"]
+
+    matches = re.findall(r"\{(.*?)\}", path)
+
+    for var in matches:
+        if var not in final_path_params:
+            cur.close()
+            conn.close()
+            raise ValueError(f"Missing path parameter: {var}")
+
+        path = path.replace(f"{{{var}}}", str(final_path_params[var]))
+
+    full_url = f"{base_url}{path}"
+
+    # ---------------------------
+    # 5️⃣ Build final config
+    # ---------------------------
+    timeout_value = (
+        runtime_params.get("timeout")
+        or row.get("timeout_seconds")
+        or row.get("app_timeout")
+        or 10
+    )
 
     config = {
         "auth": auth_config,
         "request": {
             "url": full_url,
             "method": row["method"],
-            "headers": headers,
-            "query_params": query_params,
-            "body": body,
+            "headers": final_headers,
+            "query_params": final_query_params,
+            "body": final_body,
         },
-        "timeout": row.get("timeout_seconds") or 10,
+        "timeout": timeout_value,
         "retry": {
             "count": row.get("retry_count") or 1,
             "backoff": row.get("retry_backoff_seconds") or 1,
         },
     }
 
+    # ---------------------------
+    # 6️⃣ Execute
+    # ---------------------------
     connector = APIConnector(userid=userid, config=config, context=context)
     result = connector.execute()
 
-    # Save execution log to S3 (minute-bucketed)
+    # ---------------------------
+    # 7️⃣ Log execution
+    # ---------------------------
     await save_app_run_to_s3(
         db=conn,
         user_id=userid,
         app_id=row["app_id"],
         endpoint_id=endpoint_id,
-        request_cfg=config["request"],  # Only request, not full config
+        request_cfg=config["request"],
         result=result,
         trigger="manual",
     )
 
     cur.close()
     conn.close()
-   #print("res done", result.get("status_code"))
+
     return result
 
 
@@ -490,3 +563,126 @@ def is_schedule_app_active(endpoint_id):
 
     schedule = json.loads(row[0])
     return schedule.get("status") == "active"
+
+
+def extract_user_id(payload=None):
+    payload = payload or {}
+    return (
+        payload.get("user_id")
+        or payload.get("userid")
+        or request.args.get("user_id")
+        or request.args.get("userid")
+    )
+
+
+def normalize_role(value):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    value = value.strip().lower()
+    return value or None
+
+
+def get_onboarding_role(cursor, user_id):
+    cursor.execute(
+        """
+        SELECT LineOfBusiness
+        FROM business_info
+        WHERE user_id_fk = %s
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone() or {}
+    return normalize_role(row.get("LineOfBusiness"))
+
+
+def ensure_dict(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
+    return None
+
+
+def merge_json(app_value, endpoint_value):
+    app_value = ensure_dict(app_value)
+    endpoint_value = ensure_dict(endpoint_value)
+
+    if app_value is None and endpoint_value is None:
+        return None
+    if app_value is None:
+        return endpoint_value
+    if endpoint_value is None:
+        return app_value
+
+    return {**app_value, **endpoint_value}
+
+
+def normalize_row_dynamic(row: dict):
+    """
+    Dynamically normalizes any JSON-like string values in a DB row.
+    Does NOT assume field names.
+    Does NOT invent values.
+    """
+    if not isinstance(row, dict):
+        return row
+
+    normalized = {}
+
+    for key, value in row.items():
+        # Already valid JSON
+        if isinstance(value, dict) or isinstance(value, list):
+            normalized[key] = value
+            continue
+
+        # Try parsing JSON strings
+        if isinstance(value, str):
+            value_str = value.strip()
+            if (value_str.startswith("{") and value_str.endswith("}")) or (
+                value_str.startswith("[") and value_str.endswith("]")
+            ):
+                try:
+                    normalized[key] = json.loads(value_str)
+                    continue
+                except Exception:
+                    pass  # fall through safely
+
+        # Leave everything else untouched
+        normalized[key] = value
+
+    return normalized
+
+
+# ==========================================================
+# 🔹 Helper: Build URL With Optional Path Params
+# ==========================================================
+def build_full_url(base_url, path, path_params=None):
+    base_url = base_url.rstrip("/")
+    path = normalize_path(path)
+    path_params = path_params or {}
+
+    # Support {id}
+    curly_matches = re.findall(r"\{(.*?)\}", path)
+    for var in curly_matches:
+        if var not in path_params:
+            raise ValueError(f"Missing path parameter: {var}")
+        path = path.replace(f"{{{var}}}", str(path_params[var]))
+
+    # Support :id
+    colon_matches = re.findall(r":(\w+)", path)
+    for var in colon_matches:
+        if var not in path_params:
+            raise ValueError(f"Missing path parameter: {var}")
+        path = path.replace(f":{var}", str(path_params[var]))
+
+    if path_params and not (curly_matches or colon_matches):
+        raise ValueError("Path parameters provided but no placeholders found in path")
+
+    return f"{base_url}{path}"
