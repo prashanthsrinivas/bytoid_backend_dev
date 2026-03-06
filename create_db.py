@@ -2365,6 +2365,7 @@ def create_external_apps_table():
 
     try:
         # DROP CHILD FIRST
+        cursor.execute("DROP TABLE IF EXISTS external_app_user_config;")
         cursor.execute("DROP TABLE IF EXISTS external_app_endpoints;")
         cursor.execute("DROP TABLE IF EXISTS external_apps;")
 
@@ -2388,10 +2389,12 @@ def create_external_apps_table():
                 headers JSON DEFAULT NULL,
                 method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
                 is_universal BOOLEAN NOT NULL DEFAULT FALSE,
+                source_global_app_id BIGINT DEFAULT NULL,
                 target_onboarding_role VARCHAR(255) DEFAULT NULL,
-                INDEX idx_external_apps_universal_role (is_universal, target_onboarding_role)
+                INDEX idx_external_apps_universal_role (is_universal, target_onboarding_role),
 
                 query_params JSON DEFAULT NULL,
+                path_params JSON DEFAULT NULL,
 
                 timeout_seconds INT DEFAULT 10,
                 retry_count INT DEFAULT 0,
@@ -2409,7 +2412,12 @@ def create_external_apps_table():
 
                 UNIQUE KEY uq_user_app_name (user_id, app_name),
                 INDEX idx_external_apps_user (user_id),
-                INDEX idx_external_apps_provider (provider)
+                INDEX idx_external_apps_provider (provider),
+
+                CONSTRAINT fk_external_apps_user
+                    FOREIGN KEY (user_id)
+                    REFERENCES users(user_id)
+                    ON DELETE CASCADE
             );
             """
         )
@@ -2441,18 +2449,20 @@ def create_external_app_endpoints_table():
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
                 app_id BIGINT NOT NULL,
-
                 name VARCHAR(100) NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
 
                 path VARCHAR(255) NOT NULL,
                 method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
 
                 headers JSON DEFAULT NULL,
                 query_params JSON DEFAULT NULL,
+                path_params JSON DEFAULT NULL,
                 body_template JSON DEFAULT NULL,
 
                 timeout_seconds INT DEFAULT NULL,
-
+                is_universal BOOLEAN NOT NULL DEFAULT FALSE,
+                source_global_endpoint_id BIGINT DEFAULT NULL,
                 is_active BOOLEAN DEFAULT TRUE,
 
                 last_tested_at DATETIME DEFAULT NULL,
@@ -2467,10 +2477,16 @@ def create_external_app_endpoints_table():
                 UNIQUE KEY uq_app_endpoint_name (app_id, name),
 
                 INDEX idx_endpoint_app (app_id),
+                INDEX idx_endpoint_user (user_id),
 
                 CONSTRAINT fk_endpoint_app
                     FOREIGN KEY (app_id)
                     REFERENCES external_apps(id)
+                    ON DELETE CASCADE,
+
+                CONSTRAINT fk_endpoint_user
+                    FOREIGN KEY (user_id)
+                    REFERENCES users(user_id)
                     ON DELETE CASCADE
             );
             """
@@ -2607,6 +2623,67 @@ def update_external_apps_for_universal_visibility():
         connection.close()
 
 
+def create_external_app_user_config_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS external_app_user_config (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+                app_id BIGINT NOT NULL,
+                user_id VARCHAR(36) NOT NULL,
+
+                auth_type ENUM('bearer','api_key','basic','oauth2','none') DEFAULT 'none',
+                auth_config JSON DEFAULT NULL,
+
+                method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT NULL,
+
+                headers JSON DEFAULT NULL,
+                query_params JSON DEFAULT NULL,
+
+                timeout_seconds INT DEFAULT NULL,
+                retry_count INT DEFAULT NULL,
+                retry_backoff_seconds INT DEFAULT NULL,
+
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+                INDEX idx_user_config_app (app_id),
+                INDEX idx_user_config_user (user_id),
+
+                CONSTRAINT fk_user_config_app
+                    FOREIGN KEY (app_id)
+                    REFERENCES external_apps(id)
+                    ON DELETE CASCADE,
+
+                CONSTRAINT fk_user_config_user
+                    FOREIGN KEY (user_id)
+                    REFERENCES users(user_id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+
+        connection.commit()
+        print("✅ external_app_user_config table created")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed:", str(e))
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def add_tTop_users():
     connection = connect_to_rds()
     if connection is None:
@@ -2664,90 +2741,6 @@ def export_all_table_schemas():
         conn.close()
 
 
-# def add_user_foreign_keys():
-#     connection = connect_to_rds()
-#     if connection is None:
-#         print("DB connection failed")
-#         return False
-
-#     tables = [
-#         ("credits", "user_id_fk"),
-#         ("credit_buckets", "user_id"),
-#         ("credit_usage_log", "user_id"),
-#         ("payments", "user_id"),
-#         ("subscriptions", "user_id"),
-#         ("subscribe", "user_id"),
-#         ("scraped_websites", "user_id_fk"),
-#         ("session", "user_id_fk"),
-#         ("tour_progress", "user_id"),
-#         ("user_workflows", "user_id_fk"),
-#         ("launch", "user_id_fk"),
-#         ("communication", "user_id_fk"),
-#         ("conversation_notes", "user_id"),
-#         ("business_info", "user_id_fk"),
-#     ]
-
-#     try:
-#         with connection.cursor() as cursor:
-
-#             for table, column in tables:
-#                 try:
-#                     print(f"\nProcessing {table}...")
-
-#                     # 1️⃣ Delete orphan rows
-#                     delete_query = f"""
-#                         DELETE t FROM {table} t
-#                         LEFT JOIN users u ON t.{column} = u.user_id
-#                         WHERE u.user_id IS NULL
-#                     """
-#                     cursor.execute(delete_query)
-
-#                     # 2️⃣ Check if FK already exists
-#                     cursor.execute(
-#                         """
-#                         SELECT CONSTRAINT_NAME
-#                         FROM information_schema.KEY_COLUMN_USAGE
-#                         WHERE TABLE_SCHEMA = DATABASE()
-#                         AND TABLE_NAME = %s
-#                         AND COLUMN_NAME = %s
-#                         AND REFERENCED_TABLE_NAME = 'users'
-#                     """,
-#                         (table, column),
-#                     )
-
-#                     if cursor.fetchone():
-#                         print(f"FK already exists on {table}")
-#                         continue
-
-#                     # 3️⃣ Add FK
-#                     constraint_name = f"fk_{table}_user"
-
-#                     alter_query = f"""
-#                         ALTER TABLE {table}
-#                         ADD CONSTRAINT {constraint_name}
-#                         FOREIGN KEY ({column})
-#                         REFERENCES users(user_id)
-#                         ON DELETE CASCADE
-#                     """
-#                     cursor.execute(alter_query)
-
-#                     print(f"FK added to {table}")
-
-#                 except Exception as table_error:
-#                     print(f"Error processing {table}: {table_error}")
-
-#         connection.commit()
-#         print("\nAll tables processed successfully ✅")
-#         return True
-
-#     except Exception as e:
-#         connection.rollback()
-#         print(f"Migration failed: {e}")
-#         return False
-
-
-#     finally:
-#         connection.close()
 def add_all_foreign_keys():
     connection = connect_to_rds()
     if connection is None:
@@ -2847,6 +2840,141 @@ def add_all_foreign_keys():
         connection.close()
 
 
+def create_global_apps_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute("DROP TABLE IF EXISTS global_app_endpoints;")
+        cursor.execute("DROP TABLE IF EXISTS global_apps;")
+
+        cursor.execute(
+            """
+            CREATE TABLE global_apps (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+                app_name VARCHAR(100) NOT NULL,
+                provider VARCHAR(50) NOT NULL DEFAULT 'global',
+
+                base_url TEXT NOT NULL,
+
+                -- AUTH (mostly nullable for public APIs)
+                auth_type ENUM('bearer', 'api_key', 'basic', 'oauth2', 'none') DEFAULT 'none',
+                auth_config JSON DEFAULT NULL,
+
+                -- DEFAULT REQUEST CONFIG
+                headers JSON DEFAULT NULL,
+                method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                query_params JSON DEFAULT NULL,
+                path_params JSON DEFAULT NULL,
+
+                timeout_seconds INT DEFAULT 10,
+
+                -- VISIBILITY CONTROL
+                is_universal BOOLEAN NOT NULL DEFAULT FALSE,
+
+                -- STATUS CONTROL
+                status ENUM('ready','development','removed')
+                    DEFAULT 'development',
+
+                notes TEXT DEFAULT NULL,
+                required_config_schema JSON DEFAULT NULL,
+
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+                UNIQUE KEY uq_global_app_name (app_name),
+                INDEX idx_global_apps_status (status),
+                INDEX idx_global_apps_universal (is_universal)
+            );
+            """
+        )
+
+        connection.commit()
+        print("✅ global_apps table created")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create global_apps table:", str(e))
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_global_app_endpoints_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE global_app_endpoints (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+
+                app_id BIGINT NOT NULL,
+
+                name VARCHAR(100) NOT NULL,
+                path VARCHAR(255) NOT NULL,
+
+                method ENUM('GET','POST','PUT','PATCH','DELETE')
+                    DEFAULT 'GET',
+
+                headers JSON DEFAULT NULL,
+                query_params JSON DEFAULT NULL,
+                path_params JSON DEFAULT NULL,
+                body_template JSON DEFAULT NULL,
+
+                timeout_seconds INT DEFAULT NULL,
+
+                is_active BOOLEAN DEFAULT TRUE,
+
+                -- STATUS CONTROL
+                status ENUM('ready','development','removed')
+                    DEFAULT 'development',
+
+                notes TEXT DEFAULT NULL,
+                required_config_schema JSON DEFAULT NULL,
+
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+                UNIQUE KEY uq_global_app_path_method (app_id, path, method),
+                UNIQUE KEY uq_global_endpoint_name (app_id, name),
+
+                INDEX idx_global_endpoint_app (app_id),
+                INDEX idx_global_endpoint_status (status),
+
+                CONSTRAINT fk_global_endpoint_app
+                    FOREIGN KEY (app_id)
+                    REFERENCES global_apps(id)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+
+        connection.commit()
+        print("✅ global_app_endpoints table created")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create global_app_endpoints table:", str(e))
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # print("HHSS")
@@ -2901,10 +3029,14 @@ if __name__ == "__main__":
     # recreate_subscriptions_table()
     # combo_create_credit_tables()
     # add_plan_type_columns()
-    # create_external_apps_table()
-    # create_external_app_endpoints_table()
+    # update_external_apps_for_universal_visibility()
     # add_mail_sub_column()
     # add_tTop_users()
     # export_all_table_schemas()
-    add_all_foreign_keys()
+    # add_all_foreign_keys()
+    # create_external_apps_table()
+    # create_external_app_endpoints_table()
+    # create_external_app_user_config_table()
+    # create_global_apps_table()
+    # create_global_app_endpoints_table()
     print("ok")

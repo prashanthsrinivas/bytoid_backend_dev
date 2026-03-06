@@ -60,7 +60,7 @@ def test_online_external_link():
 
         # ✅ Build full URL
         full_url = build_full_url(base_url, path, path_params)
-        print("Full URL:", full_url)
+        # print("Full URL:", full_url)
 
         config = {
             "auth": auth,
@@ -78,7 +78,7 @@ def test_online_external_link():
         connector = APIConnector(userid=user_id, config=config)
         result = connector.execute()
 
-        print("Result:", result)
+        # print("Result:", result)
 
         return jsonify(
             {
@@ -1343,7 +1343,7 @@ def execute_app(app_id):
 async def execute_endpoint(endpoint_id, userid=None):
 
     payload = request.get_json() or {}
-    print("payload for execution", payload)
+    # print("payload for execution", payload)
     userid = payload.get("user_id")
     context = payload.get("context", None)
     runtime_params = payload.get("runtime_params", None)
@@ -1353,7 +1353,7 @@ async def execute_endpoint(endpoint_id, userid=None):
         )
         return jsonify(result)
     except Exception as e:
-        print("error on executing endpoint", e)
+        # print("error on executing endpoint", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -2009,13 +2009,55 @@ def list_global_apps(user_id):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        is_admin = False
-        if user_id in ACCESSIBLE_IDS:
-            is_admin = True
-            cursor.execute("SELECT * FROM global_apps")
+        is_admin = user_id in ACCESSIBLE_IDS
+
+        if is_admin:
+            cursor.execute(
+                """
+                SELECT 
+                    g.*,
+                    ea.id AS external_app_id,
+                    ea.created_at AS installed_on
+                FROM global_apps g
+                LEFT JOIN external_apps ea
+                    ON ea.source_global_app_id = g.id
+                    AND ea.user_id = %s
+            """,
+                (user_id,),
+            )
         else:
-            cursor.execute("SELECT * FROM global_apps WHERE status='ready'")
-        apps = cursor.fetchall()
+            cursor.execute(
+                """
+                SELECT 
+                    g.*,
+                    ea.id AS external_app_id,
+                    ea.created_at AS installed_on
+                FROM global_apps g
+                LEFT JOIN external_apps ea
+                    ON ea.source_global_app_id = g.id
+                    AND ea.user_id = %s
+                WHERE g.status = 'ready'
+            """,
+                (user_id,),
+            )
+
+        rows = cursor.fetchall()
+
+        apps = []
+        for row in rows:
+            app = dict(row)
+
+            if row.get("external_app_id"):
+                app["installed"] = True
+                app["installed_on"] = row.get("installed_on")
+            else:
+                app["installed"] = False
+                app["installed_on"] = None
+
+            # remove helper fields
+            app.pop("external_app_id", None)
+
+            apps.append(app)
 
         return jsonify({"success": True, "apps": apps, "is_admin": is_admin})
 
@@ -2056,36 +2098,64 @@ def list_global_app_endpoints(user_id, app_id):
         is_admin = user_id in ACCESSIBLE_IDS
 
         # --------------------------------
-        # 3️⃣ Fetch Endpoints
+        # 3️⃣ Fetch Endpoints with Install Status
         # --------------------------------
         if is_admin:
             cursor.execute(
                 """
-                SELECT *
-                FROM global_app_endpoints
-                WHERE app_id = %s
-                ORDER BY created_at DESC
+                SELECT 
+                    g.*,
+                    e.id AS external_endpoint_id,
+                    e.created_at AS installed_on
+                FROM global_app_endpoints g
+                LEFT JOIN external_app_endpoints e
+                    ON e.source_global_endpoint_id = g.id
+                    AND e.user_id = %s
+                WHERE g.app_id = %s
+                ORDER BY g.created_at DESC
                 """,
-                (app_id,),
+                (user_id, app_id),
             )
         else:
             cursor.execute(
                 """
-                SELECT *
-                FROM global_app_endpoints
-                WHERE app_id = %s
-                  AND status = 'ready'
-                ORDER BY created_at DESC
+                SELECT 
+                    g.*,
+                    e.id AS external_endpoint_id,
+                    e.created_at AS installed_on
+                FROM global_app_endpoints g
+                LEFT JOIN external_app_endpoints e
+                    ON e.source_global_endpoint_id = g.id
+                    AND e.user_id = %s
+                WHERE g.app_id = %s
+                  AND g.status = 'ready'
+                ORDER BY g.created_at DESC
                 """,
-                (app_id,),
+                (user_id, app_id),
             )
 
-        endpoints = cursor.fetchall()
+        rows = cursor.fetchall()
+
+        endpoints = []
+        for row in rows:
+            ep = dict(row)
+
+            if row.get("external_endpoint_id"):
+                ep["installed"] = True
+                ep["installed_on"] = row.get("installed_on")
+            else:
+                ep["installed"] = False
+                ep["installed_on"] = None
+
+            # Remove helper column
+            ep.pop("external_endpoint_id", None)
+
+            endpoints.append(ep)
 
         return jsonify(
             {
                 "success": True,
-                "apps": endpoints,
+                "endpoints": endpoints,
                 "is_admin": is_admin,
                 "total": len(endpoints),
             }
@@ -2103,8 +2173,6 @@ def list_global_app_endpoints(user_id, app_id):
 
 @apiconnector_bp.route("/global/apps/change", methods=["POST"])
 def change_global_app():
-    import json
-
     body = request.json or {}
     user_id = body.get("user_id")
     app_id = body.get("app_id")
@@ -2286,9 +2354,11 @@ def change_global_app_endpoint():
         connection.close()
 
 
-@apiconnector_bp.route("/global_endpoints/<int:endpoint_id>/test", methods=["POST"])
-def global_test_endpoint(endpoint_id):
-    import json
+@apiconnector_bp.route(
+    "/global_endpoints/<int:app_id>/<int:endpoint_id>/test",
+    methods=["POST"],
+)
+def global_test_endpoint(app_id, endpoint_id):
 
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -2305,39 +2375,95 @@ def global_test_endpoint(endpoint_id):
             return jsonify({"success": False, "error": "user_id required"}), 400
 
         # ----------------------------------
-        # ✅ Check endpoint exists (ONLY existence check)
+        # ✅ Check endpoint exists
         # ----------------------------------
-        cur.execute("SELECT id FROM global_app_endpoints WHERE id = %s", (endpoint_id,))
+        cur.execute(
+            "SELECT id FROM global_app_endpoints WHERE id = %s AND app_id = %s",
+            (endpoint_id, app_id),
+        )
         exists = cur.fetchone()
 
         if not exists:
             return jsonify({"success": False, "error": "Endpoint not found"}), 404
 
         # ----------------------------------
-        # ✅ Take EVERYTHING from request body
+        # ✅ Check if user installed this app
         # ----------------------------------
-        base_url = data.get("base_url")
+        cur.execute(
+            """
+            SELECT *
+            FROM external_apps
+            WHERE user_id = %s
+              AND source_global_app_id = %s
+              AND status = "active"
+            """,
+            (user_id, app_id),
+        )
+        installed_app = cur.fetchone()
+
+        # ----------------------------------
+        # ✅ Frontend data (always accepted)
+        # ----------------------------------
+        frontend_base_url = data.get("base_url")
         path = data.get("path")
         method = data.get("method", "GET")
-        headers = data.get("headers", {})
+        frontend_headers = data.get("headers", {})
         query_params = data.get("query_params", {})
         path_params = data.get("path_params", {})
         request_body = data.get("body", {})
         timeout = data.get("timeout", 30)
-        auth_config = data.get("config", {})
+        frontend_auth = data.get("config", {})
 
-        if not base_url or not path:
-            return (
-                jsonify({"success": False, "error": "base_url and path are required"}),
-                400,
-            )
+        if not path:
+            return jsonify({"success": False, "error": "path is required"}), 400
 
         # ----------------------------------
-        # ✅ Build final URL (Supports {id} and :id)
+        # ✅ FINAL BASE URL
+        # ----------------------------------
+        if installed_app:
+            base_url = installed_app.get("base_url") or frontend_base_url
+        else:
+            base_url = frontend_base_url
+
+        if not base_url:
+            return jsonify({"success": False, "error": "base_url required"}), 400
+
+        # ----------------------------------
+        # ✅ Merge Headers (installed first, frontend overrides)
+        # ----------------------------------
+        final_headers = {}
+
+        if installed_app and installed_app.get("headers"):
+            try:
+                final_headers.update(json.loads(installed_app.get("headers") or "{}"))
+            except Exception:
+                pass
+
+        final_headers.update(frontend_headers or {})
+
+        # ----------------------------------
+        # ✅ Merge Auth
+        # ----------------------------------
+        if installed_app and installed_app.get("auth_config"):
+            try:
+                final_auth = json.loads(installed_app.get("auth_config") or "{}")
+            except Exception:
+                final_auth = {}
+        else:
+            final_auth = {}
+
+        # frontend overrides auth if provided
+        if frontend_auth:
+            final_auth.update(frontend_auth)
+
+        # ----------------------------------
+        # ✅ Build final URL
         # ----------------------------------
         try:
             final_url = build_full_url(
-                base_url=base_url, path=path, path_params=path_params
+                base_url=base_url,
+                path=path,
+                path_params=path_params,
             )
         except ValueError as e:
             return jsonify({"success": False, "error": str(e)}), 400
@@ -2346,11 +2472,11 @@ def global_test_endpoint(endpoint_id):
         # ✅ Build execution config
         # ----------------------------------
         config = {
-            "auth": auth_config,
+            "auth": final_auth,
             "request": {
                 "url": final_url,
                 "method": method,
-                "headers": headers,
+                "headers": final_headers,
                 "query_params": query_params,
                 "body": request_body,
                 "timeout": timeout,
@@ -2366,7 +2492,7 @@ def global_test_endpoint(endpoint_id):
         return jsonify(result)
 
     except Exception as e:
-        print("error", e)
+        print("error:", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
     finally:
@@ -2441,24 +2567,6 @@ def instantiate_global_app_for_user():
         final_headers = {}
         final_headers.update(global_headers)
         final_headers.update(user_headers)
-        print(
-            user_id,
-            app["app_name"],
-            app["provider"],
-            app["base_url"],
-            auth_type,
-            json.dumps(auth_config),
-            json.dumps(final_headers),
-            app["method"],
-            0,
-            app["id"],
-            json.dumps(user_config.get("query_params", {})),
-            json.dumps(user_config.get("path_params", {})),
-            app.get("timeout_seconds", 10),
-            0,
-            0,
-            "active",
-        )
 
         # ==========================================================
         # 5️⃣ Insert external_apps
@@ -2630,7 +2738,6 @@ def instantiate_global_app_for_user():
 
 @apiconnector_bp.route("/user/global-endpoint/instantiate", methods=["POST"])
 def instantiate_global_endpoint():
-
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
 
@@ -2640,7 +2747,7 @@ def instantiate_global_endpoint():
         user_id = data.get("user_id")
         external_app_id = data.get("external_app_id")
         global_endpoint_id = data.get("global_endpoint_id")
-        user_config = data.get("config", {})
+        user_config = data.get("config", {}) or {}
 
         if not user_id or not external_app_id or not global_endpoint_id:
             return jsonify({"error": "Missing required identifiers"}), 400
@@ -2650,10 +2757,13 @@ def instantiate_global_endpoint():
         # ==========================================================
         cur.execute(
             """
-            SELECT * FROM external_apps
-            WHERE id = %s AND user_id = %s
-        """,
-            (external_app_id, user_id),
+            SELECT *
+            FROM external_apps
+            WHERE user_id = %s
+              AND source_global_app_id = %s
+              AND status = "active"
+            """,
+            (user_id, external_app_id),
         )
 
         external_app = cur.fetchone()
@@ -2667,7 +2777,7 @@ def instantiate_global_endpoint():
             """
             SELECT * FROM global_app_endpoints
             WHERE id = %s AND is_active = 1
-        """,
+            """,
             (global_endpoint_id,),
         )
 
@@ -2675,57 +2785,135 @@ def instantiate_global_endpoint():
         if not endpoint:
             return jsonify({"error": "Global endpoint not found"}), 404
 
-        # Parse JSON fields safely
+        # ----------------------------------------------------------
+        # JSON Safe Parser
+        # ----------------------------------------------------------
         def parse_json(val):
             if not val:
                 return {}
             if isinstance(val, str):
-                return json.loads(val)
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return {}
             return val
 
         endpoint_headers = parse_json(endpoint.get("headers"))
         required_schema = parse_json(endpoint.get("required_config_schema"))
         body_template = parse_json(endpoint.get("body_template"))
+        app_headers = parse_json(external_app.get("headers"))
 
         # ==========================================================
-        # 3️⃣ Validate Required Config Schema
+        # 3️⃣ Normalize Required Schema (Flat + Structured Support)
         # ==========================================================
-        def validate_section(section):
-            schema = required_schema.get(section, {})
-            values = user_config.get(section, {})
+        def normalize_required_schema(schema):
+            structured = {
+                "path_params": {},
+                "query_params": {},
+                "headers": {},
+                "body": {},
+            }
+
+            if not schema:
+                return structured
+
+            # Already structured
+            if any(k in schema for k in structured.keys()):
+                for section in structured:
+                    structured[section] = schema.get(section, {}) or {}
+                return structured
+
+            # Flat schema handling
+            for key, meta in schema.items():
+                if key.startswith("path_"):
+                    structured["path_params"][key.replace("path_", "")] = meta
+                elif key.startswith("query_"):
+                    structured["query_params"][key.replace("query_", "")] = meta
+                elif key.startswith("header_"):
+                    structured["headers"][key.replace("header_", "")] = meta
+                elif key.startswith("body_"):
+                    structured["body"][key.replace("body_", "")] = meta
+
+            return structured
+
+        normalized_schema = normalize_required_schema(required_schema)
+
+        # ==========================================================
+        # 4️⃣ Universal Validator (Flat + Structured Frontend Support)
+        # ==========================================================
+        def validate_and_extract(section_name, schema_section):
             validated = {}
 
-            for key, meta in schema.items():
-                if meta.get("required") and key not in values:
-                    raise ValueError(f"{section}.{key} is required")
+            structured_input = user_config.get(section_name, {}) or {}
+            root_structured_input = data.get(section_name, {}) or {}
 
-                if key in values:
-                    validated[key] = values[key]
+            prefix_map = {
+                "path_params": "path",
+                "query_params": "query",
+                "headers": "header",
+                "body": "body",
+            }
+
+            for key, meta in schema_section.items():
+
+                flat_key = f"{prefix_map[section_name]}_{key}"
+
+                value = None
+
+                # 1️⃣ Structured inside config
+                if key in structured_input:
+                    value = structured_input[key]
+
+                # 2️⃣ Flat inside config
+                elif flat_key in user_config:
+                    value = user_config[flat_key]
+
+                # 3️⃣ Structured at root level
+                elif key in root_structured_input:
+                    value = root_structured_input[key]
+
+                # 4️⃣ Flat at root level
+                elif flat_key in data:
+                    value = data[flat_key]
+
+                if meta.get("required") and value is None:
+                    raise ValueError(f"{section_name}.{key} is required")
+
+                if value is not None:
+                    validated[key] = value
 
             return validated
 
-        validated_path = validate_section("path_params")
-        validated_query = validate_section("query_params")
-        validated_headers = validate_section("headers")
-        validated_body = validate_section("body")
+        validated_path = validate_and_extract(
+            "path_params", normalized_schema["path_params"]
+        )
+        validated_query = validate_and_extract(
+            "query_params", normalized_schema["query_params"]
+        )
+        validated_headers = validate_and_extract(
+            "headers", normalized_schema["headers"]
+        )
+        validated_body = validate_and_extract("body", normalized_schema["body"])
 
         # ==========================================================
-        # 4️⃣ Merge Headers (App + Endpoint + User)
+        # 5️⃣ Merge Headers (App + Endpoint + User)
         # ==========================================================
-        app_headers = parse_json(external_app.get("headers"))
         final_headers = {}
         final_headers.update(app_headers)
         final_headers.update(endpoint_headers)
         final_headers.update(validated_headers)
 
         # ==========================================================
-        # 5️⃣ Merge Body With Template (if exists)
+        # 6️⃣ Merge Body With Template
         # ==========================================================
-        final_body = body_template.copy() if body_template else {}
+        final_body = {}
+        if body_template:
+            final_body.update(body_template)
+
         final_body.update(validated_body)
 
         # ==========================================================
-        # 6️⃣ Save Into external_app_endpoints
+        # 7️⃣ Save Into external_app_endpoints
         # ==========================================================
         cur.execute(
             """
@@ -2745,9 +2933,9 @@ def instantiate_global_endpoint():
                 is_active
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            """,
             (
-                external_app_id,
+                external_app["id"],
                 endpoint["name"],
                 user_id,
                 endpoint["path"],
@@ -2766,7 +2954,10 @@ def instantiate_global_endpoint():
         conn.commit()
 
         return jsonify(
-            {"success": True, "message": "External endpoint instantiated successfully"}
+            {
+                "success": True,
+                "message": "External endpoint instantiated successfully",
+            }
         )
 
     except ValueError as ve:

@@ -260,12 +260,14 @@ async def _execute_endpoint_internal(
             "backoff": row.get("retry_backoff_seconds") or 1,
         },
     }
+    # print("congfigs", config)
 
     # ---------------------------
     # 6️⃣ Execute
     # ---------------------------
     connector = APIConnector(userid=userid, config=config, context=context)
     result = connector.execute()
+    # print("result", result)
 
     # ---------------------------
     # 7️⃣ Log execution
