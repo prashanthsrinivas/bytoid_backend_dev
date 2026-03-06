@@ -1074,7 +1074,16 @@ def get_integration_users(primary_user_id_fk, connection):
 
     cursor.execute(
         """
-        SELECT user_id, platform
+        SELECT integration_id,
+                        platform,
+                        access_token,
+                        refresh_token,
+                        client_id,
+                        client_secret,
+                        expiry,
+                        email,
+                        user_id,
+                        primary_user_id_fk
         FROM integrations
         WHERE primary_user_id_fk = %s
     """,
@@ -1087,6 +1096,16 @@ def get_integration_users(primary_user_id_fk, connection):
     # convert tuples → dicts explicitly
     integrations = []
     for row in rows:
-        integrations.append({"user_id": row[0], "platform": row[1]})
-
+        integrations.append({
+            "integration_id": row[0],
+            "platform": row[1],
+            "access_token": row[2],
+            "refresh_token": row[3],
+            "client_id": row[4],
+            "client_secret": row[5],
+            "expiry": row[6],
+            "email": row[7],
+            "user_id": row[8],   # external account id
+            "primary_user_id_fk":row[9]
+        })
     return integrations

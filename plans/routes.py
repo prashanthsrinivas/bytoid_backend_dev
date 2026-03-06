@@ -12,13 +12,10 @@ from utils.stripe_config import (
     create_new_price_and_disable_old,
     create_stripe_product_and_price,
 )
-
+from utils.app_configs import ACCESSIBLE_IDS
 
 load_dotenv()
 plans_bp = Blueprint("plans_bp", __name__)
-
-# Preconfigured list of IDs allowed to modify plans
-ACCESSIBLE_IDS = ["109161866299858012556", "113605503284012967393"]
 
 
 redis_service = RedisService()
@@ -59,6 +56,7 @@ def normalize_for_json(data):
 # =====================================================
 # GET ALL PLANS (CACHED)
 # =====================================================
+
 
 def _with_plans_cors(response):
     # Public endpoint used by https://app.bytoid.ai/pricing
@@ -199,9 +197,12 @@ def add_plan():
     is_topup = bool(body.get("is_topup", False))
 
     if (is_subscription + is_topup) != 1:
-        return jsonify({
-            "error": "Exactly one of is_subscription or is_topup must be true"
-        }), 400
+        return (
+            jsonify(
+                {"error": "Exactly one of is_subscription or is_topup must be true"}
+            ),
+            400,
+        )
 
     # -----------------------------------
     # Billing interval validation
@@ -209,9 +210,12 @@ def add_plan():
     if is_free:
         billing_interval = "one_time"
     elif is_subscription and billing_interval not in ("month", "year"):
-        return jsonify({
-            "error": "Invalid billing_interval for subscription (month/year only)"
-        }), 400
+        return (
+            jsonify(
+                {"error": "Invalid billing_interval for subscription (month/year only)"}
+            ),
+            400,
+        )
     elif is_topup:
         billing_interval = "one_time"
 
@@ -280,10 +284,7 @@ def add_plan():
         connection.commit()
         asyncio.run(redis_service.delete(REDIS_PLANS_KEY))
 
-        return jsonify({
-            "message": "Plan created",
-            "plan_code": plan_code
-        }), 201
+        return jsonify({"message": "Plan created", "plan_code": plan_code}), 201
 
     except Exception as e:
         connection.rollback()
@@ -368,9 +369,12 @@ def edit_plan():
         # PLAN TYPE CONSTRAINT
         # ----------------------------------
         if (new_sub + new_topup) != 1:
-            return jsonify({
-                "error": "Exactly one of is_subscription or is_topup must be true"
-            }), 400
+            return (
+                jsonify(
+                    {"error": "Exactly one of is_subscription or is_topup must be true"}
+                ),
+                400,
+            )
 
         # ----------------------------------
         # BILLING INTERVAL RULES
@@ -378,9 +382,14 @@ def edit_plan():
         if new_free:
             fields["billing_interval"] = "one_time"
         elif new_sub and new_billing not in ("month", "year"):
-            return jsonify({
-                "error": "Invalid billing_interval for subscription (month/year only)"
-            }), 400
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid billing_interval for subscription (month/year only)"
+                    }
+                ),
+                400,
+            )
         elif new_topup:
             fields["billing_interval"] = "one_time"
 
@@ -432,6 +441,7 @@ def edit_plan():
     finally:
         cursor.close()
         conn.close()
+
 
 # =====================================================
 # DELETE PLAN (SOFT DELETE + STRIPE DEACTIVATE)

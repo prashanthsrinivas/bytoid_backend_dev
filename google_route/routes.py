@@ -703,9 +703,19 @@ def get_token(inuser=None, value=None, in_connection=None):
                 (str(user_id),),
             )
             row = cursor.fetchone()
+            source_table = "users"
 
             if not row:
                 return jsonify({"error": "User not found"}), 404
+            if not row[0]:
+                cursor.execute("""
+                    SELECT client_id,client_secret,
+                               access_token,refresh_token,expiry
+                               FROM integrations WHERE user_id=%s and platform = 'google'
+                               """,
+                               (str(user_id),),)
+                row = cursor.fetchone()
+                source_table = "integrations"
 
             client_id, client_secret, token, refresh_token, expiry = row
 
@@ -732,12 +742,19 @@ def get_token(inuser=None, value=None, in_connection=None):
                     # print("refresh started")
 
                     # Save refreshed token and new expiry time
-                    cursor.execute(
-                        """
-                        UPDATE users SET token = %s, expiry = %s WHERE user_id = %s
-                    """,
-                        (creds.token, creds.expiry.isoformat(), user_id),
-                    )
+                    if source_table == "users":
+                        cursor.execute("""
+                            UPDATE users
+                            SET token=%s, expiry=%s
+                            WHERE user_id=%s
+                        """, (token, expiry.isoformat(), user_id))
+                    else:
+                        cursor.execute("""
+                            UPDATE integrations
+                            SET access_token=%s, expiry=%s
+                            WHERE user_id=%s
+                            AND platform='google'
+                        """, (token, expiry.isoformat(), user_id))
                     connection.commit()
                     if value:
                         return creds.token

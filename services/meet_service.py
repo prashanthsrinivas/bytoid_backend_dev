@@ -25,30 +25,56 @@ class GoogleMeetService:
         workflow=None,
         wf_id=None,
         connection=None,
+        integrations=None
     ):
         """
         access_token: OAuth 2.0 access token with Calendar, Drive scope
         user_email: authenticated user's email address
         """
+        # print("GoogleMeetService initialized")
         self.conn = connection or connect_to_rds()
         self.userid = userid
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
+        source_table = None
         with get_cursor(self.conn) as cursor:
-            cursor.execute(
-                """
-                SELECT client_id, client_secret, token, refresh_token, expiry,email
-                FROM users
-                WHERE user_id = %s
-                """,
-                (str(userid),),
-            )
+            cursor.execute("""
+                            SELECT client_id, client_secret,
+                                token, refresh_token,
+                                expiry, email
+                            FROM users
+                            WHERE user_id = %s
+                        """, (str(userid),))
+
             row = cursor.fetchone()
+            if row and all([row[0], row[1], row[3]]):  # client_id, secret, refresh_token exist
+                 source_table = "users"
+            else:
+                
+                cursor.execute("""
+                    SELECT client_id,client_secret,
+                               access_token,refresh_token,expiry,email
+                               FROM integrations WHERE primary_user_id_fk=%s AND platform = 'google'
+                               """,
+                               (str(userid),),)
+                row = cursor.fetchone()
+                if row and all([row[0],row[1],row[2]]):
+                    source_table = "integrations"
 
             if not row:
                 raise ValueError(f"No Gmail credentials found for user {userid}")
         client_id, client_secret, access_token, refresh_token, expiry, user_email = row
-        expiryed = datetime.fromisoformat(expiry) if isinstance(expiry, str) else expiry
-        self.user_email = user_email
+        # expiryed = datetime.fromisoformat(expiry) if isinstance(expiry, str) else expiry
+        if isinstance(expiry, str):
+            if expiry.startswith("0000"):
+                expiryed = None
+            else:
+                try:
+                    expiryed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                except Exception:
+                    expiryed = None
+        else:
+            expiryed = expiry
+        self.user_email = user_email    
 
         self.creds = Credentials(
             token=access_token,
@@ -69,14 +95,29 @@ class GoogleMeetService:
 
                 # 4. CRITICAL STEP: Save the NEW tokens and expiry back to the database
                 with get_cursor(self.conn) as cursor:
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET token = %s, expiry = %s 
-                        WHERE user_id = %s
-                        """,
-                        (self.creds.token, self.creds.expiry, str(userid)),
-                    )
+                    if source_table == "users":
+                        cursor.execute(
+                            """
+                            UPDATE users
+                            SET token = %s, expiry = %s 
+                            WHERE user_id = %s
+                            """,
+                            (self.creds.token, self.creds.expiry, str(userid)),
+                        )
+                    elif source_table == "integrations":
+                        cursor.execute("""
+                            UPDATE integrations
+                            SET access_token=%s,
+                                refresh_token=%s,
+                                expiry=%s
+                            WHERE primary_user_id_fk=%s
+                            AND platform='google'
+                        """, (
+                            self.creds.token,
+                            self.creds.refresh_token,
+                            self.creds.expiry,
+                            str(userid)
+                        ))
                 self.conn.commit()
 
             except Exception as e:

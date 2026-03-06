@@ -3394,24 +3394,27 @@ def set_mailbox_setting():
 
     try:
         integrations = get_integration_users(primary_user_id, connection)
+        users_to_update = []
+        for integration in integrations:
 
-        # normalize EVERYTHING to dicts
-        users_to_update = [{"user_id": primary_user_id, "platform": social}]
-        users_to_update.extend(integrations)
+            platform = integration["platform"]
 
-        # print(f"users to tupdate: {users_to_update}")
-        for item in users_to_update:
-            uid = item["user_id"]
-            platform = item["platform"]
+            if platform != social:
+                continue
 
+            uid = integration["user_id"]
+            access_token = integration["access_token"]
+            email = integration["email"]
+            primary_user_id = integration["primary_user_id_fk"]
+            success = False
             # print(f"uid: {uid} ")
-
+            # print(f"primary_user_id: {primary_user_id} ")
             if platform == "google":
-                service = GmailService(user_id=uid)
+                service = GmailService(user_id=primary_user_id,integration=integration)
                 if setting == "true":
-                    service.create_watch_req()
+                   success = service.create_watch_req()
                 else:
-                    service.stop_watch()
+                   success = service.stop_watch()
 
             elif platform == "microsoft":
                 manager = OutlookSubscriptionManager()
@@ -3421,21 +3424,26 @@ def set_mailbox_setting():
                         "SELECT token, email FROM users WHERE user_id = %s", (uid,)
                     )
                     row = cursor.fetchone()
-                    if not row:
-                        continue
+                    if not row or not row[0] :
+                        #continue
+                        cursor.execute("SELECT access_token, email FROM integrations WHERE primary_user_id_fk = %s",(primary_user_id,))
+                        row = cursor.fetchone()
                     access_token = row[0]
                     email = row[1]
-                    manager.create_subscription_async(access_token, email)
+                    success =  manager.create_subscription_async(access_token, email)
                 else:
-                    manager.delete_subscription(uid)
+                    success =  manager.delete_subscription(uid)
+            if success:
+                users_to_update.append(primary_user_id)
 
         user_ids = [u["user_id"] for u in users_to_update]
-        placeholders = ",".join(["%s"] * len(user_ids))
+        if user_ids:
+            placeholders = ",".join(["%s"] * len(user_ids))
 
-        cursor.execute(
-            f"UPDATE users SET mailbox = %s WHERE user_id IN ({placeholders})",
-            [mailbox_value, *user_ids],
-        )
+            cursor.execute(
+                f"UPDATE users SET mailbox = %s WHERE user_id IN ({placeholders})",
+                [mailbox_value, *user_ids],
+            )
 
         connection.commit()
         return {"success": True}, 200
@@ -3445,7 +3453,7 @@ def set_mailbox_setting():
         logger.error(
             "Mailbox toggle failed for primary user %s: %s", primary_user_id, e
         )
-        return {"error": "Failed to update mailbox"}, 500
+        return {"error": f"Failed to update mailbox,{str(e)}"}, 500
 
     finally:
         cursor.close()

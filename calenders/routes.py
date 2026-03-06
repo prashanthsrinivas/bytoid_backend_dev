@@ -1,10 +1,12 @@
 from db.db_checkers import fetch_user_Social
+from db.rds_db import connect_to_rds
 from flask import Blueprint, request
 from services.meet_service import GoogleMeetService
 from datetime import datetime
 import pytz
 
 from services.microsoft_calender_service import MicrosoftGraphCalendarService
+from umail_helper.mails_process import get_integration_users
 
 calenders_bp = Blueprint("calender", __name__)
 
@@ -33,9 +35,13 @@ def get_all_user_events():
         def parse_iso(dt_str):
             if not dt_str:
                 return None
+            if dt_str.startswith("0000"):
+                return None
             try:
                 if dt_str.endswith("Z"):
                     dt_str = dt_str[:-1] + "+00:00"
+                    if dt_str.year < 1:
+                        return None
                 return datetime.fromisoformat(dt_str)
             except:
                 try:
@@ -49,11 +55,14 @@ def get_all_user_events():
         # print(type(userid), userid)
 
         val = fetch_user_Social(user_id=userid)
+        print("Platform detected:", val)
+        connection = connect_to_rds()
+        integrations = get_integration_users(userid,connection)
         # print("val receved", val)
         # Initialize service
         if val == "google":
             # print("into google service")
-            service = GoogleMeetService(userid=userid)
+            service = GoogleMeetService(userid=userid,integrations=integrations)
         elif val == "microsoft":
             # print("into microsoft")
             service = MicrosoftGraphCalendarService(userid=userid)

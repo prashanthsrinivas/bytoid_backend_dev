@@ -75,16 +75,16 @@ class GmailService:
             raise ConnectionError("❌ Failed to connect to RDS (too many connections?)")
         # print(f"user_id : {str(user_id)}")
         with get_cursor(self.conn) as cursor:
-            if integration:
-                cursor.execute(
+            cursor.execute(
                     """
                 SELECT client_id, client_secret, access_token, refresh_token, expiry
                 FROM integrations
-                WHERE user_id = %s
+                WHERE primary_user_id_fk = %s
                 """,
-                    (str(user_id)),
+                    (str(user_id,)),
                 )
-            else:
+            row = cursor.fetchone()
+            if not row:
                 cursor.execute(
                     """
                     SELECT client_id, client_secret, token, refresh_token, expiry
@@ -119,14 +119,21 @@ class GmailService:
 
                 # 4. CRITICAL STEP: Save the NEW tokens and expiry back to the database
                 with get_cursor(self.conn) as cursor:
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET token = %s, expiry = %s 
-                        WHERE user_id = %s
-                        """,
-                        (self.creds.token, self.creds.expiry, str(user_id)),
-                    )
+                    if not integration:
+                        cursor.execute(
+                            """
+                            UPDATE users
+                            SET token = %s, expiry = %s 
+                            WHERE user_id = %s
+                            """,
+                            (self.creds.token, self.creds.expiry, str(user_id)),
+                        )
+                    else:
+                        cursor.execute(""" 
+                            UPDATE integrations SET
+                            access_token = %s, expiry = %s
+                            WHERE primary_user_id_fk = %s""",
+                            (self.creds.token, self.creds.expiry, str(user_id)))
                 self.conn.commit()
 
             except Exception as e:

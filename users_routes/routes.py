@@ -1,3 +1,6 @@
+import secrets
+from urllib.parse import urlencode
+
 from flask import Blueprint, request, jsonify, session
 import pymysql
 import os
@@ -5,6 +8,7 @@ import uuid
 from db.rds_db import connect_to_rds
 import json
 from datetime import datetime
+from microsoft_route.routes import get_microsoft_redirect_uri
 from utils.base_logger import get_logger
 from werkzeug.utils import secure_filename
 from utils.s3_utils import attach_CLDFRNT_url, generate_presigned_url, upload_any_file
@@ -14,13 +18,15 @@ from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
 from services.totp_service import TOTPService
-from db.db_checkers import check_onboarding_user
+from db.db_checkers import check_onboarding_user, fetch_user_domains
 from cryptography.fernet import Fernet
 import base64
 import time
 from utils.g_scopes import g_basescopes
 from google_auth_oauthlib.flow import Flow
+from msal import ConfidentialClientApplication
 import requests
+import dns.resolver
 
 users_bp = Blueprint("users", __name__)
 
@@ -28,6 +34,21 @@ logger = get_logger(__name__)
 
 SECRET_KEY = os.getenv("SECRETKEY")
 fernet = Fernet(base64.urlsafe_b64encode(SECRET_KEY.encode("utf-8").ljust(32)[:32]))
+
+M_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID")
+M_CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET")
+M_TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID")
+M_AUTHORITY = f"https://login.microsoftonline.com/{M_TENANT_ID}"
+M_SCOPES = [
+    "offline_access",
+    "User.Read",
+    "Mail.Send",
+    "Mail.ReadWrite",
+    "Calendars.ReadWrite",
+    "OnlineMeetings.ReadWrite",
+    "Chat.ReadWrite",
+    "Files.Read.All",
+]
 
 
 # def get_db_connection():
@@ -764,19 +785,16 @@ def create_new_user():
             logger.info("User already exist with this email address")
             return jsonify({"message": "User already exists. Please login"}), 400
         logger.info("creating a new user")
-        # Get value for social based on email domain
-        provider_domains = {
-            "Google": {"gmail.com", "googlemail.com", "google.com"},
-            "Microsoft": {"outlook.com", "hotmail.com", "live.com"},
-            "Zoho": {"zoho.com", "zohomail.com"},
-        }
+        # Get value for domain based from email 
         user_domain = ""
-        domain = email.split("@")[-1].lower()
-        for providers, domains in provider_domains.items():
-            if domain in domains:
-                user_domain = providers
 
-        user_domain = user_domain or domain
+        if email and "@" in email:
+            user_domain = email.split("@")[-1].lower()
+
+        domain_data = {
+            "primary": user_domain,
+            "secondary": []   # empty initially
+        }
         # hash the password
         hashed_password = generate_password_hash(password)
         # generate user_id
@@ -798,7 +816,7 @@ def create_new_user():
                 email,
                 phone,
                 location,
-                json.dumps([user_domain]),
+                json.dumps(domain_data),
                 hashed_password,
             ),
         )
@@ -917,6 +935,7 @@ def user_login():
         )
         conn.close()
         logger.info("Login successfull")
+        session["user_id"] = user["user_id"]
         return response, 200
     except Exception as e:
         logger.error(f"Unexpected error occured : {str(e)}")
@@ -1223,139 +1242,360 @@ def reset_password():
         return jsonify({"error": str(e)}), 500
 
 
-@users_bp.route("/connect_with_google", methods=["GET"])
-def connect_with_google():
+@users_bp.route("/connect/<provider>", methods=["GET"])
+def connect_provider(provider):
     user_id = session.get("user_id")
-    # if not user_id:
-    #     return jsonify({"error": "Unauthorized"}), 401
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
 
-    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/google_connection/callback"
+    if provider not in ["google", "microsoft"]:
+        return jsonify({"error": "Unsupported provider"}), 400
 
-    flow = Flow.from_client_secrets_file(
-        "client_secrets.json",
-        scopes=g_basescopes,
-        redirect_uri=WEB_REDIRECT_URI,
-    )
-    auth_url, state = flow.authorization_url(
-        access_type="offline", prompt="consent", include_granted_scopes="false"
-    )
-    session["google_connection_state"] = state
+    session["oauth_provider"] = provider
+
+    redirect_uri = f"{os.getenv('BASE_FRNT_URL')}/oauth/connect/callback"
+
+    if provider == "google":
+        flow = Flow.from_client_secrets_file(
+            "client_secrets.json",
+            scopes=g_basescopes,
+            redirect_uri=redirect_uri,
+        )
+
+        auth_url, state = flow.authorization_url(
+            access_type="offline",
+            prompt="consent",
+        )
+
+    elif provider == "microsoft":
+        auth_url, state = build_microsoft_auth_url()
+        session["oauth_state"] = state
+        session["oauth_provider"] = "microsoft"
+        return jsonify({"auth_url": auth_url})
+
+
+    session["oauth_state"] = state
+
     return jsonify({"auth_url": auth_url})
 
-
-@users_bp.route("/google_connection/callback", methods=["GET"])
-def google_connection_callback():
+@users_bp.route("/oauth/connect/callback", methods=["POST"])
+def universal_oauth_callback():
 
     user_id = session.get("user_id")
-
     if not user_id:
         return jsonify({"connected": False, "error": "Unauthorized"}), 401
 
-    state = request.args.get("state")
-    saved_state = session.pop("google_connection_state", None)
+    provider = session.get("oauth_provider")
+    saved_state = session.pop("oauth_state", None)
+
+    data = request.get_json()
+    full_url = data.get("url")
+    state = data.get("state")
+    code = data.get("code")
+
+    if not provider:
+        return jsonify({"connected": False, "error": "Missing provider"}), 400
 
     if not state or state != saved_state:
-        return jsonify({"connected": False, "error": "Invalide state"}), 400
+        return jsonify({"connected": False, "error": "Invalid state"}), 400
 
-    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/google_connection/callback"
-
-    flow = Flow.from_client_secrets_file(
-        "client_secrets.json",
-        scopes=g_basescopes,
-        redirect_uri=WEB_REDIRECT_URI,
-    )
     try:
-        flow.fetch_token(authorization_response=request.url)
-        credentials = flow.credentials
+        redirect_uri = f"{os.getenv('BASE_FRNT_URL')}/oauth/connect/callback"
 
-        access_token = credentials.token
-        refresh_token = credentials.refresh_token
-        expiry = credentials.expiry.strftime("%Y-%m-%d %H:%M:%S")
-        client_id = credentials.client_id
-        client_secret = credentials.client_secret
-        granted_scopes = ",".join(credentials.scopes)
-        userinfo_response = requests.get(
-            "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": f"Bearer {credentials.token}"},
-        )
-        user_info = userinfo_response.json()
-        google_user_id = user_info.get("sub")
-        google_email = user_info.get("email")
-
-        if not google_user_id:
-            return (
-                jsonify({"connected": False, "error": "Google user info failed"}),
-                400,
+        # ---------------- GOOGLE ----------------
+        if provider == "google":
+            flow = Flow.from_client_secrets_file(
+                "client_secrets.json",
+                scopes=g_basescopes,
+                redirect_uri=redirect_uri,
             )
 
-        conn = connect_to_rds()
-        cursor = conn.cursor(pymysql.cursors.DictCursor)
-        cursor.execute(
-            """
-            SELECT primary_user_id_fk
-            FROM integrations
-            WHERE platform = 'google' AND user_id = %s
-            """,
-            (google_user_id,),
-        )
-        existing = cursor.fetchone()
+            flow.fetch_token(authorization_response=full_url)
+            credentials = flow.credentials
 
-        if existing and existing["primary_user_id_fk"] != user_id:
-            return (
-                jsonify(
-                    {
-                        "connected": False,
-                        "error": "This Google account is already connected to another user",
-                    }
-                ),
-                409,
-            )
-        cursor.execute(
-            """
-            INSERT INTO integrations
-                (
-                    integration_id,
-                    user_id,
-                    platform,
-                    client_id,
-                    client_secret,
-                    access_token,
-                    refresh_token,
-                    expiry,
-                    status,
-                    primary_user_id_fk,
-                    email,
-                    created_at,
-                    updated_at,
-                )
-            VALUES
-                (%s, %s, 'google', %s, %s, %s, %s, %s,'active', %s, %s, NOW(), NOW())
-            ON DUPLICATE KEY UPDATE
-                access_token = %s,
-                refresh_token = %s,
-                expiry = %s,
-                status = 'active',
-                updated_at = NOW()
-            """,
-            (
-                str(uuid.uuid4()),
-                google_user_id,
-                client_id,
-                client_secret,
+            access_token = credentials.token
+            refresh_token = credentials.refresh_token
+            expiry = credentials.expiry
+            client_id = credentials.client_id
+            client_secret = credentials.client_secret
+
+            userinfo = requests.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            ).json()
+
+            external_user_id = userinfo.get("sub")
+            email = userinfo.get("email")
+
+        # ---------------- MICROSOFT ----------------
+        elif provider == "microsoft":
+            token_data = exchange_microsoft_code(code)
+
+            if "access_token" not in token_data:
+                return jsonify({
+                    "connected": False,
+                    "error": token_data.get("error_description", "Token exchange failed")
+                }), 400
+
+            access_token = token_data["access_token"]
+            refresh_token = token_data.get("refresh_token")
+            expiry = token_data.get("expires_in")
+            client_id = M_CLIENT_ID#token_data.get("client_id")
+            client_secret = M_CLIENT_SECRET#token_data.get("client_secret")
+
+            userinfo = get_microsoft_user(access_token)
+
+            external_user_id = userinfo["id"]
+            email = userinfo.get("mail") or userinfo.get("userPrincipalName")
+
+        else:
+            return jsonify({"connected": False, "error": "Unsupported provider"}), 400
+
+        # ---------------- SAVE INTEGRATION ----------------
+        save_integration(
+            primary_user_id=user_id,
+            provider=provider,
+            external_user_id=external_user_id,
+            email=email,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            expiry=expiry,
+        )
+
+        return jsonify({
+            "connected": True,
+            "platform": provider,
+            "email": email
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "connected": False,
+            "error": str(e)
+        }), 500
+def save_integration(
+    primary_user_id,
+    provider,
+    external_user_id,
+    email,
+    access_token,
+    refresh_token,
+    client_id,
+    client_secret,
+    expiry
+):
+    conn = connect_to_rds()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+    query = "SELECT * FROM integrations where primary_user_id_fk = %s"
+
+    cursor.execute(query,(primary_user_id,))
+    integration = cursor.fetchone()
+
+    if not integration:
+        cursor.execute("""
+            INSERT INTO integrations (
+                integration_id,
+                primary_user_id_fk,
+                platform,
+                user_id,
+                email,
+                type,
                 access_token,
                 refresh_token,
                 expiry,
+                client_id,
+                client_secret,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s,%s,%s, %s,%s,%s, %s, %s, %s, 'active', NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                access_token = VALUES(access_token),
+                refresh_token = VALUES(refresh_token),
+                expiry = VALUES(expiry),
+                status = 'active',
+                updated_at = NOW()
+        """, (
+            str(uuid.uuid4()),
+            primary_user_id,
+            provider,
+            external_user_id,
+            email,
+            "mails",
+            access_token,
+            refresh_token,
+            expiry,
+            client_id,
+            client_secret
+        ))
+
+        cursor.execute("""
+            INSERT INTO integrations (
+                integration_id,
+                primary_user_id_fk,
+                platform,
                 user_id,
-                google_email,
-            ),
-        )
+                email,
+                type,
+                access_token,
+                refresh_token,
+                client_id,
+                client_secret,
+                expiry,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s,%s,%s, %s,%s,%s, %s, %s, %s, 'active', NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                access_token = VALUES(access_token),
+                refresh_token = VALUES(refresh_token),
+                expiry = VALUES(expiry),
+                status = 'active',
+                updated_at = NOW()
+        """, (
+            str(uuid.uuid4()),
+            primary_user_id,
+            provider,
+            external_user_id,
+            email,
+            "drive",
+            access_token,
+            refresh_token,
+            expiry,
+            client_id,
+            client_secret
+        ))
+        cursor.execute("""
+            UPDATE users SET social = %s , token = %s WHERE user_id = %s""",(provider,access_token,primary_user_id))
+
+    conn.commit()
+    conn.close()
+
+def build_microsoft_auth_url():
+    AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+
+    redirect_uri = f"{os.getenv('BASE_FRNT_URL')}/oauth/connect/callback"
+
+    state = secrets.token_urlsafe(32)
+
+    params = {
+        "client_id": M_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "response_mode": "query",
+        "scope": " ".join(M_SCOPES),
+        "state": state,
+        "prompt": "select_account"
+    }
+
+    auth_url = f"{AUTH_URL}?{urlencode(params)}"
+
+    return auth_url, state
+
+def exchange_microsoft_code(code):
+    TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+    data = {
+        "client_id": M_CLIENT_ID,
+        "client_secret": M_CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": f"{os.getenv('BASE_FRNT_URL')}/oauth/connect/callback",
+    }
+
+    response = requests.post(TOKEN_URL, data=data)
+
+    if response.status_code != 200:
+        raise Exception(f"Token exchange failed: {response.text}")
+
+    return response.json()
+
+def get_microsoft_user(access_token):
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    response = requests.get(
+        "https://graph.microsoft.com/v1.0/me",
+        headers=headers
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"User fetch failed: {response.text}")
+
+    return response.json()
+
+
+@users_bp.route("/add_domain",methods=["POST"])
+def add_domain():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    email = data.get("email")
+    new_domain = data.get("new_domain")
+    try:
+        if not is_valid_domain(new_domain):
+            return jsonify({"error":"Invalid or non-existing domain"}),400
+        conn = connect_to_rds()
+        cursor = conn.cursor()
+        domains = fetch_user_domains(user_id,conn)
+        if not domains:
+            # Initialize if no domain exists
+            user_domain = email.split("@")[-1].lower() if email and "@" in email else ""
+            domains = {
+                "primary": user_domain,
+                "secondary": []
+            }
+
+        # Avoid duplicates
+        if new_domain.lower() not in [d.lower() for d in domains["secondary"]]:
+            domains["secondary"].append(new_domain.lower())
+        
+        cursor.execute("""
+            UPDATE users
+            SET domain = %s
+            WHERE user_id = %s
+        """, (json.dumps(domains), user_id))
+
         conn.commit()
         conn.close()
-
-        return (
-            jsonify({"connected": True, "platform": "google", "email": google_email}),
-            200,
-        )
+        return jsonify({"message":"Domain added successfully","domains": domains})
 
     except Exception as e:
-        return jsonify({"connected": False, "error": str(e)}), 500
+        return jsonify({"error":str(e)}),500
+#validation of domain
+def is_valid_domain(domain : str):
+    try:
+         domain = domain.strip().lower()
+         pattern = r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$"
+         if not re.match(pattern, domain):
+             return False
+         #DNS Validation
+         dns.resolver.resolve(domain,"MX")
+    except Exception:
+        return False
+    
+@users_bp.route("/get_all_domain/<user_id>",methods=["GET"])
+def get_all_domain(user_id):
+    try:
+        conn = connect_to_rds()
+        domains = fetch_user_domains(user_id,conn)
+        conn.close()
+        if not domains:
+            return jsonify({"message":"No domains available"}), 200
+        all_domains = []
+
+        if domains.get("primary"):
+            all_domains.append(domains["primary"])
+
+        if domains.get("secondary"):
+            all_domains.extend(domains["secondary"])
+
+        return jsonify(all_domains), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

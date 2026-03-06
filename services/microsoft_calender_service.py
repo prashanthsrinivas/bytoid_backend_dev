@@ -32,9 +32,11 @@ class MicrosoftGraphCalendarService:
     GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
     def __init__(self, userid: str, wf_check=False):
+        # print("MicrosoftGraphCalendarService initialized")
         self.userid = userid
         self.conn = connect_to_rds()
         self.in_workflow = wf_check
+        self.token_source = None
 
         # Fetch Microsoft tokens from DB
         with get_cursor(self.conn) as cursor:
@@ -48,21 +50,34 @@ class MicrosoftGraphCalendarService:
                 (str(userid),),
             )
             row = cursor.fetchone()
-
-        if not row:
-            raise ValueError("Microsoft OAuth not connected")
+            if row and row[0] and row[2]:   # client_id and token must exist
+                self.token_source = "users"
+            if not row:
+                raise ValueError("user not found")
+            
+            if not row[0]:
+                cursor.execute("""
+                    SELECT client_id,client_secret,
+                               access_token,refresh_token,expiry,email
+                               FROM integrations WHERE primary_user_id_fk=%s and platform = 'microsoft'
+                               """,
+                               (str(userid),),)
+                row = cursor.fetchone()
+            if not row:
+                raise ValueError("Microsoft OAuth not connected")
+            
+            self.token_source = "integrations"
+        
 
         (
             self.client_id,
             self.client_secret,
-            access_token,
-            refresh_token,
+            self.access_token,
+            self.refresh_token,
             expiry,
             self.user_email,
         ) = row
 
-        self.access_token = access_token
-        self.refresh_token = refresh_token
         self.expiry = self.safe_parse(expiry)
         self.user_timezone = "UTC"
         self.HTML_REGEX = re.compile(
@@ -277,7 +292,8 @@ class MicrosoftGraphCalendarService:
         if not self.expiry or datetime.utcnow() >= self.expiry - timedelta(minutes=2):
             # print("🔄 Refreshing Microsoft token...")
 
-            scopes = "User.Read Mail.Send Mail.ReadWrite Calendars.ReadWrite OnlineMeetings.ReadWrite Chat.ReadWrite"
+            scopes = "offline_access User.Read Mail.Send Mail.ReadWrite Calendars.ReadWrite OnlineMeetings.ReadWrite Chat.ReadWrite"
+            # print("Refreshing Microsoft access token")
 
             resp = requests.post(
                 "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -290,7 +306,11 @@ class MicrosoftGraphCalendarService:
                     "scope": scopes,
                 },
             )
-
+            # print("CLIENT ID:", self.client_id)
+            # print("CLIENT SECRET:", self.client_secret)
+            # print("REFRESH TOKEN:", self.refresh_token[:20])
+            if resp.status_code != 200:
+                 raise ValueError(f"MS token refresh failed: {resp.text}")
             data = resp.json()
             ##print("Data on refresh:", data)
 
@@ -306,16 +326,35 @@ class MicrosoftGraphCalendarService:
 
             # Save to DB
             with get_cursor(self.conn) as cursor:
-                cursor.execute(
-                    """
-                    UPDATE users SET
-                        token=%s,
-                        refresh_token=%s,
-                        expiry=%s
-                    WHERE user_id=%s
-                    """,
-                    (self.access_token, self.refresh_token, self.expiry, self.userid),
-                )
+                if self.token_source == "users":
+
+                        cursor.execute("""
+                            UPDATE users
+                            SET token=%s,
+                                refresh_token=%s,
+                                expiry=%s
+                            WHERE user_id=%s
+                        """, (
+                            self.access_token,
+                            self.refresh_token,
+                            self.expiry,
+                            self.userid,
+                        ))
+                else:
+
+                    cursor.execute("""
+                        UPDATE integrations
+                        SET access_token=%s,
+                            refresh_token=%s,
+                            expiry=%s
+                        WHERE primary_user_id_fk=%s
+                        AND platform='microsoft'
+                    """, (
+                        self.access_token,
+                        self.refresh_token,
+                        self.expiry,
+                        self.userid,
+                    ))
             self.conn.commit()
 
     def view_all_events(

@@ -1273,3 +1273,26 @@ def ensure_starter_credits_for_user(user_id: str, conn):
     )
 
     return True
+
+def fetch_user_domains(user_id: str, conn):
+    try:
+        own_conn = False
+        if conn is None:
+            conn = connect_to_rds()
+            own_conn = True
+        with get_cursor(conn) as cursor:
+            cursor.execute("SELECT domain FROM users WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+
+        if row and row[0]:
+            domain_data = row[0]
+            # Convert JSON string to dict
+            if isinstance(domain_data, str):
+                domain_data = json.loads(domain_data)
+
+            return domain_data
+        return None
+    finally:
+        if own_conn:
+            conn.close()
+
