@@ -93,7 +93,7 @@ class GmailService:
                     """,
                     (str(user_id),),
                 )
-            row = cursor.fetchone()
+                row = cursor.fetchone()
 
             if not row:
                 raise ValueError(f"No Gmail credentials found for user {user_id}")
