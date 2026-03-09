@@ -1405,9 +1405,9 @@ def save_integration(
                 type,
                 access_token,
                 refresh_token,
-                expiry,
                 client_id,
                 client_secret,
+                expiry,
                 status,
                 created_at,
                 updated_at
@@ -1428,9 +1428,9 @@ def save_integration(
             "mails",
             access_token,
             refresh_token,
-            expiry,
             client_id,
-            client_secret
+            client_secret,
+            expiry
         ))
 
         cursor.execute("""
@@ -1466,9 +1466,9 @@ def save_integration(
             "drive",
             access_token,
             refresh_token,
-            expiry,
             client_id,
-            client_secret
+            client_secret,
+            expiry
         ))
         cursor.execute("""
             UPDATE users SET social = %s , token = %s WHERE user_id = %s""",(provider,access_token,primary_user_id))
