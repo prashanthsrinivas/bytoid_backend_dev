@@ -101,7 +101,8 @@
                 "end_time": "optional string (ISO format)",
                 "attendees": "optional list of attendee emails",
                 "description": "optional string (updated description)",
-                "timezone": "optional string (IANA timezone, default: None)"
+                "timezone": "optional string (IANA timezone, default: None)",
+                "preferred_date": "optional string"
             },
             "returns": {
                 "event_id": "string",

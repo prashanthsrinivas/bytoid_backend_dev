@@ -125,6 +125,47 @@
                 "Output is execution-safe and suitable for automated workflow decisions.",
                 "Designed for use in review, approval, and fallback decision steps."
             ]
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.generate_form_schema",
+            "description": "Generates a structured UI form schema for collecting information from users. The schema describes form fields, their types, validation rules, and optional selectable values so a frontend can dynamically render a data-collection interface. The function produces only schema definitions and never collects or stores user data.",
+            "status": "active",
+            "args": {
+                "user_input": "Description of the information that needs to be collected. This acts as the topic or context for generating the form.",
+                "**args": "Optional keyword arguments providing additional context such as workflow step data, domain constraints, required fields, form complexity, or UI preferences."
+            },
+            "returns": {
+                "form": {
+                    "form_id": "Unique identifier for the generated form schema.",
+                    "title": "Human-readable form title describing the purpose of the form.",
+                    "fields": [
+                        {
+                            "id": "Unique field identifier using snake_case.",
+                            "label": "User-visible label for the field.",
+                            "type": "UI field type. One of: input, textarea, choice, multichoice, boolean, email, phone, date, image.",
+                            "data_type": "Underlying data type. One of: string, number, boolean, url.",
+                            "required": "Boolean indicating whether the field must be filled before submission.",
+                            "placeholder": "Optional hint text displayed in the input field.",
+                            "options": [
+                                {
+                                    "label": "Display text for selectable option.",
+                                    "value": "Stored value for the option."
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            "notes": [
+                "This function only generates a form schema; it does not collect, validate, or store user responses.",
+                "The output schema is designed to be rendered directly by frontend UI components.",
+                "Each field must have a unique 'id'.",
+                "Field types must follow the allowed list to ensure compatibility with UI renderers.",
+                "Options are included only for 'choice' or 'multichoice' field types.",
+                "The schema is execution-safe and suitable for automated workflow-driven UI generation.",
+                "Designed for workflows that need structured information gathering from users such as student details, product data, sales forms, surveys, and onboarding flows."
+            ]
         }
     ]
 }
