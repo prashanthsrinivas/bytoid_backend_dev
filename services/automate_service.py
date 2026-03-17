@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import base64
 from db.rds_db import connect_to_rds
 from cust_helpers import pathconfig
 from db.db_checkers import get_business_info
@@ -20,9 +21,9 @@ logger = get_logger(__name__)
 
 
 class AutoMateService:
-    def __init__(self, userid, testing=False, credits=None, workflow=None, wf_id=None):
+    def __init__(self, userid, credits, testing=False, workflow=None, wf_id=None):
         self.userid = userid
-        self.connection = connect_to_rds()
+        self.connection = None
 
         self.autopilot_data = None
         self.testing = testing
@@ -52,7 +53,9 @@ class AutoMateService:
             if isinstance(step, dict) and step.get("id")
         }
 
-        self.current_step_data = steps.get(self.current_step_id)
+        self.current_step_data = steps.get(int(self.current_step_id)) or steps.get(
+            str(self.current_step_id)
+        )
 
         if not self.current_step_data:
             # Optional: structured error for runner / logs
@@ -63,6 +66,8 @@ class AutoMateService:
         Generates a modern, professionally designed HTML email using user_input and dynamic data.
         The AI must return only a fully designed HTML string (no fallbacks, no text, no markdown).
         """
+        if self.connection is None:
+            self.connection = connect_to_rds()
 
         # Fetch business info
         business_info = (
@@ -139,7 +144,7 @@ class AutoMateService:
         # Enforce strict HTML-only output
         # if not email_html.lower().startswith("<html"):
         #     raise ValueError("Model did not return valid HTML email content.")
-
+        self.connection.close()
         return {"email_body_html": email_html.strip()}
 
     async def generate_file_from_ai(self, user_input: str, **args):
@@ -320,7 +325,7 @@ class AutoMateService:
             )
             return response.strip()
         except Exception as e:
-            #print(f"Error generating email reply: {e}")
+            # print(f"Error generating email reply: {e}")
             return "Sorry, I couldn't generate an email reply."
 
     async def generate_chat_reply(self, previous_msg, **args):
@@ -418,7 +423,7 @@ class AutoMateService:
             chat_reply = response.strip()
             return {"return_str": chat_reply}
         except Exception as e:
-            #print(f"Error generating chat reply: {e}")
+            # print(f"Error generating chat reply: {e}")
             return {"error": "encountering a problem please try again"}
 
     async def generate_ai_content(self, user_input, **args):
@@ -529,7 +534,7 @@ class AutoMateService:
             generated_content = response.strip()
             return {"return_str": generated_content}
         except Exception as e:
-            #print(f"Error generating AI content: {e}")
+            # print(f"Error generating AI content: {e}")
             return {"error": "Sorry, I couldn't generate content right now."}
 
     async def generate_questions(self, user_input, **args):
@@ -609,7 +614,7 @@ class AutoMateService:
             {{
             "id": "{current_time_prefix}_<unique_suffix>",
             "question": "<question text>",
-            "answer": null
+            "user_answer": null
             }}
 
             MCQ QUESTION (ONLY IF REQUIRED BY AI INSTRUCTIONS):
@@ -622,7 +627,7 @@ class AutoMateService:
                 "C": "<option>",
                 "D": "<option>"
             }},
-            "answer": null
+            "user_answer": null
             }}
 
             ===========================
@@ -668,7 +673,7 @@ class AutoMateService:
                 "raw_response": response.strip(),
             }
         except Exception as e:
-            #print(f"Error generating questions: {e}")
+            # print(f"Error generating questions: {e}")
             return {"error": "Sorry, I couldn't generate questions right now."}
 
     async def review_content(self, user_input, **args):
@@ -790,5 +795,425 @@ class AutoMateService:
             return {"return_str": review_output}
 
         except Exception as e:
-            #print(f"Error reviewing content: {e}")
+            # print(f"Error reviewing content: {e}")
             return {"error": "Sorry, I couldn't review the content right now."}
+
+    async def generate_form_schema(self, user_input, **args):
+
+        form_prefix = datetime.now().strftime("form_%Y%m%d_%H%M%S")
+
+        step_dict = self.current_step_data or {}
+        step_context = json.dumps(step_dict, indent=2, ensure_ascii=False)
+
+        ai_instruction = step_dict.get("ai_instructions", "")
+
+        args_pretty = json.dumps(args, indent=2, ensure_ascii=False)
+
+        prompt = f"""
+            You are a STRICT AI UI-FORM SCHEMA GENERATION ENGINE.
+
+            ===========================
+            WORKFLOW STEP AUTHORITY
+            ===========================
+            {step_context}
+
+            ===========================
+            AI INSTRUCTIONS
+            ===========================
+            {ai_instruction}
+
+            ===========================
+            OBJECTIVE
+            ===========================
+            Generate a dynamic UI form schema to collect structured information.
+
+            The schema must be usable by a frontend to render UI fields.
+
+            ===========================
+            FIELD TYPES ALLOWED
+            ===========================
+            input
+            textarea
+            choice
+            multichoice
+            boolean
+            email
+            phone
+            date
+            image
+
+            ===========================
+            FIELD STRUCTURE
+            ===========================
+            Each field MUST follow this structure:
+
+            {{
+            "id": "unique_field_id",
+            "label": "User visible label",
+            "type": "input | textarea | choice | multichoice | boolean | email | phone | date | image",
+            "data_type": "string | number | boolean | url",
+            "required": true | false,
+            "placeholder": "optional placeholder",
+            "options": [{{"label":"", "value":""}}],   // ONLY for choice or multichoice
+            "answer": ""   // ALWAYS REQUIRED. Default empty string.
+            }}
+
+            IMPORTANT:
+            - Every field MUST include an "answer" property.
+            - "answer" must ALWAYS be a STRING.
+            - Default value must be "".
+            - All user responses must be stored inside this field.
+            - For multichoice selections store comma-separated values.
+            - For boolean store "true" or "false".
+            - For numbers store string representation.
+
+            ===========================
+            FORM STRUCTURE
+            ===========================
+
+            Return EXACTLY this structure:
+
+            {{
+            "form_id": "{form_prefix}",
+            "title": "Form title",
+            "fields": [ ... ]
+            }}
+
+            ===========================
+            USER INPUT (TOPIC ONLY)
+            ===========================
+            {user_input}
+
+            ===========================
+            ADDITIONAL CONTEXT
+            ===========================
+            {args_pretty}
+
+            ===========================
+            GLOBAL RULES
+            ===========================
+            - Output ONLY JSON
+            - No markdown
+            - No explanations
+            - Must be valid JSON
+            - Fields must have unique ids
+            - Use lowercase snake_case ids
+            - Every field MUST include an "answer" property
+
+            FINAL RESPONSE:
+            """
+
+        response = await get_fireworks_response2(
+            user_message=prompt,
+            role="system",
+            temp=0.3,
+            user_id=self.userid,
+            credits=self.credits,
+        )
+        # print(type(response))
+
+        if not response:
+            return {"error": "AI returned empty response"}
+
+        cleaned = response.strip()
+
+        try:
+            return {"form": json.loads(cleaned)}
+
+        except json.JSONDecodeError:
+            return {"error": "AI returned invalid JSON", "raw_response": cleaned}
+
+    async def evaluate_answers(self, questions, answer_key_json=None):
+
+        questions_json = json.dumps(questions, indent=2, ensure_ascii=False)
+        answer_key_json = json.dumps(answer_key_json) or {}
+
+        prompt = f"""
+        You are an AI assessment evaluation engine.
+
+        Your task is to evaluate student answers objectively.
+
+        ===========================
+        INPUT QUESTIONS
+        ===========================
+
+        {questions_json}
+        
+        ===========================
+        REFERENCE ANSWER KEY (OPTIONAL)
+        ===========================
+
+        {answer_key_json}
+
+        Some questions may have predefined answers in this section.
+
+        Rules:
+        - Match answer_key.question_id with the question id.
+        - If a reference_answer or correct_answer exists, use it as the PRIMARY reference for evaluation.
+        - If no reference answer exists, evaluate using your own knowledge.
+        - Never invent reference answers.
+
+        ===========================
+        EVALUATION RULES
+        ===========================
+
+        TEXT QUESTIONS:
+        - Score from 0 to 10
+        - Use these labels:
+        - correct
+        - partially_correct
+        - incorrect
+        - unanswered
+        - If the user's answer covers all key concepts present in the reference answer,
+        even with different wording or structure,Do not deduct points for wording differences if the meaning is correct.
+        Focus on conceptual completeness.
+        assign:
+        score = 10
+        correctness = "correct"
+
+        MCQ QUESTIONS:
+        - Correct answer gets full score
+        - Wrong answer gets 0
+
+        ===========================
+        ANALYSIS REQUIREMENTS
+        ===========================
+
+        For TEXT questions include:
+
+        analysis:
+        - concept_match (true/false)
+        - strengths (list)
+        - missing_points (list)
+
+        For MCQ questions include:
+
+        analysis:
+        - reason explaining correct answer
+
+        ===========================
+        SCORING
+        ===========================
+
+        - Text question max_score = 10
+        - MCQ max_score = 5
+
+        ===========================
+        OUTPUT FORMAT (STRICT)
+        ===========================
+
+        Return JSON only.
+
+        {{
+        "summary": {{
+            "total_questions": number,
+            "attempted": number,
+            "correct": number,
+            "incorrect": number,
+            "unanswered": number,
+            "total_score": number,
+            "max_score": number,
+            "percentage": number,
+            "grade": "A/B/C/D/F"
+        }},
+        "results": [
+            {{
+            "question_id": "...",
+            "question": "...",
+            "type": "text|mcq",
+            "user_answer": "...",
+            "correctness": "correct|partially_correct|incorrect|unanswered",
+            "score": number,
+            "max_score": number,
+            "analysis": {{
+                "concept_match": true,
+                "strengths": [],
+                "missing_points": []
+            }},
+            "model_answer": "ideal answer"
+            }}
+        ]
+        }}
+
+        ===========================
+        IMPORTANT RULES
+        ===========================
+
+        - Return ONLY valid JSON
+        - No explanations
+        - No markdown
+        - No extra text
+        """
+
+        response = await get_fireworks_response2(
+            user_message=prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
+            credits=self.credits,
+        )
+
+        return json.loads(response)
+
+    async def search_knowledge_base(self, user_input):
+        from agent_route.lance_agent import LanceClient, QueryInput
+
+        res = LanceClient(user_id=self.userid, credits=self.credits)
+        query_input = QueryInput(
+            user_id=self.userid,
+            query_text=user_input,
+            top_k=1,
+        )
+        value = await res.mixed_query_vector(
+            query_input=query_input,
+        )
+        if isinstance(value, str):
+            return value
+        return "No answer found as per query"
+
+    async def generate_questions_from_file(self, extracted_files):
+
+        import json
+        from datetime import datetime
+
+        # 🔒 ID prefix
+        current_time_prefix = datetime.now().strftime("qid_%Y%m%d_%H%M%S")
+
+        # ===========================
+        # 🔥 Combine Extracted Content
+        # ===========================
+        combined_text_parts = []
+
+        for f in extracted_files:
+            content = f.get("content", "").strip()
+            filename = f.get("filename", "file")
+
+            if content:
+                combined_text_parts.append(f"[FILE: {filename}]\n{content}")
+
+        combined_text = "\n\n".join(combined_text_parts)
+
+        if not combined_text:
+            return {"error": "No usable content found in file"}
+
+        # ===========================
+        # 🔥 CHUNKING LOGIC
+        # ===========================
+        CHUNK_SIZE = 5000  # safe size
+        chunks = [
+            combined_text[i : i + CHUNK_SIZE]
+            for i in range(0, len(combined_text), CHUNK_SIZE)
+        ]
+
+        all_questions = []
+        global_index = 1
+
+        # ===========================
+        # 🔥 PROCESS EACH CHUNK
+        # ===========================
+        for chunk_idx, chunk in enumerate(chunks):
+
+            prompt = f"""
+    You are a STRICT QUESTION EXTRACTION ENGINE.
+
+    🚫 ZERO HALLUCINATION MODE
+    🚫 NO REWRITING
+    🚫 NO SUMMARIZATION
+
+    ===========================
+    SOURCE TEXT
+    ===========================
+    {chunk}
+
+    ===========================
+    TASK
+    ===========================
+    Extract ALL questions EXACTLY as they appear in the text.
+
+    ===========================
+    STRICT RULES (MANDATORY)
+    ===========================
+    1. DO NOT generate new questions
+    2. DO NOT paraphrase or reword
+    3. DO NOT improve grammar
+    4. KEEP original wording EXACTLY
+    5. KEEP numbering meaning intact
+    6. EXTRACT ALL questions present in this chunk
+    7. DO NOT skip any question
+    8. INCLUDE:
+    - MCQ questions
+    - Yes/No questions
+    - Free-text questions
+
+    ===========================
+    OPTIONS RULE
+    ===========================
+    - If options are present → extract ALL exactly
+    - DO NOT modify options text
+    - Preserve order
+
+    ===========================
+    OUTPUT FORMAT
+    ===========================
+    Return ONLY JSON ARRAY
+
+    [
+    {{
+        "question": "...",
+        "options": {{
+        "A": "...",
+        "B": "..."
+        }},
+        "user_answer": null
+    }},
+    {{
+        "question": "...",
+        "user_answer": null
+    }}
+    ]
+
+    ===========================
+    GLOBAL RULES
+    ===========================
+    - No markdown
+    - No explanation
+    - No extra text
+    - Strict JSON only
+    """
+
+            try:
+                response = await get_fireworks_response2(
+                    user_message=prompt,
+                    role="system",
+                    temp=0.2,  # 🔒 deterministic
+                    user_id=self.userid,
+                    credits=self.credits,
+                )
+
+                chunk_questions = json.loads(response.strip())
+
+                # ===========================
+                # 🔥 ASSIGN GLOBAL IDS
+                # ===========================
+                for q in chunk_questions:
+                    q["id"] = f"{current_time_prefix}_{str(global_index).zfill(3)}"
+                    global_index += 1
+                    all_questions.append(q)
+
+            except Exception as e:
+                return {"error": f"Chunk {chunk_idx} failed", "details": str(e)}
+        print(
+            {
+                "questions": all_questions,
+                "total_questions": len(all_questions),
+                "total_chunks": len(chunks),
+            }
+        )
+        # ===========================
+        # 🔥 FINAL OUTPUT
+        # ===========================
+        return {
+            "questions": all_questions,
+            "total_questions": len(all_questions),
+            "total_chunks": len(chunks),
+        }

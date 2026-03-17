@@ -5,7 +5,6 @@ from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
     get_subagent_by_userid,
-    save_or_update_workflow_schedule,
 )
 from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, Response, stream_with_context
@@ -22,7 +21,7 @@ from utils.normal import (
     read_function_jsons2,
     remove_not_found_entities,
 )
-from request_context import current_user_id
+from .background_worker import JobManager
 import pytz
 
 playbook_bp = Blueprint("playbook", __name__)
@@ -43,23 +42,32 @@ def base_name(filename):
 
 @playbook_bp.route("/create_instruction", methods=["POST"])
 async def create_new_instruction():
-    db = connect_to_rds()
-    data = request.json
-    userid = data["user_id"]
 
+    data = request.json
+
+    job_id = await JobManager.submit_job(create_instruction_worker, data)
+
+    return jsonify({"status": "accepted", "job_id": job_id})
+
+
+async def create_instruction_worker(data):
+
+    db = connect_to_rds()
+    userid = data["user_id"]
     credits = Credits(db)
 
     try:
-        # 🔐 Start transaction (OWNER)
+
         db.begin()
 
         total_input_chars = 5000
+
         if not await credits.has_ai_credits(
             total_chars=total_input_chars,
             user_id=userid,
         ):
             db.rollback()
-            return "INSUFFICIENT", 402
+            return {"error": "INSUFFICIENT"}
 
         playbook_id, config_path, subagent_id = returnconfigandpath(userid)
 
@@ -71,7 +79,6 @@ async def create_new_instruction():
                 playb_id, subagent_id, config_s3_path
             )
 
-        # 🔁 Pass db + credits explicitly
         full_output, npath = await create_playbook(
             data=data,
             template_data=PLAY_TEMPLATE,
@@ -91,35 +98,21 @@ async def create_new_instruction():
             num_steps=len(full_output["workflow"]["steps"]),
         )
 
-        # ✅ All good → commit once
         db.commit()
-        await credits.cm.sync_credits_to_redis(
-            user_id=userid
-        )  # ✅ sync Redis after commit
 
-        return jsonify({"status": "success", "data": full_output})
+        await credits.cm.sync_credits_to_redis(userid)
+
+        return full_output
 
     except Exception as e:
-        # ❌ Any failure → rollback EVERYTHING (including credits)
         db.rollback()
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "message": "Failed to create instruction",
-                    "error": str(e),
-                }
-            ),
-            500,
-        )
+        raise e
 
     finally:
         db.close()
 
 
-@playbook_bp.route("/update_instruction", methods=["POST"])
-async def updateInstruction():
-    data = request.json
+async def updateInstruction_worker(data):
     userid = data.get("user_id")
     filename = data.get("filename")
 
@@ -197,7 +190,30 @@ async def updateInstruction():
     db.close()
     await credits.cm.sync_credits_to_redis(user_id=userid)  # ✅ sync Redis after commit
 
-    return jsonify({"status": "success", "data": full_output})
+    return full_output
+
+
+@playbook_bp.route("/playbook/jbs/<job_id>", methods=["GET"])
+async def job_status(job_id):
+    from services.redis_service import RedisService
+
+    redisservice = RedisService()
+
+    job = await redisservice.get(f"job:{job_id}")
+
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+
+    return jsonify(job)
+
+
+@playbook_bp.route("/update_instruction", methods=["POST"])
+async def updateInstruction():
+    data = request.json
+
+    job_id = await JobManager.submit_job(updateInstruction_worker, data)
+
+    return jsonify({"status": "accepted", "job_id": job_id})
 
 
 @playbook_bp.route("/get_all_instructions", methods=["GET"])
@@ -316,7 +332,7 @@ def add_a_step():
     # Add to previous step's next_step if applicable
     if previous_step_id:
         for step in steps:
-            if step.get("id") == previous_step_id:
+            if str(step.get("id")) == str(previous_step_id):
                 if step.get("decision_point", False):
                     step.setdefault("next_step", [])
                     if isinstance(step["next_step"], list):
@@ -378,160 +394,6 @@ def edit_a_step():
     return save_playbook_to_s3(playbook, user_id, "Step edited successfully", filename)
 
 
-# @playbook_bp.route("/update_step_arguments", methods=["POST"])
-# def update_step_arguments():
-#     try:
-#         body = request.json
-
-#         user_id = body.get("user_id")
-#         filename = body.get("filename")
-#         step_id = body.get("step_id")
-#         new_arguments = body.get("arguments")
-
-#         if not user_id or not filename or step_id is None or new_arguments is None:
-#             return (
-#                 jsonify(
-#                     {
-#                         "status": "error",
-#                         "message": "Missing user_id, filename, step_id, or arguments",
-#                     }
-#                 ),
-#                 400,
-#             )
-#         if not filename.lower().endswith(".json"):
-#             filename = f"{filename}.json"
-#         # -----------------------------------------------------------
-#         # 1) Load playbook from S3
-#         # -----------------------------------------------------------
-#         try:
-#             playbook = read_json_from_s3(
-#                 f"{user_id}/workflow/{base_name(filename)}/{filename}"
-#             )
-#         except Exception as e:
-#             return (
-#                 jsonify(
-#                     {
-#                         "status": "error",
-#                         "message": f"Failed to load playbook: {e}",
-#                     }
-#                 ),
-#                 500,
-#             )
-
-#         steps = playbook.get("workflow", {}).get("steps", [])
-#         updated = False
-
-#         # -----------------------------------------------------------
-#         # 2) Update the step arguments
-#         # -----------------------------------------------------------
-#         try:
-#             for step in steps:
-#                 if step.get("id") == int(step_id):
-
-#                     # Must have function_call.arguments
-#                     if (
-#                         "function_call" not in step
-#                         or "arguments" not in step["function_call"]
-#                     ):
-#                         return (
-#                             jsonify(
-#                                 {
-#                                     "status": "error",
-#                                     "message": f"Step {step_id} does not contain function_call.arguments",
-#                                 }
-#                             ),
-#                             400,
-#                         )
-
-#                     # Replace ONLY arguments
-#                     step["function_call"]["arguments"] = new_arguments
-
-#                     # Remove filled arguments from requirements_needed
-#                     req_list = step.get("requirements_needed", [])
-#                     for arg in new_arguments.keys():
-#                         if arg in req_list:
-#                             req_list.remove(arg)
-#                     step["requirements_needed"] = req_list
-
-#                     updated = True
-#                     break
-#         except Exception as e:
-#             return (
-#                 jsonify(
-#                     {
-#                         "status": "error",
-#                         "message": f"Failed while updating step arguments: {e}",
-#                     }
-#                 ),
-#                 500,
-#             )
-
-#         if not updated:
-#             return jsonify({"status": "error", "message": "Step ID not found"}), 404
-
-#         # -----------------------------------------------------------
-#         # 3) Update workflow date
-#         # -----------------------------------------------------------
-#         playbook["WorkflowDate"] = datetime.now().isoformat()
-#         if "pre_user_data" not in playbook:
-#             playbook["pre_user_data"] = {}
-
-#         # -----------------------------------------------------------
-#         # 4) Call storeargument_results (inside WorkflowRunnerV2)
-#         # -----------------------------------------------------------
-#         try:
-#             with WorkflowRunnerV2(
-#                 userid=user_id,
-#                 filename=filename,
-#                 workflowJson=playbook,
-#                 testing=True,
-#             ) as runner:
-#                 # print("adding values to the ")
-#                 values = runner.storeargument_results(
-#                     nfunction_args=new_arguments,
-#                     execution_result={},  # satisfies signature
-#                 )
-#                 playbook["pre_user_data"] = values
-#         except Exception as e:
-#             return (
-#                 jsonify(
-#                     {
-#                         "status": "error",
-#                         "message": f"Failed in storeargument_results: {e}",
-#                     }
-#                 ),
-#                 500,
-#             )
-
-#         # -----------------------------------------------------------
-#         # 5) Save back to S3
-#         # -----------------------------------------------------------
-#         try:
-#             return save_playbook_to_s3(
-#                 playbook, user_id, "Step arguments updated successfully", filename
-#             )
-#         except Exception as e:
-#             return (
-#                 jsonify(
-#                     {
-#                         "status": "error",
-#                         "message": f"Failed to save playbook: {e}",
-#                     }
-#                 ),
-#                 500,
-#             )
-
-
-#     except Exception as main_e:
-#         return (
-#             jsonify(
-#                 {
-#                     "status": "error",
-#                     "message": f"Unexpected error: {main_e}",
-#                 }
-#             ),
-#             500,
-#         )
 @playbook_bp.route("/update_step_arguments", methods=["POST"])
 def update_step_arguments():
     try:
@@ -570,7 +432,7 @@ def update_step_arguments():
         # 2) Update step arguments
         # -----------------------------------------------------------
         for step in steps:
-            if step.get("id") == int(step_id):
+            if str(step.get("id")) == str(step_id):
 
                 if (
                     "function_call" not in step
@@ -721,7 +583,7 @@ def delete_step_argument():
     updated = False
 
     for step in steps:
-        if step.get("id") == int(step_id):
+        if str(step.get("id")) == str(step_id):
 
             # Step must contain function_call.arguments
             if "function_call" not in step or "arguments" not in step["function_call"]:
@@ -776,10 +638,12 @@ def delete_step_argument():
 @playbook_bp.route("/delete_a_step", methods=["POST"])
 def delete_a_step():
     body = request.json
+
     step_id = body.get("step_id")
     user_id = body.get("user_id")
     filename = body.get("filename")
 
+    # Validate inputs
     if not step_id or not user_id or not filename:
         return (
             jsonify(
@@ -787,38 +651,86 @@ def delete_a_step():
             ),
             400,
         )
+
+    # Normalize step_id to string for safe comparisons
+    step_id = str(step_id)
+
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    playbook = read_json_from_s3(f"{user_id}/workflow/{base_name(filename)}/{filename}")
-    steps = playbook.get("workflow", {}).get("steps", [])
+    try:
+        playbook = read_json_from_s3(
+            f"{user_id}/workflow/{base_name(filename)}/{filename}"
+        )
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Failed to read playbook",
+                    "error": str(e),
+                }
+            ),
+            500,
+        )
 
-    # Check if the step exists
-    step_found = any(s.get("id") == step_id for s in steps)
+    workflow = playbook.get("workflow", {})
+    steps = workflow.get("steps", [])
+
+    if not steps:
+        return (
+            jsonify({"status": "error", "message": "No steps found in workflow"}),
+            404,
+        )
+
+    # Check if step exists
+    step_found = any(str(s.get("id")) == step_id for s in steps)
+
     if not step_found:
         return jsonify({"status": "error", "message": "Step ID not found"}), 404
 
-    # 1. Remove the step itself
-    new_steps = [s for s in steps if s.get("id") != step_id]
+    # -----------------------------
+    # Remove the step
+    # -----------------------------
+    new_steps = [s for s in steps if str(s.get("id")) != step_id]
 
-    # 2. Clean up all references to this step in next_step fields
+    # -----------------------------
+    # Clean references to deleted step
+    # -----------------------------
     for step in new_steps:
-        if "next_step" in step:
-            if isinstance(step["next_step"], list):
-                step["next_step"] = [nid for nid in step["next_step"] if nid != step_id]
-                if not step["next_step"]:  # remove empty list
-                    del step["next_step"]
-            elif step["next_step"] == step_id:
+
+        if "next_step" not in step:
+            continue
+
+        next_step = step["next_step"]
+
+        # Case 1: next_step is a list
+        if isinstance(next_step, list):
+
+            filtered = [nid for nid in next_step if str(nid) != step_id]
+
+            if filtered:
+                step["next_step"] = filtered
+            else:
                 del step["next_step"]
 
-    # 3. Save updated steps back to playbook
+        # Case 2: next_step is single value
+        else:
+            if str(next_step) == step_id:
+                del step["next_step"]
+
+    # -----------------------------
+    # Update workflow
+    # -----------------------------
     playbook["workflow"]["steps"] = new_steps
     playbook["WorkflowDate"] = datetime.now().isoformat()
 
+    # -----------------------------
+    # Save back to S3
+    # -----------------------------
     return save_playbook_to_s3(playbook, user_id, "Step deleted successfully", filename)
 
 
-@playbook_bp.route("/modify_instruction", methods=["POST"])
 async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None):
     db = connect_to_rds()
     credits = Credits(db)
@@ -1072,6 +984,29 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
 
     finally:
         db.close()
+
+
+async def modlmiddle(body):
+    update_instruction = body.get("modify_instructions")
+    additional_data = body.get("additional_data") or ""
+    user_id = body.get("user_id")
+    filename = body.get("filename")
+    res = await modify_instruction(
+        ud_inst=update_instruction,
+        user_id=user_id,
+        filename=filename,
+        add_data=additional_data,
+    )
+    return res
+
+
+@playbook_bp.route("/modify_instruction", methods=["POST"])
+async def mod_instuct():
+    data = request.json
+
+    job_id = await JobManager.submit_job(modlmiddle, data)
+
+    return jsonify({"status": "accepted", "job_id": job_id})
 
 
 @playbook_bp.route("/run_workflow", methods=["POST"])
@@ -1513,15 +1448,16 @@ async def testmidcheck():
     # Lock user to avoid multiple parallel bulk sends
     user_id = body.get("user_id")
 
-    user_input = body.get("userinput")
-    length = "5 questions"
-    tone = "professional"
-
+    # user_input = body.get("userinput")
+    # length = "5 questions"
+    # tone = "professional"
+    # questions = body.get("questions")
+    # keymap = body.get("keymap", None)
+    filedata = body.get("ques_file")
+    credits = Credits()
     try:
-        ai = AutoMateService(userid=user_id)
-        val = await ai.generate_questions(
-            user_input=user_input, length=length, tone=tone
-        )
+        ai = AutoMateService(userid=user_id, credits=credits)
+        val = await ai.generate_questions_from_file(file_data=filedata)
         return jsonify({"data": val})
     except Exception as e:
         # print("❌ Error in /test-email_checks:", e)
@@ -1988,6 +1924,131 @@ def updatequestionsbulkworkflow():
     return jsonify(result), status_code
 
 
+@playbook_bp.route("/update-form-field", methods=["POST"])
+def updateformfieldworkflow():
+    data = request.json
+
+    userid = data.get("user_id")
+    answer = data.get("answer")
+    filename = data.get("filename")
+    chat_id = data.get("chat_id")
+    field_id = data.get("field_id")
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    if not field_id:
+        return jsonify({"message": "Invalid field_id", "status": "error"}), 400
+
+    if not chat_id:
+        return jsonify({"message": "Invalid chat_id", "status": "error"}), 400
+
+    if answer is None:
+        return jsonify({"message": "Answer cannot be null", "status": "error"}), 400
+
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        return (
+            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
+            404,
+        )
+
+    with WorkflowRunnerV2(
+        userid=userid,
+        filename=filename,
+        workflowJson=workflow_json,
+        testing=True,
+    ) as service:
+
+        result = asyncio.run(
+            service.update_form_field(
+                field_id=field_id,
+                answer=answer,
+                chid=chat_id,
+            )
+        )
+
+    status_code = 200 if result.get("status") == "success" else 400
+    return jsonify(result), status_code
+
+
+@playbook_bp.route("/update-form-fields-bulk", methods=["POST"])
+def updateformfieldsbulkworkflow():
+    data = request.json or {}
+
+    userid = data.get("user_id")
+    filename = data.get("filename")
+    chat_id = data.get("chat_id")
+    answers = data.get("answers")  # 🔥 BULK fields
+
+    if not userid:
+        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+
+    if not filename:
+        return jsonify({"message": "Not a valid filename", "status": "error"}), 400
+
+    if not chat_id:
+        return jsonify({"message": "Invalid chat_id", "status": "error"}), 400
+
+    if not isinstance(answers, list) or not answers:
+        return (
+            jsonify({"message": "Answers must be a non-empty list", "status": "error"}),
+            400,
+        )
+
+    for item in answers:
+        if not item.get("field_id"):
+            return (
+                jsonify(
+                    {
+                        "message": "Each answer must include field_id",
+                        "status": "error",
+                    }
+                ),
+                400,
+            )
+
+        if item.get("answer") is None:
+            return jsonify({"message": "Answer cannot be null", "status": "error"}), 400
+
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        return (
+            jsonify({"message": f"Workflow '{filename}' not found", "status": "error"}),
+            404,
+        )
+
+    with WorkflowRunnerV2(
+        userid=userid,
+        filename=filename,
+        workflowJson=workflow_json,
+        testing=True,
+    ) as service:
+
+        result = asyncio.run(
+            service.update_form_bulk(
+                answers=answers,
+                chid=chat_id,
+            )
+        )
+
+    status_code = 200 if result.get("status") == "success" else 400
+    return jsonify(result), status_code
+
+
 @playbook_bp.route("/autocheck-workflow", methods=["POST"])
 async def autocheckworkflow():
     data = request.json
@@ -2079,7 +2140,163 @@ def autocheckstatusupdate():
             else:
                 return jsonify({"error": "failed to update the auto checker"})
     except Exception as e:
+        print("auto update", e)
         return jsonify({"status": "error", "message": str(e)}), 500
     # finally:
     # current_user_id.reset(token)
     # print("updating auto check")
+
+
+@playbook_bp.route("/workflow/conversation", methods=["POST"])
+def workflow_conversation():
+
+    data = request.json
+
+    user_id = data.get("user_id")
+    filename = data.get("filename")
+    user_message = data.get("user_message", "")
+
+    if not user_id or not filename:
+        return jsonify({"error": "invalid request"}), 400
+
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+
+    if not workflow_json:
+        return jsonify({"status": "error", "message": "Workflow not found"}), 404
+    credits = Credits()
+    try:
+        with WorkflowRunnerV2(
+            userid=user_id,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+            credits=credits,
+        ) as runner:
+
+            result = asyncio.run(
+                runner.make_workflow_conversation(user_message=user_message)
+            )
+
+            return jsonify(result)
+
+    except Exception as e:
+        print("auto update", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/wf-form", methods=["POST"])
+async def check_formcreation():
+    data = request.json
+
+    user_id = data.get("user_id")
+    user_input = data.get("user_input")
+
+    from services.automate_service import AutoMateService
+
+    credits = Credits()
+    val = AutoMateService(userid=user_id, credits=credits)
+
+    kak = await val.generate_form_schema(user_input)
+
+    return jsonify({"message": kak})
+
+
+# @playbook_bp.route("/generate_ques_by_file", methods=["POST"])
+# async def generate_ques_by_file():
+#     from services.automate_service import AutoMateService
+#     from radar.radar_helpers import extract_files_content
+
+#     user_id = request.form.get("user_id")
+#     uploaded_file = request.files.get("ques_file")
+
+#     if not uploaded_file:
+#         return jsonify({"error": "No file provided"}), 400
+
+#     try:
+#         # ✅ Read file bytes
+#         file_bytes = uploaded_file.read()
+
+#         # ✅ Convert to extractor format
+#         files = [
+#             {
+#                 "filename": uploaded_file.filename,
+#                 "content_type": uploaded_file.content_type,
+#                 "data": file_bytes,
+#             }
+#         ]
+
+#         # ✅ Extract structured content
+#         extracted_files = extract_files_content(files)
+
+#         if not extracted_files:
+#             return jsonify({"error": "Could not extract content from file"}), 400
+
+#         credits = Credits()
+#         ai = AutoMateService(userid=user_id, credits=credits)
+
+#         # ✅ Call service
+#         result = await ai.generate_questions_from_file(extracted_files)
+
+#         return jsonify({"data": result})
+
+#     except Exception as e:
+#         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+async def send_ques_byfile_bk(user_id, extracted_files):
+    from services.automate_service import AutoMateService
+
+    credits = Credits()
+    ai = AutoMateService(userid=user_id, credits=credits)
+
+    result = await ai.generate_questions_from_file(extracted_files)
+    return result
+
+
+@playbook_bp.route("/generate_ques_by_file", methods=["POST"])
+async def generate_ques_by_file():
+    from radar.radar_helpers import extract_files_content
+
+    user_id = request.form.get("user_id")
+    uploaded_file = request.files.get("ques_file")
+
+    if not uploaded_file:
+        return jsonify({"error": "No file provided"}), 400
+
+    try:
+        # ✅ Read file bytes
+        file_bytes = uploaded_file.read()
+
+        files = [
+            {
+                "filename": uploaded_file.filename,
+                "content_type": uploaded_file.content_type,
+                "data": file_bytes,
+            }
+        ]
+
+        # ✅ Extract content
+        extracted_files = extract_files_content(files)
+
+        if not extracted_files:
+            return jsonify({"error": "Could not extract content from file"}), 400
+
+        # 🔥 SUBMIT BACKGROUND JOB (THIS WAS MISSING)
+        job_id = await JobManager.submit_job(
+            send_ques_byfile_bk, user_id, extracted_files
+        )
+
+        return jsonify(
+            {
+                "status": "accepted",
+                "job_id": job_id,
+                "message": "Processing started in background",
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500

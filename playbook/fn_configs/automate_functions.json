@@ -58,17 +58,30 @@
         },
         {
             "category": "AutoMateService",
+            "name": "automate.search_knowledge_base",
+            "description": "Searches internal or user-uploaded documents using semantic vector search and returns the most relevant answer based on the query.",
+            "status": "active",
+            "args": {
+                "user_input": "The user's query or question to search for in the knowledge base (string)."
+            },
+            "returns": {
+                "response": "The most relevant answer retrieved from the document sources, or null if no relevant result is found."
+            },
+            "notes": "Use this ONLY when the user explicitly asks to search, retrieve, or answer from uploaded documents, files, or knowledge base. Do NOT use for general questions, reasoning, or when the answer can be generated without document retrieval. Uses vector similarity search (e.g., LanceDB) to retrieve context-aware answers from stored documents. Designed for RAG-based workflows."
+        },
+        {
+            "category": "AutoMateService",
             "name": "automate.generate_ai_content",
-            "description": "Generates creative or informational content (stories,exam,prepare, articles, ideas, summaries) based on user input. Accepts flexible keyword arguments (**args) for tone, length, workflow, or other contextual hints.",
+            "description": "Generates creative or informational content such as stories, explanations, study material, preparation guides, summaries, ideas, articles, or conceptual learning content based on user input. This function is intended for narrative or informational content generation and NOT for generating structured questions, quizzes, MCQs, or mock exams.",
             "status": "active",
             "args": {
                 "user_input": "User's request or topic description (string).",
-                "**args": "Optional keyword arguments such as step data, tone, length, workflow, dynamic_inputs, or other contextual hints that guide the generation style and content."
+                "**args": "Optional keyword arguments such as tone, length, style, workflow context, dynamic_inputs, or other hints that guide the generation style and content."
             },
             "returns": {
-                "generated_content": "AI-generated text based on the user request (string)."
+                "generated_content": "AI-generated narrative or informational text based on the user request (string)."
             },
-            "notes": "Uses AI for balanced creativity. Automatically adapts tone, structure, and content based on **args. Suitable for dynamic AI content generation with flexible context injection."
+            "notes": "This function must NOT generate structured questions, quizzes, MCQs, or mock exams. If the user explicitly asks for questions, quizzes, tests, or mock exams, the system must instead use the 'automate.generate_questions' function."
         },
         {
             "category": "AutoMateService",
@@ -97,6 +110,26 @@
                 "If multiple formats are mentioned, quiz takes precedence over MCQ.",
                 "If the request is ambiguous or unclear, default to normal questions.",
                 "This function is safe for automated workflow execution systems."
+            ]
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.evaluate_answers",
+            "description": "Evaluates answers provided for generated questions and returns structured scoring, correctness labels, and analysis. Supports both open-ended (text) questions and MCQ questions. Optionally uses a provided answer key as the primary reference during evaluation.",
+            "status": "active",
+            "args": {
+                "questions": "A JSON array of question objects containing at minimum: id, question, type (text|mcq), and user_answer. MCQ questions may include an options object.",
+                "answer_key_json": "Optional JSON array containing reference answers or correct answers mapped by question_id. If provided, this is used as the primary reference during evaluation."
+            },
+            "returns": {
+                "summary": "Aggregated evaluation metrics including total_questions, attempted, correct, incorrect, unanswered, total_score, max_score, percentage, and grade.",
+                "results": "A JSON array containing evaluation results for each question including score, correctness label, analysis, and a model_answer reference."
+            },
+            "notes": [
+                "The answer_key_json argument is optional and only influences evaluation if provided.",
+                "Reference answers should be treated as conceptual guidance rather than requiring exact wording matches.",
+                "Evaluation focuses on conceptual completeness rather than phrasing similarity.",
+                "The returned results array is designed for direct use in workflow engines, grading dashboards, or automated feedback systems."
             ]
         },
         {
