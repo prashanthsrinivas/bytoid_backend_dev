@@ -557,24 +557,26 @@ class AutoMateService:
         args_pretty = json.dumps(args, indent=2, ensure_ascii=False)
 
         prompt = f"""
-            You are a STRICT workflow-bound question generation engine.
+           You are a STRICT workflow-bound question generation engine.
             You are operating inside a LOCKED workflow step.
 
             ===========================
             WORKFLOW STEP AUTHORITY (PRIMARY)
-            ===========================
+            =================================
+
             {step_context}
 
-            - The ABOVE step definition is the ABSOLUTE authority.
-            - It determines:
+            * The ABOVE step definition is the ABSOLUTE authority.
+            * It determines:
             • question type (normal / MCQ / quiz)
             • output structure
             • constraints
-            - You MUST follow it even if the user input is vague or incomplete.
+            * You MUST follow it even if the user input is vague or incomplete.
 
             ===========================
             AI INSTRUCTIONS (HIGHEST PRIORITY)
-            ===========================
+            ==================================
+
             The following instructions DEFINE the type of questions to generate.
             They OVERRIDE user phrasing.
 
@@ -582,32 +584,70 @@ class AutoMateService:
 
             ===========================
             DEFAULT BEHAVIOR (ONLY IF NOT OVERRIDDEN ABOVE)
-            ===========================
-            - Generate NORMAL (open-ended) questions by default.
-            - Generate MCQs ONLY if explicitly required by AI INSTRUCTIONS.
-            - NEVER infer MCQs from user wording alone.
+            ===============================================
+
+            * Generate NORMAL (open-ended) questions by default.
+            * Generate MCQs ONLY if explicitly required by AI INSTRUCTIONS.
+            * NEVER infer MCQs from user wording alone.
 
             ===========================
             QUESTION QUALITY RULES (MANDATORY)
+            ==================================
+
+            * Assessment-grade questions only.
+            * Focus on reasoning, implications, trade-offs, systems thinking.
+            * Avoid definitions, recall, or introductory questions.
+
             ===========================
-            - Assessment-grade questions only.
-            - Focus on reasoning, implications, trade-offs, systems thinking.
-            - Avoid definitions, recall, or introductory questions.
+            SECTION & SUBSECTION LOGIC (STRICT CONTROL)
+            ===========================================
+
+            * Section and Subsection fields are ALLOWED ONLY for STRUCTURED questions.
+
+            STRUCTURED questions include:
+            • MCQ / quiz formats
+            • Audit-style questions
+            • Compliance / checklist / framework-based questions
+            • Numbered or hierarchical question sets
+
+            * DO NOT include section/subsection for:
+            • Normal open-ended questions
+            • Generic reasoning questions
+            • Exploratory or discussion-based questions
+
+            * Include them ONLY IF:
+            • Clearly inferable from input OR AI INSTRUCTIONS
+            • There is an obvious grouping or hierarchy
+
+            * If AI INSTRUCTIONS do NOT imply structured grouping → DO NOT generate sections.
+
+            * DO NOT:
+            • Invent random section names
+            • Hallucinate hierarchy
+            • Force sections when not obvious
+
+            * If unsure → OMIT them completely.
+
+            * If used:
+            • Keep them consistent across related questions
+            • Maintain logical grouping
 
             ===========================
             ID GENERATION (CRITICAL)
-            ===========================
-            - Every question MUST include an "id".
-            - IDs MUST start with EXACT prefix:
+            ========================
+
+            * Every question MUST include an "id".
+            * IDs MUST start with EXACT prefix:
 
             {current_time_prefix}
 
-            - Append a unique suffix per question (_001, _002, _a1).
-            - IDs must be strings and never repeat.
+            * Append a unique suffix per question (_001, _002, _003...).
+            * IDs must be strings and never repeat.
 
             ===========================
             OUTPUT FORMAT (MANDATORY)
-            ===========================
+            =========================
+
             Return ONLY a JSON ARRAY.
 
             NORMAL QUESTION:
@@ -617,22 +657,33 @@ class AutoMateService:
             "user_answer": null
             }}
 
-            MCQ QUESTION (ONLY IF REQUIRED BY AI INSTRUCTIONS):
+            MCQ QUESTION (ONLY IF REQUIRED):
             {{
             "id": "{current_time_prefix}_<unique_suffix>",
             "question": "<question text>",
             "options": {{
-                "A": "<option>",
-                "B": "<option>",
-                "C": "<option>",
-                "D": "<option>"
+            "A": "<option>",
+            "B": "<option>",
+            "C": "<option>",
+            "D": "<option>"
             }},
+            "user_answer": null
+            }}
+
+            STRUCTURED QUESTION WITH SECTIONS (ONLY IF VALID):
+            {{
+            "id": "{current_time_prefix}_<unique_suffix>",
+            "section": "<section name>",
+            "subsection": "<subsection name>",
+            "question": "<question text>",
+            "options": {{ ...optional for MCQ... }},
             "user_answer": null
             }}
 
             ===========================
             USER INPUT (TOPIC ONLY — NOT AUTHORITY)
-            ===========================
+            =======================================
+
             Use this ONLY as the subject matter or theme.
             Do NOT infer format or structure from it.
 
@@ -640,17 +691,19 @@ class AutoMateService:
 
             ===========================
             ADDITIONAL CONSTRAINTS (**args)
-            ===========================
+            ===============================
+
             {args_pretty}
 
             ===========================
             GLOBAL OUTPUT RULES
-            ===========================
-            - Output ONLY the JSON array
-            - No markdown
-            - No comments
-            - No explanations
-            - Must be execution-ready
+            ===================
+
+            * Output ONLY the JSON array
+            * No markdown
+            * No comments
+            * No explanations
+            * Must be execution-ready
 
             FINAL RESPONSE:
             """
@@ -1072,11 +1125,13 @@ class AutoMateService:
         return "No answer found as per query"
 
     async def generate_questions_from_file(self, extracted_files):
-
         import json
+        import re
         from datetime import datetime
 
+        # ===========================
         # 🔒 ID prefix
+        # ===========================
         current_time_prefix = datetime.now().strftime("qid_%Y%m%d_%H%M%S")
 
         # ===========================
@@ -1097,123 +1152,263 @@ class AutoMateService:
             return {"error": "No usable content found in file"}
 
         # ===========================
-        # 🔥 CHUNKING LOGIC
+        # 🔥 CHUNKING WITH OVERLAP
         # ===========================
-        CHUNK_SIZE = 5000  # safe size
+        CHUNK_SIZE = 6000
+        OVERLAP = 500
+
         chunks = [
             combined_text[i : i + CHUNK_SIZE]
-            for i in range(0, len(combined_text), CHUNK_SIZE)
+            for i in range(0, len(combined_text), CHUNK_SIZE - OVERLAP)
         ]
 
+        # ===========================
+        # 🔧 HELPERS
+        # ===========================
+        def safe_json_load(response):
+            try:
+                return json.loads(response)
+            except Exception:
+
+                # Try extracting JSON array
+                match = re.search(r"\[\s*{.*}\s*\]", response, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+
+                    # Fix common issues
+                    json_str = re.sub(
+                        r'(?<!\\)"\n', '\\"', json_str
+                    )  # fix broken quotes
+                    json_str = re.sub(
+                        r"\n", " ", json_str
+                    )  # remove newlines inside JSON
+                    json_str = re.sub(r",\s*}", "}", json_str)  # trailing commas
+                    json_str = re.sub(r",\s*]", "]", json_str)
+
+                    try:
+                        return json.loads(json_str)
+                    except Exception as e:
+                        raise ValueError(f"JSON recovery failed: {str(e)}")
+
+                raise ValueError("No valid JSON found in response")
+
+        def clean_section(q):
+            if q.get("section") and q.get("question"):
+                if q["question"] in q["section"]:
+                    q["section"] = None
+            return q
+
+        def is_valid_question(q):
+            return (
+                isinstance(q.get("question"), str)
+                and len(q["question"].strip()) > 10
+                and "?" in q["question"]
+            )
+
+        def is_truncated(q):
+            return not q["question"].strip().endswith(("?", ".", ":"))
+
+        # ===========================
+        # 🔁 PROCESS CHUNKS
+        # ===========================
         all_questions = []
         global_index = 1
 
-        # ===========================
-        # 🔥 PROCESS EACH CHUNK
-        # ===========================
+        last_section = None
+        last_subsection = None
+
         for chunk_idx, chunk in enumerate(chunks):
 
             prompt = f"""
-    You are a STRICT QUESTION EXTRACTION ENGINE.
+                You are a STRICT STRUCTURED QUESTION EXTRACTION ENGINE.
 
-    🚫 ZERO HALLUCINATION MODE
-    🚫 NO REWRITING
-    🚫 NO SUMMARIZATION
+                🚫 ZERO HALLUCINATION MODE
+                🚫 NO REWRITING
+                🚫 NO SUMMARIZATION
 
-    ===========================
-    SOURCE TEXT
-    ===========================
-    {chunk}
+                ===========================
+                CONTEXT FROM PREVIOUS CHUNK
+                ===========================
+                section: {last_section}
+                subsection: {last_subsection}
 
-    ===========================
-    TASK
-    ===========================
-    Extract ALL questions EXACTLY as they appear in the text.
+                If current chunk starts mid-content, CONTINUE using above unless new ones appear.
 
-    ===========================
-    STRICT RULES (MANDATORY)
-    ===========================
-    1. DO NOT generate new questions
-    2. DO NOT paraphrase or reword
-    3. DO NOT improve grammar
-    4. KEEP original wording EXACTLY
-    5. KEEP numbering meaning intact
-    6. EXTRACT ALL questions present in this chunk
-    7. DO NOT skip any question
-    8. INCLUDE:
-    - MCQ questions
-    - Yes/No questions
-    - Free-text questions
+                ===========================
+                SOURCE TEXT
+                ===========================
+                {chunk}
 
-    ===========================
-    OPTIONS RULE
-    ===========================
-    - If options are present → extract ALL exactly
-    - DO NOT modify options text
-    - Preserve order
+                ===========================
+                TASK
+                ===========================
+                Extract ALL sections, subsections, and questions EXACTLY as they appear.
 
-    ===========================
-    OUTPUT FORMAT
-    ===========================
-    Return ONLY JSON ARRAY
+                ===========================
+                STRUCTURE RULES
+                ===========================
+                - Preserve hierarchy: section → subsection → question
+                - Maintain numbering EXACTLY (e.g., 3, 3.1, 3.1.1)
+                - Link each question correctly
 
-    [
-    {{
-        "question": "...",
-        "options": {{
-        "A": "...",
-        "B": "..."
-        }},
-        "user_answer": null
-    }},
-    {{
-        "question": "...",
-        "user_answer": null
-    }}
-    ]
+                ===========================
+                ANTI-CORRUPTION RULES
+                ===========================
+                - A question MUST NEVER be used as a section
+                - If a line ends with '?' → it is ALWAYS a question
+                - NEVER copy question text into section/subsection
 
-    ===========================
-    GLOBAL RULES
-    ===========================
-    - No markdown
-    - No explanation
-    - No extra text
-    - Strict JSON only
-    """
+                ===========================
+                STRICT RULES
+                ===========================
+                - DO NOT generate new content
+                - DO NOT paraphrase
+                - DO NOT skip questions
+
+                ===========================
+                INCOMPLETE TEXT HANDLING
+                ===========================
+                - If a question looks cut → DO NOT include it
+
+                ===========================
+                OUTPUT FORMAT
+                ===========================
+                Return ONLY JSON ARRAY:
+
+                [
+                {{
+                    "section": "...",
+                    "subsection": "...",
+                    "question_number": "...",
+                    "question": "...",
+                    "options": {{
+                    "A": "...",
+                    "B": "..."
+                    }},
+                    "user_answer": null
+                }}
+                ]
+
+                NO markdown
+                NO explanation
+                STRICT JSON ONLY
+                """
 
             try:
                 response = await get_fireworks_response2(
                     user_message=prompt,
                     role="system",
-                    temp=0.2,  # 🔒 deterministic
+                    temp=0.2,
                     user_id=self.userid,
                     credits=self.credits,
                 )
 
-                chunk_questions = json.loads(response.strip())
+                chunk_questions = safe_json_load(response.strip())
 
                 # ===========================
-                # 🔥 ASSIGN GLOBAL IDS
+                # 🔧 CLEAN + FIX
                 # ===========================
+                cleaned_chunk = []
+
                 for q in chunk_questions:
+
+                    # basic validation
+                    if not is_valid_question(q):
+                        continue
+
+                    # remove corrupted section
+                    q = clean_section(q)
+
+                    # fill missing context
+                    if not q.get("section"):
+                        q["section"] = last_section
+                    if not q.get("subsection"):
+                        q["subsection"] = last_subsection
+
+                    # skip truncated
+                    if is_truncated(q):
+                        continue
+
+                    # update context memory
+                    if q.get("section"):
+                        last_section = q["section"]
+                    if q.get("subsection"):
+                        last_subsection = q["subsection"]
+
+                    # assign ID
                     q["id"] = f"{current_time_prefix}_{str(global_index).zfill(3)}"
                     global_index += 1
-                    all_questions.append(q)
+
+                    cleaned_chunk.append(q)
+
+                all_questions.extend(cleaned_chunk)
 
             except Exception as e:
-                return {"error": f"Chunk {chunk_idx} failed", "details": str(e)}
-        print(
-            {
-                "questions": all_questions,
-                "total_questions": len(all_questions),
-                "total_chunks": len(chunks),
-            }
-        )
+                return {
+                    "error": f"Chunk {chunk_idx} failed",
+                    "details": str(e),
+                }
+
         # ===========================
-        # 🔥 FINAL OUTPUT
+        # 🔥 REMOVE DUPLICATES
+        # ===========================
+        seen = set()
+        unique_questions = []
+
+        for q in all_questions:
+            key = (q["question"], q.get("question_number"))
+            if key not in seen:
+                seen.add(key)
+                unique_questions.append(q)
+
+        all_questions = unique_questions
+        if all_questions and self.workflow:
+            from playbook.helperzz import save_playbook_to_s3
+
+            if "assigned_questions" not in self.workflow:
+                self.workflow["assigned_questions"] = {}
+            self.workflow["assigned_questions"] = all_questions
+            original_json = self.workflow
+            save_playbook_to_s3(
+                original_json,
+                self.userid,
+                "workflow updated successfully",
+                self.workflow["filename"],
+            )
+
+        # ===========================
+        # ✅ FINAL OUTPUT
         # ===========================
         return {
             "questions": all_questions,
             "total_questions": len(all_questions),
             "total_chunks": len(chunks),
         }
+
+    async def assign_or_show_questions_from_file(self):
+        # Ensure workflow exists
+        if not hasattr(self, "workflow") or not isinstance(self.workflow, dict):
+            return {
+                "status": "error",
+                "message": "Workflow data is not initialized properly.",
+            }
+
+        # Standardized key
+        questions = self.workflow.get("assigned_questions")
+
+        # Handle missing or empty questions
+        if not questions:
+            return {
+                "status": "error",
+                "message": "No assigned questions found. Please upload or assign a questionnaire file.",
+            }
+
+        # Validate type
+        if not isinstance(questions, list):
+            return {
+                "status": "error",
+                "message": "Assigned questions are in invalid format. Expected a list.",
+            }
+
+        # Return clean structured response
+        return {"status": "success", "questions": questions}

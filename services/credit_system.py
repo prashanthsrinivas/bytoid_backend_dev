@@ -214,11 +214,11 @@ class CreditManager:
         try:
             try:
                 cur = self.db.cursor(pymysql.cursors.DictCursor)
-                print("Cursor created from existing connection")
+                # print("Cursor created from existing connection")
 
             except Exception as conn_error:
-                print("Existing DB connection failed, reconnecting...")
-                print("Connection error:", conn_error)
+                # print("Existing DB connection failed, reconnecting...")
+                # print("Connection error:", conn_error)
 
                 import traceback
 
@@ -229,7 +229,7 @@ class CreditManager:
 
                 cur = self.db.cursor(pymysql.cursors.DictCursor)
 
-                print("New DB connection created")
+                # print("New DB connection created")
 
             cur.execute(
                 """
@@ -296,10 +296,10 @@ class CreditManager:
                 remaining -= consume
 
             if remaining > 0:
-                print("Error: Not enough credits")
+                # print("Error: Not enough credits")
                 raise InsufficientCreditsError("Not enough credits")
 
-            print("Credits consumed successfully")
+            # print("Credits consumed successfully")
 
             return CreditUsageResult(
                 requested=credits_needed,
@@ -308,7 +308,7 @@ class CreditManager:
             )
 
         except Exception as e:
-            print("Error in consume_credits:", str(e))
+            # print("Error in consume_credits:", str(e))
             import traceback
 
             traceback.print_exc()
@@ -317,7 +317,7 @@ class CreditManager:
         finally:
             if cur:
                 cur.close()
-                print("Cursor closed")
+                # print("Cursor closed")
 
     def get_credit_summary(self, user_id: str) -> Dict:
         cur = self.db.cursor(pymysql.cursors.DictCursor)

@@ -199,6 +199,19 @@
                 "The schema is execution-safe and suitable for automated workflow-driven UI generation.",
                 "Designed for workflows that need structured information gathering from users such as student details, product data, sales forms, surveys, and onboarding flows."
             ]
+        },
+        {
+            "category": "AutoMateService",
+            "name": "automate.assign_or_show_questions_from_file",
+            "description": "Fetches and returns pre-existing questions from the workflow's stored data (e.g., uploaded questionnaire files). This function acts as a read-only retrieval and view layer, returning the questions as a form-ready questionnaire for display. It does not perform any generation or transformation.",
+            "status": "active",
+            "args": {},
+            "returns": {
+                "status": "Indicates whether the retrieval was successful or failed (string: 'success' or 'error').",
+                "questions": "List of stored questions formatted for form-based display (array). Includes both normal and MCQ questions exactly as stored. Present only when status is 'success'.",
+                "message": "Error message explaining why questions could not be retrieved (string). Present only when status is 'error'."
+            },
+            "notes": "This is a strictly read-only retrieval function used after a questionnaire file has been uploaded and processed earlier in the workflow. It only fetches and returns already stored questions. It must NOT generate new questions, modify existing ones, rephrase content, enrich data, or add/remove fields such as sections or subsections. The output must exactly reflect the stored data and be suitable for direct rendering as a form questionnaire. If no questions are found in the workflow, it must return an error response. For generating new questions, use 'automate.generate_questions'."
         }
     ]
 }

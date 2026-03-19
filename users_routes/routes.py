@@ -27,6 +27,7 @@ from google_auth_oauthlib.flow import Flow
 from msal import ConfidentialClientApplication
 import requests
 import dns.resolver
+from utils.key_rotation_manager import SecureKMSService
 
 users_bp = Blueprint("users", __name__)
 
@@ -1599,3 +1600,32 @@ def get_all_domain(user_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@users_bp.route("/get-encryption-key/<user_id>", methods = ["GET"])
+def get_encryption_key(user_id):
+    try:
+        kms_service = SecureKMSService()
+        plain_key,encrypted_key = kms_service.get_user_key(user_id)
+        encrypted_key_b64 = base64.b64encode(encrypted_key).decode("utf-8")
+        return jsonify({"encryption_key":encrypted_key_b64}),200
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
+
+@users_bp.route("/rotate-encryption-key",methods=["POST"])
+def rotate_encryption_key():
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("SELECT user_type FROM users WHERE user_id = %s",(user_id))
+        result = cursor.fetchone()
+        is_admin = result["user_type"] == "admin"
+        kms_service = SecureKMSService()
+        rotate = kms_service.rotate_user_key(user_id,is_admin)
+
+        return jsonify({
+            "encryption_key":rotate["encrypted_key"]
+        }),200
+    except Exception as e:
+        return jsonify({"error":str(e)}),500

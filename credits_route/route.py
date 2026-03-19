@@ -1,20 +1,7 @@
-from flask import Blueprint, request, jsonify, session, redirect
+from flask import Blueprint, request, jsonify
 from db.rds_db import connect_to_rds
-from db.db_checkers import check_onboarding_user
-import uuid
 import pymysql
 from services.credit_system import CreditManager, InsufficientCreditsError
-from services.redis_service import RedisService
-import json
-from request_context import current_user_id
-from db.rds_db import safe_execute
-from utils.s3_utils import (
-    upload_any_file,
-    read_json_from_s3,
-)
-from utils.normal import ensure_dir
-from cust_helpers import pathconfig
-from datetime import datetime, timezone, timedelta
 
 
 # load_dotenv()  # Load from .env into environment variables
@@ -22,33 +9,32 @@ credits_bp = Blueprint("credits", __name__)
 
 
 class Credits:
-    """
-    Request-scoped Credits handler.
-    - Uses an externally managed DB connection
-    - NEVER opens / closes / commits / rollbacks DB
-    """
-
-    CREDIT_MULTIPLIER = 0.25  # chars → credits
+    CREDIT_MULTIPLIER = 0.25
 
     def __init__(self, db=None):
-
         self.db = db or connect_to_rds()
         self.cm = CreditManager(self.db)
         self.owns_db = db is None
 
+    def get_db(self):
+        """
+        Ensure DB connection is alive before use.
+        """
+        try:
+            if not self.db:
+                self.db = connect_to_rds()
+
+            self.db.ping(reconnect=True)
+
+        except Exception:
+            self.db = connect_to_rds()
+
+        return self.db
+
     # -------------------------------------------------
     # READ-ONLY CREDIT CHECK (OPTIONAL PREFLIGHT)
     # -------------------------------------------------
-    async def has_ai_credits(
-        self,
-        total_chars: int,
-        user_id: str,
-    ) -> bool:
-        """
-        Fast, non-authoritative preflight check.
-        - Uses Redis → DB fallback
-        - NO mutations
-        """
+    async def has_ai_credits(self, total_chars: int, user_id: str) -> bool:
 
         if not user_id or not total_chars:
             return False
@@ -57,6 +43,10 @@ class Credits:
 
         if credits_needed <= 0:
             return True
+
+        # 🔹 Refresh DB connection
+        self.db = self.get_db()
+        self.cm.db = self.db
 
         return await self.cm.has_sufficient_credits(
             user_id=user_id,
@@ -87,6 +77,10 @@ class Credits:
         print(f"credit type: {credit_type}")
         print("actual chars", total_chars)
         print("reference id", reference_id)
+
+        # 🔹 Refresh DB connection
+        self.db = self.get_db()
+        self.cm.db = self.db
 
         credits_to_consume = int(total_chars * self.CREDIT_MULTIPLIER)
         print("credits needed to decrease", credits_to_consume)
@@ -129,9 +123,11 @@ class Credits:
             raise
 
         finally:
-            # Close ONLY if Credits owns DB
-            if self.owns_db:
-                self.db.close()
+            if self.owns_db and self.db:
+                try:
+                    self.db.close()
+                except Exception:
+                    pass
 
 
 def update_ai_credits_to_db(user_id: str, credit_type: str, total_chars: int):

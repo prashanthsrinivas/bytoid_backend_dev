@@ -69,7 +69,6 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
                 if file_name
                 else os.path.basename(file_path)
             )
-
             if type == "workflow":
                 if final_name.startswith("config"):
                     s3_key = f"{user_id}/workflow/{final_name}"
@@ -89,12 +88,14 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
             elif type == "messages":
                 s3_key = f"{user_id}/messages/{final_name}"
 
+            elif type == "runbook":  
+                s3_key = f"{user_id}/runbooks/{final_name}"
+
             else:
                 s3_key = f"{user_id}/{final_name}"
 
         else:
             s3_key = s3_key_C
-
         s3.upload_file(file_path, S3_BUCKET, s3_key)
 
         logger.info(f"Upload successful: {file_path} -> {s3_key}")
@@ -192,6 +193,8 @@ def read_binary_from_s3(filepath):
 # LOAD YAML
 # ---------------------------------------------------
 def load_yaml_from_s3(filepath):
+    if filepath is None:
+        return None
     s3 = s3bucket()
 
     try:
@@ -223,6 +226,8 @@ def load_yaml_from_s3(filepath):
 # DELETE FILE
 # ---------------------------------------------------
 def delete_file_from_s3(filepath):
+    if filepath is None:
+        return None
     s3 = s3bucket()
 
     try:
@@ -278,8 +283,6 @@ def generate_presigned_url(s3_key, expiration=3600):
 
 def attach_CLDFRNT_url(link):
     clrf = os.getenv("CLOUDFRNT")
-    if IS_DEV:
-        return f"{clrf}/dev/{link}"
     return f"{clrf}/{link}"
 
 

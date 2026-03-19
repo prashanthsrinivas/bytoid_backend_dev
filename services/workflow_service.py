@@ -673,7 +673,7 @@ class WorkflowRunnerV2:
         and determines if the step is ready to execute.
         """
         template_data = PLAY_TEMPLATE
-        print("inside ai detect and route inpuut")
+        # print("inside ai detect and route inpuut")
         detect_prompt = template_data.get("detect_and_route_input")
         clarification_prompt_template = template_data.get("step_clarification_prompt")
 
@@ -681,12 +681,12 @@ class WorkflowRunnerV2:
             raise TypeError(
                 "Invalid template structure: 'detect_and_route_input' must be a string."
             )
-        print("here at 683")
+        # print("here at 683")
         # Get current chat history
         chats_obj = self.get_current_chats()
         new_chat = chats_obj.get("chat", [])[-5:]
         last_chat = new_chat[-1] if new_chat else []
-        print("exttacted id", extracted_id, userinput)
+        # print("exttacted id", extracted_id, userinput)
 
         base_ai_instruction = None
         lastly_ai_attached = self.workflow_json.get("last_ai_discovered", {}) or {}
@@ -713,11 +713,11 @@ class WorkflowRunnerV2:
         modinput = userinput
         if extracted_id:
             modinput = f"{userinput} - so execute step {extracted_id}"
-        print("before check on fucntion")
+        # print("before check on fucntion")
 
         # Build detect & route prompt
         def build_detect_prompt(u_input):
-            print("inside builde detect prompt")
+            # print("inside builde detect prompt")
             return (
                 detect_prompt.replace("{{user_input}}", u_input)
                 # .replace(
@@ -748,12 +748,12 @@ class WorkflowRunnerV2:
                 )
             ).strip()
 
-        print("before calling parsed fireworks")
+        # print("before calling parsed fireworks")
         # Call AI to detect step
         ai_result = await self.get_parsed_fireworks_response(
             build_detect_prompt(modinput)
         )
-        print("ai detect initial:", ai_result)
+        # print("ai detect initial:", ai_result)
         if str(ai_result["step_id"]) != str(extracted_id):
             ai_result = await self.get_eval_parsed_fireworks_response(
                 build_detect_prompt(modinput)
@@ -795,7 +795,7 @@ class WorkflowRunnerV2:
             clarification_result = await self.get_parsed_fireworks_response(
                 clarification_prompt_text
             )
-            print("clarification AI result:", clarification_result)
+            # print("clarification AI result:", clarification_result)
             ai_result["clarification_message"] = clarification_result.get("message", "")
 
         return ai_result
@@ -1098,9 +1098,9 @@ class WorkflowRunnerV2:
                 return ai_result  # ✅ Valid response
 
             except json.JSONDecodeError:
-                print(
-                    f"[Retry {attempt+1}] Failed to parse JSON response.{response_text}"
-                )
+                # print(
+                #     f"[Retry {attempt+1}] Failed to parse JSON response.{response_text}"
+                # )
 
                 await asyncio.sleep(0.3)
 
@@ -1144,9 +1144,9 @@ class WorkflowRunnerV2:
                 return ai_result  # ✅ Valid response
 
             except json.JSONDecodeError:
-                print(
-                    f"[Retry {attempt+1}] Failed to parse JSON response.{response_text}"
-                )
+                # print(
+                #     f"[Retry {attempt+1}] Failed to parse JSON response.{response_text}"
+                # )
 
                 await asyncio.sleep(0.3)
 
@@ -1680,7 +1680,7 @@ class WorkflowRunnerV2:
         function_args = None
         if ai_result:
             function_args = ai_result.get("function_args", {})
-        print("in execute ", step)
+        # print("in execute ", step)
 
         default_message = "Step executed successfully."
         execution_status = "failed"
@@ -1714,7 +1714,7 @@ class WorkflowRunnerV2:
                         "return_str": str(execution_result),
                     }
 
-                print("execution result", execution_result)
+                # print("execution result", execution_result)
 
                 # Normalize "success" string
                 success_flag = execution_result.get("success", True)
@@ -2060,10 +2060,10 @@ class WorkflowRunnerV2:
                 elif isinstance(v, str) and v.strip().lower() == "all":
                     args[k] = self.get_attendees("all")
 
-        print("method name", method_name)
-        print("instance", instance)
-        print("arguments", args)
-        print("step currently", step_id)
+        # print("method name", method_name)
+        # print("instance", instance)
+        # print("arguments", args)
+        # print("step currently", step_id)
 
         # Call the function
         import inspect
@@ -2146,6 +2146,23 @@ class WorkflowRunnerV2:
                         if "step_id" in ma_res:
                             extracted_id = ma_res["step_id"]
                             step = self.get_step_data(extracted_id)
+                            if step:
+                                function_call = step.get("function_call", {})
+                                function_name = function_call.get("function_name")
+                                if (
+                                    function_name
+                                    == "automate.assign_or_show_questions_from_file"
+                                ):
+                                    result = await self._execute_step(
+                                        step_id=extracted_id, compl=True
+                                    )
+                                    if "questions" in result:
+                                        return {
+                                            "message": "Questions retrieved successfully.",
+                                            "action": "step_complete",
+                                        }
+                                    else:
+                                        return result
                             # print("step", step)
                             if step.get("decision_point"):
                                 val = self.ai_decision_Check(
@@ -2229,7 +2246,7 @@ class WorkflowRunnerV2:
                         "bs_workflow_improv"
                     ):
                         # print("running impov request")
-                        improv_result = self.update_steps_workflow(user_input)
+                        improv_result = await self.update_steps_workflow(user_input)
                         ai_result["response_message"] = improv_result.get(
                             "response_message", str(improv_result)
                         )
@@ -2272,8 +2289,8 @@ class WorkflowRunnerV2:
             # Return AI result for frontend or further processing
             return ai_result
         except Exception as e:
-            traceback.print_exc()
-            print("Error", e)
+            # traceback.print_exc()
+            # logger.info("Error %s", e)
             return None
 
     async def execute_from_text_input(self, user_input: str, step_id, base_input=None):
@@ -2383,7 +2400,7 @@ class WorkflowRunnerV2:
         ai_result = await self.get_parsed_fireworks_response(
             prompt_text=prompt_text, temp=0.2
         )
-        print("ai _ result", ai_result)
+        # print("ai _ result", ai_result)
 
         # ------------------------------------------------------------------
         # Process AI response
@@ -2419,7 +2436,7 @@ class WorkflowRunnerV2:
                 }
 
         execution_status = result.get("execution_status", execution_status)
-        print("result on execute on 2422", result)
+        # print("result on execute on 2422", result)
 
         # ------------------------------------------------------------------
         # Record chat
@@ -2519,9 +2536,9 @@ class WorkflowRunnerV2:
 
             for q in outputs:
                 # count only valid questions
-                if "answer" in q:
+                if "user_answer" in q:
                     total += 1
-                    if q.get("answer") is not None:
+                    if q.get("user_answer") is not None:
                         answered += 1
 
         return {
@@ -2548,7 +2565,7 @@ class WorkflowRunnerV2:
 
                 for q in outputs:
                     if q.get("id") == qid:
-                        q["answer"] = answer
+                        q["user_answer"] = answer
                         execution_updated = True
                         last_step_id = step_id
                         break
@@ -2569,23 +2586,37 @@ class WorkflowRunnerV2:
         for chat in chats:
             if str(chat.get("id")) == str(chid):
                 outputs = chat.get("output", [])
+                step_id = chat.get("step_id")
+                last_step_id = step_id
                 if not isinstance(outputs, list):
                     continue
 
                 for out in outputs:
                     if out.get("id") == qid:
-                        out["answer"] = answer
+                        out["user_answer"] = answer
+                        break
+        step_data = self.get_step_data(last_step_id)
+        if step_data:
+            function_call = step_data.get("function_call", {})
+            function_name = function_call.get("function_name")
+            if function_name == "automate.assign_or_show_questions_from_file":
+                assigned_ques = self.workflow_json.get("assigned_questions")
+                for q in assigned_ques:
+                    if q.get("id") == qid:
+                        q["user_answer"] = answer
                         break
 
         # -------------------------------------------------
         # 3. CHECK IF ALL QUESTIONS ANSWERED
         # -------------------------------------------------
-        all_answered = self._are_all_questions_answered()
+        # all_answered = self._question_answer_stats()
+        stats = self._question_answer_stats()
+        all_answered = stats["all_answered"]
 
         message = (
             "Answer saved successfully."
             if not all_answered
-            else "All questions have been answered. Workflow can now proceed."
+            else "All questions have been answered."
         )
 
         if all_answered:
@@ -2593,7 +2624,7 @@ class WorkflowRunnerV2:
                 {
                     "id": uuid.uuid4().hex,
                     "date": now.isoformat(),
-                    "input": f"answering ....",
+                    "input": "",
                     "output": message,
                     "status": "success",
                     "step_id": last_step_id,
@@ -2632,7 +2663,7 @@ class WorkflowRunnerV2:
             for field in fields:
 
                 if field.get("id") == field_id:
-                    field["answer"] = answer
+                    field["user_answer"] = answer
                     field_found = True
                     break
 
@@ -2695,7 +2726,7 @@ class WorkflowRunnerV2:
 
                 if field.get("required"):
 
-                    answer = field.get("answer")
+                    answer = field.get("user_answer")
 
                     if answer in [None, ""]:
                         return False
@@ -2706,6 +2737,7 @@ class WorkflowRunnerV2:
 
         execution_data = self.previous_data or {}
         chats = self.chat_history or []
+        workflow = self.workflow_json or {}
 
         # -------------------------------------------------
         # NORMALIZE ANSWERS
@@ -2725,7 +2757,7 @@ class WorkflowRunnerV2:
                 if not fid:
                     continue
 
-                val = a.get("answer")
+                val = a.get("answer") or a.get("user_answer")
 
                 # convert boolean strings
                 if isinstance(val, str) and val.lower() in ["true", "false"]:
@@ -2769,7 +2801,8 @@ class WorkflowRunnerV2:
                 fid = field.get("id")
 
                 if fid in answers:
-                    field["answer"] = answers[fid]
+                    field["user_answer"] = answers[fid]
+
                     updated_fields.append(fid)
 
         # -------------------------------------------------
@@ -2782,7 +2815,25 @@ class WorkflowRunnerV2:
             fid = field.get("id")
 
             if fid in answers:
-                field["answer"] = answers[fid]
+                field["user_answer"] = answers[fid]
+
+                updated_fields.append(fid)
+        # -------------------------------------------------
+        # SAVE ANSWERS TO pre_user_data PER STEP
+        # -------------------------------------------------
+
+        pre_user_data = workflow.setdefault("pre_user_data", {})
+
+        step_key = str(step_id)
+
+        # ensure step container exists
+        step_inputs = pre_user_data.setdefault(step_key, {})
+
+        for fid, val in answers.items():
+            step_inputs[fid] = val
+
+        pre_user_data[step_key] = step_inputs
+        workflow["pre_user_data"] = pre_user_data
 
         # -------------------------------------------------
         # CHECK FORM COMPLETION
@@ -2790,16 +2841,19 @@ class WorkflowRunnerV2:
         form_completed = self._are_all_required_fields_answered()
 
         # -------------------------------------------------
-        # SAVE
+        # SAVE STATE
         # -------------------------------------------------
         self.previous_data = execution_data
         self.chat_history = chats
+        self.workflow_json = workflow
+
         self.saveworkflowtos3()
 
         return {
             "status": "success",
             "updated_fields": updated_fields,
             "form_completed": form_completed,
+            "saved_inputs": pre_user_data,
         }
 
     async def answer_questions_bulk(self, answers: list, chid: str):
@@ -2807,7 +2861,7 @@ class WorkflowRunnerV2:
         chats = self.chat_history
 
         answer_map = {
-            item.get("question_id"): item.get("answer")
+            item.get("question_id"): item.get("user_answer")
             for item in answers
             if item.get("question_id") is not None
         }
@@ -2825,7 +2879,7 @@ class WorkflowRunnerV2:
             for q in outputs:
                 qid = q.get("id")
                 if qid in answer_map:
-                    q["answer"] = answer_map[qid]
+                    q["user_answer"] = answer_map[qid]
                     last_step_id = step_id
 
         # -------------------------------------------------
@@ -2840,7 +2894,7 @@ class WorkflowRunnerV2:
                 for out in outputs:
                     qid = out.get("id")
                     if qid in answer_map:
-                        out["answer"] = answer_map[qid]
+                        out["user_answer"] = answer_map[qid]
 
         # -------------------------------------------------
         # 3. CHECK IF ALL QUESTIONS ANSWERED
@@ -2936,11 +2990,6 @@ class WorkflowRunnerV2:
                 "action": "workflow_complete",
                 "options": [],
             }
-
-        step_data = self.get_step_data(current_step)
-
-        previous_results = self.previous_data or {}
-        collected_inputs = self.workflow_json.get("pre_user_data", {})
         # -------------------------
         # Save chat
         # -------------------------
@@ -2956,72 +3005,125 @@ class WorkflowRunnerV2:
 
         last_chat = chats[-1] if chats else None
 
-        if last_chat and str(last_chat.get("step_id")) == str(current_step):
-
-            fields = (
-                last_chat.get("output", {}).get("form_schema", {}).get("fields", [])
-            )
-
-            if fields:
-                unanswered = [
-                    f for f in fields if f.get("required") and not f.get("answer")
-                ]
-
-                if unanswered:
+        step_data = self.get_step_data(current_step)
+        function_call = step_data.get("function_call", {})
+        function_name = function_call.get("function_name")
+        if function_name == "automate.assign_or_show_questions_from_file":
+            assigned = self.workflow_json.get("assigned_questions")
+            if assigned:
+                result = await self._execute_step(step_id=current_step, compl=True)
+                if "questions" in result:
                     return {
-                        "message": "⚠️ Please complete the above form to continue.",
-                        "action": "collect_inputs",
-                        "inputs": fields,
-                        "requires_input": True,
+                        "message": "Questions retrieved successfully.",
+                        "action": "step_complete",
+                    }
+            else:
+                if is_first_interaction:
+                    output_data = {
+                        "message": "👋 Welcome!\n\n"
+                        "Good to have u here. \n\n"
+                        + "for the process to run \n\n there were No assigned questions found. Please upload or assign a questionnaire file."
+                    }
+                output_data = {
+                    "message": "for the process to run \n\n there were No assigned questions found. Please upload or assign a questionnaire file."
+                }
+        else:
+            previous_results = self.previous_data or {}
+            collected_inputs = self.workflow_json.get("pre_user_data", {})
+
+            # -------------------------------------------------
+            # WAIT FOR OPTION SELECTION
+            # -------------------------------------------------
+
+            if last_chat and str(last_chat.get("step_id")) == str(current_step):
+
+                last_output = last_chat.get("output", {})
+                options = last_output.get("options", [])
+
+                if options and not user_message:
+
+                    return {
+                        "message": "⚠️ Please select one of the options above to continue.",
+                        "options": options,
+                        "action": "await_choice",
                         "step_id": current_step,
                     }
 
-        # -------------------------
-        # Build prompt
-        # -------------------------
+            if last_chat and str(last_chat.get("step_id")) == str(current_step):
 
-        prompt_text = (
-            detect_prompt.replace("{{workflow_json}}", json.dumps(self.steps))
-            .replace("{{current_step}}", str(current_step))
-            .replace("{{step_data}}", json.dumps(step_data))
-            .replace("{{previous_results}}", json.dumps(previous_results))
-            .replace("{{collected_inputs}}", json.dumps(collected_inputs))
-            .replace("{{user_message}}", user_message)
-        )
+                fields = (
+                    last_chat.get("output", {}).get("form_schema", {}).get("fields", [])
+                )
 
-        # -------------------------
-        # Call AI
-        # -------------------------
+                if fields:
+                    unanswered = [
+                        f
+                        for f in fields
+                        if f.get("required")
+                        and not (f.get("answer") or f.get("user_answer"))
+                    ]
 
-        ai_result = await self.get_parsed_fireworks_response(
-            prompt_text=prompt_text, temp=0.2
-        )
+                    if unanswered:
+                        return {
+                            "message": "⚠️ Please complete the above form to continue.",
+                            "action": "collect_inputs",
+                            "inputs": fields,
+                            "requires_input": True,
+                            "step_id": current_step,
+                        }
 
-        if not ai_result:
-            return {"message": "Something went wrong."}
+            # last assistant message
+            last_assistant_output = last_chat.get("output") if last_chat else {}
 
-        # -------------------------
-        # Transform AI result
-        # -------------------------
-        if is_first_interaction:
-            ai_result["message"] = (
-                "👋 Welcome!\n\n"
-                "I'll help you complete the Medical Onboarding process.\n"
-                "This workflow will guide you step-by-step to schedule your onboarding meeting.\n\n"
-                + ai_result.get("message", "")
+            # last 3 chat messages for context
+            chat_context = chats[-3:] if chats else []
+
+            prompt_text = (
+                detect_prompt.replace("{{workflow_json}}", json.dumps(self.steps))
+                .replace("{{current_step}}", str(current_step))
+                .replace("{{step_data}}", json.dumps(step_data))
+                .replace("{{previous_results}}", json.dumps(previous_results))
+                .replace("{{collected_inputs}}", json.dumps(collected_inputs))
+                .replace("{{user_message}}", user_message)
+                .replace(
+                    "{{last_options}}",
+                    json.dumps(last_assistant_output.get("options", [])),
+                )
+                .replace("{{last_assistant_output}}", json.dumps(last_assistant_output))
+                .replace("{{chat_history}}", json.dumps(chat_context))
             )
 
-        if ai_result.get("requires_input"):
-            output_data = {
-                "message": ai_result.get("message"),
-                "form_schema": {"fields": ai_result.get("inputs", [])},
-                "options": ai_result.get("options", []),
-            }
-        else:
-            output_data = {
-                "message": ai_result.get("message"),
-                "options": ai_result.get("options", []),
-            }
+            # -------------------------
+            # Call AI
+            # -------------------------
+
+            ai_result = await self.get_parsed_fireworks_response(
+                prompt_text=prompt_text, temp=0.2
+            )
+
+            if not ai_result:
+                return {"message": "Something went wrong."}
+
+            # -------------------------
+            # Transform AI result
+            # -------------------------
+            if is_first_interaction:
+                ai_result["message"] = (
+                    "👋 Welcome!\n\n"
+                    "Good to have u here. \n\n" + ai_result.get("message", "")
+                )
+
+            if ai_result.get("requires_input"):
+                output_data = {
+                    "message": ai_result.get("message"),
+                    "form_schema": {"fields": ai_result.get("inputs", [])},
+                    "options": ai_result.get("options", []),
+                }
+            else:
+                output_data = {
+                    "message": ai_result.get("message"),
+                    "options": ai_result.get("options", []),
+                }
 
         # -------------------------
         # Save chat entry

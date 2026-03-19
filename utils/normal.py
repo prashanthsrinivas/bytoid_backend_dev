@@ -363,102 +363,198 @@ def save_pptx_from_json(slide_data, file_path):
 
 def convert_human_date(value, base_date=None, tz_str="Asia/Kolkata"):
     """
-    Convert human-readable dates or ISO YYYY-MM-DD to a tz-aware datetime
-    Default time: 09:00
-    Rules:
-    - If year is missing, infer next valid future date
-    - Never return past dates
+    Robust human date parser.
+
+    Supports:
+    2026-03-17
+    17-01-2027
+    March 17, 2026
+    Mar 17
+    17 March
+    17th March
+    today
+    tomorrow
+    day after tomorrow
+    3 days from now
+    next monday
+    12-10
     """
+
     tz = pytz.timezone(tz_str)
+
     if base_date is None:
         base_date = datetime.now(tz)
 
-    value = str(value).strip().lower()
+    if value is None:
+        return None
+
+    raw = str(value).strip()
+
+    if raw == "":
+        return None
+
+    value = raw.lower()
+    value = re.sub(r"[,\s]+", " ", value)
+
     dt = None
 
-    # ----------------------------
-    # 1. Simple keywords
-    # ----------------------------
-    if value in ["today", ""]:
+    # ----------------------
+    # TODAY
+    # ----------------------
+    if value == "today":
         dt = base_date
+
+    # ----------------------
+    # TOMORROW
+    # ----------------------
     elif value == "tomorrow":
         dt = base_date + timedelta(days=1)
 
-    # ----------------------------
-    # 2. ISO date
-    # ----------------------------
+    elif value == "day after tomorrow":
+        dt = base_date + timedelta(days=2)
+
+    # ----------------------
+    # ISO FORMAT
+    # ----------------------
     elif re.match(r"\d{4}-\d{2}-\d{2}$", value):
+
         try:
             dt = datetime.strptime(value, "%Y-%m-%d")
-        except Exception:
+        except:
             return None
 
-    # ----------------------------
-    # 3. Numeric month-day (12-10)
-    # ----------------------------
-    elif re.match(r"\d{1,2}-\d{1,2}$", value):
-        month, day = map(int, value.split("-"))
-        dt = base_date.replace(month=month, day=day)
-
-    # ----------------------------
-    # 4. Day-month (12-jan / 12-january / 12th january)
-    # ----------------------------
-    elif match := re.match(r"(\d{1,2})(st|nd|rd|th)?[\s\-]+([a-z]+)", value):
-        day = int(match.group(1))
-        month_str = match.group(3).capitalize()
+    # ----------------------
+    # DD-MM-YYYY
+    # ----------------------
+    elif re.match(r"\d{1,2}-\d{1,2}-\d{4}$", value):
 
         try:
-            month = datetime.strptime(month_str[:3], "%b").month
-        except ValueError:
+            dt = datetime.strptime(value, "%d-%m-%Y")
+        except:
             return None
 
-        dt = base_date.replace(month=month, day=day)
+    # ----------------------
+    # NUMERIC MONTH-DAY
+    # ----------------------
+    elif re.match(r"\d{1,2}-\d{1,2}$", value):
 
-    # ----------------------------
-    # 5. Relative days
-    # ----------------------------
-    elif match := re.match(r"(\d+)\s+days\s+from\s+now", value):
-        dt = base_date + timedelta(days=int(match.group(1)))
-
-    # ----------------------------
-    # 6. Next weekday
-    # ----------------------------
-    elif match := re.match(r"next\s+(\w+)", value):
-        weekdays = [
-            "monday",
-            "tuesday",
-            "wednesday",
-            "thursday",
-            "friday",
-            "saturday",
-            "sunday",
-        ]
-        day_name = match.group(1).lower()
-        if day_name not in weekdays:
+        try:
+            month, day = map(int, value.split("-"))
+            dt = base_date.replace(month=month, day=day)
+        except:
             return None
 
-        target_wd = weekdays.index(day_name)
-        delta = (target_wd - base_date.weekday() + 7) or 7
-        dt = base_date + timedelta(days=delta)
-
+    # ----------------------
+    # MONTH NAME FORMATS
+    # ----------------------
     else:
+
+        formats = [
+            "%B %d %Y",
+            "%b %d %Y",
+            "%d %B %Y",
+            "%d %b %Y",
+            "%B %d",
+            "%b %d",
+            "%d %B",
+            "%d %b",
+        ]
+
+        for fmt in formats:
+
+            try:
+                parsed = datetime.strptime(value, fmt)
+
+                if parsed.year == 1900:
+                    parsed = parsed.replace(year=base_date.year)
+
+                dt = parsed
+                break
+
+            except:
+                continue
+
+    # ----------------------
+    # ORDINAL DATE
+    # ----------------------
+    if dt is None:
+
+        match = re.match(r"(\d{1,2})(st|nd|rd|th)\s+([a-z]+)", value)
+
+        if match:
+
+            day = int(match.group(1))
+            month_str = match.group(3)
+
+            try:
+                month = datetime.strptime(month_str[:3], "%b").month
+                dt = base_date.replace(month=month, day=day)
+            except:
+                return None
+
+    # ----------------------
+    # RELATIVE DAYS
+    # ----------------------
+    if dt is None:
+
+        match = re.match(r"(\d+)\s+days?\s+from\s+now", value)
+
+        if match:
+            dt = base_date + timedelta(days=int(match.group(1)))
+
+    # ----------------------
+    # NEXT WEEKDAY
+    # ----------------------
+    if dt is None:
+
+        match = re.match(r"next\s+(\w+)", value)
+
+        if match:
+
+            weekdays = {
+                "monday": 0,
+                "tuesday": 1,
+                "wednesday": 2,
+                "thursday": 3,
+                "friday": 4,
+                "saturday": 5,
+                "sunday": 6,
+            }
+
+            day_name = match.group(1)
+
+            if day_name not in weekdays:
+                return None
+
+            target = weekdays[day_name]
+
+            delta = (target - base_date.weekday()) % 7
+
+            if delta == 0:
+                delta = 7
+
+            dt = base_date + timedelta(days=delta)
+
+    # ----------------------
+    # INVALID
+    # ----------------------
+    if dt is None:
         return None
 
-    # ----------------------------
-    # 7. Infer year (never backward)
-    # ----------------------------
-    if dt.year == base_date.year:
-        if dt.date() < base_date.date():
-            dt = dt.replace(year=base_date.year + 1)
+    # ----------------------
+    # PREVENT PAST DATE
+    # ----------------------
+    if dt.date() < base_date.date():
+        dt = dt.replace(year=base_date.year + 1)
 
-    # ----------------------------
-    # 8. Default time 09:00
-    # ----------------------------
+    # ----------------------
+    # DEFAULT TIME
+    # ----------------------
     dt = dt.replace(hour=9, minute=0, second=0, microsecond=0)
 
-    # ----------------------------
-    # 9. Ensure tz-aware
-    # ----------------------------
+    # ----------------------
+    # TZ AWARE
+    # ----------------------
     if dt.tzinfo is None:
         dt = tz.localize(dt)
     else:

@@ -63,6 +63,7 @@ class TrainLanceAgent:
         """
         Reads a single transcript JSON file and normalizes the structure.
         """
+        print("inside the proce")
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -72,7 +73,7 @@ class TrainLanceAgent:
 
         # transcript JSON saved by /process_audio
         transcript_id = data.get("id")
-        text = data.get("text", "")
+        text = data.get("transcript") or data.get("text")
         summary = data.get("summary", "")
 
         return {
@@ -88,9 +89,11 @@ class TrainLanceAgent:
         """
         Embeds a single transcript JSON created by /process_audio.
         """
+        # print("in the audio docs")
         await self._ensure_embeddings()
         record = self.process_single_audio_json(file_path, filename)
         if not record:
+            # print("no record")
             return {"vectors_made": 0, "docs_processed": 0}
 
         user_id = record["user_id"] or self.user_id
@@ -99,7 +102,10 @@ class TrainLanceAgent:
         text = record["plain_text"]
         original_data = record["original_data"]
 
+        if isinstance(text, dict):
+            text = text.get("ciphertext", "")
         if not text:
+            # print("no text")
             return {"vectors_made": 0, "docs_processed": 1}
 
         document = Document(

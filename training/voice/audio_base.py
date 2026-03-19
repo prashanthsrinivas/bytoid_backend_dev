@@ -3,6 +3,7 @@ from datetime import datetime
 import json
 import os
 import uuid
+from utils.key_rotation_manager import SecureKMSService
 from agent_route.ag_helperzz import deletefilebasedData
 from agent_route.s_t_s import Speech2TextService
 from agent_route.train_lance_agent import TrainLanceAgent
@@ -29,10 +30,10 @@ from werkzeug.utils import secure_filename
 from request_context import current_user_id
 from credits_route.route import Credits
 from db.rds_db import connect_to_rds
-
-
+from utils.app_configs import BACKURL
 
 logger = get_logger(__name__)
+secure_kms = SecureKMSService()
 
 
 audio_agent_bps = Blueprint("agent_audio", __name__)
@@ -125,7 +126,10 @@ def process_audio_stream():
                 task_db = connect_to_rds()
                 task_credits = Credits(task_db)
                 val = await evaluate_transcript(
-                    clean_transcription_prompt, transcript_text,task_credits, userid=userid
+                    clean_transcription_prompt,
+                    transcript_text,
+                    task_credits,
+                    userid=userid,
                 )
                 if not val:
                     yield "data: ERROR: Failed to evaluate transcript\n\n"
@@ -135,25 +139,43 @@ def process_audio_stream():
                 # Save transcript locally
                 transcript_filename = f"{os.path.splitext(filename)[0]}_transcript.json"
                 transcript_local_path = os.path.join("/tmp", transcript_filename)
-                transcript_data = {
+
+                plain_data = {
                     "id": str(uuid.uuid4().hex[:8]),
                     "filename": filename,
                     "date": datetime.utcnow().isoformat(timespec="seconds"),
                     "summary": val["clean_text"],
-                    "transcript":transcript_text,
+                    "transcript": transcript_text,
                     "heading": val["summary"],
                     "contacts": "All",
                 }
+
                 with open(transcript_local_path, "w", encoding="utf-8") as f:
-                    json.dump(transcript_data, f, ensure_ascii=False, indent=2)
+                    json.dump(plain_data, f, ensure_ascii=False, indent=2)
                 yield "data: Transcript saved locally\n\n"
 
                 # Embed transcript (async)
                 ser = TrainLanceAgent(user_id=userid)
                 await ser.embed_single_audio_json(
-                    file_path=transcript_local_path, filename=transcript_filename, credits = task_credits
+                    file_path=transcript_local_path,
+                    filename=transcript_filename,
+                    credits=task_credits,
                 )
                 yield "data: Embedding complete\n\n"
+
+                enc_transcript = secure_kms.encrypt(userid, transcript_text)
+                enc_summary = secure_kms.encrypt(userid, val["clean_text"])
+                transcript_data = {
+                    "id": str(uuid.uuid4().hex[:8]),
+                    "filename": filename,
+                    "date": datetime.utcnow().isoformat(timespec="seconds"),
+                    "summary": enc_summary,
+                    "transcript": enc_transcript,
+                    "heading": val["summary"],
+                    "contacts": "All",
+                }
+                with open(transcript_local_path, "w", encoding="utf-8") as f:
+                    json.dump(transcript_data, f, ensure_ascii=False, indent=2)
 
                 # Upload transcript
                 transcript_s3_path = upload_any_file(
@@ -235,7 +257,9 @@ def process_audio_stream():
             upload_any_file(
                 config_local_path_for_overwrite,
                 user_id=userid,
-                file_name=config_s3_key,  # keep same key so pointer remains valid
+                file_name=os.path.basename(
+                    config_s3_key
+                ),  # keep same key so pointer remains valid
                 type="audio",
             )
             yield "data: Config updated\n\n"
@@ -331,8 +355,8 @@ async def update_transcript():
 
         update_loc = None
         for rec in config.get("recordings", []):
-            #print("values", type(rec))
-            #print("values", rec.get("title"), filename)
+            # print("values", type(rec))
+            # print("values", rec.get("title"), filename)
             if rec.get("title") == filename:
                 update_loc = rec.get("transcript_location")
                 rec["updated_date"] = datetime.utcnow().isoformat(timespec="seconds")
@@ -346,8 +370,14 @@ async def update_transcript():
         if not transcript_maindata:
             return jsonify({"error": "Transcript data not found"}), 404
 
-        # Update transcript text
-        transcript_maindata["text"] = transcript_data
+        # Encrypt Update transcript text
+        enc = secure_kms.encrypt(userid, transcript_data)
+        transcript_maindata["transcript"] = {
+            "user_id": userid,
+            "ciphertext": enc["ciphertext"],
+            "iv": enc["iv"],
+            "encrypted_key": enc["encrypted_key"],
+        }
 
         # Save updated transcript locally
         local_transcript_path = "/tmp/temp_transcript.json"
@@ -356,16 +386,7 @@ async def update_transcript():
 
         transcript_filename = f"{os.path.splitext(filename)[0]}_transcript.json"
 
-        # re-embed (async)
-        ser = TrainLanceAgent(user_id=userid)
-        # token = current_user_id.set(userid)
-        try:
-            await ser.embed_single_audio_json(
-                file_path=local_transcript_path, filename=transcript_filename
-            )
-        finally:
-            # current_user_id.reset(token)
-            print("commented update transcrpt current user id set")
+        print("Transcript update locally - skipping re-embedding")
 
         # Upload updated transcript
         upload_any_file(
@@ -388,9 +409,12 @@ async def update_transcript():
             type="audio",
         )
 
-        # Cleanup
-        os.remove(local_config_path)
-        os.remove(local_transcript_path)
+        try:
+            # Cleanup
+            os.remove(local_config_path)
+            os.remove(local_transcript_path)
+        except Exception:
+            pass
 
         return (
             jsonify(
@@ -522,7 +546,7 @@ def get_audio_config():
         return jsonify({"error": "Invalid access"}), 404
 
     config_filename = fetch_document_link(agentid)
-    #print("config filename", config_filename)
+    # print("config filename", config_filename)
     if not config_filename:
         return jsonify({"error": "No audios found for this user"}), 404
     try:
@@ -531,8 +555,9 @@ def get_audio_config():
             for rec in config.get("recordings", []):
                 # Convert S3 paths to public URLs
                 rec["audio_location"] = attach_CLDFRNT_url(rec["audio_location"])
-                rec["transcript_location"] = attach_CLDFRNT_url(
-                    rec["transcript_location"]
+
+                rec["transcript_location"] = (
+                    f"{BACKURL}/get-audio-transcript?id={rec['id']}&api_key={api_key}"
                 )
             return jsonify(config), 200
         else:
@@ -540,6 +565,93 @@ def get_audio_config():
     except FileNotFoundError:
         return jsonify({"error": "No audio config found for this user"}), 404
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@audio_agent_bps.route("/get-audio-transcript", methods=["GET"])
+def get_audio_transcript():
+    api_key = request.args.get("api_key")
+    recording_id = request.args.get("id")
+
+    if not api_key or not recording_id:
+        return jsonify({"error": "API key and recording id required"}), 400
+        # remove timestamp if present
+    if api_key and "?t=" in api_key:
+        api_key = api_key.split("?t=")[0]
+    userid, agentid = get_user_agent_id(api_key)
+
+    if not userid or not agentid:
+        return jsonify({"error": "Invalid API key"}), 401
+
+    config_filename = fetch_document_link(agentid)
+    config = read_json_from_s3(config_filename)
+
+    if not config:
+        return jsonify({"error": "Config not found"}), 404
+
+    transcript_obj = None
+
+    for rec in config.get("recordings", []):
+
+        if str(rec.get("id")) == str(recording_id):
+            transcript_obj = read_json_from_s3(rec.get("transcript_location"))
+            break
+
+    if not transcript_obj:
+        return jsonify({"error": "Recording not found"}), 404
+
+    try:
+        transcript_data = transcript_obj.get("transcript")
+        print(transcript_data)
+        summary_data = transcript_obj.get("summary")
+
+        # decrypt transcript
+        if isinstance(transcript_data, dict):
+            transcript = secure_kms.decrypt(
+                userid,
+                transcript_data.get("encrypted_key"),
+                transcript_data.get("iv"),
+                transcript_data.get("ciphertext"),
+            )
+        else:
+            transcript = transcript_data
+
+        if isinstance(transcript, dict):
+            transcript = (
+                transcript.get("plaintext") or transcript.get("data") or str(transcript)
+            )
+
+        # decrypt summary
+        if isinstance(summary_data, dict):
+            summary = secure_kms.decrypt(
+                userid,
+                summary_data.get("encrypted_key"),
+                summary_data.get("iv"),
+                summary_data.get("ciphertext"),
+            )
+        else:
+            summary = summary_data
+
+        if isinstance(summary, dict):
+            summary = summary.get("plaintext") or summary.get("data") or str(summary)
+
+        return (
+            jsonify(
+                {
+                    "id": transcript_obj.get("id"),
+                    "filename": transcript_obj.get("filename"),
+                    "date": transcript_obj.get("date"),
+                    "summary": str(summary),
+                    "transcript": str(transcript),
+                    "heading": transcript_obj.get("heading"),
+                    "contacts": transcript_obj.get("contacts"),
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print("decrypt error:", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -568,6 +680,8 @@ async def delete_audio():
             return jsonify({"error": "No audio config found for this user"}), 404
 
         config = read_json_from_s3(config_filename)
+        if not config:
+            return jsonify({"error": "User config file could not be read"}), 404
 
         # 🔹 Find matching recording
         recording_to_delete = None
@@ -582,11 +696,19 @@ async def delete_audio():
             return jsonify({"error": "Recording not found in config"}), 404
 
         ser = TrainLanceAgent(user_id=userid)
-        await ser.delete_rec_lance(recording_to_delete["id"])
+
+        rec_id = recording_to_delete.get("id")
+        if rec_id:
+            await ser.delete_rec_lance(recording_to_delete["id"])
 
         # 🔹 Delete audio + transcript from S3
-        delete_file_from_s3(recording_to_delete["audio_location"])
-        delete_file_from_s3(recording_to_delete["transcript_location"])
+        audio_loc = recording_to_delete.get("audio_location")
+        transcript_loc = recording_to_delete.get("transcript_location")
+
+        if audio_loc:
+            delete_file_from_s3(audio_loc)
+        if transcript_loc:
+            delete_file_from_s3(transcript_loc)
 
         # 🔹 Remove from config
         config["recordings"].remove(recording_to_delete)

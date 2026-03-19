@@ -71,7 +71,7 @@ def make_celery(app_name=__name__):
         backend=base_ip,
     )
     if IS_DEV or dev_val == "true":
-        print("connecting to Dev Redis")
+        print("connecting to Dev Redis for celery")
         celery.conf.update(
             task_serializer="json",
             result_serializer="json",
@@ -87,7 +87,7 @@ def make_celery(app_name=__name__):
             worker_hijack_root_logger=False,
         )
     else:
-        print("connecting to Prod Redis")
+        print("connecting to Prod Redis for celery")
         celery.conf.update(
             task_serializer="json",
             result_serializer="json",

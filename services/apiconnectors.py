@@ -59,7 +59,11 @@ class APIConnector:
     # Headers
     # -------------------------
     def _build_headers(self):
-        headers = {}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (APIConnector)",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
 
         req_headers = self.config["request"].get("headers", {})
         for k, v in req_headers.items():

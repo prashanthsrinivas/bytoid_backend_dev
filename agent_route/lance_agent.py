@@ -463,7 +463,7 @@ class LanceClient:
         )
 
         embedding = np.array(
-            self.embeddings.embed_query(text_blob),
+            self.embeddings.embed_query(text_blob[:30000]),
             dtype=np.float32,
         )
 

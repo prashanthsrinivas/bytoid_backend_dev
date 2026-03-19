@@ -16,15 +16,14 @@ PROD_ORIGINS = {
 DEV_ORIGINS = {
     "https://preview--bytoid-45.lovable.app",
     "https://preview--bytoiddev.lovable.app",
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
-    "http://localhost:8081",
-    "http://localhost:19000",
-    "http://localhost:19006",
-    "http://172.31.5.214",
     "https://dev.bytoid.ai",
 }
 
 ALLOWED_ORIGINS = PROD_ORIGINS | (DEV_ORIGINS if IS_DEV else set())
 
 ACCESSIBLE_IDS = ["109161866299858012556", "113605503284012967393"]
+BACKURL = (
+    "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com"
+    if IS_DEV
+    else "https://api.bytoid.ai"
+)

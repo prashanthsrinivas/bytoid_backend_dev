@@ -28,6 +28,7 @@ from umail_helper.forwarding_rules_route import forwarding_bp
 from calenders.routes import calenders_bp
 from integrations.routes import integrations_bp
 from training.docs_train.docs_base import docs_agent_bps
+
 from training.scrape.scrape_base import scrape_agent_bps
 from training.voice.audio_base import audio_agent_bps
 from payments.payments import payments_bp
@@ -35,6 +36,7 @@ from plans.routes import plans_bp
 from bytoid_pro_dev.routes import bytoid_dev_pro_bp
 from apiConnector.routes import apiconnector_bp
 from radar.routes import radar_bp
+from runbook.routes import runbook_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -139,6 +141,7 @@ blueprints = [
     bytoid_dev_pro_bp,
     apiconnector_bp,
     radar_bp,
+    runbook_bp,
 ]
 
 for print in blueprints:

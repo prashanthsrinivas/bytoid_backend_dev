@@ -1,0 +1,48 @@
+import uuid
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from services.redis_service import RedisService
+
+redis_service = RedisService()
+
+# worker pool
+executor = ThreadPoolExecutor(max_workers=4)
+
+
+class JobManager:
+
+    @staticmethod
+    async def submit_job(func, *args, **kwargs):
+
+        job_id = str(uuid.uuid4())
+
+        # mark queued
+        await redis_service.set(f"job:{job_id}", {"status": "queued"}, ex=3600)
+
+        loop = asyncio.get_running_loop()
+
+        # run background worker
+        loop.run_in_executor(
+            executor,
+            lambda: asyncio.run(JobManager._run_job(job_id, func, *args, **kwargs)),
+        )
+
+        return job_id
+
+    @staticmethod
+    async def _run_job(job_id, func, *args, **kwargs):
+
+        try:
+            await redis_service.set(f"job:{job_id}", {"status": "processing"}, ex=3600)
+
+            result = await func(*args, **kwargs)
+
+            await redis_service.set(
+                f"job:{job_id}", {"status": "completed", "data": result}, ex=3600
+            )
+
+        except Exception as e:
+
+            await redis_service.set(
+                f"job:{job_id}", {"status": "failed", "error": str(e)}, ex=3600
+            )

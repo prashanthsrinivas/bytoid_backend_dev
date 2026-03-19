@@ -31,6 +31,7 @@ async def save_app_run_to_s3(
 
     val = save_app_runbase_S3(record=record, key=key)
     if val:
+        # print("ba")
         credits = Credits(db=db)
         lanceClient = LanceClient(user_id=user_id, credits=credits)
         await lanceClient.save_app_run(
@@ -89,7 +90,7 @@ def _get_effective_auth_config(cur, app_id, userid, app_auth_config):
     return json.loads(app_auth_config or "{}")
 
 
-def _execute_app_internal(app_id, userid):
+async def _execute_app_internal(app_id, userid):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
 
@@ -126,7 +127,8 @@ def _execute_app_internal(app_id, userid):
     connector = APIConnector(userid=userid, config=config)
     result = connector.execute()
 
-    save_app_run_to_s3(
+    await save_app_run_to_s3(
+        db=conn,
         user_id=userid,
         app_id=app_id,
         endpoint_id=None,
@@ -267,7 +269,7 @@ async def _execute_endpoint_internal(
     # ---------------------------
     connector = APIConnector(userid=userid, config=config, context=context)
     result = connector.execute()
-    # print("result", result)
+    # print("result on api connector", result)
 
     # ---------------------------
     # 7️⃣ Log execution

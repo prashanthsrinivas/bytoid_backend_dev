@@ -1,0 +1,49 @@
+runbook:
+
+  name: ${runbook_name}
+  type: ${runbook_type}
+
+  schedule:
+    trigger: ${schedule_type}
+    cron: ${cron_expression}
+
+  input:
+    mode: ${input_type}
+
+    questionnaire:
+      playbook_id: ${playbook_id}
+
+    api:
+      endpoint: ${api_endpoint}
+
+    logs:
+      source: ${log_source}
+      log_group: ${log_group}
+
+  radar:
+
+    format: review
+
+    prompts:
+      analysis: radar_analysis_prompt_no_structure
+      review: radar_review_template_no_structure
+      recommendation: radar_recommendations_prompt_no_structure
+
+    structure_prompts:
+      analysis: radar_analysis_prompt_structure
+      review: radar_review_template_structure
+      recommendation: radar_recommendations_prompt_structure
+
+    language_prompt: language_wordcount_extractor
+
+    structure_prompt: structure_prompt_template
+
+  files:
+    enable_processing: true
+    allow_structure_file: true
+
+  output:
+    summary: true
+    score: true
+    risk_score: true
+    store: lancedb

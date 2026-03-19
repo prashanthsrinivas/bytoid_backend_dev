@@ -19,3 +19,5 @@ retrieval_path = f"{basepath}/retrieval.yaml"
 
 # ------------------RADAR-------------------------#
 radar_prompts = f"{basepath}/radar_templates.yaml"
+
+runbook_prompts = f"{basepath}/runbook_templates.yaml"

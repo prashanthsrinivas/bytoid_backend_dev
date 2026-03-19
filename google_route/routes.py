@@ -35,6 +35,7 @@ from microsoft_route.microsoft_helpers import (
 from umail_helper.mails_process import check_mailbox
 from services.credit_system import CreditManager
 from utils.g_scopes import g_basescopes
+from utils.app_configs import ALLOWED_ORIGINS
 
 load_dotenv()  # Load from .env into environment variables
 google_bp = Blueprint("auth", __name__)
@@ -45,6 +46,11 @@ dev_val = os.getenv("BASE_FRNT_URL", "")
 
 @google_bp.route("/login")
 def login():
+    origin = request.headers.get("Origin")
+    # referrer = request.referrer
+
+    print("Origin:", origin)
+    # print("Referrer:", referrer)
     session.pop("user_id", None)
     session.pop("state", None)  # Optional, but clean
     ga = GoogleAuth()
@@ -58,8 +64,12 @@ def login():
         # print(f"Stored mobile redirect URI: {mobile_redirect_uri}")
 
     ga = GoogleAuth()
+    if origin in ALLOWED_ORIGINS:
+        val = origin
+    else:
+        val = os.getenv("BASE_FRNT_URL")
 
-    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
+    WEB_REDIRECT_URI = f"{val}/auth/google/callback"
 
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
@@ -86,9 +96,19 @@ def oauth2callback(url, state):
         return "Missing state in URL", 400
 
     unique_id = str(uuid.uuid4())
+    origin = request.headers.get("Origin")
+    # referrer = request.referrer
+
+    print("Origin:", origin)
+    if origin in ALLOWED_ORIGINS:
+        val = origin
+    else:
+        val = os.getenv("BASE_FRNT_URL")
+
+    WEB_REDIRECT_URI = f"{val}/auth/google/callback"
 
     EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
-    WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
+    # WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
 
     use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
     redirect_uri = WEB_REDIRECT_URI
@@ -139,11 +159,16 @@ def oauth2callback(url, state):
                 logger.info("creating a new user")
 
                 cursor.execute(
-                    """INSERT INTO users (user_id, user_type, launch_id_fk, first_name, last_name, email,phone, client_id,
-                client_secret, token, refresh_token, expiry, password_hash, profile_pic, location, social,
-                created_in, updated_in, logged_in_at, logged_out_at,sociallinks,subscribe_id,roles_creation,permissions,special_access )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW(), %s,%s,%s,%s,%s,%s)
-                               """,
+                    """INSERT INTO users (
+                        user_id, user_type, launch_id_fk, first_name, last_name, email, phone,
+                        client_id, client_secret, token, refresh_token, expiry,
+                        password_hash, profile_pic, location, social,
+                        created_in, updated_in, logged_in_at, logged_out_at,
+                        sociallinks, subscribe_id, roles_creation, permissions, special_access
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            NOW(), NOW(), NOW(), %s, %s, %s, %s, %s, %s)
+                    """,
                     (
                         user_id,
                         "admin",
@@ -169,12 +194,16 @@ def oauth2callback(url, state):
                         True,
                     ),
                 )
+
+                # 🔹 Generate internal subscription id
+                internal_subscription_id = f"starter_{user_id}"
+
                 # 3️⃣ Fetch STARTER plan
                 cursor.execute(
                     """
                     SELECT plan_code, monthly_token_limit
                     FROM plans
-                    WHERE plan_code IN ('STARTER', 'FREE')
+                    WHERE plan_code IN ('STARTER','FREE')
                     AND is_active = 1
                     ORDER BY CASE plan_code
                         WHEN 'STARTER' THEN 1
@@ -189,7 +218,7 @@ def oauth2callback(url, state):
                 if not starter_plan:
                     raise Exception("Neither STARTER nor FREE plan found")
 
-                # 4️⃣ Create FREE subscription (internal, no Stripe)
+                # 4️⃣ Create STARTER subscription (internal)
                 cursor.execute(
                     """
                     INSERT INTO subscriptions (
@@ -214,11 +243,11 @@ def oauth2callback(url, state):
                     """,
                     (
                         user_id,
-                        "STARTER",  # internal reference
+                        internal_subscription_id,
                     ),
                 )
 
-                # 5️⃣ Create credit bucket (250,000 credits)
+                # 5️⃣ Create credit bucket
                 cursor.execute(
                     """
                     INSERT INTO credit_buckets (
@@ -245,7 +274,7 @@ def oauth2callback(url, state):
                     """,
                     (
                         user_id,
-                        "STARTER",
+                        internal_subscription_id,
                         starter_plan["monthly_token_limit"],
                     ),
                 )
@@ -708,12 +737,14 @@ def get_token(inuser=None, value=None, in_connection=None):
             if not row:
                 return jsonify({"error": "User not found"}), 404
             if not row[0]:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT client_id,client_secret,
                                access_token,refresh_token,expiry
                                FROM integrations WHERE user_id=%s and platform = 'google'
                                """,
-                               (str(user_id),),)
+                    (str(user_id),),
+                )
                 row = cursor.fetchone()
                 source_table = "integrations"
 
@@ -743,18 +774,24 @@ def get_token(inuser=None, value=None, in_connection=None):
 
                     # Save refreshed token and new expiry time
                     if source_table == "users":
-                        cursor.execute("""
+                        cursor.execute(
+                            """
                             UPDATE users
                             SET token=%s, expiry=%s
                             WHERE user_id=%s
-                        """, (token, expiry.isoformat(), user_id))
+                        """,
+                            (token, expiry.isoformat(), user_id),
+                        )
                     else:
-                        cursor.execute("""
+                        cursor.execute(
+                            """
                             UPDATE integrations
                             SET access_token=%s, expiry=%s
                             WHERE user_id=%s
                             AND platform='google'
-                        """, (token, expiry.isoformat(), user_id))
+                        """,
+                            (token, expiry.isoformat(), user_id),
+                        )
                     connection.commit()
                     if value:
                         return creds.token

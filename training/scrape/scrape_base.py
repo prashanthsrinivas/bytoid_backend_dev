@@ -38,6 +38,9 @@ from db.db_checkers import (
 )
 from datetime import datetime
 from credits_route.route import Credits
+from utils.key_rotation_manager import SecureKMSService
+
+secure_kms = SecureKMSService()
 
 
 logger = get_logger(__name__)
@@ -103,6 +106,12 @@ async def scrape_youtube_route():
         # Step 2: Summarize
         summary_text = await summarize_youtube_data_advanced(scraped_data, user_id)
 
+        enc_title = secure_kms.encrypt(user_id, scraped_data.get("title", "YouTube Video"))
+        enc_summary = secure_kms.encrypt(user_id, summary_text)
+
+        scraped_data["title"] = enc_title
+        summary_text = enc_summary
+
         if summary_text == "UNSUITABLE_CONTENT":
             return (
                 jsonify(
@@ -158,7 +167,7 @@ async def scrape_youtube_route():
 
         # ---------- calculate credits -------------------
 
-        total_input_chars = len(summary_text)
+        total_input_chars = len(original_summary_text)
         # total_output_chars = 0
         # total_output_chars += sum(len(vec) for vec in embedding_vector)
         total_output_chars = len(embedding_vector)
@@ -438,6 +447,14 @@ async def scrape_website_route():
         logger.info(f"Summarizing scraped content for: {scraped_data['url']}")
         summary_text = await summarize_scraped_data_advanced(scraped_data, user_id)
 
+        enc_title = secure_kms.encrypt(user_id, scraped_data.get("title", "YouTube Video"))
+        enc_summary = secure_kms.encrypt(user_id, summary_text)
+
+        scraped_data["title"] = enc_title
+        summary_text = enc_summary
+
+        
+
         if not summary_text or summary_text == "UNSUITABLE_CONTENT":
             logger.warning(f"Summarization failed, using original content")
             summary_text = scraped_data["content"][:2000]  # Fallback to raw content
@@ -445,7 +462,7 @@ async def scrape_website_route():
         # --- Step 3: Process the summarized text to get an embedding ---
         embedding_client = WebScrapingLanceClient(user_id=user_id)
 
-        full_content = f"{scraped_data['title']}\n\n{summary_text}"
+        full_content = f"{scraped_data['title_plain']}\n\n{summary_plain}"
         embedding_vector = embedding_client.embeddings.embed_query(full_content)
 
         # -------- calculate credits ---------------
@@ -642,48 +659,75 @@ def get_website_details():
         if not website:
             return jsonify({"error": "Website not found"}), 404
 
-        # Format response with pages_by_level structure for frontend explorer
+        # Decrypt main title
+
+        try:
+            decrypted_title = secure_kms.decrypt(
+                user_id,
+                website["title"]["encrypted_key"],
+                website["title"]["iv"],
+                website["title"]["ciphertext"]
+            )
+        except:
+            decyrpted_title = website.get("title")
         pages_by_level = website.get("pages_by_level", {})
 
-        # Get homepage summary from level 0 (may have integer or string keys)
+        # Decyrpt homepage summary
         level_0_pages = pages_by_level.get(0) or pages_by_level.get("0", [])
         if level_0_pages:
-            # Handle both 'summary' and 'content' field names
-            homepage_summary = level_0_pages[0].get("summary") or level_0_pages[0].get(
-                "content", ""
-            )
+            enc_summary = level_0_pages[0].get("summary") or level_0_pages.get("content")
+
+            try:
+                homepage_summary = secure_kms.decrypt(
+                    user_id,
+                    enc_summary["encrypted_key"],
+                    enc_summary["iv"],
+                    enc_summary["ciphertext"]
+                )
+            except:
+                homepage_summary = enc_summary
         else:
             homepage_summary = ""
 
         response_data = {
             "status": "success",
             "url": website.get("url"),
-            "title": website.get("title"),
+            "title": decrypted_title,
             "homepage_summary": homepage_summary,
             "pages_by_level": {},
             "total_pages": website.get("pages_count"),
             "scraping_time": website.get("scraping_time"),
             "timestamp": website.get("timestamp"),
         }
-
-        # Format pages for each level - handle both integer and string keys
+        
+        # Decrypt each page
         for level_key in [0, 1, 2]:
             # Try integer key first (from YAML), then string key (from JSON)
             level_pages = pages_by_level.get(level_key) or pages_by_level.get(
                 str(level_key), []
             )
-            response_data["pages_by_level"][str(level_key)] = [
-                {
-                    "url": page.get("url"),
-                    "title": page.get("title"),
-                    "summary": page.get("summary")
-                    or page.get("content", ""),  # Handle both field names
-                    "word_count": page.get("word_count", 0),
-                    "depth": page.get("depth", level_key),
-                    "has_sublinks": len(page.get("links", [])) > 0,
-                }
-                for page in level_pages
-            ]
+            decrypted_pages = []
+            for page in level_pages:
+                try:
+                    title = secure_kms.decrypt(
+                        user_id,
+                        page["title"]["encrypted_key"],
+                        page["title"]["iv"],
+                        page["title"]["ciphertext"]
+                    )
+                except:
+                    summary = enc_summary
+                decrypted_pages.append(
+                    {
+                        "url": page.get("url"),
+                        "title": title,
+                        "summary": summary,
+                        "word_count": page.get("word_count", 0),
+                        "depth": page.get("depth", level_key),
+                        "has_sublinks": len(page.get("links", [])) > 0,
+                    }
+                )
+            response_data["pages_by_level"][str(level_key)] = decrypted_pages
 
         logger.info(f"[GET_WEBSITE_DETAILS] Retrieved details for {url}")
         return jsonify(response_data), 200
@@ -839,15 +883,16 @@ def save_website_summary():
         data = request.get_json()
         api_key = data.get("api_key")
         url = data.get("url")
-        title = data.get("title", "")
-        original_summary = data.get("original_summary", "")
-
+       
         if not api_key or not url:
             return jsonify({"error": "api_key and url are required"}), 400
-
+        
         user_id = fetch_userid_from_launch(api_key)
         if not user_id:
             return jsonify({"error": "Invalid API Key"}), 401
+
+        title = secure_kms.encrypt(user_id, data.get("title", ""))
+        original_summary = secure_kms.encrypt(user_id, data.get("original_summary", ""))
 
         if not check_userid_valid(user_id):
             return jsonify({"error": "Invalid access"}), 404
@@ -960,7 +1005,7 @@ def edit_website_summary():
         data = request.get_json()
         api_key = data.get("api_key")
         url = data.get("url")
-        edited_summary = data.get("edited_summary", "")
+        edited_summary = secure_kms.encrypt(user_id, data.get("edited_summary", ""))
 
         if not api_key or not url:
             return jsonify({"error": "api_key and url are required"}), 400
@@ -1048,7 +1093,7 @@ def edit_internal_link_summary():
         api_key = data.get("api_key")
         url = data.get("url")
         internal_link = data.get("internal_link")
-        edited_summary = data.get("edited_summary", "")
+        edited_summary = secure_kms.encrypt(user_id, data.get("edited_summary", ""))
 
         if not api_key or not url:
             return jsonify({"error": "api_key and url are required"}), 400
@@ -1186,30 +1231,50 @@ def get_website_summary():
             if not row:
                 return jsonify({"error": "Website summary not found"}), 404
 
-            return (
-                jsonify(
-                    {
-                        "status": "success",
-                        "scrape_id": row[0],
-                        "url": row[1],
-                        "title": row[2],
-                        "original_summary": row[3],
-                        "edited_summary": row[4],
-                        "total_pages": row[5],
-                        "total_words": row[6],
-                        "scrape_method": row[7],
-                        "scrape_duration_seconds": row[8],
-                        "is_edited": row[9],
-                        "created_at": row[10].isoformat() if row[10] else None,
-                        "updated_at": row[11].isoformat() if row[11] else None,
-                        "current_summary": (
-                            row[4] if row[9] else row[3]
-                        ),  # Return edited if available, else original
-                    }
-                ),
-                200,
-            )
+            # Decrypt encrypted fields
 
+            try:
+                title = secure_kms.decrypt(
+                    user_id,
+                    row[2]["encrypted_key"],
+                    row[2]["iv"],
+                    row[2]["ciphertext"]
+                )
+            except:
+                original_summary = row[3]
+            edited_summary = None
+
+            if row[4]:
+                try:
+                    edited_summary = secure_kms.decrypt(
+                        user_id,
+                        row[4]["encrypted_key"],
+                        row[4]["iv"],
+                        row[4]["ciphertext"]
+                    )
+                except:
+                    edited_summary = row[4]
+
+            return  jsonify(
+                {
+                    "status": "success",
+                    "scrape_id": row[0],
+                    "url": row[1],
+                    "title": title,
+                    "original_summary": row[3],
+                    "edited_summary": row[4],
+                    "total_pages": row[5],
+                    "total_words": row[6],
+                    "scrape_method": row[7],
+                    "scrape_duration_seconds": row[8],
+                    "is_edited": row[9],
+                    "created_at": row[10].isoformat() if row[10] else None,
+                    "updated_at": row[11].isoformat() if row[11] else None,
+                    "current_summary": edited_summary if row[9] else original_summary
+                      # Return edited if available, else original
+                }
+            ), 200,
+            
         finally:
             cursor.close()
             connection.close()
@@ -1385,11 +1450,40 @@ def scrape_website_page_endpoint():
         if not page_data:
             return jsonify({"error": "Failed to scrape page"}), 500
 
+        # Encrypt Sensitive fields
+        try:
+            encrypted_title = secure_kms.encrypt(user_id, page_data["title"])
+            encrypted_content = secure_kms.encrypt(user_id, page_data["content"])
+        except Exception as e:
+            logger.warning(f"[ENCRYPT_PAGE] Failed: {e}")
+            encrypted_title = page_data["title"]
+            encrypted_content = page_data["content"]
+
+        # Decrypt before sending to frontend
+        try:
+            decrypted_title = secure_kms.decrypt(
+                user_id, 
+                encrypted_title["encrypted_key"],
+                encrypted_title["iv"],
+                encrypted_title["ciphertext"]
+            )
+        except:
+            decrypted_title = page_data["title"]
+        try:
+            decrypted_content = secure_kms.decrypt(
+                user_id,
+                encrypted_content["encrypted_key"],
+                encrypted_content["iv"],
+                encrypted_content["ciphertext"]
+            )
+        except:
+            decrypted_title = page_data["content"]
+            
         response_data = {
             "status": "success",
             "url": page_data["url"],
-            "title": page_data["title"],
-            "content": page_data["content"],
+            "title": decrypted_title,
+            "content": decrypted_content,
             "word_count": page_data["word_count"],
             "sublinks": page_data.get("links", []),
         }

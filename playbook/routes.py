@@ -350,6 +350,48 @@ def add_a_step():
     steps.append(step_data)
     playbook["workflow"]["steps"] = steps
     playbook["WorkflowDate"] = datetime.now().isoformat()
+    # -----------------------------
+    # 🔥 Update config (ONLY num_steps)
+    # -----------------------------
+    playbook_id, config_path, subagent_id = returnconfigandpath(user_id)
+
+    try:
+        config_data = read_json_from_s3(config_path)
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Failed to read config",
+                    "error": str(e),
+                }
+            ),
+            500,
+        )
+
+    if not config_data or user_id not in config_data:
+        return jsonify({"status": "error", "message": "User config not found"}), 404
+
+    playbook_list = config_data[user_id].get("playbooklist", [])
+
+    updated_payload = False
+    for pb in playbook_list:
+        if pb.get("name", "").replace(".json", "") == filename.replace(".json", ""):
+            updated_payload = {
+                "configpath": config_path,
+                "name": pb.get("name"),
+                "filepath": pb.get("filepath"),
+                "title": pb.get("title"),
+                "description": pb.get("description"),
+                "num_steps": len(steps),  # ✅ updated value
+            }
+            break
+    if not updated_payload:
+        return (
+            jsonify({"status": "error", "message": "Playbook not found in config"}),
+            404,
+        )
+    update_playbook_config(**updated_payload)
 
     return save_playbook_to_s3(playbook, user_id, "Step added successfully", filename)
 
@@ -726,6 +768,49 @@ def delete_a_step():
     playbook["WorkflowDate"] = datetime.now().isoformat()
 
     # -----------------------------
+    # 🔥 Update config (ONLY num_steps)
+    # -----------------------------
+    playbook_id, config_path, subagent_id = returnconfigandpath(user_id)
+
+    try:
+        config_data = read_json_from_s3(config_path)
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Failed to read config",
+                    "error": str(e),
+                }
+            ),
+            500,
+        )
+
+    if not config_data or user_id not in config_data:
+        return jsonify({"status": "error", "message": "User config not found"}), 404
+
+    playbook_list = config_data[user_id].get("playbooklist", [])
+
+    updated_payload = False
+    for pb in playbook_list:
+        if pb.get("name", "").replace(".json", "") == filename.replace(".json", ""):
+            updated_payload = {
+                "configpath": config_path,
+                "name": pb.get("name"),
+                "filepath": pb.get("filepath"),
+                "title": pb.get("title"),
+                "description": pb.get("description"),
+                "num_steps": len(new_steps),  # ✅ updated value
+            }
+            break
+    if not updated_payload:
+        return (
+            jsonify({"status": "error", "message": "Playbook not found in config"}),
+            404,
+        )
+    update_playbook_config(**updated_payload)
+
+    # -----------------------------
     # Save back to S3
     # -----------------------------
     return save_playbook_to_s3(playbook, user_id, "Step deleted successfully", filename)
@@ -1028,6 +1113,38 @@ async def runWorkflow():
     if not workflow_json:
         return jsonify({"status": "error", "message": "Workflow not found"}), 404
 
+    # ==========================================
+    # 🔍 PRE-VALIDATION CHECK
+    # ==========================================
+    workflow_steps = workflow_json.get("workflow", {}).get("steps", [])
+
+    requires_questions = False
+
+    for step in workflow_steps:
+        function_call = step.get("function_call", {})
+        function_name = function_call.get("function_name")
+
+        if function_name == "automate.assign_or_show_questions_from_file":
+            requires_questions = True
+            break
+
+    if requires_questions:
+        assigned = workflow_json.get("assigned_questions")
+
+        if not assigned:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "For this workflow to run, no assigned questions were found.\n\nPlease upload or assign a questionnaire file.",
+                    }
+                ),
+                400,
+            )
+
+    # ==========================================
+    # 🚀 EXECUTION
+    # ==========================================
     db = connect_to_rds()
     credits = Credits(db=db)
 
@@ -2205,53 +2322,16 @@ async def check_formcreation():
     return jsonify({"message": kak})
 
 
-# @playbook_bp.route("/generate_ques_by_file", methods=["POST"])
-# async def generate_ques_by_file():
-#     from services.automate_service import AutoMateService
-#     from radar.radar_helpers import extract_files_content
-
-#     user_id = request.form.get("user_id")
-#     uploaded_file = request.files.get("ques_file")
-
-#     if not uploaded_file:
-#         return jsonify({"error": "No file provided"}), 400
-
-#     try:
-#         # ✅ Read file bytes
-#         file_bytes = uploaded_file.read()
-
-#         # ✅ Convert to extractor format
-#         files = [
-#             {
-#                 "filename": uploaded_file.filename,
-#                 "content_type": uploaded_file.content_type,
-#                 "data": file_bytes,
-#             }
-#         ]
-
-#         # ✅ Extract structured content
-#         extracted_files = extract_files_content(files)
-
-#         if not extracted_files:
-#             return jsonify({"error": "Could not extract content from file"}), 400
-
-#         credits = Credits()
-#         ai = AutoMateService(userid=user_id, credits=credits)
-
-#         # ✅ Call service
-#         result = await ai.generate_questions_from_file(extracted_files)
-
-#         return jsonify({"data": result})
-
-#     except Exception as e:
-#         return jsonify({"status": "error", "message": str(e)}), 500
-
-
-async def send_ques_byfile_bk(user_id, extracted_files):
+async def send_ques_byfile_bk(user_id, extracted_files, filename):
     from services.automate_service import AutoMateService
 
     credits = Credits()
-    ai = AutoMateService(userid=user_id, credits=credits)
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    ai = AutoMateService(userid=user_id, credits=credits, workflow=workflow_json)
 
     result = await ai.generate_questions_from_file(extracted_files)
     return result
@@ -2263,6 +2343,7 @@ async def generate_ques_by_file():
 
     user_id = request.form.get("user_id")
     uploaded_file = request.files.get("ques_file")
+    wf_id = request.form.get("wf_filename")
 
     if not uploaded_file:
         return jsonify({"error": "No file provided"}), 400
@@ -2287,7 +2368,7 @@ async def generate_ques_by_file():
 
         # 🔥 SUBMIT BACKGROUND JOB (THIS WAS MISSING)
         job_id = await JobManager.submit_job(
-            send_ques_byfile_bk, user_id, extracted_files
+            send_ques_byfile_bk, user_id, extracted_files, wf_id
         )
 
         return jsonify(
@@ -2296,6 +2377,74 @@ async def generate_ques_by_file():
                 "job_id": job_id,
                 "message": "Processing started in background",
             }
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+ALLOWED_ARCHIVES = {"zip", "rar"}
+ALLOWED_FILES = {"json", "xlsx", "xls", "csv", "txt", "pdf"}
+
+
+def allowed_file(filename):
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return ext in ALLOWED_ARCHIVES or ext in ALLOWED_FILES
+
+
+from werkzeug.utils import secure_filename
+
+
+@playbook_bp.route("/accept_zip", methods=["POST"])
+def accept_zip():
+    try:
+        # ✅ Get user_id
+        user_id = request.form.get("user_id")
+        if not user_id:
+            return jsonify({"status": "error", "message": "user_id is required"}), 400
+
+        # ✅ Get multiple files (IMPORTANT)
+        files = request.files.getlist("files")
+
+        if not files or len(files) == 0:
+            return jsonify({"status": "error", "message": "No files uploaded"}), 400
+
+        saved_files = []
+        rejected_files = []
+
+        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
+        os.makedirs(user_folder, exist_ok=True)
+
+        for file in files:
+            if file.filename == "":
+                continue
+
+            filename = secure_filename(file.filename)
+
+            if not allowed_file(filename):
+                rejected_files.append(filename)
+                continue
+
+            file_path = os.path.join(user_folder, filename)
+
+            # ✅ Save file
+            file.save(file_path)
+
+            saved_files.append({"filename": filename, "path": file_path})
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "user_id": user_id,
+                    "saved_files": saved_files,
+                    "rejected_files": rejected_files,
+                }
+            ),
+            200,
         )
 
     except Exception as e:

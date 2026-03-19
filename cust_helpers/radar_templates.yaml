@@ -1490,6 +1490,11 @@ structure_prompt_template: |
 language_wordcount_extractor: |
   Extract language and word_count from: {{analyze_input}}
 
+  IMPORTANT:
+  - If the text contains logs or structured data, still count words.
+  - word_count MUST be an integer.
+
+
   RULES
 
   Language:

@@ -60,7 +60,7 @@ def test_online_external_link():
 
         # ✅ Build full URL
         full_url = build_full_url(base_url, path, path_params)
-        # print("Full URL:", full_url)
+        print("Full URL:", full_url)
 
         config = {
             "auth": auth,
@@ -74,6 +74,7 @@ def test_online_external_link():
             "retry": {"count": 1, "backoff": 1},
             "timeout": 10,
         }
+        print("config", config)
 
         connector = APIConnector(userid=user_id, config=config)
         result = connector.execute()

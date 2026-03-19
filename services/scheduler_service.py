@@ -1,12 +1,13 @@
 from celery.schedules import crontab
 from datetime import date, datetime, timedelta, time
-from services.redis_service import RedisService
-from utils.celery_base import celery
 import pytz
 import uuid
+from utils.celery_base import celery
+from services.redis_service import RedisService
 
 
 class SchedulerService:
+
     redis_service = RedisService()  # your existing async Redis wrapper
 
     @staticmethod
@@ -60,7 +61,7 @@ class SchedulerService:
         dt_utc = SchedulerService.to_utc(dt, timezone)
         run_iso = dt_utc.isoformat()
         key = f"scheduled:{userid}:{filename}:all"
-        #print("making a one time schedule", dt_utc)
+        # print("making a one time schedule", dt_utc)
         hexid = uuid.uuid4()
         uniquekey = f"{filename}_{hexid}"
 
@@ -78,7 +79,7 @@ class SchedulerService:
             eta=dt_utc,
         )
         # await SchedulerService.redis_service.set(key, task.id, ex=86400)
-        #print("task made for one time", task)
+        # print("task made for one time", task)
         return {
             "task_id": task.id,
             "run_at_utc": run_iso,
@@ -99,7 +100,7 @@ class SchedulerService:
         dt_utc = SchedulerService.to_utc(run_at, timezone)
         run_iso = dt_utc.isoformat()
         key = f"scheduled:{userid}:{filename}:{stepid}"
-        #print("making sinfle task schedule", dt_utc)
+        # print("making sinfle task schedule", dt_utc)
         hexid = uuid.uuid4()
         uniquekey = f"{filename}_{hexid}"
 
@@ -117,7 +118,7 @@ class SchedulerService:
             eta=dt_utc,
         )
         # await SchedulerService.redis_service.set(key, task.id, ex=86400)
-        #print("task made for single", task)
+        # print("task made for single", task)
         return {
             "task_id": task.id,
             "run_at_utc": run_iso,
@@ -133,7 +134,7 @@ class SchedulerService:
         # Check Redis if already scheduled
         key = f"scheduled:{userid}:{filename}:all"
         # existing_task = await SchedulerService.redis_service.get(key)
-        #print("making task for daily")
+        # print("making task for daily")
         hexid = uuid.uuid4()
         uniquekey = f"{filename}_{hexid}"
         # if existing_task:
@@ -151,7 +152,7 @@ class SchedulerService:
 
         # Mark in Redis (just a placeholder, TTL optional)
         # await SchedulerService.redis_service.set(key, entry_name, ex=86400 * 365)
-        #print("task made for daily", task)
+        # print("task made for daily", task)
         return {
             "status": "scheduled",
             "entry_name": entry_name,

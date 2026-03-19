@@ -529,10 +529,10 @@ def get_user_agent_id(apikey):
         if result:
             return result  # (user_id_fk, sub_agent_id_fk)
         else:
-            return None
+            return None, None
     except Exception as e:
         print(f"Error fetching user/sub_agent IDs: {e}")
-        return None
+        return None, None
     finally:
         connection.close()
 
@@ -1160,7 +1160,9 @@ def ensure_starter_credits_for_user(user_id: str, conn):
     """
     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-    # 1️⃣ Check existing active credit bucket
+    internal_subscription_id = f"starter_{user_id}"
+
+    # 1️⃣ Check existing credit bucket
     cursor.execute(
         """
         SELECT bucket_id
@@ -1169,11 +1171,12 @@ def ensure_starter_credits_for_user(user_id: str, conn):
         """,
         (user_id,),
     )
+
     existing_bucket = cursor.fetchone()
 
     if existing_bucket:
         logger.info(f"ℹ️ User {user_id} already has active credits")
-        return False  # no new credits created
+        return False
 
     logger.info(
         f"⚠️ No active credits found for user {user_id}, creating STARTER credits"
@@ -1184,7 +1187,7 @@ def ensure_starter_credits_for_user(user_id: str, conn):
         """
         SELECT plan_code, monthly_token_limit
         FROM plans
-        WHERE plan_code IN ('STARTER', 'FREE')
+        WHERE plan_code IN ('STARTER','FREE')
         AND is_active = 1
         ORDER BY CASE plan_code
             WHEN 'STARTER' THEN 1
@@ -1205,32 +1208,33 @@ def ensure_starter_credits_for_user(user_id: str, conn):
         SELECT id
         FROM subscriptions
         WHERE user_id = %s
-          AND stripe_subscription_id = 'STARTER'
+          AND stripe_subscription_id = %s
           AND status = 'active'
         LIMIT 1
         """,
-        (user_id,),
+        (user_id, internal_subscription_id),
     )
+
     subscription = cursor.fetchone()
 
     if not subscription:
         cursor.execute(
             """
-    INSERT IGNORE INTO subscriptions (
-        user_id,
-        stripe_subscription_id,
-        status,
-        current_period_start,
-        created_at
-    ) VALUES (
-        %s,
-        'STARTER',
-        'active',
-        NOW(),
-        NOW()
-    )
-    """,
-            (user_id,),
+            INSERT INTO subscriptions (
+                user_id,
+                stripe_subscription_id,
+                status,
+                current_period_start,
+                created_at
+            ) VALUES (
+                %s,
+                %s,
+                'active',
+                NOW(),
+                NOW()
+            )
+            """,
+            (user_id, internal_subscription_id),
         )
 
         logger.info(f"✅ STARTER subscription created for user {user_id}")
@@ -1254,7 +1258,7 @@ def ensure_starter_credits_for_user(user_id: str, conn):
             UUID(),
             %s,
             'SUBSCRIPTION',
-            'STARTER',
+            %s,
             %s,
             0,
             DATE_ADD(NOW(), INTERVAL 60 DAY),
@@ -1264,6 +1268,7 @@ def ensure_starter_credits_for_user(user_id: str, conn):
         """,
         (
             user_id,
+            internal_subscription_id,
             starter_plan["monthly_token_limit"],
         ),
     )
@@ -1273,6 +1278,7 @@ def ensure_starter_credits_for_user(user_id: str, conn):
     )
 
     return True
+
 
 def fetch_user_domains(user_id: str, conn):
     try:
@@ -1295,4 +1301,3 @@ def fetch_user_domains(user_id: str, conn):
     finally:
         if own_conn:
             conn.close()
-

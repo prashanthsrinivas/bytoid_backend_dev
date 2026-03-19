@@ -663,6 +663,7 @@ async def microsoft_callback():
                 logger.info(
                     f"✅ Auto-generated API key {str(new_api_key)[:20]}... for new Microsoft user {email}"
                 )
+                internal_subscription_id = f"starter_{user_id}"
                 # 3️⃣ Fetch STARTER plan
                 cursor.execute(
                     """
@@ -708,11 +709,11 @@ async def microsoft_callback():
                     """,
                     (
                         user_id,
-                        "STARTER",  # internal reference
+                        internal_subscription_id,
                     ),
                 )
 
-                # 5️⃣ Create credit bucket (250,000 credits)
+                # 5️⃣ Create credit bucket
                 cursor.execute(
                     """
                     INSERT INTO credit_buckets (
@@ -739,7 +740,7 @@ async def microsoft_callback():
                     """,
                     (
                         user_id,
-                        "STARTER",
+                        internal_subscription_id,
                         starter_plan["monthly_token_limit"],
                     ),
                 )

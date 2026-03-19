@@ -14,8 +14,10 @@ import os, re
 from utils.normal import can_reply_to_email, convert_human_date, convert_human_time
 from dotenv import load_dotenv
 from utils.g_scopes import g_basescopes
+from utils.base_logger import get_logger
 
 load_dotenv()
+logger = get_logger(__name__)
 
 
 class GoogleMeetService:
@@ -135,6 +137,7 @@ class GoogleMeetService:
             except Exception as e:
                 # Token refresh failed (e.g., refresh token revoked)
                 # print(f"❌ Token refresh failed for user {userid}: {e}")
+                logger.info("❌ Token refresh failed for user %s: %s", userid, e)
                 raise ValueError(
                     f"Token refresh failed. User must re-authenticate: {e}"
                 )
@@ -297,7 +300,7 @@ class GoogleMeetService:
                 date_is_future = False
             else:
                 converted_date = convert_human_date(preferred_date, tz_str=effective_tz)
-                print("converted date", converted_date)
+                # print("converted date", converted_date)
                 if not converted_date:
                     preferred_date_dt = now_local.date()
                     date_is_future = False
@@ -445,7 +448,7 @@ class GoogleMeetService:
             return available_slots
 
         except Exception as e:
-            print("Error in get_all_available_slots:", e)
+            logger.info("Error in get_all_available_slots: %s", e)
             return []
 
     # ----------------------------
@@ -480,7 +483,7 @@ class GoogleMeetService:
                 return {"success": False, "reason": "No available slots in range."}
 
             first_slot = slots[0]
-            print("first slot", first_slot)
+            # print("first slot", first_slot)
             created = self.createbasemeet(
                 summary=summary,
                 start_time=first_slot["start"],
@@ -493,7 +496,7 @@ class GoogleMeetService:
 
             return created
         except Exception as e:
-            print("Error in schedule_meeting_on_first_available:", repr(e))
+            logger.info("Error in schedule_meeting_on_first_available: %s", repr(e))
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
@@ -515,7 +518,7 @@ class GoogleMeetService:
         import pytz
         from datetime import datetime
 
-        print("got into createbasemeet")
+        # print("got into createbasemeet")
 
         try:
             # --------------------------------------------------
@@ -577,7 +580,7 @@ class GoogleMeetService:
             if description:
                 event["description"] = description
 
-            print("Sending event to Google Calendar:", event)
+            # print("Sending event to Google Calendar:", event)
 
             # --------------------------------------------------
             # 4. Create event
@@ -637,8 +640,8 @@ class GoogleMeetService:
             }
 
         except Exception as e:
-            print("error on create base:", repr(e))
-            traceback.print_exc()
+            logger.info("error on create base: %s", repr(e))
+            # traceback.print_exc()
             return {
                 "success": False,
                 "error": str(e),

@@ -27,7 +27,6 @@ from collections import defaultdict
 import traceback
 import re
 import pymysql
-from services.redis_service import RedisService
 
 
 gmail_bp = Blueprint("gmail", __name__)
@@ -1856,6 +1855,8 @@ def delete_user_cache(primary_user_id):
 
 
 async def _delete_cache_async(user_id):
+    from services.redis_service import RedisService
+
     client = RedisService()
     return await client.delete(f"umail_{user_id}")
 
