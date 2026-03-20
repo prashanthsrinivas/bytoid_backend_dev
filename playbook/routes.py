@@ -23,6 +23,7 @@ from utils.normal import (
 )
 from .background_worker import JobManager
 import pytz
+from utils.FileHandler import FileProcessor
 
 playbook_bp = Blueprint("playbook", __name__)
 PLAY_TEMPLATE = load_yaml_file(path=pathconfig.play_template)
@@ -30,7 +31,7 @@ MINOR_PROMPTS = load_yaml_file(path=pathconfig.minor_prompts)
 ALL_FUNCTIONS = read_function_jsons2(Full=True)
 
 from concurrent.futures import ThreadPoolExecutor
-
+from utils.s3_utils import s3bucket, S3_BUCKET
 
 executor = ThreadPoolExecutor(max_workers=4)
 
@@ -379,6 +380,7 @@ def add_a_step():
         if pb.get("name", "").replace(".json", "") == filename.replace(".json", ""):
             updated_payload = {
                 "configpath": config_path,
+                "user_id": user_id,
                 "name": pb.get("name"),
                 "filepath": pb.get("filepath"),
                 "title": pb.get("title"),
@@ -796,6 +798,7 @@ def delete_a_step():
         if pb.get("name", "").replace(".json", "") == filename.replace(".json", ""):
             updated_payload = {
                 "configpath": config_path,
+                "user_id": user_id,
                 "name": pb.get("name"),
                 "filepath": pb.get("filepath"),
                 "title": pb.get("title"),
@@ -1222,6 +1225,7 @@ def testworkflowbyinput_stream():
     userid = data.get("user_id")
     filename = data.get("filename")
     userinput = data.get("userinput")
+    testing = data.get("is_testing") or True
 
     if not userid or not filename or not userinput:
         return jsonify({"status": "error", "message": "Invalid input"}), 400
@@ -1244,7 +1248,7 @@ def testworkflowbyinput_stream():
                 userid=userid,
                 filename=filename,
                 workflowJson=workflow_json,
-                testing=True,
+                testing=testing,
                 db=db,
                 credits=credits,
             ) as runner:
@@ -2272,6 +2276,7 @@ def workflow_conversation():
     user_id = data.get("user_id")
     filename = data.get("filename")
     user_message = data.get("user_message", "")
+    testing = data.get("testing") or True
 
     if not user_id or not filename:
         return jsonify({"error": "invalid request"}), 400
@@ -2290,7 +2295,7 @@ def workflow_conversation():
             userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
-            testing=True,
+            testing=testing,
             credits=credits,
         ) as runner:
 
@@ -2383,69 +2388,197 @@ async def generate_ques_by_file():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+async def answer_ques_file_bk(user_id, extracted_files, filename, step_id):
+    from services.automate_service import AutoMateService
 
-ALLOWED_ARCHIVES = {"zip", "rar"}
-ALLOWED_FILES = {"json", "xlsx", "xls", "csv", "txt", "pdf"}
+    credits = Credits()
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    with WorkflowRunnerV2(
+        userid=user_id,
+        filename=filename,
+        workflowJson=workflow_json,
+        testing=True,
+        credits=credits,
+    ) as runner:
+
+        result = asyncio.run(runner.answer_ques_file_bk(extracted_files))
+    return result
 
 
-def allowed_file(filename):
-    ext = filename.rsplit(".", 1)[-1].lower()
-    return ext in ALLOWED_ARCHIVES or ext in ALLOWED_FILES
-
-
-from werkzeug.utils import secure_filename
-
-
-@playbook_bp.route("/accept_zip", methods=["POST"])
-def accept_zip():
+@playbook_bp.route("/make_ans_by_files_normal", methods=["POST"])
+def generate_ans_files_normal():
     try:
         # ✅ Get user_id
         user_id = request.form.get("user_id")
-        if not user_id:
+        file_name = request.form.get("filename")
+        step_id = request.form.get("step_id")
+        if not user_id or file_name:
             return jsonify({"status": "error", "message": "user_id is required"}), 400
 
         # ✅ Get multiple files (IMPORTANT)
         files = request.files.getlist("files")
-
         if not files or len(files) == 0:
             return jsonify({"status": "error", "message": "No files uploaded"}), 400
+        handler = FileProcessor()
+        extracted_files = handler.process_files(files)
 
-        saved_files = []
-        rejected_files = []
-
-        user_folder = os.path.join(UPLOAD_FOLDER, str(user_id))
-        os.makedirs(user_folder, exist_ok=True)
-
-        for file in files:
-            if file.filename == "":
-                continue
-
-            filename = secure_filename(file.filename)
-
-            if not allowed_file(filename):
-                rejected_files.append(filename)
-                continue
-
-            file_path = os.path.join(user_folder, filename)
-
-            # ✅ Save file
-            file.save(file_path)
-
-            saved_files.append({"filename": filename, "path": file_path})
+        if not extracted_files:
+            return jsonify({"error": "Could not extract content from file"}), 400
+        print(extracted_files)
 
         return (
             jsonify(
                 {
                     "status": "success",
                     "user_id": user_id,
-                    "saved_files": saved_files,
-                    "rejected_files": rejected_files,
                 }
             ),
             200,
         )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/make_ans_by_files", methods=["POST"])
+async def generate_ans_files():
+    local_files = []
+    try:
+        from utils.s3_utils import s3bucket
+
+        data = request.get_json()
+
+        user_id = data.get("user_id")
+        file_keys = data.get("file_keys", [])
+        step_id = data.get("step_id")
+        wf_name = request.form.get("wf_name")
+
+        if not user_id or not file_keys:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and file_keys are required"}
+                ),
+                400,
+            )
+
+        s3 = s3bucket()
+
+        # 🔥 Download files from S3
+        for key in file_keys:
+            try:
+                temp_path = os.path.join(tempfile.gettempdir(), os.path.basename(key))
+
+                s3.download_file(
+                    Bucket=os.getenv("S3_BUCKET_NAME"), Key=key, Filename=temp_path
+                )
+
+                local_files.append(temp_path)
+
+            except Exception as e:
+                print(f"Failed to download {key}: {e}")
+
+        if not local_files:
+            return (
+                jsonify(
+                    {"status": "error", "message": "Failed to download files from S3"}
+                ),
+                400,
+            )
+
+        # 🔥 Process files (your existing pipeline)
+        handler = FileProcessor()
+        extracted_files = handler.process_files(local_files)
+
+        if not extracted_files:
+            return (
+                jsonify({"status": "error", "message": "Could not extract content"}),
+                400,
+            )
+
+        # 🔥 SUBMIT BACKGROUND JOB (THIS WAS MISSING)
+        job_id = await JobManager.submit_job(
+            answer_ques_file_bk, user_id, extracted_files, wf_name, step_id
+        )
+
+        return jsonify(
+            {
+                "status": "accepted",
+                "job_id": job_id,
+                "message": "Processing started in background",
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        # 🧹 CLEANUP (always runs)
+        for path in local_files:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as cleanup_error:
+                print(f"Cleanup failed for {path}: {cleanup_error}")
+
+
+@playbook_bp.route("/make_s3upload", methods=["POST"])
+def generatesigned_url_for_upload():
+    try:
+
+        s3 = s3bucket()
+        data = request.get_json()
+
+        user_id = data.get("user_id")
+        files = data.get("filenames", [])
+
+        if not user_id or not files:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filenames are required"}
+                ),
+                400,
+            )
+
+        # 🔒 Optional: limit number of files
+        if len(files) > 100:
+            return (
+                jsonify({"status": "error", "message": "Too many files (max 100)"}),
+                400,
+            )
+
+        response_files = []
+
+        for original_filename in files:
+
+            # 🔒 basic validation
+            if not isinstance(original_filename, str) or not original_filename.strip():
+                continue
+
+            # 🔥 unique filename
+            unique_id = uuid.uuid4().hex
+            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+
+            filename = f"{timestamp}_{unique_id}_{original_filename}"
+            s3_key = f"{user_id}/uploads/{filename}"
+
+            presigned_url = s3.generate_presigned_url(
+                ClientMethod="put_object",
+                Params={"Bucket": S3_BUCKET, "Key": s3_key},
+                ExpiresIn=3600,
+            )
+
+            response_files.append(
+                {
+                    "original_name": original_filename,
+                    "file_key": s3_key,
+                    "upload_url": presigned_url,
+                }
+            )
+
+        return jsonify({"status": "success", "files": response_files})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

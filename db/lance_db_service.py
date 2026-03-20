@@ -3197,8 +3197,8 @@ class LanceDBServer:
         # Step 2: Merge updates
         updated_row = {
             **existing,
-            **updates,
-            "updated_at": datetime.utcnow().isoformat()
+            **updates
+            # "updated_at": datetime.utcnow().isoformat()
         }
 
         # Step 3: Delete old record

@@ -50,6 +50,7 @@ class WorkflowRunnerV2:
         self.userid = userid
         self.filename = filename
         self.credits = credits
+        self.execution_id = execution_id
         self.connection = db or connect_to_rds()
         self.basename = os.path.splitext(filename)[0]
         self.wf_loc = f"{userid}/workflow/{self.basename}/{filename}"
@@ -60,7 +61,6 @@ class WorkflowRunnerV2:
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
         self.testing = testing
         self.current_wf_id = None
-        self.execution_id = execution_id
         self.execution_unique_key = execution_unique_key
         # Correctly load steps from workflow['steps'] instead of top-level steps
         workflow_steps = self.workflow_json.get("workflow", {}).get("steps", [])
@@ -104,7 +104,7 @@ class WorkflowRunnerV2:
         if "testing" in self.workflow_json and self.testing:
             return self.workflow_json["testing"]
         else:
-            if self.execution_id:
+            if self.execution_id and not self.testing:
                 exec_json = read_json_from_s3(self.on_loc) or {}
                 return exec_json
         # return original_json
@@ -2580,6 +2580,7 @@ class WorkflowRunnerV2:
                 "qid": qid,
             }
 
+        cleared = False
         # -------------------------------------------------
         # 2. UPDATE CHAT HISTORY (SECONDARY)
         # -------------------------------------------------
@@ -2594,17 +2595,19 @@ class WorkflowRunnerV2:
                 for out in outputs:
                     if out.get("id") == qid:
                         out["user_answer"] = answer
+                        if answer == "":
+                            cleared = True
                         break
-        step_data = self.get_step_data(last_step_id)
-        if step_data:
-            function_call = step_data.get("function_call", {})
-            function_name = function_call.get("function_name")
-            if function_name == "automate.assign_or_show_questions_from_file":
-                assigned_ques = self.workflow_json.get("assigned_questions")
-                for q in assigned_ques:
-                    if q.get("id") == qid:
-                        q["user_answer"] = answer
-                        break
+        # step_data = self.get_step_data(last_step_id)
+        # if step_data:
+        #     function_call = step_data.get("function_call", {})
+        #     function_name = function_call.get("function_name")
+        #     if function_name == "automate.assign_or_show_questions_from_file":
+        #         assigned_ques = self.workflow_json.get("assigned_questions")
+        #         for q in assigned_ques:
+        #             if q.get("id") == qid:
+        #                 q["user_answer"] = answer
+        #                 break
 
         # -------------------------------------------------
         # 3. CHECK IF ALL QUESTIONS ANSWERED
@@ -2612,6 +2615,8 @@ class WorkflowRunnerV2:
         # all_answered = self._question_answer_stats()
         stats = self._question_answer_stats()
         all_answered = stats["all_answered"]
+        if cleared:
+            all_answered = False
 
         message = (
             "Answer saved successfully."
@@ -3147,3 +3152,232 @@ class WorkflowRunnerV2:
         self.saveworkflowtos3()
 
         return ai_result
+
+    async def answer_ques_file_bk(self, extracted_files, step_id):
+        import json
+        import re
+
+        assigned_ques = self.workflow_json.get("assigned_questions", [])
+
+        if not assigned_ques:
+            return {"error": "No assigned questions found"}
+
+        # ===========================
+        # 🔒 FILTER ONLY UNANSWERED
+        # ===========================
+        unanswered_questions = [q for q in assigned_ques if not q.get("user_answer")]
+
+        if not unanswered_questions:
+            return {"message": "All questions already answered"}
+
+        # ===========================
+        # 🔥 COMBINE FILE CONTENT
+        # ===========================
+        combined_text_parts = []
+
+        for f in extracted_files:
+            content = f.get("content", "").strip()
+            filename = f.get("filename", "file")
+
+            if content:
+                combined_text_parts.append(f"[FILE: {filename}]\n{content}")
+
+        combined_text = "\n\n".join(combined_text_parts)
+
+        if not combined_text:
+            return {"error": "No usable content found"}
+
+        # ===========================
+        # 🔥 CHUNKING
+        # ===========================
+        CHUNK_SIZE = 6000
+        OVERLAP = 500
+
+        chunks = [
+            combined_text[i : i + CHUNK_SIZE]
+            for i in range(0, len(combined_text), CHUNK_SIZE - OVERLAP)
+        ]
+
+        # ===========================
+        # 🔧 SAFE JSON
+        # ===========================
+        def safe_json_load(response):
+            try:
+                return json.loads(response)
+            except Exception:
+                match = re.search(r"\[\s*{.*}\s*\]", response, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+                    json_str = re.sub(r"\n", " ", json_str)
+                    json_str = re.sub(r",\s*}", "}", json_str)
+                    json_str = re.sub(r",\s*]", "]", json_str)
+                    return json.loads(json_str)
+                raise ValueError("Invalid JSON")
+
+        # ===========================
+        # 🔁 ANSWER ACCUMULATION
+        # ===========================
+        answers_map = {q["id"]: q for q in assigned_ques}
+
+        # ===========================
+        # 🔁 PROCESS CHUNKS
+        # ===========================
+        for chunk_idx, chunk in enumerate(chunks):
+
+            prompt = f"""
+            You are a STRICT QUESTION ANSWERING ENGINE.
+
+            🚫 NO HALLUCINATION
+            🚫 NO GUESSING
+            🚫 NO EXTERNAL KNOWLEDGE
+
+            ===========================
+            SOURCE TEXT
+            ===========================
+            {chunk}
+
+            ===========================
+            QUESTIONS
+            ===========================
+            {json.dumps(assigned_ques, ensure_ascii=False)}
+
+            ===========================
+            TASK
+            ===========================
+            - Answer ONLY if answer is clearly present in SOURCE TEXT
+            - If answer is NOT found → keep user_answer as null
+            - DO NOT infer or assume
+            - DO NOT modify question text
+
+            ===========================
+            OUTPUT FORMAT
+            ===========================
+            Return ONLY JSON ARRAY:
+
+            [
+                {{
+                    "id": "...",
+                    "user_answer": "..." OR null
+                }}
+            ]
+
+            STRICT JSON ONLY
+            """
+
+            try:
+                response = await get_fireworks_response2(
+                    user_message=prompt,
+                    role="system",
+                    temp=0.0,
+                    user_id=self.userid,
+                    credits=self.credits,
+                )
+
+                chunk_answers = safe_json_load(response.strip())
+                for ans in chunk_answers:
+                    qid = ans.get("id")
+                    new_answer = ans.get("user_answer")
+
+                    if not qid or not new_answer:
+                        continue
+
+                    # ===========================
+                    # 🔒 CROSS VERIFY (ID + QUESTION)
+                    # ===========================
+                    original_q = answers_map.get(qid)
+                    if not original_q:
+                        continue
+
+                    # extra safety: question match
+                    if not original_q.get("question"):
+                        continue
+
+                    # ===========================
+                    # ✅ UPDATE ONLY IF EMPTY
+                    # ===========================
+                    if not original_q.get("user_answer"):
+                        original_q["user_answer"] = new_answer
+
+            except Exception as e:
+                return {
+                    "error": f"Chunk {chunk_idx} failed",
+                    "details": str(e),
+                }
+
+        # ===========================
+        # 🔥 SYNC TO EXECUTION + CHAT
+        # ===========================
+        execution_data = self.previous_data
+        chats = self.chat_history
+
+        updated_count = 0
+
+        for q in assigned_ques:
+            if not q.get("user_answer"):
+                continue
+
+            qid = q["id"]
+            question_text = q.get("question")
+            answer = q.get("user_answer")
+
+            # -------------------------------------------------
+            # 1. UPDATE EXECUTION DATA
+            # -------------------------------------------------
+            if isinstance(execution_data, dict):
+
+                for s_id, step_data in execution_data.items():
+
+                    # ✅ ONLY MATCH STEP
+                    if step_id and str(s_id) != str(step_id):
+                        continue
+
+                    outputs = step_data.get("output", [])
+                    if not isinstance(outputs, list):
+                        continue
+
+                    for out in outputs:
+                        if (
+                            out.get("id") == qid
+                            and out.get("question") == question_text
+                        ):
+                            if not out.get("user_answer"):
+                                out["user_answer"] = answer
+                                updated_count += 1
+                            break
+
+            # -------------------------------------------------
+            # 2. UPDATE CHAT HISTORY
+            # -------------------------------------------------
+            for chat in chats:
+
+                if step_id and str(chat.get("step_id")) != str(step_id):
+                    continue
+
+                outputs = chat.get("output", [])
+                if not isinstance(outputs, list):
+                    continue
+
+                for out in outputs:
+                    if out.get("id") == qid and out.get("question") == question_text:
+                        if not out.get("user_answer"):
+                            out["user_answer"] = answer
+                        break
+
+        # ===========================
+        # 💾 PERSIST
+        # ===========================
+        self.previous_data = execution_data
+        self.chat_history = chats
+        # self.workflow_json["assigned_questions"] = assigned_ques
+
+        self.saveworkflowtos3()
+
+        # ===========================
+        # ✅ RESPONSE
+        # ===========================
+        return {
+            "status": "success",
+            "updated_answers": updated_count,
+            "total_questions": len(assigned_ques),
+            "chunks_processed": len(chunks),
+        }

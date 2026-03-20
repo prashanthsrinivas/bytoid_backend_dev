@@ -28,12 +28,15 @@ runbook:
       analysis: radar_analysis_prompt_no_structure
       review: radar_review_template_no_structure
       recommendation: radar_recommendations_prompt_no_structure
+      risk_score: nist_risk_score_prompt
 
     structure_prompts:
       analysis: radar_analysis_prompt_structure
       review: radar_review_template_structure
       recommendation: radar_recommendations_prompt_structure
 
+    risk_prompt: nist_risk_score_prompt 
+    
     language_prompt: language_wordcount_extractor
 
     structure_prompt: structure_prompt_template

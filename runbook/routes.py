@@ -951,8 +951,36 @@ async def run_runbook_execution_engine(
         # RISK SCORE (runbook specific)
         # --------------------------------------------------
 
-        risk_score = calculate_risk_score(refactor_result)
+        # risk_score = calculate_risk_score(refactor_result)
 
+        # refactor_result["risk_score"] = risk_score
+        # --------------------------------------------------
+        # RISK SCORE (NIST LLM BASED)
+        # --------------------------------------------------
+
+        risk_prompt_key = runbook_yaml["radar"].get("risk_prompt", "nist_risk_score_prompt")
+        risk_prompt_template = RADAR_TEMPLATE[risk_prompt_key]
+
+        risk_prompt = risk_prompt_template.replace(
+            "{{analysis_result}}",
+            json.dumps(refactor_result)
+        )
+
+        risk_llm_result = await get_think_fire_response2_og(
+            user_message=risk_prompt,
+            user_id=user_id,
+            credits=credits,
+            total_input_chars=len(risk_prompt),
+        )
+
+        print("RISK RAW:", risk_llm_result)
+
+        risk_data = _safe_json_parse(risk_llm_result)
+
+        risk_score = risk_data.get("final_risk_score", 0)
+
+        # attach full breakdown (VERY IMPORTANT)
+        refactor_result["risk_analysis"] = risk_data
         refactor_result["risk_score"] = risk_score
 
         # --------------------------------------------------

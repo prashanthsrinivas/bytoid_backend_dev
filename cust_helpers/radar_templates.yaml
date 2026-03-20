@@ -1533,3 +1533,69 @@ correct_radar_json_prompt: |
 
   Input JSON chunks: 
   {{chunks_list}}
+
+nist_risk_score_prompt: |
+  You are a cybersecurity risk analyst following NIST SP 800-30 and NIST SP 800-53 guidelines.
+
+  Given the following system analysis report:
+
+  {{analysis_result}}
+
+  Your task is to calculate a RISK SCORE using NIST methodology.
+
+  ----------------------------------------
+  STEP 1: Identify Threat Events
+  - Extract all possible threat events (adversarial, structural, environmental)
+
+  STEP 2: Identify Vulnerabilities
+  - Map weaknesses or missing controls (NIST 800-53)
+
+  STEP 3: Assign Likelihood
+  Use:
+  Very High = 10
+  High = 8
+  Moderate = 5
+  Low = 2
+  Very Low = 0
+
+  STEP 4: Assign Impact
+  Use:
+  Very High = 10
+  High = 8
+  Moderate = 5
+  Low = 2
+  Very Low = 0
+
+  STEP 5: Calculate Risk Score
+  For each risk:
+  risk_value = likelihood × impact
+
+  STEP 6: Aggregate Risk Score
+  - Compute overall risk_score = average of all risk_values (0–100)
+  - Normalize to 0–100 scale if needed
+
+  STEP 7: Assign Final Risk Level
+  0–20 → Very Low
+  21–40 → Low
+  41–60 → Moderate
+  61–80 → High
+  81–100 → Very High
+
+  ----------------------------------------
+
+  Return STRICT JSON:
+
+  {
+    "risks": [
+      {
+        "threat": "...",
+        "vulnerability": "...",
+        "likelihood": 8,
+        "impact": 5,
+        "risk_score": 40
+      }
+    ],
+    "final_risk_score": 65,
+    "risk_level": "High",
+    "justification": "..."
+  }
