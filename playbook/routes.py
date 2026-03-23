@@ -1294,6 +1294,7 @@ def clear_playground_data():
             "execution_logs",
             "last_ai_discovered",
             "pre_user_data",
+            "evidences_ques",
         ]:
             if key in workflow_json:
                 del workflow_json[key]
@@ -2388,8 +2389,7 @@ async def generate_ques_by_file():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-async def answer_ques_file_bk(user_id, extracted_files, filename, step_id):
-    from services.automate_service import AutoMateService
+async def answer_ques_file_bk(user_id, extracted_files, filename, step_id, file_keys):
 
     credits = Credits()
     if not filename.lower().endswith(".json"):
@@ -2405,7 +2405,8 @@ async def answer_ques_file_bk(user_id, extracted_files, filename, step_id):
         credits=credits,
     ) as runner:
 
-        result = asyncio.run(runner.answer_ques_file_bk(extracted_files))
+        result = await runner.answer_ques_file_bk(extracted_files, step_id, file_keys)
+
     return result
 
 
@@ -2450,12 +2451,13 @@ async def generate_ans_files():
     try:
         from utils.s3_utils import s3bucket
 
-        data = request.get_json()
+        # data = request.get_json()
 
-        user_id = data.get("user_id")
-        file_keys = data.get("file_keys", [])
-        step_id = data.get("step_id")
+        user_id = request.form.get("user_id")
+        file_keys = request.form.getlist("file_keys")
+        step_id = request.form.get("step_id")
         wf_name = request.form.get("wf_name")
+        print("request form", request.form)
 
         if not user_id or not file_keys:
             return (
@@ -2466,15 +2468,19 @@ async def generate_ans_files():
             )
 
         s3 = s3bucket()
+        print("files", file_keys)
+        if type(file_keys) == str:
+            file_keys = [file_keys]
 
         # 🔥 Download files from S3
         for key in file_keys:
+            if not key:
+                continue
+
             try:
                 temp_path = os.path.join(tempfile.gettempdir(), os.path.basename(key))
 
-                s3.download_file(
-                    Bucket=os.getenv("S3_BUCKET_NAME"), Key=key, Filename=temp_path
-                )
+                s3.download_file(Bucket=S3_BUCKET, Key=key, Filename=temp_path)
 
                 local_files.append(temp_path)
 
@@ -2501,7 +2507,7 @@ async def generate_ans_files():
 
         # 🔥 SUBMIT BACKGROUND JOB (THIS WAS MISSING)
         job_id = await JobManager.submit_job(
-            answer_ques_file_bk, user_id, extracted_files, wf_name, step_id
+            answer_ques_file_bk, user_id, extracted_files, wf_name, step_id, file_keys
         )
 
         return jsonify(
@@ -2579,6 +2585,200 @@ def generatesigned_url_for_upload():
             )
 
         return jsonify({"status": "success", "files": response_files})
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/pb_temp_clone", methods=["POST"])
+def pb_temp_clone_min():
+    try:
+        from datetime import datetime
+        import uuid
+        import tempfile
+        import json
+        import os
+
+        data = request.json or {}
+
+        user_id = data.get("user_id")
+        filename = data.get("filename")
+        is_global = data.get("is_global", False)
+
+        if not user_id or not filename:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename required"}
+                ),
+                400,
+            )
+
+        # ---------------------------------
+        # ✅ Normalize filename
+        # ---------------------------------
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        base = base_name(filename=filename)
+
+        # ---------------------------------
+        # ✅ Load workflow
+        # ---------------------------------
+        wf_loc = f"{user_id}/workflow/{base}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json and is_global:
+            workflow_json = read_json_from_s3(f"workflow/global/{base}/{filename}")
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        # ---------------------------------
+        # ✅ Create new workflow
+        # ---------------------------------
+        new_filename = f"{uuid.uuid4().hex[:8]}.json"
+        new_base = base_name(filename=new_filename)
+
+        new_workflow = {
+            "filename": new_filename,
+            "reference_filename": filename,
+            "input_data": workflow_json.get("input_data", {}),
+            "workflow": workflow_json.get("workflow", {}),
+            "WorkflowDate": datetime.now().isoformat(),
+            "assigned_ques": workflow_json.get("assigned_ques", []),
+        }
+
+        # ---------------------------------
+        # ✅ Save new workflow to S3
+        # ---------------------------------
+        new_path = f"{user_id}/workflow/{new_base}/{new_filename}"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(new_workflow, tmp, indent=2)
+            temp_file_path = tmp.name
+
+        upload_any_file(
+            file_path=temp_file_path,
+            user_id=user_id,
+            s3_key_C=new_path,  # 🔥 FORCE correct path
+        )
+
+        os.remove(temp_file_path)  # ✅ cleanup
+
+        # ---------------------------------
+        # ✅ Update chat_config
+        # ---------------------------------
+        config_path = f"{user_id}/workflow/chat_config"
+        config_data = read_json_from_s3(config_path) or []
+
+        found = False
+        now = datetime.now().isoformat()
+
+        for pb in config_data:
+            if pb.get("original") == filename:
+                pb.setdefault("runs", []).append(
+                    {"name": new_filename, "created_at": now}
+                )
+                found = True
+                break
+
+        if not found:
+            config_data.append(
+                {
+                    "name": new_filename,
+                    "original": filename,
+                    "description": workflow_json.get("input_data", {}).get(
+                        "description"
+                    ),
+                    "title": workflow_json.get("input_data", {}).get("title"),
+                    "num_steps": len(
+                        workflow_json.get("workflow", {}).get("steps", [])
+                    ),
+                    "runs": [{"name": new_filename, "created_at": now}],
+                }
+            )
+
+        # ---------------------------------
+        # ✅ Save updated config
+        # ---------------------------------
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(config_data, tmp, indent=2)
+            temp_config_path = tmp.name
+
+        upload_any_file(
+            file_path=temp_config_path,
+            user_id=user_id,
+            s3_key_C=config_path,  # 🔥 FORCE correct path
+        )
+
+        os.remove(temp_config_path)  # ✅ cleanup
+
+        # ---------------------------------
+        # ✅ Response
+        # ---------------------------------
+        return jsonify(
+            {"status": "success", "new_filename": new_filename, "path": new_path}
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/list_chat_config", methods=["POST"])
+def list_chat_config():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+
+        if not user_id:
+            return jsonify({"status": "error", "message": "user_id required"}), 400
+
+        # ---------------------------------
+        # ✅ Load config
+        # ---------------------------------
+        config_path = f"{user_id}/workflow/chat_config"
+        config_data = read_json_from_s3(config_path) or []
+
+        if not isinstance(config_data, list):
+            return jsonify({"status": "error", "message": "Invalid config format"}), 500
+
+        # ---------------------------------
+        # ✅ Group by original
+        # ---------------------------------
+        grouped = {}
+
+        for item in config_data:
+            original = item.get("original")
+
+            if not original:
+                continue
+
+            if original not in grouped:
+                grouped[original] = {
+                    "original": original,
+                    "description": item.get("description"),
+                    "title": item.get("title"),
+                    "num_steps": item.get("num_steps"),
+                    "runs": [],
+                }
+
+            # Add runs
+            runs = item.get("runs", [])
+            if isinstance(runs, list):
+                grouped[original]["runs"].extend(runs)
+
+        # ---------------------------------
+        # ✅ Convert to list
+        # ---------------------------------
+        response_data = list(grouped.values())
+
+        # Optional: sort runs by created_at DESC
+        for group in response_data:
+            group["runs"] = sorted(
+                group["runs"], key=lambda x: x.get("created_at", ""), reverse=True
+            )
+
+        return jsonify({"status": "success", "data": response_data})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

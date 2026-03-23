@@ -47,13 +47,29 @@ class FileProcessor:
     # HANDLE SINGLE FILE
     # ================================
     def _handle_single_file(self, file):
-        filename = file.filename or "uploaded_file"
-        ext = os.path.splitext(filename)[1].lower()
 
-        # Save temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            file.save(tmp.name)
-            temp_path = tmp.name
+        # =====================================
+        # CASE 1: File is already a local path (S3 download)
+        # =====================================
+        if isinstance(file, str):
+            temp_path = file
+            filename = os.path.basename(file)
+            content_type = mimetypes.guess_type(filename)[0]
+
+        # =====================================
+        # CASE 2: Flask FileStorage
+        # =====================================
+        else:
+            filename = file.filename or "uploaded_file"
+            ext = os.path.splitext(filename)[1].lower()
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                file.save(tmp.name)
+                temp_path = tmp.name
+
+            content_type = file.content_type
+
+        ext = os.path.splitext(filename)[1].lower()
 
         # ---- ZIP ----
         if zipfile.is_zipfile(temp_path):
@@ -67,13 +83,13 @@ class FileProcessor:
         elif ext == ".rar":
             return self._extract_rar(temp_path)
 
-        # ---- 7Z (optional) ----
+        # ---- 7Z ----
         elif ext == ".7z":
             return self._extract_7z(temp_path)
 
         # ---- NORMAL FILE ----
         else:
-            return self._build_file_dict(filename, file.content_type, temp_path)
+            return self._build_file_dict(filename, content_type, temp_path)
 
     # ================================
     # ZIP EXTRACTION
