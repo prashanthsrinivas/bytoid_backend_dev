@@ -1,4 +1,6 @@
 import os
+
+
 from .s3_utils import (
     delete_folder_from_s3,
     upload_any_file,
@@ -39,7 +41,15 @@ def create_empty_playbook_config(user_id):
 
 
 def update_playbook_config(
-    configpath, user_id, name, filepath, title, description, num_steps, status="stopped"
+    configpath,
+    user_id,
+    name,
+    filepath,
+    title,
+    description,
+    num_steps,
+    referece="",
+    status="stopped",
 ):
     config_filename = "playbooksconfig.json"
     local_config_path = f"data/tmp_json/{config_filename}"
@@ -59,6 +69,7 @@ def update_playbook_config(
         "description": description,
         "num_steps": num_steps,
         "status": status,
+        "referece": referece,
         "schedule": {},
         "runtime": {},
     }
@@ -202,6 +213,74 @@ def deleteConfigdata(configpath, user_id, name):
     # Step 6: Clean local temp file
     try:
         os.remove(local_config_path)
+    except:
+        pass
+
+    return True
+
+
+def deleteGlobalConfigdata(config_path, filename):
+    import os
+    import json
+    import tempfile
+
+    # Normalize filename
+    filename = filename.strip()
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    def base_name(filename):
+        name_without_ext = os.path.splitext(filename)[0]
+        # print(name_without_ext)
+        # print(name_without_ext[:8])
+
+        # Always take first 8 characters (playbook ID)
+        return name_without_ext[:8]
+
+    base = base_name(filename)
+
+    # -----------------------
+    # Step 1: Load config
+    # -----------------------
+    config_data = read_json_from_s3(config_path) or []
+
+    if not isinstance(config_data, list) or not config_data:
+        return False
+
+    # -----------------------
+    # Step 2: Remove entry
+    # -----------------------
+    updated_config = [item for item in config_data if item.get("filename") != filename]
+
+    if len(updated_config) == len(config_data):
+        # No match found
+        return False
+
+    # -----------------------
+    # Step 3: Save updated config locally
+    # -----------------------
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+        json.dump(updated_config, tmp, indent=2)
+        temp_config_path = tmp.name
+
+    # Upload updated config
+    upload_any_file(temp_config_path, "", s3_key_C=config_path)
+
+    # -----------------------
+    # Step 4: Delete S3 folder
+    # -----------------------
+    s3_folder = f"workflow/global/{base}"
+
+    try:
+        delete_folder_from_s3(s3_folder)
+    except Exception as e:
+        print("⚠️ Failed to delete S3 folder:", e)
+
+    # -----------------------
+    # Step 5: Cleanup
+    # -----------------------
+    try:
+        os.remove(temp_config_path)
     except:
         pass
 

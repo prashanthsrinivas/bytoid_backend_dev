@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
 from services.totp_service import TOTPService
-from db.db_checkers import check_onboarding_user, fetch_user_domains
+from db.db_checkers import check_onboarding_user, delete_user_domain, fetch_user_domains
 from cryptography.fernet import Fernet
 import base64
 import time
@@ -28,6 +28,7 @@ from msal import ConfidentialClientApplication
 import requests
 import dns.resolver
 from utils.key_rotation_manager import SecureKMSService
+from db.db_checkers import make_api_key
 
 users_bp = Blueprint("users", __name__)
 
@@ -486,73 +487,7 @@ def generate_api_key():
     user_id = data.get("userid") or session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-    new_api_key = uuid.uuid4()
-    # connection = pymysql.connect(
-    #        host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
-    #         user='skilbyt_db',
-    #          password='JesusChristIsLord$1',
-    #           db='ai_support'
-    #          )
-    connection = connect_to_rds()
-    try:
-        with connection.cursor() as cursor:
-            sql = "SELECT 1 FROM launch WHERE user_id_fk = %s LIMIT 1"
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            if not result:
-                sub_agent_id = uuid.uuid4()
-                launch_id = uuid.uuid4()
-
-                subagent_sql = """
-                INSERT INTO subagents (
-                sub_agent_id, launch_id_fk, name, description,voice_type,
-                documentation_link, model_version, created_at, updated_at
-                ) VALUES (%s, %s, %s,NULL, NULL, NULL, NULL, NULL, NULL)
-                """
-                cursor.execute(subagent_sql, (sub_agent_id, None, ""))
-
-                insert_sql = """
-                    INSERT INTO launch (launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name)
-                    VALUES (%s, %s, %s, %s, %s)
-                """
-
-                cursor.execute(
-                    insert_sql, (launch_id, sub_agent_id, user_id, new_api_key, None)
-                )
-                cursor.execute(
-                    """
-                UPDATE subagents
-                SET launch_id_fk = %s
-                WHERE sub_agent_id = %s
-                """,
-                    (launch_id, sub_agent_id),
-                )
-
-                connection.commit()
-                return jsonify({"apiKey": new_api_key}), 200
-
-            else:
-                sql = "SELECT api_id FROM launch WHERE user_id_fk = %s LIMIT 1"
-                cursor.execute(sql, (user_id,))
-                result = cursor.fetchone()
-
-                if (
-                    result and result[0]
-                ):  # ✅ Check if result exists AND api_id is not None
-                    return jsonify({"apiKey": result[0]}), 200
-                else:
-                    update_sql = """
-                        UPDATE launch
-                        SET api_id = %s
-                        WHERE user_id_fk = %s
-                    """
-                    cursor.execute(update_sql, (new_api_key, user_id))
-
-                connection.commit()
-                return jsonify({"apiKey": new_api_key}), 200
-    except Exception as e:
-        # print(f"Error generating API key: {e}")  # Or use logging instead of print
-        return jsonify({"error": f"Internal server error {e}"}), 500
+    return make_api_key(user_id=user_id)
 
 
 @users_bp.route("/get_leads", methods=["GET"])
@@ -690,7 +625,8 @@ def get_account_info(userid):
                 SELECT 
                     u.user_id,
                     u.first_name, 
-                    u.last_name, 
+                    u.last_name,
+                    u.user_type, 
                     u.email,
                     u.social,
                     l.api_id 
@@ -717,6 +653,7 @@ def get_account_info(userid):
                     "email": row.get("email") or None,
                     "api_key": row.get("api_id") or None,
                     "social": row.get("social"),
+                    "user_type": row.get("user_type"),
                 }
             ),
             200,
@@ -786,16 +723,13 @@ def create_new_user():
             logger.info("User already exist with this email address")
             return jsonify({"message": "User already exists. Please login"}), 400
         logger.info("creating a new user")
-        # Get value for domain based from email 
+        # Get value for domain based from email
         user_domain = ""
 
         if email and "@" in email:
             user_domain = email.split("@")[-1].lower()
 
-        domain_data = {
-            "primary": user_domain,
-            "secondary": []   # empty initially
-        }
+        domain_data = {"primary": user_domain, "secondary": []}  # empty initially
         # hash the password
         hashed_password = generate_password_hash(password)
         # generate user_id
@@ -1274,10 +1208,10 @@ def connect_provider(provider):
         session["oauth_provider"] = "microsoft"
         return jsonify({"auth_url": auth_url})
 
-
     session["oauth_state"] = state
 
     return jsonify({"auth_url": auth_url})
+
 
 @users_bp.route("/oauth/connect/callback", methods=["POST"])
 def universal_oauth_callback():
@@ -1333,16 +1267,23 @@ def universal_oauth_callback():
             token_data = exchange_microsoft_code(code)
 
             if "access_token" not in token_data:
-                return jsonify({
-                    "connected": False,
-                    "error": token_data.get("error_description", "Token exchange failed")
-                }), 400
+                return (
+                    jsonify(
+                        {
+                            "connected": False,
+                            "error": token_data.get(
+                                "error_description", "Token exchange failed"
+                            ),
+                        }
+                    ),
+                    400,
+                )
 
             access_token = token_data["access_token"]
             refresh_token = token_data.get("refresh_token")
             expiry = token_data.get("expires_in")
-            client_id = M_CLIENT_ID#token_data.get("client_id")
-            client_secret = M_CLIENT_SECRET#token_data.get("client_secret")
+            client_id = M_CLIENT_ID  # token_data.get("client_id")
+            client_secret = M_CLIENT_SECRET  # token_data.get("client_secret")
 
             userinfo = get_microsoft_user(access_token)
 
@@ -1365,17 +1306,12 @@ def universal_oauth_callback():
             expiry=expiry,
         )
 
-        return jsonify({
-            "connected": True,
-            "platform": provider,
-            "email": email
-        }), 200
+        return jsonify({"connected": True, "platform": provider, "email": email}), 200
 
     except Exception as e:
-        return jsonify({
-            "connected": False,
-            "error": str(e)
-        }), 500
+        return jsonify({"connected": False, "error": str(e)}), 500
+
+
 def save_integration(
     primary_user_id,
     provider,
@@ -1385,18 +1321,19 @@ def save_integration(
     refresh_token,
     client_id,
     client_secret,
-    expiry
+    expiry,
 ):
     conn = connect_to_rds()
     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
     query = "SELECT * FROM integrations where primary_user_id_fk = %s"
 
-    cursor.execute(query,(primary_user_id,))
+    cursor.execute(query, (primary_user_id,))
     integration = cursor.fetchone()
 
     if not integration:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO integrations (
                 integration_id,
                 primary_user_id_fk,
@@ -1420,21 +1357,24 @@ def save_integration(
                 expiry = VALUES(expiry),
                 status = 'active',
                 updated_at = NOW()
-        """, (
-            str(uuid.uuid4()),
-            primary_user_id,
-            provider,
-            external_user_id,
-            email,
-            "mails",
-            access_token,
-            refresh_token,
-            client_id,
-            client_secret,
-            expiry
-        ))
+        """,
+            (
+                str(uuid.uuid4()),
+                primary_user_id,
+                provider,
+                external_user_id,
+                email,
+                "mails",
+                access_token,
+                refresh_token,
+                client_id,
+                client_secret,
+                expiry,
+            ),
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO integrations (
                 integration_id,
                 primary_user_id_fk,
@@ -1458,24 +1398,30 @@ def save_integration(
                 expiry = VALUES(expiry),
                 status = 'active',
                 updated_at = NOW()
-        """, (
-            str(uuid.uuid4()),
-            primary_user_id,
-            provider,
-            external_user_id,
-            email,
-            "drive",
-            access_token,
-            refresh_token,
-            client_id,
-            client_secret,
-            expiry
-        ))
-        cursor.execute("""
-            UPDATE users SET social = %s , token = %s WHERE user_id = %s""",(provider,access_token,primary_user_id))
+        """,
+            (
+                str(uuid.uuid4()),
+                primary_user_id,
+                provider,
+                external_user_id,
+                email,
+                "drive",
+                access_token,
+                refresh_token,
+                client_id,
+                client_secret,
+                expiry,
+            ),
+        )
+        cursor.execute(
+            """
+            UPDATE users SET social = %s , token = %s WHERE user_id = %s""",
+            (provider, access_token, primary_user_id),
+        )
 
     conn.commit()
     conn.close()
+
 
 def build_microsoft_auth_url():
     AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
@@ -1491,12 +1437,13 @@ def build_microsoft_auth_url():
         "response_mode": "query",
         "scope": " ".join(M_SCOPES),
         "state": state,
-        "prompt": "select_account"
+        "prompt": "select_account",
     }
 
     auth_url = f"{AUTH_URL}?{urlencode(params)}"
 
     return auth_url, state
+
 
 def exchange_microsoft_code(code):
     TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
@@ -1516,15 +1463,11 @@ def exchange_microsoft_code(code):
 
     return response.json()
 
-def get_microsoft_user(access_token):
-    headers = {
-        "Authorization": f"Bearer {access_token}"
-    }
 
-    response = requests.get(
-        "https://graph.microsoft.com/v1.0/me",
-        headers=headers
-    )
+def get_microsoft_user(access_token):
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    response = requests.get("https://graph.microsoft.com/v1.0/me", headers=headers)
 
     if response.status_code != 200:
         raise Exception(f"User fetch failed: {response.text}")
@@ -1532,7 +1475,7 @@ def get_microsoft_user(access_token):
     return response.json()
 
 
-@users_bp.route("/add_domain",methods=["POST"])
+@users_bp.route("/add_domain", methods=["POST"])
 def add_domain():
     data = request.get_json()
     user_id = data.get("user_id")
@@ -1540,54 +1483,108 @@ def add_domain():
     new_domain = data.get("new_domain")
     try:
         if not is_valid_domain(new_domain):
-            return jsonify({"error":"Invalid or non-existing domain"}),400
+            return jsonify({"error": "Invalid or non-existing domain"}), 400
         conn = connect_to_rds()
         cursor = conn.cursor()
-        domains = fetch_user_domains(user_id,conn)
+        domains = fetch_user_domains(user_id, conn)
         if not domains:
             # Initialize if no domain exists
             user_domain = email.split("@")[-1].lower() if email and "@" in email else ""
-            domains = {
-                "primary": user_domain,
-                "secondary": []
-            }
+            domains = {"primary": user_domain, "secondary": []}
 
         # Avoid duplicates
-        if new_domain.lower() not in [d.lower() for d in domains["secondary"]]:
-            domains["secondary"].append(new_domain.lower())
-        
-        cursor.execute("""
+        secondary_domains = domains.get("secondary") or []
+        domains["secondary"] = secondary_domains
+        if new_domain.lower() != domains[
+            "primary"
+        ].lower() and new_domain.lower() not in [d.lower() for d in secondary_domains]:
+            secondary_domains.append(new_domain.lower())
+
+        cursor.execute(
+            """
             UPDATE users
             SET domain = %s
             WHERE user_id = %s
-        """, (json.dumps(domains), user_id))
+        """,
+            (json.dumps(domains), user_id),
+        )
 
         conn.commit()
         conn.close()
-        return jsonify({"message":"Domain added successfully","domains": domains})
+        return jsonify({"message": "Domain added successfully", "domains": domains})
 
     except Exception as e:
-        return jsonify({"error":str(e)}),500
-#validation of domain
-def is_valid_domain(domain : str):
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+# validation of domain
+
+
+def is_valid_domain(domain: str):
     try:
-         domain = domain.strip().lower()
-         pattern = r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$"
-         if not re.match(pattern, domain):
-             return False
-         #DNS Validation
-         dns.resolver.resolve(domain,"MX")
-    except Exception:
+        domain = domain.strip().lower()
+        pattern = r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$"
+
+        match = re.match(pattern, domain)
+        print(match, domain)
+
+        if not match:
+            return False
+
+        # DNS Validation (MX)
+        dns.resolver.resolve(domain, "MX")
+
+        return True  # ✅ IMPORTANT
+
+    except Exception as e:
+        print("Error:", e)
         return False
-    
-@users_bp.route("/get_all_domain/<user_id>",methods=["GET"])
+
+
+@users_bp.route("/delete_domain", methods=["DELETE"])
+def delete_domain():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    domain_name = data.get("domain_name")
+    if not data or not user_id or not domain_name:
+        return (
+            jsonify({"status": False, "message": "user_id and domain_name required"}),
+            400,
+        )
+    try:
+        conn = connect_to_rds()
+
+        domains = fetch_user_domains(user_id, conn)
+
+        if domains["primary"].lower() == domain_name.lower():
+            return (
+                jsonify({"status": False, "message": "Can't delete primary domain"}),
+                401,
+            )
+
+        result = delete_user_domain(user_id, domain_name, conn)
+
+        conn.close()
+        return jsonify({"status": True, "message": "Deleted successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@users_bp.route("/get_all_domain/<user_id>", methods=["GET"])
 def get_all_domain(user_id):
     try:
         conn = connect_to_rds()
-        domains = fetch_user_domains(user_id,conn)
+        domains = fetch_user_domains(user_id, conn)
         conn.close()
         if not domains:
-            return jsonify({"message":"No domains available"}), 200
+            return jsonify({"message": "No domains available"}), 200
         all_domains = []
 
         if domains.get("primary"):
@@ -1601,31 +1598,31 @@ def get_all_domain(user_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@users_bp.route("/get-encryption-key/<user_id>", methods = ["GET"])
+
+@users_bp.route("/get-encryption-key/<user_id>", methods=["GET"])
 def get_encryption_key(user_id):
     try:
         kms_service = SecureKMSService()
-        plain_key,encrypted_key = kms_service.get_user_key(user_id)
+        plain_key, encrypted_key = kms_service.get_user_key(user_id)
         encrypted_key_b64 = base64.b64encode(encrypted_key).decode("utf-8")
-        return jsonify({"encryption_key":encrypted_key_b64}),200
+        return jsonify({"encryption_key": encrypted_key_b64}), 200
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return jsonify({"error": str(e)}), 500
 
-@users_bp.route("/rotate-encryption-key",methods=["POST"])
+
+@users_bp.route("/rotate-encryption-key", methods=["POST"])
 def rotate_encryption_key():
     try:
         data = request.get_json()
         user_id = data.get("user_id")
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
-        cursor.execute("SELECT user_type FROM users WHERE user_id = %s",(user_id))
+        cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (user_id))
         result = cursor.fetchone()
         is_admin = result["user_type"] == "admin"
         kms_service = SecureKMSService()
-        rotate = kms_service.rotate_user_key(user_id,is_admin)
+        rotate = kms_service.rotate_user_key(user_id, is_admin)
 
-        return jsonify({
-            "encryption_key":rotate["encrypted_key"]
-        }),200
+        return jsonify({"encryption_key": rotate["encrypted_key"]}), 200
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return jsonify({"error": str(e)}), 500

@@ -74,7 +74,7 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
                     s3_key = f"{user_id}/workflow/{final_name}"
                 else:
                     first_char = os.path.splitext(final_name)[0]
-                    s3_key = f"{user_id}/workflow/{first_char}/{final_name}"
+                    s3_key = f"{user_id}/workflow/{first_char[:8]}/{final_name}"
 
             elif type == "yaml":
                 s3_key = f"{user_id}/yaml/{final_name}"
@@ -88,7 +88,7 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
             elif type == "messages":
                 s3_key = f"{user_id}/messages/{final_name}"
 
-            elif type == "runbook":  
+            elif type == "runbook":
                 s3_key = f"{user_id}/runbooks/{final_name}"
 
             else:
@@ -158,15 +158,26 @@ def read_json_from_s3(filepath):
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key=filepath)
         content = response["Body"].read().decode("utf-8")
-
         data = json.loads(content)
 
         logger.info(f"JSON read successfully: {filepath}")
-
         return data
 
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code")
+
+        if error_code == "NoSuchKey":
+            # ✅ Expected case → no noisy logs
+            logger.info(f"S3 key not found (returning None): {filepath}")
+            return None
+
+        # ❗ Unexpected AWS error
+        logger.error(f"AWS ClientError reading JSON: {e}", exc_info=True)
+        return None
+
     except Exception as e:
-        logger.error(f"Error reading JSON: {e}", exc_info=True)
+        # ❗ Any other unexpected error
+        logger.error(f"Unexpected error reading JSON: {e}", exc_info=True)
         return None
 
 

@@ -90,6 +90,9 @@ def login():
     return jsonify(auth_url=auth_url)
 
 
+from db.db_checkers import make_api_key
+
+
 @google_bp.route("/oauth2callback")
 def oauth2callback(url, state):
     if not state:
@@ -278,6 +281,8 @@ def oauth2callback(url, state):
                         starter_plan["monthly_token_limit"],
                     ),
                 )
+                # Generate a subagent and launch ids for new user
+                make_api_key(user_id)
 
             else:
                 logger.info("users update data")

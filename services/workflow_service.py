@@ -33,6 +33,13 @@ PLAY_TEMPLATE = load_yaml_file(path=pathconfig.play_template)
 now = datetime.now()
 
 
+def base_name(filename):
+    name_without_ext = os.path.splitext(filename)[0]
+
+    # Always take first 8 characters (playbook ID)
+    return name_without_ext[:8]
+
+
 class WorkflowRunnerV2:
     def __init__(
         self,
@@ -52,7 +59,7 @@ class WorkflowRunnerV2:
         self.credits = credits
         self.execution_id = execution_id
         self.connection = db or connect_to_rds()
-        self.basename = os.path.splitext(filename)[0]
+        self.basename = base_name(filename)
         self.wf_loc = f"{userid}/workflow/{self.basename}/{filename}"
         self.on_loc = f"{userid}/workflow/{self.basename}/{execution_id}.json"
         base_workflow = workflowJson or read_json_from_s3(self.wf_loc)
@@ -151,16 +158,6 @@ class WorkflowRunnerV2:
             if uid not in existing_ids:
                 return uid
 
-    def prompt_template_load(self):
-        if not PLAY_TEMPLATE:
-            return load_yaml_file(path=pathconfig.play_template)
-        else:
-            return PLAY_TEMPLATE
-
-    def send_update(self, event, data):
-        if self.on_update:
-            self.on_update(event, data)
-
     def _get_next_uncompleted_step(self):
         """
         Environment-agnostic:
@@ -195,31 +192,6 @@ class WorkflowRunnerV2:
                 return step_id
 
         return None
-
-    def check_affirmative(self, userinput):
-        affirmative_words = [
-            "yes",
-            "y",
-            "ok",
-            "sure",
-            "confirm",
-            "correct",
-            "that's right",
-            "yep",
-            "go ahead",
-            "please proceed",
-        ]
-
-        pattern = (
-            r"\b(" + "|".join(re.escape(word) for word in affirmative_words) + r")\b"
-        )
-
-        def is_affirmative(user_input: str) -> bool:
-            if not user_input:
-                return False
-            return bool(re.search(pattern, user_input.lower()))
-
-        return is_affirmative(user_input=userinput)
 
     async def get_chat_summarization(self, chats_obj=None):
         template_data = PLAY_TEMPLATE
@@ -2477,19 +2449,6 @@ class WorkflowRunnerV2:
             self.workflow_json.setdefault(target_section, {})
             self.workflow_json[target_section][str(step_id)] = log_entry
 
-        # ------------------------------------------------------------------
-        # Record execution logs
-        # ------------------------------------------------------------------
-        # self.workflow_json["execution_logs"].append(
-        #     {
-        #         "timestamp": now.isoformat(),
-        #         "input": user_input,
-        #         "output": result.get("message"),
-        #         "status": execution_status,
-        #         "step_id": result.get("step_id"),
-        #     }
-        # )
-
         self.workflow_json["last_ai_discovered"] = {}
 
         # ------------------------------------------------------------------
@@ -2598,17 +2557,6 @@ class WorkflowRunnerV2:
                         if answer == "":
                             cleared = True
                         break
-        # step_data = self.get_step_data(last_step_id)
-        # if step_data:
-        #     function_call = step_data.get("function_call", {})
-        #     function_name = function_call.get("function_name")
-        #     if function_name == "automate.assign_or_show_questions_from_file":
-        #         assigned_ques = self.workflow_json.get("assigned_questions")
-        #         for q in assigned_ques:
-        #             if q.get("id") == qid:
-        #                 q["user_answer"] = answer
-        #                 break
-
         # -------------------------------------------------
         # 3. CHECK IF ALL QUESTIONS ANSWERED
         # -------------------------------------------------
@@ -3019,7 +2967,10 @@ class WorkflowRunnerV2:
             assigned = self.workflow_json.get("assigned_questions")
             if assigned:
                 result = await self._execute_step(step_id=current_step, compl=True)
-                if "questions" in result:
+                if (
+                    "execution_details" in result
+                    and result["execution_details"]["questions"]
+                ):
                     return {
                         "message": "Questions retrieved successfully.",
                         "action": "step_complete",
@@ -3028,12 +2979,15 @@ class WorkflowRunnerV2:
                 if is_first_interaction:
                     output_data = {
                         "message": "👋 Welcome!\n\n"
-                        "Good to have u here. \n\n"
-                        + "for the process to run \n\n there were No assigned questions found. Please upload or assign a questionnaire file."
+                        "Good to have u here.\n\n"
+                        "For the process to run, no assigned questions were found.\n\n"
+                        "Please upload or assign a questionnaire file."
                     }
-                output_data = {
-                    "message": "for the process to run \n\n there were No assigned questions found. Please upload or assign a questionnaire file."
-                }
+                else:
+                    output_data = {
+                        "message": "For the process to run, no assigned questions were found.\n\n"
+                        "Please upload or assign a questionnaire file."
+                    }
         else:
             previous_results = self.previous_data or {}
             collected_inputs = self.workflow_json.get("pre_user_data", {})
@@ -3153,7 +3107,7 @@ class WorkflowRunnerV2:
 
         self.saveworkflowtos3()
 
-        return ai_result
+        return output_data
 
     async def answer_ques_file_bk(self, extracted_files, step_id, file_keys):
 
@@ -3418,6 +3372,7 @@ class WorkflowRunnerV2:
         # 🔽 SAVE FILE REFERENCES
         # ===========================
         cf_urls = [attach_CLDFRNT_url(k) for k in file_keys if k]
+        self._question_answer_stats()
 
         if "evidences_ques" not in self.workflow_json:
             self.workflow_json["evidences_ques"] = cf_urls
@@ -3431,6 +3386,8 @@ class WorkflowRunnerV2:
         # ===========================
         # ✅ FINAL RESPONSE
         # ===========================
+        # if len(assigned_ques) == len(answers_map):
+        #     pass    celery.delay()
         return {
             "status": "success",
             "updated_answers": total_updated,

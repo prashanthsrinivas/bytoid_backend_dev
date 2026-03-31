@@ -28,8 +28,12 @@ from utils.s3_utils import upload_exefileany_file
 
 
 def base_name(filename):
-    base_name = os.path.splitext(filename)[0]
-    return base_name
+    name_without_ext = os.path.splitext(filename)[0]
+    # print(name_without_ext)
+    # print(name_without_ext[:8])
+
+    # Always take first 8 characters (playbook ID)
+    return name_without_ext[:8]
 
 
 def clean_yaml_block(text: str) -> str:
@@ -605,6 +609,7 @@ async def create_playbook(
         "WorkflowDate": datetime.now().isoformat(),
         "is_global": False,
         "autotest": {"status": False, "count": 0},
+        "runbook_id": None,
     }
     delete_file_from_s3(filepath=f"{userid}/workflow/{first_char}/{filename}")
     with open(filepath, "w", encoding="utf-8") as f:
@@ -664,54 +669,6 @@ def save_execution_playbook_to_s3(playbook, user_id, success_message, filepath):
     upload_exefileany_file(file_path=temp_file_path, bfilepath=filepath)
     os.remove(temp_file_path)
     return {"status": "success", "message": success_message, "data": playbook}
-
-
-# def format_step_data(stepdata: dict) -> dict:
-#     """Return a cleaned step definition with only populated fields."""
-#     out = {}
-
-#     # always worth keeping if present
-#     for src, tgt in [
-#         ("id", "id"),
-#         ("title", "title"),
-#         ("stepType", "type"),
-#         ("objective", "objective"),
-#     ]:
-#         val = stepdata.get(src)
-#         if val:
-#             out[tgt] = val
-
-#     # Always include decision_point (true or false)
-#     out["decision_point"] = bool(stepdata.get("isDecisionPoint", False))
-
-#     # Only include decision_type if applicable
-#     if stepdata.get("isDecisionPoint") and stepdata.get("decisionType"):
-#         out["decision_type"] = stepdata["decisionType"]
-
-#     # lists / strings that might be empty
-#     if stepdata.get("conditions"):
-#         out["condition"] = stepdata["conditions"]
-
-#     if stepdata.get("nextStepIds"):
-#         out["next_step"] = stepdata["nextStepIds"]
-
-#     if stepdata.get("instructions"):
-#         out["ai_instructions"] = stepdata["instructions"]
-
-#     # communication extras
-#     if stepdata.get("stepType") == "communication":
-#         if stepdata.get("communicationMode"):
-#             out["communication_mode"] = stepdata["communicationMode"]
-#         if stepdata.get("selectedIntegrations"):
-#             out["channels"] = stepdata["selectedIntegrations"]
-#         if stepdata.get("calendar_type"):
-#             out["calendar_type"] = stepdata["calendar_type"]
-
-#     # navigation extras
-#     if stepdata.get("stepType") == "navigation" and stepdata.get("pageUrl"):
-#         out["page_url"] = stepdata["pageUrl"]
-
-#     return out
 
 
 def format_step_data(stepdata: dict) -> dict:
@@ -959,3 +916,19 @@ def update_playbook_schedule_and_runtime(
 
     os.remove(local_path)
     return True
+
+
+def assign_runbook_playbook(runbook_id, playbook, userid):
+    filename = playbook
+    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    main_workflow = read_json_from_s3(wf_loc) or {}
+
+    # Always overwrite to keep source of truth
+    main_workflow["runbook_id"] = runbook_id
+
+    return save_playbook_to_s3(
+        main_workflow,
+        userid,
+        "workflow schedule updated",
+        filename,
+    )

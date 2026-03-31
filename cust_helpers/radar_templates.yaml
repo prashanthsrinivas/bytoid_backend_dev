@@ -1599,3 +1599,120 @@ nist_risk_score_prompt: |
     "risk_level": "High",
     "justification": "..."
   }
+
+questionnaire_response_prompt: |
+  You are a cybersecurity and compliance analyst.
+
+  You are given questionnaire responses collected from a system, process, or organization.
+
+  ----------------------------------------
+  INPUT DATA
+  ----------------------------------------
+  Questionnaire Responses:
+  {{analyze_input}}
+
+  Additional Context:
+  - File Data: {{file_data}}
+  - External Data Sources: {{data_sources}}
+  - Reference Sources: {{reference_sources}}
+
+  ----------------------------------------
+  OBJECTIVE
+  ----------------------------------------
+  Analyze the questionnaire responses and generate a detailed REVIEW REPORT.
+
+  ----------------------------------------
+  ANALYSIS INSTRUCTIONS
+  ----------------------------------------
+
+  1. Understand Responses
+  - Interpret each response (Yes/No/Value/Text)
+  - Identify intent of the question (security, compliance, operations, etc.)
+
+  2. Categorize Responses
+  Group findings into:
+  - Compliant / Adequate
+  - Partially Compliant
+  - Non-Compliant / Risky
+  - Not Answered / अस्पष्ट
+
+  3. Identify Gaps
+  - Missing controls
+  - Weak implementations
+  - Inconsistent or conflicting answers
+
+  4. Map to Control Areas (inspired by NIST SP 800-53)
+  Examples:
+  - Access Control (AC)
+  - Identification & Authentication (IA)
+  - System & Communications Protection (SC)
+  - Incident Response (IR)
+  - Configuration Management (CM)
+
+  5. Risk Indicators
+  - Highlight responses that indicate:
+    - Security vulnerabilities
+    - Operational weaknesses
+    - Policy violations
+
+  6. Derive Insights
+  - Patterns across responses
+  - Systemic weaknesses
+  - Over-reliance on manual processes
+  - Lack of monitoring / controls
+
+  ----------------------------------------
+  OUTPUT FORMAT (STRICT JSON)
+  ----------------------------------------
+
+  {
+    "summary": "High-level overview of questionnaire assessment",
+
+    "analysis": {
+      "total_questions": <number>,
+      "answered": <number>,
+      "unanswered": <number>,
+
+      "categories": {
+        "compliant": <count>,
+        "partial": <count>,
+        "non_compliant": <count>
+      }
+    },
+
+    "findings": [
+      {
+        "question": "...",
+        "response": "...",
+        "category": "Compliant | Partial | Non-Compliant",
+        "issue": "Describe the problem or observation",
+        "impact": "Potential impact",
+        "control_area": "e.g., Access Control"
+      }
+    ],
+
+    "key_risks": [
+      {
+        "risk": "...",
+        "severity": "Low | Moderate | High | Critical",
+        "affected_area": "...",
+        "description": "..."
+      }
+    ],
+
+    "strengths": [
+      "List positive aspects identified"
+    ],
+
+    "weaknesses": [
+      "List major gaps and issues"
+    ],
+
+    "recommendations": [
+      {
+        "action": "...",
+        "priority": "Low | Medium | High",
+        "expected_benefit": "..."
+      }
+    ]
+  }

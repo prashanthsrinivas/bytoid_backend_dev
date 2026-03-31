@@ -537,45 +537,90 @@ def get_user_agent_id(apikey):
         connection.close()
 
 
+import json
+
+
 def get_existing_umail_json(user_id, connection=None):
     """Fetch existing umail_json for a user."""
     try:
-        # print("----inside get_existing_umail_json")
+        print("----inside get_existing_umail_json")
+
         own_conn = False
         if connection is None:
             connection = connect_to_rds()
             own_conn = True
 
-        with get_cursor(connection) as cursor:
-            cursor.execute(
-                "SELECT umail_json FROM users WHERE user_id = %s", (user_id,)
-            )
-            row = cursor.fetchone()
-
-        if row and row[0]:
-            try:
-                return json.loads(row[0])
-            except Exception:
-                return None
-
-        else:
-            # try to get from integrations table:
+        def fetch_json(query):
             with get_cursor(connection) as cursor:
-                cursor.execute(
-                    "SELECT umail_json FROM integrations WHERE user_id = %s", (user_id,)
-                )
-                row = cursor.fetchone()
+                cursor.execute(query, (user_id,))
+                return cursor.fetchone()
 
-            if row and row[0]:
-                try:
-                    return json.loads(row[0])
-                except Exception:
-                    return None
+        # -----------------------
+        # Step 1: Check users table
+        # -----------------------
+        row = fetch_json("SELECT umail_json FROM users WHERE user_id = %s")
+        # print("row (users):", row)
+        # print(type(row))
+
+        data = parse_json_row(row)
+        if data:
+            return data
+
+        # -----------------------
+        # Step 2: Check integrations table
+        # -----------------------
+        row = fetch_json("SELECT umail_json FROM integrations WHERE user_id = %s")
+        # print("row (integrations):", row)
+
+        data = parse_json_row(row)
+        if data:
+            return data
 
         return None
+
+    except Exception as e:
+        print("❌ Error in get_existing_umail_json:", e)
+        return None
+
     finally:
-        if own_conn:
+        if connection and own_conn:
             connection.close()
+
+
+# -----------------------
+# Helper: Safe JSON Parse
+# -----------------------
+def parse_json_row(row):
+    if not row or not row[0]:
+        return None
+
+    raw = row[0]
+
+    try:
+        # Handle bytes (just in case)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+
+        # Clean string
+        raw = raw.strip()
+
+        parsed = json.loads(raw)
+
+        # Optional validation
+        if not isinstance(parsed, dict):
+            print("⚠️ Parsed JSON is not dict")
+            return None
+
+        return parsed
+
+    except json.JSONDecodeError as e:
+        print("❌ JSON decode error:", e)
+        print("Raw value:", raw[:200])  # print partial
+        return None
+
+    except Exception as e:
+        print("❌ Unexpected parse error:", e)
+        return None
 
 
 def get_existing_umail_json_integration(user_id, connection=None):
@@ -1301,3 +1346,109 @@ def fetch_user_domains(user_id: str, conn):
     finally:
         if own_conn:
             conn.close()
+
+
+def delete_user_domain(user_id: str, domain_name: str, conn):
+    try:
+        own_conn = False
+        if conn is None:
+            conn = connect_to_rds()
+            own_conn = True
+        with get_cursor(conn) as cursor:
+            update_query = """
+                UPDATE users
+                SET domain = JSON_SET(
+                    domain,
+                    '$.secondary',
+                    (
+                        SELECT JSON_ARRAYAGG(value)
+                        FROM JSON_TABLE(
+                            domain->'$.secondary',
+                            '$[*]' COLUMNS (
+                                value VARCHAR(255) PATH '$'
+                            )
+                        ) AS jt
+                        WHERE value <> %s
+                    )
+                )
+                WHERE user_id = %s;
+                """
+            cursor.execute(update_query, (domain_name, user_id))
+
+        conn.commit()
+        return True
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False
+
+
+def make_api_key(user_id):
+    # connection = pymysql.connect(
+    #        host='database-1.czoeckiiosd2.ap-south-1.rds.amazonaws.com',
+    #         user='skilbyt_db',
+    #          password='JesusChristIsLord$1',
+    #           db='ai_support'
+    #          )
+    new_api_key = uuid.uuid4()
+    connection = connect_to_rds()
+    try:
+        with connection.cursor() as cursor:
+            sql = "SELECT 1 FROM launch WHERE user_id_fk = %s LIMIT 1"
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            if not result:
+                sub_agent_id = uuid.uuid4()
+                launch_id = uuid.uuid4()
+
+                subagent_sql = """
+                INSERT INTO subagents (
+                sub_agent_id, launch_id_fk, name, description,voice_type,
+                documentation_link, model_version, created_at, updated_at
+                ) VALUES (%s, %s, %s,NULL, NULL, NULL, NULL, NULL, NULL)
+                """
+                cursor.execute(subagent_sql, (sub_agent_id, None, "Bytoid"))
+
+                insert_sql = """
+                    INSERT INTO launch (launch_id, sub_agent_id_fk, user_id_fk, api_id, website_name)
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+
+                cursor.execute(
+                    insert_sql, (launch_id, sub_agent_id, user_id, new_api_key, None)
+                )
+                cursor.execute(
+                    """
+                UPDATE subagents
+                SET launch_id_fk = %s
+                WHERE sub_agent_id = %s
+                """,
+                    (launch_id, sub_agent_id),
+                )
+
+                connection.commit()
+                return jsonify({"apiKey": new_api_key}), 200
+
+            else:
+                sql = "SELECT api_id FROM launch WHERE user_id_fk = %s LIMIT 1"
+                cursor.execute(sql, (user_id,))
+                result = cursor.fetchone()
+
+                if (
+                    result and result[0]
+                ):  # ✅ Check if result exists AND api_id is not None
+                    return jsonify({"apiKey": result[0]}), 200
+                else:
+                    update_sql = """
+                        UPDATE launch
+                        SET api_id = %s
+                        WHERE user_id_fk = %s
+                    """
+                    cursor.execute(update_sql, (new_api_key, user_id))
+
+                connection.commit()
+                return jsonify({"apiKey": new_api_key}), 200
+    except Exception as e:
+        # print(f"Error generating API key: {e}")  # Or use logging instead of print
+        return jsonify({"error": f"Internal server error {e}"}), 500

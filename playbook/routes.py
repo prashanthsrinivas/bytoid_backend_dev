@@ -5,11 +5,14 @@ from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
     get_subagent_by_userid,
+    get_email_by_id,
+    get_userid,
 )
 from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 import json, uuid
 from cust_helpers import pathconfig
+from services.redis_service import RedisService
 from services.scheduler_service import SchedulerService
 from services.workflow_service import WorkflowRunnerV2
 from utils.fireworkzz import get_fireworks_response2
@@ -22,8 +25,9 @@ from utils.normal import (
     remove_not_found_entities,
 )
 from .background_worker import JobManager
-import pytz
+import pytz, pymysql
 from utils.FileHandler import FileProcessor
+from utils.app_configs import ACCESSIBLE_IDS
 
 playbook_bp = Blueprint("playbook", __name__)
 PLAY_TEMPLATE = load_yaml_file(path=pathconfig.play_template)
@@ -34,11 +38,6 @@ from concurrent.futures import ThreadPoolExecutor
 from utils.s3_utils import s3bucket, S3_BUCKET
 
 executor = ThreadPoolExecutor(max_workers=4)
-
-
-def base_name(filename):
-    base_name = os.path.splitext(filename)[0]
-    return base_name
 
 
 @playbook_bp.route("/create_instruction", methods=["POST"])
@@ -220,24 +219,41 @@ async def updateInstruction():
 @playbook_bp.route("/get_all_instructions", methods=["GET"])
 def get_all_instructions():
     user_id = request.args.get("user_id")
+    is_admin = False
+
     if not user_id:
-        return jsonify({"error": "userid is required"}), 400
+        return jsonify({"error": "credentials required"}), 400
+
     subagent_id = get_subagent_by_userid(user_id)
     if not subagent_id:
-        return jsonify({"error": "no agent found"}), 400
-    config_path = None
+        return jsonify({"error": "invalid credentials"}), 401
+
     playbook_id, config_path = check_subagent_by_playbook(subagent_id)
-    if not user_id or not config_path:
-        return jsonify({"error": "user_id and config_path are required"}), 400
-    # config_path = "107642411636394027005/workflow/config_playbook_0195b8dd.json"
+
+    # ✅ FIX: Do NOT fail if config_path is None
+    if not config_path:
+        return jsonify({"data": [], "is_admin": user_id in ACCESSIBLE_IDS})
+
+    if user_id in ACCESSIBLE_IDS:
+        is_admin = True
+
     try:
         config_data = read_json_from_s3(config_path)
+
+        # ✅ Handle empty config properly
         if not config_data or user_id not in config_data:
-            return jsonify({"data": []})  # No instructions yet
+            return jsonify({"data": [], "is_admin": is_admin})
+
         playbook_list = config_data[user_id].get("playbooklist", [])
+
+        # Remove filepath for response
         for playbook in playbook_list:
             playbook.pop("filepath", None)
-        return jsonify({"data": playbook_list})
+            if "referece" not in playbook:
+                playbook["referece"] = ""
+
+        return jsonify({"data": playbook_list, "is_admin": is_admin})
+
     except Exception as e:
         return jsonify({"error": f"Failed to fetch instructions: {str(e)}"}), 500
 
@@ -252,6 +268,7 @@ def get_single_instruction():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
     s3_key = f"{user_id}/workflow/{base_name(filename)}/{filename}"
+    # print("s3 key", s3_key)
 
     try:
         instruction_data = read_json_from_s3(s3_key)
@@ -2351,6 +2368,9 @@ async def generate_ques_by_file():
     uploaded_file = request.files.get("ques_file")
     wf_id = request.form.get("wf_filename")
 
+    if not user_id:
+        return jsonify({"error": "No userid provided"}), 400
+
     if not uploaded_file:
         return jsonify({"error": "No file provided"}), 400
 
@@ -2593,11 +2613,6 @@ def generatesigned_url_for_upload():
 @playbook_bp.route("/pb_temp_clone", methods=["POST"])
 def pb_temp_clone_min():
     try:
-        from datetime import datetime
-        import uuid
-        import tempfile
-        import json
-        import os
 
         data = request.json or {}
 
@@ -2636,8 +2651,8 @@ def pb_temp_clone_min():
         # ---------------------------------
         # ✅ Create new workflow
         # ---------------------------------
-        new_filename = f"{uuid.uuid4().hex[:8]}.json"
-        new_base = base_name(filename=new_filename)
+        new_filename = f"{base}_ch_{uuid.uuid4().hex[:6]}.json"
+        # new_base = base_name(filename=new_filename)
 
         new_workflow = {
             "filename": new_filename,
@@ -2645,13 +2660,13 @@ def pb_temp_clone_min():
             "input_data": workflow_json.get("input_data", {}),
             "workflow": workflow_json.get("workflow", {}),
             "WorkflowDate": datetime.now().isoformat(),
-            "assigned_ques": workflow_json.get("assigned_ques", []),
+            "assigned_questions": workflow_json.get("assigned_questions", []),
         }
 
         # ---------------------------------
         # ✅ Save new workflow to S3
         # ---------------------------------
-        new_path = f"{user_id}/workflow/{new_base}/{new_filename}"
+        new_path = f"{user_id}/workflow/{base}/{new_filename}"
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
             json.dump(new_workflow, tmp, indent=2)
@@ -2668,7 +2683,7 @@ def pb_temp_clone_min():
         # ---------------------------------
         # ✅ Update chat_config
         # ---------------------------------
-        config_path = f"{user_id}/workflow/chat_config"
+        config_path = f"{user_id}/workflow/chat_config.json"
         config_data = read_json_from_s3(config_path) or []
 
         found = False
@@ -2716,9 +2731,7 @@ def pb_temp_clone_min():
         # ---------------------------------
         # ✅ Response
         # ---------------------------------
-        return jsonify(
-            {"status": "success", "new_filename": new_filename, "path": new_path}
-        )
+        return jsonify({"status": "success", "new_filename": new_filename})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -2736,7 +2749,7 @@ def list_chat_config():
         # ---------------------------------
         # ✅ Load config
         # ---------------------------------
-        config_path = f"{user_id}/workflow/chat_config"
+        config_path = f"{user_id}/workflow/chat_config.json"
         config_data = read_json_from_s3(config_path) or []
 
         if not isinstance(config_data, list):
@@ -2781,4 +2794,532 @@ def list_chat_config():
         return jsonify({"status": "success", "data": response_data})
 
     except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/share_playbook_template", methods=["POST"])
+def share_pb_template():
+    try:
+        data = request.json or {}
+
+        user_id = data.get("user_id")
+        filename = data.get("wf_filename")
+        role_assigned = data.get("role_assigned")
+        is_for_all = data.get("is_for_all", False)
+
+        if not user_id or not filename:
+            return (
+                jsonify({"status": "error", "message": "requirements not satisfied"}),
+                400,
+            )
+
+        # Normalize filename
+        if not filename.lower().endswith(".json"):
+            filename += ".json"
+
+        base = base_name(filename)
+
+        # Load workflow
+        wf_loc = f"{user_id}/workflow/{base}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "workflow not found"}), 404
+
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        email_creator = get_email_by_id(user_id, conn)
+
+        # New template
+        new_filename = f"{base}_tp_{uuid.uuid4().hex[:8]}.json"
+        new_base = base_name(new_filename)
+
+        new_workflow = {
+            "filename": new_filename,
+            "reference_filename": filename,
+            "input_data": workflow_json.get("input_data", {}),
+            "workflow": workflow_json.get("workflow", {}),
+            "WorkflowDate": datetime.now().isoformat(),
+            "assigned_questions": workflow_json.get("assigned_questions", []),
+            "is_global": is_for_all,
+            "created_by": email_creator,
+            "autotest": {"status": False, "count": 0},
+            "runbook_id": workflow_json.get("runbook_id", None),
+        }
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(new_workflow, tmp, indent=2)
+            temp_file_path = tmp.name
+
+        # Fetch permissions
+        cursor.execute("SELECT permissions FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return jsonify({"status": "error", "message": "User not found"}), 404
+
+        owner_permissions = json.loads(row.get("permissions") or "{}")
+
+        emails_set = set()
+
+        for entry in owner_permissions.get("shared", []):
+            role_id = entry.get("role", {}).get("id")
+
+            if is_for_all or role_id == role_assigned:
+                email = entry.get("email")
+                if email:
+                    emails_set.add(email.lower())
+
+        if not emails_set:
+            return jsonify({"status": "error", "message": "no users found"}), 404
+
+        # 🔥 REDIS TRACKING
+        redis_service = RedisService()
+
+        share_id = f"share:{uuid.uuid4().hex}"
+
+        shared_records = []
+
+        for email in emails_set:
+            role_userid = get_userid(email)
+            if not role_userid:
+                continue
+
+            path = f"{role_userid}/workflow/{new_base}/{new_filename}"
+
+            upload_any_file(
+                file_path=temp_file_path,
+                user_id=role_userid,
+                s3_key_C=path,
+            )
+
+            playbook_id, config_path, subagent_id = returnconfigandpath(role_userid)
+
+            if not playbook_id:
+                config_s3_path = create_empty_playbook_config(role_userid)
+                playb_id = str(uuid.uuid4())
+
+                playbook_id, config_path = create_subagent_to_playbook(
+                    playb_id, subagent_id, config_s3_path
+                )
+
+            update_playbook_config(
+                configpath=config_path,
+                user_id=role_userid,
+                name=new_filename,
+                filepath=path,
+                referece=filename,
+                title=new_workflow["workflow"]["name"],
+                description=new_workflow["workflow"]["description"],
+                num_steps=len(new_workflow["workflow"]["steps"]),
+            )
+
+            shared_records.append(
+                {"email": email, "user_id": role_userid, "path": path}
+            )
+
+        # Save undo data in Redis (TTL 1 day)
+        redis_data = {
+            "template": new_filename,
+            "reference": filename,
+            "shared_with": shared_records,
+            "created_by": email_creator,
+            "created_at": datetime.now().isoformat(),
+        }
+
+        asyncio.run(redis_service.set(share_id, redis_data, ex=86400))
+
+        os.remove(temp_file_path)
+        cursor.close()
+        conn.close()
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "message": "Template shared successfully",
+                    "share_id": share_id,  # 🔥 important for undo
+                    "shared_with": list(emails_set),
+                    "is_global": is_for_all,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print("Error:", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/get_all_global_instructions", methods=["GET"])
+def get_all_global_instructions():
+    user_id = request.args.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "userid is required"}), 400
+
+    config_path = "workflow/global/template_config.json"
+
+    try:
+        config_data = read_json_from_s3(config_path) or []
+
+        playbook_list = config_data
+
+        for pb_copy in playbook_list:
+            pb_copy.pop("filepath", None)
+
+        return jsonify({"data": playbook_list})
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch instructions: {str(e)}"}), 500
+
+
+@playbook_bp.route("/get_single_global_instruction", methods=["GET"])
+def get_single_global_instructions():
+    user_id = request.args.get("user_id")
+    filename = request.args.get("wf_filename")
+
+    if not user_id or not filename:
+        return jsonify({"error": "insufficient details"}), 400
+
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+    s3_key = f"workflow/global/{base_name(filename)}/{filename}"
+
+    try:
+        instruction_data = read_json_from_s3(s3_key)
+        if not instruction_data:
+            return jsonify({"error": "Instruction not found"}), 404
+        # instruction_data.pop("filepath", None)
+        return jsonify(instruction_data)
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch global playbook: {str(e)}"}), 500
+
+
+@playbook_bp.route("/make_global_playbook", methods=["POST"])
+def make_global_playbook():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+        filename = data.get("wf_filename")
+
+        if user_id not in ACCESSIBLE_IDS:
+            return jsonify({"error": "UN-Authorized"}), 401
+
+        if not filename:
+            return jsonify({"error": "filename required"}), 400
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        base = base_name(filename)
+
+        # -----------------------
+        # Load original workflow
+        # -----------------------
+        wf_loc = f"{user_id}/workflow/{base}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "workflow not found"}), 404
+
+        # -----------------------
+        # Create new template
+        # -----------------------
+        new_filename = f"{uuid.uuid4().hex[:8]}.json"
+        new_base = base_name(new_filename)
+
+        new_workflow = {
+            "filename": new_filename,
+            "reference_filename": filename,
+            "input_data": workflow_json.get("input_data", {}),
+            "workflow": workflow_json.get("workflow", {}),
+            "WorkflowDate": datetime.now().isoformat(),
+            "assigned_questions": workflow_json.get("assigned_questions", []),
+            "is_global": True,
+            "created_by": "bytoid",
+            "autotest": {"status": False, "count": 0},
+            "runbook_id": workflow_json.get("runbook_id", None),
+        }
+
+        new_path = f"workflow/global/{new_base}/{new_filename}"
+
+        # upload workflow
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(new_workflow, tmp, indent=2)
+            temp_file_path = tmp.name
+
+        upload_any_file(temp_file_path, user_id, s3_key_C=new_path)
+
+        # -----------------------
+        # Update config
+        # -----------------------
+        config_path = "workflow/global/template_config.json"
+        config_data = read_json_from_s3(config_path) or []
+
+        config_data.append(
+            {
+                "filename": new_filename,
+                "reference_filename": filename,
+                "WorkflowDate": datetime.now().isoformat(),
+                "filepath": new_path,
+                "title": new_workflow["workflow"].get("name"),
+                "description": new_workflow["workflow"].get("description"),
+                "num_steps": len(new_workflow["workflow"].get("steps", [])),
+                "is_global": True,
+                "created_by": "bytoid",
+            }
+        )
+
+        # save config
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(config_data, tmp, indent=2)
+            temp_config_path = tmp.name
+
+        upload_any_file(temp_config_path, user_id, s3_key_C=config_path)
+
+        # cleanup
+        os.remove(temp_file_path)
+        os.remove(temp_config_path)
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "message": "Global Template successfully created",
+                    "template": new_filename,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print("error", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@playbook_bp.route("/delete_global_playbook", methods=["DELETE"])
+def delete_global_playbook():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+        filename = data.get("wf_filename")
+
+        if user_id not in ACCESSIBLE_IDS:
+            return jsonify({"error": "UN-Authorized"}), 401
+
+        if not filename:
+            return jsonify({"error": "filename required"}), 400
+
+        config_path = "workflow/global/template_config.json"
+
+        success = deleteGlobalConfigdata(config_path, filename)
+
+        if not success:
+            return jsonify({"error": "Template not found or delete failed"}), 404
+
+        return (
+            jsonify(
+                {"status": "success", "message": "Global template deleted successfully"}
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print("error", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@playbook_bp.route("/install_global_playbook", methods=["POST"])
+def install_global_playbook():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+        filename = data.get("wf_filename")
+        # ---------------------------------
+        # Normalize filename
+        # ---------------------------------
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        base = base_name(filename=filename)
+
+        # ---------------------------------
+        # Load workflow
+        # ---------------------------------
+        global_path = f"workflow/global/{base}/{filename}"
+
+        workflow_json = read_json_from_s3(global_path)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "workflow not found"}), 404
+        # ---------------------------------
+        # Create new workflow
+        # ---------------------------------
+        new_filename = f"{uuid.uuid4().hex[:8]}.json"
+        new_base = base_name(filename=new_filename)
+
+        new_workflow = {
+            "filename": new_filename,
+            "reference_filename": filename,
+            "input_data": workflow_json.get("input_data", {}),
+            "workflow": workflow_json.get("workflow", {}),
+            "WorkflowDate": datetime.now().isoformat(),
+            "assigned_questions": workflow_json.get("assigned_questions", []),
+            "is_global": True,
+            "created_by": "bytoid",
+            "autotest": {"status": False, "count": 0},
+            "runbook_id": workflow_json.get("runbook_id", None),
+        }
+        new_path = f"{user_id}/workflow/{new_base}/{new_filename}"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(new_workflow, tmp, indent=2)
+            temp_file_path = tmp.name
+
+        upload_any_file(
+            file_path=temp_file_path,
+            user_id=user_id,
+            s3_key_C=new_path,
+        )
+
+        playbook_id, config_path, subagent_id = returnconfigandpath(userid=user_id)
+
+        if not playbook_id:
+            config_s3_path = create_empty_playbook_config(user_id)
+            playb_id = str(uuid.uuid4())
+
+            playbook_id, config_path = create_subagent_to_playbook(
+                playb_id, subagent_id, config_s3_path
+            )
+
+        update_playbook_config(
+            configpath=config_path,
+            user_id=user_id,
+            name=new_filename,  # ✅ FIXED
+            filepath=new_path,
+            referece=filename,
+            title=new_workflow["workflow"]["name"],
+            description=new_workflow["workflow"]["description"],
+            num_steps=len(new_workflow["workflow"]["steps"]),
+        )
+        os.remove(temp_file_path)
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "message": "Global Template successfully",
+                    "template": new_filename,
+                }
+            ),
+            200,
+        )
+    except Exception as e:
+        print("error", e)
+
+
+@playbook_bp.route("/undo_share_playbook_template", methods=["POST"])
+def undo_share_pb_template():
+    try:
+        data = request.json or {}
+
+        user_id = data.get("user_id")
+        filename = data.get("wf_filename")
+        role_assigned = data.get("role_assigned")
+        is_for_all = data.get("is_for_all", False)
+
+        if not user_id or not filename:
+            return (
+                jsonify({"status": "error", "message": "requirements not satisfied"}),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename += ".json"
+
+        base = base_name(filename)
+
+        # ---------------------------------
+        # DB connection
+        # ---------------------------------
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        cursor.execute("SELECT permissions FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return jsonify({"status": "error", "message": "User not found"}), 404
+
+        owner_permissions = json.loads(row.get("permissions") or "{}")
+
+        emails_set = set()
+
+        # ---------------------------------
+        # SAME LOGIC AS SHARE
+        # ---------------------------------
+        for entry in owner_permissions.get("shared", []):
+            role_name = entry.get("role", {}).get("name")
+
+            if is_for_all or role_name == role_assigned:
+                email = entry.get("email")
+                if email:
+                    emails_set.add(email.lower())
+
+        if not emails_set:
+            return jsonify({"status": "error", "message": "no users found"}), 404
+
+        # ---------------------------------
+        # DELETE FROM EACH USER
+        # ---------------------------------
+        deleted_users = []
+        failed_users = []
+
+        for email in emails_set:
+            try:
+                role_userid = get_userid(email)
+                if not role_userid:
+                    continue
+
+                subagent_id = get_subagent_by_userid(role_userid)
+                if not subagent_id:
+                    failed_users.append(email)
+                    continue
+
+                playbook_id, config_path = check_subagent_by_playbook(subagent_id)
+
+                if not config_path:
+                    failed_users.append(email)
+                    continue
+
+                success = deleteConfigdata(
+                    configpath=config_path, user_id=role_userid, name=filename
+                )
+
+                if success:
+                    deleted_users.append(email)
+                else:
+                    failed_users.append(email)
+
+            except Exception as e:
+                print(f"Error deleting for {email}:", e)
+                failed_users.append(email)
+
+        cursor.close()
+        conn.close()
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "message": "Undo completed",
+                    "deleted_from": deleted_users,
+                    "failed": failed_users,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        print("Undo error:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
