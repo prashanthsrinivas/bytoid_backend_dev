@@ -113,41 +113,152 @@ async def create_instruction_worker(data):
 
 
 async def updateInstruction_worker(data):
+    import json
+    import asyncio
+
     userid = data.get("user_id")
     filename = data.get("filename")
 
     if not userid or not filename:
-        return jsonify({"error": "user_id and filename required"}), 400
+        return {"error": "user_id and filename required"}, 400
 
-    # Ensure JSON file extension
+    # Ensure JSON extension
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    # Get playbook info
+    # Get config + path
     playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+    s3_key = f"{userid}/workflow/{base_name(filename)}/{filename}"
 
-    # Open DB and initialize Credits
+    # 🔹 Load existing workflow
+    try:
+        existing_data = read_json_from_s3(s3_key)
+    except Exception:
+        existing_data = None
+
+    # =========================================================
+    # 🔍 STRICT COMPARISON LOGIC
+    # =========================================================
+    only_meta_changed = False
+
+    if existing_data:
+        old_input = existing_data.get("input_data", {}) or {}
+
+        # 🔹 Normalize NEW input (from frontend)
+        normalized_new_input = {
+            "title": data.get("title"),
+            "description": data.get("description"),
+            "trigger_mode": data.get("trigger_mode"),
+            "trigger_input": data.get("trigger_input"),
+            "ai_mode": data.get("ai_mode"),
+            "communication_channels": data.get("communication_channels") or [],
+            "contacts": data.get("contacts") or [],
+            "steps": data.get("steps") or [],
+            "is_active": data.get("is_active"),
+        }
+
+        # 🔹 Normalize OLD input (from stored workflow)
+        normalized_old_input = {
+            "title": old_input.get("title"),
+            "description": old_input.get("description"),
+            "trigger_mode": old_input.get("trigger_mode"),
+            "trigger_input": old_input.get("trigger_input"),
+            "ai_mode": old_input.get("ai_mode"),
+            "communication_channels": old_input.get("communication_channels") or [],
+            "contacts": old_input.get("contacts") or [],
+            "steps": old_input.get("steps") or [],
+            "is_active": old_input.get("is_active"),
+        }
+
+        # 🔹 Extract allowed fields
+        new_title = normalized_new_input.pop("title", None)
+        new_desc = normalized_new_input.pop("description", None)
+
+        old_title = normalized_old_input.pop("title", None)
+        old_desc = normalized_old_input.pop("description", None)
+
+        # 🔹 Compare ALL other fields strictly
+        rest_same = normalized_new_input == normalized_old_input
+
+        # 🔹 Final decision
+        if rest_same and (new_title != old_title or new_desc != old_desc):
+            only_meta_changed = True
+
+    # =========================================================
+    # 🔹 DB + Credits init
+    # =========================================================
     db = connect_to_rds()
     credits = Credits(db)
+    print("this is ", existing_data and only_meta_changed)
 
+    # =========================================================
+    # ✅ CASE 1: ONLY TITLE / DESCRIPTION CHANGED
+    # =========================================================
+    if existing_data and only_meta_changed:
+        try:
+            existing_data["input_data"]["title"] = data.get("title")
+            existing_data["input_data"]["description"] = data.get("description")
+
+            existing_data["workflow"]["name"] = data.get("title")
+            existing_data["workflow"]["description"] = data.get("description")
+            ensure_dir(f"{pathconfig.basepath}/test/")
+            filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
+            delete_file_from_s3(
+                filepath=f"{userid}/workflow/{base_name(filename)}/{filename}"
+            )
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(existing_data, f, indent=2)
+            res = upload_any_file(
+                file_path=filepath, user_id=userid, file_name=filename, type="workflow"
+            )
+            os.remove(filepath)
+
+            # Update DB config
+            update_playbook_config(
+                configpath=config_path,
+                user_id=userid,
+                name=filename,
+                filepath=filename,
+                title=data.get("title"),
+                description=data.get("description"),
+                num_steps=len(existing_data["workflow"].get("steps", [])),
+            )
+
+            db.commit()
+            db.close()
+
+            return existing_data
+
+        except Exception as e:
+            db.rollback()
+            db.close()
+            return {
+                "status": "error",
+                "message": "Metadata update failed",
+                "error": str(e),
+            }
+
+    # =========================================================
+    # ✅ CASE 2: FULL AI REGENERATION
+    # =========================================================
     async def _create_and_update():
-        # Estimate input size for credits (optional)
-        total_input_chars = 5000  # or dynamically compute
+        total_input_chars = 5000
+
         if not await credits.has_ai_credits(
             total_chars=total_input_chars, user_id=userid
         ):
             raise Exception("INSUFFICIENT_CREDITS")
 
-        # Call your async playbook creation logic
         full_output, npath = await create_playbook(
             data=data,
             template_data=PLAY_TEMPLATE,
             minor_data=MINOR_PROMPTS,
             functions_ds=ALL_FUNCTIONS,
             nfilename=filename,
+            db=db,
+            credits=credits,
         )
 
-        # Update playbook metadata in DB (transaction-scoped)
         update_playbook_config(
             configpath=config_path,
             user_id=userid,
@@ -160,7 +271,6 @@ async def updateInstruction_worker(data):
 
         return full_output
 
-    # Run async function in executor thread
     def run_in_thread():
         return asyncio.run(_create_and_update())
 
@@ -171,24 +281,19 @@ async def updateInstruction_worker(data):
     except Exception as e:
         db.rollback()
         db.close()
-        # Handle insufficient credits separately
-        if "INSUFFICIENT_CREDITS" in str(e):
-            return jsonify({"status": "error", "message": "Insufficient credits"}), 402
-        return (
-            jsonify(
-                {
-                    "status": "error",
-                    "message": "Failed to update instruction",
-                    "error": str(e),
-                }
-            ),
-            500,
-        )
 
-    # Commit all changes safely
+        if "INSUFFICIENT_CREDITS" in str(e):
+            return {"status": "error", "message": "Insufficient credits"}
+
+        return {
+            "status": "error",
+            "message": "Failed to update instruction",
+            "error": str(e),
+        }
+
+    await credits.cm.sync_credits_to_redis(user_id=userid)
     db.commit()
     db.close()
-    await credits.cm.sync_credits_to_redis(user_id=userid)  # ✅ sync Redis after commit
 
     return full_output
 

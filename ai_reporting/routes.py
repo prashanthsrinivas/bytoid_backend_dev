@@ -1,3 +1,4 @@
+from credits_route.route import Credits
 from flask import request, jsonify, Blueprint
 import logging
 from db.rds_db import connect_to_rds
@@ -41,6 +42,7 @@ def get_spacy_nlp():
     return nlp
 
 
+report_cred = Credits()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -462,7 +464,7 @@ def extract_names_from_emails(query):
     names = []
     for match in re.finditer(email_pattern, query):
         email = match.group()
-       #print(f"matching email: {email}")
+        # print(f"matching email: {email}")
         start_idx = match.start()
         end_idx = match.end()
 
@@ -488,13 +490,13 @@ async def ner_using_prompt(query, user_id):
     ner_template = ner_yaml.get("name_recognition")
     filled_prompt = ner_template.replace("{{user_query}}", str(query))
     modified_yaml = await get_fireworks_response(
-        filled_prompt, role="system", user_id=user_id
+        user_message=filled_prompt, role="system", user_id=user_id, credits=report_cred
     )
 
     try:
         ner_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 report_generation parsing failed: {e}")
+        # print(f"🔥 report_generation parsing failed: {e}")
         return jsonify({"error": "Failed to parse report_generation response"}), 500
 
     entity_detected = ner_result.get("entity_detected")
@@ -523,7 +525,7 @@ def identify_names(query):
 
     # extrct names from email id if present
     person_names.extend(extract_names_from_emails(query))
-   #print(f"person_names from email: {person_names}")
+    # print(f"person_names from email: {person_names}")
 
     STOPWORDS = {
         "number",
@@ -562,7 +564,7 @@ def identify_names(query):
                     (token.text, token.idx, token.idx + len(token.text))
                 )
 
-   #print(f"potential names: {person_names}")
+    # print(f"potential names: {person_names}")
 
     if person_names:
         return person_names
@@ -735,7 +737,7 @@ def replace_names_with_placeholders(
     new_person_param = {}
 
     if results:
-       #print(f"results found : {results}")
+        # print(f"results found : {results}")
         sorted_results = sorted(results, key=lambda x: x["start_index"], reverse=True)
 
         for i, res in enumerate(sorted_results, start=1):
@@ -758,7 +760,7 @@ def replace_names_with_placeholders(
 
     # Handle invited/authorized users
     if invited_users:
-       #print(f"invited_users found : {invited_users}")
+        # print(f"invited_users found : {invited_users}")
 
         next_index = len(sorted_results) + 1
         for j, user_id in enumerate(invited_users, start=next_index):
@@ -808,13 +810,13 @@ async def determine_referenced_person(new_query, reporting_yaml, userid):
     person_template = reporting_yaml.get("referenced_person_identifier")
     filled_prompt = person_template.replace("{{user_query}}", str(new_query))
     modified_yaml = await get_fireworks_response(
-        filled_prompt, role="system", user_id=userid
+        user_message=filled_prompt, role="system", user_id=userid, credits=report_cred
     )
 
     try:
         referneced_person_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 referneced_person_result parsing failed: {e}")
+        # print(f"🔥 referneced_person_result parsing failed: {e}")
         return (
             jsonify({"error": "Failed to parse referneced_person_result response"}),
             500,
@@ -858,13 +860,17 @@ async def dummy_execute(
         )
     )
     modified_yaml = await get_fireworks_response2(
-        userid, filled_prompt, role="system", temp=0.1
+        credits=report_cred,
+        user_id=userid,
+        user_message=filled_prompt,
+        role="system",
+        temp=0.1,
     )
 
     try:
         dummy_executer_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 dummy_executer_result parsing failed: {e}")
+        # print(f"🔥 dummy_executer_result parsing failed: {e}")
         return jsonify({"error": "Failed to parse dummy_executer_result response"}), 500
 
     success = dummy_executer_result.get("success", "")
@@ -900,13 +906,17 @@ async def perform_sql_verification(
         )
     )
     modified_yaml = await get_fireworks_response2(
-        current_user_id, filled_prompt, role="system", temp=0.1
+        user_id=current_user_id,
+        user_message=filled_prompt,
+        role="system",
+        temp=0.1,
+        credits=report_cred,
     )
 
     try:
         sql_verfication_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 sql_verfication_result parsing failed: {e}")
+        # print(f"🔥 sql_verfication_result parsing failed: {e}")
         return (
             jsonify({"error": "Failed to parse sql_verfication_result response"}),
             500,
@@ -929,13 +939,17 @@ async def parameterization_n_validation(
         "{{query_params}}", str(query_params)
     )
     modified_yaml = await get_fireworks_response2(
-        userid, filled_prompt, role="system", temp=0.2
+        user_id=userid,
+        user_message=filled_prompt,
+        role="system",
+        temp=0.2,
+        credits=report_cred,
     )
 
     try:
         parameterization_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 parameterization_result parsing failed: {e}")
+        # print(f"🔥 parameterization_result parsing failed: {e}")
         return (
             jsonify({"error": "Failed to parse parameterization_result response"}),
             500,
@@ -944,8 +958,8 @@ async def parameterization_n_validation(
     parameterized_corrected_sql = parameterization_result.get("corrected_query", "")
     parameterized_sql_params = parameterization_result.get("sql_params", "")
 
-   #print(f"parameterized_corrected_sql : {parameterized_corrected_sql}")
-   #print(f"parameterized_sql_params : {parameterized_sql_params}")
+    # print(f"parameterized_corrected_sql : {parameterized_corrected_sql}")
+    # print(f"parameterized_sql_params : {parameterized_sql_params}")
 
     # validation of the sql and params
     template = reporting_yaml.get("sql_verifier")
@@ -958,21 +972,25 @@ async def parameterization_n_validation(
         .replace("{{current_date}}", str(current_date))
     )
     modified_yaml = await get_fireworks_response2(
-        userid, filled_prompt, role="system", temp=0.2
+        user_id=userid,
+        user_message=filled_prompt,
+        role="system",
+        temp=0.2,
+        credits=report_cred,
     )
 
     try:
         validation_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 validation parsing failed: {e}")
+        # print(f"🔥 validation parsing failed: {e}")
         return jsonify({"error": "Failed to parse validation response"}), 500
 
     corrected_query = validation_result.get("corrected_query")
     corrected_params = validation_result.get("sql_params", [])
     verifer_summary = validation_result.get("explanation")
-   #print(f"output of sql verifer : {corrected_query}")
-   #print(f"output of sql verifer corrected_params : {corrected_params}")
-   #print(f"output of verifer_summary : {verifer_summary}")
+    # print(f"output of sql verifer : {corrected_query}")
+    # print(f"output of sql verifer corrected_params : {corrected_params}")
+    # print(f"output of verifer_summary : {verifer_summary}")
 
     return corrected_query, corrected_params
 
@@ -1079,8 +1097,8 @@ async def continue_report_generation(
     sql_function = INTENT_TO_SQL_FUNCTION[sql_intent]
     generated_query, query_params = sql_function(ast)
     # print("##------------------##")
-   #print(f"generated_query : {generated_query}")
-   #print(f"query_params : {query_params}")
+    # print(f"generated_query : {generated_query}")
+    # print(f"query_params : {query_params}")
 
     # corrected_query, corrected_params = parameterization_n_validation(generated_query, query_params, reporting_yaml, current_date )
 
@@ -1102,7 +1120,7 @@ async def continue_report_generation(
             reporting_yaml,
             user_id,
         )
-       #print(f"Attempt {attempt} | success: {success} | error: {error}")
+        # print(f"Attempt {attempt} | success: {success} | error: {error}")
 
         if not success:
             # Try fixing SQL using verification
@@ -1117,28 +1135,28 @@ async def continue_report_generation(
             )
             # generated_query, query_params = parameterization_n_validation(generated_query, query_params, reporting_yaml, current_date )
 
-           #print(
-            #     f" //////// corrected using dummy execution :({attempt}) ////////////"
-            # )
-           #print(f"generated_query : {generated_query}")
-           #print(f"corrected_params : {query_params}")
+        # print(
+        #     f" //////// corrected using dummy execution :({attempt}) ////////////"
+        # )
+        # print(f"generated_query : {generated_query}")
+        # print(f"corrected_params : {query_params}")
         # print("*****************")
 
     if not success:
         return None
-       #print("Failed to correct the query after multiple attempts.")
+    # print("Failed to correct the query after multiple attempts.")
 
     # report title generation
     template = reporting_yaml.get("report_title_generator")
     filled_prompt = template.replace("{{user_query}}", str(actual_query))
     modified_yaml = await get_fireworks_response(
-        filled_prompt, role="system", user_id=user_id
+        user_message=filled_prompt, role="system", user_id=user_id, credits=report_cred
     )
 
     try:
         title_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 title generation parsing failed: {e}")
+        # print(f"🔥 title generation parsing failed: {e}")
         return jsonify({"error": "Failed to parse validation response"}), 500
 
     report_title = title_result.get("brief_summary")
@@ -1173,14 +1191,14 @@ async def continue_report_generation(
 
             conn = connect_to_rds()
             cursor = conn.cursor()
-           #print(f"sql_query before execution : {sql_query}")
-           #print(f"query_params before execution : {query_params}")
+            # print(f"sql_query before execution : {sql_query}")
+            # print(f"query_params before execution : {query_params}")
 
             cursor.execute(sql_query, query_params)
             rows = cursor.fetchall()
             rows = format_rows(rows)
             # print("Query executed successfully.")
-           #print(f"Rows returned: {rows}")
+            # print(f"Rows returned: {rows}")
 
             success = True  # Exit loop if successful
 
@@ -1201,8 +1219,8 @@ async def continue_report_generation(
             )
             # generated_query, corrected_params = parameterization_n_validation(generated_query, query_params, reporting_yaml, current_date )
 
-           #print(f" retry generation during execution : attempt : {attempt}")
-           #print(f"Corrected query for next attempt: {generated_query}")
+            # print(f" retry generation during execution : attempt : {attempt}")
+            # print(f"Corrected query for next attempt: {generated_query}")
 
             # Reapply placeholder replacements
             for key, value in person_map.items():
@@ -1239,13 +1257,13 @@ async def continue_report_generation(
         # .replace("{{variables}}", json.dumps(variables, ensure_ascii=False, indent=2))
     )
     modified_yaml = await get_fireworks_response(
-        filled_prompt, role="system", user_id=user_id
+        user_message=filled_prompt, role="system", user_id=user_id, credits=report_cred
     )
 
     try:
         visualization_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 visualization_result parsing failed: {e}")
+        # print(f"🔥 visualization_result parsing failed: {e}")
         return jsonify({"error": "Failed to parse visualization_result response"}), 500
 
     suggested_chart = visualization_result.get("chart_type")
@@ -1286,8 +1304,8 @@ async def continue_report_generation(
 
 
 def merge_decomposed_queries(final_decomposed_query, new_query_data):
-   #print(f"new: {new_query_data}")
-   #print(f"old: {final_decomposed_query}")
+    # print(f"new: {new_query_data}")
+    # print(f"old: {final_decomposed_query}")
 
     for key, value in new_query_data.items():
         if key not in final_decomposed_query:
@@ -1310,7 +1328,7 @@ def merge_decomposed_queries(final_decomposed_query, new_query_data):
             elif value is not None:
                 final_decomposed_query[key] = value
 
-   #print(f"merged: {final_decomposed_query}")
+    # print(f"merged: {final_decomposed_query}")
     return final_decomposed_query
 
 
@@ -1364,6 +1382,7 @@ import json
 import re
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
 
 def _safe_identifier(value: str):
     if isinstance(value, str) and _SAFE_IDENTIFIER.match(value):
@@ -1424,12 +1443,12 @@ async def find_sql_intent(original_query, reporting_yaml, userid):
     intent_template = reporting_yaml.get("sql_intent_detection")
     filled_prompt = intent_template.replace("{{user_query}}", str(original_query))
     modified_yaml = await get_fireworks_response(
-        filled_prompt, role="system", user_id=userid
+        user_message=filled_prompt, role="system", user_id=userid, credits=report_cred
     )
     try:
         intent_result = parse_llm_response(modified_yaml)
     except ValueError as e:
-       #print(f"🔥 intent_result parsing failed: {e}")
+        # print(f"🔥 intent_result parsing failed: {e}")
         return jsonify({"error": "Failed to parse intent_result response"}), 500
     intent_type = intent_result.get("intent_type")
     return intent_type
@@ -1449,7 +1468,7 @@ async def perform_clarification(
     referenced_person=None,
 ):
 
-   #print(f"final decomposed_query : {decomposed_query}")
+    # print(f"final decomposed_query : {decomposed_query}")
     # Step 1: find top-level empty-string fields
     empty_string_fields = [
         key for key, value in decomposed_query.items() if value in ("", [], {}, None)
@@ -1460,7 +1479,7 @@ async def perform_clarification(
         # If enum_results is empty/None, remove "filters"
         if not enum_results:
             empty_string_fields.remove("filters")
-           #print(empty_string_fields)
+        # print(empty_string_fields)
 
     # Step 3: if no aggregation is there for ranking intent, avoid asking questions on that
     aggregation_flag = True
@@ -1480,7 +1499,7 @@ async def perform_clarification(
         # print("removed aggregation and grouping_dimension from empty string fields")
 
     # print("----------------")
-   #print(
+    # print(
     #     f"empty_string_fields before sending to clarification : {empty_string_fields}"
     # )
     # print("----------------")
@@ -1515,7 +1534,7 @@ async def perform_clarification(
         if not reporting_yaml:
             reporting_yaml = load_yaml_file(path=pathconfig.reporting)
 
-       #print(f"filters_possible: {enum_results}")
+        # print(f"filters_possible: {enum_results}")
         clarification_template = reporting_yaml.get("clarification_prompt_1")
 
         if sql_intent in ["Trend", "Ranking", "Retrieval", "Aggregation"]:
@@ -1544,17 +1563,21 @@ async def perform_clarification(
         )
 
         modified_yaml = await get_fireworks_response2(
-            user_id, filled_prompt, role="system", temp=0.2
+            user_id=user_id,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            credits=report_cred,
         )
 
         try:
             clarification_result = parse_llm_response(modified_yaml)
             # print("***************")
-           #print(f"clarification_result : {clarification_result}")
+        # print(f"clarification_result : {clarification_result}")
         # print("***************")
 
         except ValueError as e:
-           #print(f"🔥 clarification_generation parsing failed: {e}")
+            # print(f"🔥 clarification_generation parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse clarification_generation response"}),
                 500,
@@ -1741,18 +1764,21 @@ async def generate_report():
             "{{user_query}}", str(new_query)
         )
         modified_yaml = await get_fireworks_response(
-            filled_prompt, role="system", user_id=user_id
+            user_message=filled_prompt,
+            role="system",
+            user_id=user_id,
+            credits=report_cred,
         )
 
         try:
             classification_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 report_generation parsing failed: {e}")
+            # print(f"🔥 report_generation parsing failed: {e}")
             return jsonify({"error": "Failed to parse report_generation response"}), 500
 
         query_type = classification_result.get("query_type")
         intent_query = classification_result.get("query", [])
-       #print(f"---------------intent_query : {intent_query}")
+        # print(f"---------------intent_query : {intent_query}")
 
         if query_type == "semantic_query":
             if results:
@@ -1777,24 +1803,24 @@ async def generate_report():
                     selected_id.append(id)
                     dates.append(timestamp)
 
-               #print(f"%%%%%%  selected_id : {selected_id}")
+            # print(f"%%%%%%  selected_id : {selected_id}")
 
-               #print(f"no. of mails fetched: {len(selected_id)}")
-               #print(f"no. of unique mails fetched: {len(set(selected_id))}")
+            # print(f"no. of mails fetched: {len(selected_id)}")
+            # print(f"no. of unique mails fetched: {len(set(selected_id))}")
 
-                # # Count occurrences of each ID
-                # id_counts = Counter(mail["id"] for mail in lance_mails)
+            # # Count occurrences of each ID
+            # id_counts = Counter(mail["id"] for mail in lance_mails)
 
-                # # Keep only repeated IDs
-                # repeated_ids = {mid for mid, count in id_counts.items() if count > 1}
+            # # Keep only repeated IDs
+            # repeated_ids = {mid for mid, count in id_counts.items() if count > 1}
 
-                # # Create list of dicts with id and plain_text for repeated IDs
-                # repeated_mails = [
-                #     {"id": mail["id"], "plain_text": mail["plain_text"]}
-                #     for mail in lance_mails if mail["id"] in repeated_ids
-                # ]
+            # # Create list of dicts with id and plain_text for repeated IDs
+            # repeated_mails = [
+            #     {"id": mail["id"], "plain_text": mail["plain_text"]}
+            #     for mail in lance_mails if mail["id"] in repeated_ids
+            # ]
 
-                # print(repeated_mails)
+            # print(repeated_mails)
 
         # add the user id to person_map so that we can replace in the query params later
         person_map[user_id] = "current_user_id"
@@ -1895,7 +1921,7 @@ def get_enum_results(entity, primary_search_table, referenced_person, metric):
         else:
             end = "users_account"
 
-       #print(f"primary_search_table : {primary_search_table} | end = {end}")
+        # print(f"primary_search_table : {primary_search_table} | end = {end}")
 
         path_1, joins_1 = get_tables(primary_search_table, end)
 
@@ -1919,7 +1945,7 @@ def get_enum_results(entity, primary_search_table, referenced_person, metric):
 
     enum_results = get_enum_columns(path)
     # print("***************")
-   #print(f"enum_results : {enum_results}")
+    # print(f"enum_results : {enum_results}")
     # print("***************")
 
     return enum_results
@@ -1974,13 +2000,17 @@ async def post_calrify_with_user(
             json.dumps(clarifications, ensure_ascii=False, indent=2),
         )
         modified_yaml = await get_fireworks_response2(
-            user_id, filled_prompt, role="system", temp=0.5
+            user_id=user_id,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.5,
+            credits=report_cred,
         )
         try:
             data_from_qa_result = parse_llm_response(modified_yaml)
-           #print(f"data_from_qa_result : {data_from_qa_result}")
+        # print(f"data_from_qa_result : {data_from_qa_result}")
         except ValueError as e:
-           #print(f"🔥 post clarification parsing failed: {e}")
+            # print(f"🔥 post clarification parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse post clarification response"}),
                 500,
@@ -2073,7 +2103,7 @@ async def post_calrify_with_user(
         sql_intent = await find_sql_intent(
             original_query, reporting_yaml, userid=user_id
         )
-       #print(f"sql_intent : {sql_intent}")
+        # print(f"sql_intent : {sql_intent}")
 
         # get entity, grouping_dimension, metric, filters, temporal flag to understand the tables and columns
         q_intent_extrt = QueryIntentionExtractor(
@@ -2088,7 +2118,7 @@ async def post_calrify_with_user(
             filters,
             temporal_flag,
         ) = await q_intent_extrt.extract_all(original_query, sql_intent)
-       #print(
+        # print(
         #     f"entity : {entity} | grouping_dimension : {grouping_dimension} |  metric : {metric} | aggregation : {aggregation} | filters : {filters}"
         # )
         # print(f"temporal_flag : {temporal_flag}")
@@ -2122,12 +2152,16 @@ async def post_calrify_with_user(
         #     )
 
         modified_yaml = await get_fireworks_response2(
-            user_id=user_id, user_message = filled_prompt, role="system", temp=0.5
+            user_id=user_id,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.5,
+            credits=report_cred,
         )
         try:
             data_extraction_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 post clarification parsing failed: {e}")
+            # print(f"🔥 post clarification parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse post clarification response"}),
                 500,
@@ -2155,13 +2189,17 @@ async def post_calrify_with_user(
                 "{{user_query}}", str(original_query)
             )
             modified_yaml = await get_fireworks_response2(
-                user_id=user_id, user_message =filled_prompt, role="system", temp=0.5
+                user_id=user_id,
+                user_message=filled_prompt,
+                role="system",
+                temp=0.5,
+                credits=report_cred,
             )
             try:
                 direction_limit_result = parse_llm_response(modified_yaml)
-               #print(f"direction_limit_result from query: {direction_limit_result}")
+            # print(f"direction_limit_result from query: {direction_limit_result}")
             except ValueError as e:
-               #print(f"🔥 post clarification parsing failed: {e}")
+                # print(f"🔥 post clarification parsing failed: {e}")
                 return (
                     jsonify({"error": "Failed to parse post clarification response"}),
                     500,
@@ -2218,12 +2256,12 @@ async def post_clarifications():
     user_id = data.get("user_id")
     system_query = data.get("system_query", "")
 
-   #print(f"clarifications : {clarifications}")
-   #print(f"original_query : {original_query}")
-   #print(f"user_edit : {user_edit}")
-   #print(f"user_satisfied : {user_satisfied}")
-   #print(f"user_id : {user_id}")
-   #print(f"system_query: {system_query}")
+    # print(f"clarifications : {clarifications}")
+    # print(f"original_query : {original_query}")
+    # print(f"user_edit : {user_edit}")
+    # print(f"user_satisfied : {user_satisfied}")
+    # print(f"user_id : {user_id}")
+    # print(f"system_query: {system_query}")
 
     token = current_user_id.set(user_id)
     try:
@@ -2272,14 +2310,14 @@ async def list_all_draft_reports(client, user_id):
     all_reports = await client.hgetall(key)
 
     if not all_reports:
-       #print(f"No draft reports found for user {user_id}")
+        # print(f"No draft reports found for user {user_id}")
         return
 
-   #print(f"Draft reports for user {user_id}:")
+    # print(f"Draft reports for user {user_id}:")
     for report_id, report_json in all_reports.items():
         report_data = json.loads(report_json)
-       #print(f"- Report ID: {report_id}")
-       #print(f"  Content: {json.dumps(report_data, indent=2)}\n")
+    # print(f"- Report ID: {report_id}")
+    # print(f"  Content: {json.dumps(report_data, indent=2)}\n")
 
 
 @ai_reporting_bp.route("/change_name", methods=["POST"])
@@ -2397,7 +2435,7 @@ async def set_special_access():
             sql = "UPDATE users SET special_access = %s WHERE email = %s"
             cursor.execute(sql, (special_access, user_email))
             conn.commit()
-           #print(
+            # print(
             #     f"✅ Special access set to {special_access} for user_email {user_email}"
             # )
             return jsonify({"message": "Special access updated successfully"}), 200
@@ -2433,7 +2471,7 @@ def creation_of_umail_index():
         lance_mails = client.creating_index()
         return jsonify({"message": "index creation successful"})
     except Exception as e:
-       #print(f"Error in creation_of_umail_index: {e}")
+        # print(f"Error in creation_of_umail_index: {e}")
         return []
 
 
@@ -2458,7 +2496,7 @@ def extract_names_from_emails_test():
     names = []
     for match in re.finditer(email_pattern, query):
         email = match.group()
-       #print(f"matching email: {email}")
+        # print(f"matching email: {email}")
         start_idx = match.start()
         end_idx = match.end()
 

@@ -15,6 +15,7 @@ from utils.normal import can_reply_to_email, convert_human_date, convert_human_t
 from dotenv import load_dotenv
 from utils.g_scopes import g_basescopes
 from utils.base_logger import get_logger
+from markupsafe import escape
 
 load_dotenv()
 logger = get_logger(__name__)
@@ -1443,6 +1444,7 @@ class GoogleMeetService:
             ),
         }
 
+
     def update_calendar_event(
         self,
         event_id,
@@ -1462,17 +1464,17 @@ class GoogleMeetService:
                 .execute()
             )
 
-            # Simple fields
+            # ---- Sanitize inputs BEFORE sending ----
             if title:
-                event["summary"] = title
+                event["summary"] = str(title)
             if description:
-                event["description"] = description
+                event["description"] = str(description)
             if location:
-                event["location"] = location
+                event["location"] = str(location)
             if attendees:
-                event["attendees"] = [{"email": a} for a in attendees]
+                event["attendees"] = [{"email": str(a)} for a in attendees]
 
-            # Time update (timezone ONLY from argument or organizer)
+            # ---- Time update ----
             if start_dt and end_dt:
                 effective_tz = timezone or self.organizer_tz
 
@@ -1485,7 +1487,7 @@ class GoogleMeetService:
                     "timeZone": effective_tz,
                 }
 
-            # Google Meet handling
+            # ---- Google Meet handling ----
             if googlemeet:
                 event["conferenceData"] = {
                     "createRequest": {
@@ -1507,22 +1509,31 @@ class GoogleMeetService:
                 .execute()
             )
 
+            # ---- Sanitize response (CRITICAL for XSS) ----
+            safe_summary = escape(updated.get("summary")) if updated.get("summary") else ""
+
             return {
                 "success": True,
                 "event_id": updated.get("id"),
-                "summary": updated.get("summary"),
+                "summary": safe_summary,
                 "hangoutLink": updated.get("hangoutLink"),
                 "start": updated.get("start"),
                 "end": updated.get("end"),
                 "attendees": updated.get("attendees"),
+
+                # SAFE string
                 "return_str": (
-                    f"Meeting '{updated.get('summary')}' updated successfully. "
+                    f"Meeting '{safe_summary}' updated successfully. "
                     f"{'Google Meet link updated.' if googlemeet else 'No meeting link attached.'}"
                 ),
             }
 
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        except Exception:
+            # ❌ Never expose raw exception
+            return {
+                "success": False,
+                "error": "Failed to update calendar event"
+            }
 
     def delete_calendar_event(self, event_id):
         try:

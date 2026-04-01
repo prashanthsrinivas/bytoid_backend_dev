@@ -1,5 +1,6 @@
 import json
 import os
+from credits_route.route import Credits
 from flask import jsonify
 from utils.fireworkzz import get_fireworks_response, get_fireworks_response2
 from utils.normal import load_yaml_file
@@ -23,6 +24,7 @@ class ASTGenerator:
     def __init__(self, user_id):
         base_dir = os.path.dirname(os.path.dirname(__file__))
         self.userid = user_id
+        self.credits = Credits()
 
         # Load schema once
         with open(os.path.join(base_dir, "table_details.json"), "r") as f:
@@ -265,7 +267,11 @@ class ASTGenerator:
             .replace("{{current_date}}", str(current_date))
         )
         llm_response = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
 
         try:
@@ -490,20 +496,20 @@ class ASTGenerator:
     ):
 
         # print("=== retrieval_ast arguments ===")
-       #print(f"decomposed_query: {decomposed_query}")
-       #print(f"time_column: {time_column}")
-       #print(f"entity_table: {entity_table}")
-       #print(f"entity_columns: {entity_columns}")
-       #print(f"filter_table: {filter_table}")
-       #print(f"new_person_param: {new_person_param}")
-       #print(f"time_sql_template: {time_sql_template}")
-       #print(f"time_params: {time_params}")
-       #print(f"filter_columns: {filter_columns}")
-       #print(f"entity_primary_key: {entity_primary_key}")
-       #print(f"grouping_table: {grouping_table}")
-       #print(f"grouping_column: {grouping_column}")
-       #print(f"select_table: {select_table}")
-       #print(f"select_columns: {select_columns}")
+        # print(f"decomposed_query: {decomposed_query}")
+        # print(f"time_column: {time_column}")
+        # print(f"entity_table: {entity_table}")
+        # print(f"entity_columns: {entity_columns}")
+        # print(f"filter_table: {filter_table}")
+        # print(f"new_person_param: {new_person_param}")
+        # print(f"time_sql_template: {time_sql_template}")
+        # print(f"time_params: {time_params}")
+        # print(f"filter_columns: {filter_columns}")
+        # print(f"entity_primary_key: {entity_primary_key}")
+        # print(f"grouping_table: {grouping_table}")
+        # print(f"grouping_column: {grouping_column}")
+        # print(f"select_table: {select_table}")
+        # print(f"select_columns: {select_columns}")
         # print("===============================")
         retrieval_yaml = load_yaml_file(path=pathconfig.retrieval_path)
 
@@ -524,12 +530,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 mapper_result parsing failed: {e}")
+            # print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
 
         metric_table = mapper_result.get("metric_table")
@@ -558,12 +568,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 select_builder_result parsing failed: {e}")
+            # print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -582,12 +596,16 @@ class ASTGenerator:
             "{{entity_table}}", json.dumps(entity_table, ensure_ascii=False)
         ).replace("{{joins}}", json.dumps(joins, ensure_ascii=False))
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 from_join_result parsing failed: {e}")
+            # print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -642,12 +660,16 @@ class ASTGenerator:
                 .replace("{{limit}}", json.dumps(limit))
             )
             modified_yaml = await get_fireworks_response2(
-                user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+                credits=self.credits,
+                user_message=filled_prompt,
+                role="system",
+                temp=0.2,
+                user_id=self.userid,
             )
             try:
                 group_order_result = parse_llm_response(modified_yaml)
             except ValueError as e:
-               #print(f"🔥 group_order_limit_result parsing failed: {e}")
+                # print(f"🔥 group_order_limit_result parsing failed: {e}")
                 return (
                     jsonify(
                         {"error": "Failed to parse group_order_limit_result response"}
@@ -700,20 +722,20 @@ class ASTGenerator:
     ):
 
         # print("=== aggregation_ast arguments ===")
-       #print(f"decomposed_query: {decomposed_query}")
-       #print(f"time_column: {time_column}")
-       #print(f"entity_table: {entity_table}")
-       #print(f"entity_columns: {entity_columns}")
-       #print(f"filter_table: {filter_table}")
-       #print(f"new_person_param: {new_person_param}")
-       #print(f"time_sql_template: {time_sql_template}")
-       #print(f"time_params: {time_params}")
-       #print(f"filter_columns: {filter_columns}")
-       #print(f"entity_primary_key: {entity_primary_key}")
-       #print(f"grouping_table: {grouping_table}")
-       #print(f"grouping_column: {grouping_column}")
-       #print(f"select_table: {select_table}")
-       #print(f"select_columns: {select_columns}")
+        # print(f"decomposed_query: {decomposed_query}")
+        # print(f"time_column: {time_column}")
+        # print(f"entity_table: {entity_table}")
+        # print(f"entity_columns: {entity_columns}")
+        # print(f"filter_table: {filter_table}")
+        # print(f"new_person_param: {new_person_param}")
+        # print(f"time_sql_template: {time_sql_template}")
+        # print(f"time_params: {time_params}")
+        # print(f"filter_columns: {filter_columns}")
+        # print(f"entity_primary_key: {entity_primary_key}")
+        # print(f"grouping_table: {grouping_table}")
+        # print(f"grouping_column: {grouping_column}")
+        # print(f"select_table: {select_table}")
+        # print(f"select_columns: {select_columns}")
         # print("===============================")
 
         aggregation_yaml = load_yaml_file(path=pathconfig.aggregation_path)
@@ -734,12 +756,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 mapper_result parsing failed: {e}")
+            # print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -772,12 +798,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 select_builder_result parsing failed: {e}")
+            # print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -806,12 +836,16 @@ class ASTGenerator:
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 from_join_result parsing failed: {e}")
+            # print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -826,7 +860,7 @@ class ASTGenerator:
         #     .replace("{{time_column}}", json.dumps(time_column, ensure_ascii=False))
         #     .replace("{{time_range}}", str(time_range))
         # )
-        # modified_yaml = get_fireworks_response2( user_message=filled_prompt, role="system", temp=0.2,user_id=self.userid)
+        # modified_yaml = get_fireworks_response2(credits=self.credits, user_message=filled_prompt, role="system", temp=0.2,user_id=self.userid)
         # try:
         #     where_result = parse_llm_response(modified_yaml)
         # except ValueError as e:
@@ -855,7 +889,7 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-       #print(
+        # print(
         #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
         # )
         group_order_template = aggregation_yaml.get("ast_group_order_limit_builder")
@@ -878,12 +912,16 @@ class ASTGenerator:
             .replace("{{limit}}", json.dumps(limit))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 group_order_result parsing failed: {e}")
+            # print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -937,22 +975,22 @@ class ASTGenerator:
     ):
 
         # print("=== trend_ast arguments ===")
-       #print(f"decomposed_query: {decomposed_query}")
-       #print(f"time_column: {time_column}")
-       #print(f"entity_table: {entity_table}")
-       #print(f"entity_columns: {entity_columns}")
-       #print(f"filter_table: {filter_table}")
-       #print(f"new_person_param: {new_person_param}")
-       #print(f"time_sql_template: {time_sql_template}")
-       #print(f"time_params: {time_params}")
-       #print(f"filter_columns: {filter_columns}")
-       #print(f"entity_primary_key: {entity_primary_key}")
-       #print(f"grouping_table: {grouping_table}")
-       #print(f"grouping_column: {grouping_column}")
-       #print(f"select_table: {select_table}")
-       #print(f"select_columns: {select_columns}")
-       #print(f"pivot_values_map: {pivot_values_map}")
-       #print(f"pivot_col: {pivot_col}")
+        # print(f"decomposed_query: {decomposed_query}")
+        # print(f"time_column: {time_column}")
+        # print(f"entity_table: {entity_table}")
+        # print(f"entity_columns: {entity_columns}")
+        # print(f"filter_table: {filter_table}")
+        # print(f"new_person_param: {new_person_param}")
+        # print(f"time_sql_template: {time_sql_template}")
+        # print(f"time_params: {time_params}")
+        # print(f"filter_columns: {filter_columns}")
+        # print(f"entity_primary_key: {entity_primary_key}")
+        # print(f"grouping_table: {grouping_table}")
+        # print(f"grouping_column: {grouping_column}")
+        # print(f"select_table: {select_table}")
+        # print(f"select_columns: {select_columns}")
+        # print(f"pivot_values_map: {pivot_values_map}")
+        # print(f"pivot_col: {pivot_col}")
 
         # print("===============================")
 
@@ -974,12 +1012,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 mapper_result parsing failed: {e}")
+            # print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -994,7 +1036,7 @@ class ASTGenerator:
         time_bucket_column = (
             f"DATE_TRUNC('{granularity}', {time_column}) AS time_bucket"
         )
-       #print(f"time_bucket_column : {time_bucket_column}")
+        # print(f"time_bucket_column : {time_bucket_column}")
 
         # ----------------- select builder ----------------------#
 
@@ -1038,18 +1080,22 @@ class ASTGenerator:
             )
 
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 select_builder_result parsing failed: {e}")
+            # print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
             )
         select = select_builder_result.get("SELECT")
-       #print(f"select : {select}")
+        # print(f"select : {select}")
 
         # ---------------- FROM & JOIN builder ---------------- #
 
@@ -1067,12 +1113,16 @@ class ASTGenerator:
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 from_join_result parsing failed: {e}")
+            # print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1107,7 +1157,7 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-       #print(
+        # print(
         #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
         # )
         group_order_template = trend_yaml.get("ast_group_order_limit_builder")
@@ -1115,12 +1165,16 @@ class ASTGenerator:
             "{{limit}}", json.dumps(limit)
         ).replace("{{time_bucket_column}}", json.dumps(time_bucket_column))
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 group_order_result parsing failed: {e}")
+            # print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1170,20 +1224,20 @@ class ASTGenerator:
     ):
 
         # print("=== ranking_ast arguments ===")
-       #print(f"decomposed_query: {decomposed_query}")
-       #print(f"time_column: {time_column}")
-       #print(f"entity_table: {entity_table}")
-       #print(f"entity_columns: {entity_columns}")
-       #print(f"filter_table: {filter_table}")
-       #print(f"new_person_param: {new_person_param}")
-       #print(f"time_sql_template: {time_sql_template}")
-       #print(f"time_params: {time_params}")
-       #print(f"filter_columns: {filter_columns}")
-       #print(f"entity_primary_key: {entity_primary_key}")
-       #print(f"grouping_table: {grouping_table}")
-       #print(f"grouping_column: {grouping_column}")
-       #print(f"select_table: {select_table}")
-       #print(f"select_columns: {select_columns}")
+        # print(f"decomposed_query: {decomposed_query}")
+        # print(f"time_column: {time_column}")
+        # print(f"entity_table: {entity_table}")
+        # print(f"entity_columns: {entity_columns}")
+        # print(f"filter_table: {filter_table}")
+        # print(f"new_person_param: {new_person_param}")
+        # print(f"time_sql_template: {time_sql_template}")
+        # print(f"time_params: {time_params}")
+        # print(f"filter_columns: {filter_columns}")
+        # print(f"entity_primary_key: {entity_primary_key}")
+        # print(f"grouping_table: {grouping_table}")
+        # print(f"grouping_column: {grouping_column}")
+        # print(f"select_table: {select_table}")
+        # print(f"select_columns: {select_columns}")
         # print("===============================")
 
         ranking_yaml = load_yaml_file(path=pathconfig.ranking_path)
@@ -1204,12 +1258,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 mapper_result parsing failed: {e}")
+            # print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -1242,12 +1300,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 select_builder_result parsing failed: {e}")
+            # print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -1270,12 +1332,16 @@ class ASTGenerator:
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 from_join_result parsing failed: {e}")
+            # print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1330,12 +1396,16 @@ class ASTGenerator:
             .replace("{{ranking_direction}}", json.dumps(ranking_direction))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 group_order_result parsing failed: {e}")
+            # print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1387,20 +1457,20 @@ class ASTGenerator:
     ):
 
         # print("=== ranking_ast_temporal arguments ===")
-       #print(f"decomposed_query: {decomposed_query}")
-       #print(f"time_column: {time_column}")
-       #print(f"entity_table: {entity_table}")
-       #print(f"entity_columns: {entity_columns}")
-       #print(f"filter_table: {filter_table}")
-       #print(f"new_person_param: {new_person_param}")
-       #print(f"time_sql_template: {time_sql_template}")
-       #print(f"time_params: {time_params}")
-       #print(f"filter_columns: {filter_columns}")
-       #print(f"entity_primary_key: {entity_primary_key}")
-       #print(f"grouping_table: {grouping_table}")
-       #print(f"grouping_column: {grouping_column}")
-       #print(f"select_table: {select_table}")
-       #print(f"select_columns: {select_columns}")
+        # print(f"decomposed_query: {decomposed_query}")
+        # print(f"time_column: {time_column}")
+        # print(f"entity_table: {entity_table}")
+        # print(f"entity_columns: {entity_columns}")
+        # print(f"filter_table: {filter_table}")
+        # print(f"new_person_param: {new_person_param}")
+        # print(f"time_sql_template: {time_sql_template}")
+        # print(f"time_params: {time_params}")
+        # print(f"filter_columns: {filter_columns}")
+        # print(f"entity_primary_key: {entity_primary_key}")
+        # print(f"grouping_table: {grouping_table}")
+        # print(f"grouping_column: {grouping_column}")
+        # print(f"select_table: {select_table}")
+        # print(f"select_columns: {select_columns}")
         # print("===============================")
 
         ranking_temporal_yaml = load_yaml_file(path=pathconfig.ranking_temporal_path)
@@ -1421,12 +1491,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 mapper_result parsing failed: {e}")
+            # print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -1434,7 +1508,7 @@ class ASTGenerator:
         metric_column = mapper_result.get("metric_column")
         if "." in metric_column:
             metric_column = metric_column.split(".")[-1]  # remove prefix
-       #print(f"metric_table : {metric_table} | metric_column : {metric_column}")
+        # print(f"metric_table : {metric_table} | metric_column : {metric_column}")
         joins = mapper_result.get("joins")
         aggregation = decomposed_query.get("aggregation")
         grouping_dimension = decomposed_query.get("grouping_dimension")
@@ -1459,12 +1533,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 select_builder_result parsing failed: {e}")
+            # print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -1487,12 +1565,16 @@ class ASTGenerator:
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 from_join_result parsing failed: {e}")
+            # print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1524,7 +1606,7 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-       #print(
+        # print(
         #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
         # )
         group_order_template = ranking_temporal_yaml.get(
@@ -1550,12 +1632,16 @@ class ASTGenerator:
             .replace("{{ranking_direction}}", json.dumps(ranking_direction))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 group_order_result parsing failed: {e}")
+            # print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1607,20 +1693,20 @@ class ASTGenerator:
     ):
 
         # print("=== ranking_ast_no_aggregate arguments ===")
-       #print(f"decomposed_query: {decomposed_query}")
-       #print(f"time_column: {time_column}")
-       #print(f"entity_table: {entity_table}")
-       #print(f"entity_columns: {entity_columns}")
-       #print(f"filter_table: {filter_table}")
-       #print(f"new_person_param: {new_person_param}")
-       #print(f"time_sql_template: {time_sql_template}")
-       #print(f"time_params: {time_params}")
-       #print(f"filter_columns: {filter_columns}")
-       #print(f"entity_primary_key: {entity_primary_key}")
-       #print(f"grouping_table: {grouping_table}")
-       #print(f"grouping_column: {grouping_column}")
-       #print(f"select_table: {select_table}")
-       #print(f"select_columns: {select_columns}")
+        # print(f"decomposed_query: {decomposed_query}")
+        # print(f"time_column: {time_column}")
+        # print(f"entity_table: {entity_table}")
+        # print(f"entity_columns: {entity_columns}")
+        # print(f"filter_table: {filter_table}")
+        # print(f"new_person_param: {new_person_param}")
+        # print(f"time_sql_template: {time_sql_template}")
+        # print(f"time_params: {time_params}")
+        # print(f"filter_columns: {filter_columns}")
+        # print(f"entity_primary_key: {entity_primary_key}")
+        # print(f"grouping_table: {grouping_table}")
+        # print(f"grouping_column: {grouping_column}")
+        # print(f"select_table: {select_table}")
+        # print(f"select_columns: {select_columns}")
         # print("===============================")
 
         ranking_no_aggregate_yaml = load_yaml_file(
@@ -1643,12 +1729,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             mapper_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 mapper_result parsing failed: {e}")
+            # print(f"🔥 mapper_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse mapper_result response"}), 500
         # print(f"mapper_result : {mapper_result}")
 
@@ -1675,12 +1765,16 @@ class ASTGenerator:
             )
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             select_builder_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 select_builder_result parsing failed: {e}")
+            # print(f"🔥 select_builder_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse select_builder_result response"}),
                 500,
@@ -1703,12 +1797,16 @@ class ASTGenerator:
             .replace("{{joins}}", json.dumps(joins, ensure_ascii=False, indent=2))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             from_join_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 from_join_result parsing failed: {e}")
+            # print(f"🔥 from_join_result parsing failed: {e}")
             return jsonify({"error": "Failed to parse from_join_result response"}), 500
         from_node = from_join_result.get("FROM")
 
@@ -1739,7 +1837,7 @@ class ASTGenerator:
             grouping_table = entity_table
             grouping_column.append(entity_primary_key)
 
-       #print(
+        # print(
         #     f"grouping_table : {grouping_table} | grouping_column : {grouping_column}"
         # )
         group_order_template = ranking_no_aggregate_yaml.get(
@@ -1765,12 +1863,16 @@ class ASTGenerator:
             .replace("{{ranking_direction}}", json.dumps(ranking_direction))
         )
         modified_yaml = await get_fireworks_response2(
-            user_message=filled_prompt, role="system", temp=0.2, user_id=self.userid
+            credits=self.credits,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            user_id=self.userid,
         )
         try:
             group_order_result = parse_llm_response(modified_yaml)
         except ValueError as e:
-           #print(f"🔥 group_order_result parsing failed: {e}")
+            # print(f"🔥 group_order_result parsing failed: {e}")
             return (
                 jsonify({"error": "Failed to parse group_order_result response"}),
                 500,
@@ -1823,9 +1925,9 @@ class ASTGenerator:
         # Filters
         filter_columns, pivot_col = self.get_filters(decomposed_query)
         if pivot_col:
-           #print(f"pivot_col : {pivot_col}")
+            # print(f"pivot_col : {pivot_col}")
             pivot_values_map = self.build_pivot_values_map(pivot_col)
-           #print(f"pivot_values_map : {pivot_values_map}")
+        # print(f"pivot_values_map : {pivot_values_map}")
 
         else:
             pivot_values_map = []
@@ -1858,7 +1960,7 @@ class ASTGenerator:
         )
 
         temporal_flag = decomposed_query["temporal_flag"]
-       #print(f"temporal_flag in generate_ast: {temporal_flag}")
+        # print(f"temporal_flag in generate_ast: {temporal_flag}")
 
         # RANKING
         if sql_intent.lower() == "ranking":

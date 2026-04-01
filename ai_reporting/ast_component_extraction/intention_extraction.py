@@ -1,5 +1,6 @@
 import json
 import os
+from credits_route.route import Credits
 from utils.fireworkzz import get_fireworks_response, get_fireworks_response2
 from ai_reporting.parse_llm import parse_llm_response
 from ai_reporting.ast_component_extraction.entity_detection_common import (
@@ -15,6 +16,7 @@ class QueryIntentionExtractor:
         self.base_dir = base_dir
         self.database_schema = self.load_database_schema()
         self.userid = userid
+        self.credits = Credits()
 
     def load_database_schema(self, schema_file="table_details.json"):
         schema_path = os.path.join(self.base_dir, schema_file)
@@ -29,7 +31,11 @@ class QueryIntentionExtractor:
         filled_prompt = entity_template.replace("{{user_query}}", str(original_query))
 
         llm_output = await get_fireworks_response2(
-            user_id=self.userid, user_message=filled_prompt, role="system", temp=0.2
+            user_id=self.userid,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            credits=self.credits,
         )
         return parse_llm_response(llm_output)
 
@@ -66,7 +72,10 @@ class QueryIntentionExtractor:
         filled_prompt = template.replace("{{user_query}}", query)
 
         response = await get_fireworks_response(
-            filled_prompt, role="system", user_id=self.userid
+            user_message=filled_prompt,
+            role="system",
+            user_id=self.userid,
+            credits=self.credits,
         )
         try:
             result = parse_llm_response(response)
@@ -104,7 +113,10 @@ class QueryIntentionExtractor:
         )
 
         response = await get_fireworks_response(
-            filled_prompt, role="system", user_id=self.userid
+            user_message=filled_prompt,
+            role="system",
+            user_id=self.userid,
+            credits=self.credits,
         )
         try:
             result = parse_llm_response(response)
@@ -124,7 +136,10 @@ class QueryIntentionExtractor:
             )
 
             response = await get_fireworks_response(
-                filled_prompt, role="system", user_id=self.userid
+                user_message=filled_prompt,
+                role="system",
+                user_id=self.userid,
+                credits=self.credits,
             )
             try:
                 result = parse_llm_response(response)
@@ -164,7 +179,11 @@ class QueryIntentionExtractor:
 
         # --- First LLM call ---
         raw1 = await get_fireworks_response2(
-            user_id=self.userid, user_message=filled_prompt, role="system", temp=0.2
+            user_id=self.userid,
+            user_message=filled_prompt,
+            role="system",
+            temp=0.2,
+            credits=self.credits,
         )
         try:
             result1 = parse_llm_response(raw1)
@@ -173,7 +192,10 @@ class QueryIntentionExtractor:
 
         # --- Second LLM call ---
         raw2 = await get_fireworks_response(
-            user_message=filled_prompt, role="system", user_id=self.userid
+            user_message=filled_prompt,
+            role="system",
+            user_id=self.userid,
+            credits=self.credits,
         )
         try:
             result2 = parse_llm_response(raw2)
@@ -184,7 +206,10 @@ class QueryIntentionExtractor:
         if result1 != result2:
             # print("⚠️ Mismatch between LLM outputs — retrying once more")
             raw3 = await get_fireworks_response(
-                user_message=filled_prompt, role="system", user_id=self.userid
+                user_message=filled_prompt,
+                role="system",
+                user_id=self.userid,
+                credits=self.credits,
             )
             try:
                 final_result = parse_llm_response(raw3)
