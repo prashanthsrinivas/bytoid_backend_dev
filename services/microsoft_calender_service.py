@@ -3,6 +3,8 @@ import pytz, json, re
 from datetime import datetime, timedelta, time
 from db.rds_db import connect_to_rds, get_cursor
 from utils.base_logger import get_logger
+from utils.normal import strip_html
+from markupsafe import escape
 
 logger = get_logger(__name__)
 
@@ -50,24 +52,25 @@ class MicrosoftGraphCalendarService:
                 (str(userid),),
             )
             row = cursor.fetchone()
-            if row and row[0] and row[2]:   # client_id and token must exist
+            if row and row[0] and row[2]:  # client_id and token must exist
                 self.token_source = "users"
             if not row:
                 raise ValueError("user not found")
-            
+
             if not row[0]:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT client_id,client_secret,
                                access_token,refresh_token,expiry,email
                                FROM integrations WHERE primary_user_id_fk=%s and platform = 'microsoft'
                                """,
-                               (str(userid),),)
+                    (str(userid),),
+                )
                 row = cursor.fetchone()
             if not row:
                 raise ValueError("Microsoft OAuth not connected")
-            
+
             self.token_source = "integrations"
-        
 
         (
             self.client_id,
@@ -310,7 +313,7 @@ class MicrosoftGraphCalendarService:
             # print("CLIENT SECRET:", self.client_secret)
             # print("REFRESH TOKEN:", self.refresh_token[:20])
             if resp.status_code != 200:
-                 raise ValueError(f"MS token refresh failed: {resp.text}")
+                raise ValueError(f"MS token refresh failed: {resp.text}")
             data = resp.json()
             ##print("Data on refresh:", data)
 
@@ -328,33 +331,39 @@ class MicrosoftGraphCalendarService:
             with get_cursor(self.conn) as cursor:
                 if self.token_source == "users":
 
-                        cursor.execute("""
+                    cursor.execute(
+                        """
                             UPDATE users
                             SET token=%s,
                                 refresh_token=%s,
                                 expiry=%s
                             WHERE user_id=%s
-                        """, (
+                        """,
+                        (
                             self.access_token,
                             self.refresh_token,
                             self.expiry,
                             self.userid,
-                        ))
+                        ),
+                    )
                 else:
 
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         UPDATE integrations
                         SET access_token=%s,
                             refresh_token=%s,
                             expiry=%s
                         WHERE primary_user_id_fk=%s
                         AND platform='microsoft'
-                    """, (
-                        self.access_token,
-                        self.refresh_token,
-                        self.expiry,
-                        self.userid,
-                    ))
+                    """,
+                        (
+                            self.access_token,
+                            self.refresh_token,
+                            self.expiry,
+                            self.userid,
+                        ),
+                    )
             self.conn.commit()
 
     def view_all_events(
@@ -556,18 +565,8 @@ class MicrosoftGraphCalendarService:
         location=None,
         googlemeet=False,
     ):
-        """
-        Update Microsoft calendar event (Teams-compatible but cleaned like Google).
-        """
-
-        # ---------------------------------------
-        # STEP 1: Ensure token is fresh
-        # ---------------------------------------
         self.ensure_fresh_token()
 
-        # ---------------------------------------
-        # STEP 2: Fetch existing event (needed for description)
-        # ---------------------------------------
         existing_resp = requests.get(
             f"{self.GRAPH_BASE}/me/events/{event_id}",
             headers=self.headers,
@@ -576,20 +575,16 @@ class MicrosoftGraphCalendarService:
         if existing_resp.status_code != 200:
             return {
                 "success": False,
-                "error": f"Failed to get existing event: {existing_resp.text}",
+                "error": "Failed to fetch existing event",
             }
 
         existing = existing_resp.json()
-
         old_desc = existing.get("body", {}).get("content", "") or ""
 
-        # ---------------------------------------
-        # STEP 3: Build update PATCH body
-        # ---------------------------------------
         body = {}
 
         if title:
-            body["subject"] = title
+            body["subject"] = str(title)
 
         if start_dt:
             body["start"] = format_dt(start_dt, self.user_timezone)
@@ -598,50 +593,33 @@ class MicrosoftGraphCalendarService:
             body["end"] = format_dt(end_dt, self.user_timezone)
 
         if location:
-            body["location"] = {"displayName": location}
+            body["location"] = {"displayName": str(location)}
 
-        # ----------------------------
-        # Attendees
-        # ----------------------------
         if attendees is not None:
             body["attendees"] = [
-                {"emailAddress": {"address": email}, "type": "required"}
+                {"emailAddress": {"address": str(email)}, "type": "required"}
                 for email in attendees
             ]
 
-        # ----------------------------
-        # Teams Meeting (like googlemeet=True)
-        # ----------------------------
         if googlemeet:
             body["isOnlineMeeting"] = True
             body["onlineMeetingProvider"] = "teamsForBusiness"
         else:
-            # Explicitly DISABLE Teams meeting
             body["isOnlineMeeting"] = False
             body["onlineMeetingProvider"] = None
             body["onlineMeeting"] = None
 
-        # ----------------------------
-        # DESCRIPTION (user + cleanup logic)
-        # ----------------------------
+        # ---- Description sanitization ----
         if description is not None:
-            # User passed a new description → use it directly
             clean_desc = remove_teams_block(description)
         else:
-            # Keep user's existing text, but remove Teams block
             clean_desc = remove_teams_block(old_desc)
 
         body["body"] = {
             "contentType": "HTML",
-            "content": clean_desc,
+            "content": clean_desc,  # safe to send, but NOT safe to return
         }
 
-        # DEBUG
-        # print("🟦 Final PATCH body sent to Microsoft:", json.dumps(body, indent=2))
-
-        # ---------------------------------------
-        # STEP 4: PATCH request
-        # ---------------------------------------
         resp = requests.patch(
             f"{self.GRAPH_BASE}/me/events/{event_id}",
             headers=self.headers,
@@ -649,27 +627,34 @@ class MicrosoftGraphCalendarService:
         )
 
         if resp.status_code not in (200, 202):
-            # print("❌ Microsoft update failed:", resp.text)
-            return {"success": False, "error": resp.text}
+            return {"success": False, "error": "Failed to update event"}
 
         updated = resp.json()
 
-        # ---------------------------------------
-        # STEP 5: Normalize response
-        # ---------------------------------------
-        date_str, time_str = self._format_event_time(
-            updated.get("start"), updated.get("end")
+        # ---- SAFE RESPONSE SANITIZATION ----
+        safe_summary = escape(updated.get("subject")) if updated.get("subject") else ""
+        safe_location = (
+            escape(updated.get("location", {}).get("displayName"))
+            if updated.get("location")
+            else ""
         )
 
+        raw_desc = updated.get("body", {}).get("content", "")
+        safe_description = escape(strip_html(raw_desc))  # 🔥 critical
+
         attendee_list = ", ".join(
-            a.get("emailAddress", {}).get("address", "")
+            escape(a.get("emailAddress", {}).get("address", ""))
             for a in updated.get("attendees", [])
+        )
+
+        date_str, time_str = self._format_event_time(
+            updated.get("start"), updated.get("end")
         )
 
         return {
             "success": True,
             "event_id": updated.get("id"),
-            "summary": updated.get("subject"),
+            "summary": safe_summary,
             "start": updated.get("start"),
             "end": updated.get("end"),
             "attendees": updated.get("attendees", []),
@@ -678,8 +663,8 @@ class MicrosoftGraphCalendarService:
                 if updated.get("isOnlineMeeting")
                 else None
             ),
-            "location": updated.get("location", {}).get("displayName"),
-            "description": updated.get("body", {}).get("content"),
+            "location": safe_location,
+            "description": safe_description,
             "status": (
                 "cancelled"
                 if updated.get("isCancelled")
@@ -687,8 +672,9 @@ class MicrosoftGraphCalendarService:
                     "tentative" if updated.get("showAs") == "tentative" else "confirmed"
                 )
             ),
+            # ---- SAFE STRING ----
             "return_str": (
-                f"Meeting '{updated.get('subject')}' was updated"
+                f"Meeting '{safe_summary}' was updated"
                 + (
                     f" and is now scheduled on {date_str} from {time_str}."
                     if date_str

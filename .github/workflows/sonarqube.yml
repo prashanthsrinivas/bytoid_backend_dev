@@ -36,3 +36,4 @@ jobs:
           args: >
             -Dsonar.projectKey=${{ secrets.PROJECT_KEY }}
             -Dsonar.organization=${{ secrets.YOUR_ORG_KEY }}
+            -Dsonar.python.version=3.11.6

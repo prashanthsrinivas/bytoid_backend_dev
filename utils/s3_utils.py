@@ -91,6 +91,9 @@ def upload_any_file(file_path, user_id, type="workflow", file_name=None, s3_key_
             elif type == "runbook":
                 s3_key = f"{user_id}/runbooks/{final_name}"
 
+            elif type == "structure_file":
+                s3_key = f"{user_id}/runbooks/structure_file/{final_name}"
+
             else:
                 s3_key = f"{user_id}/{final_name}"
 

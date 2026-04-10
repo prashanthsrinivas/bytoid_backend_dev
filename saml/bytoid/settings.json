@@ -1,0 +1,27 @@
+{
+ "strict": true,
+ "debug": true,
+
+ "sp": {
+   "entityId": "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com",
+   "assertionConsumerService": {
+     "url": "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/auth/saml/acs",
+     "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+   }
+ },
+
+ "idp": {
+   "entityId": "https://sts.windows.net/2b2e980d-e5ac-460c-8b9d-4cebde117aed/",
+   "singleSignOnService": {
+     "url": "https://login.microsoftonline.com/2b2e980d-e5ac-460c-8b9d-4cebde117aed/saml2",
+     "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+   },
+   "x509cert": "MIIC8DCCAdigAwIBAgIQGuS0ntNpvoNJzNog4aRhdzANBgkqhkiG9w0BAQsFADA0MTIwMAYDVQQDEylNaWNyb3NvZnQgQXp1cmUgRmVkZXJhdGVkIFNTTyBDZXJ0aWZpY2F0ZTAeFw0yNjAzMjUxMzQ0NTBaFw0yOTAzMjUxMzQ0NDlaMDQxMjAwBgNVBAMTKU1pY3Jvc29mdCBBenVyZSBGZWRlcmF0ZWQgU1NPIENlcnRpZmljYXRlMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsIBJegvsLNXuERkYluxWsQD83pjnJMBELcIMNCqPMZSOmILnhAL8N7tHEkDuBmt3g2ALxbJkVxWK0I6Vvp2aokMQeI6hgolzLu5TaalF36JDchm90maR33yOIjmfB4uemYTzkEKFkFYdrZRbpR3+AcKeHYPHS/zE75CMlAyhuMh3wdp1/ZTEqwG8lk/TkfgFZPXubPNdMpvHgpXlnI+0tnzo+JAzxltQYkBSfp5ZV+EwBy6JjVmvWaJKLy4cs0YbmDqLNbZTRzSf0vek2Y1XrOwz1Z8SY2Tb7HuAtplN5aXIKMR8IhKVajHgPiYcjPXLPwIKIF1Kt2HIm2U2zBSXPQIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQCab2oAjvKVfGg2ZwKHRLW5o94kOrUuMN1EZq3d2/dTW8kJiZ6DZ1E0ZcWK710k0/ht9G4H78xe1bbT6lOwWCkPVYj8OMRgYhTBGGrCKTvEz8LAjlFY9rYiSa1NO+q2LWWqkA9pnpYi2IvwFbotetydHJWEXNGBaffMKW/lSq1Rx5XqAOGTQjBvRYJUNjYbDPA76NEjVAvsgRxl7fSPagcr9b2P2fEMeq9BvIDivAZdBSQB/dr6mH8X5LZzkuPmWTIFye9YBpr/E85TUrrDiKA4/t2Wki6+0JVTF3mdzIVInBmmqY6ej+4gM+Ea3MOM4bmgvlKDaCAyjrJoyyB/CkQG"
+ },
+
+ "security": {
+   "wantAssertionsSigned": false,
+   "wantMessagesSigned": false,
+   "wantNameId": false
+ }
+}

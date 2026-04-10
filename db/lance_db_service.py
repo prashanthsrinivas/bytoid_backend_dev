@@ -1,5 +1,6 @@
 import os
 import uuid
+from credits_route.route import Credits
 import lancedb
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -2448,7 +2449,7 @@ class LanceDBServer:
         )
 
         def _query():
-            records = table.to_arrow_table().to_pylist()
+            records = table.search().limit(limit).to_list()
             # Sort by foldername (minute_bucket)
             records.sort(key=lambda r: r["foldername"], reverse=newest_first)
             return records[:limit]
@@ -2456,8 +2457,24 @@ class LanceDBServer:
         records = await asyncio.to_thread(_query)
 
         # Parse JSON text
+        # for r in records:
+        #     r["text"] = json.loads(r["text"])
         for r in records:
-            r["text"] = json.loads(r["text"])
+            for field in ["text", "original"]:
+                val = r.get(field)
+
+                if isinstance(val, str):
+                    val = val.strip()
+
+                    if not val or val == "init":
+                        r[field] = None
+                        continue
+
+                    try:
+                        r[field] = json.loads(val)
+                    except json.JSONDecodeError:
+                        # leave as-is (string)
+                        pass
         return records
 
     async def delete_app_runs(self, user_id: str, app_id: str, endpoint_id: str):
@@ -2964,77 +2981,32 @@ class LanceDBServer:
     # runbook schema
     async def _create_runbook_schema(self):
 
-        return pa.schema(
-            [
-                pa.field("runbook_id", pa.string()),
-                pa.field("user_id", pa.string()),
-                pa.field("name", pa.string()),
-                pa.field("description", pa.string()),
-                pa.field("runbook_type", pa.string()),
-                pa.field("schedule", pa.string()),  # cron / manual
-                pa.field("input_type", pa.string()),  # questionnaire/api/logs
-                pa.field("playbook_id", pa.string()),
-                pa.field("api_endpoint", pa.string()),
-                pa.field("log_source", pa.string()),
-                pa.field("files", pa.list_(pa.string())),
-                pa.field("links", pa.list_(pa.string())),
-                pa.field("data_sources", pa.list_(pa.string())),
-                pa.field("reference_sources", pa.list_(pa.string())),
-                pa.field("created_at", pa.timestamp("us")),
-            ]
-        )
+       return pa.schema([
+            pa.field("runbook_id", pa.string()),
+            pa.field("user_id", pa.string()),
+            pa.field("name", pa.string()),
+            pa.field("description", pa.string()),
+            pa.field("runbook_type", pa.string()),
+            pa.field("schedule", pa.string()),
+            pa.field("input_type", pa.string()),
+            pa.field("playbook_id", pa.string()),
+            pa.field("api_endpoint", pa.string()),
+            pa.field("log_source", pa.string()),
+            pa.field("files", pa.string()),
+            pa.field("links", pa.string()),
+            pa.field("data_sources", pa.string()),
+            pa.field("reference_sources", pa.string()),
+            pa.field("app_id", pa.string()),
+            pa.field("is_template", pa.string()),
+            pa.field("structure_theme", pa.string()),
+            pa.field("playbook_source", pa.string()),
+            pa.field("api_source", pa.string()),
+            pa.field("log_file", pa.string()),
+            pa.field("main_source", pa.string()),
+            pa.field("reference_main_source",pa.string()),
+            pa.field("created_at", pa.timestamp("us")),
+        ])
 
-    # open or create new runbook
-    # async def _open_or_create_runbook_table(self, user_id: str):
-
-    #     table_name = f"runbook_{user_id}"
-
-    #     self.db = self._connect_if_needed()
-
-    #     def _exists():
-    #      return table_name in self.db.table_names()
-
-    #     if await asyncio.to_thread(_exists):
-    #         # 🔥 FORCE DELETE OLD SCHEMA
-    #         await asyncio.to_thread(lambda: self.db.drop_table(table_name))
-
-    #     schema = await self._create_runbook_schema()
-
-    #     dummy = [
-    #             {
-    #                 "runbook_id": "init",
-    #                 "user_id": user_id,
-    #                 "name": "init",
-    #                 "description": "init",
-    #                 "runbook_type": "init",
-    #                 "schedule": "init",
-    #                 "input_type": "",
-    #                 "playbook_id": "",
-    #                 "api_endpoint": "",
-    #                 "log_source": "",
-    #                 "files": [],
-    #                 "links": [],
-    #                 "data_sources": [],
-    #                 "reference_sources": [],
-    #                 "created_at": datetime.utcnow(),
-    #             }
-    #         ]
-
-    #     def _create():
-    #             return self.db.create_table(
-    #                 table_name, data=dummy, schema=schema, mode="overwrite"
-    #             )
-
-    #     table = await asyncio.to_thread(_create)
-
-    #     try:
-    #         await asyncio.to_thread(lambda: table.delete('runbook_id == "init"'))
-    #     except Exception:
-    #             pass
-
-    #     logger.info("Created RUNBOOK table %s", table_name)
-
-    #     return table
     async def _open_or_create_runbook_table(self, user_id: str):
 
         table_name = f"runbook_{user_id}"
@@ -3042,9 +3014,8 @@ class LanceDBServer:
 
         try:
             # ✅ Try opening existing table
-            table = await asyncio.to_thread(
-                lambda: self.db.open_table(table_name)
-            )
+            # print("opening the runbook table")
+            table = await asyncio.to_thread(lambda: self.db.open_table(table_name))
             return table
 
         except Exception:
@@ -3052,54 +3023,9 @@ class LanceDBServer:
             schema = await self._create_runbook_schema()
 
             table = await asyncio.to_thread(
-                lambda: self.db.create_table(
-                    table_name,
-                    schema=schema,
-                    mode="create"
-                )
+                lambda: self.db.create_table(table_name, schema=schema, mode="create")
             )
             return table
-
-    async def _get_runbook_inputs(self, runbook_id: str):
-        table_name = f"runbook_inputs_{runbook_id}"
-        self.db = self._connect_if_needed()
-
-        try:
-            # Always try to open first
-            return self.db.open_table(table_name)
-
-        except Exception as e:
-            # print(
-            #     f"[DEBUG] runbook input table not found for runbook {runbook_id}, creating new one"
-            # )
-            schema = pa.schema(
-                [
-                    pa.field("id", pa.string()),
-                    pa.field("runbook_id", pa.string()),
-                    pa.field("questionnaire", pa.string()),
-                    pa.field("api_data", pa.string()),
-                    pa.field("logs", pa.string()),
-                    pa.field("created_at", pa.timestamp("ms")),
-                ]
-            )
-
-            dummy = [
-                {
-                    "id": "init",
-                    "runbook_id": runbook_id,
-                    "questionnaire": "init",
-                    "api_data": "init",
-                    "logs": "init",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                }
-            ]
-
-            return self.db.create_table(
-                table_name,
-                data=dummy,
-                schema=schema,
-                mode="create",
-            )
 
     # insert runbook details
     async def insert_runbook(self, data: dict):
@@ -3111,21 +3037,29 @@ class LanceDBServer:
             "name": data["name"],
             "description": data.get("description", ""),
             "runbook_type": data.get("runbook_type"),
-            "schedule": data.get("schedule"),
+            "schedule": data.get("schedule",{}),
             "input_type": data.get("input_type"),
             "playbook_id": data.get("playbook_id", ""),
             "api_endpoint": data.get("api_endpoint", ""),
+            "app_id":data.get("app_id",""),
             "log_source": data.get("log_source", ""),
-            "files": data.get("files", []),
-            "links": data.get("links", []),
-            "data_sources": data.get("data_sources", []),
-            "reference_sources": data.get("reference_sources", []),
+            "files": data.get("files", {}),
+            "links": data.get("links", {}),
+            "data_sources": data.get("data_sources", {}),
+            "reference_sources": data.get("reference_sources", {}),
+            "is_template":data.get("is_template",""),
+            "structure_theme":data.get("structure_theme",{}),
+            "playbook_source":data.get("playbook_source",""),
+            "api_source":data.get("api_source",""),
+            "log_file": data.get("log_file",""),
+            "main_source":data.get("main_source"),
+            "reference_main_source":data.get("reference_main_source"),
             "created_at": datetime.utcnow(),
         }
+
         # print("ROW KEYS:", row.keys())
         def _insert():
-            column_data = {k: [v] for k, v in row.items()}
-            return table.add(pa.Table.from_pydict(column_data))
+            return table.add([row])
 
         await asyncio.to_thread(_insert)
 
@@ -3134,14 +3068,14 @@ class LanceDBServer:
     # get runbook by id
     async def get_runbook_by_id(self, user_id: str, runbook_id: str):
 
-        table = self._open_or_create_runbook_table(user_id)
+        table = await self._open_or_create_runbook_table(user_id)
 
-        df = await asyncio.to_thread(lambda: table.to_pandas())
+        def _query():
+            return table.search().where(f"runbook_id == '{runbook_id}'").to_list()
 
-        result = df[df["runbook_id"] == runbook_id]
+        result = await asyncio.to_thread(_query)
 
-        if result.empty:
-            return None
+        return result
 
         return result.iloc[0].to_dict()
 
@@ -3152,21 +3086,13 @@ class LanceDBServer:
         table = await self._open_or_create_runbook_table(user_id)
 
         # FIX 2: use to_list instead of to_pandas
-        records = await asyncio.to_thread(
-            lambda: table.search().limit(1000).to_list()
-        )
+        records = await asyncio.to_thread(lambda: table.search().limit(1000).to_list())
 
         # Remove dummy/init row
-        records = [
-            r for r in records
-            if r.get("runbook_id") != "init"
-        ]
+        records = [r for r in records if r.get("runbook_id") != "init"]
 
         # Optional (only if shared table)
-        records = [
-            r for r in records
-            if r.get("user_id") == user_id
-        ]
+        # records = [r for r in records if r.get("user_id") == user_id]
 
         return records
 
@@ -3177,19 +3103,27 @@ class LanceDBServer:
         await asyncio.to_thread(lambda: table.delete(f'runbook_id == "{runbook_id}"'))
 
         return True
+
+    async def delete_all_runbook(self, user_id: str, runbook_id: list[str]):
+
+        table = await self._open_or_create_runbook_table(user_id)
+        # ✅ Build filter: runbook_id IN (...)
+        ids_str = ", ".join([f'"{rid}"' for rid in runbook_id])
+        filter_expr = f"runbook_id IN ({ids_str})"
+
+        await asyncio.to_thread(lambda: table.delete(filter_expr))
+
+        return True
+
     async def update_runbook(self, user_id: str, runbook_id: str, updates: dict):
         table = await self._open_or_create_runbook_table(user_id)
 
         # Step 1: Fetch existing runbook
-        records = await asyncio.to_thread(
-            lambda: table.search().limit(1000).to_list()
-        )
+        def _query():
+            return table.search().where(f'runbook_id == "{runbook_id}"').to_list()
 
-        existing = None
-        for r in records:
-            if r.get("runbook_id") == runbook_id:
-                existing = r
-                break
+        records = await asyncio.to_thread(_query)
+        existing = records[0] if records else None
 
         if not existing:
             raise ValueError("Runbook not found")
@@ -3197,7 +3131,7 @@ class LanceDBServer:
         # Step 2: Merge updates
         updated_row = {
             **existing,
-            **updates
+            **updates,
             # "updated_at": datetime.utcnow().isoformat()
         }
 
@@ -3221,9 +3155,7 @@ class LanceDBServer:
         table = await self._open_or_create_runbook_table(user_id)
 
         # Fetch all runbooks (Cloud-friendly)
-        runbooks = await asyncio.to_thread(
-            lambda: table.search().limit(1000).to_list()
-        )
+        runbooks = await asyncio.to_thread(lambda: table.search().limit(1000).to_list())
 
         # Remove dummy row
         runbooks = [r for r in runbooks if r["runbook_id"] != "init"]
@@ -3234,12 +3166,18 @@ class LanceDBServer:
         result_map = {}
 
         for r in all_results:
-            if r.get("status", "").lower() == "completed" and r.get("risk_score") != 0.0:   # STRICT filter
+            if (
+                r.get("status", "").lower() == "completed"
+                and r.get("risk_score") != 0.0
+            ):  # STRICT filter
                 rid = r.get("runbook_id")
 
                 if rid:
                     # Keep latest execution
-                    if rid not in result_map or r["started_at"] > result_map[rid]["started_at"]:
+                    if (
+                        rid not in result_map
+                        or r["started_at"] > result_map[rid]["started_at"]
+                    ):
                         result_map[rid] = r
 
         # ✅ Return only runbooks with completed executions
@@ -3249,32 +3187,17 @@ class LanceDBServer:
             rid = rb["runbook_id"]
 
             if rid in result_map:
-                rb["execution_result"] = result_map[rid]
-                final_results.append(rb)
+                latest = result_map[rid]
+
+                rb["execution_result"] = {
+                    "execution_id": latest.get("execution_id"),
+                    "result_id": latest.get("result_id"),  # make sure this exists in DB
+                }
+
+            final_results.append(rb)
 
         return final_results
-    # async def get_all_runbooks(self, user_id: str):
-    #     # Open runbook table
-    #     table = await self._open_or_create_runbook_table(user_id)
 
-    #     # Fetch all records (Cloud-compatible)
-    #     runbooks = await asyncio.to_thread(
-    #         lambda: table.search().limit(1000).to_list()
-    #     )
-
-    #     # Remove dummy/init row
-    #     runbooks = [
-    #         rb for rb in runbooks
-    #         if rb.get("runbook_id") != "init"
-    #     ]
-
-    #     # (Optional safety filter — if multi-user table)
-    #     runbooks = [
-    #         rb for rb in runbooks
-    #         if rb.get("user_id") == user_id
-    #     ]
-
-    #     return runbooks
     # runbook results schema
     async def _create_runbook_results_schema(self):
 
@@ -3287,11 +3210,10 @@ class LanceDBServer:
                 pa.field("input_mode", pa.string()),
                 pa.field("status", pa.string()),  # running / completed / failed
                 pa.field("risk_score", pa.float32()),
-                pa.field("started_at", pa.int64()),      
+                pa.field("started_at", pa.int64()),
                 pa.field("ended_at", pa.int64()),
                 pa.field("execution_time_ms", pa.int64()),
-                pa.field("result",pa.large_string())
-                
+                pa.field("result", pa.large_string()),
             ]
         )
 
@@ -3303,6 +3225,7 @@ class LanceDBServer:
         self.db = self._connect_if_needed()
 
         def _open():
+            # print("opening the result table")
             return self.db.open_table(table_name)
 
         try:
@@ -3316,17 +3239,15 @@ class LanceDBServer:
                 {
                     "result_id": "init",
                     "runbook_id": "init",
-                     "execution_id": "init",
+                    "execution_id": "init",
                     "user_id": user_id,
                     "status": "init",
                     "started_at": 0,
                     "ended_at": 0,
                     "execution_time_ms": 0,
-
                     "input_mode": "init",
                     "risk_score": 0.0,
-                    "result":"init"
-                    
+                    "result": "init",
                 }
             ]
 
@@ -3351,27 +3272,37 @@ class LanceDBServer:
 
         table = await self._open_or_create_runbook_results_table(data["user_id"])
         now = int(time.time())
-
+        # print("inside insert runbook result for user : ",data["user_id"])
         started_at = data.get("started_at", now)
         ended_at = data.get("ended_at", now)
         row = {
-            "result_id": str(uuid.uuid4()),
+            "result_id": data["result_id"],
             "runbook_id": data["runbook_id"],
-            "execution_id":data["execution_id"],
+            "execution_id": data["execution_id"],
             "user_id": data["user_id"],
             "status": data.get("status", "completed"),
             "started_at": started_at,
             "ended_at": ended_at,
             "execution_time_ms": (ended_at - started_at) * 1000,
             "input_mode": data.get("input_mode"),
-            "risk_score": data.get("risk_score", 0.0),
-
-            "result": json.dumps(data.get("result"))
+            "risk_score": float(data.get("risk_score") or 0.0),
+            "result": json.dumps(data.get("result", {})),
         }
 
-        await asyncio.to_thread(lambda: table.add([row]))
+        try:
+            print("📦 ROW TO INSERT:", row["result_id"], row["runbook_id"])
 
-        return row
+            await asyncio.to_thread(lambda: table.add([row]))
+
+            print("✅ inserted runbook result")
+            return row
+
+        except Exception as e:
+            print("❌ INSERT FAILED:", str(e))
+
+            import traceback
+
+            print(traceback.format_exc())
 
     # get runbook results by id
     async def get_runbook_results(self, user_id: str, runbook_id: str):
@@ -3379,11 +3310,7 @@ class LanceDBServer:
         table = await self._open_or_create_runbook_results_table(user_id)
 
         def _query():
-            return (
-                table.search()
-                .where(f'runbook_id = "{runbook_id}"')
-                .to_list()
-            )
+            return table.search().where(f'runbook_id = "{runbook_id}"').to_list()
 
         results = await asyncio.to_thread(_query)
 
@@ -3394,57 +3321,273 @@ class LanceDBServer:
         table = await self._open_or_create_runbook_results_table(user_id)
 
         def _query():
-            return (
-                table.search()
-                .where(f'user_id = "{user_id}"')
-                .to_list()
-            )
+            return table.search().where(f'user_id = "{user_id}"').to_list()
 
         results = await asyncio.to_thread(_query)
 
         return results
+
+    async def delete_runbook_result(self, user_id: str, runbook_id: str):
+
+        table = await self._open_or_create_runbook_results_table(user_id)
+        # return True
+        await asyncio.to_thread(lambda: table.delete(f'runbook_id == "{runbook_id}"'))
+
+        return True
+
+    async def delete_runbook_result_by_id(
+        self, user_id: str, runbook_id: str, result_id: str
+    ):
+        table = await self._open_or_create_runbook_results_table(user_id)
+
+        def _delete():
+            table.delete(f"runbook_id == '{runbook_id}' AND result_id == '{result_id}'")
+
+        await asyncio.to_thread(_delete)
+        return True
+
     # latest runbook result
-    async def get_latest_runbook_result(self, user_id: str, runbook_id: str):
+    async def get_latest_runbook_result(
+        self, user_id: str, runbook_id: str, result_id=None
+    ):
 
         table = await self._open_or_create_runbook_results_table(user_id)
 
-        df = await asyncio.to_thread(lambda: table.to_pandas())
+        filter_expr = f"runbook_id == '{runbook_id}' AND status == 'complete' "
 
-        df = df[df["runbook_id"] == runbook_id]
+        if result_id:
+            filter_expr = f"runbook_id == '{runbook_id}' AND status == 'complete' and result_id = '{result_id}'"
 
-        if df.empty:
+        def _query():
+            return table.search().where(filter_expr).to_list()
+
+        results = await asyncio.to_thread(_query)
+        if not results:
             return None
-
-        df = df.sort_values("run_timestamp", ascending=False)
-
-        return df.iloc[0].to_dict()
-
-    async def upsert_runbook(self, data: dict):
-
-        table = await self._open_or_create_runbook_table(data["user_id"])
-
-        row = {
-            "runbook_id": data["runbook_id"],
-            "user_id": data["user_id"],
-            "name": data["name"],
-            "description": data.get("description", ""),
-            "runbook_type": data.get("runbook_type"),
-            "schedule": data.get("schedule"),
-            "input_type": data.get("input_type"),
-            "playbook_id": data.get("playbook_id", ""),
-            "api_endpoint": data.get("api_endpoint", ""),
-            "log_source": data.get("log_source", ""),
-            "files": data.get("files", []),
-            "links": data.get("links", []),
-            "created_at": int(time.time() * 1000),
-        }
-
-        # delete existing runbook
-        await asyncio.to_thread(
-            lambda: table.delete(f'runbook_id == "{data["runbook_id"]}"')
+        latest = max(
+            results, key=lambda x: x.get("ended_at") or x.get("run_timestamp") or 0
         )
 
-        # insert new row
-        await asyncio.to_thread(lambda: table.add([row]))
+        return latest
+
+    async def get_runbooks_by_endpoint(self, user_id, app_id, endpoint_id):
+        table = await self._open_or_create_runbook_table(user_id)
+
+        filter_expr = f"api_endpoint == '{endpoint_id}' AND " f"input_type == 'api'"
+
+        def _query():
+            return table.search().where(filter_expr).to_list()
+
+        results = await asyncio.to_thread(_query)
+
+        if not results:
+            print("⚠️ No runbooks found for endpoint:", endpoint_id)
+            return []
+
+        # ✅ sort newest first
+        # results = sorted(results, key=lambda x: x.get("created_at", 0), reverse=True)
+        latest_runbook = max(results, key=lambda x: x.get("created_at", 0))
+        if isinstance(latest_runbook, str):
+            latest_runbook = json.loads(latest_runbook)
+
+        # print("latest result: ",latest_runbook)
+
+        return latest_runbook
+        # return results  # ✅ ALWAYS RETURN LIST
+
+    async def get_runbook_by_playbookid(self, user_id, playbook_id):
+        table = await self._open_or_create_runbook_table(user_id)
+
+        def _query():
+            return (
+                table.search()
+                .where(f"playbook_id == '{playbook_id}' and input_type == 'playbook'")
+                .to_list()
+            )
+
+        result = await asyncio.to_thread(_query)
+
+        return result
+
+    async def runbook_get_result(self, user_id, result_id):
+        table = await self._open_or_create_runbook_results_table(user_id)
+
+        def _query():
+            return (
+                table.search()
+                .where(f'result_id = "{result_id}" AND status = "completed"')
+                .to_list()
+            )
+
+        rows = await asyncio.to_thread(_query)
+
+        row = rows[0]
+        # Parse result JSON safely
+        row["result"] = _safe_json_parse(row.get("result"))
 
         return row
+
+    async def update_runbook_result(
+        self,
+        user_id: str,
+        result_id: str,
+        new_result: dict,
+    ):
+        table = await self._open_or_create_runbook_results_table(user_id)
+
+        payload = {
+            "result": json.dumps(new_result),
+            "status": "completed",
+        }
+
+        def _update():
+            table.update(where=f'result_id == "{result_id}"', values=payload)
+
+        await asyncio.to_thread(_update)
+
+    async def update_runbook_schedule(self, user_id,runbook_id, schedule):
+        table = await self._open_or_create_runbook_table(user_id)
+
+        schedule_str = json.dumps(schedule)
+
+        def _update():
+            rows = (
+                table.search()
+                .where(f'runbook_id = "{runbook_id}"')
+                .to_list()
+            )
+
+            if not rows:
+                raise Exception("Runbook not found")
+
+            table.update(
+                where=f'runbook_id = "{runbook_id}"',
+                values={
+                    "schedule": schedule_str,
+                    "runbook_type": "scheduled",
+                },
+            )
+
+            return True
+
+        await asyncio.to_thread(_update)
+
+        return {"status": "updated", "runbook_id": runbook_id}
+
+    # async def _create_updated_runbook_schema(self):
+    #     return pa.schema([
+    #         pa.field("runbook_id", pa.string()),
+    #         pa.field("user_id", pa.string()),
+    #         pa.field("name", pa.string()),
+    #         pa.field("description", pa.string()),
+    #         pa.field("runbook_type", pa.string()),
+    #         pa.field("schedule", pa.string()),
+            
+    #         pa.field("input_type", pa.string()),
+    #         pa.field("playbook_id", pa.string()),
+    #         pa.field("api_endpoint", pa.string()),
+
+    #         # ✅ existing
+    #         pa.field("log_source", pa.string()),
+
+    #         pa.field("files", pa.string()),
+    #         pa.field("links", pa.string()),
+
+    #         # ✅ UPDATED → JSON stored as string
+    #         pa.field("data_sources", pa.string()),
+    #         pa.field("reference_sources", pa.string()),
+
+    #         # ✅ NEW columns
+    #         pa.field("app_id", pa.string()),
+    #         pa.field("is_template", pa.string()),
+    #         pa.field("structure_theme", pa.string()),
+    #         pa.field("playbook_source", pa.string()),
+    #         pa.field("api_source", pa.string()),
+    #         pa.field("log_file", pa.string()),
+    #         pa.field("main_source", pa.string()),
+    #         pa.field("reference_main_source",pa.string()),
+
+    #         pa.field("created_at", pa.timestamp("us")),
+    #     ])
+    
+    # async def migrate_runbook_table(self, user_id: str):
+    #     table_name = f"runbook_{user_id}"
+    #     self.db = self._connect_if_needed()
+
+    #     # 1. Open table
+    #     table = await asyncio.to_thread(lambda: self.db.open_table(table_name))
+
+    #     # 2. Fetch records (Cloud-safe)
+    #     def fetch_all():
+    #         offset = 0
+    #         batch_size = 1000
+    #         all_rows = []
+
+    #         while True:
+    #             batch = table.search().limit(batch_size).offset(offset).to_list()
+    #             if not batch:
+    #                 break
+    #             all_rows.extend(batch)
+    #             offset += batch_size
+
+    #         return all_rows
+
+    #     records = await asyncio.to_thread(fetch_all)
+
+    #     # 3. Helper
+    #     def to_json_safe(val):
+    #         if val is None:
+    #             return json.dumps({})
+    #         if isinstance(val, str):
+    #             return val
+    #         return json.dumps(val)
+
+    #     # 4. Transform records
+    #     new_records = []
+    #     for row in records:
+    #         row["data_sources"] = to_json_safe(row.get("data_sources"))
+    #         row["reference_sources"] = to_json_safe(row.get("reference_sources"))
+    #         row["files"] = to_json_safe(row.get("files"))
+    #         row["links"] = to_json_safe(row.get("links"))
+
+    #         # ⚠️ DO NOT TOUCH schedule (keep as string)
+
+    #         # New fields (match schema EXACTLY)
+    #         row.setdefault("app_id", "")
+    #         row.setdefault("is_template", "")
+    #         row.setdefault("structure_theme", json.dumps({}))
+    #         row.setdefault("playbook_source", "")
+    #         row.setdefault("api_source", "")
+    #         row.setdefault("log_file", "")
+    #         row.setdefault("main_source", "")
+    #         row.setdefault("reference_main_source", "")
+
+    #         new_records.append(row)
+
+    #     # 5. New schema
+    #     new_schema = await self._create_updated_runbook_schema()
+
+    #     # 6. Overwrite table (no Arrow needed)
+    #     await asyncio.to_thread(
+    #         lambda: self.db.create_table(
+    #             table_name,
+    #             data=new_records,
+    #             schema=new_schema,
+    #             mode="overwrite"
+    #         )
+    #     )
+
+    #     # 7. Validate schema
+    #     updated_table = await asyncio.to_thread(lambda: self.db.open_table(table_name))
+    #     updated_schema = updated_table.schema
+
+    #     columns = [
+    #         {"name": field.name, "type": str(field.type)}
+    #         for field in updated_schema
+    #     ]
+
+    #     return {
+    #         "status": "success",
+    #         "rows_migrated": len(new_records),
+    #         "columns": columns
+    #     }

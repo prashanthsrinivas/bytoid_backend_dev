@@ -925,7 +925,7 @@ def assign_runbook_playbook(runbook_id, playbook, userid):
 
     # Always overwrite to keep source of truth
     main_workflow["runbook_id"] = runbook_id
-
+    print("assigning runbook to playbook")
     return save_playbook_to_s3(
         main_workflow,
         userid,

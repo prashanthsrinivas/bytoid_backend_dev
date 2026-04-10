@@ -1,11 +1,13 @@
 import asyncio
 from datetime import datetime, timedelta
 import json
-from pkg_resources import normalize_path
+import os
 import pymysql
 import re
 from db.rds_db import connect_to_rds
+from runbook.helper import  trigger_runbooks_for_api_response
 from services.apiconnectors import APIConnector
+# from utils.celery_base import trigger_runbooks_api_task
 from utils.s3_utils import save_app_runbase_S3
 from agent_route.lance_agent import LanceClient
 from credits_route.route import Credits
@@ -283,6 +285,22 @@ async def _execute_endpoint_internal(
         result=result,
         trigger="manual",
     )
+    # 2, 3  
+    # 12 , 10
+    print("Inside execute_endpoint_internal triggering runbook")
+    # await trigger_runbooks_for_api_response(
+    #     user_id=userid,
+    #     app_id=row["app_id"],
+    #     endpoint_id=endpoint_id,
+    #     record=result
+    # )
+    trigger(
+    userid,
+    row["app_id"],
+    endpoint_id,
+    result
+)
+
 
     cur.close()
     conn.close()
@@ -669,7 +687,7 @@ def normalize_row_dynamic(row: dict):
 # ==========================================================
 def build_full_url(base_url, path, path_params=None):
     base_url = base_url.rstrip("/")
-    path = normalize_path(path)
+    path = os.path.normpath(path)
     path_params = path_params or {}
 
     # Support {id}
@@ -690,3 +708,12 @@ def build_full_url(base_url, path, path_params=None):
         raise ValueError("Path parameters provided but no placeholders found in path")
 
     return f"{base_url}{path}"
+
+def trigger(userid, app_id, endpoint_id, result):
+    from utils.celery_base import trigger_runbooks_api_task
+    trigger_runbooks_api_task.delay(
+    userid,
+    app_id,
+    endpoint_id,
+    result
+)

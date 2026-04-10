@@ -341,6 +341,85 @@ def is_microsoft_allowed_origin(origin):
 
 # ------ login related ------------#
 
+@microsoft_bp.route("/saml/login", methods=["GET"])
+async def saml_login():
+   try:
+       # 🔹 Get user from session (must be set after SAML auth)
+       user = session.get("user")
+
+       if not user:
+           return jsonify({"error": "User not authenticated"}), 401
+
+       user_id = user.get("id")
+
+       # 🔹 onboarding check (same pattern as Microsoft)
+       newuser = check_onboarding_user(user_id)
+
+       # 🔹 API key
+       apikey = fetch_apikey_from_launch(user_id)
+
+       # 🔹 DB connection
+       connection = connect_to_rds()
+
+       # 🔹 Credits
+       credits = CreditManager(connection)
+       avail_credits = credits.check_if_remaining(user_id=user_id)
+       credit_status = avail_credits.get("status")
+       message = avail_credits.get("message")
+
+       connection.close()
+
+       # 🔹 SESSION LOGIN (IMPORTANT - same as Microsoft)
+       session_id, access_token_session, refresh_token_session = await session_login(user_id)
+
+       # 🔹 RESPONSE (same structure as Microsoft callback)
+       response = make_response(
+           jsonify(
+               {
+                   "status": "success",
+                   "userid": user_id,
+                   "user_onboarded": newuser,
+                   "api_key": apikey or "",
+                   "service": "saml",
+                   "credit_status": credit_status,
+                   "message": message,
+               }
+           )
+       )
+
+       # 🔹 cookies (same as Microsoft)
+       response.set_cookie(
+           "session_id",
+           session_id,
+           max_age=30 * 24 * 60 * 60,
+           httponly=True,
+           secure=True,
+           samesite="None",
+       )
+
+       response.set_cookie(
+           "access_token",
+           access_token_session,
+           max_age=30 * 24 * 60 * 60,
+           httponly=True,
+           secure=True,
+           samesite="None",
+       )
+
+       response.set_cookie(
+           "refresh_token",
+           refresh_token_session,
+           max_age=30 * 24 * 60 * 60,
+           httponly=True,
+           secure=True,
+           samesite="None",
+       )
+
+       return response
+
+   except Exception as e:
+       logger.error(f"SAML Login error: {str(e)}")
+       return jsonify({"error": "SAML login failed"}), 500
 
 @microsoft_bp.route("/microsoft/login", methods=["GET", "OPTIONS"])
 def microsoft_login():
@@ -358,6 +437,7 @@ def microsoft_login():
         )
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return response
+        
 
     logger.info("🚀 Starting Microsoft OAuth login (global access)")
 
@@ -539,6 +619,8 @@ async def microsoft_callback():
             cursor.execute(
                 "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
             )
+
+
 
             existing_user = cursor.fetchone()
 

@@ -1,7 +1,5 @@
 from flask import (
-    request,
     jsonify,
-    session,
     redirect,
 )
 from datetime import datetime, timedelta

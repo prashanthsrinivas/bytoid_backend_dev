@@ -1140,11 +1140,40 @@ class AutoMateService:
         combined_text_parts = []
 
         for f in extracted_files:
-            content = f.get("content", "").strip()
             filename = f.get("filename", "file")
+            content = f.get("content", "")
 
-            if content:
-                combined_text_parts.append(f"[FILE: {filename}]\n{content}")
+            # ---- CASE 1: content is STRING ----
+            if isinstance(content, str):
+                text = content.strip()
+                if text:
+                    combined_text_parts.append(f"\n\n[FILE: {filename}]\n{text}")
+
+            # ---- CASE 2: content is LIST (structured elements) ----
+            elif isinstance(content, list):
+                file_text_parts = []
+
+                for item in content:
+                    text = item.get("text", "").strip()
+                    typ = item.get("type", "Unknown")
+
+                    if not text:
+                        continue
+
+                    # Format based on type
+                    if typ == "Title":
+                        file_text_parts.append(f"\n## {text}\n")
+                    elif typ == "ListItem":
+                        file_text_parts.append(f"- {text}")
+                    elif typ == "Table":
+                        file_text_parts.append(f"\n[TABLE]\n{text}\n")
+                    else:
+                        file_text_parts.append(text)
+
+                if file_text_parts:
+                    combined_text_parts.append(
+                        f"\n\n[FILE: {filename}]\n" + "\n".join(file_text_parts)
+                    )
 
         combined_text = "\n\n".join(combined_text_parts)
 
@@ -1169,26 +1198,16 @@ class AutoMateService:
             try:
                 return json.loads(response)
             except Exception:
-
-                # Try extracting JSON array
                 match = re.search(r"\[\s*{.*}\s*\]", response, re.DOTALL)
                 if match:
                     json_str = match.group(0)
 
-                    # Fix common issues
-                    json_str = re.sub(
-                        r'(?<!\\)"\n', '\\"', json_str
-                    )  # fix broken quotes
-                    json_str = re.sub(
-                        r"\n", " ", json_str
-                    )  # remove newlines inside JSON
-                    json_str = re.sub(r",\s*}", "}", json_str)  # trailing commas
+                    json_str = re.sub(r'(?<!\\)"\n', '\\"', json_str)
+                    json_str = re.sub(r"\n", " ", json_str)
+                    json_str = re.sub(r",\s*}", "}", json_str)
                     json_str = re.sub(r",\s*]", "]", json_str)
 
-                    try:
-                        return json.loads(json_str)
-                    except Exception as e:
-                        raise ValueError(f"JSON recovery failed: {str(e)}")
+                    return json.loads(json_str)
 
                 raise ValueError("No valid JSON found in response")
 
@@ -1197,16 +1216,6 @@ class AutoMateService:
                 if q["question"] in q["section"]:
                     q["section"] = None
             return q
-
-        def is_valid_question(q):
-            return (
-                isinstance(q.get("question"), str)
-                and len(q["question"].strip()) > 10
-                and "?" in q["question"]
-            )
-
-        def is_truncated(q):
-            return not q["question"].strip().endswith(("?", ".", ":"))
 
         # ===========================
         # 🔁 PROCESS CHUNKS
@@ -1218,7 +1227,6 @@ class AutoMateService:
         last_subsection = None
 
         for chunk_idx, chunk in enumerate(chunks):
-
             prompt = f"""
                 You are a STRICT STRUCTURED QUESTION EXTRACTION ENGINE.
 
@@ -1255,7 +1263,6 @@ class AutoMateService:
                 ANTI-CORRUPTION RULES
                 ===========================
                 - A question MUST NEVER be used as a section
-                - If a line ends with '?' → it is ALWAYS a question
                 - NEVER copy question text into section/subsection
 
                 ===========================
@@ -1305,31 +1312,19 @@ class AutoMateService:
 
                 chunk_questions = safe_json_load(response.strip())
 
-                # ===========================
-                # 🔧 CLEAN + FIX
-                # ===========================
                 cleaned_chunk = []
 
                 for q in chunk_questions:
 
-                    # basic validation
-                    if not is_valid_question(q):
-                        continue
-
-                    # remove corrupted section
                     q = clean_section(q)
 
-                    # fill missing context
+                    # context fallback
                     if not q.get("section"):
                         q["section"] = last_section
                     if not q.get("subsection"):
                         q["subsection"] = last_subsection
 
-                    # skip truncated
-                    if is_truncated(q):
-                        continue
-
-                    # update context memory
+                    # update memory
                     if q.get("section"):
                         last_section = q["section"]
                     if q.get("subsection"):
@@ -1349,28 +1344,21 @@ class AutoMateService:
                     "details": str(e),
                 }
 
-        # ===========================
-        # 🔥 REMOVE DUPLICATES
-        # ===========================
-        seen = set()
-        unique_questions = []
+        # ❌ REMOVED DEDUPLICATION (IMPORTANT)
 
-        for q in all_questions:
-            key = (q["question"], q.get("question_number"))
-            if key not in seen:
-                seen.add(key)
-                unique_questions.append(q)
-
-        all_questions = unique_questions
+        # ===========================
+        # 💾 SAVE TO WORKFLOW
+        # ===========================
         if all_questions and self.workflow:
             from playbook.helperzz import save_playbook_to_s3
 
             if "assigned_questions" not in self.workflow:
                 self.workflow["assigned_questions"] = {}
+
             self.workflow["assigned_questions"] = all_questions
-            original_json = self.workflow
+
             save_playbook_to_s3(
-                original_json,
+                self.workflow,
                 self.userid,
                 "workflow updated successfully",
                 self.workflow["filename"],

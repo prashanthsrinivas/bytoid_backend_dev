@@ -6,6 +6,7 @@ from langchain_community.document_loaders import (
     UnstructuredWordDocumentLoader,
     UnstructuredPowerPointLoader,
     UnstructuredExcelLoader,
+    UnstructuredPDFLoader,
 )
 import os
 import json
@@ -111,46 +112,13 @@ def _safe_json_parse(value):
     return {}
 
 
-def _safe_json_parse2(value):
-    if value is None:
-        return []
-
-    # Already parsed
-    if isinstance(value, (dict, list)):
-        return value
-
-    if not isinstance(value, str):
-        return []
-
-    s = value.strip()
-
-    # Remove any escaped quotes wrapping
-    if s.startswith('"') and s.endswith('"'):
-        inner = s[1:-1].replace('\\"', '"')
-        s = inner.strip()
-
-    # Extract all JSON objects/arrays from string
-    json_objects = []
-    decoder = json.JSONDecoder()
-    idx = 0
-    while idx < len(s):
-        s = s[idx:].lstrip()
-        if not s:
-            break
-        try:
-            obj, idx2 = decoder.raw_decode(s)
-            json_objects.append(obj)
-            idx += idx2
-        except json.JSONDecodeError:
-            # Skip invalid prefix until next '{' or '['
-            match = re.search(r"[\{\[]", s)
-            if not match:
-                break
-            idx += match.start()
-    return json_objects
-
-
 import mimetypes
+
+
+def normalize_text(text):
+    if not text:
+        return ""
+    return " ".join(text.strip().split())
 
 
 def extract_files_content(files):
@@ -158,17 +126,21 @@ def extract_files_content(files):
 
     extension_loader_map = {
         ".txt": lambda p: TextLoader(p, autodetect_encoding=True),
-        ".pdf": lambda p: PyMuPDFLoader(p),
-        ".docx": lambda p: UnstructuredWordDocumentLoader(p),
-        ".pptx": lambda p: UnstructuredPowerPointLoader(p),
-        ".xlsx": lambda p: UnstructuredExcelLoader(p),
+        ".pdf": lambda p: UnstructuredPDFLoader(
+            p,
+            mode="elements",
+            strategy="fast",
+            infer_table_structure=True,
+        ),
+        ".docx": lambda p: UnstructuredWordDocumentLoader(p, mode="elements"),
+        ".pptx": lambda p: UnstructuredPowerPointLoader(p, mode="elements"),
+        ".xlsx": lambda p: UnstructuredExcelLoader(p, mode="elements"),
     }
 
     for f in files:
         filename = f.get("filename", "uploaded_file")
         content_type = f.get("content_type")
 
-        # ---- 1️⃣ Ensure extension exists ----
         name, ext = os.path.splitext(filename)
         ext = ext.lower()
 
@@ -179,10 +151,9 @@ def extract_files_content(files):
                 filename = name + ext
 
         if ext not in extension_loader_map:
-            print(f"⚠️ Skipping unsupported file: {filename} (ext='{ext}')")
+            print(f"⚠️ Skipping unsupported file: {filename}")
             continue
 
-        # ---- 2️⃣ Write temp file ----
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(f["data"])
             tmp_path = tmp.name
@@ -191,18 +162,30 @@ def extract_files_content(files):
             loader = extension_loader_map[ext](tmp_path)
             docs = loader.load()
 
+            # print(f"DEBUG: docs length = {len(docs)}")
+
             if not docs:
                 print(f"⚠️ No content extracted from {filename}")
                 continue
 
+            # 🔥 JUST COMBINE EVERYTHING
+            combined_text = []
+
             for d in docs:
-                all_file_data.append(
-                    {
-                        "filename": filename,
-                        "type": ext,
-                        "content": normalize_text(d.page_content),
-                    }
-                )
+                text = normalize_text(d.page_content)
+
+                if text:  # only skip fully empty
+                    combined_text.append(text)
+
+            final_text = "\n".join(combined_text)
+
+            all_file_data.append(
+                {
+                    "filename": filename,
+                    "type": ext,
+                    "content": final_text,  # 🔥 STRING ONLY
+                }
+            )
 
         except Exception as e:
             print(f"❌ Extraction failed for {filename}: {str(e)}")
@@ -286,8 +269,10 @@ def extract_file_payload(file_item, default_filename: str):
     if isinstance(file_item, dict) and "data" in file_item:
 
         return {
-            "filename": file_item.get("filename", default_filename),
-            "content_type": file_item.get("content_type"),
+            "filename": file_item.get("filename")
+            or file_item.get("name")
+            or default_filename,
+            "content_type": file_item.get("content_type") or file_item.get("type"),
             "data_base64": file_item["data"],  # assume base64
         }
 
@@ -304,7 +289,6 @@ def process_file_payloads(
     inp_links,
     extracted_payload,
 ):
-
     if not files:
         return
 
@@ -313,14 +297,44 @@ def process_file_payloads(
         if not f:
             continue
 
-        # ✅ FIX 1: read correct field
+        # =========================
+        # ✅ NEW: normalize FileStorage → dict (FIRST)
+        # =========================
+        if hasattr(f, "read"):  # form-data file
+            try:
+                file_bytes = f.read()
+
+                if not file_bytes:
+                    logger.warning("Empty uploaded file")
+                    continue
+
+                file_data_b64 = base64.b64encode(file_bytes).decode("utf-8")
+
+                f = {
+                    "filename": getattr(f, "filename", "file"),
+                    "content_type": getattr(
+                        f, "content_type", "application/octet-stream"
+                    ),
+                    "data_base64": file_data_b64,
+                }
+
+            except Exception:
+                logger.exception("Failed to process uploaded file")
+                continue
+
+        # =========================
+        # ✅ EXISTING LOGIC (unchanged)
+        # =========================
         file_data_b64 = f.get("data_base64")
+
+        if file_data_b64 and file_data_b64.startswith("data:"):
+            file_data_b64 = file_data_b64.split(",", 1)[1]
 
         if not file_data_b64:
             logger.warning("Missing data_base64 for file: %s", f.get("filename"))
             continue
 
-        # ✅ FIX 2: decode base64 safely
+        # ✅ decode base64
         try:
             file_data = base64.b64decode(file_data_b64)
         except Exception:
@@ -351,51 +365,37 @@ def process_file_payloads(
         if ext in IMAGE_EXTENSIONS:
 
             inline_data = f"data:{content_type};base64,{file_data_b64}"
-
             inp_links.append(inline_data)
 
             logger.info("Image converted to inline link: %s", filename)
-
             continue
 
         # -------------------------
         # DOCUMENT → extract text
         # -------------------------
         try:
-
             extracted = extract_files_content(
                 [
                     {
                         "filename": filename,
-                        "data": file_data,  # ✅ proper bytes
+                        "data": file_data,
                         "content_type": content_type,
                     }
                 ]
             )
 
             if extracted:
-
                 extracted_payload.extend(extracted)
-
                 logger.info(
                     "Extracted content from %s (chars=%d)",
                     filename,
                     len(str(extracted)),
                 )
-
             else:
-
-                logger.warning(
-                    "No content extracted from %s",
-                    filename,
-                )
+                logger.warning("No content extracted from %s", filename)
 
         except Exception:
-
-            logger.exception(
-                "Extraction failed for file: %s",
-                filename,
-            )
+            logger.exception("Extraction failed for file: %s", filename)
 
 
 import asyncio

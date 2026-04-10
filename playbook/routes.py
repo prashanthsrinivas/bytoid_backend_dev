@@ -189,7 +189,7 @@ async def updateInstruction_worker(data):
     # =========================================================
     db = connect_to_rds()
     credits = Credits(db)
-    print("this is ", existing_data and only_meta_changed)
+    # print("this is ", existing_data and only_meta_changed)
 
     # =========================================================
     # ✅ CASE 1: ONLY TITLE / DESCRIPTION CHANGED
@@ -2384,7 +2384,7 @@ def autocheckstatusupdate():
             else:
                 return jsonify({"error": "failed to update the auto checker"})
     except Exception as e:
-        print("auto update", e)
+        print(" auto status update check", e)
         return jsonify({"status": "error", "message": str(e)}), 500
     # finally:
     # current_user_id.reset(token)
@@ -2582,7 +2582,7 @@ async def generate_ans_files():
         file_keys = request.form.getlist("file_keys")
         step_id = request.form.get("step_id")
         wf_name = request.form.get("wf_name")
-        print("request form", request.form)
+        # print("request form", request.form)
 
         if not user_id or not file_keys:
             return (
@@ -2593,7 +2593,7 @@ async def generate_ans_files():
             )
 
         s3 = s3bucket()
-        print("files", file_keys)
+        # print("files", file_keys)
         if type(file_keys) == str:
             file_keys = [file_keys]
 
@@ -2766,6 +2766,7 @@ def pb_temp_clone_min():
             "workflow": workflow_json.get("workflow", {}),
             "WorkflowDate": datetime.now().isoformat(),
             "assigned_questions": workflow_json.get("assigned_questions", []),
+            "runbook_id": workflow_json.get("runbook_id", None),
         }
 
         # ---------------------------------
@@ -3427,4 +3428,297 @@ def undo_share_pb_template():
 
     except Exception as e:
         print("Undo error:", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/edit_assigned_question", methods=["POST"])
+async def edit_assigned_question():
+    try:
+        data = request.json or {}
+
+        userid = data.get("user_id")
+        filename = data.get("filename")
+        question_id = data.get("question_id")
+        new_question_text = data.get("new_question_text")
+
+        # ----------------------------
+        # VALIDATION
+        # ----------------------------
+        if not userid or not filename or not question_id or not new_question_text:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "user_id, filename, question_id, new_question_text are required",
+                    }
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        # ----------------------------
+        # EXECUTION
+        # ----------------------------
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as runner:
+
+            result = runner.edit_assigned_question(
+                qid=question_id, new_question=new_question_text
+            )
+
+            return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/delete_assigned_question", methods=["POST"])
+async def delete_assigned_question():
+    try:
+        data = request.json or {}
+
+        userid = data.get("user_id")
+        filename = data.get("filename")
+        question_id = data.get("question_id")
+
+        # ----------------------------
+        # VALIDATION
+        # ----------------------------
+        if not userid or not filename or not question_id:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "user_id, filename, question_id are required",
+                    }
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        # ----------------------------
+        # EXECUTION
+        # ----------------------------
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as runner:
+
+            result = runner.delete_assigned_question(qid=question_id)
+
+            return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/check_runbook_exists_playbook", methods=["POST"])
+def check_runbook_exists_playbook():
+    try:
+        data = request.json or {}
+
+        userid = data.get("user_id")
+        filename = data.get("filename")
+
+        if not userid or not filename:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename are required"}
+                ),
+                400,
+            )
+
+        # ensure .json
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        runbook_id = workflow_json.get("runbook_id")
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "runbook": runbook_id,
+                    "is_available": bool(runbook_id),
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/clear_runbook_exists_playbook", methods=["POST"])
+def clear_runbook_exists_playbook():
+    try:
+        data = request.json or {}
+
+        userid = data.get("user_id")
+        filename = data.get("filename")
+
+        if not userid or not filename:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename are required"}
+                ),
+                400,
+            )
+
+        # ensure .json
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        runbook_id = workflow_json.get("runbook_id")
+
+        if not runbook_id:
+            return (
+                jsonify(
+                    {
+                        "status": "success",
+                        "message": "No runbook id to clear",
+                        "runbook": None,
+                    }
+                ),
+                200,
+            )
+
+        # ✅ clear runbook
+        workflow_json["runbook_id"] = None
+
+        save_playbook_to_s3(
+            workflow_json,
+            userid,
+            "workflow updated successfully",
+            workflow_json.get("filename", filename),  # safer
+        )
+
+        return (
+            jsonify({"status": "success", "message": "Runbook cleared successfully"}),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/morph_question", methods=["POST"])
+def morph_questions():
+    try:
+        data = request.json or {}
+
+        userid = data.get("user_id")
+        filename = data.get("filename")
+        question_id = data.get("question_id")
+        morph_type = data.get("morph_type")
+        new_question_text = data.get("new_question_text")
+        new_options = data.get("new_options")
+
+        # ----------------------------
+        # VALIDATION
+        # ----------------------------
+        if not userid or not filename or not question_id or not new_question_text:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "user_id, filename, question_id, new_question_text are required",
+                    }
+                ),
+                400,
+            )
+
+        if morph_type not in ["text_to_option", "option_to_text", "update_only"]:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Invalid morph_type. Allowed: text_to_option, option_to_text, update_only",
+                    }
+                ),
+                400,
+            )
+
+        # Require options only for text_to_option
+        if morph_type == "text_to_option":
+            if not new_options or not isinstance(new_options, dict):
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": "new_options (dict) is required for text_to_option",
+                        }
+                    ),
+                    400,
+                )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        # ----------------------------
+        # LOAD WORKFLOW
+        # ----------------------------
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        # ----------------------------
+        # EXECUTION
+        # ----------------------------
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as runner:
+
+            result = runner.morph_question(
+                qid=question_id,
+                new_question=new_question_text,
+                morph_type=morph_type,
+                new_options=new_options,
+            )
+
+            status_code = 200 if result.get("status") == "success" else 400
+            return jsonify(result), status_code
+
+    except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

@@ -488,84 +488,26 @@ def conversations_test(user_id, next_cursor):
     return convo_messages
 
 
-@umail_bp.route("/conversations/<user_id>/<next_cursor>", methods=["GET"])
-def get_latest_conversations(user_id, next_cursor):
-    """
-    Get the latest conversation from each client's config file.
-    Priority:
-    1. Fetch fresh Gmail emails (real-time)
-    2. Local JSON (get_existing_umail_json)
-    3. Cache (GlideClusterClient)
-    4. Lance (fallback)
-    Always return flattened disp_messages format.
-    """
+from concurrent.futures import ThreadPoolExecutor
 
-    mailbox_setting = check_mailbox(user_id)
-    # print(f"mailbox called : {mailbox_setting}")
-    if not mailbox_setting:
-        # print("inside if not")
-        return {"disp_messages": "Restricted"}
+executor = ThreadPoolExecutor(max_workers=5)
 
-    # print(f"next_cursor from api: {next_cursor}")
-    display_messages = []
-    convo_messages = {}
-    cached = None
 
-    def rediscync():
-        def get_from_cache_sync(user_id):
-            async def _inner():
-                ## client = await GlideClusterClient.create(redis_config_glide)
-                print("fetching from cache ")
-                client = RedisService()
-                return await client.get(f"umail_{user_id}")
+# -----------------------
+# Background Task
+# -----------------------
+def background_convo_fetch(user_id, next_cursor):
+    try:
+        print("🚀 Background Lance fetch...")
 
-            return asyncio.run(_inner())
-
-        cached = get_from_cache_sync(user_id)
-        # print("⚡ Using cached Gmail data")
-        if cached:
-            # print("cached got")
-            cached_json = cached  # already a dict
-            if isinstance(cached_json, list):
-                cached_json = cached_json[0] if cached_json else {}
-            convo_messages = cached_json.get("grouped_messages", {})
-            next_cursor = cached_json.get("next_page_token")
-            # print("conv", len(convo_messages))
-            source = "mid"
-            return handle_cache_data(
-                groupedmessages=convo_messages,
-                disp_messages=display_messages,
-                next_cursor=next_cursor,
-                source=source,
-            )
-
-        else:
-            return getall_route(user_id)
-
-    # return rediscync()
-    # ✅ Step 1: Local JSON
-    existing_json = get_existing_umail_json(user_id)
-    # print("----------------------------")
-
-    # print(f"user_id : {user_id}")
-    # print("data added", existing_json)
-    if not existing_json:
-        # ✅ Step 2: Cache
-        getall_route(user_id=user_id)
-        return rediscync()
-
-    else:
-        print("before calling lance")
-        # ✅ Step 3: Lance fallback
         client = UmailLanceClient(user_id)
         convo_messages, bnext_cursor = client.latest_messages_from_lance(
             user_id, next_cursor
         )
-        print("convo messages length", len(convo_messages))
-        # print("in lance fetch next cursor", bnext_cursor)
-        # getall_route(user_id)
+
+        print("📦 Background fetched:", len(convo_messages))
+
         if not convo_messages:
-            # If LanceDB returned a date-like cursor
             try:
                 cursor_date = datetime.fromisoformat(str(next_cursor)).date()
             except:
@@ -573,30 +515,85 @@ def get_latest_conversations(user_id, next_cursor):
 
             today_date = datetime.today().date()
 
-            # If next_cursor is NOT today → trigger next month Gmail fetch
-            if cursor_date and cursor_date != today_date:
-                # next_monthemails.delay(user_id, cursor_date)
-                pass
-            else:
-                # next_cursor matches today OR not a date → stop Gmail paging
+            if not cursor_date or cursor_date == today_date:
                 getall_route(user_id=user_id)
 
-            return handle_lance_data(
-                convo_messages=[],
-                next_cursor=None,
-                userid=user_id,
-                source=None,
-            )
+    except Exception as e:
+        print("❌ Background error:", e)
 
-        # If nothing matched, return a clean response
-        source = "full"
-        # print(f"return data lenght from get_latest: {len(display_messages)}")
-        return handle_lance_data(
-            convo_messages=convo_messages,
-            next_cursor=bnext_cursor,
-            userid=user_id,
+
+# -----------------------
+# Redis Sync Wrapper
+# -----------------------
+def get_cache_sync(user_id):
+    async def _inner():
+        client = RedisService()
+        return await client.get(f"umail_{user_id}")
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(_inner())
+    loop.close()
+    return result
+
+
+# -----------------------
+# API
+# -----------------------
+@umail_bp.route("/conversations/<user_id>/<next_cursor>", methods=["GET"])
+def get_latest_conversations(user_id, next_cursor):
+
+    mailbox_setting = check_mailbox(user_id)
+    if not mailbox_setting:
+        return {"disp_messages": "Restricted"}
+
+    display_messages = []
+    convo_messages = {}
+
+    # -----------------------
+    # Step 1: Local JSON
+    # -----------------------
+    existing_json = get_existing_umail_json(user_id)
+
+    # -----------------------
+    # Step 2: Cache Fetch
+    # -----------------------
+    cached = get_cache_sync(user_id)
+
+    if cached:
+        if isinstance(cached, list):
+            cached = cached[0] if cached else {}
+
+        convo_messages = cached.get("grouped_messages", {})
+        cache_cursor = cached.get("next_page_token")
+
+        # 🚀 Background refresh always
+        executor.submit(background_convo_fetch, user_id, next_cursor)
+
+        # ✅ Keep ORIGINAL behavior
+        source = "mid"
+
+        return handle_cache_data(
+            groupedmessages=convo_messages,
+            disp_messages=display_messages,
+            next_cursor=cache_cursor,
             source=source,
         )
+
+    # -----------------------
+    # Step 3: If no cache → fallback to Lance (but async)
+    # -----------------------
+    print("⚡ No cache → trigger background Lance")
+
+    executor.submit(background_convo_fetch, user_id, next_cursor)
+
+    # Return empty but valid response (non-blocking)
+    return handle_lance_data(
+        convo_messages=[],
+        next_cursor=None,
+        userid=user_id,
+        source="full",  # keep consistency
+    )
 
 
 def get_conv_order(config):
@@ -798,7 +795,7 @@ async def get_selected_conv(conversation_id, user_id):
                 connection = connect_to_rds()
                 if connection is None:
                     print("Database connection failed")
-                    return jsonify({"error": "Database connection failed"}), 500
+                    return jsonify({"error": "Error Occured"}), 500
                 cursor = connection.cursor()
                 cursor.execute(
                     "SELECT sender_id FROM messages WHERE conversation_id_fk = %s",
@@ -3410,11 +3407,11 @@ def set_mailbox_setting():
             # print(f"uid: {uid} ")
             # print(f"primary_user_id: {primary_user_id} ")
             if platform == "google":
-                service = GmailService(user_id=primary_user_id,integration=integration)
+                service = GmailService(user_id=primary_user_id, integration=integration)
                 if setting == "true":
-                   success = service.create_watch_req()
+                    success = service.create_watch_req()
                 else:
-                   success = service.stop_watch()
+                    success = service.stop_watch()
 
             elif platform == "microsoft":
                 manager = OutlookSubscriptionManager()
@@ -3424,15 +3421,18 @@ def set_mailbox_setting():
                         "SELECT token, email FROM users WHERE user_id = %s", (uid,)
                     )
                     row = cursor.fetchone()
-                    if not row or not row[0] :
-                        #continue
-                        cursor.execute("SELECT access_token, email FROM integrations WHERE primary_user_id_fk = %s",(primary_user_id,))
+                    if not row or not row[0]:
+                        # continue
+                        cursor.execute(
+                            "SELECT access_token, email FROM integrations WHERE primary_user_id_fk = %s",
+                            (primary_user_id,),
+                        )
                         row = cursor.fetchone()
                     access_token = row[0]
                     email = row[1]
-                    success =  manager.create_subscription_async(access_token, email)
+                    success = manager.create_subscription_async(access_token, email)
                 else:
-                    success =  manager.delete_subscription(uid)
+                    success = manager.delete_subscription(uid)
             if success:
                 users_to_update.append(primary_user_id)
 

@@ -7,6 +7,7 @@ import pytz
 
 from services.microsoft_calender_service import MicrosoftGraphCalendarService
 from umail_helper.mails_process import get_integration_users
+from utils.normal import sanitize_value, strip_html
 
 calenders_bp = Blueprint("calender", __name__)
 
@@ -57,12 +58,12 @@ def get_all_user_events():
         val = fetch_user_Social(user_id=userid)
         print("Platform detected:", val)
         connection = connect_to_rds()
-        integrations = get_integration_users(userid,connection)
+        integrations = get_integration_users(userid, connection)
         # print("val receved", val)
         # Initialize service
         if val == "google":
             # print("into google service")
-            service = GoogleMeetService(userid=userid,integrations=integrations)
+            service = GoogleMeetService(userid=userid, integrations=integrations)
         elif val == "microsoft":
             # print("into microsoft")
             service = MicrosoftGraphCalendarService(userid=userid)
@@ -176,15 +177,16 @@ def update_user_event():
             googlemeet = googlemeet.lower() in ["true", "1", "yes"]
 
         val = fetch_user_Social(user_id=userid)
-        # Initialize service
+
         if val == "google":
             service = GoogleMeetService(userid=userid)
             organizer_tz = pytz.timezone(service.organizer_tz)
         elif val == "microsoft":
             service = MicrosoftGraphCalendarService(userid=userid)
             organizer_tz = pytz.timezone(service.user_timezone)
+        else:
+            return {"success": False, "message": "Unsupported provider"}, 400
 
-        # Parse timestamps only if provided
         def parse_dt(dt):
             if not dt:
                 return None
@@ -192,7 +194,7 @@ def update_user_event():
                 if dt.endswith("Z"):
                     dt = dt[:-1] + "+00:00"
                 d = datetime.fromisoformat(dt)
-            except:
+            except Exception:
                 d = datetime.strptime(dt, "%Y-%m-%d %H:%M")
             if d.tzinfo is None:
                 return organizer_tz.localize(d)
@@ -212,11 +214,13 @@ def update_user_event():
             googlemeet=googlemeet,
         )
 
-        return {"success": True, "event": updated_event}, 200
+        # 🔥 CRITICAL: sanitize response here
+        safe_event = sanitize_value(strip_html(updated_event))
 
-    except Exception as e:
-        # print("Error in update_user_event:", e)
-        return {"success": False, "error": str(e)}, 500
+        return {"success": True, "event": safe_event}, 200
+
+    except Exception:
+        return {"success": False, "error": "Internal server error"}, 500
 
 
 @calenders_bp.route("/delete-user-event", methods=["POST"])
@@ -231,16 +235,20 @@ def delete_user_event():
             return {"success": False, "message": "userid and event_id required"}, 400
 
         val = fetch_user_Social(user_id=userid)
-        # Initialize service
+
         if val == "google":
             service = GoogleMeetService(userid=userid)
         elif val == "microsoft":
             service = MicrosoftGraphCalendarService(userid=userid)
+        else:
+            return {"success": False, "message": "Unsupported provider"}, 400
 
         result = service.delete_calendar_event(event_id)
 
-        return {"success": True, "result": result}, 200
+        # 🔥 sanitize result too
+        safe_result = sanitize_value(result)
 
-    except Exception as e:
-        # print("Error in delete_user_event:", e)
-        return {"success": False, "error": str(e)}, 500
+        return {"success": True, "result": safe_result}, 200
+
+    except Exception:
+        return {"success": False, "error": "Internal server error"}, 500

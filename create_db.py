@@ -2708,6 +2708,31 @@ def add_tTop_users():
         cursor.close()
         connection.close()
 
+def add_domain_users():
+    connection = connect_to_rds()
+    if connection is None:
+        print("DB connection failed")
+        return False
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """ALTER TABLE users
+            ADD COLUMN domain JSON DEFAULT (JSON_OBJECT(
+            'primary', NULL,
+            'secondary', JSON_ARRAY()
+            ));""")
+        connection.commit()
+        print("Column domain added successfully")
+        return True
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 
 import json
 
@@ -2974,6 +2999,41 @@ def create_global_app_endpoints_table():
         cursor.close()
         connection.close()
 
+def create_company_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE company (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                company_name VARCHAR(255) NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                deleted_at DATETIME NULL,
+                
+                CONSTRAINT chk_company_name_no_space
+                CHECK (company_name NOT LIKE '% %')
+            );
+            """
+        )
+
+        connection.commit()
+        print("✅ company table created")
+
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create external_app_user_auth table:", str(e))
+        raise
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
 
 # Run this when ready to create tables
 if __name__ == "__main__":
@@ -3032,6 +3092,7 @@ if __name__ == "__main__":
     # update_external_apps_for_universal_visibility()
     # add_mail_sub_column()
     # add_tTop_users()
+    # add_domain_users()
     # export_all_table_schemas()
     # add_all_foreign_keys()
     # create_external_apps_table()
@@ -3039,4 +3100,5 @@ if __name__ == "__main__":
     # create_external_app_user_config_table()
     # create_global_apps_table()
     # create_global_app_endpoints_table()
+    # create_company_table()
     print("ok")

@@ -442,7 +442,7 @@ class LanceClient:
         table = await self.service._open_or_create_apiconnectors_table(
             user_id, app_id, endpoint_id
         )
-
+        print("✅ save_app_run called", user_id, app_id, endpoint_id)
         # Searchable text
         text_blob = " ".join(
             [
@@ -476,7 +476,8 @@ class LanceClient:
         }
 
         await asyncio.to_thread(lambda: table.add([record]))
-
+        await asyncio.sleep(0.5)
+        print("📦 Stored record ID:", record["id"])
         return f"apiconnectors/{user_id}/{app_id}/{endpoint_id}/{minute_bucket}"
 
     async def audio_query_vector(

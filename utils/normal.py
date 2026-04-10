@@ -817,3 +817,27 @@ def remove_not_found_entities(text: str, not_found: list[str]) -> str:
     cleaned = re.sub(r"\b(with|and)\s*$", "", cleaned, flags=re.IGNORECASE).strip()
 
     return cleaned
+
+
+from markupsafe import escape
+import re
+
+
+def sanitize_value(value):
+    if isinstance(value, str):
+        return escape(value)
+    elif isinstance(value, list):
+        return [sanitize_value(v) for v in value]
+    elif isinstance(value, dict):
+        return {k: sanitize_value(v) for k, v in value.items()}
+    return value
+
+
+def strip_html(value):
+    if isinstance(value, str):
+        return re.sub(r"<.*?>", "", value)
+    elif isinstance(value, list):
+        return [strip_html(v) for v in value]
+    elif isinstance(value, dict):
+        return {k: strip_html(v) for k, v in value.items()}
+    return value

@@ -1384,12 +1384,734 @@ radar_change_block_prompt: |
   - If numeric evidence is missing, use clearly labeled qualitative/ordinal values (e.g., 1–5 scale)
   - Mark the chart as a qualitative estimate in the caption
 
+# structure_prompt_template: |
+#   You are a RADAR DOCUMENT STRUCTURE ARCHITECT.
+
+#   Your task is to analyze the input and produce a RADAR STRUCTURE BLUEPRINT.
+#   You are defining structure only — NOT writing content.
+
+#   INPUTS:
+#   DOCUMENT TEXT:
+#   {{document_file_data}}
+
+#   FILE LINKS:
+#   {{file_links}}
+
+#   USER CONTEXT:
+#   {{user_original_prompt_or_context}}
+
+#   ────────────────────────────────────────────────
+#   CORE RULES
+
+#   • Output MUST use RADAR block format.
+#   • Output MUST contain:
+#     - document_meta
+#     - estimated_word_count
+#     - structure_rationale
+#     - blocks[]
+
+#   • DO NOT output sections[], constraints[], or content.
+
+#   ────────────────────────────────────────────────
+#   BLOCK RULES
+
+#   Each block represents a major section and MUST include:
+
+#   - block_id (semantic-readable)
+#   - block_type: narrative | table | chart | matrix | scorecard | list | appendix
+#   - title
+#   - editable: true
+#   - exportable: true
+#   - micro_blocks: []
+
+#   Use block_type based on evidence:
+#   - narrative → default
+#   - table → structured comparisons
+#   - chart → trends/distributions
+#   - matrix → risk or multi-factor evaluation
+#   - scorecard → scoring/rating
+#   - list → enumerations
+
+#   If uncertain → use narrative.
+
+#   ────────────────────────────────────────────────
+#   DEFAULT BLOCKS (use unless clearly inappropriate)
+
+#   - executive-summary
+#   - scope-and-objectives
+#   - methodology
+#   - key-findings
+#   - detailed-analysis
+#   - risks-and-limitations
+#   - recommendations
+#   - conclusion
+
+#   ────────────────────────────────────────────────
+#   WORD COUNT RULE
+
+#   Choose realistic size:
+
+#   - standard → 1500–3000
+#   - extended → 3000–5000
+#   - comprehensive → 5000–8000
+
+#   ────────────────────────────────────────────────
+#   LANGUAGE RULE
+
+#   Output MUST be in: {{output_language}}
+
+#   ────────────────────────────────────────────────
+#   OUTPUT FORMAT — JSON ONLY
+
+#   {
+#     "document_meta": {
+#       "persona": "",
+#       "domain": "",
+#       "use_case": "",
+#       "review_depth": "standard | extended | comprehensive",
+#       "confidence_level": "high | medium | low"
+#     },
+#     "estimated_word_count": number,
+#     "structure_rationale": "",
+#     "blocks": [
+#       {
+#         "block_id": "",
+#         "block_type": "narrative | table | chart | matrix | scorecard | list | appendix",
+#         "title": "",
+#         "editable": true,
+#         "exportable": true,
+#         "micro_blocks": []
+#       }
+#     ]
+#   }
+
+#   Produce the JSON now.
+
+# structure_prompt_template: |
+#   You are a RADAR DOCUMENT STRUCTURE ARCHITECT.
+
+#   Your task is to analyze the input and produce a RADAR STRUCTURE BLUEPRINT.
+#   You are defining structure only — NOT writing content.
+
+#   ⚠️ PRIMARY OBJECTIVE:
+#   Reconstruct the ORIGINAL DOCUMENT STRUCTURE with HIGH FIDELITY (95%+ accuracy).
+#   DO NOT redesign, summarize, or improve the structure.
+
+#   ────────────────────────────────────────────────
+#   INPUTS:
+
+#   DOCUMENT TEXT:
+#   {{document_file_data}}
+
+#   FILE LINKS:
+#   {{file_links}}
+
+#   USER CONTEXT:
+#   {{user_original_prompt_or_context}}
+
+#   ────────────────────────────────────────────────
+#   CORE RULES
+
+#   • Output MUST use RADAR block format.
+#   • Output MUST contain:
+#     - document_meta
+#     - estimated_word_count
+#     - structure_rationale
+#     - blocks[]
+
+#   • DO NOT output sections[], constraints[], or content.
+
+#   • DO NOT invent sections that are not present in the document.
+#   • DO NOT rename sections unless necessary for clarity.
+#   • DO NOT merge unrelated sections.
+
+#   ────────────────────────────────────────────────
+#   🚨 STRUCTURE PRESERVATION (CRITICAL)
+
+#   • If the input document contains headings, sections, or template structure:
+#     → PRESERVE them EXACTLY as blocks
+
+#   • Extract ALL major sections including:
+#     - introductory sections (e.g., System Description)
+#     - purpose/objective sections
+#     - methodology/approach
+#     - all tables
+#     - all matrices
+#     - results sections
+#     - appendix/signature sections
+
+#   • Maintain logical order EXACTLY as in the document.
+
+#   ────────────────────────────────────────────────
+#   🚨 TABLE & MATRIX RULES (VERY IMPORTANT)
+
+#   • Each distinct table MUST be its own block.
+
+#   • DO NOT merge multiple tables into one block.
+
+#   • Treat the following as SEPARATE blocks if present:
+#     - different likelihood tables
+#     - impact tables
+#     - risk level definitions
+#     - risk matrices
+#     - results tables
+
+#   • If a table represents:
+#     - structured rows/columns → block_type = table
+#     - cross-factor evaluation (e.g., likelihood × impact) → block_type = matrix
+
+#   ────────────────────────────────────────────────
+#   🚨 TEMPLATE DOCUMENT DETECTION
+
+#   If the document is a TEMPLATE (placeholders like <...>, form fields, or instructions):
+
+#   • DO NOT introduce narrative sections like:
+#     - executive summary
+#     - key findings
+#     - recommendations
+#     - conclusion
+
+#   • Instead, strictly follow the template structure.
+
+#   ────────────────────────────────────────────────
+#   BLOCK RULES
+
+#   Each block MUST include:
+
+#   - block_id (semantic-readable, based on actual section name)
+#   - block_type: narrative | table | chart | matrix | scorecard | list | appendix
+#   - title (preserve original wording as much as possible)
+#   - editable: true
+#   - exportable: true
+#   - micro_blocks: []
+
+#   Use block_type based on evidence:
+#   - narrative → descriptive sections
+#   - table → structured tabular data
+#   - matrix → multi-dimensional evaluation (e.g., risk matrix)
+#   - list → enumerations
+#   - appendix → signatures, notes, supporting info
+
+#   • If block_type = table:
+
+#   → Extract table structure into micro_blocks
+
+#   → Each table MUST include:
+#     - columns (from table headers)
+#     - inferred data types:
+#         text | number | category
+
+#   → DO NOT leave table micro_blocks empty
+
+#   → Preserve column names EXACTLY as in the document
+
+#   If uncertain → use narrative.
+
+#   ────────────────────────────────────────────────
+#   🚨 DEFAULT BLOCKS (STRICT RULE)
+
+#   • ONLY use default blocks IF the document has NO clear structure.
+
+#   • If structure exists → DO NOT use:
+#     - executive-summary
+#     - key-findings
+#     - recommendations
+#     - conclusion
+#     - detailed-analysis
+
+#   ────────────────────────────────────────────────
+#   WORD COUNT RULE
+
+#   Choose realistic size based on document density:
+
+#   - standard → 1500–3000
+#   - extended → 3000–5000
+#   - comprehensive → 5000–8000
+
+#   ────────────────────────────────────────────────
+#   LANGUAGE RULE
+
+#   Output MUST be in: {{output_language}}
+
+#   ────────────────────────────────────────────────
+#   OUTPUT FORMAT — JSON ONLY
+
+#   {
+#     "document_meta": {
+#       "persona": "",
+#       "domain": "",
+#       "use_case": "",
+#       "review_depth": "standard | extended | comprehensive",
+#       "confidence_level": "high | medium | low"
+#     },
+#     "estimated_word_count": number,
+#     "structure_rationale": "",
+#     "blocks": [
+#       {
+#         "block_id": "",
+#         "block_type": "narrative | table | chart | matrix | scorecard | list | appendix",
+#         "title": "",
+#         "editable": true,
+#         "exportable": true,
+#         "micro_blocks": []
+#       }
+#     ]
+#   }
+
+#   Produce the JSON now.
+
+# structure_prompt_template: |
+#   You are a RADAR DOCUMENT STRUCTURE ARCHITECT.
+
+#   Your task is to analyze the input and produce a RADAR STRUCTURE BLUEPRINT.
+#   You are defining structure only — NOT writing content.
+
+#   ⚠️ PRIMARY OBJECTIVE:
+#   Reconstruct the ORIGINAL DOCUMENT STRUCTURE with HIGH FIDELITY (95–100% accuracy).
+#   DO NOT redesign, summarize, or improve the structure.
+
+#   ────────────────────────────────────────────────
+#   INPUTS:
+
+#   DOCUMENT TEXT:
+#   {{document_file_data}}
+
+#   FILE LINKS:
+#   {{file_links}}
+
+#   USER CONTEXT:
+#   {{user_original_prompt_or_context}}
+
+#   ────────────────────────────────────────────────
+#   CORE RULES
+
+#   • Output MUST use RADAR block format.
+#   • Output MUST contain:
+#     - document_meta
+#     - estimated_word_count
+#     - structure_rationale
+#     - blocks[]
+
+#   • DO NOT output sections[], constraints[], or content.
+#   • DO NOT invent sections that are not present in the document.
+#   • DO NOT rename sections unless necessary for clarity.
+#   • DO NOT merge unrelated sections.
+
+#   ────────────────────────────────────────────────
+#   🚨 DOCUMENT HEADER EXTRACTION (NICE TO HAVE BUT PREFERRED)
+
+#   • If the document contains a title/header section (e.g., report name, organization, system name, date):
+#     → Extract it as the FIRST block:
+
+#     {
+#       "block_id": "document_header",
+#       "block_type": "narrative",
+#       "title": "<document title>"
+#     }
+
+#   ────────────────────────────────────────────────
+#   🚨 STRUCTURE PRESERVATION (CRITICAL)
+
+#   • If the input document contains headings, sections, or template structure:
+#     → PRESERVE them EXACTLY as blocks
+
+#   • Maintain logical order EXACTLY as in the document.
+
+#   • Extract ALL major sections including:
+#     - system description
+#     - scope
+#     - purpose
+#     - methodology / approach
+#     - all tables
+#     - all matrices
+#     - results sections
+#     - appendix / signature sections
+
+#   ────────────────────────────────────────────────
+#   🚨 SUB-SECTIONS → MICRO BLOCKS (IMPORTANT)
+
+#   • If a section contains embedded instructions or sub-parts (e.g., assumptions, constraints, timeframe):
+
+#     → DO NOT create a new block
+#     → Place them inside parent block as micro_blocks
+
+#   Example:
+#     Scope → micro_blocks → assumptions / constraints / timeframe
+
+#   ────────────────────────────────────────────────
+#   🚨 TABLE RULES (CRITICAL)
+
+#   • Each table MUST be its own block
+#   • DO NOT merge tables
+#   • DO NOT leave table micro_blocks empty
+
+#   • Table schema MUST use object-based columns (NOT arrays)
+
+#   REQUIRED FORMAT:
+
+#   {
+#     "type": "table_schema",
+#     "columns": [
+#       {
+#         "name": "<column name>",
+#         "type": "text | number | category",
+#         "enum": [] (ONLY if category)
+#       }
+#     ]
+#   }
+
+#   ────────────────────────────────────────────────
+#   🚨 COLUMN TYPE DETECTION (SMART)
+
+#   Infer types as:
+
+#   • number → numeric ranges (e.g., 0–100, scores)
+#   • category → fixed labels (e.g., Very High, High, Moderate, Low)
+#   • text → descriptions
+
+#   ────────────────────────────────────────────────
+#   🚨 ENUM EXTRACTION (IMPORTANT)
+
+#   • If a column contains repeated fixed values:
+
+#     Example:
+#       Very High, High, Moderate, Low, Very Low
+
+#     → Use:
+
+#     {
+#       "type": "category",
+#       "enum": ["Very High", "High", "Moderate", "Low", "Very Low"]
+#     }
+
+#   ────────────────────────────────────────────────
+#   🚨 TABLE COMPLETENESS VALIDATION (VERY IMPORTANT)
+
+#   • Ensure ALL visible columns are extracted
+
+#   • DO NOT miss columns (common mistake)
+
+#   Example:
+#     If table has:
+#       Qualitative | Semi-Quantitative | Description
+
+#     → ALL THREE must be present
+
+#   ────────────────────────────────────────────────
+#   🚨 MATRIX RULES (VERY IMPORTANT)
+
+#   • If table represents cross-factor evaluation (e.g., Likelihood × Impact):
+
+#     → block_type = matrix
+
+#     → Use this schema:
+
+#     {
+#       "type": "matrix_schema",
+#       "x_axis": {
+#         "name": "<column dimension>",
+#         "values": []
+#       },
+#       "y_axis": {
+#         "name": "<row dimension>",
+#         "values": []
+#       },
+#       "cell_value": "<meaning of cell>"
+#     }
+
+#   • DO NOT represent matrix as flat table
+
+#   ────────────────────────────────────────────────
+#   🚨 TEMPLATE DOCUMENT DETECTION
+
+#   If the document is a TEMPLATE (placeholders like <...>):
+
+#   • DO NOT introduce:
+#     - executive summary
+#     - key findings
+#     - recommendations
+#     - conclusion
+
+#   • Strictly follow template structure
+
+#   ────────────────────────────────────────────────
+#   BLOCK RULES
+
+#   Each block MUST include:
+
+#   - block_id (semantic-readable)
+#   - block_type: narrative | table | matrix | list | appendix
+#   - title (preserve original wording)
+#   - editable: true
+#   - exportable: true
+#   - micro_blocks: []
+
+#   If uncertain → use narrative
+
+#   ────────────────────────────────────────────────
+#   🚨 DEFAULT BLOCKS (STRICT RULE)
+
+#   • ONLY use default blocks IF no structure exists
+
+#   ────────────────────────────────────────────────
+#   WORD COUNT RULE
+
+#   Choose:
+
+#   - standard → 1500–3000
+#   - extended → 3000–5000
+#   - comprehensive → 5000–8000
+
+#   ────────────────────────────────────────────────
+#   LANGUAGE RULE
+
+#   Output MUST be in: {{output_language}}
+
+#   ────────────────────────────────────────────────
+#   OUTPUT FORMAT — JSON ONLY
+
+#   {
+#     "document_meta": {
+#       "persona": "",
+#       "domain": "",
+#       "use_case": "",
+#       "review_depth": "standard | extended | comprehensive",
+#       "confidence_level": "high | medium | low"
+#     },
+#     "estimated_word_count": number,
+#     "structure_rationale": "",
+#     "blocks": [
+#       {
+#         "block_id": "",
+#         "block_type": "narrative | table | matrix | list | appendix",
+#         "title": "",
+#         "editable": true,
+#         "exportable": true,
+#         "micro_blocks": []
+#       }
+#     ]
+#   }
+
+#   Produce the JSON now.
+
+# structure_prompt_template: |
+#   You are a RADAR DOCUMENT STRUCTURE ARCHITECT.
+
+#   Your task is to reconstruct the ORIGINAL DOCUMENT STRUCTURE with HIGH FIDELITY (95–100% accuracy).
+#   You are defining structure only — NOT writing content.
+
+#   ────────────────────────────────────────────────
+#   INPUTS:
+#   DOCUMENT TEXT:
+#   {{document_file_data}}
+
+#   FILE LINKS:
+#   {{file_links}}
+
+#   USER CONTEXT:
+#   {{user_original_prompt_or_context}}
+
+#   ────────────────────────────────────────────────
+#   🚨 CORE RULES (NON-NEGOTIABLE)
+
+#   • Output MUST be valid JSON
+#   • Output MUST contain:
+#     - document_meta
+#     - estimated_word_count
+#     - structure_rationale
+#     - blocks[]
+
+#   • DO NOT:
+#     - invent sections
+#     - summarize
+#     - merge sections
+#     - rename headings unnecessarily
+
+#   • ALWAYS preserve exact structure + order
+
+#   ────────────────────────────────────────────────
+#   🚨 EXTRACTION ORDER (STRICT)
+
+#   1. Document header
+#   2. Sections (blocks)
+#   3. Tables / matrices
+#   4. Micro-blocks (inside narrative)
+
+#   ────────────────────────────────────────────────
+#   🚨 BLOCK DEFINITION
+
+#   A BLOCK is a top-level section.
+
+#   Each block MUST have:
+
+#   - block_id
+#   - block_type: narrative | table | matrix | list | appendix
+#   - title
+#   - editable: true
+#   - exportable: true
+#   - micro_blocks: []
+
+#   ────────────────────────────────────────────────
+#   🚨 MICRO-BLOCK DEFINITION (CRITICAL)
+
+#   🚨 MICRO-BLOCKS ARE NOT BLOCKS
+
+#   • DO NOT use:
+#     - block_id
+#     - block_type
+#     - editable
+#     - exportable
+
+#   • Micro-blocks MUST follow ONLY this structure:
+
+#   {
+#     "type": "list | instruction_group | sub_section | field_group",
+#     "title": "<name>",
+#     "items": []
+#   }
+
+#   ────────────────────────────────────────────────
+#   🚨 MICRO-BLOCK EXTRACTION (MANDATORY)
+
+#   For EVERY narrative block:
+
+#   Scan for:
+#   • bullet points
+#   • numbered lists
+#   • <...> instructions
+#   • colon-based expansions
+#   • grouped sub-content
+
+#   IF FOUND:
+#   → Convert into micro_blocks
+
+#   DO NOT leave structured content in plain text
+
+#   ────────────────────────────────────────────────
+#   🚨 SPECIAL TEMPLATE CASE
+
+#   Example:
+
+#   <Identify assumptions, constraints, timeframe. This section will include:>
+
+#   → MUST become:
+
+#   {
+#     "type": "instruction_group",
+#     "title": "Assumptions, Constraints, Timeframe",
+#     "items": [
+#       "Range of threats",
+#       "Tools/methods",
+#       "Non-compliance details",
+#       "Operating conditions",
+#       "Timeframe"
+#     ]
+#   }
+
+#   Attach inside parent block (e.g., Scope)
+
+#   ────────────────────────────────────────────────
+#   🚨 TABLE RULES (STRICT)
+
+#   Each table = separate block
+
+#   micro_blocks MUST contain:
+
+#   {
+#     "type": "table_schema",
+#     "columns": [
+#       {
+#         "name": "",
+#         "type": "text | number | category",
+#         "enum": []
+#       }
+#     ]
+#   }
+
+#   • Extract ALL columns
+#   • Preserve exact names
+#   • Detect enums
+
+#   ────────────────────────────────────────────────
+#   🚨 MATRIX RULES
+
+#   If Likelihood × Impact:
+
+#   block_type = matrix
+
+#   {
+#     "type": "matrix_schema",
+#     "x_axis": { "name": "", "values": [] },
+#     "y_axis": { "name": "", "values": [] },
+#     "cell_value": "risk level"
+#   }
+
+#   ────────────────────────────────────────────────
+#   🚨 TEMPLATE DETECTION
+
+#   If placeholders (<...>) exist:
+
+#   → DO NOT add:
+#     - executive summary
+#     - recommendations
+#     - conclusions
+
+#   ────────────────────────────────────────────────
+#   🚨 VALIDATION (MANDATORY)
+
+#   Before output:
+
+#   ✔ Blocks → correct structure  
+#   ✔ Tables → schema exists  
+#   ✔ Matrix → correct format  
+#   ✔ Micro-blocks → NOT using block format  
+
+#   If violated → OUTPUT INVALID
+
+#   ────────────────────────────────────────────────
+#   WORD COUNT
+
+#   Choose:
+#   - standard | extended | comprehensive
+
+#   ────────────────────────────────────────────────
+#   LANGUAGE
+
+#   {{output_language}}
+
+#   ────────────────────────────────────────────────
+#   OUTPUT FORMAT (JSON ONLY)
+#   {
+#     "document_meta": {
+#       "persona": "",
+#       "domain": "",
+#       "use_case": "",
+#       "review_depth": "standard | extended | comprehensive",
+#       "confidence_level": "high | medium | low"
+#     },
+#     "estimated_word_count": number,
+#     "structure_rationale": "",
+#     "blocks": [
+#       {
+#         "block_id": "",
+#         "block_type": "narrative | table | chart | matrix | scorecard | list | appendix",
+#         "title": "",
+#         "editable": true,
+#         "exportable": true,
+#         "micro_blocks": []
+#       }
+#     ]
+#   }
+
+#   Produce the JSON now.
+
 structure_prompt_template: |
   You are a RADAR DOCUMENT STRUCTURE ARCHITECT.
 
-  Your task is to analyze the input and produce a RADAR STRUCTURE BLUEPRINT.
+  Your task is to reconstruct the ORIGINAL DOCUMENT STRUCTURE with **HIGH FIDELITY (95–100% accuracy)**.
   You are defining structure only — NOT writing content.
 
+  ────────────────────────────────────────────────
   INPUTS:
   DOCUMENT TEXT:
   {{document_file_data}}
@@ -1401,82 +2123,163 @@ structure_prompt_template: |
   {{user_original_prompt_or_context}}
 
   ────────────────────────────────────────────────
-  CORE RULES
+  🚨 CORE RULES (NON-NEGOTIABLE)
 
-  • Output MUST use RADAR block format.
+  • Output MUST be valid JSON.
   • Output MUST contain:
     - document_meta
     - estimated_word_count
     - structure_rationale
     - blocks[]
 
-  • DO NOT output sections[], constraints[], or content.
+  • DO NOT:
+    - invent sections
+    - summarize
+    - merge sections
+    - rename headings unnecessarily
+    - omit any numbered or bulleted instructions
+
+  • ALWAYS preserve **exact structure + order** from the source document.
+  • EVERY step, instruction, table, sub-section, and note must be captured as a micro-block if structured.
+  • Capture **all parenthetical notes** (e.g., “sometimes included”) as part of schema or micro-block items.
 
   ────────────────────────────────────────────────
-  BLOCK RULES
+  🚨 BLOCK EXTRACTION ORDER
 
-  Each block represents a major section and MUST include:
+  1. Document header (title, authorship, institution)
+  2. Top-level sections (e.g., STEP 1, Introduction, Methodology)
+  3. Tables / matrices / charts
+  4. Micro-blocks inside narratives
+     - bullets
+     - numbered lists
+     - sub-headings
+     - colon-based expansions
+     - grouped instructions
+     - parentheses/notes
 
-  - block_id (semantic-readable)
-  - block_type: narrative | table | chart | matrix | scorecard | list | appendix
+  ────────────────────────────────────────────────
+  🚨 BLOCK DEFINITION
+
+  A BLOCK is a top-level section.
+
+  Each block MUST have:
+  - block_id
+  - block_type: narrative | table | matrix | chart | list | appendix
   - title
   - editable: true
   - exportable: true
   - micro_blocks: []
 
-  Use block_type based on evidence:
-  - narrative → default
-  - table → structured comparisons
-  - chart → trends/distributions
-  - matrix → risk or multi-factor evaluation
-  - scorecard → scoring/rating
-  - list → enumerations
+  ────────────────────────────────────────────────
+  🚨 MICRO-BLOCK DEFINITION (STRICT)
 
-  If uncertain → use narrative.
+  • Micro-blocks are **nested content within a block**.
+  • Micro-block types:
+    - list → for simple bullets or numbered points
+    - instruction_group → for instructions, tasks, or guidelines
+    - sub_section → for sub-headings with items under them
+    - field_group → for forms, tables, or structured fields
+
+  • Micro-block schema:
+    {
+      "type": "list | instruction_group | sub_section | field_group",
+      "title": "<name>",
+      "items": []
+    }
+
+  • Every bullet, numbered point, or sub-instruction MUST be an item.
+  • Do not leave structured content as plain text.
 
   ────────────────────────────────────────────────
-  DEFAULT BLOCKS (use unless clearly inappropriate)
+  🚨 NESTED MICRO-BLOCK EXTRACTION
 
-  - executive-summary
-  - scope-and-objectives
-  - methodology
-  - key-findings
-  - detailed-analysis
-  - risks-and-limitations
-  - recommendations
-  - conclusion
+  For narrative blocks containing numbered steps or instructions:
+  • Each main step (e.g., STEP 1, STEP 2) → separate narrative block.
+  • Subheadings under steps (e.g., Introduction, Methodology) → sub_section micro-block.
+  • Bullets inside sub-sections → items in sub_section.
+  • Any instructions with colon expansions → instruction_group.
+  • Parenthetical notes (e.g., “sometimes included”) → append to items or capture as enum if inside table.
 
   ────────────────────────────────────────────────
-  WORD COUNT RULE
+  🚨 TABLE EXTRACTION RULES
 
-  Choose realistic size:
-
-  - standard → 1500–3000
-  - extended → 3000–5000
-  - comprehensive → 5000–8000
+  • Each table = separate block.
+  • Table micro_blocks:
+    {
+      "type": "table_schema",
+      "columns": [
+        {
+          "name": "<column_name>",
+          "type": "text | number | category",
+          "enum": []  # if applicable
+        }
+      ]
+    }
+  • Preserve all column names exactly.
+  • Capture notes like "(sometimes included)" in enum or description.
 
   ────────────────────────────────────────────────
-  LANGUAGE RULE
+  🚨 MATRIX RULES
 
-  Output MUST be in: {{output_language}}
+  • If the document contains Likelihood × Impact or similar risk matrix:
+    block_type = matrix
+    {
+      "type": "matrix_schema",
+      "x_axis": { "name": "", "values": [] },
+      "y_axis": { "name": "", "values": [] },
+      "cell_value": "risk level"
+    }
 
   ────────────────────────────────────────────────
-  OUTPUT FORMAT — JSON ONLY
+  🚨 HEADER / FOOTER / COPYRIGHT
 
+  • Capture headers and footers as narrative blocks.
+  • Include structured micro-blocks if possible (e.g., contact info, university details, copyright).
+
+  ────────────────────────────────────────────────
+  🚨 TEMPLATE DETECTION
+
+  • If placeholders (<…>) exist → do NOT invent sections.
+  • Do not add extra sections like Executive Summary, Recommendations, or Conclusion unless present in the source.
+
+  ────────────────────────────────────────────────
+  🚨 VALIDATION (MANDATORY)
+
+  ✔ Every narrative block has micro_blocks where applicable.  
+  ✔ Every table has a table_schema.  
+  ✔ Matrices are correctly formatted.  
+  ✔ Micro-blocks are **not using block keys**.  
+  ✔ Header/footer/copyright captured as blocks.
+
+  If violated → OUTPUT INVALID.
+
+  ────────────────────────────────────────────────
+  WORD COUNT
+
+  Choose:
+  - standard | extended | comprehensive
+
+  ────────────────────────────────────────────────
+  LANGUAGE
+
+  {{output_language}}
+
+  ────────────────────────────────────────────────
+  OUTPUT FORMAT (JSON ONLY)
   {
     "document_meta": {
-      "persona": "",
-      "domain": "",
-      "use_case": "",
+      "persona": "RADAR DOCUMENT STRUCTURE ARCHITECT",
+      "domain": "<domain>",
+      "use_case": "<use_case>",
       "review_depth": "standard | extended | comprehensive",
-      "confidence_level": "high | medium | low"
+      "confidence_level": "high"
     },
     "estimated_word_count": number,
     "structure_rationale": "",
     "blocks": [
       {
         "block_id": "",
-        "block_type": "narrative | table | chart | matrix | scorecard | list | appendix",
+        "block_type": "narrative | table | chart | matrix | list | appendix",
         "title": "",
         "editable": true,
         "exportable": true,
@@ -1485,7 +2288,7 @@ structure_prompt_template: |
     ]
   }
 
-  Produce the JSON now.
+  Produce the JSON now with **full nested micro-blocks**, all instructions, sub-sections, lists, tables, headers, footers, and notes exactly as in the source document.
 
 language_wordcount_extractor: |
   Extract language and word_count from: {{analyze_input}}
@@ -1534,55 +2337,332 @@ correct_radar_json_prompt: |
   Input JSON chunks: 
   {{chunks_list}}
 
+# nist_risk_score_prompt: |
+#   You are a cybersecurity risk analyst following NIST SP 800-30 and NIST SP 800-53 guidelines.
+
+#   Given the following system analysis report:
+
+#   {{analysis_result}}
+
+#   Your task is to calculate a RISK SCORE using NIST methodology.
+
+#   ----------------------------------------
+#   STEP 1: Identify Threat Events
+#   - Extract all possible threat events (adversarial, structural, environmental)
+
+#   STEP 2: Identify Vulnerabilities
+#   - Map weaknesses or missing controls (NIST 800-53)
+
+#   STEP 3: Assign Likelihood
+#   Use:
+#   Very High = 10
+#   High = 8
+#   Moderate = 5
+#   Low = 2
+#   Very Low = 0
+
+#   STEP 4: Assign Impact
+#   Use:
+#   Very High = 10
+#   High = 8
+#   Moderate = 5
+#   Low = 2
+#   Very Low = 0
+
+#   STEP 5: Calculate Risk Score
+#   For each risk:
+#   risk_value = likelihood × impact
+
+#   STEP 6: Aggregate Risk Score
+#   - Compute overall risk_score = average of all risk_values (0–100)
+#   - Normalize to 0–100 scale if needed
+
+#   STEP 7: Assign Final Risk Level
+#   0–20 → Very Low
+#   21–40 → Low
+#   41–60 → Moderate
+#   61–80 → High
+#   81–100 → Very High
+
+#   ----------------------------------------
+
+#   Return STRICT JSON:
+
+#   {
+#     "risks": [
+#       {
+#         "threat": "...",
+#         "vulnerability": "...",
+#         "likelihood": 8,
+#         "impact": 5,
+#         "risk_score": 40
+#       }
+#     ],
+#     "final_risk_score": 65,
+#     "risk_level": "High",
+#     "justification": "..."
+#   }
+
+# nist_risk_score_prompt: |
+#   You are a senior cybersecurity risk analyst performing a NIST-aligned evaluation using principles from NIST SP 800-30 and NIST SP 800-53.
+
+#   You are given a system analysis report in JSON format:
+
+#   {{analysis_result}}
+#   --------------------------------------------------
+#   OBJECTIVE:
+#   Evaluate the overall cybersecurity risk posture and produce a realistic risk score (1–100).
+
+#   --------------------------------------------------
+#   IMPORTANT RULES:
+
+#   1. The input may NOT contain explicit risks.
+#   2. You MUST NOT return a risk score of 0.
+#   3. You MUST evaluate based on:
+#      - quality of methodology
+#      - presence/absence of implementation evidence
+#      - inferred enterprise risks
+#      - typical control gaps (IAM, logging, monitoring, vendor risk, etc.)
+
+#   4. You MUST infer realistic risks even if not explicitly listed.
+
+#   --------------------------------------------------
+#   STEP 1: Understand System Maturity
+
+#   Analyze:
+#   - Is this only a framework or actual implementation?
+#   - Are controls described or just methodology?
+#   - Is there evidence of real risk data?
+
+#   --------------------------------------------------
+#   STEP 2: Infer Representative Risks
+
+#   Generate 6–10 realistic enterprise risks such as:
+#   - Unauthorized access / weak authentication
+#   - Data breach / sensitive data exposure
+#   - Misconfiguration (cloud, infra)
+#   - Insider threat
+#   - Logging and monitoring gaps
+#   - Third-party/vendor risk
+#   - Incident response weaknesses
+
+#   --------------------------------------------------
+#   STEP 3: Assign Scores
+
+#   Use:
+#   Very High = 10
+#   High = 8
+#   Moderate = 5
+#   Low = 2
+#   Very Low = 1
+
+#   For each inferred risk:
+#   - assign likelihood
+#   - assign impact
+#   - compute risk_score = likelihood × impact
+
+#   --------------------------------------------------
+#   STEP 4: Compute Final Risk Score
+
+#   - final_risk_score = average of all risk_scores
+#   - normalize to 1–100 if needed
+
+#   --------------------------------------------------
+#   STEP 5: Adjust Based on Maturity
+
+#   Adjust score based on:
+
+#   LOWER risk if:
+#   - strong structured methodology
+#   - clear governance and monitoring design
+
+#   INCREASE risk if:
+#   - no evidence of implemented controls
+#   - no asset-level risk data
+#   - no validation of controls
+
+#   --------------------------------------------------
+#   STEP 6: Assign Risk Level
+
+#   1–20 → Very Low  
+#   21–40 → Low  
+#   41–60 → Moderate  
+#   61–80 → High  
+#   81–100 → Very High  
+
+#   --------------------------------------------------
+#   OUTPUT REQUIREMENTS:
+
+#   - MUST include at least 6 risks
+#   - MUST NOT return empty risks
+#   - MUST NOT return 0
+#   - MUST reflect realistic enterprise scenarios
+
+#   --------------------------------------------------
+
+#   Return STRICT JSON:
+
+#   {
+#     "risks": [
+#       {
+#         "threat": "...",
+#         "vulnerability": "...",
+#         "likelihood": 8,
+#         "impact": 8,
+#         "risk_score": 64
+#       }
+#     ],
+#     "final_risk_score": 12,
+#     "risk_level": "Moderate",
+#     "justification": "Explain based on framework strength vs lack of implementation evidence"
+#   }
+  
+
 nist_risk_score_prompt: |
-  You are a cybersecurity risk analyst following NIST SP 800-30 and NIST SP 800-53 guidelines.
+  You are a senior cybersecurity risk analyst performing a NIST-aligned evaluation using principles from NIST SP 800-30 and NIST SP 800-53.
 
-  Given the following system analysis report:
+  You are given:
 
+  --------------------------------------------------
+  PRIMARY SYSTEM ANALYSIS:
   {{analysis_result}}
 
-  Your task is to calculate a RISK SCORE using NIST methodology.
+  --------------------------------------------------
+  OPTIONAL REPORT DATA (may contain extracted risk analysis or raw report content):
+  {{report_data}}
 
-  ----------------------------------------
-  STEP 1: Identify Threat Events
-  - Extract all possible threat events (adversarial, structural, environmental)
+  --------------------------------------------------
+  OBJECTIVE:
+  Evaluate the overall cybersecurity risk posture and produce a realistic risk score (1–100).
 
-  STEP 2: Identify Vulnerabilities
-  - Map weaknesses or missing controls (NIST 800-53)
+  --------------------------------------------------
+  CRITICAL LOGIC FOR INPUT USAGE:
 
-  STEP 3: Assign Likelihood
+  1. If {{report_data}} is EMPTY or NULL:
+     - Perform full inference from {{analysis_result}} only.
+
+  2. If {{report_data}} is PRESENT:
+     - Analyze its content carefully.
+
+     IF it contains:
+     - explicit risks
+     - threat/vulnerability descriptions
+     - risk scores
+     - assessment findings
+
+     THEN:
+     - Use those risks as PRIMARY INPUT
+     - Validate, refine, and normalize them
+     - DO NOT ignore them
+
+     ELSE (if report_data is just structure/text/template):
+     - Ignore it for scoring
+     - Fall back to inference from {{analysis_result}}
+
+  --------------------------------------------------
+  IMPORTANT RULES:
+
+  1. You MUST NOT return a risk score of 0.
+  2. You MUST evaluate based on:
+     - quality of methodology
+     - presence/absence of implementation evidence
+     - inferred enterprise risks
+     - typical control gaps (IAM, logging, monitoring, vendor risk, etc.)
+  3. You MUST infer risks if they are missing.
+  4. You MUST prioritize real risks from report_data when valid.
+
+  --------------------------------------------------
+  STEP 1: Understand System Maturity
+
+  Analyze:
+  - Is this only a framework or actual implementation?
+  - Are controls described or just methodology?
+  - Is there evidence of real risk data?
+  - Does report_data contain actual evaluated risks or just structure?
+
+  --------------------------------------------------
+  STEP 2: Build Risk Set
+
+  CASE A — report_data contains valid risks:
+  - Extract risks
+  - Normalize into:
+    threat, vulnerability, likelihood, impact
+  - Adjust unrealistic scoring if needed
+
+  CASE B — no usable risks:
+  - Infer 6–10 realistic enterprise risks such as:
+    - Unauthorized access / weak authentication
+    - Data breach / sensitive data exposure
+    - Misconfiguration (cloud, infra)
+    - Insider threat
+    - Logging and monitoring gaps
+    - Third-party/vendor risk
+    - Incident response weaknesses
+
+  --------------------------------------------------
+  STEP 3: Assign Scores
+
   Use:
   Very High = 10
   High = 8
   Moderate = 5
   Low = 2
-  Very Low = 0
+  Very Low = 1
 
-  STEP 4: Assign Impact
-  Use:
-  Very High = 10
-  High = 8
-  Moderate = 5
-  Low = 2
-  Very Low = 0
-
-  STEP 5: Calculate Risk Score
   For each risk:
-  risk_value = likelihood × impact
+  - assign likelihood
+  - assign impact
+  - compute risk_score = likelihood × impact
 
-  STEP 6: Aggregate Risk Score
-  - Compute overall risk_score = average of all risk_values (0–100)
-  - Normalize to 0–100 scale if needed
+  --------------------------------------------------
+  STEP 4: Compute Final Risk Score
 
-  STEP 7: Assign Final Risk Level
-  0–20 → Very Low
-  21–40 → Low
-  41–60 → Moderate
-  61–80 → High
-  81–100 → Very High
+  - final_risk_score = average of all risk_scores
+  - normalize to 1–100 if needed
 
-  ----------------------------------------
+  --------------------------------------------------
+  STEP 5: Adjust Based on Maturity
 
+  LOWER risk if:
+  - strong structured methodology
+  - governance is clearly defined
+  - monitoring/logging is well designed
+
+  INCREASE risk if:
+  - no implementation evidence
+  - no real asset-level risks
+  - report_data shows weak or inconsistent scoring
+  - missing validation or testing
+
+  --------------------------------------------------
+  STEP 6: Assign Risk Level
+
+  1–20 → Very Low  
+  21–40 → Low  
+  41–60 → Moderate  
+  61–80 → High  
+  81–100 → Very High  
+
+  --------------------------------------------------
+  OUTPUT REQUIREMENTS:
+
+  - MUST include at least 6 risks
+  - MUST NOT return empty risks
+  - MUST NOT return 0
+  - MUST reflect realistic enterprise scenarios
+
+  --------------------------------------------------
+  JUSTIFICATION REQUIREMENTS:
+
+  - You MUST explain:
+    - Whether report_data was used or ignored
+    - WHY it was used (e.g., contained actual risks)
+    - Reference specific patterns from input:
+      - "report_data includes explicit risk entries..."
+      - "only structural template found, so risks were inferred..."
+      - "lack of implementation evidence increased score..."
+
+  --------------------------------------------------
   Return STRICT JSON:
 
   {
@@ -1591,13 +2671,13 @@ nist_risk_score_prompt: |
         "threat": "...",
         "vulnerability": "...",
         "likelihood": 8,
-        "impact": 5,
-        "risk_score": 40
+        "impact": 8,
+        "risk_score": 64
       }
     ],
-    "final_risk_score": 65,
+    "final_risk_score": 68,
     "risk_level": "High",
-    "justification": "..."
+    "justification": "Clear explanation referencing whether report_data was used, what was found in it, and how it impacted scoring"
   }
 
 questionnaire_response_prompt: |

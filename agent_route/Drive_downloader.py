@@ -16,7 +16,6 @@ load_dotenv()
 DOWNLOAD_DIR = "data"
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 SERVICE_ACCOUNT_FILE = "new_service_secrets.json"
-# SERVICE_ACCOUNT_FILE = 'service_secret.json'
 SERVICE_ACCOUNT_EMAIL = os.getenv("SERVICE_CLIENT_EMAIL")  # Replace this
 logger = get_logger(__name__)
 

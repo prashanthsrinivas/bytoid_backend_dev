@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from celery import Celery
 from celery.utils.log import get_task_logger
 import asyncio
+from runbook.helper import trigger_runbooks_for_api_response
 from services.redis_service import RedisService
 
 from umail_helper.asyn_functions import fetchnextmonthmails, v2all_continuous
@@ -786,3 +787,82 @@ def run_endpoint_interval(self, userid, endpoint_id, interval_seconds, stop_key=
         args=[userid, endpoint_id, interval_seconds, stop_key],
         countdown=interval_seconds,
     )
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.trigger_runbooks_api")
+def trigger_runbooks_api_task(self, user_id, app_id, endpoint_id, record):
+    import asyncio
+
+    print("🔥 TASK STARTED")
+    lock_key = f"runbook_trigger_lock:{user_id}:{endpoint_id}"
+
+    try:
+        # 🔒 Acquire lock (avoid duplicate execution)
+        acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
+        if not acquired:
+            return {"status": "skipped", "reason": "already_running"}
+        print("🚀 running trigger_runbooks_for_api_response from task ")
+        # 🚀 Run your async method
+        result = run_async(
+            trigger_runbooks_for_api_response(
+                user_id=user_id,
+                app_id=app_id,
+                endpoint_id=endpoint_id,
+                record=record,
+            )
+        )
+
+        return {
+            "status": "completed",
+            "user_id": user_id,
+            "endpoint_id": endpoint_id,
+            "result": result,
+        }
+
+    except Exception as e:
+        # 🔁 Retry with exponential backoff
+        countdown = min(2**self.request.retries, 300)
+        raise self.retry(exc=e, countdown=countdown)
+
+    finally:
+        # 🔓 Always release lock
+        asyncio.run(lock_client.delete(lock_key))
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.create_playbook_runbook_task")
+def create_playbook_runbook_task(self, user_id, playbook_id, rb_pb_id):
+    import asyncio
+    from runbook.helper import trigger_runbook_from_playbook
+
+    print("🔥 PLAYBOOK RUNBOOK TASK STARTED")
+
+    lock_key = f"playbook_runbook_lock:{user_id}:{playbook_id}"
+
+    try:
+        # 🔒 Acquire lock (avoid duplicate execution)
+        acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
+        if not acquired:
+            return {"status": "skipped", "reason": "already_running"}
+
+        print("🚀 Running trigger_runbook_from_playbook inside Celery task")
+
+        # 🚀 Run async function safely
+        result = run_async(
+            trigger_runbook_from_playbook(playbook_id=playbook_id, user_id=user_id,runbook_id=rb_pb_id)
+        )
+
+        return {
+            "status": "completed", 
+            "user_id": user_id,
+            "playbook_id": playbook_id,
+            "result": result,
+        }
+
+    except Exception as e:
+        # 🔁 Retry with exponential backoff
+        countdown = min(2**self.request.retries, 300)
+        raise self.retry(exc=e, countdown=countdown)
+
+    finally:
+        # 🔓 Always release lock
+        asyncio.run(lock_client.delete(lock_key))

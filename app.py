@@ -1,11 +1,13 @@
 from datetime import datetime
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from flask_compress import Compress
 from google_route.routes import google_bp
 from facebook_route.routes import facebook_bp
 from agent_route.routes import agent_bps
 from gmail_route.routes import gmail_bp
+
+# from runbook.api_watcher import start_api_watcher
 from session_manager_route.routes import session_bp
 from microsoft_route.routes import microsoft_bp
 from users_routes.routes import users_bp
@@ -37,25 +39,31 @@ from bytoid_pro_dev.routes import bytoid_dev_pro_bp
 from apiConnector.routes import apiconnector_bp
 from radar.routes import radar_bp
 from runbook.routes import runbook_bp
+from sso_by.routes import sso_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
 import tempfile
 from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # from session_middleware import register_session_check
 
 load_dotenv("/home/ec2-user/bytoid_python/.env")
 app = Flask(__name__)
+# print("🚀 Starting watcher during app init")
+# start_api_watcher()
 Compress(app)
-app.secret_key = os.getenv(
-    "SECRETKEY"
-)  # set a secret key as an enviornmental variable later
-app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
+app.secret_key = os.getenv("SECRETKEY")
+# set a secret key as an enviornmental variable later
+# app.config.update(SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=False)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 
 ALLOWED_SCHEMES = ["bytoid", "user-app", "exp"]
+
+
 
 
 def is_origin_allowed(origin: str | None) -> bool:
@@ -142,11 +150,12 @@ blueprints = [
     apiconnector_bp,
     radar_bp,
     runbook_bp,
+    sso_bp,
 ]
 
-for print in blueprints:
+for bp in blueprints:
     CORS(
-        print,
+        bp,
         supports_credentials=True,
         origins=ALLOWED_ORIGINS,
     )
@@ -156,8 +165,8 @@ os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
 # Create data directory if not exists
 os.makedirs("data", exist_ok=True)
 
-for prints in blueprints:
-    app.register_blueprint(prints)
+for bp in blueprints:
+    app.register_blueprint(bp)
 
 from collections import defaultdict
 
@@ -207,6 +216,7 @@ def save_routes_to_json(file_path="all_apis.json"):
 import argparse
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=3000)

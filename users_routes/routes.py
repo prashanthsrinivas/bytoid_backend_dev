@@ -1,4 +1,5 @@
 import secrets
+import traceback
 from urllib.parse import urlencode
 
 from flask import Blueprint, request, jsonify, session
@@ -1592,11 +1593,18 @@ def get_all_domain(user_id):
 
         if domains.get("secondary"):
             all_domains.extend(domains["secondary"])
+        # for domain in domains:
+        #     if isinstance(domain, dict):
+        #         if domain.get("primary"):
+        #             all_domains.append(domain["primary"])
 
-        return jsonify(all_domains), 200
+        #         if domain.get("secondary"):
+        #             all_domains.extend(domain["secondary"])
+
+        return jsonify({"domains":all_domains}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
 @users_bp.route("/get-encryption-key/<user_id>", methods=["GET"])

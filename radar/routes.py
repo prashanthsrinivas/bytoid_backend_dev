@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import inspect
 import json
 import time
@@ -17,10 +16,7 @@ import uuid
 # from radar.lang_maps import run_language_tests
 from radar.radar_helpers import (
     _safe_json_parse,
-    _safe_json_parse2,
-    build_file_data_payload,
     extract_file_payload,
-    extract_files_content,
     extract_json,
     process_file_payloads,
 )
@@ -31,15 +27,14 @@ from utils.fireworkzz import (
     get_think_fire_response2_og,
     get_think_fire_response2_og2,
 )
-import os, io
+import os
 from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file
-from utils.s3_utils import upload_any_file_and_get_url
 from utils.base_logger import get_logger
 
 radar_bp = Blueprint("radar", __name__)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
-print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
+# print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
 logger = get_logger(__name__)
 
 # # Run tests
@@ -92,91 +87,6 @@ def radarapp(userid):
             apps[app_id]["endpoints"].append(endpoint)
 
     return jsonify(list(apps.values()))
-
-
-# @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
-# def radarapp(userid):
-#     conn = connect_to_rds()
-#     cur = conn.cursor(pymysql.cursors.DictCursor)
-
-#     cur.execute(
-#         """
-#         SELECT LineOfBusiness
-#         FROM business_info
-#         WHERE user_id_fk = %s
-#         LIMIT 1
-#         """,
-#         (userid,),
-#     )
-#     role_row = cur.fetchone()
-#     onboarding_role = (
-#         (role_row.get("LineOfBusiness") or "").strip().lower() if role_row else None
-#     )
-
-#     if onboarding_role:
-#         cur.execute(
-#             """
-#             SELECT
-#                 a.id AS app_id,
-#                 a.app_name,
-
-#                 e.id   AS endpoint_id,
-#                 e.name,
-#                 e.path,
-#                 e.updated_at
-
-#             FROM external_apps a
-#             LEFT JOIN external_app_endpoints e
-#                 ON a.id = e.app_id
-#             WHERE a.user_id = %s
-#                OR (
-#                     a.is_universal = 1
-#                     AND LOWER(TRIM(a.target_onboarding_role)) = %s
-#                )
-#             ORDER BY a.id, e.id
-#         """,
-#             (userid, onboarding_role),
-#         )
-#     else:
-#         cur.execute(
-#             """
-#             SELECT
-#                 a.id AS app_id,
-#                 a.app_name,
-
-#                 e.id   AS endpoint_id,
-#                 e.name,
-#                 e.path,
-#                 e.updated_at
-
-#             FROM external_apps a
-#             LEFT JOIN external_app_endpoints e
-#                 ON a.id = e.app_id
-#             WHERE a.user_id = %s
-#             ORDER BY a.id, e.id
-#         """,
-#             (userid,),
-#         )
-
-#     rows = cur.fetchall()
-#     apps = {}
-
-#     for row in rows:
-#         app_id = row["app_id"]
-
-#         if app_id not in apps:
-#             apps[app_id] = {"id": app_id, "app_name": row["app_name"], "endpoints": []}
-
-#         if row["endpoint_id"] is not None:
-#             endpoint = {
-#                 "id": row["endpoint_id"],
-#                 "name": row["name"],
-#                 "path": row["path"],
-#                 "updated_at": row["updated_at"],
-#             }
-#             apps[app_id]["endpoints"].append(endpoint)
-
-#     return jsonify(list(apps.values()))
 
 
 async def retreval_from_sources(
@@ -632,7 +542,7 @@ async def run_radar_review_redis(
         langs_word = json.loads(result)
         output_language = langs_word.get("language", "English")
         output_word_count = langs_word.get("word_count")
-        print("language word", langs_word)
+        # print("language word", langs_word)
 
         # ---------------------------------
         # STRUCTURE BLUEPRINT GENERATION
@@ -810,7 +720,7 @@ async def run_radar_review_redis(
             .replace("{{output_language}}", output_language)
             .replace("{{requested_word_count}}", str(output_word_count))
         )
-        print("output word count", output_word_count)
+        # print("output word count", output_word_count)
 
         # ---------------------------------
         # LLM CALL
@@ -1122,26 +1032,44 @@ async def radar_change_block_preview():
 
     user_id = data.get("userid")
     review_id = data.get("review_id")
+    result_id = data.get("result_id")
     block_id = data.get("block_id")
     micro_block = data.get("micro_id")
     user_requested_change = data.get("user_input")
     credits = Credits()
 
-    if not user_id or not review_id or not block_id or not user_requested_change:
+    if not user_id or not block_id or not user_requested_change:
         return (
-            jsonify(
-                {"error": "userid, review_id, block_id, and user_input are required"}
-            ),
+            jsonify({"error": "userid, block_id, and user_input are required"}),
+            400,
+        )
+
+    # 🔥 Either result_id OR review_id must be present
+    if not (result_id or review_id):
+        return (
+            jsonify({"error": "Either result_id or review_id must be provided"}),
             400,
         )
 
     dbserver = LanceDBServer()
-    record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
+    record = None
+    original_json = None
+    if review_id:
+        record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
 
-    if not record or not record.get("result"):
-        return jsonify({"error": "RADAR review not found"}), 404
+        if not record or not record.get("result"):
+            return jsonify({"error": "RADAR review not found"}), 404
 
-    original_json = record["result"]
+        original_json = record["result"]
+    elif result_id:
+        record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
+
+        if not record or not record.get("result"):
+            return jsonify({"error": "runbook review result not found"}), 404
+
+        original_json = record["result"]
+    else:
+        return jsonify({"error": "Either review_id or result_id is required"}), 400
 
     try:
         review_temp = RADAR_TEMPLATE["radar_change_block_prompt"]
@@ -1215,26 +1143,42 @@ async def radar_change_block_confirm():
 
     user_id = data.get("userid")
     review_id = data.get("review_id")
+    result_id = data.get("result_id")
     block_id = data.get("block_id")
     micro_block = data.get("micro_id")
     changed_block = data.get("changed_block")
 
-    if not user_id or not review_id or not block_id or not changed_block:
+    if not user_id or not block_id or not changed_block:
         return (
-            jsonify(
-                {"error": "userid, review_id, block_id, and changed_block are required"}
-            ),
+            jsonify({"error": "userid, block_id, and user_input are required"}),
             400,
         )
 
+    # 🔥 Either result_id OR review_id must be present
+    if not (result_id or review_id):
+        return (
+            jsonify({"error": "Either result_id or review_id must be provided"}),
+            400,
+        )
     dbserver = LanceDBServer()
+    record = None
+    updated_json = None
+    if review_id:
+        record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
 
-    record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
+        if not record or not record.get("result"):
+            return jsonify({"error": "RADAR review not found"}), 404
 
-    if not record or not record.get("result"):
-        return jsonify({"error": "RADAR review not found"}), 404
+        updated_json = record["result"]
+    elif result_id:
+        record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
 
-    updated_json = record["result"]
+        if not record or not record.get("result"):
+            return jsonify({"error": "Runbook review result not found"}), 404
+
+        updated_json = record["result"]
+    else:
+        return jsonify({"error": "Either review_id or result_id is required"}), 400
 
     # 🔧 Safe deterministic merge
     block_found = False
@@ -1258,11 +1202,18 @@ async def radar_change_block_confirm():
         return jsonify({"error": "Target block or micro-block not found"}), 404
 
     try:
-        await dbserver.radar_update_result(
-            user_id=user_id,
-            review_id=review_id,
-            new_result=updated_json,
-        )
+        if review_id:
+            await dbserver.radar_update_result(
+                user_id=user_id,
+                review_id=review_id,
+                new_result=updated_json,
+            )
+        elif result_id:
+            await dbserver.update_runbook_result(
+                user_id=user_id,
+                result_id=result_id,
+                new_result=updated_json,
+            )
 
         return jsonify(
             {
@@ -1282,6 +1233,9 @@ async def radar_change_block_confirm():
 
 @radar_bp.route("/radar/knowledge/analyze", methods=["POST"])
 async def radar_knowledge_analyze():
+    import os
+    import inspect
+
     data = request.get_json(force=True)
 
     # 🔹 Input
@@ -1299,14 +1253,15 @@ async def radar_knowledge_analyze():
     credits = Credits()
 
     # 1 file → depth, many files → precision
-    top_k = 3 if file_count == 1 else 1
+    top_k = 3 if file_count == 1 else 2  # 🔥 improved
 
     # 🔹 Create embedding
     embedding = await get_firework_embedding()
     vector = embedding.embed_query(user_analyze_input)
-    dbserver = LanceDBServer()
-    total_output_chars = len(vector)
 
+    dbserver = LanceDBServer()
+
+    total_output_chars = len(vector)
     total_chars = len(user_analyze_input) + total_output_chars
 
     await credits.update_ai_credits_redis(
@@ -1315,6 +1270,7 @@ async def radar_knowledge_analyze():
         total_chars=total_chars,
         reference_id=inspect.stack()[0].function,
     )
+
     payload = QueryData(user_id=userid, embedding=vector, top_k=top_k)
 
     data_for_review = []
@@ -1391,24 +1347,72 @@ async def radar_knowledge_analyze():
             ),
             400,
         )
-    # print("data for review", data_for_review)
-    # print("type of data", type(data_for_review))
-    # 🔹 BEST result = LOWEST distance
-    best_result = min(data_for_review, key=lambda x: x.get("distance", float("inf")))
 
-    # 🔹 Optional similarity (cosine-based systems only)
+    # 🔥 Sort & take top results
+    sorted_results = sorted(
+        data_for_review, key=lambda x: x.get("distance", float("inf"))
+    )[:top_k]
+
+    # 🔥 Combine context (VERY IMPORTANT)
+    combined_context = "\n\n".join(
+        [r.get("text", "") for r in sorted_results if r.get("text")]
+    )
+
+    best_result = sorted_results[0]
+
     similarity = (
         round(1 - best_result["distance"], 4)
         if best_result.get("distance") is not None
         else None
     )
 
+    # 🔥 FINAL PROMPT
+    prompt = f"""
+        You are a highly accurate AI answer generator.
+
+        USER QUERY:
+        {user_analyze_input}
+
+        CONTEXT:
+        {combined_context}
+
+        INSTRUCTIONS:
+        - Answer ONLY using the provided context.
+        - Do NOT hallucinate or add external knowledge.
+        - never invent or create answer.
+        - If the answer is not clearly present, say something politely as we cant find the query in the documents
+
+        STYLE RULES:
+        - short → 1-2 lines
+        - medium → 3-5 lines
+        - detailed → structured explanation with bullet points
+
+        - Prefer exact phrases from context when possible.
+        - If multiple points exist, summarize clearly.
+
+        OUTPUT:
+        Return only the final answer.
+        """
+
+    response = await get_think_fire_response2_og(
+        user_id=userid,
+        user_message=prompt,
+        credits=credits,
+        total_input_chars=len(prompt),
+    )
+
+    ai_made = response
+    if len(response) > 2:
+        ai_made = response
+    else:
+        ai_made = best_result.get("text")
+
     return (
         jsonify(
             {
                 "userid": userid,
                 "query": user_analyze_input,
-                "answer": best_result.get("text"),
+                "answer": ai_made,
                 "source": {
                     "type": best_result.get("type"),
                     "reference": best_result.get("source"),
@@ -1439,4 +1443,3 @@ async def delete_radar_files():
         return jsonify({"message": "review not found", "details": result}), 404
 
     return jsonify({"message": "file deleted successfully", "details": result}), 200
-

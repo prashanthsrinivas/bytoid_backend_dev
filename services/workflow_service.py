@@ -2476,14 +2476,6 @@ class WorkflowRunnerV2:
         # return user_input
 
     def _question_answer_stats(self):
-        """
-        Returns:
-            {
-                "answered": int,
-                "total": int,
-                "all_answered": bool
-            }
-        """
         execution_data = self.previous_data
         answered = 0
         total = 0
@@ -2494,16 +2486,30 @@ class WorkflowRunnerV2:
                 continue
 
             for q in outputs:
-                # count only valid questions
                 if "user_answer" in q:
                     total += 1
-                    if q.get("user_answer") is not None:
+                    ans = q.get("user_answer")
+
+                    # ✅ Proper check
+                    if ans is not None and str(ans).strip() != "":
                         answered += 1
+
+        all_answered = total > 0 and answered == total
+        # print("all answered", all_answered)
+
+        if all_answered:
+            if self.workflow_json.get("runbook_id"):
+                from utils.celery_base import create_playbook_runbook_task
+
+                print("inside all answered")
+
+                rb_pb_id = self.workflow_json["runbook_id"]
+                create_playbook_runbook_task.delay(self.userid, self.filename, rb_pb_id)
 
         return {
             "answered": answered,
             "total": total,
-            "all_answered": total > 0 and answered == total,
+            "all_answered": all_answered,
         }
 
     async def answer_questions(self, answer: str, qid: str, chid: str):
@@ -2930,6 +2936,7 @@ class WorkflowRunnerV2:
 
         template_data = PLAY_TEMPLATE
         detect_prompt = template_data.get("wf_conversation")
+        # print("ty")
 
         # -------------------------
         # Determine current step
@@ -2964,6 +2971,7 @@ class WorkflowRunnerV2:
         function_call = step_data.get("function_call", {})
         function_name = function_call.get("function_name")
         if function_name == "automate.assign_or_show_questions_from_file":
+            # print("dsadsad")
             assigned = self.workflow_json.get("assigned_questions")
             if assigned:
                 result = await self._execute_step(step_id=current_step, compl=True)
@@ -3032,12 +3040,34 @@ class WorkflowRunnerV2:
                             "requires_input": True,
                             "step_id": current_step,
                         }
-
+            # print("bes lasa a")
             # last assistant message
             last_assistant_output = last_chat.get("output") if last_chat else {}
 
+            # ✅ Handle list
+            if isinstance(last_assistant_output, list):
+                last_assistant_output = (
+                    last_assistant_output[0] if last_assistant_output else {}
+                )
+
+            # ✅ Handle string (VERY IMPORTANT)
+            if isinstance(last_assistant_output, str):
+                try:
+                    last_assistant_output = json.loads(last_assistant_output)
+                except Exception:
+                    last_assistant_output = {}
+
+            # ✅ Final safety
+            if not isinstance(last_assistant_output, dict):
+                last_assistant_output = {}
+
+            # print("DEBUG OUTPUT:", last_assistant_output)
+
+            last_options = last_assistant_output.get("options", [])
+
             # last 3 chat messages for context
             chat_context = chats[-3:] if chats else []
+            # print("dsadasdas")
 
             prompt_text = (
                 detect_prompt.replace("{{workflow_json}}", json.dumps(self.steps))
@@ -3048,7 +3078,7 @@ class WorkflowRunnerV2:
                 .replace("{{user_message}}", user_message)
                 .replace(
                     "{{last_options}}",
-                    json.dumps(last_assistant_output.get("options", [])),
+                    json.dumps(last_options),
                 )
                 .replace("{{last_assistant_output}}", json.dumps(last_assistant_output))
                 .replace("{{chat_history}}", json.dumps(chat_context))
@@ -3394,4 +3424,148 @@ class WorkflowRunnerV2:
             "total_questions": len(assigned_ques),
             "answered_now": len(answers_map),
             "chunks_processed": len(chunks),
+        }
+
+    def edit_assigned_question(self, qid: str, new_question: str):
+        workflow = self.workflow_json
+
+        if not new_question or not new_question.strip():
+            return {
+                "status": "error",
+                "message": "Question text cannot be empty",
+            }
+
+        assigned_questions = workflow.get("assigned_questions", [])
+        updated = False
+
+        for q in assigned_questions:
+            if q.get("id") == qid:
+                q["question"] = new_question.strip()
+                updated = True
+                break
+
+        if not updated:
+            return {
+                "status": "error",
+                "message": f"Question ID '{qid}' not found",
+            }
+        self.workflow_json["assigned_questions"] = assigned_questions
+
+        save_playbook_to_s3(
+            self.workflow_json,
+            self.userid,
+            "question updated",
+            self.workflow_json["filename"],
+        )
+
+        return {
+            "status": "success",
+            "message": "Question updated successfully",
+            "qid": qid,
+        }
+
+    def delete_assigned_question(self, qid: str):
+        workflow = self.workflow_json
+
+        assigned_questions = workflow.get("assigned_questions", [])
+        new_questions = [q for q in assigned_questions if q.get("id") != qid]
+
+        if len(new_questions) == len(assigned_questions):
+            return {
+                "status": "error",
+                "message": f"Question ID '{qid}' not found in assigned_questions",
+            }
+
+        # workflow["assigned_questions"] = new_questions
+        self.workflow_json["assigned_questions"] = new_questions
+
+        save_playbook_to_s3(
+            self.workflow_json,
+            self.userid,
+            "workflow updated successfully",
+            self.workflow_json["filename"],
+        )
+        return {
+            "status": "success",
+            "message": "Question deleted successfully",
+            "qid": qid,
+        }
+
+    def morph_question(
+        self,
+        qid: str,
+        new_question: str,
+        morph_type: str,
+        new_options: dict = None,
+    ):
+        workflow = self.workflow_json
+
+        # ----------------------------
+        # VALIDATION
+        # ----------------------------
+        if not new_question or not new_question.strip():
+            return {
+                "status": "error",
+                "message": "Question text cannot be empty",
+            }
+
+        if morph_type not in ["text_to_option", "option_to_text", "update_only"]:
+            return {
+                "status": "error",
+                "message": "Invalid morph_type. Allowed: text_to_option, option_to_text, update_only",
+            }
+
+        assigned_questions = workflow.get("assigned_questions", [])
+        updated = False
+
+        for q in assigned_questions:
+            if q.get("id") == qid:
+
+                # ----------------------------
+                # ALWAYS UPDATE QUESTION TEXT
+                # ----------------------------
+                q["question"] = new_question.strip()
+
+                # ----------------------------
+                # MORPH LOGIC
+                # ----------------------------
+                if morph_type == "text_to_option":
+                    if not new_options or not isinstance(new_options, dict):
+                        return {
+                            "status": "error",
+                            "message": "new_options must be provided for text_to_option",
+                        }
+
+                    q["options"] = new_options
+
+                elif morph_type == "option_to_text":
+                    # Remove options completely
+                    q["options"] = {}
+
+                updated = True
+                break
+
+        if not updated:
+            return {
+                "status": "error",
+                "message": f"Question ID '{qid}' not found",
+            }
+
+        # ----------------------------
+        # SAVE BACK TO S3
+        # ----------------------------
+        self.workflow_json["assigned_questions"] = assigned_questions
+
+        save_playbook_to_s3(
+            self.workflow_json,
+            self.userid,
+            "question morphed",
+            self.workflow_json["filename"],
+        )
+
+        return {
+            "status": "success",
+            "message": "Question morphed successfully",
+            "qid": qid,
+            "morph_type": morph_type,
         }

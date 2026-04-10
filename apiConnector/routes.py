@@ -1,7 +1,6 @@
 from datetime import datetime
-import json, re
+import json
 from urllib.parse import urlencode
-from pkg_resources import normalize_path
 import pymysql
 from db.rds_db import connect_to_rds
 from flask import request, jsonify, Blueprint
@@ -1457,9 +1456,9 @@ async def schedule_app(app_id):
     # ---------- CUSTOM RANGE ----------
     elif schedule_type == "custom":
         dates = expand_custom_dates(
-            data["startDate"],
-            data["endDate"],
-            data["startTime"],
+           start_date= data["startDate"],
+            end_date=data["endDate"],
+            start_time=data["startTime"],
         )
         result = await APIConnectorScheduler.schedule_app_custom_dates(
             userid, app_id, dates, timezone
@@ -1552,10 +1551,10 @@ async def schedule_endpoint(endpoint_id):
 
     elif schedule_type == "custom":
         dates = expand_custom_dates(
-            data["startDate"],
-            data["endDate"],
-            data["startTime"],
-            data["intervalMinutes"],
+           start_date= data["startDate"],
+           end_date= data["endDate"],
+           start_time= data["startTime"],
+            # data["intervalMinutes"],
         )
         result = await APIConnectorScheduler.schedule_endpoint_custom_dates(
             userid, endpoint_id, dates, timezone

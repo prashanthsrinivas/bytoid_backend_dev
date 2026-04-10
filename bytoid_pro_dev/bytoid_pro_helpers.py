@@ -296,7 +296,8 @@ async def mixed_response(user_message: str, role: str, user_id: str, file_url: l
                                     user_id=user_id,
                                     file_url=file_url,
                                     credits = credits,
-                                    mixed = True
+                                    mixed = True,
+                                    context=context
                                 )
 
     message = "Summarize the following images clearly and concisely.Preserve all factual details, key points, entities, and data.Do NOT compare or reference other documents."

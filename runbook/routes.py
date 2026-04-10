@@ -1,1100 +1,350 @@
-from asyncio.log import logger
-import csv
-import io
-import json
-import time
-import asyncio
+from datetime import datetime
 import logging
-import traceback
-import uuid
-import json
 import os
-import pymysql
+import traceback
+import json
 
-from apiConnector.helpers import _execute_endpoint_internal,_execute_app_internal, build_full_url
-from cust_helpers import pathconfig
-from db.db_checkers import get_notes_data
-from services.apiconnectors import APIConnector
-from services.redis_service import RedisService
+from playbook.background_worker import JobManager
+from playbook.helperzz import assign_runbook_playbook
+from runbook.helper import (
+    Modify_default_structure,
+    activate_runbook_schedule,
+    fetch_cloudwatch_logs,
+    get_playbook_instruction,
+    parse_cloudwatch_url,
+    reconstruct_sources,
+    run_runbook_execution_engine,
+    save_runbook_schedule,
+    schedule_runbook_log,
+    store_runbook_trigger_schedule,
+    structure_payload_generation,
+    trigger_runbook_from_playbook,
+)
 from db.lance_db_service import LanceDBServer
 from credits_route.route import Credits
 from db.rds_db import connect_to_rds
 
-from umail.routes import get_sorted_lance_emails
-from utils.fireworkzz import get_think_fire_response2_og, get_think_fire_response2_og2
-from utils.normal import load_yaml_file
-from radar.radar_helpers import _safe_json_parse, process_file_payloads
-from flask import Blueprint, jsonify,request, session
-from utils.s3_utils import S3_BUCKET, s3bucket, upload_any_file
-from utils.scheduler import scheduler
-from apscheduler.triggers.cron import CronTrigger
-
+from radar.radar_helpers import (
+    extract_file_payload,
+)
+from flask import Blueprint, jsonify, request, session
+from services.redis_service import RedisService
+from utils.s3_utils import upload_any_file
 
 
 runbook_bp = Blueprint("runbook", __name__)
-RUNBOOK_TEMPLATE = load_yaml_file(path=pathconfig.runbook_prompts)
-RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
 logger = logging.getLogger(__name__)
+dbserver = LanceDBServer()
 
 
-def schedule_runbook(runbook):
+async def execute_runbook_create(data):
+    import time, uuid, os, json, traceback
 
-    cron_expr = runbook.get("schedule")
+    user_id = data.get("user_id")
 
-    if not cron_expr:
-        return
-    if cron_expr == "1m":
-        cron_expr = "*/1 * * * *"
-    elif cron_expr == "5m":
-        cron_expr = "*/5 * * * *"
-    elif cron_expr == "10m":
-        cron_expr = "*/10 * * * *"
-    elif cron_expr == "15m":
-        cron_expr = "*/15 * * * *"
-    elif cron_expr == "1h":
-        cron_expr = "0 * * * *"
-    elif cron_expr == "daily":
-        cron_expr = "0 0 * * *"
+    json_files = data.get("files") or []
+    structure_file = data.get("structure_file")
+    default_view_template = data.get("default_view_template") or ""
 
-    trigger = CronTrigger.from_crontab(cron_expr)
-
-    # ✅ FIX: wrap async properly
-    scheduler.add_job(
-        run_runbook_job_wrapper,
-        trigger=trigger,
-        id=runbook["runbook_id"],
-        args = [runbook],
-        replace_existing=True
-    )
-
-    print(f"✅ Scheduled runbook {runbook['runbook_id']}")
-
-def run_runbook_job_wrapper(runbook):
-    # print("🚀 WRAPPER TRIGGERED")
-    asyncio.run(run_runbook_job(runbook))
-
-async def run_runbook_job(runbook):
-    #  print(f"🔥 JOB TRIGGERED: {runbook['runbook_id']}")
-    
-
-    try:
-        print(f"🚀 Running runbook {runbook['runbook_id']}")
-        conn = connect_to_rds()
-        dbserver = LanceDBServer()
-        credits = Credits(db=conn)
-        await run_runbook_execution_engine(
-            conn=conn,
-            dbserver=dbserver,
-            credits = credits,
-            user_id=runbook["user_id"],
-            runbook=runbook
-        )
-        print(f"✅ COMPLETED: {runbook['runbook_id']}")
-    except Exception as e:
-        print("❌ FULL ERROR:", traceback.format_exc())
-        print(f"❌ Runbook failed: {e}")
-
-
-async def build_runbook_prompt(runbook):
-
-    input_type = runbook["input_type"]
-
-    if input_type == "questionnaire":
-
-        return f"""
-        Generate security review based on questionnaire answers.
-        Use playbook: {runbook.get("playbook_id")}
-        """
-
-    elif input_type == "api":
-
-        return f"""
-        Analyze API endpoint response for security risks.
-
-        Endpoint:
-        {runbook.get("api_endpoint")}
-        """
-
-    elif input_type == "logs":
-
-        return f"""
-        Analyze logs for anomalies.
-
-        Log source:
-        {runbook.get("log_source")}
-        """
-
-
-def render_runbook_yaml(runbook):
-
-    template = RUNBOOK_TEMPLATE["runbook"]
-
-    rendered = json.loads(
-        json.dumps(template)
-        .replace("${runbook_name}", runbook.get("name",""))
-        .replace("${runbook_type}", runbook.get("runbook_type",""))
-
-        .replace("${schedule_type}", runbook.get("schedule_type","cron"))
-        .replace("${cron_expression}", runbook.get("cron",""))
-
-        .replace("${input_type}", runbook.get("input_type",""))
-
-        .replace("${playbook_id}", str(runbook.get("playbook_id") or ""))
-        .replace("${api_endpoint}", str(runbook.get("api_endpoint") or ""))
-        .replace("${log_source}", str(runbook.get("log_source") or ""))
-    )
-
-    return rendered
-
-async def fetch_logs_from_url(url):
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            text = await resp.text()
-
-    reader = csv.DictReader(io.StringIO(text))
-
-    return list(reader)
-
-def read_csv_logs(file_path):
-
-    with open(file_path, newline="") as f:
-        reader = csv.DictReader(f)
-        return list(reader)
-
-async def get_logs_data(user_id,source):
-   # case 1 → url log file
-    if source.startswith("http"):
-
-        logs =  fetch_logs_from_url(source)
-
-        # case 2 → csv file path
-    elif source.endswith(".csv"):
-
-        logs = read_csv_logs(source)
-    return logs
-
-def get_playbook_answers(user_id, source):
-    pass
-
-def read_csv_logs_from_s3(s3_key):
-    try:
-        # print("📥 Fetching S3 key:", s3_key)
-
-        response = s3bucket().get_object(
-            Bucket=S3_BUCKET,
-            Key=s3_key
+    structure_file_data = None
+    if structure_file:
+        structure_file_data = extract_file_payload(
+            structure_file,
+            default_filename="structure_file",
         )
 
-        content = response["Body"].read()
-        import pandas as pd
-         # ✅ Case 1: CSV
-        if s3_key.endswith(".csv"):
-            df = pd.read_csv(io.StringIO(content))
-            return df.to_dict(orient="records")
-
-        # ✅ Case 2: JSON logs
-        elif s3_key.endswith(".json"):
-            return json.loads(content.decode("utf-8"))
-        
-        elif s3_key.endswith(".xlsx") or s3_key.endswith(".xls"):
-            df = pd.read_excel(io.BytesIO(content))
-            return df.to_dict(orient="records")
-
-        # ✅ Case 3: TXT logs (YOUR CASE)
-        else:
-            lines = content.splitlines()
-
-            logs = []
-            for line in lines:
-                if line.strip():
-                    logs.append({
-                        "message": line
-                    })
-
-            return logs
-
-    except Exception as e:
-        print("❌ S3 READ ERROR:", str(e))
-        raise Exception(f"S3 log read failed: {s3_key} | {str(e)}")
-
-def reconstruct_and_format_logs(logs):
-
-    buffer = ""
-    merged_logs = []
-
-    for item in logs:
-        line = item.get("message", "").strip()
-
-        if not line:
-            continue
-
-        buffer += line
-
-        # ✅ detect complete JSON
-        if buffer.endswith("}"):
-            try:
-                parsed = json.loads(buffer)
-
-                clean_line = (
-                    f"{parsed.get('Time')} | "
-                    f"{parsed.get('LogLevel')} | "
-                    f"{parsed.get('Message')}"
-                )
-
-                merged_logs.append(clean_line)
-                buffer = ""
-
-            except Exception:
-                # continue accumulating
-                continue
-
-    return "\n".join(merged_logs)
-
-def calculate_risk_score(result):
-
-    score = 0
-
-    if "critical" in str(result).lower():
-        score += 40
-
-    if "vulnerability" in str(result).lower():
-        score += 30
-
-    if "misconfiguration" in str(result).lower():
-        score += 20
-
-    return min(score,100)
-
-async def execute_app_via_endpoint(app_id: int, user_id: str):
-    conn = connect_to_rds()
-    cur = conn.cursor(pymysql.cursors.DictCursor)
-
-    try:
-        # 1️⃣ Get endpoints for this app
-        cur.execute(
-            """
-            SELECT id
-            FROM global_app_endpoints
-            WHERE app_id = %s
-            """,
-            (app_id,)
-        )
-
-        endpoints = cur.fetchall()
-        print("endpoints:",endpoints)
-        if not endpoints:
-            raise ValueError("No active endpoints found for this app")
-
-        results = []
-
-        # 2️⃣ Execute each endpoint
-        for ep in endpoints:
-            endpoint_id = ep["id"]
-
-            try:
-                response = await _execute_global_endpoint_internal(
-                    endpoint_id=endpoint_id,
-                    user_id=user_id,
-                    app_id=app_id
-                )
-
-                results.append({
-                    "endpoint_id": endpoint_id,
-                    "status": "success",
-                    "response": response
-                })
-
-            except Exception as e:
-                results.append({
-                    "endpoint_id": endpoint_id,
-                    "status": "failed",
-                    "error": str(e)
-                })
-
-        return {
-            "app_id": app_id,
-            "results": results
-        }
-
-    finally:
-        cur.close()
-        conn.close()
-
-async def collect_runbook_inputs(runbook):
-
-    if runbook.get("playbook_id"):
-
-        return f"Playbook questionnaire {runbook['playbook_id']}"
-
-    elif runbook.get("api_endpoint"):
-        if runbook.get("api_source_type") == "global":
-            result = await _execute_global_endpoint_internal(endpoint_id=runbook["api_endpoint"],user_id=runbook["user_id"],app_id=runbook["app_id"])
-        elif runbook.get("api_source_type") == "user":
-            result = await _execute_endpoint_internal(runbook["api_endpoint"],runbook["user_id"])
-        # print("api result:",result)
-        return json.dumps(result)[:3000] 
-
-    elif runbook.get("log_source"):
-
-        s3_key = runbook.get("log_source")
-
-        if not s3_key:
-            raise Exception("Missing log_source")
-
-        logs = read_csv_logs_from_s3(s3_key)
-        # logs_str = reconstruct_and_format_logs(logs)
-        formatted_logs = []
-
-        for log in logs:
-            try:
-                message = log.get("message")
-
-                if isinstance(message, str) and message.startswith("{"):
-                    msg_json = json.loads(message)
-                    msg = msg_json.get("Message", message)
-                    level = msg_json.get("LogLevel", "")
-                    time = msg_json.get("Time", "")
-                    formatted_logs.append(f"[{time}] [{level}] {msg}")
-                else:
-                    formatted_logs.append(str(message))
-
-            except Exception:
-                formatted_logs.append(str(log))
-
-        logs_str = "\n".join(formatted_logs)
-
-        return logs_str
-    raise ValueError("Runbook requires questionnaire/api/log input")
-
-async def retreval_from_sources(
-    conn, dbserver, main_source, datasources, userid, payload
-):
-
-    data_for_review = []
-    # -------------------------
-    # APP SOURCE
-    # -------------------------
-    if main_source == "app":
-        endpoint_ids = datasources.get("endpoint_ids", [])
-
-        for endpoint_id in endpoint_ids:
-            try:
-                result = await _execute_endpoint_internal(
-                    endpoint_id=endpoint_id,
-                    userid=userid,
-                )
-                data_for_review.append(
-                    {
-                        "type": "app",
-                        "endpoint_id": endpoint_id,
-                        "data": str(result.get("response")),
-                    }
-                )
-            except Exception as e:
-                data_for_review.append({"endpoint_id": endpoint_id, "error": str(e)})
-
-    # -------------------------
-    # NOTES SOURCE
-    # -------------------------
-    elif main_source == "notes":
-        note_ids = datasources.get("note_ids", [])
-        all_notes = get_notes_data(userid)  # expect list[ {note_id, content, ...} ]
-        # print("len of all_notes", len(all_notes), all_notes)
-        for note in all_notes.get("notes"):
-            # print("type of note", type(note), note)
-            if note.get("note_id") in note_ids:
-                data_for_review.append(
-                    {"type": "notes", "note_id": note.get("note_id"), "data": str(note)}
-                )
-
-    # -------------------------
-    # EMAIL SOURCE
-    # -------------------------
-    elif main_source == "emails":
-        client_ids = datasources.get("client_ids", [])
-        for i in client_ids:
-            data_for_review.append(
-                {
-                    "type": "emails",
-                    "clientid": i,
-                    "data": str(
-                        get_sorted_lance_emails(
-                            connection=conn, user_id=userid, client_id=i
-                        )
-                    ),
-                }
-            )
-        # all_emails = get_emails_data(userid)
-
-    # -------------------------
-    # KNOWLEDGE SOURCE (LanceDB / Docs)
-    # -------------------------
-    elif main_source == "knowledge":
-        filenames = datasources.get("filenames", [])
-        for file in filenames:
-            if file.get("type") == "docs":
-                fname = file.get("filename")
-                results = await dbserver.query_vector_filename(
-                    query=payload, filename=fname
-                )
-                if results:
-                    for item in results:
-                        data_for_review.append(
-                            {
-                                "type": "docs",
-                                "source": fname,
-                                "data": str(item.get("text", "")),
-                            }
-                        )
-                else:
-                    newdas = await dbserver.fetch_by_filename(
-                        user_id=userid, filename=fname
-                    )
-                    if newdas:
-                        for item in newdas:
-                            data_for_review.append(
-                                {
-                                    "type": "docs",
-                                    "source": fname,
-                                    "data": str(item.get("text", "")),
-                                }
-                            )
-
-            elif file.get("type") == "aud":
-                bfname = file.get("filename")
-                base = os.path.basename(bfname)
-                name_without_ext = os.path.splitext(base)[0]
-                fname = f"{name_without_ext}_transcript.json"
-
-                results = await dbserver.rec_query_vector_foldername(
-                    query=payload, foldername=fname
-                )
-                if results:
-                    for item in results:
-                        data_for_review.append(
-                            {
-                                "type": "audio",
-                                "source": fname,
-                                "data": str(item.get("text", "")),
-                            }
-                        )
-
-            elif file.get("type") == "scrape":
-                url = file.get("url")
-                results = dbserver.search_scraped_data_by_url(query=payload, url=url)
-                if results:
-                    data_for_review.append(
-                        {
-                            "type": "scrape",
-                            "source": url,
-                            "data": str(results.get("text", "")),
-                        }
-                    )
-    # -------------------------
-    # QUESTIONNAIRE SOURCE
-    # -------------------------
-    elif main_source == "questionnaire":
-
-        playbook_id = datasources.get("playbook_id")
-
-        data = await get_playbook_answers(
-            user_id=userid,
-            playbook_id=playbook_id
-        )
-
-        data_for_review.append({
-            "type": "questionnaire",
-            "playbook_id": playbook_id,
-            "data": str(data)
-        })
-    # -------------------------
-    # API SOURCE
-    # -------------------------
-    elif main_source == "api":
-
-        endpoint_ids = datasources.get("endpoint_ids", [])
-
-        for endpoint in endpoint_ids:
-            try:
-
-                result = await _execute_endpoint_internal(
-                    endpoint_id=endpoint,
-                    userid=userid
-                )
-
-                data_for_review.append({
-                    "type": "api",
-                    "endpoint_id": endpoint,
-                    "data": str(result)
-                })
-
-            except Exception as e:
-
-                data_for_review.append({
-                    "type": "api",
-                    "endpoint_id": endpoint,
-                    "error": str(e)
-                })
-    # -------------------------
-    # LOG SOURCE
-    # -------------------------
-    elif main_source == "logs":
-
-        log_source = datasources.get("log_source")
-
-        s3_key = datasources.get("log_source")
-
-        if not s3_key:
-            raise Exception("Missing log_source")
-
-        logs = read_csv_logs_from_s3(s3_key)
-
-        data_for_review.append({
-            "type": "logs",
-            "source": logs,
-            "data": str(logs)
-        })
-
-    return data_for_review
-
-import copy
-
-
-def merge_runbook_chunks_deterministic(
-    raw_chunks,
-    output_language="english",
-    runbook_id=None,
-    execution_id=None
-):
-
-    if not raw_chunks:
-        return {}
-
-    merged = {
-        "document_meta": {},
-        "structure_rationale": "",
-        "analysis_depth": None,
-        "analysis_depth_rationale": None,
-        "recommendation_depth": None,
-        "recommendation_depth_rationale": None,
-        "recommendation_intent": [],
-        "confidence_level": None,
-        "core_objective": None,
-        "intent_type": None,
-        "blocks": [],
-        "estimated_word_count": 0,
-
-        # Runbook specific metadata
-        "runbook_meta": {
-            "runbook_id": runbook_id,
-            "execution_id": execution_id,
-            "output_language": output_language
-        }
-    }
-
-    block_index = {}
-
-    for chunk in raw_chunks:
-
-        # -----------------------------
-        # document_meta merge
-        # -----------------------------
-        if "document_meta" in chunk:
-            merged["document_meta"].update(chunk["document_meta"])
-
-        # -----------------------------
-        # structure rationale
-        # -----------------------------
-        if chunk.get("structure_rationale") and not merged["structure_rationale"]:
-            merged["structure_rationale"] = chunk["structure_rationale"]
-
-        # -----------------------------
-        # analysis depth
-        # -----------------------------
-        merged["analysis_depth"] = chunk.get(
-            "analysis_depth",
-            merged["analysis_depth"]
-        )
-
-        merged["analysis_depth_rationale"] = chunk.get(
-            "analysis_depth_rationale",
-            merged["analysis_depth_rationale"]
-        )
-
-        # -----------------------------
-        # recommendation depth
-        # -----------------------------
-        merged["recommendation_depth"] = chunk.get(
-            "recommendation_depth",
-            merged["recommendation_depth"]
-        )
-
-        merged["recommendation_depth_rationale"] = chunk.get(
-            "recommendation_depth_rationale",
-            merged["recommendation_depth_rationale"]
-        )
-
-        # -----------------------------
-        # recommendation intent
-        # -----------------------------
-        for intent in chunk.get("recommendation_intent", []):
-            if intent not in merged["recommendation_intent"]:
-                merged["recommendation_intent"].append(intent)
-
-        # -----------------------------
-        # intent / objective
-        # -----------------------------
-        merged["intent_type"] = chunk.get(
-            "intent_type",
-            merged["intent_type"]
-        )
-
-        merged["core_objective"] = chunk.get(
-            "core_objective",
-            merged["core_objective"]
-        )
-
-        # -----------------------------
-        # confidence level
-        # -----------------------------
-        merged["confidence_level"] = (
-            chunk.get("confidence_level")
-            or chunk.get("document_meta", {}).get("confidence_level")
-            or merged["confidence_level"]
-        )
-
-        # -----------------------------
-        # word count aggregation
-        # -----------------------------
-        if "estimated_word_count" in chunk:
-            merged["estimated_word_count"] += chunk["estimated_word_count"]
-
-        elif "document_meta" in chunk:
-            merged["estimated_word_count"] += chunk["document_meta"].get(
-                "estimated_word_count", 0
-            )
-
-        # -----------------------------
-        # blocks merge
-        # -----------------------------
-        for block in chunk.get("blocks", []):
-
-            block_id = block.get("block_id")
-
-            if not block_id:
-                continue
-
-            block.setdefault("micro_blocks", [])
-
-            if block_id not in block_index:
-
-                new_block = copy.deepcopy(block)
-
-                merged["blocks"].append(new_block)
-
-                block_index[block_id] = new_block
-
-            else:
-
-                existing_block = block_index[block_id]
-
-                existing_block.setdefault("micro_blocks", [])
-
-                existing_micro_ids = {
-                    mb.get("micro_id") for mb in existing_block["micro_blocks"]
-                }
-
-                for micro in block["micro_blocks"]:
-
-                    micro_id = micro.get("micro_id")
-
-                    if micro_id not in existing_micro_ids:
-                        existing_block["micro_blocks"].append(copy.deepcopy(micro))
-
-    # -----------------------------
-    # deterministic block ordering
-    # -----------------------------
-    merged["blocks"] = sorted(
-        merged["blocks"],
-        key=lambda x: x.get("block_id", "")
-    )
-
-    # -----------------------------
-    # cleanup empty fields
-    # -----------------------------
-    merged = {
-        k: v
-        for k, v in merged.items()
-        if v not in [None, "", [], {}]
-    }
-
-    return merged
-
-async def run_runbook_execution_engine(
-    conn,
-    dbserver,
-    credits,
-    user_id,
-    runbook,
-    files=None,
-    structure_file=None,
-    datasources=None,
-    reference_RWA=None,
-):
-    
-
-    runbook_id = runbook["runbook_id"]
-
-    execution_id = f"exec_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-    started_at = int(time.time())
-    risk_score = None
-    refactor_result = {}
-
-    await dbserver.insert_runbook_result({
-        "execution_id": execution_id,
-        "runbook_id": runbook_id,
+    files_data = []
+    for i, f in enumerate(json_files):
+        payload = extract_file_payload(f, default_filename=f"file_{i}")
+        if payload:
+            files_data.append(payload)
+
+    files_data = files_data or None
+
+    data_sources_full = json.dumps(data.get("data_sources", {}))
+    reference_sources_full = json.dumps(data.get("reference_sources", {}))
+
+    runbook_data = {
+        "runbook_id": f"runbook_{uuid.uuid4().hex[:6]}",
         "user_id": user_id,
-        "status": "running",
-        "started_at": started_at,
-        "input_mode": runbook.get("input_type")
-    })
-    # --------------------------------------------------
-    # RENDER RUNBOOK TEMPLATE
-    # --------------------------------------------------
+        "name": data.get("name"),
+        "description": data.get("description"),
+        "runbook_type": data.get("runbook_type"),
+        "schedule": data.get("schedule"),
+        "input_type": data.get("input_type"),
+        "playbook_id": data.get("playbook_id"),
+        "structure_theme": json.dumps(default_view_template),
+        "api_endpoint": data.get("endpoint_id"),
+        "app_id": data.get("app_id"),
+        "log_source": data.get("log_source"),
+        "files": json.dumps(data.get("files", {})),
+        "links": json.dumps(data.get("links", {})),
+        "data_sources": data_sources_full,
+        "reference_sources": reference_sources_full,
+        "main_source": data.get("main_source"),
+        "refernce_main_source": data.get("refernce_main_source"),
+        "is_template": data.get("is_template"),
+        "created_at": int(time.time()),
+    }
+    print("loc 1")
 
-    runbook_yaml = render_runbook_yaml(runbook)
+    log_source = None
 
-    # --------------------------------------------------
-    # RESOLVE RUNBOOK INPUT
-    # --------------------------------------------------
-    try:
-        analyze_input = await collect_runbook_inputs(runbook)
+    # FILE or CloudWatch logic (same as yours)
+    if data.get("log_source"):
+        parsed = parse_cloudwatch_url(data.get("log_source"))
 
-        user_analyze_input = analyze_input
-        print("RUNBOOK YAML:", runbook_yaml)
-        print("ANALYZE INPUT:", analyze_input)
-        # --------------------------------------------------
-        # FILE PROCESSING  (same as radar)
-        # --------------------------------------------------
+        if parsed["status"] != "success":
+            raise Exception("Invalid CloudWatch URL")
 
-        INP_LINKS = []
-        STR_LINKS = []
-
-        file_data_payload = []
-        structure_file_payload = []
-
-        if files:
-
-            process_file_payloads(
-                user_id=user_id,
-                files=files,
-                inp_links=INP_LINKS,
-                extracted_payload=file_data_payload,
-            )
-
-        if structure_file:
-
-            process_file_payloads(
-                user_id=user_id,
-                files=[structure_file],
-                inp_links=STR_LINKS,
-                extracted_payload=structure_file_payload,
-            )
-
-        # --------------------------------------------------
-        # LANGUAGE + WORD COUNT (same radar logic)
-        # --------------------------------------------------
-
-        lang_prompt_key = runbook_yaml["radar"]["language_prompt"]
-
-        lang_prompt = RADAR_TEMPLATE[lang_prompt_key]
-
-        lang_prompt = lang_prompt.replace(
-            "{{analyze_input}}",
-            str(user_analyze_input or analyze_input)
+        cw_result = fetch_cloudwatch_logs(
+            log_group=parsed["log_group"],
+            log_stream=parsed["log_stream"],
+            region=parsed["region"],
         )
 
-        # print("lang_prompt: ",lang_prompt)
+        if cw_result["status"] != "success":
+            raise Exception(cw_result["error"])
 
-        result = await get_think_fire_response2_og(
-            user_message=lang_prompt,
+        log_source = cw_result["logs"]
+
+    runbook_data["log_source"] = log_source
+
+    dbserver = LanceDBServer()
+    conn = connect_to_rds()
+    credits = Credits(db=conn)
+    print("loc 2")
+
+    res = ""
+    if structure_file_data:
+        filename = f'structure_file_{runbook_data["runbook_id"]}.json'
+        config_local_path = os.path.join("/tmp", filename)
+
+        with open(config_local_path, "w", encoding="utf-8") as f:
+            json.dump(structure_file_data, f, ensure_ascii=False, indent=2)
+
+        res = upload_any_file(
+            file_path=config_local_path,
             user_id=user_id,
-            credits=credits,
-            total_input_chars=len(lang_prompt),
+            type="structure_file",
+            file_name=filename,
         )
-        print("LANG RESULT RAW:", result)
-        lang_data = json.loads(result)
 
-        output_language = lang_data.get("language", "English")
-        output_word_count = lang_data.get("word_count") or len(analyze_input) 
-        # print("language_data: ",lang_data)
-        print("output_word_count: ",output_word_count)
-        # --------------------------------------------------
-        # STRUCTURE GENERATION
-        # --------------------------------------------------
+        runbook_data["files"]["structure_file"] = res.get("s3_key")
+        default_view_template = await structure_payload_generation(
+            analyze_input="", structure_file=structure_file_data
+        )
+        runbook_data["structure_theme"] = default_view_template
 
-        if structure_file_payload:
+    result = await dbserver.insert_runbook(runbook_data)
 
-            structure_prompt_key = runbook_yaml["radar"]["structure_prompt"]
+    # runbook_data["app_id"] = data.get("app_id")
+    # runbook_data["main_source"] = data.get("main_source")
+    # runbook_data["reference_main_source"] = data.get("refernce_main_source")
 
-            structure_prompt = RADAR_TEMPLATE[structure_prompt_key]
+    # runbook_data["api_source_type"] = data.get("api_source_type")
 
-            structure_prompt = (
-                structure_prompt
-                .replace("{{document_file_data}}", json.dumps(structure_file_payload))
-                .replace("{{file_links}}", json.dumps(STR_LINKS))
-                .replace("{{user_original_prompt_or_context}}", analyze_input)
-                .replace("{{output_language}}", output_language)
+    # runbook_data["data_sources"] = data_sources_full
+    # runbook_data["reference_sources"] = reference_sources_full
+    # runbook_data["is_template"] = data.get("is_template")
+    print("loc 3")
+
+    # EXECUTION
+    if runbook_data.get("input_type") == "logs":
+        schedule_runbook_log(runbook_data)
+        print("loc 4")
+
+    elif runbook_data.get("input_type") == "api":
+        print("loc 5")
+        latest = await dbserver.get_app_runs(
+            user_id=user_id,
+            app_id=str(runbook_data.get("app_id")),
+            endpoint_id=str(runbook_data.get("api_endpoint")),
+        )
+
+        if isinstance(latest, list) and latest:
+            latest = sorted(latest, key=lambda x: x.get("created_at", 0), reverse=True)[
+                0
+            ]
+
+            runbook_data["runtime_input"] = (
+                latest.get("response") or latest.get("text") or json.dumps(latest)
             )
 
-            result = await get_think_fire_response2_og(
-                user_message=structure_prompt,
-                user_id=user_id,
+            await run_runbook_execution_engine(
+                conn=conn,
+                dbserver=dbserver,
                 credits=credits,
-                total_input_chars=len(structure_prompt),
+                user_id=user_id,
+                runbook=runbook_data,
+                structure_file=runbook_data["files"].get("structure_file"),
+                structure_file_payload=default_view_template,
             )
 
-            structure_file_payload = json.loads(result)
-
-        # --------------------------------------------------
-        # PROMPT SELECTION
-        # --------------------------------------------------
-
-        btype = runbook_yaml["radar"]["format"]
-
-        prompts = runbook_yaml["radar"]["prompts"]
-        structure_prompts = runbook_yaml["radar"]["structure_prompts"]
-
-        if btype == "review":
-
-            if structure_file_payload:
-                review_temp = RADAR_TEMPLATE[structure_prompts["review"]]
-            else:
-                review_temp = RADAR_TEMPLATE[prompts["review"]]
-
-        elif btype == "analyze":
-
-            if structure_file_payload:
-                review_temp = RADAR_TEMPLATE[structure_prompts["analysis"]]
-            else:
-                review_temp = RADAR_TEMPLATE[prompts["analysis"]]
-
-        elif btype == "decide":
-
-            if structure_file_payload:
-                review_temp = RADAR_TEMPLATE[structure_prompts["recommendation"]]
-            else:
-                review_temp = RADAR_TEMPLATE[prompts["recommendation"]]
-
-        # --------------------------------------------------
-        # OPTIONAL RADAR DATA SOURCES
-        # --------------------------------------------------
-
-        data_checked = []
-
-        if datasources:
-
-            data_checked = await retreval_from_sources(
-                conn,
-                dbserver,
-                datasources.get("main_source"),
-                datasources,
-                user_id,
-                analyze_input
+    elif runbook_data.get("input_type") == "playbook":
+        print("loc 6")
+        if runbook_data["is_template"]:
+            assign_runbook_playbook(
+                runbook_id=runbook_data["runbook_id"],
+                playbook=runbook_data["playbook_id"],
+                userid=user_id,
+            )
+            # await run_runbook_execution_engine(
+            #             conn=conn,
+            #             dbserver=dbserver,
+            #             credits=credits,
+            #             user_id=user_id,
+            #             runbook=runbook_data,
+            #             structure_file=(
+            #                 runbook_data["files"][0] if runbook_data.get("files") else None
+            #             ),
+            #         )
+        else:
+            await run_runbook_execution_engine(
+                conn=conn,
+                dbserver=dbserver,
+                credits=credits,
+                user_id=user_id,
+                runbook=runbook_data,
+                structure_file=(runbook_data["files"].get("structure_file"),),
+                structure_file_payload=default_view_template,
             )
 
-        # --------------------------------------------------
-        # BUILD PROMPT
-        # --------------------------------------------------
+    return result
 
-        base_prompt = (
-            review_temp
-            .replace("{{analyze_input}}", (analyze_input or ""))
-            .replace("{{file_data}}", json.dumps(file_data_payload))
-            .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
-            .replace("{{file_links}}", json.dumps(INP_LINKS))
-            .replace("{{data_sources}}", json.dumps(data_checked))
-            .replace("{{reference_sources}}", json.dumps(reference_RWA or []))
-            .replace("{{output_language}}", output_language)
-            .replace("{{requested_word_count}}", str(output_word_count))
-        )
-
-        # --------------------------------------------------
-        # LLM CALL
-        # --------------------------------------------------
-
-        result = await get_think_fire_response2_og2(
-            user_message=base_prompt,
-            user_id=user_id,
-            credits=credits,
-            total_input_chars=len(base_prompt),
-            language=output_language,
-            words_count=output_word_count,
-        )
-        # print("RAW LLM RESULT:", result)
-        # --------------------------------------------------
-        # MERGE RADAR CHUNKS
-        # --------------------------------------------------
-
-        merged_report = merge_runbook_chunks_deterministic(
-            raw_chunks=result
-        )
-
-        # --------------------------------------------------
-        # PARSE RESULT
-        # --------------------------------------------------
-
-        refactor_result = _safe_json_parse(merged_report)
-        # print("refactor result: ",refactor_result)
-        # --------------------------------------------------
-        # RISK SCORE (runbook specific)
-        # --------------------------------------------------
-
-        # risk_score = calculate_risk_score(refactor_result)
-
-        # refactor_result["risk_score"] = risk_score
-        # --------------------------------------------------
-        # RISK SCORE (NIST LLM BASED)
-        # --------------------------------------------------
-
-        risk_prompt_key = runbook_yaml["radar"].get("risk_prompt", "nist_risk_score_prompt")
-        risk_prompt_template = RADAR_TEMPLATE[risk_prompt_key]
-
-        risk_prompt = risk_prompt_template.replace(
-            "{{analysis_result}}",
-            json.dumps(refactor_result)
-        )
-
-        risk_llm_result = await get_think_fire_response2_og(
-            user_message=risk_prompt,
-            user_id=user_id,
-            credits=credits,
-            total_input_chars=len(risk_prompt),
-        )
-
-        print("RISK RAW:", risk_llm_result)
-
-        risk_data = _safe_json_parse(risk_llm_result)
-
-        risk_score = risk_data.get("final_risk_score", 0)
-
-        # attach full breakdown (VERY IMPORTANT)
-        refactor_result["risk_analysis"] = risk_data
-        refactor_result["risk_score"] = risk_score
-
-        # --------------------------------------------------
-        # STORE RESULT
-        # --------------------------------------------------
-
-        await dbserver.insert_runbook_result({
-                "execution_id": execution_id,
-                "runbook_id": runbook_id,
-                "user_id": user_id,
-                "status": "completed",
-                "risk_score": risk_score,
-                "result": refactor_result,
-                "started_at": started_at,
-                "ended_at": int(time.time()),
-                "input_mode": runbook.get("input_type")
-            })
-
-        return refactor_result
-    except Exception as e:
-        print("❌ FULL ERROR:", traceback.format_exc())
-        await dbserver.insert_runbook_result({
-            "execution_id": execution_id,
-            "runbook_id": runbook_id,
-            "user_id": user_id,
-            "status": "completed",
-            "risk_score": risk_score,
-            "result": refactor_result,
-            "started_at": started_at,
-            "ended_at": int(time.time()),
-            "input_mode": runbook.get("input_type")
-        })
-        
 
 @runbook_bp.route("/runbook/create", methods=["POST"])
 async def create_runbook():
 
-    data = request.form.to_dict()
-    user_id = data.get("user_id")
+    if request.is_json:
+        data = request.get_json()
+    else:
+        data = request.form.to_dict()
 
+    user_id = data.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+
+    # 🔥 SUBMIT BACKGROUND JOB
+    job_id = await JobManager.submit_job(execute_runbook_create, data)
+
+    return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+
+
+@runbook_bp.route("/runbook/status/<job_id>", methods=["GET"])
+async def get_job_status(job_id):
     try:
-        
-        runbook_data = {
-            "runbook_id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "name": data.get("name"),
-            "description": data.get("description"),
-            "runbook_type": data.get("runbook_type"),
-            "schedule": data.get("schedule"),  # cron expression
-            "input_type": data.get("input_type"),
-            "playbook_id": data.get("playbook_id"),
-            "api_endpoint": data.get("endpoint_id"),
-            "log_source": data.get("log_source"),
-            "files": data.get("files", []),
-            "links": data.get("links", []),
-            "data_sources": data.get("data_sources", []),
-            "reference_sources": data.get("reference_sources", []),
-        }
-        file = request.files.get("log_file")
-        log_source = None
+        redis_service = RedisService()
 
-        # CASE 1: file upload
-        if file:
-            result = upload_file_object(file, data.get("user_id"))
+        job = await redis_service.get(f"job:{job_id}")
 
-            if result["status"] != "success":
-                return jsonify({"error": "File upload failed"}), 500
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
 
-            log_source = result["s3_key"]
-
-        # CASE 2: URL input
-        elif data.get("log_source"):
-            log_source = data.get("log_source")
-
-            # ✅ decide log_source safely
-
-        runbook_data["log_source"] = log_source
-        # print("result:",log_source)
-        # print("📦 RECEIVED FILE:", file.filename if file else None)
-        # print("FINAL LOG SOURCE:", runbook_data["log_source"])
-        dbserver = LanceDBServer()
-        result = await dbserver.insert_runbook(runbook_data)
-        runbook_data["app_id"] = data.get("app_id")
-        runbook_data["api_source_type"] = data.get("api_source_type")
-        schedule_runbook(runbook_data,)
-
-        return jsonify({"success": True, "runbook": result})
+        return jsonify(job), 200
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error":str(e),"trace": traceback.format_exc()}),500
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
-def upload_file_object(file, user_id):
+
+async def execute_modify_runbook(data):
     try:
-        temp_path = f"/tmp/{uuid.uuid4()}_{file.filename}"
 
-        # save file locally
-        file.save(temp_path)
+        conn = connect_to_rds
+        dbserver = LanceDBServer()
+        credits = Credits(conn)
 
-        # upload to S3
-        result = upload_any_file(
-            file_path=temp_path,
+        user_id = data.get("user_id")
+        runbook_id = data.get("runbook_id")
+        result_id = data.get("result_id")
+        analyze_input = data.get("analyze_input") or data.get("user_input")
+
+        runbook_data = await dbserver.get_runbook_by_id(user_id, runbook_id)
+        updates = {}
+        structure_file_data = None
+        if data.get("structure_file"):
+            structure_file_data = extract_file_payload(
+                data.get("structure_file"),
+                default_filename="structure_file",
+            )
+
+        data_sources_full = data.get("data_sources", {})
+        data_sources_db = extract_filenames(data_sources_full) or []
+        res = ""
+        user_structure_file = None
+        if structure_file_data:
+            filename = f"structure_file_{result_id}.json"
+            config_local_path = os.path.join("/tmp", filename)
+
+            with open(config_local_path, "w", encoding="utf-8") as f:
+                json.dump(structure_file_data, f, ensure_ascii=False, indent=2)
+
+            res = upload_any_file(
+                file_path=config_local_path,
+                user_id=user_id,
+                type="structure_file",
+                file_name=filename,
+            )
+
+            user_structure_file = res.get("s3_key")
+
+        # updated_runbook = await dbserver.update_runbook(user_id,runbook_id,updates)
+        if isinstance(runbook_data, list):
+            runbook_data = runbook_data[0] if runbook_data else None
+
+        if isinstance(runbook_data, str):
+            runbook_data = json.loads(runbook_data)
+
+        runbook_data["analyze_input"] = analyze_input
+        if not runbook_data.get("data_sources_full"):
+            runbook_data["data_sources_full"] = reconstruct_sources(
+                runbook_data.get("data_sources", [])
+            )
+        if not runbook_data.get("reference_sources_full"):
+            runbook_data["reference_sources_full"] = reconstruct_sources(
+                runbook_data.get("reference_sources", [])
+            )
+
+        runbook_data["main_source"] = "knowledge"
+        runbook_data["reference_main_source"] = "knowledge"
+        structure_file = (
+            (runbook_data.get("files") or [])[0]
+            if isinstance(runbook_data.get("files"), list)
+            else []
+        )
+        print("structure_file: ", structure_file)
+        # runbook_data["data_sources_full"]["filenames"] += data_sources_full["filenames"]
+
+        return await run_runbook_execution_engine(
+            conn=conn,
+            credits=credits,
             user_id=user_id,
-            type="runbook"
+            runbook=runbook_data,
+            structure_file=user_structure_file
+            or structure_file,  # updated_runbook["files"][0] if updated_runbook.get("files") else None,
+            result_id=result_id,
         )
 
-        # cleanup
-        os.remove(temp_path)
-
-        return result
-
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print("error", e)
+
+
+@runbook_bp.route("/runbook/modify", methods=["POST"])
+async def modify_runbook():
+    if request.is_json:
+        data = request.get_json()
+    else:
+        data = request.form.to_dict()
+
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # 🔥 SUBMIT BACKGROUND JOB
+    job_id = await JobManager.submit_job(execute_modify_runbook, data)
+
+    return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+
+
 @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
 async def get_runbook_results(runbook_id):
 
@@ -1103,14 +353,52 @@ async def get_runbook_results(runbook_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    dbserver = LanceDBServer()
-
     results = await dbserver.get_runbook_results(user_id, runbook_id)
+    runbook_details = await dbserver.get_runbook_by_id(user_id, runbook_id)
+    filtered_results = [
+        r
+        for r in results
+        if r.get("status") == "completed" and (r.get("risk_score")) != 0
+    ]
+    # filtered_results = [r for r in results if r.get("status") == "completed"]
 
-    return jsonify({
-        "success": True,
-        "results": results
-    })
+    return (
+        jsonify(
+            {"success": True, "results": filtered_results, "runbook": runbook_details}
+        ),
+        200,
+    )
+
+
+@runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
+async def redult_list(user_id):
+    try:
+        result = await dbserver.get_runbook_results_by_user_id(user_id)
+        runbooks = await dbserver.get_all_runbooks(user_id)
+        runbook_ids = {rb.get("runbook_id") for rb in runbooks if rb.get("runbook_id")}
+        filtered_results = [
+            r
+            for r in result
+            if r.get("status") == "completed"
+            and (r.get("risk_score") or 0) != 0
+            and r.get("runbook_id") in runbook_ids
+        ]
+        # filtered_results = [
+        #     r
+        #     for r in result
+        #     if r.get("status") == "completed" and r.get("runbook_id") in runbook_ids
+        # ]
+
+        return (
+            jsonify(
+                {"success": True, "results": filtered_results, "runbook": runbooks}
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @runbook_bp.route("/runbooks/list/<user_id>", methods=["GET"])
 async def list_runbooks(user_id):
@@ -1118,7 +406,7 @@ async def list_runbooks(user_id):
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
-    dbserver = LanceDBServer()
+    # dbserver = LanceDBServer()
     runbooks = await dbserver.get_all_runbooks(user_id)
 
     return jsonify({"success": True, "runbooks": runbooks})
@@ -1130,10 +418,20 @@ async def get_runbook(runbook_id):
     user_id = session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-    dbserver = LanceDBServer()
+    # dbserver = LanceDBServer()
     runbook = await dbserver.get_runbook_by_id(user_id, runbook_id)
 
     return jsonify({"success": True, "runbook": runbook})
+
+
+@runbook_bp.route("/allrunbook/<user_id>", methods=["GET"])
+async def get_all_runbook(user_id):
+    try:
+        # dbserver = LanceDBServer()
+        result = await dbserver.get_user_runbook(user_id)
+        return jsonify({"result": result, "all": len(result)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @runbook_bp.route("/runbook/delete/<runbook_id>", methods=["DELETE"])
@@ -1142,12 +440,47 @@ async def delete_runbook(runbook_id):
         user_id = session.get("user_id")
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
-        dbserver = LanceDBServer()
+        # dbserver = LanceDBServer()
         await dbserver.delete_runbook(user_id, runbook_id)
+        await dbserver.delete_runbook_result(user_id, runbook_id)
 
-        return jsonify({"success": True}),200
+        return jsonify({"success": True}), 200
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/runbook/delete_all", methods=["POST"])
+async def delete_all():
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+        runbook_id = data.get("runbook_id", [])
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+        # dbserver = LanceDBServer()
+        await dbserver.delete_all_runbook(user_id, runbook_id)
+
+        return jsonify({"success": True, "deleted_ids": len(runbook_id)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/runbook/delete_result", methods=["DELETE"])
+async def delte_result():
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+        runbook_id = data.get("runbook_id")
+        result_id = data.get("result_id")
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        await dbserver.delete_runbook_result_by_id(user_id, runbook_id, result_id)
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @runbook_bp.route("/runbook/update/<runbook_id>", methods=["POST"])
 async def update_runbook_api(runbook_id):
@@ -1159,173 +492,345 @@ async def update_runbook_api(runbook_id):
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        dbserver = LanceDBServer()
-
         # Remove protected fields
-        updates = {k: v for k, v in data.items() if k not in ["runbook_id", "user_id"]}
+        updates = {
+            k: v
+            for k, v in data.items()
+            if k
+            not in [
+                "runbook_id",
+                "user_id",
+            ]
+        }
 
         updated = await dbserver.update_runbook(user_id, runbook_id, updates)
 
-        return jsonify({
-            "success": True,
-            "runbook": updated
-        }), 200
+        return jsonify({"success": True, "runbook": updated}), 200
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-async def _execute_global_endpoint_internal(
-    user_id,
-    app_id,
-    endpoint_id,
-    runtime_params=None,
-    context=None,
-):
-    """
-    Internal executor for GLOBAL app endpoints.
 
-    runtime_params:
-        {
-            "base_url": "",
-            "path": "",
-            "method": "GET",
-            "headers": {},
-            "query_params": {},
-            "path_params": {},
-            "body": {},
-            "timeout": 30,
-            "config": {}   # auth override
-        }
-    """
+@runbook_bp.route("/runbook/results_delete/<runbook_id>", methods=["DELETE"])
+async def delete_runbook_results(runbook_id):
+    try:
+        user_id = session.get("user_id")
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+        # dbserver = LanceDBServer()
+        await dbserver.delete_runbook_result(user_id, runbook_id)
 
-    runtime_params = runtime_params or {}
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    conn = connect_to_rds()
-    cur = conn.cursor(pymysql.cursors.DictCursor)
+
+@runbook_bp.route("/create_playbook_runbook", methods=["POST"])
+async def create_playbook_runbook():
+    # from utils.celery_base import create_playbook_runbook_task
+
+    data = request.get_json()
+    user_id = data.get("user_id")
+    playbook_id = data.get("playbook_id")
+    runbook_id = data.get("runbook_id")
+
+    if not user_id or not playbook_id:
+        return jsonify({"error": "Missing user_id or playbook_id"}), 400
+    try:
+
+        # create_playbook_runbook_task.delay(user_id, playbook_id)
+        result = await trigger_runbook_from_playbook(
+            playbook_id=playbook_id, user_id=user_id, runbook_id=runbook_id
+        )
+
+        return jsonify({"status": result}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/runbook/check_playbook/<playbook_id>", methods=["GET"])
+async def check_playbook_runbook(playbook_id):
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        # ----------------------------------
-        # 1️⃣ Validate endpoint exists
-        # ----------------------------------
-        cur.execute(
-            """
-            SELECT *
-            FROM global_app_endpoints
-            WHERE id = %s AND app_id = %s
-            """,
-            (endpoint_id, app_id),
-        )
-        endpoint = cur.fetchone()
+        result = await dbserver.get_runbook_by_playbookid(user_id, playbook_id)
+        print(result)
+        if not result:
+            return jsonify({"status": False, "message": "No runbook is present"}), 400
+        return jsonify({"status": True, "result": result}), 200
 
-        if not endpoint:
-            raise ValueError("Endpoint not found")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        # ----------------------------------
-        # 2️⃣ Check installed app
-        # ----------------------------------
-        cur.execute(
-            """
-            SELECT *
-            FROM external_apps
-            WHERE user_id = %s
-              AND source_global_app_id = %s
-              AND status = "active"
-            """,
-            (user_id, app_id),
-        )
-        installed_app = cur.fetchone()
 
-        # ----------------------------------
-        # 3️⃣ Extract runtime input
-        # ----------------------------------
-        frontend_base_url = runtime_params.get("base_url")
-        path = runtime_params.get("path") or endpoint.get("path")
-        method = runtime_params.get("method") or endpoint.get("method", "GET")
+def extract_filenames(source):
+    if not source:
+        return []
 
-        frontend_headers = runtime_params.get("headers", {})
-        query_params = runtime_params.get("query_params", {})
-        path_params = runtime_params.get("path_params", {})
-        request_body = runtime_params.get("body", {})
-        timeout = runtime_params.get("timeout", 30)
-        frontend_auth = runtime_params.get("config", {})
+    # Case 1: dict with filenames
+    if isinstance(source, dict):
+        files = source.get("filenames", [])
 
-        if not path:
-            raise ValueError("path is required")
+        result = []
+        for f in files:
+            if not isinstance(f, dict):
+                continue
 
-        # ----------------------------------
-        # 4️⃣ Resolve base URL
-        # ----------------------------------
-        if installed_app:
-            base_url = installed_app.get("base_url") or frontend_base_url
-        else:
-            base_url = frontend_base_url
+            ftype = f.get("type")
 
-        if not base_url:
-            raise ValueError("base_url required")
+            if ftype == "scrape" and f.get("url"):
+                result.append(f"scrape:{f.get('url')}")
 
-        # ----------------------------------
-        # 5️⃣ Merge headers
-        # ----------------------------------
-        final_headers = {}
-
-        if installed_app and installed_app.get("headers"):
-            try:
-                final_headers.update(json.loads(installed_app.get("headers") or "{}"))
-            except Exception:
-                pass
-
-        final_headers.update(frontend_headers or {})
-
-        # ----------------------------------
-        # 6️⃣ Merge auth
-        # ----------------------------------
-        if installed_app and installed_app.get("auth_config"):
-            try:
-                final_auth = json.loads(installed_app.get("auth_config") or "{}")
-            except Exception:
-                final_auth = {}
-        else:
-            final_auth = {}
-
-        if frontend_auth:
-            final_auth.update(frontend_auth)
-
-        # ----------------------------------
-        # 7️⃣ Build final URL
-        # ----------------------------------
-        final_url = build_full_url(
-            base_url=base_url,
-            path=path,
-            path_params=path_params,
-        )
-
-        # ----------------------------------
-        # 8️⃣ Build config
-        # ----------------------------------
-        config = {
-            "auth": final_auth,
-            "request": {
-                "url": final_url,
-                "method": method,
-                "headers": final_headers,
-                "query_params": query_params,
-                "body": request_body,
-            },
-            "timeout": timeout,
-        }
-
-        # ----------------------------------
-        # 9️⃣ Execute
-        # ----------------------------------
-        connector = APIConnector(userid=user_id, config=config, context=context)
-        result = connector.execute()
+            elif f.get("filename"):
+                result.append(f"{ftype}:{f.get('filename')}")
 
         return result
 
-    finally:
-        cur.close()
-        conn.close()
+    # Case 2: already list[str]
+    if isinstance(source, list):
+        return [str(x) for x in source if x]
+
+    return []
+
+
+# ai changesin blocks of report
+
+
+@runbook_bp.route("/result/<result_id>", methods=["GET"])
+async def result_by_id(result_id):
+    try:
+        user_id = session.get("user_id")
+        res = await dbserver.runbook_get_result(user_id, result_id)
+        return jsonify({"result": res}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/schedule_runbook", methods=["POST"])
+async def schedule_runbook():
+    import json
+    from datetime import datetime
+
+    body = request.json or {}
+
+    user_id = body["user_id"]
+    runbook_id = body["runbook_id"]
+    scheduled = body.get("scheduledActivation", {})
+
+    schedule_type = scheduled.get("frequency")
+    timezone = scheduled.get("timezone", "UTC")
+
+    if not schedule_type:
+        return jsonify({"error": "Missing frequency"}), 400
+
+    # ----------------------------------------
+    # Normalize schedule data
+    # ----------------------------------------
+    data = {
+        "startTime": scheduled.get("startTime"),
+        "weekday": scheduled.get("weekday"),
+        "datetime": scheduled.get("datetime"),
+    }
+
+    # ========================================
+    # STEP 1: SAVE SCHEDULE
+    # ========================================
+    result = await save_runbook_schedule(
+        user_id=user_id,
+        runbook_id=runbook_id,
+        schedule_type=schedule_type,
+        timezone=timezone,
+        data=data,
+    )
+
+    # ========================================
+    # STEP 2: ACTIVATE SCHEDULE (CELERY)
+    # ========================================
+    # result = await activate_runbook_schedule(user_id, runbook_id)
+
+    return jsonify(
+        {
+            "status": "success",
+            "runbook_id": runbook_id,
+            "schedule_type": schedule_type,
+            "scheduler_result": result,
+        }
+    )
+
+
+@runbook_bp.route("/runbook/structure_extract", methods=["POST"])
+async def structure_extract():
+    try:
+        data = request.get_json()
+
+        user_id = data.get("user_id")
+        analyze_input = data.get("analyze_input")
+        structure_file = data.get("structure_file")
+        default_structure = data.get("default_structure")
+
+        if not default_structure and not structure_file:
+            with open("runbook/default_temp.json", "r", encoding="utf-8") as file:
+                default_structure = json.load(file)
+
+        if structure_file:
+            structure_file_payload = await structure_payload_generation(
+                user_id=user_id,
+                analyze_input=analyze_input or "",
+                structure_file=structure_file,
+            )
+        else:
+            structure_file_payload = await Modify_default_structure(
+                user_id=user_id,
+                analyze_input=analyze_input or "",
+                default_structure=default_structure,
+            )
+        return (
+            jsonify({"success": True, "data": structure_file_payload}),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/runbook/structure_extract_modify", methods=["POST"])
+async def structure_extract_modify():
+    try:
+        data = request.get_json()
+
+        user_id = data.get("user_id")
+        runbook_id = data.get("runbook_id")
+        default_structure = data.get("default_structure")
+
+        updates = {
+            "structure_theme": default_structure  
+        }
+
+        updated_row = await dbserver.update_runbook(user_id=user_id,
+                                               runbook_id=runbook_id,
+                                               updates=updates)
+
+        return (
+            jsonify({"success": True, "data": updated_row}),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/test/check/runbooks", methods=["GET"])
+async def check_runbook_imple():
+    from utils.fireworkzz import get_think_fire_response2_og
+    from utils.normal import load_yaml_file
+    from cust_helpers import pathconfig
+    from radar.radar_helpers import _safe_json_parse
+
+    RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
+    print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
+    risk_prompt_template = RADAR_TEMPLATE.get("nist_risk_score_prompt")
+    user_id = "109161866299858012556"
+    result_id = "result_ee166f"
+    credits = Credits()
+    file_data = [
+        {
+            "filename": "Risk-Assessment-Report-Template.pdf",
+            "type": ".pdf",
+            "content": "I\nAPPENDIX C: RISK ASSESSMENT REPORT TEMPLATE\nRISK ASSESSMENT REPORT (RAR)\n<ORGANIZATION> <SYSTEM NAME> <DATE>\nRecord of Changes:\nVersion\nDate\nSections Modified\nDescription of Changes\n1.0\nDD MM YY\nInitial RAR\nSystem Description\nThe <System Name/Unique Identifier> consists of <System Description> processing <Classification Level> data. The risk categorization for this system is assessed as <e.g., Moderate-Low-Low>.\n< System Name/Unique Identifier> is located <insert physical environment details>. The system <list all system connections and inter-connections, or state “has no connections, (wired or wireless)>. This system is used for <system purpose/function>, in support of performance on the <list all program and/or contract information>. The system <provide any system-specific details, such as Mobility>.\nThe Information Owner is <insert POC information, including address and phone number>.\nThe Information System Security Manager (ISSM) is <insert Point of Contact (POC) information, including address and phone number>.\nThe Information System Security Officer (ISSO) is <insert POC information, including address and phone number>.\nScope\nThe scope of this risk assessment is focused on the system’s use of resources and controls to mitigate vulnerabilities exploitable by threat agents (internal and external) identified during the Risk Management Framework (RMF) control selection process, based on the system’s categorization.\nThis initial assessment will be a Tier 3 or “information system level” risk assessment. While not entirely comprehensive of all threats and vulnerabilities to the system, this assessment will include any known risks related to the incomplete or inadequate implementation of the National Institute of Standards and Technology (NIST) Special Publication (SP) 800-53 controls selected for this system. This document will be updated after certification testing to include any vulnerabilities or observations by the independent\nPage | 1\nI\nassessment team. Data collected during this assessment may be used to support higher level risk assessments at the mission/business or organization level.\n<Identify assumptions, constraints, timeframe. This section will include the following information:\nRange or scope of threats considered in the assessment\nSummary of tools/methods used to ensure NIST SP 800-53 compliance\nDetails regarding any instances of non-compliance\nRelevant operating conditions and physical security conditions\nTimeframe supported by the assessment (Example: security-relevant changes that are anticipated before the authorization, expiration of the existing authorization, etc.).>\nPurpose\n<Provide details on why this risk assessment is being conducted, including whether it is an initial or other subsequent assessment, and state the circumstances that prompted the assessment. Example: This initial risk assessment was conducted to document areas where the selection and implementation of RMF controls may have left residual risk. This will provide security control assessors and authorizing officials an upfront risk profile.>\nRisk Assessment Approach\nThis initial risk assessment was conducted using the guidelines outlined in the NIST SP 800-30, Guide for Conducting Risk Assessments. A <SELECT QUALITATIVE / QUANTITATIVE / SEMI-QUANTITATIVE> approach will be utilized for this assessment. Risk will be determined based on a threat event, the likelihood of that threat event occurring, known system vulnerabilities, mitigating factors, and consequences/impact to mission.\nThe following table is provided as a list of sample threat sources. Use this table to determine relevant threats to the system.\nTable 1: Sample Threat Sources (see NIST SP 800-30 for complete list)\nTYPE OF THREAT SOURCE\nDESCRIPTION\nADVERSARIAL - Individual (outsider, insider, trusted, privileged) - Group (ad-hoc or established) - Organization (competitor, supplier, partner,\ncustomer) - Nation state\nIndividuals, groups, organizations, or states that seek to exploit the organization’s dependence on cyber resources (e.g., information in electronic form, information and communications, and the communications and information-handling capabilities provided by those technologies.)\nPage | 2\nI\nTYPE OF THREAT SOURCE\nDESCRIPTION\nADVERSARIAL - Standard user - Privileged user/Administrator\nErroneous actions taken by individuals in the course of executing everyday responsibilities.\nSTRUCTURAL - IT Equipment (storage, processing, comm., display,\nsensor, controller)\nEnvironmental conditions\nFailures of equipment, environmental controls, or software due to aging, resource depletion, or other circumstances which exceed expected operating parameters.\nTemperature/humidity controls \uf0b7 Power supply\nSoftware\nOperating system \uf0b7 Networking \uf0b7 General-purpose application \uf0b7 Mission-specific application\nENVIRONMENTAL - Natural or man-made (fire, flood, earthquake, etc.) - Unusual natural event (e.g., sunspots) - Infrastructure failure/outage (electrical, telecomm)\nNatural disasters and failures of critical infrastructures on which the organization depends, but is outside the control of the organization. Can be characterized in terms of severity and duration.\nThe following tables from the NIST SP 800-30 were used to assign values to likelihood, impact, and risk:\nTable 2: Assessment Scale – Likelihood of Threat Event Initiation (Adversarial)\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery High\n96-100\n10\nAdversary is almost certain to initiate the threat event.\nHigh\n80-95\n8\nAdversary is highly likely to initiate the threat event.\nModerate\n21-79\n5\nAdversary is somewhat likely to initiate the threat event.\nLow\n5-20\n2\nAdversary is unlikely to initiate the threat event.\nVery Low\n0-4\n0\nAdversary is highly unlikely to initiate the threat event\nPage | 3\nI\nTable 3: Assessment Scale – Likelihood of Threat Event Occurrence (Non-adversarial)\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery High\n96-100\n10\nError, accident, or act of nature is almost certain to occur; or occurs more than 100 times per year.\nHigh\n80-95\n8\nError, accident, or act of nature is highly likely to occur; or occurs between 10-100 times per year.\nModerate\n21-79\n5\nError, accident, or act of nature is somewhat likely to occur; or occurs between 1-10 times per year.\nLow\n5-20\n2\nError, accident, or act of nature is unlikely to occur; or occurs less than once a year, but more than once every 10 years.\nVery Low\n0-4\n0\nError, accident, or act of nature is highly unlikely to occur; or occurs less than once every 10 years.\nTable 4: Assessment Scale – Impact of Threat Events\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery High\n96-100\n10\nThe threat event could be expected to have multiple severe or catastrophic adverse effects on organizational operations, organizational assets, individuals, other organizations, or the Nation.\nHigh\n80-95\n8\nThe threat event could be expected to have a severe or catastrophic adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation. A severe or catastrophic adverse effect means that, for example, the threat event might: (i) cause a severe degradation in or loss of mission capability to an extent and duration that the organization is not able to perform one or more of its primary functions; (ii) result in major damage to organizational assets; (iii) result in major financial loss; or (iv) result in severe or catastrophic harm to individuals involving loss of life or serious life threatening injuries.\nPage | 4\nI\nQualitative Values\nModerate\nLow\nVery Low\nQualitative Values\nVery High\nHigh\nModerate\nLow\nSemi-Quantitative Values\nDescription\n21-79\n5\nThe threat event could be expected to have a serious adverse effect on organizational operations, organizational assets, individuals other organizations, or the Nation. A serious adverse effect means that, for example, the threat event might: (i) cause a significant degradation in mission capability to an extent and duration that the organization is able to perform its primary functions, but the effectiveness of the functions is significantly reduced; (ii) result in significant damage to organizational assets; (iii) result in significant financial loss; or (iv) result in significant harm to individuals that does not involve loss of life or serious life threatening injuries.\n5-20\n2\nThe threat event could be expected to have a limited adverse effect on organizational operations, organizational assets, individuals other organizations, or the Nation. A limited adverse effect means that, for example, the threat event might: (i) cause a degradation in mission capability to an extent and duration that the organization is able to perform its primary functions, but the effectiveness of the functions is noticeably reduced; (ii) result in minor damage to organizational assets; (iii) result in minor financial loss; or (iv) result in minor harm to individuals.\n0-4\n0\nThe threat event could be expected to have a negligible adverse effect on organizational operations, organizational assets, individuals other organizations, or the Nation.\nTable 5: Assessment Scale – Level of Risk\nSemi-Quantitative Values\nDescription\n96-100\n10\nThreat event could be expected to have multiple severe or catastrophic adverse effects on organizational operations, organizational assets, individuals, other organizations, or the Nation.\n80-95\n8\nThreat event could be expected to have a severe or catastrophic adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\n21-79\n5\nThreat event could be expected to have a serious adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\n5-20\n2\nThreat event could be expected to have a limited adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\nPage | 5\nI\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery Low\n0-4\n0\nThreat event could be expected to have a negligible adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\nTable 6: Assessment Scale – Level of Risk (Combination of Likelihood and Impact)\nLikelihood (That Occurrence Results in Adverse Impact)\nVery Low\nLow\nLevel of Impact\nModerate\nHigh\nVery High\nVery High\nVery Low\nLow\nModerate\nHigh\nVery High\nHigh\nVery Low\nLow\nModerate\nHigh\nVery High\nModerate\nVery Low\nLow\nModerate\nModerate\nHigh\nLow\nVery Low\nLow\nLow\nLow\nModerate\nVery Low\nVery Low\nVery Low\nVery Low\nLow\nLow\nPage | 6\nI\nRisk Assessment Approach\nDetermine relevant threats to the system. List the risks to system in the Risk Assessment Results table below and detail the relevant mitigating factors and controls. Refer to NIST SP 800-30 for further guidance, examples, and suggestions.\nRisk Assessment Results\nThreat Event\nVulnerabilities / Predisposing Characteristics\nMitigating Factors\nSecurity Control(s)\nLikelihood (Tables 2 & 3)\nImpact (Table 4)\nRisk (Tables 5 & 6)\ne.g. Hurricane\nPower Outage\nBackup generators\nPE-12\nModerate\nLow\nLow\nLikelihood / Impact / Risk = Very High, High, Moderate, Low, or Very Low\n_____________________________\nSignature Government Information Owner\n_____________________________\nPrinted Name, Title, and Phone Number\nNote: Information Owner acknowledgment is only provided if necessary or required by the DCSA AO. (Examples: Legacy Operating Systems, Risk concerns raised based on the results of the RAR, deviations from the DCSA baseline, etc.)\nPage | 7",
+        }
+    ]
+    refactor_result = await dbserver.runbook_get_result(user_id, result_id)
+    risk_prompt = risk_prompt_template.replace(
+        "{{analysis_result}}", json.dumps(refactor_result)
+    ).replace("{{report_data}}", json.dumps(file_data) if file_data else "")
+
+    risk_llm_result = await get_think_fire_response2_og(
+        user_message=risk_prompt,
+        user_id=user_id,
+        credits=credits,
+        total_input_chars=len(risk_prompt),
+    )
+
+    # print("RISK RAW:", risk_llm_result)
+
+    risk_data = _safe_json_parse(risk_llm_result)
+
+    risk_score = risk_data.get("final_risk_score", 0)
+
+    return jsonify({"status": risk_data})
+
+
+@runbook_bp.route("/test/check_rst/runbooks", methods=["POST"])
+async def check_runbook_structure():
+    from utils.fireworkzz import get_think_fire_response2_og
+    from utils.normal import load_yaml_file
+    from cust_helpers import pathconfig
+    from radar.radar_helpers import _safe_json_parse, process_file_payloads
+
+    import json
+
+    # ✅ Get form-data instead of JSON
+    user_analyze_input = request.form.get("user_input")
+    user_file = request.files.get("userfile")  # file comes from form-data
+
+    RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
+    print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
+
+    credits = Credits()
+    structure_prompt = RADAR_TEMPLATE.get("structure_prompt_template")
+
+    user_id = "109161866299858012556"
+
+    structure_file_payload = []
+
+    # ✅ Process uploaded file
+    process_file_payloads(
+        user_id=user_id,
+        files=[user_file] if user_file else [],
+        inp_links=[],
+        extracted_payload=structure_file_payload,
+    )
+    print(structure_file_payload)
+
+    # ✅ Build prompt
+    structure_prompt = (
+        structure_prompt.replace(
+            "{{document_file_data}}", json.dumps(structure_file_payload)
+        )
+        .replace("{{file_links}}", "")
+        .replace(
+            "{{user_original_prompt_or_context}}",
+            user_analyze_input or "",
+        )
+        .replace("{{output_language}}", "English")
+    )
+
+    base_chars = len(structure_prompt)
+
+    # ✅ Call LLM
+    result = await get_think_fire_response2_og(
+        user_message=structure_prompt,
+        user_id=user_id,
+        credits=credits,
+        total_input_chars=base_chars,
+    )
+
+    structure_file_payloads = json.loads(result)
+    logger.info("✅ STRUCTURE GENERATED  %s", structure_file_payloads)
+
+    return jsonify({"status": structure_file_payloads})
+
+
+# @runbook_bp.route("/updateschema", methods=["POST"])
+# async def update_schema():
+#     try:
+#         data = request.get_json()
+#         user_id = data.get("user_id")
+#         dbserver = LanceDBServer()
+#         res = await dbserver.migrate_runbook_table(user_id=user_id)
+#         return jsonify({"message": res}), 200
+#     except Exception as e:
+#         return jsonify({"error": str(e)})
