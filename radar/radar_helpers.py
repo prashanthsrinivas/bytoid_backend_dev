@@ -195,6 +195,7 @@ def extract_files_content(files):
                 os.unlink(tmp_path)
             except Exception:
                 pass
+        
 
     return all_file_data
 
@@ -218,65 +219,119 @@ def build_file_data_payload(file_data):
 
 
 import base64
+import mimetypes
 from werkzeug.datastructures import FileStorage
 
 
-def extract_file_payload(file_item, default_filename: str):
+def extract_file_payload(file_item, default_filename: str = "file"):
     """
-    Normalizes file payload into JSON-safe format:
+    Normalize any file input into JSON-safe payload:
 
+    Returns:
     {
-        filename: str,
-        content_type: str,
-        data_base64: str
+        "filename": str,
+        "content_type": str,
+        "data_base64": str
     }
     """
 
     if not file_item:
         return None
 
-    # -------------------------
-    # Case A: multipart upload
-    # -------------------------
-    if isinstance(file_item, FileStorage):
+    try:
+        # =========================
+        # Case A: multipart upload
+        # =========================
+        if isinstance(file_item, FileStorage):
 
-        raw_bytes = file_item.read()
+            raw_bytes = file_item.read()
+            if not raw_bytes:
+                return None
 
+            filename = file_item.filename or default_filename
+            content_type = file_item.content_type or "application/octet-stream"
+
+            data_base64 = base64.b64encode(raw_bytes).decode("utf-8")
+
+        # =========================
+        # Case B: data URL (frontend)
+        # =========================
+        elif isinstance(file_item, str) and file_item.startswith("data:"):
+
+            header, b64data = file_item.split(",", 1)
+
+            content_type = header.split(";")[0].replace("data:", "")
+
+            # ✅ CLEAN base64 (important)
+            b64data = b64data.strip().replace("\n", "").replace("\r", "")
+
+            # ✅ Fix padding
+            missing_padding = len(b64data) % 4
+            if missing_padding:
+                b64data += "=" * (4 - missing_padding)
+
+            data_base64 = b64data
+
+            filename = default_filename
+
+        # =========================
+        # Case C: structured JSON
+        # =========================
+        elif isinstance(file_item, dict):
+
+            filename = (
+                file_item.get("filename") or file_item.get("name") or default_filename
+            )
+
+            content_type = (
+                file_item.get("content_type")
+                or file_item.get("type")
+                or "application/octet-stream"
+            )
+
+            if "data_base64" in file_item:
+                data_base64 = file_item["data_base64"]
+
+            elif "data" in file_item:
+                # assume raw bytes OR base64
+                if isinstance(file_item["data"], bytes):
+                    data_base64 = base64.b64encode(file_item["data"]).decode("utf-8")
+                else:
+                    data_base64 = file_item["data"]
+
+            else:
+                return None
+
+        else:
+            return None
+
+        # =========================
+        # ✅ Ensure extension exists
+        # =========================
+        name, ext = filename.rsplit(".", 1) if "." in filename else (filename, "")
+
+        if not ext:
+            guessed_ext = mimetypes.guess_extension(content_type)
+
+            # 🔥 special fix for docx (VERY IMPORTANT)
+            if not guessed_ext and "wordprocessingml" in content_type:
+                guessed_ext = ".docx"
+
+            if guessed_ext:
+                filename = filename + guessed_ext
+
+        # =========================
+        # ✅ Final output
+        # =========================
         return {
-            "filename": file_item.filename or default_filename,
-            "content_type": file_item.content_type,
-            "data_base64": base64.b64encode(raw_bytes).decode("utf-8"),
-        }
-
-    # -------------------------
-    # Case B: data URL
-    # -------------------------
-    if isinstance(file_item, str) and file_item.startswith("data:"):
-
-        header, b64data = file_item.split(",", 1)
-
-        content_type = header.split(";")[0].replace("data:", "")
-
-        return {
-            "filename": default_filename,
+            "filename": filename,
             "content_type": content_type,
-            "data_base64": b64data,  # already base64
+            "data_base64": data_base64,
         }
 
-    # -------------------------
-    # Case C: structured JSON
-    # -------------------------
-    if isinstance(file_item, dict) and "data" in file_item:
-
-        return {
-            "filename": file_item.get("filename")
-            or file_item.get("name")
-            or default_filename,
-            "content_type": file_item.get("content_type") or file_item.get("type"),
-            "data_base64": file_item["data"],  # assume base64
-        }
-
-    return None
+    except Exception as e:
+        print("❌ extract_file_payload error:", str(e))
+        return None
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}

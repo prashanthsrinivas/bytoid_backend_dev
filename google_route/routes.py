@@ -133,7 +133,6 @@ def oauth2callback(url, state):
             f.write(credentials.to_json())
 
         # Correct way to access the token
-        access_token = credentials.token
         userinfo_response = requests.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {credentials.token}"},
@@ -147,213 +146,249 @@ def oauth2callback(url, state):
             family_name = userinfo.get("family_name")
             user_id = userinfo.get("sub")
             phonenumber = userinfo.get("phoneNumber", "")
+            import time
 
-            conn = connect_to_rds()
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
+            MAX_RETRIES = 3
 
-            # Check if the user_id is present
-            cursor.execute(
-                "SELECT user_id,user_type FROM users WHERE email = %s", (email,)
-            )
-            user_exists = cursor.fetchone()
-            session["user_id"] = user_id
+            for attempt in range(MAX_RETRIES):
+                conn = None
+                try:
+                    conn = connect_to_rds()
+                    cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-            if not user_exists:
-                logger.info("creating a new user")
+                    conn.begin()  # ✅ explicitly start txn
 
-                cursor.execute(
-                    """INSERT INTO users (
-                        user_id, user_type, launch_id_fk, first_name, last_name, email, phone,
-                        client_id, client_secret, token, refresh_token, expiry,
-                        password_hash, profile_pic, location, social,
-                        created_in, updated_in, logged_in_at, logged_out_at,
-                        sociallinks, subscribe_id, roles_creation, permissions, special_access
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            NOW(), NOW(), NOW(), %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        user_id,
-                        "admin",
-                        "",
-                        given_name,
-                        family_name,
-                        email,
-                        phonenumber,
-                        credentials.client_id,
-                        credentials.client_secret,
-                        credentials.token,
-                        credentials.refresh_token,
-                        credentials.expiry,
-                        "",
-                        "",
-                        "",
-                        "google",
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        True,
-                    ),
-                )
-
-                # 🔹 Generate internal subscription id
-                internal_subscription_id = f"starter_{user_id}"
-
-                # 3️⃣ Fetch STARTER plan
-                cursor.execute(
-                    """
-                    SELECT plan_code, monthly_token_limit
-                    FROM plans
-                    WHERE plan_code IN ('STARTER','FREE')
-                    AND is_active = 1
-                    ORDER BY CASE plan_code
-                        WHEN 'STARTER' THEN 1
-                        WHEN 'FREE' THEN 2
-                    END
-                    LIMIT 1
-                    """
-                )
-
-                starter_plan = cursor.fetchone()
-
-                if not starter_plan:
-                    raise Exception("Neither STARTER nor FREE plan found")
-
-                # 4️⃣ Create STARTER subscription (internal)
-                cursor.execute(
-                    """
-                    INSERT INTO subscriptions (
-                        user_id,
-                        stripe_subscription_id,
-                        stripe_customer_id,
-                        stripe_price_id,
-                        status,
-                        current_period_start,
-                        current_period_end,
-                        created_at
-                    ) VALUES (
-                        %s,
-                        %s,
-                        NULL,
-                        NULL,
-                        'active',
-                        NOW(),
-                        NULL,
-                        NOW()
-                    )
-                    """,
-                    (
-                        user_id,
-                        internal_subscription_id,
-                    ),
-                )
-
-                # 5️⃣ Create credit bucket
-                cursor.execute(
-                    """
-                    INSERT INTO credit_buckets (
-                        bucket_id,
-                        user_id,
-                        source_type,
-                        source_ref,
-                        credits_total,
-                        credits_used,
-                        expires_at,
-                        is_expired,
-                        created_at
-                    ) VALUES (
-                        UUID(),
-                        %s,
-                        'SUBSCRIPTION',
-                        %s,
-                        %s,
-                        0,
-                        DATE_ADD(NOW(), INTERVAL 60 DAY),
-                        0,
-                        NOW()
-                    )
-                    """,
-                    (
-                        user_id,
-                        internal_subscription_id,
-                        starter_plan["monthly_token_limit"],
-                    ),
-                )
-                # Generate a subagent and launch ids for new user
-                make_api_key(user_id)
-
-            else:
-                logger.info("users update data")
-                prev_id = user_exists.get("user_id", "NODATA")
-                logger.info("prev-> %s", prev_id)
-                if user_id != prev_id:
+                    # 🔒 LOCK the row
                     cursor.execute(
-                        """
-                    UPDATE users 
-                    SET 
-                        user_id = %s,
-                        first_name = %s,
-                        last_name = %s,
-                        client_id = %s,
-                        client_secret = %s,
-                        token = %s,
-                        refresh_token = %s,
-                        expiry = %s,
-                        social=%s,
-                        updated_in = NOW(),
-                        logged_in_at = NOW(),
-                        logged_out_at = NOW()
-                    WHERE email = %s
-                    """,
-                        (
-                            user_id,
-                            given_name,
-                            family_name,
-                            credentials.client_id,
-                            credentials.client_secret,
-                            credentials.token,
-                            credentials.refresh_token,
-                            credentials.expiry,
-                            "google",
-                            email,
-                        ),
+                        "SELECT user_id,user_type FROM users WHERE email = %s FOR UPDATE",
+                        (email,),
                     )
-                else:
-                    cursor.execute(
-                        """
-                        UPDATE users 
-                        SET 
-                            first_name = %s,
-                            last_name = %s,
-                            client_id = %s,
-                            client_secret = %s,
-                            token = %s,
-                            refresh_token = %s,
-                            expiry = %s,
-                            social=%s,
-                            updated_in = NOW(),
-                            logged_in_at = NOW(),
-                            logged_out_at = NOW()
-                        WHERE email = %s
-                    """,
-                        (
-                            given_name,
-                            family_name,
-                            credentials.client_id,
-                            credentials.client_secret,
-                            credentials.token,
-                            credentials.refresh_token,
-                            credentials.expiry,
-                            "google",
-                            email,
-                        ),
-                    )
-                    ensure_starter_credits_for_user(user_id, conn)
-            conn.commit()
-            conn.close()
+                    user_exists = cursor.fetchone()
 
+                    session["user_id"] = user_id
+
+                    if not user_exists:
+                        logger.info("creating a new user")
+
+                        cursor.execute(
+                            """INSERT INTO users (
+                                user_id, user_type, launch_id_fk, first_name, last_name, email, phone,
+                                client_id, client_secret, token, refresh_token, expiry,
+                                password_hash, profile_pic, location, social,
+                                created_in, updated_in, logged_in_at, logged_out_at,
+                                sociallinks, subscribe_id, roles_creation, permissions, special_access
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                    NOW(), NOW(), NOW(), %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                user_id,
+                                "admin",
+                                "",
+                                given_name,
+                                family_name,
+                                email,
+                                phonenumber,
+                                credentials.client_id,
+                                credentials.client_secret,
+                                credentials.token,
+                                credentials.refresh_token,
+                                credentials.expiry,
+                                "",
+                                "",
+                                "",
+                                "google",
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                True,
+                            ),
+                        )
+
+                        # ⚡ COMMIT EARLY (IMPORTANT)
+                        conn.commit()
+
+                        # ---------- continue SAME LOGIC ----------
+                        conn.begin()
+
+                        internal_subscription_id = f"starter_{user_id}"
+
+                        cursor.execute(
+                            """
+                            SELECT plan_code, monthly_token_limit
+                            FROM plans
+                            WHERE plan_code IN ('STARTER','FREE')
+                            AND is_active = 1
+                            ORDER BY CASE plan_code
+                                WHEN 'STARTER' THEN 1
+                                WHEN 'FREE' THEN 2
+                            END
+                            LIMIT 1
+                        """
+                        )
+
+                        starter_plan = cursor.fetchone()
+
+                        if not starter_plan:
+                            raise Exception("Neither STARTER nor FREE plan found")
+
+                        cursor.execute(
+                            """
+                            INSERT INTO subscriptions (
+                                user_id,
+                                stripe_subscription_id,
+                                stripe_customer_id,
+                                stripe_price_id,
+                                status,
+                                current_period_start,
+                                current_period_end,
+                                created_at
+                            ) VALUES (
+                                %s,
+                                %s,
+                                NULL,
+                                NULL,
+                                'active',
+                                NOW(),
+                                NULL,
+                                NOW()
+                            )
+                        """,
+                            (user_id, internal_subscription_id),
+                        )
+
+                        cursor.execute(
+                            """
+                            INSERT INTO credit_buckets (
+                                bucket_id,
+                                user_id,
+                                source_type,
+                                source_ref,
+                                credits_total,
+                                credits_used,
+                                expires_at,
+                                is_expired,
+                                created_at
+                            ) VALUES (
+                                UUID(),
+                                %s,
+                                'SUBSCRIPTION',
+                                %s,
+                                %s,
+                                0,
+                                DATE_ADD(NOW(), INTERVAL 60 DAY),
+                                0,
+                                NOW()
+                            )
+                        """,
+                            (
+                                user_id,
+                                internal_subscription_id,
+                                starter_plan["monthly_token_limit"],
+                            ),
+                        )
+
+                        conn.commit()
+
+                        # keep your logic
+                        make_api_key(user_id)
+
+                    else:
+                        logger.info("users update data")
+                        prev_id = user_exists.get("user_id", "NODATA")
+
+                        if user_id != prev_id:
+                            cursor.execute(
+                                """
+                                UPDATE users 
+                                SET 
+                                    user_id = %s,
+                                    first_name = %s,
+                                    last_name = %s,
+                                    client_id = %s,
+                                    client_secret = %s,
+                                    token = %s,
+                                    refresh_token = %s,
+                                    expiry = %s,
+                                    social=%s,
+                                    updated_in = NOW(),
+                                    logged_in_at = NOW(),
+                                    logged_out_at = NOW()
+                                WHERE email = %s
+                            """,
+                                (
+                                    user_id,
+                                    given_name,
+                                    family_name,
+                                    credentials.client_id,
+                                    credentials.client_secret,
+                                    credentials.token,
+                                    credentials.refresh_token,
+                                    credentials.expiry,
+                                    "google",
+                                    email,
+                                ),
+                            )
+                        else:
+                            cursor.execute(
+                                """
+                                UPDATE users 
+                                SET 
+                                    first_name = %s,
+                                    last_name = %s,
+                                    client_id = %s,
+                                    client_secret = %s,
+                                    token = %s,
+                                    refresh_token = %s,
+                                    expiry = %s,
+                                    social=%s,
+                                    updated_in = NOW(),
+                                    logged_in_at = NOW(),
+                                    logged_out_at = NOW()
+                                WHERE email = %s
+                            """,
+                                (
+                                    given_name,
+                                    family_name,
+                                    credentials.client_id,
+                                    credentials.client_secret,
+                                    credentials.token,
+                                    credentials.refresh_token,
+                                    credentials.expiry,
+                                    "google",
+                                    email,
+                                ),
+                            )
+
+                            # ⚡ commit before external logic
+                            conn.commit()
+
+                            ensure_starter_credits_for_user(user_id, conn)
+
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+
+                    break  # ✅ success → exit retry loop
+
+                except pymysql.err.OperationalError as e:
+                    if conn:
+                        conn.rollback()
+                        conn.close()
+
+                    if e.args[0] == 1205 and attempt < MAX_RETRIES - 1:
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    else:
+                        raise
+
+                except Exception as e:
+                    if conn:
+                        conn.rollback()
+                        conn.close()
+                    raise
             # CHANGED: If mobile flow initiated /login and stored mobile_redirect_uri, redirect to Expo after DB commit
             mobile_redirect_uri = session.pop("mobile_redirect_uri", None)  # ADDED
             if mobile_redirect_uri:  # ADDED

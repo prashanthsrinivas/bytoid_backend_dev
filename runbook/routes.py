@@ -8,21 +8,16 @@ from playbook.background_worker import JobManager
 from playbook.helperzz import assign_runbook_playbook
 from runbook.helper import (
     Modify_default_structure,
-    activate_runbook_schedule,
     fetch_cloudwatch_logs,
-    get_playbook_instruction,
     parse_cloudwatch_url,
-    reconstruct_sources,
     run_runbook_execution_engine,
     save_runbook_schedule,
     schedule_runbook_log,
-    store_runbook_trigger_schedule,
     structure_payload_generation,
     trigger_runbook_from_playbook,
 )
 from db.lance_db_service import LanceDBServer
 from credits_route.route import Credits
-from db.rds_db import connect_to_rds
 
 from radar.radar_helpers import (
     extract_file_payload,
@@ -73,18 +68,21 @@ async def execute_runbook_create(data):
         "schedule": data.get("schedule"),
         "input_type": data.get("input_type"),
         "playbook_id": data.get("playbook_id"),
+        "playbook_source": data.get("playbook_source"),
+        "api_source": data.get("api_source"),
+        "log_file": data.get("log_file"),
         "structure_theme": json.dumps(default_view_template),
         "api_endpoint": data.get("endpoint_id"),
         "app_id": data.get("app_id"),
         "log_source": data.get("log_source"),
-        "files": json.dumps(data.get("files", {})),
+        "files": data.get("files") or {},
         "links": json.dumps(data.get("links", {})),
         "data_sources": data_sources_full,
         "reference_sources": reference_sources_full,
         "main_source": data.get("main_source"),
         "refernce_main_source": data.get("refernce_main_source"),
         "is_template": data.get("is_template"),
-        "created_at": int(time.time()),
+        "created_at": datetime.utcnow().isoformat(),
     }
     print("loc 1")
 
@@ -111,8 +109,8 @@ async def execute_runbook_create(data):
     runbook_data["log_source"] = log_source
 
     dbserver = LanceDBServer()
-    conn = connect_to_rds()
-    credits = Credits(db=conn)
+    # conn = connect_to_rds()
+    # credits = Credits(db=conn)
     print("loc 2")
 
     res = ""
@@ -132,10 +130,10 @@ async def execute_runbook_create(data):
 
         runbook_data["files"]["structure_file"] = res.get("s3_key")
         default_view_template = await structure_payload_generation(
-            analyze_input="", structure_file=structure_file_data
+            user_id=user_id, analyze_input="", structure_file=structure_file_data
         )
-        runbook_data["structure_theme"] = default_view_template
-
+        runbook_data["structure_theme"] = json.dumps(default_view_template)
+    runbook_data["files"] = json.dumps(runbook_data["files"])
     result = await dbserver.insert_runbook(runbook_data)
 
     # runbook_data["app_id"] = data.get("app_id")
@@ -170,14 +168,12 @@ async def execute_runbook_create(data):
             runbook_data["runtime_input"] = (
                 latest.get("response") or latest.get("text") or json.dumps(latest)
             )
-
+            files_obj = json.loads(runbook_data.get("files")) or {}
             await run_runbook_execution_engine(
-                conn=conn,
                 dbserver=dbserver,
-                credits=credits,
                 user_id=user_id,
                 runbook=runbook_data,
-                structure_file=runbook_data["files"].get("structure_file"),
+                structure_file=files_obj.get("structure_file"),
                 structure_file_payload=default_view_template,
             )
 
@@ -200,13 +196,13 @@ async def execute_runbook_create(data):
             #             ),
             #         )
         else:
+            files_obj = json.loads(runbook_data.get("files")) or {}
+
             await run_runbook_execution_engine(
-                conn=conn,
                 dbserver=dbserver,
-                credits=credits,
                 user_id=user_id,
                 runbook=runbook_data,
-                structure_file=(runbook_data["files"].get("structure_file"),),
+                structure_file=files_obj.get("structure_file"),
                 structure_file_payload=default_view_template,
             )
 
@@ -216,19 +212,23 @@ async def execute_runbook_create(data):
 @runbook_bp.route("/runbook/create", methods=["POST"])
 async def create_runbook():
 
-    if request.is_json:
-        data = request.get_json()
-    else:
-        data = request.form.to_dict()
+    try:
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
 
-    user_id = data.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+        user_id = data.get("user_id")
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
 
-    # 🔥 SUBMIT BACKGROUND JOB
-    job_id = await JobManager.submit_job(execute_runbook_create, data)
+        # 🔥 SUBMIT BACKGROUND JOB
+        job_id = await JobManager.submit_job(execute_runbook_create, data)
 
-    return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+
+    except Exception as e:
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
 @runbook_bp.route("/runbook/status/<job_id>", methods=["GET"])
@@ -248,10 +248,7 @@ async def get_job_status(job_id):
 
 async def execute_modify_runbook(data):
     try:
-
-        conn = connect_to_rds
         dbserver = LanceDBServer()
-        credits = Credits(conn)
 
         user_id = data.get("user_id")
         runbook_id = data.get("runbook_id")
@@ -259,35 +256,7 @@ async def execute_modify_runbook(data):
         analyze_input = data.get("analyze_input") or data.get("user_input")
 
         runbook_data = await dbserver.get_runbook_by_id(user_id, runbook_id)
-        updates = {}
-        structure_file_data = None
-        if data.get("structure_file"):
-            structure_file_data = extract_file_payload(
-                data.get("structure_file"),
-                default_filename="structure_file",
-            )
 
-        data_sources_full = data.get("data_sources", {})
-        data_sources_db = extract_filenames(data_sources_full) or []
-        res = ""
-        user_structure_file = None
-        if structure_file_data:
-            filename = f"structure_file_{result_id}.json"
-            config_local_path = os.path.join("/tmp", filename)
-
-            with open(config_local_path, "w", encoding="utf-8") as f:
-                json.dump(structure_file_data, f, ensure_ascii=False, indent=2)
-
-            res = upload_any_file(
-                file_path=config_local_path,
-                user_id=user_id,
-                type="structure_file",
-                file_name=filename,
-            )
-
-            user_structure_file = res.get("s3_key")
-
-        # updated_runbook = await dbserver.update_runbook(user_id,runbook_id,updates)
         if isinstance(runbook_data, list):
             runbook_data = runbook_data[0] if runbook_data else None
 
@@ -295,33 +264,50 @@ async def execute_modify_runbook(data):
             runbook_data = json.loads(runbook_data)
 
         runbook_data["analyze_input"] = analyze_input
-        if not runbook_data.get("data_sources_full"):
-            runbook_data["data_sources_full"] = reconstruct_sources(
-                runbook_data.get("data_sources", [])
-            )
-        if not runbook_data.get("reference_sources_full"):
-            runbook_data["reference_sources_full"] = reconstruct_sources(
-                runbook_data.get("reference_sources", [])
+
+        # -----------------------------
+        # STRUCTURE FILE HANDLING
+        # -----------------------------
+        structure_file = data.get("structure_file")
+        structure_file_payload = None
+
+        if structure_file:
+            structure_file_payload = extract_file_payload(
+                structure_file, default_filename="structure_file"
             )
 
-        runbook_data["main_source"] = "knowledge"
-        runbook_data["reference_main_source"] = "knowledge"
-        structure_file = (
-            (runbook_data.get("files") or [])[0]
-            if isinstance(runbook_data.get("files"), list)
-            else []
-        )
-        print("structure_file: ", structure_file)
-        # runbook_data["data_sources_full"]["filenames"] += data_sources_full["filenames"]
+            filename = f"structure_file_{result_id}.json"
+            path = os.path.join("/tmp", filename)
+
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(structure_file_payload, f, indent=2)
+
+            upload_res = upload_any_file(
+                file_path=path,
+                user_id=user_id,
+                type="structure_file",
+                file_name=filename,
+            )
+
+            structure_file = upload_res.get("s3_key")
+
+            structure_file_payload = await structure_payload_generation(
+                user_id=user_id,
+                analyze_input=analyze_input,
+                structure_file=structure_file_payload,
+            )
+        else:
+            files_obj = json.loads(runbook_data.get("files") or "{}")
+            structure_file = files_obj.get("structure_file")
 
         return await run_runbook_execution_engine(
-            conn=conn,
-            credits=credits,
             user_id=user_id,
             runbook=runbook_data,
-            structure_file=user_structure_file
-            or structure_file,  # updated_runbook["files"][0] if updated_runbook.get("files") else None,
+            structure_file=structure_file,
             result_id=result_id,
+            structure_file_payload=structure_file_payload
+            or runbook_data.get("structure_theme"),
+            is_prev_needed=True,
         )
 
     except Exception as e:
@@ -348,7 +334,7 @@ async def modify_runbook():
 @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
 async def get_runbook_results(runbook_id):
 
-    user_id = session.get("user_id")
+    user_id = session.get("user_id") or request.args.get("user_id")
 
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
@@ -661,39 +647,60 @@ async def schedule_runbook():
     )
 
 
-@runbook_bp.route("/runbook/structure_extract", methods=["POST"])
-async def structure_extract():
+async def execute_structure_extract(data):
     try:
-        data = request.get_json()
-
         user_id = data.get("user_id")
         analyze_input = data.get("analyze_input")
         structure_file = data.get("structure_file")
         default_structure = data.get("default_structure")
 
+        # ✅ fallback default structure
         if not default_structure and not structure_file:
             with open("runbook/default_temp.json", "r", encoding="utf-8") as file:
                 default_structure = json.load(file)
 
+        # ✅ process structure
         if structure_file:
+            structure_file_data = extract_file_payload(
+                structure_file,
+                default_filename="structure_file",
+            )
+
             structure_file_payload = await structure_payload_generation(
                 user_id=user_id,
                 analyze_input=analyze_input or "",
-                structure_file=structure_file,
+                structure_file=structure_file_data,
             )
+            print(structure_file_payload)
         else:
             structure_file_payload = await Modify_default_structure(
                 user_id=user_id,
                 analyze_input=analyze_input or "",
                 default_structure=default_structure,
             )
-        return (
-            jsonify({"success": True, "data": structure_file_payload}),
-            200,
-        )
+
+        return {"success": True, "data": structure_file_payload}
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return {"success": False, "error": str(e), "trace": traceback.format_exc()}
+
+
+@runbook_bp.route("/runbook/structure_extract", methods=["POST"])
+async def structure_extract():
+
+    if request.is_json:
+        data = request.get_json()
+    else:
+        data = request.form.to_dict()
+
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # 🚀 Submit as background job
+    job_id = await JobManager.submit_job(execute_structure_extract, data)
+
+    return jsonify({"success": True, "job_id": job_id, "status": "queued"})
 
 
 @runbook_bp.route("/runbook/structure_extract_modify", methods=["POST"])
@@ -705,13 +712,11 @@ async def structure_extract_modify():
         runbook_id = data.get("runbook_id")
         default_structure = data.get("default_structure")
 
-        updates = {
-            "structure_theme": default_structure  
-        }
+        updates = {"structure_theme": json.dumps(default_structure)}
 
-        updated_row = await dbserver.update_runbook(user_id=user_id,
-                                               runbook_id=runbook_id,
-                                               updates=updates)
+        updated_row = await dbserver.update_runbook(
+            user_id=user_id, runbook_id=runbook_id, updates=updates
+        )
 
         return (
             jsonify({"success": True, "data": updated_row}),
@@ -834,3 +839,24 @@ async def check_runbook_structure():
 #         return jsonify({"message": res}), 200
 #     except Exception as e:
 #         return jsonify({"error": str(e)})
+# @runbook_bp.route("/getlatestresponse",methods=["POST"])
+# async def get_latest_response():
+#      data = request.get_json()
+#      user_id = data.get("user_id")
+#      runbook_id = data.get("runbook_id")
+#      result_id = data.get("result_id")
+#      val = await dbserver.get_latest_runbook_result(
+#                 user_id=user_id, runbook_id=runbook_id, result_id=result_id
+#             )
+
+
+#      last_runbook_response = json.dumps(val.get("result"))
+#      output_word_count = None
+#      if not output_word_count:
+#                     output_word_count = (
+#                         val.get("estimated_word_count")
+#                         or val.get("document_meta", {}).get("estimated_word_count")
+#                         or 800  # fallback default
+#                     )
+
+#      return jsonify({"response": last_runbook_response,"wordcount":output_word_count})

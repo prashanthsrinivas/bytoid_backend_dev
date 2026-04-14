@@ -2392,7 +2392,7 @@ def autocheckstatusupdate():
 
 
 @playbook_bp.route("/workflow/conversation", methods=["POST"])
-def workflow_conversation():
+async def workflow_conversation():
 
     data = request.json
 
@@ -2422,10 +2422,7 @@ def workflow_conversation():
             credits=credits,
         ) as runner:
 
-            result = asyncio.run(
-                runner.make_workflow_conversation(user_message=user_message)
-            )
-
+            result = await runner.make_workflow_conversation(user_message=user_message)
             return jsonify(result)
 
     except Exception as e:

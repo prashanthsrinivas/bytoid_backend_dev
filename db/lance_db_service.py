@@ -2981,31 +2981,33 @@ class LanceDBServer:
     # runbook schema
     async def _create_runbook_schema(self):
 
-       return pa.schema([
-            pa.field("runbook_id", pa.string()),
-            pa.field("user_id", pa.string()),
-            pa.field("name", pa.string()),
-            pa.field("description", pa.string()),
-            pa.field("runbook_type", pa.string()),
-            pa.field("schedule", pa.string()),
-            pa.field("input_type", pa.string()),
-            pa.field("playbook_id", pa.string()),
-            pa.field("api_endpoint", pa.string()),
-            pa.field("log_source", pa.string()),
-            pa.field("files", pa.string()),
-            pa.field("links", pa.string()),
-            pa.field("data_sources", pa.string()),
-            pa.field("reference_sources", pa.string()),
-            pa.field("app_id", pa.string()),
-            pa.field("is_template", pa.string()),
-            pa.field("structure_theme", pa.string()),
-            pa.field("playbook_source", pa.string()),
-            pa.field("api_source", pa.string()),
-            pa.field("log_file", pa.string()),
-            pa.field("main_source", pa.string()),
-            pa.field("reference_main_source",pa.string()),
-            pa.field("created_at", pa.timestamp("us")),
-        ])
+        return pa.schema(
+            [
+                pa.field("runbook_id", pa.string()),
+                pa.field("user_id", pa.string()),
+                pa.field("name", pa.string()),
+                pa.field("description", pa.string()),
+                pa.field("runbook_type", pa.string()),
+                pa.field("schedule", pa.string()),
+                pa.field("input_type", pa.string()),
+                pa.field("playbook_id", pa.string()),
+                pa.field("api_endpoint", pa.string()),
+                pa.field("log_source", pa.string()),
+                pa.field("files", pa.string()),
+                pa.field("links", pa.string()),
+                pa.field("data_sources", pa.string()),
+                pa.field("reference_sources", pa.string()),
+                pa.field("app_id", pa.string()),
+                pa.field("is_template", pa.string()),
+                pa.field("structure_theme", pa.string()),
+                pa.field("playbook_source", pa.string()),
+                pa.field("api_source", pa.string()),
+                pa.field("log_file", pa.string()),
+                pa.field("main_source", pa.string()),
+                pa.field("reference_main_source", pa.string()),
+                pa.field("created_at", pa.timestamp("us")),
+            ]
+        )
 
     async def _open_or_create_runbook_table(self, user_id: str):
 
@@ -3037,24 +3039,24 @@ class LanceDBServer:
             "name": data["name"],
             "description": data.get("description", ""),
             "runbook_type": data.get("runbook_type"),
-            "schedule": data.get("schedule",{}),
+            "schedule": data.get("schedule", {}),
             "input_type": data.get("input_type"),
             "playbook_id": data.get("playbook_id", ""),
             "api_endpoint": data.get("api_endpoint", ""),
-            "app_id":data.get("app_id",""),
+            "app_id": data.get("app_id", ""),
             "log_source": data.get("log_source", ""),
             "files": data.get("files", {}),
             "links": data.get("links", {}),
             "data_sources": data.get("data_sources", {}),
             "reference_sources": data.get("reference_sources", {}),
-            "is_template":data.get("is_template",""),
-            "structure_theme":data.get("structure_theme",{}),
-            "playbook_source":data.get("playbook_source",""),
-            "api_source":data.get("api_source",""),
-            "log_file": data.get("log_file",""),
-            "main_source":data.get("main_source"),
-            "reference_main_source":data.get("reference_main_source"),
-            "created_at": datetime.utcnow(),
+            "is_template": data.get("is_template", ""),
+            "structure_theme": data.get("structure_theme", {}),
+            "playbook_source": data.get("playbook_source", ""),
+            "api_source": data.get("api_source", ""),
+            "log_file": data.get("log_file", ""),
+            "main_source": data.get("main_source"),
+            "reference_main_source": data.get("reference_main_source"),
+            "created_at": data.get("created_at") or datetime.utcnow().isoformat(),
         }
 
         # print("ROW KEYS:", row.keys())
@@ -3123,6 +3125,7 @@ class LanceDBServer:
             return table.search().where(f'runbook_id == "{runbook_id}"').to_list()
 
         records = await asyncio.to_thread(_query)
+        print("records ", records)
         existing = records[0] if records else None
 
         if not existing:
@@ -3132,7 +3135,6 @@ class LanceDBServer:
         updated_row = {
             **existing,
             **updates,
-            # "updated_at": datetime.utcnow().isoformat()
         }
 
         # Step 3: Delete old record
@@ -3353,13 +3355,18 @@ class LanceDBServer:
 
         table = await self._open_or_create_runbook_results_table(user_id)
 
-        filter_expr = f"runbook_id == '{runbook_id}' AND status == 'complete' "
-
-        if result_id:
-            filter_expr = f"runbook_id == '{runbook_id}' AND status == 'complete' and result_id = '{result_id}'"
-
         def _query():
-            return table.search().where(filter_expr).to_list()
+            data = table.search().to_list()
+
+            filtered = [
+                x
+                for x in data
+                if x.get("runbook_id") == runbook_id
+                and x.get("status") == "completed"
+                and (not result_id or x.get("result_id") == result_id)
+            ]
+
+            return filtered
 
         results = await asyncio.to_thread(_query)
         if not results:
@@ -3445,17 +3452,13 @@ class LanceDBServer:
 
         await asyncio.to_thread(_update)
 
-    async def update_runbook_schedule(self, user_id,runbook_id, schedule):
+    async def update_runbook_schedule(self, user_id, runbook_id, schedule):
         table = await self._open_or_create_runbook_table(user_id)
 
         schedule_str = json.dumps(schedule)
 
         def _update():
-            rows = (
-                table.search()
-                .where(f'runbook_id = "{runbook_id}"')
-                .to_list()
-            )
+            rows = table.search().where(f'runbook_id = "{runbook_id}"').to_list()
 
             if not rows:
                 raise Exception("Runbook not found")
@@ -3482,7 +3485,7 @@ class LanceDBServer:
     #         pa.field("description", pa.string()),
     #         pa.field("runbook_type", pa.string()),
     #         pa.field("schedule", pa.string()),
-            
+
     #         pa.field("input_type", pa.string()),
     #         pa.field("playbook_id", pa.string()),
     #         pa.field("api_endpoint", pa.string()),
@@ -3509,7 +3512,7 @@ class LanceDBServer:
 
     #         pa.field("created_at", pa.timestamp("us")),
     #     ])
-    
+
     # async def migrate_runbook_table(self, user_id: str):
     #     table_name = f"runbook_{user_id}"
     #     self.db = self._connect_if_needed()

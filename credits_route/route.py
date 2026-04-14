@@ -95,11 +95,8 @@ class Credits:
                 reason=credit_type.upper(),
                 reference_id=reference_id or "AI_EXECUTION",
             )
+            self.db.commit()
 
-            # ✅ Commit ONLY if Credits owns DB
-            if self.owns_db:
-                # print("commiting db")
-                self.db.commit()
             # print("returning creed")
             return {
                 "status": "ok",
@@ -109,8 +106,8 @@ class Credits:
             }
 
         except InsufficientCreditsError:
-            if self.owns_db:
-                self.db.rollback()
+            self.db.rollback()
+
             return {
                 "status": "error",
                 "error": "INSUFFICIENT_CREDITS",

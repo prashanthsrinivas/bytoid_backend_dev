@@ -699,6 +699,128 @@ async def get_think_fire_response2_og2(
     return aggregated_text
 
 
+async def get_think_bedrok_response(
+    user_message: str,
+    user_id,
+    credits,
+    total_input_chars=None,
+    language="english",
+    words_count=800,
+):
+
+    import json
+    import asyncio
+
+    if not total_input_chars:
+        total_input_chars = len(user_message)
+
+    # Check credits BEFORE generation
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return "INSUFFICIENT"
+
+    words_per_chunk = 300
+    num_chunks = (words_count + words_per_chunk - 1) // words_per_chunk
+
+    aggregated_text = []
+    total_output_chars = 0
+
+    for i in range(num_chunks):
+
+        chunk_words = min(words_per_chunk, words_count - i * words_per_chunk)
+
+        if i == 0:
+            chunk_prompt = f"""
+                {user_message}
+
+                STRICT INSTRUCTIONS:
+
+                1. Return ONLY valid JSON.
+                2. Do NOT include explanations.
+                3. Do NOT include markdown.
+                4. Do NOT include duplicate sections.
+                5. Each block_id must appear ONLY ONCE.
+                6. estimated_word_count must count ONLY visible words.
+                7. Ignore HTML tags when counting words.
+                8. Ignore CSS.
+                9. Ignore tag names like <p>, <div>, etc.
+                10. Count ONLY human-readable words.
+                11. the language must be used was {language}
+
+                Generate part {i+1}/{num_chunks}.
+                """
+        else:
+            context_preview = json.dumps(aggregated_text[-1], ensure_ascii=False)
+
+            chunk_prompt = f"""
+                Previous JSON:
+
+                {context_preview}
+
+                STRICT CONTINUATION RULES:
+
+                1. Return ONLY valid JSON.
+                2. DO NOT repeat any existing block_id.
+                3. DO NOT repeat any micro_id.
+                4. ONLY generate NEW sections not already present.
+                5. Continue exactly where previous JSON ended.
+                6. Do NOT regenerate title, abstract, introduction, or existing sections.
+                7. estimated_word_count must count ONLY visible words.
+                8. Ignore HTML tags.
+                9. Ignore CSS.
+                10. Ignore markup.
+                11. the language must be used was {language}
+
+                Generate part {i+1}/{num_chunks}.
+                """
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": chunk_prompt}],
+                }
+            ],
+            "anthropic_version": "bedrock-2023-05-31",
+            "temperature": 0,
+            "max_tokens": 22000,
+        }
+
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        body = json.loads(response["body"].read())
+
+        response_text = body["content"][0]["text"].strip()
+        # print("resonse_text", response_text)
+
+        parsed = extract_json_safe(response_text)
+
+        if parsed:
+            aggregated_text.append(parsed)
+            total_output_chars += len(response_text)
+        else:
+            print("Invalid JSON chunk by claude", parsed)
+            aggregated_text.append({"raw_text": response_text})
+
+    # TOTAL chars consumed = input + output
+    total_chars_used = total_input_chars + total_output_chars
+
+    # Deduct credits AFTER generation
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_chars_used,
+        user_id=user_id,
+        reference_id="get_think_fire_response2_og2",
+    )
+
+    return aggregated_text
+
+
 async def get_think_fire_response_image(
     user_message: str,
     role: str,
