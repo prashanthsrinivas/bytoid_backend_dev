@@ -1,232 +1,276 @@
 {
-
-"blocks": [
- {
- "block_id": "title-page",
- "block_type": "narrative",
- "title": "Title Page",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "instruction_group",
- "title": "Report Identity",
- "items": [
- "Report title",
- "Author(s) / organization",
- "Date of report",
- "Version / Revision number",
- "Confidentiality level"
- ]
- }
- ]
- },
- {
- "block_id": "executive-summary",
- "block_type": "narrative",
- "title": "Executive Summary",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "instruction_group",
- "title": "Overview & Key Takeaways",
- "items": [
- "Summarize purpose and scope of the report",
- "Highlight critical findings or insights",
- "Present top-level recommendations or actions",
- "Keep concise and decision-focused"
- ]
- }
- ]
- },
- {
- "block_id": "introduction",
- "block_type": "narrative",
- "title": "Introduction",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "instruction_group",
- "title": "Context & Purpose",
- "items": [
- "Explain report purpose",
- "Provide background context",
- "Define objectives and intended audience",
- "Mention scope, limitations, and system/environment context"
- ]
- }
- ]
- },
- {
- "block_id": "objectives",
- "block_type": "list",
- "title": "Objectives",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "list",
- "title": "Report Objectives",
- "items": [
- "Primary goals of the report",
- "Questions or problems the report addresses",
- "Expected outcomes",
- "Metrics or success criteria if applicable"
- ]
- }
- ]
- },
- {
- "block_id": "methodology",
- "block_type": "narrative",
- "title": "Methodology",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "instruction_group",
- "title": "Approach & Methods",
- "items": [
- "Describe approach and techniques used",
- "List tools, frameworks, or standards referenced",
- "Explain data collection and analysis process",
- "Clarify assumptions and limitations"
- ]
- }
- ]
- },
- {
- "block_id": "data-analysis",
- "block_type": "table",
- "title": "Data / Evidence Analysis",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "table_schema",
- "columns": [
- { "name": "Item", "type": "text", "enum": [] },
- { "name": "Description / Details", "type": "text", "enum": [] },
- { "name": "Category / Type", "type": "text", "enum": [] },
- { "name": "Observations / Notes", "type": "text", "enum": [] }
- ]
- }
- ]
- },
- {
- "block_id": "findings",
- "block_type": "table",
- "title": "Findings / Results",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "table_schema",
- "columns": [
- { "name": "Finding / Insight", "type": "text", "enum": [] },
- { "name": "Description / Explanation", "type": "text", "enum": [] },
- { "name": "Impact / Significance", "type": "category", "enum": ["Low", "Moderate", "High", "Critical"] }
- ]
- }
- ]
- },
- {
- "block_id": "risk-assessment",
- "block_type": "matrix",
- "title": "Risk / Priority Assessment",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "matrix_schema",
- "x_axis": {
- "name": "Impact / Severity",
- "values": ["Very Low", "Low", "Moderate", "High", "Very High"]
- },
- "y_axis": {
- "name": "Likelihood / Probability",
- "values": ["Very Low", "Low", "Moderate", "High", "Very High"]
- },
- "cell_value": "Risk / Priority Level"
- }
- ]
- },
- {
- "block_id": "mitigation-strategies",
- "block_type": "list",
- "title": "Mitigation / Action Strategies",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "instruction_group",
- "title": "Recommendations & Next Steps",
- "items": [
- "Provide recommended actions or remediation steps",
- "Prioritize based on severity or impact",
- "Include both technical and procedural measures",
- "Ensure recommendations are actionable and feasible"
- ]
- }
- ]
- },
- {
- "block_id": "conclusion",
- "block_type": "narrative",
- "title": "Conclusion",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "instruction_group",
- "title": "Summary & Closing",
- "items": [
- "Summarize key takeaways",
- "Reinforce main recommendations",
- "Highlight any follow-up actions or considerations",
- "Keep concise and impactful"
- ]
- }
- ]
- },
- {
- "block_id": "appendices",
- "block_type": "narrative",
- "title": "Appendices / Supporting Material",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "instruction_group",
- "title": "Supplementary Data",
- "items": [
- "Include raw data, charts, or tables as needed",
- "Add references or source material",
- "Provide glossary of terms if applicable",
- "Attach supporting documentation or evidence"
- ]
- }
- ]
- },
- {
- "block_id": "references",
- "block_type": "list",
- "title": "References / Bibliography",
- "editable": true,
- "exportable": true,
- "micro_blocks": [
- {
- "type": "list",
- "title": "Source References",
- "items": [
- "List all sources cited",
- "Include publications, standards, and frameworks",
- "Provide URLs or document identifiers if applicable"
- ]
- }
- ]
- }
- ]
-} 
+    "blocks": [
+        {
+            "block_id": "title-page",
+            "block_type": "narrative",
+            "title": "Title Page",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "instruction_group",
+                    "title": "Report Identity",
+                    "items": [
+                        "Report title",
+                        "Author(s) / organization",
+                        "Date of report",
+                        "Version / Revision number",
+                        "Confidentiality level"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "executive-summary",
+            "block_type": "narrative",
+            "title": "Executive Summary",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "instruction_group",
+                    "title": "Overview & Key Takeaways",
+                    "items": [
+                        "Summarize purpose and scope of the report",
+                        "Highlight critical findings or insights",
+                        "Present top-level recommendations or actions",
+                        "Keep concise and decision-focused"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "introduction",
+            "block_type": "narrative",
+            "title": "Introduction",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "instruction_group",
+                    "title": "Context & Purpose",
+                    "items": [
+                        "Explain report purpose",
+                        "Provide background context",
+                        "Define objectives and intended audience",
+                        "Mention scope, limitations, and system/environment context"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "objectives",
+            "block_type": "list",
+            "title": "Objectives",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "list",
+                    "title": "Report Objectives",
+                    "items": [
+                        "Primary goals of the report",
+                        "Questions or problems the report addresses",
+                        "Expected outcomes",
+                        "Metrics or success criteria if applicable"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "methodology",
+            "block_type": "narrative",
+            "title": "Methodology",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "instruction_group",
+                    "title": "Approach & Methods",
+                    "items": [
+                        "Describe approach and techniques used",
+                        "List tools, frameworks, or standards referenced",
+                        "Explain data collection and analysis process",
+                        "Clarify assumptions and limitations"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "data-analysis",
+            "block_type": "table",
+            "title": "Data / Evidence Analysis",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "table_schema",
+                    "columns": [
+                        {
+                            "name": "Item",
+                            "type": "text",
+                            "enum": []
+                        },
+                        {
+                            "name": "Description / Details",
+                            "type": "text",
+                            "enum": []
+                        },
+                        {
+                            "name": "Category / Type",
+                            "type": "text",
+                            "enum": []
+                        },
+                        {
+                            "name": "Observations / Notes",
+                            "type": "text",
+                            "enum": []
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "findings",
+            "block_type": "table",
+            "title": "Findings / Results",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "table_schema",
+                    "columns": [
+                        {
+                            "name": "Finding / Insight",
+                            "type": "text",
+                            "enum": []
+                        },
+                        {
+                            "name": "Description / Explanation",
+                            "type": "text",
+                            "enum": []
+                        },
+                        {
+                            "name": "Impact / Significance",
+                            "type": "category",
+                            "enum": [
+                                "Low",
+                                "Moderate",
+                                "High",
+                                "Critical"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "risk-assessment",
+            "block_type": "matrix",
+            "title": "Risk / Priority Assessment",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "matrix_schema",
+                    "x_axis": {
+                        "name": "Impact / Severity",
+                        "values": [
+                            "Very Low",
+                            "Low",
+                            "Moderate",
+                            "High",
+                            "Very High"
+                        ]
+                    },
+                    "y_axis": {
+                        "name": "Likelihood / Probability",
+                        "values": [
+                            "Very Low",
+                            "Low",
+                            "Moderate",
+                            "High",
+                            "Very High"
+                        ]
+                    },
+                    "cell_value": "Risk / Priority Level"
+                }
+            ]
+        },
+        {
+            "block_id": "mitigation-strategies",
+            "block_type": "list",
+            "title": "Mitigation / Action Strategies",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "instruction_group",
+                    "title": "Recommendations & Next Steps",
+                    "items": [
+                        "Provide recommended actions or remediation steps",
+                        "Prioritize based on severity or impact",
+                        "Include both technical and procedural measures",
+                        "Ensure recommendations are actionable and feasible"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "conclusion",
+            "block_type": "narrative",
+            "title": "Conclusion",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "instruction_group",
+                    "title": "Summary & Closing",
+                    "items": [
+                        "Summarize key takeaways",
+                        "Reinforce main recommendations",
+                        "Highlight any follow-up actions or considerations",
+                        "Keep concise and impactful"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "appendices",
+            "block_type": "narrative",
+            "title": "Appendices / Supporting Material",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "instruction_group",
+                    "title": "Supplementary Data",
+                    "items": [
+                        "Include raw data, charts, or tables as needed",
+                        "Add references or source material",
+                        "Provide glossary of terms if applicable",
+                        "Attach supporting documentation or evidence"
+                    ]
+                }
+            ]
+        },
+        {
+            "block_id": "references",
+            "block_type": "list",
+            "title": "References / Bibliography",
+            "editable": true,
+            "exportable": true,
+            "micro_blocks": [
+                {
+                    "type": "list",
+                    "title": "Source References",
+                    "items": [
+                        "List all sources cited",
+                        "Include publications, standards, and frameworks",
+                        "Provide URLs or document identifiers if applicable"
+                    ]
+                }
+            ]
+        }
+    ]
+}

@@ -421,14 +421,29 @@ async def run_radar_review_redis(
     btype,
     files=None,
     structure_file=None,
+    session_id=None,
 ):
     redis = RedisService()
+    from runbook.utils import send
+    from websockets_custom.ws_instance import ws_service, msg_builder_main
+
+    msg_builder = msg_builder_main
+    if not session_id:
+        session_id = data.get("session_id")
+
+    # ✅ single flag
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_service, msg, user_id)
 
     job_key = f"radar:job:{job_id}"
     user_lock_key = f"radar:user_lock:{user_id}"
 
     review_temp = None
     conn = None
+
     try:
 
         # ---------------------------------
@@ -437,18 +452,13 @@ async def run_radar_review_redis(
         async def update(**kwargs):
             try:
                 state = await redis.get(job_key)
-
                 if not state:
                     return
 
                 state.update(kwargs)
 
-                # mark end time if finished
                 if kwargs.get("status") in ("completed", "failed"):
                     state["ended_at"] = int(time.time())
-
-                    # release lock
-                    # await redis.delete(user_lock_key)
 
                 await redis.set(job_key, state, ex=7200)
 
@@ -456,47 +466,61 @@ async def run_radar_review_redis(
                 logger.exception("❌ JOB REDIS UPDATE FAILED")
 
         # ---------------------------------
-        # MARK RUNNING
+        # START
         # ---------------------------------
         await update(status="running")
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "INIT",
+                "started generating of report",
+                10,
+            )
+        )
         logger.info("🚀 RADAR START job_id=%s", job_id)
 
         # ---------------------------------
         # DB CONNECTION
         # ---------------------------------
-        try:
-            conn = connect_to_rds()
-            dbserver = LanceDBServer()
-            credits = Credits(db=conn)
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "Inputs",
+                "checking input configurations",
+                20,
+            )
+        )
 
-        except Exception:
-            logger.exception("❌ DB CONNECTION FAILED")
-            raise
+        conn = connect_to_rds()
+        dbserver = LanceDBServer()
+        credits = Credits(db=conn)
 
         # ---------------------------------
         # INPUT EXTRACTION
         # ---------------------------------
-        try:
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "data",
+                "processing the input data",
+                25,
+            )
+        )
 
-            userid = data.get("userid")
-            name = data.get("name")
-            user_analyze_input = data.get("analyze_input")
+        userid = data.get("userid")
+        name = data.get("name")
+        user_analyze_input = data.get("analyze_input")
 
-            main_source = data.get("main_source")
-            data_sources = data.get("data_sources", {})
+        main_source = data.get("main_source")
+        data_sources = data.get("data_sources", {})
+        reference_sources = data.get("reference_sources", {})
+        refernce_main_source = data.get("refernce_main_source")
 
-            reference_sources = data.get("reference_sources", {})
-            refernce_main_source = data.get("refernce_main_source")
-
-        except Exception:
-            logger.exception("❌ INPUT EXTRACTION FAILED")
-            raise
-
-        INP_LINKS = []
-        STR_LINKS = []
-
-        file_data_payload = []
-        structure_file_payload = []
+        INP_LINKS, STR_LINKS = [], []
+        file_data_payload, structure_file_payload = [], []
 
         data_checked = []
         reference_RWA = []
@@ -505,6 +529,15 @@ async def run_radar_review_redis(
         # FILE PROCESSING
         # ---------------------------------
         if files:
+            await emit(
+                msg_builder.job_progress(
+                    job_id,
+                    session_id,
+                    "Files",
+                    "processing the uploaded files",
+                    30,
+                )
+            )
 
             process_file_payloads(
                 user_id=user_id,
@@ -513,10 +546,16 @@ async def run_radar_review_redis(
                 extracted_payload=file_data_payload,
             )
 
-        # ---------------------------------
-        # STRUCTURE FILE PROCESSING
-        # ---------------------------------
         if structure_file:
+            await emit(
+                msg_builder.job_progress(
+                    job_id,
+                    session_id,
+                    "Files",
+                    "processing the structure files",
+                    35,
+                )
+            )
 
             process_file_payloads(
                 user_id=user_id,
@@ -524,14 +563,23 @@ async def run_radar_review_redis(
                 inp_links=STR_LINKS,
                 extracted_payload=structure_file_payload,
             )
+
         # ---------------------------------
-        # TEMPLATE RESOLUTION
+        # LANGUAGE DETECTION
         # ---------------------------------
-        lang_prmot = RADAR_TEMPLATE["language_wordcount_extractor"]
-        lang_check = lang_prmot.replace(
-            "{{analyze_input}}",
-            user_analyze_input or "",
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "query",
+                "processing the query",
+                40,
+            )
         )
+
+        lang_prompt = RADAR_TEMPLATE["language_wordcount_extractor"]
+        lang_check = lang_prompt.replace("{{analyze_input}}", user_analyze_input or "")
+
         result = await get_think_fire_response2_og(
             user_message=lang_check,
             user_id=user_id,
@@ -542,70 +590,67 @@ async def run_radar_review_redis(
         langs_word = json.loads(result)
         output_language = langs_word.get("language", "English")
         output_word_count = langs_word.get("word_count")
-        # print("language word", langs_word)
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "query",
+                f"processing the report generation with {output_language} language",
+                42,
+            )
+        )
 
         # ---------------------------------
-        # STRUCTURE BLUEPRINT GENERATION
+        # STRUCTURE GENERATION
         # ---------------------------------
         if structure_file_payload:
-
-            try:
-
-                structure_prompt_template = RADAR_TEMPLATE["structure_prompt_template"]
-
-                base_struc_prompt = (
-                    structure_prompt_template.replace(
-                        "{{document_file_data}}",
-                        json.dumps(structure_file_payload),
-                    )
-                    .replace(
-                        "{{file_links}}",
-                        json.dumps(STR_LINKS),
-                    )
-                    .replace(
-                        "{{user_original_prompt_or_context}}",
-                        user_analyze_input or "",
-                    )
-                    .replace("{{output_language}}", output_language)
+            await emit(
+                msg_builder.job_progress(
+                    job_id,
+                    session_id,
+                    "structure generation",
+                    f"Generating structure blueprint...",
+                    45,
                 )
+            )
 
-                base_chars = len(base_struc_prompt)
+            structure_prompt_template = RADAR_TEMPLATE["structure_prompt_template"]
 
-                for img in STR_LINKS:
-                    base_chars -= len(img)
-                    base_chars += image_credit_cost(img)
-
-                result = await get_think_fire_response2_og(
-                    user_message=base_struc_prompt,
-                    user_id=user_id,
-                    credits=credits,
-                    total_input_chars=base_chars,
+            base_struc_prompt = (
+                structure_prompt_template.replace(
+                    "{{document_file_data}}", json.dumps(structure_file_payload)
                 )
+                .replace("{{file_links}}", json.dumps(STR_LINKS))
+                .replace(
+                    "{{user_original_prompt_or_context}}", user_analyze_input or ""
+                )
+                .replace("{{output_language}}", output_language)
+            )
 
-                structure_file_payload = json.loads(result)
-                # print("structrure file payload", structure_file_payload)
-                logger.info("✅ STRUCTURE GENERATED")
+            base_chars = len(base_struc_prompt)
 
-            except Exception:
-                logger.exception("❌ STRUCTURE GENERATION FAILED")
-                raise
+            for img in STR_LINKS:
+                base_chars -= len(img)
+                base_chars += image_credit_cost(img)
+
+            result = await get_think_fire_response2_og(
+                user_message=base_struc_prompt,
+                user_id=user_id,
+                credits=credits,
+                total_input_chars=base_chars,
+            )
+
+            structure_file_payload = json.loads(result)
 
         # ---------------------------------
-        # EMBEDDING GENERATION
+        # EMBEDDING
         # ---------------------------------
-        payload = None
-
         if main_source == "knowledge" or refernce_main_source == "knowledge":
 
             embedding = await get_firework_embedding()
-
             vector = embedding.embed_query(user_analyze_input)
 
-            payload = QueryData(
-                user_id=userid,
-                embedding=vector,
-                top_k=3,
-            )
+            payload = QueryData(user_id=userid, embedding=vector, top_k=3)
 
             await credits.update_ai_credits_redis(
                 user_id=userid,
@@ -613,39 +658,66 @@ async def run_radar_review_redis(
                 total_chars=len(user_analyze_input),
                 reference_id="embedding_generation",
             )
+        else:
+            payload = None
 
         # ---------------------------------
         # DATA RETRIEVAL
         # ---------------------------------
-        if main_source:
+        if main_source and data_sources:
 
             data_checked = await retreval_from_sources(
                 conn,
                 dbserver,
                 main_source,
                 data_sources,
-                userid,
+                user_id,
                 payload,
             )
+            if data_checked and len(data_checked) > 10:
+                progress = 45
 
-        if refernce_main_source:
+                await emit(
+                    msg_builder.job_progress(
+                        job_id,
+                        session_id,
+                        "report setup",
+                        "extracted information from selected Responses & Evidences",
+                        progress,
+                    )
+                )
 
+        if refernce_main_source and reference_sources:
             reference_RWA = await retreval_from_sources(
                 conn,
                 dbserver,
                 refernce_main_source,
                 reference_sources,
-                userid,
+                user_id,
                 payload,
             )
+            if reference_RWA and len(reference_RWA) > 10:
+                if main_source and data_sources:
+                    progress = 50
+                else:
+                    progress = 45
+
+                await emit(
+                    msg_builder.job_progress(
+                        job_id,
+                        session_id,
+                        "report setup",
+                        "extracted information from selected Governance Framework",
+                        progress,
+                    )
+                )
 
         # ---------------------------------
-        # LAST RESPONSE FETCH
+        # LAST RESPONSE
         # ---------------------------------
         last_radar_response = ""
 
         if date_uniqueid:
-
             val = await dbserver.radar_get_review_last_response(
                 user_id=user_id,
                 radar_id=date_uniqueid,
@@ -657,80 +729,77 @@ async def run_radar_review_redis(
                     output_word_count = (
                         val.get("estimated_word_count")
                         or val.get("document_meta", {}).get("estimated_word_count")
-                        or 800  # fallback default
+                        or 800
                     )
+                await emit(
+                    msg_builder.job_progress(
+                        job_id,
+                        session_id,
+                        "previous report",
+                        "extracted old report",
+                        55,
+                    )
+                )
 
-        # REVIEW
+        # ---------------------------------
+        # TEMPLATE SELECTION
+        # ---------------------------------
         if btype == "review":
-
-            if structure_file_payload:
-                review_temp = RADAR_TEMPLATE["radar_review_template_structure"]
-                logger.info("using structure-based template: review")
-            else:
-                review_temp = RADAR_TEMPLATE["radar_review_template_no_structure"]
-                logger.info("using no-structure template: review")
-
-        # ANALYSIS
+            review_temp = (
+                RADAR_TEMPLATE["radar_review_template_structure"]
+                if structure_file_payload
+                else RADAR_TEMPLATE["radar_review_template_no_structure"]
+            )
         elif btype == "analyze":
-
-            if structure_file_payload:
-                review_temp = RADAR_TEMPLATE["radar_analysis_prompt_structure"]
-                logger.info("using structure-based template: analysis")
-            else:
-                review_temp = RADAR_TEMPLATE["radar_analysis_prompt_no_structure"]
-                logger.info("using no-structure template: analysis")
-
-        # RECOMMENDATIONS
+            review_temp = (
+                RADAR_TEMPLATE["radar_analysis_prompt_structure"]
+                if structure_file_payload
+                else RADAR_TEMPLATE["radar_analysis_prompt_no_structure"]
+            )
         elif btype == "decide":
-
-            if structure_file_payload:
-                review_temp = RADAR_TEMPLATE["radar_recommendations_prompt_structure"]
-                logger.info("using structure-based template: recommendations")
-            else:
-                review_temp = RADAR_TEMPLATE[
-                    "radar_recommendations_prompt_no_structure"
-                ]
-                logger.info("using no-structure template: recommendations")
+            review_temp = (
+                RADAR_TEMPLATE["radar_recommendations_prompt_structure"]
+                if structure_file_payload
+                else RADAR_TEMPLATE["radar_recommendations_prompt_no_structure"]
+            )
 
         # ---------------------------------
         # PROMPT BUILD
         # ---------------------------------
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "report",
+                "Generating Report",
+                55,
+            )
+        )
+
         if not output_word_count:
             output_word_count = 800
+
         base_prompt = (
-            review_temp.replace(
-                "{{analyze_input}}",
-                user_analyze_input or "",
-            )
+            review_temp.replace("{{analyze_input}}", user_analyze_input or "")
             .replace("{{file_data}}", json.dumps(file_data_payload))
-            .replace(
-                "{{structure_file_data}}",
-                json.dumps(structure_file_payload),
-            )
+            .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
             .replace("{{file_links}}", json.dumps(INP_LINKS))
             .replace("{{data_sources}}", json.dumps(data_checked))
-            .replace(
-                "{{reference_sources}}",
-                json.dumps(reference_RWA),
-            )
-            .replace(
-                "{{last_radar_response}}",
-                last_radar_response,
-            )
+            .replace("{{reference_sources}}", json.dumps(reference_RWA))
+            .replace("{{last_radar_response}}", last_radar_response)
             .replace("{{output_language}}", output_language)
             .replace("{{requested_word_count}}", str(output_word_count))
         )
-        # print("output word count", output_word_count)
 
-        # ---------------------------------
-        # LLM CALL
-        # ---------------------------------
         base_chars = len(base_prompt)
 
         for img in INP_LINKS:
             base_chars -= len(img)
             base_chars += image_credit_cost(img)
 
+        # ---------------------------------
+        # LLM EXECUTION
+        # ---------------------------------
         result = await get_think_fire_response2_og2(
             user_message=base_prompt,
             user_id=user_id,
@@ -739,18 +808,41 @@ async def run_radar_review_redis(
             language=output_language,
             words_count=output_word_count,
         )
-        # print("result raw", result)
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "report generation",
+                "generated content for report",
+                70,
+            )
+        )
+
         merged_report = merge_radar_chunks_deterministic(raw_chunks=result)
-        # print("result2", merged_report)
-        # ---------------------------------
-        # PARSE RESULT
-        # ---------------------------------
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "report generation",
+                "merging content for report",
+                75,
+            )
+        )
         refactor_result = _safe_json_parse(merged_report)
-        # logger.info("refactored,result %s", refactor_result)
 
         # ---------------------------------
         # SAVE RESULT
         # ---------------------------------
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "report generation",
+                "saving report ",
+                90,
+            )
+        )
+
         if refactor_result:
             await dbserver.radar_upsert_review(
                 user_id=user_id,
@@ -766,21 +858,21 @@ async def run_radar_review_redis(
                 refernce_main_source=refernce_main_source,
             )
 
-        await update(
-            status="completed",
-            result=refactor_result,
+        await update(status="completed", result=refactor_result)
+        await emit(
+            msg_builder.job_success(
+                job_id,
+                session_id,
+                "✅ Radar report generated successfully ",
+            )
         )
 
-        logger.info("✅ RADAR COMPLETE job_id=%s", job_id)
-
-    except Exception as e:
-
+    except Exception:
         logger.exception("❌ RADAR FAILED job_id=%s", job_id)
 
-        await update(
-            status="failed",
-            error="Error Occured in Generation",
-        )
+        await update(status="failed", error="Error Occured in Generation")
+
+        await send("❌ Radar generation failed", "failed", 0, "error")
 
     finally:
         if conn:
