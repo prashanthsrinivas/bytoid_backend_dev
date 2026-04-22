@@ -18,6 +18,7 @@ from utils.normal import load_yaml_file
 from utils.s3_utils import read_json_from_s3, upload_any_file
 from utils.fireworkzz import (
     get_firework_embedding,
+    get_fireworks_response2,
     get_think_bedrok_response,
     get_think_fire_response2_og,
     get_think_fire_response2_og2,
@@ -98,6 +99,113 @@ async def run_runbook_job(runbook):
 def run_runbook_job_wrapper(runbook):
     # print("🚀 WRAPPER TRIGGERED")
     asyncio.run(run_runbook_job(runbook))
+
+
+ASSESSORS = """
+For Risk Assessors (Control Effectiveness Across Security, Privacy, AI)
+- Evidence maps directly to the control objective (security/privacy/AI governance)
+- Evidence demonstrates actual control operation, not just documented intent
+- Evidence aligns with security baselines, privacy obligations, and AI governance policies
+- Evidence reflects data classification and sensitivity (PII, PHI, confidential, AI inputs/outputs)
+- Evidence shows how personal data is collected, processed, stored, and shared
+- Evidence demonstrates lawful basis and purpose limitation for data processing
+- Evidence supports data minimization principles (only required data used)
+- Evidence reflects data retention and deletion controls
+- Evidence shows user consent capture and management (where applicable)
+- Evidence demonstrates data subject rights handling (access, deletion, correction)
+- Evidence reflects cross-border data transfer controls and restrictions
+- Evidence demonstrates third-party/vendor risk handling (including AI providers)
+- Evidence shows integration points between systems and data flows
+- Evidence reflects AI model usage context and decision boundaries
+- Evidence demonstrates human-in-the-loop or oversight mechanisms for AI decisions
+- Evidence supports bias, fairness, and ethical AI considerations
+- Evidence reflects risk mitigation effectiveness across security, privacy, and AI domains
+- Evidence shows control ownership and accountability
+- Evidence demonstrates frequency and consistency of control execution
+- Evidence includes exceptions, deviations, and risk acceptance decisions
+- Evidence supports residual risk determination
+- Evidence aligns with framework mappings (ISO 27001, NIST, SOC 2, GDPR, AI frameworks)
+"""
+
+AUDITORS = """
+For Auditors (Assurance, Compliance, Defensibility)
+
+- Evidence is relevant to security, privacy, and AI control objectives
+- Evidence is sufficient to support an audit conclusion across domains
+- Evidence is reliable (system-generated, authoritative sources preferred)
+- Evidence is accurate and internally consistent across artifacts
+- Evidence is complete with no material omissions in scope or population
+- Evidence is time-bound and within the audit/review period
+- Evidence is authentic and free from tampering or manipulation
+- Evidence is traceable to systems, users, and transactions
+- Evidence supports re-performance or independent validation
+- Evidence aligns with policies, procedures, and regulatory requirements
+- Evidence demonstrates actual execution of controls (not theoretical compliance)
+- Evidence is consistent across multiple samples, systems, and timeframes
+- Evidence does not contradict other security, privacy, or AI artifacts
+- Evidence includes identifiers (logs, IDs, model versions, dataset references)
+- Evidence reflects independence (not solely self-attested by control owner)
+- Evidence demonstrates review and approval workflows (including AI outputs where applicable)
+- Evidence supports segregation of duties and access restrictions
+- Evidence includes exception handling, incident logs, and remediation tracking
+- Evidence supports data protection obligations (GDPR, HIPAA, etc.)
+- Evidence supports AI governance requirements (transparency, explainability where required)
+- Evidence is clear, interpretable, and defensible to external stakeholders/regulators
+- Evidence is retained, versioned, and auditable over time
+- Evidence supports a defensible audit opinion across security, privacy, and AI domains
+"""
+
+REVIEWER = """
+For Security / Privacy / AI Reviewers (Technical & Governance Validation)
+
+- Evidence originates from authoritative sources (logs, configs, AI system outputs, data lineage tools)
+- Evidence reflects actual system configuration and runtime behavior
+- Evidence includes raw logs, configuration outputs, or system-generated reports where possible
+- Evidence validates access controls, authentication, and authorization mechanisms
+- Evidence demonstrates least privilege and role-based access enforcement
+- Evidence confirms encryption at rest and in transit for sensitive data
+- Evidence validates secure key management practices (e.g., KMS, CMK)
+- Evidence reflects data masking, anonymization, or pseudonymization where required
+- Evidence shows PII/PHI is not unnecessarily exposed in logs, prompts, or outputs
+- Evidence demonstrates secure data handling in AI pipelines (input → processing → output)
+- Evidence validates prompt handling and protection against prompt injection or leakage
+- Evidence confirms AI outputs are controlled, filtered, or moderated where required
+- Evidence demonstrates model versioning, traceability, and reproducibility
+- Evidence reflects training data governance (source, quality, bias considerations)
+- Evidence validates monitoring of AI behavior (drift, anomalies, misuse)
+- Evidence demonstrates alerting and incident response for security/privacy/AI events
+- Evidence reflects logging completeness and integrity (no gaps or tampering)
+- Evidence confirms segregation of environments (dev/test/prod, training vs inference)
+- Evidence validates secure API integrations and data exchange points
+- Evidence demonstrates vulnerability management and remediation for systems and AI components
+- Evidence reflects resilience controls (backup, recovery, failover)
+- Evidence confirms third-party AI/vendor controls and data handling assurances
+- Evidence supports compliance with security benchmarks and privacy regulations
+- Evidence is sufficient to technically validate effectiveness of controls across all domains
+"""
+
+EVIDENCES_TYPES = """
+Governance Evidence (policies, standards, procedures, frameworks)
+
+- Process Evidence (process flows, SOPs, runbooks)
+- Control Execution Evidence (proof a control was performed)
+- Transactional Evidence (records of activities, events, operations)
+- Approval & Authorization Evidence (sign-offs, decisions, endorsements)
+- Access & Ownership Evidence (who has access, roles, responsibilities)
+- Monitoring & Review Evidence (reviews, oversight, supervision outputs)
+- Exception & Incident Evidence (issues, deviations, breaches, resolutions)
+- Reporting Evidence (summaries, dashboards, generated reports)
+- Configuration / State Evidence (current state or setup of a system/process)
+- Change Evidence (changes made, version history, updates)
+- Third-Party Evidence (vendor documents)
+- External Assurances (SOC 2 Type 2, ISO 27001, etc..)
+- Training & Awareness Evidence (training completion, communications)
+- Data & Record Evidence (datasets, records, stored information)
+- Lifecycle Evidence (creation, retention, archival, deletion)
+- Physical Evidence (onsite controls, physical access, environment)
+- Analytical / Assessment Evidence (risk assessments, evaluations, test results)
+- Self Attestation Evidence (self-declarations, certifications, confirmations)
+"""
 
 
 async def run_runbook_execution_engine(
@@ -636,6 +744,13 @@ async def run_runbook_execution_engine(
                 "ended_at": int(time.time()),
             }
         )
+        if merged_result:
+            name = runbook["name"] or runbook_id
+            await emit(
+                msg_builder.global_msg(
+                    f"generated report for {name}",
+                )
+            )
 
         return merged_result
 
@@ -1206,7 +1321,7 @@ def fetch_cloudwatch_logs(log_group, log_stream=None, region="ca-central-1", lim
         if log_stream:
             kwargs["logStreamNames"] = [log_stream]
 
-        response = client.filter_log_events(**kwargs)
+        response = client.filter_log_events(kwargs)
 
         logs = []
         for event in response.get("events", []):
@@ -2024,11 +2139,14 @@ async def analyze_single_question(
     base_char = len(prompt)
 
     # 🤖 LLM call
-    result = await get_think_fire_response2_og(
-        user_message=prompt,
-        user_id=user_id,
-        credits=credits,
-        total_input_chars=base_char,
+    # result = await get_think_fire_response2_og(
+    #     user_message=prompt,
+    #     user_id=user_id,
+    #     credits=credits,
+    #     total_input_chars=base_char,
+    # )
+    result = await get_fireworks_response2(
+        user_id=user_id, user_message=prompt, role="system", credits=credits, temp=0.0
     )
 
     # 🧹 Safe JSON parsing

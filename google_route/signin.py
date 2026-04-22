@@ -7,6 +7,9 @@ import logging
 from db.rds_db import connect_to_rds
 from dotenv import load_dotenv
 import os
+from flask import make_response
+import asyncio
+from session_manager_route.session_bp import session_login
 load_dotenv()
 client_id = os.getenv("CLIENTID")
 class GoogleAuth:
@@ -86,6 +89,8 @@ class GoogleAuth:
                     )
 
                     connection.commit()
+                else:
+                    user_id = user["user_id"]
 
             except mysql.connector.Error as e:
                 logging.error(f"Database query error: {e}")
@@ -95,7 +100,40 @@ class GoogleAuth:
                 cursor.close()
                 connection.close()
 
-            return {"message": "Login successful", "redirect_url": "/dashboard.html"}, 200
+            if user:
+                user_id = user["user_id"]
+            # else: user_id already created above
+
+            # Create session
+            session_id, access_token, refresh_token = asyncio.run(session_login(user_id))
+
+            # Create response
+            response = make_response({
+                "message": "Login successful",
+                "redirect_url": "/dashboard.html"
+            })
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+
+            # Set cookies
+            response.set_cookie(
+                "session_id",
+                session_id,
+                httponly=True,
+                secure=True,   # ⚠️ use False if local
+                samesite="None",
+                path="/"
+            )
+
+            response.set_cookie(
+                "access_token",
+                access_token,
+                httponly=True,
+                secure=True,
+                samesite="None",
+                path="/"
+            )
+
+            return response
 
         except Exception as e:
             logging.error(f"Unhandled error: {e}")

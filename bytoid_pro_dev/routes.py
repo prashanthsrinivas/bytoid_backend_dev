@@ -31,6 +31,7 @@ from .bytoid_pro_helpers import (
 )
 from .bytoid_pro_lance import Bytoid_pro_lance
 
+
 bytoid_dev_pro_bp = Blueprint("bytoid_dev_pro", __name__, url_prefix="/bytoid-pro-dev")
 
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
@@ -215,8 +216,29 @@ def handle_audio_fallback():
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think", methods=["POST"])
 async def bytoidpro_think():
+    import json, time, uuid, base64, asyncio, threading
+    from websockets_custom.ws_instance import ws_service, msg_builder_main
+    from runbook.utils import send
+
     db = connect_to_rds()
     credits = Credits(db)
+    msg_builder = msg_builder_main
+
+    # -------------------------------
+    # ✅ MESSAGE CONFIG (NEW)
+    # -------------------------------
+    DEFAULT_MESSAGES = {
+        "stage": "thinking",
+        "start": "Starting your request...",
+        "validating": "Checking inputs and preparing data...",
+        "processing_files": "Processing uploaded files...",
+        "fetching_context": "Understanding your request context...",
+        "model_selection": "Choosing the best processing strategy...",
+        "executing": "Working on your request...",
+        "saving": "Saving results...",
+        "completed": "Done! Your response is ready.",
+        "failed": "Something went wrong while processing your request.",
+    }
 
     try:
         # -------------------------------
@@ -226,11 +248,34 @@ async def bytoidpro_think():
         user_id = json_body.get("user_id") or request.form.get("user_id")
         message = json_body.get("message") or request.form.get("message")
         chat_id = json_body.get("chat_id") or str(uuid.uuid4())
+        session_id = json_body.get("session_id") or request.form.get("session_id")
+
+        progress_messages = json_body.get("progress_messages") or DEFAULT_MESSAGES
+        stage = progress_messages.get("stage", "thinking")
+
+        job_id = str(uuid.uuid4())
+
+        async def emit(msg):
+            if job_id and session_id:
+                await send(ws_service, msg, user_id)
 
         if not user_id or not message:
             return jsonify({"error": "user_id and message required"}), 400
 
         db.begin()
+
+        # -------------------------------
+        # Emit START
+        # -------------------------------
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                stage,
+                progress_messages["start"],
+                5,
+            )
+        )
 
         if not await credits.has_ai_credits(total_chars=8000, user_id=user_id):
             db.rollback()
@@ -240,8 +285,20 @@ async def bytoidpro_think():
         inline_files = []
 
         # -------------------------------
-        # 2️⃣ Handle uploaded IMAGE files
-        # → convert to inline base64
+        # Emit VALIDATION
+        # -------------------------------
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                stage,
+                progress_messages["validating"],
+                10,
+            )
+        )
+
+        # -------------------------------
+        # 2️⃣ Handle IMAGE files
         # -------------------------------
         files = request.files.getlist("file") or request.files.getlist("image")
 
@@ -251,10 +308,7 @@ async def bytoidpro_think():
             content_type = file.content_type or "image/png"
 
             if not content_type.startswith("image/"):
-                return (
-                    jsonify({"error": "Only image files allowed for inline images"}),
-                    400,
-                )
+                return jsonify({"error": "Only image files allowed"}), 400
 
             inline_images.append(f"data:{content_type};base64,{encoded}")
 
@@ -267,18 +321,11 @@ async def bytoidpro_think():
 
         for image_data in image_urls_payload:
             if not image_data.startswith("data:image/"):
-                return (
-                    jsonify(
-                        {
-                            "error": "Invalid image input. Only data:image/* base64 allowed."
-                        }
-                    ),
-                    400,
-                )
+                return jsonify({"error": "Invalid image input"}), 400
             inline_images.append(image_data)
 
         # -------------------------------
-        # 4️⃣ Inline FILES (PDF / DOCX / PPTX / XLSX)
+        # 4️⃣ Inline FILES
         # -------------------------------
         file_urls_payload = json_body.get("file_urls") or request.form.getlist(
             "file_urls"
@@ -286,30 +333,36 @@ async def bytoidpro_think():
 
         for file_data in file_urls_payload:
             if not file_data.startswith("data:"):
-                return (
-                    jsonify(
-                        {"error": "Invalid file input. Only inline base64 allowed."}
-                    ),
-                    400,
-                )
-
+                return jsonify({"error": "Invalid file input"}), 400
             inline_files.append(file_data)
 
         # -------------------------------
-        # 5️⃣ HARD VALIDATION (CRITICAL)
+        # Emit FILE PROCESSING
+        # -------------------------------
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                stage,
+                progress_messages["processing_files"],
+                20,
+            )
+        )
+
+        # -------------------------------
+        # 5️⃣ VALIDATION
         # -------------------------------
         for img in inline_images:
             if not img.startswith("data:image/"):
-                raise ValueError("Only inline base64 images are allowed")
+                raise ValueError("Only base64 images allowed")
 
         for f in inline_files:
             if not f.startswith("data:"):
-                raise ValueError("Only inline base64 files are allowed")
+                raise ValueError("Only base64 files allowed")
 
         # -------------------------------
         # 6️⃣ Create Job
         # -------------------------------
-        job_id = str(uuid.uuid4())
         jobs = load_jobs()
         jobs[job_id] = {
             "user_id": user_id,
@@ -335,6 +388,21 @@ async def bytoidpro_think():
 
                 task_db.begin()
 
+                # -------------------------------
+                # Emit CONTEXT
+                # -------------------------------
+                loop.run_until_complete(
+                    emit(
+                        msg_builder.job_progress(
+                            job_id,
+                            session_id,
+                            stage,
+                            progress_messages["fetching_context"],
+                            35,
+                        )
+                    )
+                )
+
                 lance = Bytoid_pro_lance(user_id)
                 context = loop.run_until_complete(lance.get_context(message, chat_id))
 
@@ -342,9 +410,47 @@ async def bytoidpro_think():
                 has_files = bool(inline_files)
 
                 # -------------------------------
-                # 8️⃣ SAFE MODEL CALLS (INLINE ONLY)
+                # Emit MODEL SELECTION
                 # -------------------------------
+                loop.run_until_complete(
+                    emit(
+                        msg_builder.job_progress(
+                            job_id,
+                            session_id,
+                            stage,
+                            progress_messages["model_selection"],
+                            50,
+                        )
+                    )
+                )
+
+                # -------------------------------
+                # Model execution
+                # -------------------------------
+                loop.run_until_complete(
+                    emit(
+                        msg_builder.job_progress(
+                            job_id,
+                            session_id,
+                            stage,
+                            progress_messages["executing"],
+                            60,
+                        )
+                    )
+                )
+
                 if has_images and has_files:
+                    loop.run_until_complete(
+                        emit(
+                            msg_builder.job_progress(
+                                job_id,
+                                session_id,
+                                stage,
+                                "analyzing images and files",
+                                70,
+                            )
+                        )
+                    )
                     response = loop.run_until_complete(
                         mixed_response(
                             user_message=message,
@@ -358,6 +464,17 @@ async def bytoidpro_think():
                     )
 
                 elif has_images:
+                    loop.run_until_complete(
+                        emit(
+                            msg_builder.job_progress(
+                                job_id,
+                                session_id,
+                                stage,
+                                "analyzing image content",
+                                70,
+                            )
+                        )
+                    )
                     response = loop.run_until_complete(
                         get_think_fire_response_image(
                             user_message=message,
@@ -370,6 +487,17 @@ async def bytoidpro_think():
                     )
 
                 elif has_files:
+                    loop.run_until_complete(
+                        emit(
+                            msg_builder.job_progress(
+                                job_id,
+                                session_id,
+                                stage,
+                                "analyzing files content",
+                                70,
+                            )
+                        )
+                    )
                     response = loop.run_until_complete(
                         process_large_book(
                             user_message=message,
@@ -402,6 +530,21 @@ async def bytoidpro_think():
 
                 task_db.commit()
 
+                # -------------------------------
+                # Emit SAVING
+                # -------------------------------
+                loop.run_until_complete(
+                    emit(
+                        msg_builder.job_progress(
+                            job_id,
+                            session_id,
+                            stage,
+                            progress_messages["saving"],
+                            90,
+                        )
+                    )
+                )
+
                 chat = build_chat(
                     chat_id=chat_id,
                     user_message=message,
@@ -423,12 +566,35 @@ async def bytoidpro_think():
                 )
                 save_jobs(jobs)
 
+                # -------------------------------
+                # Emit COMPLETED
+                # -------------------------------
+                loop.run_until_complete(
+                    emit(
+                        msg_builder.job_success(
+                            job_id,
+                            session_id,
+                            progress_messages["completed"],
+                        )
+                    )
+                )
+
             except Exception as e:
                 task_db.rollback()
                 jobs[job_id]["status"] = "FAILED"
                 jobs[job_id]["error"] = str(e)
                 jobs[job_id]["chat_id"] = chat_id
                 save_jobs(jobs)
+
+                loop.run_until_complete(
+                    emit(
+                        msg_builder.job_error(
+                            job_id,
+                            session_id,
+                            progress_messages["failed"],
+                        )
+                    )
+                )
 
             finally:
                 loop.close()
@@ -458,15 +624,16 @@ async def bytoidpro_think():
 def check_job_status():
     json_body = request.get_json()
     job_id = json_body.get("job_id")
+
     if not job_id:
         return jsonify({"error": "job_id is required"}), 400
 
     jobs = load_jobs()
     job = jobs.get(job_id)
+
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    # Return relevant fields
     response = {
         "job_id": job_id,
         "status": job.get("status"),
@@ -476,6 +643,12 @@ def check_job_status():
         "user_id": job.get("user_id"),
         "chat_id": job.get("chat_id"),
     }
+
+    # ✅ DELETE JOB AFTER FINAL STATE IS READ
+    if job.get("status") in ["COMPLETED", "FAILED"]:
+        jobs.pop(job_id, None)
+        save_jobs(jobs)
+
     return jsonify(response)
 
 

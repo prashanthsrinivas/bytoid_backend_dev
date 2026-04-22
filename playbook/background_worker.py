@@ -16,12 +16,10 @@ class JobManager:
 
         job_id = str(uuid.uuid4())
 
-        # mark queued
         await redis_service.set(f"job:{job_id}", {"status": "queued"}, ex=3600)
 
         loop = asyncio.get_running_loop()
 
-        # run background worker
         loop.run_in_executor(
             executor,
             lambda: asyncio.run(JobManager._run_job(job_id, func, *args, **kwargs)),
@@ -35,6 +33,9 @@ class JobManager:
         try:
             await redis_service.set(f"job:{job_id}", {"status": "processing"}, ex=3600)
 
+            # ✅ inject job_id
+            kwargs["job_id"] = job_id
+
             result = await func(*args, **kwargs)
 
             await redis_service.set(
@@ -42,7 +43,6 @@ class JobManager:
             )
 
         except Exception as e:
-
             await redis_service.set(
                 f"job:{job_id}", {"status": "failed", "error": str(e)}, ex=3600
             )

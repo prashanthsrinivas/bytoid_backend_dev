@@ -104,7 +104,7 @@ def is_domain_allowed(org, email_domain, user_id=None):
        primary = (row[0] or "").strip().lower()
        secondary = row[1]
 
-       # ✅ SAFE JSON PARSE
+       # SAFE JSON PARSE
        if isinstance(secondary, str):
            try:
                secondary = json.loads(secondary)
@@ -126,6 +126,25 @@ def is_domain_allowed(org, email_domain, user_id=None):
            cursor.close()
        if conn:
            conn.close()
+
+def is_admin(user_id, org):
+   conn = connect_to_rds()
+   cursor = conn.cursor()
+
+   cursor.execute(
+       """
+       SELECT user_type FROM users 
+       WHERE user_id = %s AND company_name = %s
+       """,
+       (user_id, org)
+   )
+
+   user = cursor.fetchone()
+
+   cursor.close()
+   conn.close()
+
+   return user and user[0] == "admin"
            
 
 
@@ -222,8 +241,6 @@ def saml_login():
 @sso_bp.route("/auth/saml/acs", methods=["POST"])
 def saml_acs():
    import pymysql
-   import uuid
-
 
    conn = None
    cursor = None
@@ -243,33 +260,37 @@ def saml_acs():
 
        user_data = auth.get_attributes()
 
-       # ROLE EXTRACTION FROM SAML
-       role = user_data.get("role", ["bytoid-user"])[0]
+       # ================= ROLE =================
+       roles = (
+           user_data.get("role")
+           or user_data.get("http://schemas.microsoft.com/ws/2008/06/identity/claims/role")
+           or []
+       )
 
-       if role == "bytoid-admin":
-           user_role = "admin"
-       else:
-           user_role = "user"
+       if not isinstance(roles, list) or len(roles) == 0:
+           return jsonify({"error": "Role not received from IDP"}), 403
 
+       role = roles[0]
+
+       if role not in ["bytoid-admin", "bytoid-user"]:
+           return jsonify({"error": "Invalid role from IDP"}), 403
+
+       # ================= EMAIL =================
        email = (
            user_data.get("email", [None])[0]
-           or user_data.get(
-               "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
-               [None],
-           )[0]
+           or user_data.get("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress", [None])[0]
        )
-       
 
-       if not email:
-           return jsonify({"error": "Email not found"}), 400
+       if not email or "@" not in email:
+           return jsonify({"error": "Invalid email"}), 400
 
        email = email.lower()
        name = user_data.get("name", [""])[0]
 
-       user_id = user_data.get(
+       user_id = str(user_data.get(
            "http://schemas.microsoft.com/identity/claims/objectidentifier",
            [email],
-       )[0]
+       )[0]).strip()
 
        session["user_id"] = user_id
        session["auth_type"] = "saml"
@@ -280,108 +301,85 @@ def saml_acs():
        if not org:
            return jsonify({"error": "SESSION_EXPIRED"}), 401
 
-       #  DOMAIN VALIDATION
+       # ================= DOMAIN CHECK =================
        if not is_domain_allowed(org, domain):
            return jsonify({"error": "DOMAIN NOT ALLOWED"}), 401
 
-       # ================= DB START =================
+       # ================= DB =================
        conn = connect_to_rds()
        cursor = conn.cursor(pymysql.cursors.DictCursor)
-       
 
        cursor.execute(
-           "SELECT user_id, user_type FROM users WHERE user_id = %s OR email = %s",
-           (user_id, email)
+           """
+           SELECT user_id, user_type, company_name 
+           FROM users 
+           WHERE (user_id = %s OR email = %s) 
+           AND (company_name = %s OR company_name IS NULL)
+           """,
+           (user_id, email, org),
        )
 
        existing_user = cursor.fetchone()
-       if user_role == "admin":
-            created_by = user_id
-       else:
-            cursor.execute(
-                """
-                SELECT user_id FROM users
-                WHERE company_name = %s AND user_type = 'admin'
-                LIMIT 1
-                """,
-                (org,)
-            )
-            admin = cursor.fetchone()
-            if not admin:
-                user_role = "admin"
-                created_by = user_id 
-            else:
-                created_by = admin["user_id"]
 
+       # ================= AUTO ONBOARDING =================
        if existing_user:
+           if not existing_user["company_name"]:
+               cursor.execute(
+                   """
+                   UPDATE users 
+                   SET company_name = %s
+                   WHERE user_id = %s
+                   """,
+                   (org, user_id)
+                )
+               conn.commit()
+           user_role = existing_user["user_type"]
+       else:
+           user_type = "admin" if role == "bytoid-admin" else "user"
            cursor.execute(
                """
-               UPDATE users SET 
-                   first_name = %s,
-                   last_name = %s,
-                   social = %s,
-                   user_type = %s,
-                   company_name = %s,
-                   logged_in_at = NOW(),
-                   updated_in = NOW()
-               WHERE user_id = %s 
+               INSERT INTO users 
+               (user_id, email, user_type, company_name, created_by, has_access)
+               VALUES (%s, %s, %s, %s, %s, 1)
                """,
-               (name, "", "saml",user_role, org, user_id),
-           )
+               (user_id, email, user_type, org, user_id)
+            )
+           conn.commit()
+           user_role = user_type
+    
+       # ================= ROLE VALIDATION =================
 
-       else:      
-           cursor.execute(
-               """
-               INSERT INTO users (
-                   user_id, user_type,
-                   first_name, last_name, email,
-                   social, company_name, created_by, 
-                   created_in, updated_in, logged_in_at
-               )
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),NOW())
-               """,
-               (user_id, user_role, name, "", email, "saml", org, created_by),
-           )
+       if role == "bytoid-admin" and user_role != "admin":
+           return jsonify({"error": "Role mismatch"}), 403
 
-           #  SAME AS MICROSOFT FLOW
-           new_api_key = str(uuid.uuid4())
-           new_launch_id = str(uuid.uuid4())
-           new_sub_agent_id = str(uuid.uuid4())
+       if role == "bytoid-user" and user_role != "user":
+           return jsonify({"error": "Role mismatch"}), 403
 
-           cursor.execute(
-               """
-               INSERT INTO subagents (
-                   sub_agent_id, launch_id_fk, name
-               ) VALUES (%s, %s, %s)
-               """,
-               (new_sub_agent_id, None, "Default Agent"),
-           )
+       # ================= SESSION =================
+       session["user_role"] = user_role
 
-           cursor.execute(
-               """
-               INSERT INTO launch (
-                   launch_id, sub_agent_id_fk, user_id_fk, api_id
-               )
-               VALUES (%s, %s, %s, %s)
-               """,
-               (new_launch_id, new_sub_agent_id, user_id, new_api_key),
-           )
-
-           cursor.execute(
-               """
-               UPDATE subagents 
-               SET launch_id_fk = %s 
-               WHERE sub_agent_id = %s
-               """,
-               (new_launch_id, new_sub_agent_id),
-           )
+       # ================= UPDATE USER =================
+       cursor.execute(
+           """
+           UPDATE users SET 
+               first_name = %s,
+               last_name = %s,
+               social = %s,
+               company_name = %s,
+               logged_in_at = NOW(),
+               updated_in = NOW()
+           WHERE user_id = %s
+           """,
+           (name, "", "saml", org, user_id),
+       )
 
        conn.commit()
-      
 
        redirect_base = session.get("saml_redirect", "https://app.bytoid.ai")
 
-       return redirect(f"{redirect_base}/sso?status=success&userid={user_id}&service=saml")
+       return redirect(
+           f"{redirect_base}/sso?status=success&userid={user_id}&service=saml"
+       )
 
    except Exception as e:
        print("SAML ERROR:", str(e))
@@ -393,7 +391,91 @@ def saml_acs():
        if conn:
            conn.close()
 
+def can_access_user(requesting_user, target_user, org):
+   conn = connect_to_rds()
+   cursor = conn.cursor()
 
+   #  Get requesting user role
+   cursor.execute(
+       "SELECT user_type FROM users WHERE user_id = %s AND company_name = %s",
+       (requesting_user, org)
+   )
+   req = cursor.fetchone()
+   if not req:
+       cursor.close()
+       conn.close()
+       return False
+
+   requesting_role = req[0]
+
+   #  Get target user details
+   cursor.execute(
+       """
+       SELECT user_id, user_type, shared_with, created_by
+       FROM users
+       WHERE user_id = %s AND company_name = %s
+       """,
+       (target_user, org)
+   )
+   row = cursor.fetchone()
+
+   if not row:
+       cursor.close()
+       conn.close()
+       return False
+
+   owner_id, target_role, shared_with, created_by = row
+
+   #  1. Own record
+   if requesting_user == owner_id:
+       cursor.close()
+       conn.close()
+       return True
+
+   #  2. Creator access
+   if requesting_user == created_by:
+       cursor.close()
+       conn.close()
+       return True
+
+   # 3. ADMIN RULE (KEY LOGIC)
+   if requesting_role == "admin":
+       if target_role == "user":
+           #  Admin sees ALL users in org by default
+           cursor.close()
+           conn.close()
+           return True
+
+       if target_role == "admin":
+           #  Admin cannot see other admins unless shared
+           if shared_with:
+               try:
+                   shared = json.loads(shared_with)
+                   if requesting_user in shared:
+                       cursor.close()
+                       conn.close()
+                       return True
+               except:
+                   pass
+
+           cursor.close()
+           conn.close()
+           return False
+
+   #  4. Shared access (for non-admin users)
+   if shared_with:
+       try:
+           shared = json.loads(shared_with)
+           if requesting_user in shared:
+               cursor.close()
+               conn.close()
+               return True
+       except:
+           pass
+
+   cursor.close()
+   conn.close()
+   return False
 # =========================
 # ORG CREATE
 # =========================
@@ -514,19 +596,166 @@ def list_orgs():
 
    return jsonify(result)
 
+@sso_bp.route("/admin/users", methods=["GET"])
+def get_all_users():
+   user_id = session.get("user_id")
+   org = session.get("saml_org")
 
+   if not user_id or not org or not is_admin(user_id, org):
+       return jsonify({"error": "Unauthorized"}), 403
 
+   conn = connect_to_rds()
+   cursor = conn.cursor()
 
+   cursor.execute(
+       """
+       SELECT user_id, email, user_type, has_access 
+       FROM users 
+       WHERE company_name = %s
+       """,
+       (org,)
+   )
+
+   users = cursor.fetchall()
+
+   #  Apply access filter BEFORE closing connection
+   filtered_users = [
+       u for u in users
+       if can_access_user(user_id, u[0], org)
+   ]
+
+   cursor.close()
+   conn.close()
+
+   return jsonify(filtered_users)
+
+def has_access(user_id, org):
+   conn = connect_to_rds()
+   cursor = conn.cursor()
+
+   cursor.execute(
+       "SELECT user_type, has_access FROM users WHERE user_id = %s AND company_name = %s",
+       (user_id, org)
+   )
+
+   result = cursor.fetchone()
+
+   cursor.close()
+   conn.close()
+
+   if not result:
+       return False
+
+   user_type, access = result
+   if user_type == "admin":
+       return True
+
+   return bool(access)
+
+def has_admin_access(user_id, org):
+   conn = connect_to_rds()
+   cursor = conn.cursor()
+
+   cursor.execute(
+       "SELECT user_type, has_access FROM users WHERE user_id = %s AND company_name = %s",
+       (user_id, org)
+   )
+
+   result = cursor.fetchone()
+
+   cursor.close()
+   conn.close()
+
+   if not result:
+       return False
+
+   user_type, access = result
+
+   return user_type == "admin" and bool(access)
+
+@sso_bp.route("/admin/grant-access", methods=["POST"])
+def grant_access():
+   data = request.json
+   target_user = data.get("user_id")
+
+   if not target_user:
+       return jsonify({"error": "Missing user_id"}), 400
+
+   admin_id = session.get("user_id")
+   org = session.get("saml_org")
+
+   if not admin_id or not org or not is_admin(admin_id, org):
+       return jsonify({"error": "Unauthorized"}), 403
+
+   conn = connect_to_rds()
+   cursor = conn.cursor()
+
+   cursor.execute(
+       """
+       UPDATE users 
+       SET shared_with = 
+            CASE 
+                WHEN JSON_CONTAINS(COALESCE(shared_with, JSON_ARRAY()), JSON_QUOTE(%s))
+                THEN shared_with
+                ELSE JSON_ARRAY_APPEND(COALESCE(shared_with, JSON_ARRAY()), '$', %s)
+            END
+        WHERE user_id = %s AND company_name = %s
+        """,
+        (admin_id, admin_id, target_user, org)
+    )
+
+   conn.commit()
+   cursor.close()
+   conn.close()
+
+   return jsonify({"message": "Access granted"})
+@sso_bp.route("/admin/revoke-access", methods=["POST"])
+def revoke_access():
+   data = request.json
+   target_user = data.get("user_id")
+
+   if not target_user:
+       return jsonify({"error": "Missing user_id"}), 400
+
+   admin_id = session.get("user_id")
+   org = session.get("saml_org")
+
+   if not admin_id or not org or not is_admin(admin_id, org):
+       return jsonify({"error": "Unauthorized"}), 403
+
+   conn = connect_to_rds()
+   cursor = conn.cursor()
+
+   cursor.execute(
+       """
+       UPDATE users 
+       SET shared_with = JSON_REMOVE(
+           shared_with,
+           JSON_UNQUOTE(JSON_SEARCH(shared_with, 'one', %s))
+        )
+        WHERE user_id = %s AND company_name = %s
+        """,
+        (admin_id, target_user, org)
+        )
+
+   conn.commit()
+   cursor.close()
+   conn.close()
+
+   return jsonify({"message": "Access revoked"})
 
 # =========================
 # DASHBOARD
 # =========================
 @sso_bp.route("/dashboard")
 def dashboard():
-   if "user_id" not in session or session["user_id"] not in ACCESSIBLE_IDS:
-       return redirect("/auth/saml/login")
+  user_id = session.get("user_id")
+  org = session.get("saml_org")
 
-   if "user" not in session:
-       return redirect("/auth/saml/login")
+  if not user_id:
+      return redirect("/auth/saml/login")
 
-   return "Dashboard"
+  if not has_access(user_id, org):
+      return jsonify({"error": "Access denied"}), 403
+
+  return "Dashboard"

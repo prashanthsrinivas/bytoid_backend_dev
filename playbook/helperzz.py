@@ -922,7 +922,7 @@ def assign_runbook_playbook(runbook_id, playbook, userid):
     filename = playbook
     wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
     main_workflow = read_json_from_s3(wf_loc) or {}
-
+    print(runbook_id)
     # Always overwrite to keep source of truth
     main_workflow["runbook_id"] = runbook_id
     print("assigning runbook to playbook")

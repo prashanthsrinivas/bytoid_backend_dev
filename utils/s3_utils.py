@@ -151,7 +151,18 @@ def save_yaml_to_s3(data, user_id, filename):
         logger.error(f"Error writing YAML: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
+# SAVE FILE 
+def save_any_s3(filepath,s3_key):
+    s3 = s3bucket()
+    try:
+        s3.upload_file(filepath, S3_BUCKET, s3_key)
 
+        logger.info(f"Upload successful: {filepath} -> {s3_key}")
+
+        return {"status": "success", "s3_key": s3_key}
+    except Exception as e:
+        logger.error(f"Upload failed: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 # ---------------------------------------------------
 # READ JSON
 # ---------------------------------------------------

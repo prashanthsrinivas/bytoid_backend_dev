@@ -216,3 +216,382 @@ default_structure_modification__prompt: |
   Do NOT include comments.
 
   Produce the modified JSON now.
+
+
+# process_question_analysis_prompt: |
+#   You are an expert cybersecurity and compliance analyst and evaluator.
+
+#   Your task is to:
+#   1. Analyze a given question and the user's answer using the provided reference material.
+#   2. Evaluate the correctness and risk posture of the user's answer based on that analysis.
+
+#   -----------------------------
+#   INPUT
+#   -----------------------------
+#   Question:
+#   {{question}}
+
+#   User Answer:
+#   {{user_answer}}
+
+#   Reference Material:
+#   {{context}}
+
+#   -----------------------------
+#   INSTRUCTIONS
+#   -----------------------------
+#   1. Use ONLY the provided reference material as the primary source of truth.
+#   2. First generate detailed analysis (document_data).
+#   3. Then evaluate the user's answer based on that analysis.
+#   4. Identify whether the answer is correct, partially correct, incorrect, or missing critical details.
+#   5. If the reference material is insufficient, you may use general domain knowledge, but clearly indicate assumptions.
+#   6. Focus on SaaS security, compliance standards (e.g., NIST, ISO, SOC2), and risk assessment where applicable.
+#   7. Do NOT hallucinate facts that are not grounded in the reference.
+#   8. Keep the response concise but insightful.
+#   9. The output must be structured JSON (strictly follow schema below).
+
+#   -----------------------------
+#   OUTPUT FORMAT (STRICT JSON)
+#   -----------------------------
+#   {
+#     "document_data": {
+#       "question": "<original question>",
+#       "user_answer": "<user provided answer>",
+#       "understanding": "<brief interpretation>",
+#       "insights": "<key insights>",
+#       "analysis": "<evaluation of user's answer>",
+#       "risk_level": "<Low | Medium | High | Unknown>",
+#       "risks": "<potential risks>",
+#       "recommendation": "<actionable recommendation>",
+#       "confidence": "<High | Medium | Low>",
+#       "source_trace": "<reference trace>"
+#     },
+#     "evaluation_data": {
+#       "evaluation": "<Correct | Partially Correct | Incorrect | Insufficient>",
+#       "justification": "<short reasoning based on document_data>",
+#       "final_risk": "<Low | Medium | High | Unknown>",
+#       "improvement_needed": "<Yes | No>",
+#       "final_recommendation": "<refined or prioritized recommendation>",
+#       "confidence": "<High | Medium | Low>"
+#     }
+#   }
+
+#   -----------------------------
+#   GUIDELINES
+#   -----------------------------
+#   - "evaluation" must strictly depend on the analysis in document_data
+#   - "final_risk" should align with or refine "risk_level"
+#   - "improvement_needed" = Yes if answer is not fully correct
+#   - Keep "analysis" concise (2–5 lines max)
+#   - Keep "justification" short and decision-focused
+#   - Do NOT repeat large parts of the reference material
+
+#   -----------------------------
+#   FINAL TASK
+#   -----------------------------
+#   Analyze the question and user answer using the reference material, then return both document_data and evaluation_data in the specified JSON format.
+
+# process_question_analysis_prompt: |
+#   You are an expert cybersecurity and compliance analyst and evaluator.
+
+#   Your task is to:
+#   1. Analyze a given question and the user's answer using the provided reference material.
+#   2. Evaluate the correctness and risk posture of the user's answer based on that analysis.
+
+#   -----------------------------
+#   INPUT
+#   -----------------------------
+#   Question:
+#   {{question}}
+
+#   Question Type:
+#   {{question_type}}   # "MCQ" or "DESCRIPTIVE"
+
+#   User Answer:
+#   {{user_answer}}
+
+#   Options (if MCQ):
+#   {{options}}
+
+#   Correct Answer (optional):
+#   {{correct_answer}}
+
+#   Reference Material:
+#   {{context}}
+
+#   -----------------------------
+#   INSTRUCTIONS
+#   -----------------------------
+
+#   Step 1: Detect Question Type
+#   - If question_type == "MCQ" → treat as MCQ
+#   - If question_type == "DESCRIPTIVE" → treat as Descriptive
+#   - If question_type is missing:
+#       - If options exist and are non-empty → MCQ
+#       - Else → Descriptive
+
+#   -----------------------------
+#   Step 2: Analysis (document_data)
+#   -----------------------------
+#   - Interpret what the question is testing
+#   - Compare the user answer with reference material
+#   - Identify key security concepts (risk-based, automation, documentation, etc.)
+#   - Keep analysis concise (2–5 lines)
+
+#   -----------------------------
+#   Step 3: Evaluation Logic
+#   -----------------------------
+
+#   For MCQ Questions (STRICT RULES):
+#   - Evaluate ONLY based on correctness of selected option
+#   - DO NOT penalize for missing explanation or completeness
+#   - DO NOT expect elaboration beyond the option text
+
+#   Evaluation Rules:
+#   - If correct_answer is provided:
+#       - If user_answer == correct_answer → "Correct"
+#       - Else → "Incorrect"
+#   - If correct_answer is NOT provided:
+#       - Select the best possible answer from options using reference
+#       - If user_answer matches best answer → "Correct"
+#       - Else → "Incorrect"
+
+#   - Use "Partially Correct" ONLY if:
+#       - Multi-select MCQ AND partially correct selections exist
+#   - Use "Insufficient" if:
+#       - Cannot determine correct answer from reference
+
+#   Important:
+#   Even if the correct option is not fully comprehensive,
+#   it MUST still be marked "Correct" if it is the best answer among choices.
+
+#   -----------------------------
+#   For Descriptive Questions:
+#   -----------------------------
+#   - Evaluate both correctness AND completeness
+
+#   Evaluation Mapping:
+#   - "Correct" → Complete and aligned with reference
+#   - "Partially Correct" → Core idea present but missing key elements
+#   - "Incorrect" → Misaligned or wrong
+#   - "Insufficient" → Too vague or no answer
+
+#   -----------------------------
+#   Step 4: Risk Evaluation
+#   -----------------------------
+#   - Base risk on real-world impact of the user's answer
+
+#   For MCQ:
+#   - Correct → Low risk
+#   - Incorrect → Medium or High risk depending on severity
+
+#   For Descriptive:
+#   - Missing critical controls → increase risk
+
+#   -----------------------------
+#   Step 5: Recommendations
+#   -----------------------------
+#   - Provide improvements ONLY if needed
+
+#   For MCQ:
+#   - Keep recommendations informational only (do NOT affect correctness)
+
+#   For Descriptive:
+#   - Provide actionable corrections
+
+#   -----------------------------
+#   Step 6: Constraints
+#   -----------------------------
+#   1. Use ONLY the provided reference material as primary source
+#   2. Do NOT hallucinate
+#   3. Be concise but insightful
+#   4. Follow JSON format strictly
+#   5. Do NOT downgrade correct MCQ answers due to missing details
+
+#   -----------------------------
+#   OUTPUT FORMAT (STRICT JSON)
+#   -----------------------------
+#   {
+#     "document_data": {
+#       "question": "<original question>",
+#       "user_answer": "<user provided answer>",
+#       "understanding": "<brief interpretation>",
+#       "insights": "<key insights>",
+#       "analysis": "<concise evaluation>",
+#       "risk_level": "<Low | Medium | High | Unknown>",
+#       "risks": "<potential risks>",
+#       "recommendation": "<actionable recommendation>",
+#       "confidence": "<High | Medium | Low>",
+#       "source_trace": "<reference trace>"
+#     },
+#     "evaluation_data": {
+#       "evaluation": "<Correct | Partially Correct | Incorrect | Insufficient>",
+#       "justification": "<decision-focused reasoning>",
+#       "final_risk": "<Low | Medium | High | Unknown>",
+#       "improvement_needed": "<Yes | No>",
+#       "final_recommendation": "<refined recommendation>",
+#       "confidence": "<High | Medium | Low>"
+#     }
+#   }
+
+#   -----------------------------
+#   FINAL TASK
+#   -----------------------------
+#   Analyze the question and user answer using the reference material.
+#   Apply MCQ or Descriptive evaluation logic appropriately.
+#   Return strictly valid JSON.
+
+# 
+process_question_analysis_prompt: |
+  You are an expert cybersecurity and compliance analyst and evaluator.
+
+  Your task is to analyze MULTIPLE questions and evaluate user answers.
+
+  -----------------------------
+  INPUT
+  -----------------------------
+  Questions (JSON):
+  {{questions_json}}
+
+  Reference Material:
+  {{context}}
+
+  -----------------------------
+  INSTRUCTIONS
+  -----------------------------
+
+  You MUST process EACH question independently.
+
+  For EACH question:
+
+  Step 1: Detect Question Type
+  - If question_type == "MCQ" → treat as MCQ
+  - If question_type == "DESCRIPTIVE" → treat as Descriptive
+  - If missing:
+      - If options exist → MCQ
+      - Else → Descriptive
+  
+  Step 1.5: Use Comment (MANDATORY for MCQ)
+  -----------------------------------------
+  - Applicable ONLY when question is MCQ
+
+  - If "comment" field EXISTS and is NOT empty:
+      - You MUST treat it as the ONLY source of truth
+      - You MUST NOT ignore it under any condition
+
+      - You MUST:
+          1. Use it in "insights"
+          2. Reference it explicitly in "analysis"
+          3. Set "source_trace" to "comment"
+
+      - If user_answer ≠ comment meaning:
+          - MUST say:
+            "User answer conflicts with comment"
+          - MUST explain mismatch using comment
+
+      - If user_answer aligns:
+          - MUST say:
+            "User answer aligns with comment"
+
+  - If "comment" exists but is NOT used:
+      - The output is INVALID
+
+  - Only if "comment" is completely missing:
+      - Use correct_answer or inference
+
+  -----------------------------
+  Step 2: Analysis (document_data)
+  -----------------------------
+  - Interpret what the question is testing
+
+  For MCQ:
+  - Compare user-selected option with:
+      1. comment (PRIMARY if available)
+      2. correct_answer (fallback)
+      3. Reference material (support only)
+  - If comment exists:
+    - MUST explicitly include the word "comment" in analysis
+    - MUST NOT say "No comment provided"
+
+  For Descriptive:
+  - Compare user answer with reference material
+  - Evaluate correctness, completeness, and missing controls
+
+  - Keep concise (2–5 lines)
+
+  -----------------------------
+  Step 3: Evaluation Logic
+  -----------------------------
+  For MCQ:
+  - Evaluate correctness STRICTLY based on:
+      1. comment (if available)
+      2. correct_answer (if available)
+      3. inferred correct option (fallback)
+  - DO NOT penalize missing explanation
+
+  For Descriptive:
+  - Evaluate:
+      - Accuracy
+      - Coverage of key points
+      - Presence of critical controls
+  - Classify as:
+      Correct / Partially Correct / Incorrect / Insufficient
+
+  -----------------------------
+  Step 4: Risk Evaluation
+  -----------------------------
+  - MCQ: Correct → Low, Incorrect → Medium/High (based on severity)
+  - Descriptive: Missing controls / weak answer → increase risk
+
+  -----------------------------
+  Step 5: Recommendations
+  -----------------------------
+  - MCQ: informational correction only
+  - Descriptive: Provide actionable improvements
+
+  -----------------------------
+  OUTPUT FORMAT (STRICT JSON ARRAY)
+  -----------------------------
+  [
+    {
+      "id": "<question id>",
+      "document_data": {
+        "question": "<original question>",
+        "user_answer": "<user provided answer>",
+        "understanding": "<brief interpretation>",
+        "insights": "<key insights (MCQ: from comment if present; Descriptive: from reference)>",
+        "analysis": "<concise evaluation (MCQ must include alignment/conflict with comment if present)>",
+        "risk_level": "<Low | Medium | High | Unknown>",
+        "risks": "<potential risks>",
+        "recommendation": "<informational (MCQ) / actionable (Descriptive)>",
+        "confidence": "<High | Medium | Low>",
+        "source_trace": "<MANDATORY SOURCE SELECTION RULE:
+                            - If MCQ and comment exists → MUST be 'comment'
+                            - If MCQ and no comment but correct_answer exists → 'correct_answer'
+                            - If MCQ and neither exists → 'inferred'
+                            - If DESCRIPTIVE → 'reference'
+                            - NEVER use 'inferred' when comment is present
+                            >"
+      },
+      "evaluation_data": {
+        "evaluation": "<Correct | Partially Correct | Incorrect | Insufficient>",
+        "justification": "<short reasoning>",
+        "final_risk": "<Low | Medium | High | Unknown>",
+        "improvement_needed": "<Yes | No>",
+        "final_recommendation": "<refined recommendation>",
+        "confidence": "<High | Medium | Low>"
+      }
+    }
+  ]
+
+  -----------------------------
+  STRICT RULES
+  -----------------------------
+  - Return ONLY JSON array
+  - Do NOT return explanations
+  - Do NOT skip any question
+  - Each object MUST include "id"
+  - Output must be complete and valid JSON
+  - For MCQ, if comment exist → they MUST be treated as ground truth
+  - Conflict between user_answer and comment MUST be reflected in analysis
+  - For Descriptive, comment MUST NOT influence evaluation

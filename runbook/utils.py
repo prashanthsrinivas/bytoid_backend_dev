@@ -248,20 +248,20 @@ async def get_playbook_instruction(user_id, filename):
 
 
 async def retreval_from_sources(
-    conn, dbserver, main_source, datasources, userid, payload
+    conn, dbserver, main_source, filesources, userid, payload
 ):
     from umail.routes import get_sorted_lance_emails
     from apiConnector.helpers import _execute_endpoint_internal
 
-    print(main_source, datasources)
-    datasources = normalize_json_field(datasources)
+    print(main_source, filesources)
+    filesources = normalize_json_field(filesources)
 
     data_for_review = []
     # -------------------------
     # APP SOURCE
     # -------------------------
-    if main_source == "app" and datasources:
-        endpoint_ids = datasources.get("endpoint_ids", [])
+    if main_source == "app" and filesources:
+        endpoint_ids = filesources.get("endpoint_ids", [])
 
         for endpoint_id in endpoint_ids:
             try:
@@ -282,8 +282,8 @@ async def retreval_from_sources(
     # -------------------------
     # NOTES SOURCE
     # -------------------------
-    elif main_source == "notes" and datasources:
-        note_ids = datasources.get("note_ids", [])
+    elif main_source == "notes" and filesources:
+        note_ids = filesources.get("note_ids", [])
         all_notes = get_notes_data(userid)  # expect list[ {note_id, content, ...} ]
         # print("len of all_notes", len(all_notes), all_notes)
         for note in all_notes.get("notes"):
@@ -296,8 +296,8 @@ async def retreval_from_sources(
     # -------------------------
     # EMAIL SOURCE
     # -------------------------
-    elif main_source == "emails" and datasources:
-        client_ids = datasources.get("client_ids", [])
+    elif main_source == "emails" and filesources:
+        client_ids = filesources.get("client_ids", [])
         for i in client_ids:
             data_for_review.append(
                 {
@@ -315,54 +315,25 @@ async def retreval_from_sources(
     # -------------------------
     # KNOWLEDGE SOURCE (LanceDB / Docs)
     # -------------------------
-    elif main_source == "knowledge" and datasources:
-        filenames = datasources.get("filenames", [])
+    elif main_source == "knowledge" and filesources:
+        filenames = filesources.get("filenames", [])
         for file in filenames:
             if file.get("type") == "docs":
                 fname = file.get("filename")
                 # print("payload", payload)
-                if payload:
-                    print("in min data extraction")
-                    results = await dbserver.query_vector_filename(
-                        query=payload, filename=fname
-                    )
-                    if results:
-                        for item in results:
-                            data_for_review.append(
-                                {
-                                    "type": "docs",
-                                    "source": fname,
-                                    "data": str(item.get("text", "")),
-                                }
-                            )
-                    else:
-                        print("in fallback base")
-                        newdas = await dbserver.fetch_by_filename(
-                            user_id=userid, filename=fname
+                print("in full data extraction")
+                newdas = await dbserver.fetch_by_filename(
+                    user_id=userid, filename=fname
+                )
+                if newdas:
+                    for item in newdas:
+                        data_for_review.append(
+                            {
+                                "type": "docs",
+                                "source": fname,
+                                "data": str(item.get("text", "")),
+                            }
                         )
-                        if newdas:
-                            for item in newdas:
-                                data_for_review.append(
-                                    {
-                                        "type": "docs",
-                                        "source": fname,
-                                        "data": str(item.get("text", "")),
-                                    }
-                                )
-                else:
-                    print("in full data extraction")
-                    newdas = await dbserver.fetch_by_filename(
-                        user_id=userid, filename=fname
-                    )
-                    if newdas:
-                        for item in newdas:
-                            data_for_review.append(
-                                {
-                                    "type": "docs",
-                                    "source": fname,
-                                    "data": str(item.get("text", "")),
-                                }
-                            )
 
             elif file.get("type") == "aud":
                 bfname = file.get("filename")
@@ -582,8 +553,6 @@ def normalize_json_field(field):
     return None
 
 
-
-
 async def send(ws_sender, msg, user_id):
     if not msg:
         return
@@ -599,4 +568,3 @@ async def send(ws_sender, msg, user_id):
         progress=msg.get("progress"),
         feature="runbook",
     )
-

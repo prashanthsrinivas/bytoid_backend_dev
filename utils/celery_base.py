@@ -10,7 +10,12 @@ from dotenv import load_dotenv
 from celery import Celery
 from celery.utils.log import get_task_logger
 import asyncio
-from runbook.helper import trigger_runbooks_for_api_response
+from runbook.helper import (
+    analyze_questions_with_references,
+    trigger_runbooks_for_api_response,
+    trigger_scheduled_api_runbook,
+    trigger_scheduled_playbook_runbook,
+)
 from services.redis_service import RedisService
 
 from umail_helper.asyn_functions import fetchnextmonthmails, v2all_continuous
@@ -830,37 +835,206 @@ def trigger_runbooks_api_task(self, user_id, app_id, endpoint_id, record):
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.create_playbook_runbook_task")
-def create_playbook_runbook_task(self, user_id, playbook_id, rb_pb_id):
+def create_playbook_runbook_task(self, user_id, playbook_id, rb_pb_id, session_id=None):
     import asyncio
     from runbook.helper import trigger_runbook_from_playbook
+    from websockets_custom.ws_instance import ws_service
 
     print("🔥 PLAYBOOK RUNBOOK TASK STARTED")
 
     lock_key = f"playbook_runbook_lock:{user_id}:{playbook_id}"
 
     try:
-        # 🔒 Acquire lock (avoid duplicate execution)
+        # 🔒 Acquire lock
         acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
         if not acquired:
             return {"status": "skipped", "reason": "already_running"}
 
+        # 🚀 SEND START MESSAGE (only if session_id exists)
+        if session_id:
+            asyncio.run(
+                ws_service.emit(
+                    user_id=user_id,
+                    message="📊 Report generation started...",
+                    scope="session",
+                    session_id=session_id,
+                    msg_type="info",
+                    stage="start",
+                    progress=0,
+                    feature="runbook_execution",
+                )
+            )
+
         print("🚀 Running trigger_runbook_from_playbook inside Celery task")
 
-        # 🚀 Run async function safely
+        # 🚀 Execute async workflow
         result = run_async(
-            trigger_runbook_from_playbook(playbook_id=playbook_id, user_id=user_id,runbook_id=rb_pb_id)
+            trigger_runbook_from_playbook(
+                playbook_id=playbook_id,
+                user_id=user_id,
+                runbook_id=rb_pb_id,
+            )
         )
 
+        # ✅ SEND COMPLETION MESSAGE
+        if session_id:
+            asyncio.run(
+                ws_service.emit(
+                    user_id=user_id,
+                    message="✅ Report generation completed",
+                    scope="session",
+                    session_id=session_id,
+                    msg_type="success",
+                    stage="completed",
+                    progress=100,
+                    feature="runbook_execution",
+                )
+            )
+
         return {
-            "status": "completed", 
+            "status": "completed",
             "user_id": user_id,
             "playbook_id": playbook_id,
             "result": result,
         }
 
     except Exception as e:
-        # 🔁 Retry with exponential backoff
         countdown = min(2**self.request.retries, 300)
+        raise self.retry(exc=e, countdown=countdown)
+
+    finally:
+        # 🔓 Release lock
+        asyncio.run(lock_client.delete(lock_key))
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.trigger_scheduled_playbook_runbook")
+def trigger_scheduled_playbook_runbook_task(self, user_id, runbook_id):
+    import asyncio
+
+    print("🔥 PLAYBOOK TASK STARTED")
+    lock_key = f"scheduled_playbook_lock:{user_id}:{runbook_id}"
+
+    try:
+        # 🔒 Acquire lock
+        acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
+        if not acquired:
+            return {"status": "skipped", "reason": "already_running"}
+
+        print("🚀 Running trigger_scheduled_playbook_runbook")
+
+        # 🚀 Run async function
+        result = run_async(
+            trigger_scheduled_playbook_runbook(
+                user_id=user_id,
+                runbook_id=runbook_id,
+            )
+        )
+
+        return {
+            "status": "completed",
+            "type": "playbook",
+            "user_id": user_id,
+            "runbook_id": runbook_id,
+            "result": result,
+        }
+
+    except Exception as e:
+        countdown = min(2**self.request.retries, 300)
+        raise self.retry(exc=e, countdown=countdown)
+
+    finally:
+        # 🔓 Release lock
+        asyncio.run(lock_client.delete(lock_key))
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.trigger_scheduled_api_runbook")
+def trigger_scheduled_api_runbook_task(self, user_id, runbook_id):
+    import asyncio
+
+    print("🔥 API TASK STARTED")
+    lock_key = f"scheduled_api_lock:{user_id}:{runbook_id}"
+
+    try:
+        # 🔒 Acquire lock
+        acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
+        if not acquired:
+            return {"status": "skipped", "reason": "already_running"}
+
+        print("🚀 Running trigger_scheduled_api_runbook")
+
+        # 🚀 Run async function
+        result = run_async(
+            trigger_scheduled_api_runbook(
+                user_id=user_id,
+                runbook_id=runbook_id,
+            )
+        )
+
+        return {
+            "status": "completed",
+            "type": "api",
+            "user_id": user_id,
+            "runbook_id": runbook_id,
+            "result": result,
+        }
+
+    except Exception as e:
+        countdown = min(2**self.request.retries, 300)
+        raise self.retry(exc=e, countdown=countdown)
+
+    finally:
+        # 🔓 Release lock
+        asyncio.run(lock_client.delete(lock_key))
+@celery.task(bind=True, max_retries=3, name="tasks.analyze_runbook_questions")
+def analyze_runbook_questions_task(
+    self,
+    user_id,
+    questions,
+    reference_source,
+    reference_main_source,
+    runbook,
+):
+    import asyncio
+
+    print("🔥 ANALYZE TASK STARTED")
+
+    lock_key = f"analyze_lock:{user_id}:{runbook.get('runbook_id')}"
+
+    try:
+        # 🔒 Acquire lock (prevent duplicate execution)
+        acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
+        if not acquired:
+            return {"status": "skipped", "reason": "already_running"}
+
+        print("🚀 Running analyze_questions_with_references")
+
+        # 🚀 Run async function
+        result = run_async(
+            analyze_questions_with_references(
+                questions,
+                reference_source,
+                reference_main_source,
+                user_id,
+                runbook,
+            )
+        )
+
+        if not result:
+            print("⚠️ No analysis results generated")
+
+        return {
+            "status": "completed",
+            "type": "analysis",
+            "user_id": user_id,
+            "runbook_id": runbook.get("runbook_id"),
+            "total_questions": len(questions),
+            "result": result,
+        }
+
+    except Exception as e:
+        print(f"❌ Error in analyze task: {e}")
+
+        countdown = min(2 ** self.request.retries, 300)
         raise self.retry(exc=e, countdown=countdown)
 
     finally:

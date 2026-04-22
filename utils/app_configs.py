@@ -17,6 +17,9 @@ DEV_ORIGINS = {
     "https://preview--bytoid-45.lovable.app",
     "https://preview--bytoiddev.lovable.app",
     "https://dev.bytoid.ai",
+    "preview--bytoiddev.lovable.app",
+    "preview--bytoid-45.lovable.app",
+    "dev.bytoid.ai",
 }
 
 ALLOWED_ORIGINS = PROD_ORIGINS | (DEV_ORIGINS if IS_DEV else set())

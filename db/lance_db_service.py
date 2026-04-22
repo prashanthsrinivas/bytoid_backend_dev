@@ -3079,8 +3079,6 @@ class LanceDBServer:
 
         return result
 
-        return result.iloc[0].to_dict()
-
     # get all runbooks of user
     async def get_user_runbook(self, user_id: str):
 
@@ -3125,21 +3123,32 @@ class LanceDBServer:
             return table.search().where(f'runbook_id == "{runbook_id}"').to_list()
 
         records = await asyncio.to_thread(_query)
-        print("records ", records)
         existing = records[0] if records else None
 
         if not existing:
             raise ValueError("Runbook not found")
 
-        # Step 2: Merge updates
-        updated_row = {
-            **existing,
-            **updates,
-        }
+        # ✅ Normalize function (FINAL GUARD)
+        def normalize(value):
+            if isinstance(value, (dict, list)):
+                return json.dumps(value)
+            if value is None:
+                return ""
+            return value
+
+        # Step 2: Merge + normalize EVERYTHING
+        merged = {**existing, **updates}
+
+        updated_row = {k: normalize(v) for k, v in merged.items()}
+
+        # 🧪 DEBUG (optional - remove later)
+        for k, v in updated_row.items():
+            if isinstance(v, (dict, list)):
+                print(f"🚨 STRUCT STILL FOUND: {k} -> {type(v)}")
 
         # Step 3: Delete old record
         def _delete():
-            table.delete(f'runbook_id = "{runbook_id}"')
+            table.delete(f'runbook_id == "{runbook_id}"')  # ✅ FIXED
 
         await asyncio.to_thread(_delete)
 
@@ -3312,7 +3321,7 @@ class LanceDBServer:
         table = await self._open_or_create_runbook_results_table(user_id)
 
         def _query():
-            return table.search().where(f'runbook_id = "{runbook_id}"').to_list()
+            return table.search().where(f'runbook_id == "{runbook_id}"').to_list()
 
         results = await asyncio.to_thread(_query)
 
@@ -3323,7 +3332,7 @@ class LanceDBServer:
         table = await self._open_or_create_runbook_results_table(user_id)
 
         def _query():
-            return table.search().where(f'user_id = "{user_id}"').to_list()
+            return table.search().where(f'user_id == "{user_id}"').to_list()
 
         results = await asyncio.to_thread(_query)
 
@@ -3422,15 +3431,26 @@ class LanceDBServer:
         def _query():
             return (
                 table.search()
-                .where(f'result_id = "{result_id}" AND status = "completed"')
+                .where(f'result_id == "{result_id}" and status == "completed"')
                 .to_list()
             )
 
         rows = await asyncio.to_thread(_query)
-
+        if not rows:
+            return {
+                "status": "not_found",
+                "message": f"No completed result found for result_id={result_id}",
+                "data": None,
+            }
         row = rows[0]
         # Parse result JSON safely
         row["result"] = _safe_json_parse(row.get("result"))
+        if row.get("status") != "completed":
+            return {
+                "status": "running",
+                "message": "Execution still in progress",
+                "data": row,
+            }
 
         return row
 
@@ -3476,121 +3496,3 @@ class LanceDBServer:
         await asyncio.to_thread(_update)
 
         return {"status": "updated", "runbook_id": runbook_id}
-
-    # async def _create_updated_runbook_schema(self):
-    #     return pa.schema([
-    #         pa.field("runbook_id", pa.string()),
-    #         pa.field("user_id", pa.string()),
-    #         pa.field("name", pa.string()),
-    #         pa.field("description", pa.string()),
-    #         pa.field("runbook_type", pa.string()),
-    #         pa.field("schedule", pa.string()),
-
-    #         pa.field("input_type", pa.string()),
-    #         pa.field("playbook_id", pa.string()),
-    #         pa.field("api_endpoint", pa.string()),
-
-    #         # ✅ existing
-    #         pa.field("log_source", pa.string()),
-
-    #         pa.field("files", pa.string()),
-    #         pa.field("links", pa.string()),
-
-    #         # ✅ UPDATED → JSON stored as string
-    #         pa.field("data_sources", pa.string()),
-    #         pa.field("reference_sources", pa.string()),
-
-    #         # ✅ NEW columns
-    #         pa.field("app_id", pa.string()),
-    #         pa.field("is_template", pa.string()),
-    #         pa.field("structure_theme", pa.string()),
-    #         pa.field("playbook_source", pa.string()),
-    #         pa.field("api_source", pa.string()),
-    #         pa.field("log_file", pa.string()),
-    #         pa.field("main_source", pa.string()),
-    #         pa.field("reference_main_source",pa.string()),
-
-    #         pa.field("created_at", pa.timestamp("us")),
-    #     ])
-
-    # async def migrate_runbook_table(self, user_id: str):
-    #     table_name = f"runbook_{user_id}"
-    #     self.db = self._connect_if_needed()
-
-    #     # 1. Open table
-    #     table = await asyncio.to_thread(lambda: self.db.open_table(table_name))
-
-    #     # 2. Fetch records (Cloud-safe)
-    #     def fetch_all():
-    #         offset = 0
-    #         batch_size = 1000
-    #         all_rows = []
-
-    #         while True:
-    #             batch = table.search().limit(batch_size).offset(offset).to_list()
-    #             if not batch:
-    #                 break
-    #             all_rows.extend(batch)
-    #             offset += batch_size
-
-    #         return all_rows
-
-    #     records = await asyncio.to_thread(fetch_all)
-
-    #     # 3. Helper
-    #     def to_json_safe(val):
-    #         if val is None:
-    #             return json.dumps({})
-    #         if isinstance(val, str):
-    #             return val
-    #         return json.dumps(val)
-
-    #     # 4. Transform records
-    #     new_records = []
-    #     for row in records:
-    #         row["data_sources"] = to_json_safe(row.get("data_sources"))
-    #         row["reference_sources"] = to_json_safe(row.get("reference_sources"))
-    #         row["files"] = to_json_safe(row.get("files"))
-    #         row["links"] = to_json_safe(row.get("links"))
-
-    #         # ⚠️ DO NOT TOUCH schedule (keep as string)
-
-    #         # New fields (match schema EXACTLY)
-    #         row.setdefault("app_id", "")
-    #         row.setdefault("is_template", "")
-    #         row.setdefault("structure_theme", json.dumps({}))
-    #         row.setdefault("playbook_source", "")
-    #         row.setdefault("api_source", "")
-    #         row.setdefault("log_file", "")
-    #         row.setdefault("main_source", "")
-    #         row.setdefault("reference_main_source", "")
-
-    #         new_records.append(row)
-
-    #     # 5. New schema
-    #     new_schema = await self._create_updated_runbook_schema()
-
-    #     # 6. Overwrite table (no Arrow needed)
-    #     await asyncio.to_thread(
-    #         lambda: self.db.create_table(
-    #             table_name,
-    #             data=new_records,
-    #             schema=new_schema,
-    #             mode="overwrite"
-    #         )
-    #     )
-
-    #     # 7. Validate schema
-    #     updated_table = await asyncio.to_thread(lambda: self.db.open_table(table_name))
-    #     updated_schema = updated_table.schema
-
-    #     columns = [
-    #         {"name": field.name, "type": str(field.type)}
-    #         for field in updated_schema
-    #     ]
-
-    #     return {
-    #         "status": "success",
-    #         "rows_migrated": len(new_records),
-    #         "columns": columns
-    #     }

@@ -8,6 +8,8 @@ from flask import (
     jsonify,
     session,
 )
+from playbook.background_worker import JobManager
+from utils.app_configs import DEV_ORIGINS
 from utils.async_check import run_async
 from agent_route.ag_helperzz import (
     remove_https_prefix,
@@ -75,7 +77,7 @@ logger = get_logger(__name__)
 load_dotenv()
 
 user_query_history = defaultdict(list)
-dev_val = os.getenv("BASE_FRNT_URL", "")
+dev_val = DEV_ORIGINS
 
 
 @agent_bps.route("/save-training-settings", methods=["POST"])
@@ -651,32 +653,41 @@ async def semantically_repeated_response(
     return fallback_response
 
 
-@agent_bps.route("/process-query-key", methods=["POST"])
-async def checkquerywithApiKey():
+async def process_query_worker(data, job_id=None):
+    connection = None
     try:
+        # job_id = None
+        import json, time, uuid, base64, asyncio, threading
+        from websockets_custom.ws_instance import ws_service, msg_builder_main
+        from runbook.utils import send
+
+        print("started on query")
+
+        msg_builder = msg_builder_main
         # print("Query made by:", session.get("user", {}))
         response_data = []
         summary_generated = ""
-
-        data = request.json
         previous_query = data.get("previous_query", "").strip()
         previous_response = data.get("previous_response").strip()
         querytext = data.get("query", "").strip()
         conversation_summary = data.get("conversation_summary")
+        session_id = data.get("session_id")
         # print(f"conversation_summary received: {conversation_summary}")
         api_key = data.get("api_key")
         if not api_key:
-            return jsonify({"error": "API key is required"}), 400
+            return {"error": "API key is required"}, 400
         website = (
             remove_https_prefix(data.get("website")) if data.get("website") else None
         )
         if not website:
-            return jsonify({"error": "Website is required"}), 400
+            return {"error": "Website is required"}, 400
         if not querytext:
-            return jsonify({"error": "Query is required"}), 400
+            return {"error": "Query is required"}, 400
+        print(job_id, session_id)
 
         connection = connect_to_rds()
         credits = Credits(db=connection)
+
         with connection.cursor() as cursor:
             # Check if the API key exists for the user
             cursor.execute(
@@ -685,14 +696,30 @@ async def checkquerywithApiKey():
             )
             user_row = cursor.fetchone()
             if not user_row:
-                return jsonify({"error": "Invalid API key"}), 401
+                return {"error": "Invalid API key"}, 401
 
             userid, userwebsite = user_row
-            if website != userwebsite or website != dev_val:
-                return (
-                    jsonify({"error": "API key does not match the provided website"}),
-                    401,
+
+            async def emit(msg):
+                if job_id and session_id:
+                    await send(ws_service, msg, userid)
+
+            await emit(
+                msg_builder.job_progress(
+                    job_id,
+                    session_id,
+                    "INIT",
+                    "Validating user information",
+                    15,
                 )
+            )
+
+            if website not in dev_val:
+                if website != userwebsite:
+                    return (
+                        {"error": "API key does not match the provided website"},
+                        401,
+                    )
             if not check_userid_valid(userid):
                 return jsonify({"error": "Invalid access"}), 404
 
@@ -703,8 +730,24 @@ async def checkquerywithApiKey():
             )
             repeated_fallback_response = repeated_check_ans["fallback_response"]
             is_repeated = repeated_check_ans["is_repeated"]
+            await emit(
+                msg_builder.job_progress(
+                    job_id,
+                    session_id,
+                    "diagnosing",
+                    "Checking previous responses",
+                    25,
+                )
+            )
 
             if is_repeated:
+                await emit(
+                    msg_builder.job_success(
+                        job_id,
+                        session_id,
+                        "retrieved message",
+                    )
+                )
                 response_data.append(
                     {
                         "id": "",
@@ -712,9 +755,10 @@ async def checkquerywithApiKey():
                         "extracted_answer": repeated_fallback_response,
                         "full_text": "",
                         "conversation_summary": conversation_summary,
+                        "job_id": job_id,
                     }
                 )
-                return jsonify(response_data), 200
+                return response_data, 200
 
             # validate the input query
             validated_respone = load_yaml_file(path=pathconfig.query_validation)
@@ -737,7 +781,7 @@ async def checkquerywithApiKey():
             except ValueError as e:
                 # print(f"🔥 Query validation parsing failed: {e}")
                 return (
-                    jsonify({"error": "Failed to parse query validation response"}),
+                    {"error": "Failed to parse query validation response"},
                     500,
                 )
             validated_query = result.get("question")
@@ -745,6 +789,15 @@ async def checkquerywithApiKey():
             summary_generated = result.get("summary_generated")
             # print(f"type : {type}")
             # print(f"summary : {summary_generated}")
+            await emit(
+                msg_builder.job_progress(
+                    job_id,
+                    session_id,
+                    "diagnosing",
+                    "validating the query",
+                    25,
+                )
+            )
 
             if (
                 type == "general"
@@ -760,10 +813,18 @@ async def checkquerywithApiKey():
                         "extracted_answer": validated_query,
                         "full_text": "",
                         "conversation_summary": summary_generated,
+                        "job_id": job_id,
                     }
                 )
+                await emit(
+                    msg_builder.job_success(
+                        job_id,
+                        session_id,
+                        "retrieved message",
+                    )
+                )
                 connection.commit()
-                return jsonify(response_data), 200
+                return response_data, 200
 
             elif type == "repetition":
                 response = await semantically_repeated_response(
@@ -776,13 +837,29 @@ async def checkquerywithApiKey():
                         "extracted_answer": response,
                         "full_text": "",
                         "conversation_summary": summary_generated,
+                        "job_id": job_id,
                     }
                 )
                 connection.commit()
-                return jsonify(response_data), 200
+                await emit(
+                    msg_builder.job_success(
+                        job_id,
+                        session_id,
+                        "retrieved message",
+                    )
+                )
+                return response_data, 200
 
             else:
-
+                await emit(
+                    msg_builder.job_progress(
+                        job_id,
+                        session_id,
+                        "checking",
+                        "checking on the knowledge based",
+                        35,
+                    )
+                )
                 # Check for exact match in passed_ques.yaml
                 passed_yaml_path = f"{userid}/yaml/passed_ques.yaml"
                 valid_ones = load_yaml_from_s3(passed_yaml_path)
@@ -800,9 +877,15 @@ async def checkquerywithApiKey():
                                     "extracted_answer": each.get("Ai Response", ""),
                                     "full_text": "",
                                     "conversation_summary": summary_generated,
+                                    "job_id": job_id,
                                 }
                             )
-                            return jsonify(response_data), 200
+                            await emit(
+                                msg_builder.job_success(
+                                    job_id, session_id, "retrieved message success"
+                                )
+                            )
+                            return response_data, 200
 
                 # If no exact match, perform vector search
                 base_doc_ans = []
@@ -819,6 +902,15 @@ async def checkquerywithApiKey():
                         clean_text = r.get("text", "").encode().decode("unicode_escape")
                         base_doc_ans.append(clean_text)
                     # print("***** after calling query_vector")
+                await emit(
+                    msg_builder.job_progress(
+                        job_id,
+                        session_id,
+                        "extracting",
+                        "extracting business information",
+                        45,
+                    )
+                )
 
                 # Fetch business info
                 businessdata = get_business_info(connection=connection, userid=userid)
@@ -863,7 +955,7 @@ async def checkquerywithApiKey():
                 except ValueError as e:
                     # print(f"🔥 Base evaluation parsing failed: {e}")
                     return (
-                        jsonify({"error": "Failed to parse base evaluation response"}),
+                        {"error": "Failed to parse base evaluation response"},
                         500,
                     )
 
@@ -891,10 +983,16 @@ async def checkquerywithApiKey():
                             "extracted_answer": base_response,
                             "full_text": "",
                             "conversation_summary": summary_generated,
+                            "job_id": job_id,
                         }
                     )
                     connection.commit()
-                    return jsonify(response_data), 200
+                    await emit(
+                        msg_builder.job_success(
+                            job_id, session_id, "retrieved message successfully"
+                        )
+                    )
+                    return response_data, 200
 
                 elif no_answer_found == "Partial":
                     # genereate fall back response when no_answer_found is true or partial
@@ -933,7 +1031,7 @@ async def checkquerywithApiKey():
                     except ValueError as e:
                         # print(f"🔥 Fallback response parsing failed: {e}")
                         return (
-                            jsonify({"error": "Failed to parse fallback response"}),
+                            {"error": "Failed to parse fallback response"},
                             500,
                         )
 
@@ -948,13 +1046,30 @@ async def checkquerywithApiKey():
                             "extracted_answer": fallback_response,
                             "full_text": "",
                             "conversation_summary": summary_generated,
+                            "job_id": job_id,
                         }
                     )
+                    await emit(
+                        msg_builder.job_success(
+                            job_id,
+                            session_id,
+                            "retrieved message successfully",
+                        )
+                    )
                     connection.commit()
-                    return jsonify(response_data), 200
+                    return response_data, 200
 
                 else:
                     # print(f"inside true part")
+                    await emit(
+                        msg_builder.job_progress(
+                            job_id,
+                            session_id,
+                            "rechecking",
+                            "rechecking the previous responses",
+                            45,
+                        )
+                    )
                     fallback_respone = load_yaml_file(path=pathconfig.query_validation)
                     prompt = fallback_respone.get("fallback_no_answer")
                     # print(f"str(querytext) : {str(querytext)}")
@@ -975,7 +1090,7 @@ async def checkquerywithApiKey():
                     except ValueError as e:
                         # print(f"🔥 Fallback response parsing failed: {e}")
                         return (
-                            jsonify({"error": "Failed to parse fallback response"}),
+                            {"error": "Failed to parse fallback response"},
                             500,
                         )
 
@@ -990,21 +1105,39 @@ async def checkquerywithApiKey():
                             "extracted_answer": fallback_response,
                             "full_text": "",
                             "conversation_summary": summary_generated,
+                            "job_id": job_id,
                         }
                     )
+                    await emit(
+                        msg_builder.job_success(
+                            job_id,
+                            session_id,
+                            "retrieved message successfully",
+                        )
+                    )
                     connection.commit()
-                    return jsonify(response_data), 200
+                    return response_data, 200
         except Exception as e:
             # print(f"error in cehckquerywithApiKey:{e} ")
-            return jsonify({"error": str(e)}), 400
+            return {"error": str(e)}, 400
 
     except Exception as e:
         # print("❌ Error during query processing:", e)
         connection.rollback()
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400
     finally:
         if connection:
             connection.close()
+
+
+@agent_bps.route("/process-query-key", methods=["POST"])
+async def checkquerywithApiKey():
+    data = request.json
+    print(data)
+
+    job_id = await JobManager.submit_job(process_query_worker, data)
+
+    return jsonify({"status": "accepted", "job_id": job_id}), 202
 
 
 def getFilenameData(fetched_userid):

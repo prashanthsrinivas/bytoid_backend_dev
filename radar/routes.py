@@ -20,6 +20,7 @@ from radar.radar_helpers import (
     extract_json,
     process_file_payloads,
 )
+from runbook.utils import normalize_json_field
 from services.redis_service import RedisService
 from umail.routes import get_sorted_lance_emails
 from utils.fireworkzz import (
@@ -90,15 +91,17 @@ def radarapp(userid):
 
 
 async def retreval_from_sources(
-    conn, dbserver, main_source, datasources, userid, payload
+    conn, dbserver, main_source, filesources, userid, payload
 ):
 
     data_for_review = []
+    print(main_source, filesources)
+    filesources = normalize_json_field(filesources)
     # -------------------------
     # APP SOURCE
     # -------------------------
     if main_source == "app":
-        endpoint_ids = datasources.get("endpoint_ids", [])
+        endpoint_ids = filesources.get("endpoint_ids", [])
 
         for endpoint_id in endpoint_ids:
             try:
@@ -120,7 +123,7 @@ async def retreval_from_sources(
     # NOTES SOURCE
     # -------------------------
     elif main_source == "notes":
-        note_ids = datasources.get("note_ids", [])
+        note_ids = filesources.get("note_ids", [])
         all_notes = get_notes_data(userid)  # expect list[ {note_id, content, ...} ]
         # print("len of all_notes", len(all_notes), all_notes)
         for note in all_notes.get("notes"):
@@ -134,7 +137,7 @@ async def retreval_from_sources(
     # EMAIL SOURCE
     # -------------------------
     elif main_source == "emails":
-        client_ids = datasources.get("client_ids", [])
+        client_ids = filesources.get("client_ids", [])
         for i in client_ids:
             data_for_review.append(
                 {
@@ -153,7 +156,7 @@ async def retreval_from_sources(
     # KNOWLEDGE SOURCE (LanceDB / Docs)
     # -------------------------
     elif main_source == "knowledge":
-        filenames = datasources.get("filenames", [])
+        filenames = filesources.get("filenames", [])
         for file in filenames:
             if file.get("type") == "docs":
                 fname = file.get("filename")

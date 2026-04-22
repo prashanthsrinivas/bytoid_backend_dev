@@ -50,7 +50,7 @@ async def create_new_instruction():
     return jsonify({"status": "accepted", "job_id": job_id})
 
 
-async def create_instruction_worker(data):
+async def create_instruction_worker(data, job_id=None, session_id=None):
 
     db = connect_to_rds()
     userid = data["user_id"]
@@ -112,7 +112,7 @@ async def create_instruction_worker(data):
         db.close()
 
 
-async def updateInstruction_worker(data):
+async def updateInstruction_worker(data, job_id=None, session_id=None):
     import json
     import asyncio
 
@@ -2058,6 +2058,7 @@ def updatequestionsworkflow():
     # print("dadss", data)
     userid = data.get("user_id")
     answer = data.get("answer")
+    comment = data.get("comment")
     filename = data.get("filename")
     chat_id = data.get("chat_id")
     question_id = data.get("question_id")
@@ -2094,7 +2095,7 @@ def updatequestionsworkflow():
         testing=True,
     ) as service:
         result = asyncio.run(
-            service.answer_questions(answer=answer, qid=question_id, chid=chat_id)
+            service.answer_questions(answer=answer,comment=comment, qid=question_id, chid=chat_id)
         )
 
     # current_user_id.reset(token)
@@ -2447,7 +2448,9 @@ async def check_formcreation():
     return jsonify({"message": kak})
 
 
-async def send_ques_byfile_bk(user_id, extracted_files, filename):
+async def send_ques_byfile_bk(
+    user_id, extracted_files, filename, job_id=None, session_id=None
+):
     from services.automate_service import AutoMateService
 
     credits = Credits()
@@ -2511,7 +2514,9 @@ async def generate_ques_by_file():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-async def answer_ques_file_bk(user_id, extracted_files, filename, step_id, file_keys):
+async def answer_ques_file_bk(
+    user_id, extracted_files, filename, step_id, file_keys, job_id=None, session_id=None
+):
 
     credits = Credits()
     if not filename.lower().endswith(".json"):

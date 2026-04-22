@@ -654,7 +654,8 @@ class AutoMateService:
             {{
             "id": "{current_time_prefix}_<unique_suffix>",
             "question": "<question text>",
-            "user_answer": null
+            "user_answer": null,
+            "comment":null
             }}
 
             MCQ QUESTION (ONLY IF REQUIRED):
@@ -667,7 +668,8 @@ class AutoMateService:
             "C": "<option>",
             "D": "<option>"
             }},
-            "user_answer": null
+            "user_answer": null,
+            "comment":null
             }}
 
             STRUCTURED QUESTION WITH SECTIONS (ONLY IF VALID):
@@ -677,7 +679,8 @@ class AutoMateService:
             "subsection": "<subsection name>",
             "question": "<question text>",
             "options": {{ ...optional for MCQ... }},
-            "user_answer": null
+            "user_answer": null,
+            "comment":null
             }}
 
             ===========================
@@ -1292,7 +1295,8 @@ class AutoMateService:
                     "A": "...",
                     "B": "..."
                     }},
-                    "user_answer": null
+                    "user_answer": null,
+                    "comment":null
                 }}
                 ]
 

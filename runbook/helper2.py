@@ -95,6 +95,35 @@ COLOR RULES:
 "#9C27B0" comparison
 """
 
+REPORT_MESSAGES = {
+    "start": "Initializing report generation...",
+    "phases": [
+        "Analyzing input data",
+        "Structuring report sections",
+        "Generating insights",
+        "Compiling report",
+    ],
+    "chunk_start": "Generating report section {current}/{total}...",
+    "chunk_success": "Report section {current} generated.",
+    "chunk_warning": "Section {current} had minor formatting issues.",
+    "chunk_error": "Issue while generating section {current}.",
+    "final": "Report generation completed successfully.",
+}
+RISK_MESSAGES = {
+    "start": "Initializing risk analysis...",
+    "phases": [
+        "Scanning risk inputs",
+        "Evaluating threats",
+        "Calculating impact",
+        "Finalizing risk report",
+    ],
+    "chunk_start": "Analyzing risk segment {current}/{total}...",
+    "chunk_success": "Risk segment {current} analyzed.",
+    "chunk_warning": "Partial issue in risk segment {current}.",
+    "chunk_error": "Error during risk analysis segment {current}.",
+    "final": "Risk analysis completed successfully.",
+}
+
 
 def has_chart_block(instructions):
     return any(b.get("block_type") == "chart" for b in instructions)
@@ -600,6 +629,7 @@ async def modify_run_runbook_execution_engine(
                 job_id=job_id,
                 session_id=session_id,
                 msg_builder=msg_builder,
+                progress_messages=REPORT_MESSAGES,  # ✅
             )
             merged_report = merge_runbook_chunks_deterministic(result)
 
@@ -608,6 +638,16 @@ async def modify_run_runbook_execution_engine(
         else:
             merged_result = last_runbook_response or {}
             merged_result["blocks"] = existing_blocks
+
+    await emit(
+        msg_builder.job_progress(
+            job_id,
+            session_id,
+            "Report",
+            "generating new report content done",
+            80,
+        )
+    )
 
     # =========================================================
     # RISK ANALYSIS (UNCHANGED)
@@ -665,6 +705,12 @@ async def modify_run_runbook_execution_engine(
         user_id=user_id,
         credits=credits,
         total_input_chars=len(risk_prompt),
+        emit=emit,
+        mprogress=80,
+        job_id=job_id,
+        session_id=session_id,
+        msg_builder=msg_builder,
+        progress_messages=RISK_MESSAGES,
     )
 
     risk_data = _safe_json_parse(risk_result)
@@ -700,6 +746,13 @@ async def modify_run_runbook_execution_engine(
                 job_id,
                 session_id,
                 "generated risk analysis and saving it to report",
+            )
+        )
+        name = runbook["name"] or runbook_id
+        await emit(
+            msg_builder.global_session_msg(
+                session_id=session_id,
+                message= f"generated report for {name}",
             )
         )
 

@@ -40,6 +40,7 @@ from apiConnector.routes import apiconnector_bp
 from radar.routes import radar_bp
 from runbook.routes import runbook_bp
 from sso_by.routes import sso_bp
+from websockets_custom.routes import ws_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -62,8 +63,6 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 
 ALLOWED_SCHEMES = ["bytoid", "user-app", "exp"]
-
-
 
 
 def is_origin_allowed(origin: str | None) -> bool:
@@ -96,7 +95,8 @@ def after_request(response):
     if is_origin_allowed(origin):
         # If no origin (mobile app), use *
         # If has origin, echo it back
-        response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Methods"] = (
             "GET, POST, PUT, DELETE, OPTIONS"
@@ -151,6 +151,7 @@ blueprints = [
     radar_bp,
     runbook_bp,
     sso_bp,
+    ws_bp,
 ]
 
 for bp in blueprints:

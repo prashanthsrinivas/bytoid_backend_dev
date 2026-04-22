@@ -9,6 +9,9 @@ from session_manager_route.session_redis import (
 from utils.base_logger import get_logger
 from functools import wraps
 from flask_cors import CORS
+from db.rds_db import connect_to_rds
+import pymysql
+import json
 
 logger = get_logger(__name__)
 BASE_ORGINS = [
@@ -41,58 +44,90 @@ def register_session_check(app):
 
     @app.before_request
     def session_check():
-        if request.method == "OPTIONS" or request.path in EXEMPT_PATHS:
+        print("PATH:", request.path)
+        print("SESSION ID:", request.cookies.get("session_id"))
+        print("ACCESS TOKEN:", request.cookies.get("access_token"))
+        if request.method == "OPTIONS" or any(request.path.startswith(p) for p in EXEMPT_PATHS):
             return None  # allow exempt requests
 
         session_hash = request.cookies.get("session_id")
-        access_token = request.cookies.get("access_token") or request.headers.get(
-            "Authorization"
-        )
-        path = request.path
+        access_token = request.cookies.get("access_token") 
+
+        if not access_token:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                access_token = auth_header.split(" ")[1]
+
 
         if not session_hash or not access_token:
-            logger.warning("NO session_hash or access_token")
+            logger.warning("Missing session or token")
             return (
-                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                jsonify({"error": "Session expired", "redirect": "/login"}),
                 401,
             )
         session, key_str = asyncio.run(get_session(session_hash, request))
         if not session:
-            logger.warning("NO session")
+            logger.warning("Invalid session")
             asyncio.run(delete_all_session_cookies(key_str))
             return (
-                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                jsonify({"error": "Session expired", "redirect": "/login"}),
                 401,
             )
-        client_ip = request.remote_addr
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else request.remote_addr
         client_ua = request.headers.get("User-Agent")
 
-        if session["ip"] != client_ip or session["user_agent"] != client_ua:
-            logger.warning("client_ip or ua not same")
+        if session("user_agent") != client_ua:
+            logger.warning("User agent mismatch")
             asyncio.run(delete_all_session_cookies(key_str))
             return (
-                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                jsonify({"error": "Session expired", "redirect": "/login"}),
                 401,
             )
         now = datetime.now(timezone.utc)
-        expiry_str = session["session_expiry"]
+        expiry_str = session.get("session_expiry")
+        if not expiry_str:
+            return jsonify({"error": "Session expired", "redirect": "/login"}), 401
         expiry = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
 
-        # if expiry < now:
-        #     logger.warning("session expired")
-        #     asyncio.run(delete_all_session_cookies(key_str))
-        #     return jsonify({"error": "Authentication required", "redirect": "/login"}), 401
+        if expiry < now:
+             logger.warning("session expired")
+             asyncio.run(delete_all_session_cookies(key_str))
+             return jsonify({"error": "Session expired", "redirect": "/login"}), 401
         is_valid, new_tokens = asyncio.run(
             validate_and_refresh_tokens(session_hash, session, access_token, key_str)
         )
         if not is_valid:
             logger.warning("Token validation failed")
             return (
-                jsonify({"error": "Authentication required", "redirect": "/login"}),
+                jsonify({"error": "Session expired", "redirect": "/login"}),
                 401,
             )
         # store context for later
         g.user_id = session["user_id"]
+        conn = None
+        try:
+            conn = connect_to_rds()
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT user_id, user_type, permissions FROM users WHERE user_id=%s",
+                    (session["user_id"],),
+                )
+                user_row = cursor.fetchone()
+                if user_row:
+                    try:
+                         user_row["permissions"] = json.loads(user_row["permissions"] or "{}")
+                    except Exception:
+                        user_row["permissions"] = {}
+                    g.user = user_row
+                else:
+                    g.user = None
+        except Exception as e:
+            logger.error(f"User fetch failed: {str(e)}")
+            g.user = None
+        finally:
+            if conn:
+                conn.close()
         g.session_data = session
         g.new_tokens = new_tokens
         g.current_access_token = (

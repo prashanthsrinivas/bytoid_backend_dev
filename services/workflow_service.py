@@ -2512,7 +2512,7 @@ class WorkflowRunnerV2:
             "all_answered": all_answered,
         }
 
-    async def answer_questions(self, answer: str, qid: str, chid: str):
+    async def answer_questions(self, answer: str,comment:str, qid: str, chid: str):
         execution_data = self.previous_data
         chats = self.chat_history
 
@@ -2531,6 +2531,7 @@ class WorkflowRunnerV2:
                 for q in outputs:
                     if q.get("id") == qid:
                         q["user_answer"] = answer
+                        q["comment"] = comment
                         execution_updated = True
                         last_step_id = step_id
                         break
@@ -2560,6 +2561,7 @@ class WorkflowRunnerV2:
                 for out in outputs:
                     if out.get("id") == qid:
                         out["user_answer"] = answer
+                        out["comment"] = comment
                         if answer == "":
                             cleared = True
                         break

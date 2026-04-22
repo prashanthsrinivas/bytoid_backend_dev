@@ -1202,39 +1202,6 @@ async def check_runbook_structure():
     return jsonify({"status": structure_file_payloads})
 
 
-# @runbook_bp.route("/updateschema", methods=["POST"])
-# async def update_schema():
-#     try:
-#         data = request.get_json()
-#         user_id = data.get("user_id")
-#         dbserver = LanceDBServer()
-#         res = await dbserver.migrate_runbook_table(user_id=user_id)
-#         return jsonify({"message": res}), 200
-#     except Exception as e:
-#         return jsonify({"error": str(e)})
-# @runbook_bp.route("/getlatestresponse",methods=["POST"])
-# async def get_latest_response():
-#      data = request.get_json()
-#      user_id = data.get("user_id")
-#      runbook_id = data.get("runbook_id")
-#      result_id = data.get("result_id")
-#      val = await dbserver.get_latest_runbook_result(
-#                 user_id=user_id, runbook_id=runbook_id, result_id=result_id
-#             )
-
-
-#      last_runbook_response = json.dumps(val.get("result"))
-#      output_word_count = None
-#      if not output_word_count:
-#                     output_word_count = (
-#                         val.get("estimated_word_count")
-#                         or val.get("document_meta", {}).get("estimated_word_count")
-#                         or 800  # fallback default
-#                     )
-
-#      return jsonify({"response": last_runbook_response,"wordcount":output_word_count})
-
-
 @runbook_bp.route("/check_pb_output", methods=["POST"])
 async def check_pb_output():
     try:
@@ -1244,63 +1211,64 @@ async def check_pb_output():
         pb_id = data.get("playbook_id")
         rb_id = data.get("runbook_id")
 
-
-            # -----------------------------
-            # Fetch Runbook
-            # -----------------------------
+        # -----------------------------
+        # Fetch Runbook
+        # -----------------------------
         runbook = await dbserver.get_runbook_by_id(user_id=user_id, runbook_id=rb_id)
 
         if isinstance(runbook, list):
-                runbook = runbook[0] if runbook else None
+            runbook = runbook[0] if runbook else None
 
         if isinstance(runbook, str):
-                runbook = json.loads(runbook)
+            runbook = json.loads(runbook)
 
-            # -----------------------------
-            # Fetch Instruction
-            # -----------------------------
+        # -----------------------------
+        # Fetch Instruction
+        # -----------------------------
         runtime_input = await get_playbook_instruction(user_id, pb_id)
 
-            # -----------------------------
-            # Extract Questions
-            # -----------------------------
+        # -----------------------------
+        # Extract Questions
+        # -----------------------------
         questions = await extract_qna_from_instruction(runtime_input)
 
-            # -----------------------------
-            # Analyze
-            # -----------------------------
-                # -----------------------------
+        # -----------------------------
+        # Analyze
+        # -----------------------------
+        # -----------------------------
         # SYNC MODE
         # -----------------------------
-       
+
         document_data = []
 
         if runbook.get("reference_sources"):
-                analyzed_results = await analyze_questions_with_references(
-                    questions,
-                    runbook.get("reference_sources"),
-                    runbook.get("reference_main_source"),
-                    user_id,
-                    runbook,
-                )
+            analyzed_results = await analyze_questions_with_references(
+                questions,
+                runbook.get("reference_sources"),
+                runbook.get("reference_main_source"),
+                user_id,
+                runbook,
+            )
 
-                merged = await merge_document_data(analyzed_results, runtime_input)
+            merged = await merge_document_data(analyzed_results, runtime_input)
 
-                runbook["runtime_input"] = json.dumps(merged)
-                document_data.append(merged.get("chat"))
-                print(document_data[0][:500])
+            runbook["runtime_input"] = json.dumps(merged)
+            document_data.append(merged.get("chat"))
+            print(document_data[0][:500])
 
         else:
-                runbook["runtime_input"] = json.dumps(runtime_input.get("chat", []))
+            runbook["runtime_input"] = json.dumps(runtime_input.get("chat", []))
 
-        return jsonify({
-                "status": "completed",
-                "questions": questions,
-                "final": document_data,
-            }), 200
+        return (
+            jsonify(
+                {
+                    "status": "completed",
+                    "questions": questions,
+                    "final": document_data,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }), 500
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
