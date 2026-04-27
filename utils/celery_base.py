@@ -840,7 +840,7 @@ def create_playbook_runbook_task(self, user_id, playbook_id, rb_pb_id, session_i
     from runbook.helper import trigger_runbook_from_playbook
     from websockets_custom.ws_instance import ws_service
 
-    print("🔥 PLAYBOOK RUNBOOK TASK STARTED")
+    print(f"🔥 PLAYBOOK RUNBOOK TASK STARTED {playbook_id} amd {rb_pb_id}")
 
     lock_key = f"playbook_runbook_lock:{user_id}:{playbook_id}"
 
@@ -985,6 +985,8 @@ def trigger_scheduled_api_runbook_task(self, user_id, runbook_id):
     finally:
         # 🔓 Release lock
         asyncio.run(lock_client.delete(lock_key))
+
+
 @celery.task(bind=True, max_retries=3, name="tasks.analyze_runbook_questions")
 def analyze_runbook_questions_task(
     self,
@@ -1034,7 +1036,7 @@ def analyze_runbook_questions_task(
     except Exception as e:
         print(f"❌ Error in analyze task: {e}")
 
-        countdown = min(2 ** self.request.retries, 300)
+        countdown = min(2**self.request.retries, 300)
         raise self.retry(exc=e, countdown=countdown)
 
     finally:

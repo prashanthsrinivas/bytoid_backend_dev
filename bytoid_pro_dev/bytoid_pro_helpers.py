@@ -6,13 +6,6 @@ import threading
 from typing import List, Optional
 import requests
 from utils.fireworkzz import get_think_fire_response_image, get_fireworks_response2
-from langchain_community.document_loaders import (
-    TextLoader,
-    PyMuPDFLoader,
-    UnstructuredWordDocumentLoader,
-    UnstructuredPowerPointLoader,
-    UnstructuredExcelLoader,
-)
 import tempfile
 from datetime import datetime
 import uuid
@@ -21,11 +14,10 @@ from cust_helpers import pathconfig
 from utils.normal import ensure_dir
 from utils.s3_utils import upload_any_file, read_json_from_s3
 from dataclasses import asdict
-from werkzeug.utils import secure_filename
 from agent_route.s_t_s import Speech2TextService
-import subprocess
 from flask import jsonify
-
+from utils.docu_extensions import extension_loader_map
+from utils.fireworkzz import fw
 
 MAX_CHARS_PER_CHUNK = 90_000  # ~30k tokens safe
 MAX_CONCURRENT_CHUNKS = 4
@@ -167,14 +159,6 @@ async def process_large_book(
     High-level function for processing a large book file (or multiple files)
     """
     all_file_summaries = []
-
-    extension_loader_map = {
-        ".plain": lambda path: TextLoader(path, autodetect_encoding=True),
-        ".pdf": lambda path: PyMuPDFLoader(path),
-        ".docx": lambda path: UnstructuredWordDocumentLoader(path),
-        ".pptx": lambda path: UnstructuredPowerPointLoader(path),
-        ".xlsx": lambda path: UnstructuredExcelLoader(path),
-    }
 
     for idx, url in enumerate(file_url):
 
@@ -609,13 +593,6 @@ async def get_think_fire_response_file_og(
         """
 
     # Mapping extensions to loader functions
-    extension_loader_map = {
-        ".plain": lambda path: TextLoader(path, autodetect_encoding=True),
-        ".pdf": lambda path: PyMuPDFLoader(path),
-        ".docx": lambda path: UnstructuredWordDocumentLoader(path),
-        ".pptx": lambda path: UnstructuredPowerPointLoader(path),
-        ".xlsx": lambda path: UnstructuredExcelLoader(path),
-    }
 
     all_file_summaries = []
 

@@ -2139,7 +2139,7 @@ class LanceDBServer:
                         query.user_id,
                         enc["encrypted_key"],
                         enc["iv"],
-                        enc["ciphertext]"],
+                        enc["ciphertext"],
                     )
             latency = time.time() - start
             logger.debug(
@@ -3006,6 +3006,7 @@ class LanceDBServer:
                 pa.field("main_source", pa.string()),
                 pa.field("reference_main_source", pa.string()),
                 pa.field("created_at", pa.timestamp("us")),
+                pa.field("runbook_evidence_config", pa.string()),
             ]
         )
 
@@ -3057,11 +3058,15 @@ class LanceDBServer:
             "main_source": data.get("main_source"),
             "reference_main_source": data.get("reference_main_source"),
             "created_at": data.get("created_at") or datetime.utcnow().isoformat(),
+            "runbook_evidence_config": data.get("runbook_evidence_config", ""),
         }
 
         # print("ROW KEYS:", row.keys())
         def _insert():
-            return table.add([row])
+            table_fields = {f.name for f in table.schema}
+            filtered_row = {k: v for k, v in row.items() if k in table_fields}
+            print([filtered_row])
+            return table.add([filtered_row])
 
         await asyncio.to_thread(_insert)
 
@@ -3113,6 +3118,13 @@ class LanceDBServer:
 
         await asyncio.to_thread(lambda: table.delete(filter_expr))
 
+        # Delete all associated results for each runbook
+        results_table = await self._open_or_create_runbook_results_table(user_id)
+        for rid in runbook_id:
+            await asyncio.to_thread(
+                lambda r=rid: results_table.delete(f'runbook_id == "{r}"')
+            )
+
         return True
 
     async def update_runbook(self, user_id: str, runbook_id: str, updates: dict):
@@ -3154,7 +3166,9 @@ class LanceDBServer:
 
         # Step 4: Insert updated record
         def _insert():
-            column_data = {k: [v] for k, v in updated_row.items()}
+            table_fields = {f.name for f in table.schema}
+            filtered = {k: v for k, v in updated_row.items() if k in table_fields}
+            column_data = {k: [v] for k, v in filtered.items()}
             table.add(pa.Table.from_pydict(column_data))
 
         await asyncio.to_thread(_insert)

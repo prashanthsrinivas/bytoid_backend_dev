@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 import pandas as pd
 import copy
 
@@ -9,8 +10,8 @@ from db.rds_db import connect_to_rds
 
 # from services.scheduler_service import SchedulerService
 from playbook.helperzz import base_name
-from utils.normal import load_yaml_file
-from utils.s3_utils import S3_BUCKET, read_json_from_s3, s3bucket
+from utils.normal import ensure_dir, load_yaml_file
+from utils.s3_utils import S3_BUCKET, delete_file_from_s3, read_json_from_s3, s3bucket, upload_any_file
 from utils.normal import load_yaml_file
 
 from cust_helpers import pathconfig
@@ -29,6 +30,36 @@ logger = get_logger(__name__)
 
 
 import re, io
+
+
+REPORT_MESSAGES = {
+    "start": "Initializing report generation...",
+    "phases": [
+        "Analyzing input data",
+        "Structuring report sections",
+        "Generating insights",
+        "Compiling report",
+    ],
+    "chunk_start": "Generating report section {current}/{total}...",
+    "chunk_success": "Report section {current} generated.",
+    "chunk_warning": "Section {current} had minor formatting issues.",
+    "chunk_error": "Issue while generating section {current}.",
+    "final": "Report generation completed successfully.",
+}
+RISK_MESSAGES = {
+    "start": "Initializing risk analysis...",
+    "phases": [
+        "Scanning risk inputs",
+        "Evaluating threats",
+        "Calculating impact",
+        "Finalizing risk report",
+    ],
+    "chunk_start": "Analyzing risk segment {current}/{total}...",
+    "chunk_success": "Risk segment {current} analyzed.",
+    "chunk_warning": "Partial issue in risk segment {current}.",
+    "chunk_error": "Error during risk analysis segment {current}.",
+    "final": "Risk analysis completed successfully.",
+}
 
 
 def _safe_json_parse_full(value):
@@ -257,6 +288,7 @@ async def retreval_from_sources(
     filesources = normalize_json_field(filesources)
 
     data_for_review = []
+    extracted_text_len = 0
     # -------------------------
     # APP SOURCE
     # -------------------------
@@ -269,6 +301,7 @@ async def retreval_from_sources(
                     endpoint_id=endpoint_id,
                     userid=userid,
                 )
+                extracted_text_len += len(result.get("response"))
                 data_for_review.append(
                     {
                         "type": "app",
@@ -288,6 +321,7 @@ async def retreval_from_sources(
         # print("len of all_notes", len(all_notes), all_notes)
         for note in all_notes.get("notes"):
             # print("type of note", type(note), note)
+            extracted_text_len += len(note)
             if note.get("note_id") in note_ids:
                 data_for_review.append(
                     {"type": "notes", "note_id": note.get("note_id"), "data": str(note)}
@@ -327,6 +361,7 @@ async def retreval_from_sources(
                 )
                 if newdas:
                     for item in newdas:
+                        extracted_text_len += len(item.get("text", ""))
                         data_for_review.append(
                             {
                                 "type": "docs",
@@ -346,6 +381,7 @@ async def retreval_from_sources(
                 )
                 if results:
                     for item in results:
+                        extracted_text_len += len(item.get("text", ""))
                         data_for_review.append(
                             {
                                 "type": "audio",
@@ -358,6 +394,7 @@ async def retreval_from_sources(
                 url = file.get("url")
                 results = dbserver.search_scraped_data_by_url(query=payload, url=url)
                 if results:
+                    extracted_text_len += len(results.get("text", ""))
                     data_for_review.append(
                         {
                             "type": "scrape",
@@ -365,6 +402,7 @@ async def retreval_from_sources(
                             "data": str(results.get("text", "")),
                         }
                     )
+    print(f"THE COMPLETE extracted is {extracted_text_len}")
 
     return data_for_review
 
@@ -521,7 +559,6 @@ def normalize_json_field(field):
     """
     Normalize JSON field using regex cleanup + safe parsing
     """
-
     if not field:
         return None
 
@@ -568,3 +605,6 @@ async def send(ws_sender, msg, user_id):
         progress=msg.get("progress"),
         feature="runbook",
     )
+
+
+

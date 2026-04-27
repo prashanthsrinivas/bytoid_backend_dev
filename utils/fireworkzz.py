@@ -703,6 +703,81 @@ async def get_think_fire_response2_og2(
     return aggregated_text
 
 
+async def get_extract_response(
+    prompt_template: str,
+    data: str,
+    user_id,
+    credits,
+    data_placeholder: str = "{{data}}",
+    max_output_tokens: int = 8000,
+    max_data_chars: int = 150000,
+) -> str:
+    """
+    Extraction-optimized LLM call using THINK_MODEL.
+
+    Splits `data` into chunks so that (template + chunk + output) stays within
+    the model's 262144-token context window. Each chunk is processed
+    independently and the extracted_content fields are concatenated.
+
+    Use this for reduction/extraction tasks, NOT for multi-block report generation.
+    """
+    total_input_chars = len(prompt_template) + len(data)
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return ""
+
+    chunks = [data[i : i + max_data_chars] for i in range(0, max(len(data), 1), max_data_chars)]
+    total_chunks = len(chunks)
+
+    aggregated_parts = []
+    total_chars_used = 0
+
+    for idx, chunk in enumerate(chunks):
+        full_prompt = prompt_template.replace(data_placeholder, chunk)
+        if total_chunks > 1:
+            full_prompt += f"\n\nNote: This is data segment {idx + 1} of {total_chunks}. Extract all relevant information from this segment."
+
+        payload = {
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": full_prompt}]}
+            ],
+            "temperature": 0,
+            "max_tokens": max_output_tokens,
+        }
+
+        try:
+            response = await asyncio.to_thread(
+                bedrock_runtime.invoke_model,
+                modelId=THINK_MODEL,
+                body=json.dumps(payload),
+                contentType="application/json",
+                accept="application/json",
+            )
+            raw_body = response["body"].read()
+            response_body = json.loads(raw_body)
+            response_text = extract_bedrock_text(response_body)
+
+            if response_text:
+                total_chars_used += len(full_prompt) + len(response_text)
+                parsed = extract_json_safe(response_text)
+                if parsed and parsed.get("extracted_content"):
+                    aggregated_parts.append(str(parsed["extracted_content"]))
+                else:
+                    aggregated_parts.append(response_text.strip())
+
+        except Exception as e:
+            print(f"get_extract_response chunk {idx + 1}/{total_chunks} failed: {e}")
+            continue
+
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_chars_used,
+        user_id=user_id,
+        reference_id="get_extract_response",
+    )
+
+    return "\n\n".join(aggregated_parts)
+
+
 # async def get_think_bedrok_response(
 #     user_message: str,
 #     user_id,
@@ -1050,7 +1125,7 @@ Generate part {i+1}/{num_chunks}.
         total_chars=total_chars_used,
         user_id=user_id,
         reference_id="get_think_bedrok_response",
-    )
+    )    
 
     return aggregated_text
 

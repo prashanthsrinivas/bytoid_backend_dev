@@ -25,7 +25,7 @@ PERMISSIONS = {
    "compliance.report.read": "Read Only Reports",
    "compliance.runbook.logs": "View Runbook Logs",
    "compliance.report.logs": "View Report Logs",
-
+         
    # ================= TRACKERS =================
    "trackers.framework.add": "Add Framework",
    "trackers.column.add": "Add Columns",

@@ -184,7 +184,7 @@ def normalize_url_for_comparison(url):
 
 
 async def process_and_update_yaml(
-    all_downloaded_paths, userid, provider, db, folderpath, credits=None
+    all_downloaded_paths, userid, provider, db, folderpath, credits=None, emit=None
 ):
     """
     Process files, delete processed ones, and store/update metadata in a provider-based YAML structure.
@@ -193,9 +193,10 @@ async def process_and_update_yaml(
     :param userid: ID of the user
     :param provider: Provider name (e.g., "google", "zoho")
     :param folderpath: Temporary folder path containing files
-    :param pathconfig: Config object containing basepath
+    :param credits: optional Credits instance
+    :param emit: optional async callable(message: str, progress: int) — caller provides this,
+                 typically wrapping msg_builder.job_progress via the websocket send helper
     """
-    # print("inside process_and_update_yaml")
     processed_filenames = []
     connection = db or connect_to_rds()
     if not credits:
@@ -236,11 +237,15 @@ async def process_and_update_yaml(
         industry = user_row["LineOfBusiness"]
     if not db:
         connection.close()
-    # print("before all_downloaded_paths ")
-    # print(f"all_downloaded_paths: {all_downloaded_paths}")
-    for path in all_downloaded_paths:
+
+    total = len(all_downloaded_paths)
+    for i, path in enumerate(all_downloaded_paths):
         filename = os.path.basename(path)
         try:
+            if emit:
+                pct = 20 + int(i / max(total, 1) * 60)
+                await emit(f"Processing file {i + 1}/{total}: {filename}", pct)
+
             lance_client = LanceClient(user_id=userid, credits=credits)
             result = await lance_client.process_document(
                 file_path=path, filename=filename, credits=credits
@@ -253,7 +258,6 @@ async def process_and_update_yaml(
                     "message": "Credits exhausted. Please recharge to continue.",
                 }
 
-            # print(f"************** result: {result}")
             if result.get("vectors_made", 0) > 0:
                 current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 processed_filenames.append(
@@ -268,9 +272,11 @@ async def process_and_update_yaml(
             os.remove(path)
             logger.info(f"[🗑] Deleted processed file: {path}")
 
-    # print(f"processed_filenames : {processed_filenames}")
     if not processed_filenames:
         return {"message": "nothing to merge"}
+
+    if emit:
+        await emit("Updating file metadata...", 85)
 
     # Remove the folder after processing
     if os.path.isdir(folderpath):
@@ -339,6 +345,8 @@ async def process_and_update_yaml(
     logger.info(
         f"[✅] Updated YAML for provider '{provider}' with {len(processed_filenames)} files."
     )
+    if emit:
+        await emit(f"Saved metadata for {len(processed_filenames)} file(s)", 92)
     indusries = get_industry_names_from_yaml(f"{pathconfig.basepath}/smb_usecases.yaml")
     matched_industry = find_matching_industry(industry, indusries)
     if matched_industry:

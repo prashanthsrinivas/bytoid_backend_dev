@@ -22,6 +22,7 @@ from utils.fireworkzz import (
     get_think_bedrok_response,
     get_think_fire_response2_og,
     get_think_fire_response2_og2,
+    get_extract_response,
 )
 from utils.normal import load_yaml_file
 from radar.radar_helpers import process_file_payloads
@@ -207,6 +208,101 @@ Governance Evidence (policies, standards, procedures, frameworks)
 - Self Attestation Evidence (self-declarations, certifications, confirmations)
 """
 
+EVIDENCE_ANALYSIS_PROMPT = """You are a compliance and security evidence analyst.
+
+Analyze the provided document and return a structured assessment.
+
+EVIDENCE TYPES (select exactly ONE that best fits):
+{{evidence_types}}
+
+FILE NAME: {{filename}}
+
+FILE CONTENT:
+{{file_data}}
+
+REPORT VIEWER TYPE: {{viewer_type}}
+
+REVIEW CRITERIA FOR {{viewer_type}}:
+{{viewer_criteria}}
+
+OUTPUT (strict JSON only, no markdown):
+{
+  "evidence_type": "<one exact type from the list above>",
+  "summary": "<the summary should be detailed and very well defined. make sure it is long as possible.>",
+  "analysis": "<detailed analysis tailored for the {{viewer_type}}, covering what the evidence demonstrates, gaps, and relevant control observations. it must conclude why the evidence type is made and how and why it comes and viewer criteria.>"
+}"""
+
+
+async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
+    from collections import defaultdict
+
+    viewer_map = {
+        "Assessor": ASSESSORS,
+        "Auditor": AUDITORS,
+        "Reviewer": REVIEWER,
+    }
+    viewer_data = viewer_map.get(report_viewer, ASSESSORS)
+
+    files_map = defaultdict(list)
+    for item in data_checked:
+        source = (
+            item.get("source")
+            or item.get("endpoint_id")
+            or item.get("note_id")
+            or item.get("url")
+            or "unknown"
+        )
+        files_map[source].append(str(item.get("data", "")))
+
+    results = []
+    for filename, chunks in files_map.items():
+        combined_data = "\n\n".join(chunks)[:20000]
+        prompt = (
+            EVIDENCE_ANALYSIS_PROMPT.replace("{{evidence_types}}", EVIDENCES_TYPES)
+            .replace("{{filename}}", filename)
+            .replace("{{file_data}}", combined_data)
+            .replace("{{viewer_type}}", report_viewer or "Assessor")
+            .replace("{{viewer_criteria}}", viewer_data)
+        )
+        raw = await get_think_fire_response2_og2(
+            user_message=prompt,
+            user_id=user_id,
+            credits=credits,
+            total_input_chars=len(prompt),
+        )
+        parsed = _safe_json_parse(raw)
+        if parsed:
+            parsed["filename"] = filename
+            results.append(parsed)
+
+    return results
+
+
+async def reduce_data_for_report(
+    data_items, structure_file_payload, user_id, credits, label="evidence"
+):
+    if not data_items:
+        return json.dumps(data_items)
+
+    structure_str = json.dumps(structure_file_payload)
+    prompt_template = (
+        f"You are a document intelligence extractor.\n\n"
+        f"Given raw {label} data and a report structure, extract ONLY the information relevant to the report blocks.\n"
+        f"Preserve ALL specific facts, values, metrics, configurations, dates, names, and technical details.\n"
+        f"Eliminate repeated or duplicate content. Be thorough — losing key details degrades report quality.\n\n"
+        f"REPORT STRUCTURE (what the report covers):\n{structure_str}\n\n"
+        f"{label.upper()} DATA:\n{{{{data}}}}\n\n"
+        f'OUTPUT (strict JSON only, no markdown):\n{{"extracted_content": "<dense extraction preserving all specific facts relevant to the report structure>"}}'
+    )
+
+    extracted = await get_extract_response(
+        prompt_template=prompt_template,
+        data=json.dumps(data_items),
+        user_id=user_id,
+        credits=credits,
+    )
+    return extracted if extracted else json.dumps(data_items)
+
 
 async def run_runbook_execution_engine(
     user_id,
@@ -238,13 +334,15 @@ async def run_runbook_execution_engine(
     credits = Credits(conn)
     runbook_id = runbook["runbook_id"]
     main_source = runbook["main_source"] if "main_source" in runbook else None
-    data_sources = runbook["data_source"] if "data_source" in runbook else None
+    data_sources = runbook["data_sources"] if "data_sources" in runbook else None
     reference_sources = (
         runbook["reference_sources"] if "reference_sources" in runbook else None
     )
     refernce_main_source = (
         runbook["reference_main_source"] if "reference_main_source" in runbook else None
     )
+    print("DATA SOURCES", data_sources)
+    print("REFERENCE SOURCES ", refernce_main_source)
     if structure_file:
         structure_file_content = read_json_from_s3(structure_file)
     else:
@@ -317,6 +415,7 @@ async def run_runbook_execution_engine(
         file_data = ""
         if not result_id and not document_data:
             file_data = await collect_runbook_inputs(runbook)
+
         user_analyze_input = analyze_input
 
         # --------------------------------------------------
@@ -346,7 +445,7 @@ async def run_runbook_execution_engine(
             lang_data = json.loads(result)
 
             output_language = lang_data.get("language", "English")
-            output_word_count = lang_data.get("word_count")
+            output_word_count = lang_data.get("word_count") or 800
 
             progress = 40
             re_msg = f"generating report in {output_language}"
@@ -392,6 +491,7 @@ async def run_runbook_execution_engine(
             reference_RWA.append(document_data)
 
         if main_source and data_sources:
+            print("in Data sources")
 
             data_checked = await retreval_from_sources(
                 conn,
@@ -414,7 +514,8 @@ async def run_runbook_execution_engine(
                     )
                 )
 
-        if refernce_main_source and not document_data:
+        if refernce_main_source and reference_sources:
+            print("in Data reference sources")
 
             reference_RWA = await retreval_from_sources(
                 conn,
@@ -442,7 +543,6 @@ async def run_runbook_execution_engine(
         # ---------------------------------
         # LAST RESPONSE FETCH
         # ---------------------------------
-        last_runbook_response = ""
 
         # if runbook_id or result_id :
         if is_prev_needed:
@@ -520,124 +620,114 @@ async def run_runbook_execution_engine(
                 progress,
             )
         )
-        if is_prev_needed:
-            base_prompt = (
-                review_temp.replace("{{analyze_input}}", analyze_input)
-                .replace("{{file_data}}", file_data)
-                .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
-                .replace("{{data_sources}}", json.dumps(data_checked))
-                .replace("{{reference_sources}}", json.dumps(reference_RWA))
+
+        # --------------------------------------------------
+        # REDUCE DATA TO STAY WITHIN TOKEN LIMITS
+        # --------------------------------------------------
+        print("in reduce of data checked")
+        reduced_datachecked = await reduce_data_for_report(
+            data_checked, structure_file_payload, user_id, credits, label="evidence"
+        )
+        print("in reduce of reduced_referencerwa")
+        reduced_referencerwa = await reduce_data_for_report(
+            reference_RWA,
+            structure_file_payload,
+            user_id,
+            credits,
+            label="governance framework",
+        )
+
+        print("before generating report")
+        for idx, block in enumerate(structure_file_payload["blocks"]):
+
+            block_payload = {"blocks": [block]}  # isolate single block
+
+            block_prompt = (
+                review_temp.replace(
+                    "{{structure_file_data}}", json.dumps(block_payload)
+                )
+                .replace("{{analyze_input}}", analyze_input)
+                .replace(
+                    "{{data_sources}}",
+                    (
+                        reduced_datachecked
+                        if isinstance(reduced_datachecked, str)
+                        else json.dumps(reduced_datachecked)
+                    ),
+                )
+                .replace(
+                    "{{file_data}}",
+                    (
+                        file_data
+                        if isinstance(file_data, str)
+                        else json.dumps(file_data)
+                    ),
+                )
+                .replace(
+                    "{{reference_sources}}",
+                    (
+                        reduced_referencerwa
+                        if isinstance(reduced_referencerwa, str)
+                        else json.dumps(reduced_referencerwa)
+                    ),
+                )
                 .replace("{{output_language}}", output_language)
-                .replace("{{last_radar_response}}", json.dumps(last_runbook_response))
                 .replace("{{requested_word_count}}", str(output_word_count))
             )
 
-            # =========================================================
-            # INITIAL GENERATION
-            # =========================================================
             result = await get_think_bedrok_response(
-                user_message=base_prompt,
+                user_message=block_prompt,
                 user_id=user_id,
                 credits=credits,
-                total_input_chars=len(base_prompt),
-                language=output_language,
-                words_count=output_word_count,
-            )
-            await emit(
-                msg_builder.job_progress(
-                    job_id,
-                    session_id,
-                    "report generation",
-                    "generated content for report",
-                    60,
-                )
+                total_input_chars=len(block_prompt),
+                language="English",
+                words_count=200,
             )
 
-            merged_report = merge_runbook_chunks_deterministic(result)
-            await emit(
-                msg_builder.job_progress(
-                    job_id,
-                    session_id,
-                    "report generation",
-                    "merging content for report",
-                    70,
-                )
-            )
-            merged_result = _safe_json_parse_full(merged_report)
-            # print("mergeed result", type(merged_result), merged_result)
-        else:
+            parsed = _safe_json_parse(result)
 
-            for idx, block in enumerate(structure_file_payload["blocks"]):
-
-                block_payload = {"blocks": [block]}  # isolate single block
-
-                block_prompt = (
-                    review_temp.replace(
-                        "{{structure_file_data}}", json.dumps(block_payload)
-                    )
-                    .replace("{{analyze_input}}", analyze_input)
-                    .replace("{{data_sources}}", json.dumps(data_checked))
-                    .replace("{{file_data}}", file_data)
-                    .replace("{{reference_sources}}", json.dumps(reference_RWA))
-                    .replace("{{last_radar_response}}", last_runbook_response)
-                    .replace("{{requested_word_count}}", "200")
-                )
-
-                result = await get_think_bedrok_response(
-                    user_message=block_prompt,
-                    user_id=user_id,
-                    credits=credits,
-                    total_input_chars=len(block_prompt),
-                    language="English",
-                    words_count=200,
-                )
-
-                parsed = _safe_json_parse(result)
-
-                # -----------------------------
-                # STRICT BLOCK EXTRACTION
-                # -----------------------------
-                if not parsed:
-                    raise ValueError(
-                        f"LLM returned invalid JSON at block {idx}: RAW parse failed"
-                    )
-
-                if isinstance(parsed, dict) and "blocks" in parsed:
-                    final_blocks.append(parsed["blocks"][0])
-                elif isinstance(parsed, dict) and "block_id" in parsed:
-                    final_blocks.append(parsed)
-                else:
-                    raise ValueError(f"Unexpected schema at block {idx}: {parsed}")
             # -----------------------------
-            # FINAL MERGE
+            # STRICT BLOCK EXTRACTION
             # -----------------------------
-            await emit(
-                msg_builder.job_progress(
-                    job_id,
-                    session_id,
-                    "report generation",
-                    "generated content for report",
-                    60,
+            if not parsed:
+                raise ValueError(
+                    f"LLM returned invalid JSON at block {idx}: RAW parse failed"
                 )
+
+            if isinstance(parsed, dict) and "blocks" in parsed:
+                final_blocks.append(parsed["blocks"][0])
+            elif isinstance(parsed, dict) and "block_id" in parsed:
+                final_blocks.append(parsed)
+            else:
+                raise ValueError(f"Unexpected schema at block {idx}: {parsed}")
+        # -----------------------------
+        # FINAL MERGE
+        # -----------------------------
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "report generation",
+                "generated content for report",
+                60,
             )
-            merged_result = {
-                "document_meta": parsed.get("document_meta", {}),
-                "estimated_word_count": sum(
-                    b.get("word_count", 0) for b in final_blocks
-                ),
-                "structure_rationale": "Block-by-block deterministic execution",
-                "blocks": final_blocks,
-            }
-            await emit(
-                msg_builder.job_progress(
-                    job_id,
-                    session_id,
-                    "report generation",
-                    "merging content for report",
-                    70,
-                )
+        )
+        merged_result = {
+            "document_meta": parsed.get("document_meta", {}),
+            "estimated_word_count": sum(b.get("word_count", 0) for b in final_blocks),
+            "structure_rationale": "Block-by-block deterministic execution",
+            "blocks": final_blocks,
+        }
+        await emit(
+            msg_builder.job_progress(
+                job_id,
+                session_id,
+                "report generation",
+                "merging content for report",
+                70,
             )
-        # print(" hello 6")
+        )
+        print(" hello 6")
         if merged_result:
             progress = 85
 
@@ -652,6 +742,7 @@ async def run_runbook_execution_engine(
             )
         newdata_risk = ""
         if structure_file_content:
+            print("in the structure content")
             riskbaseprompt = """
                 You are a risk data compressor.
 
@@ -709,8 +800,9 @@ async def run_runbook_execution_engine(
                     progress,
                 )
             )
+        print("before risk")
 
-        risk_result = await get_think_fire_response2_og(
+        risk_result = await get_think_bedrok_response(
             user_message=risk_prompt,
             user_id=user_id,
             credits=credits,
@@ -721,6 +813,15 @@ async def run_runbook_execution_engine(
 
         merged_result["risk_analysis"] = risk_data
         merged_result["risk_score"] = risk_data.get("final_risk_score", 0)
+
+        if data_checked:
+            print("in data checked", len(data_checked))
+            report_viewer = data_sources.get("report_viewer")
+            evidence_analysis = await run_evidence_analysis(
+                data_checked, report_viewer, user_id, credits
+            )
+            merged_result["evidence_analysis"] = evidence_analysis
+
         await emit(
             msg_builder.job_progress(
                 job_id,
@@ -769,443 +870,6 @@ async def run_runbook_execution_engine(
             }
         )
         return None
-
-
-# # =========================================================
-# # 🔧 HELPER: MERGE FIXED BLOCKS
-# # =========================================================
-# def merge_fixed_blocks(original, fixed_blocks):
-#     fixed_map = {b["block_id"]: b for b in fixed_blocks}
-
-#     for i, block in enumerate(original.get("blocks", [])):
-#         bid = block.get("block_id")
-#         if bid in fixed_map:
-#             original["blocks"][i] = fixed_map[bid]
-
-#     return original
-
-
-# # =========================================================
-# # 🔧 HELPER: EXTRACT BLOCKS TO FIX
-# # =========================================================
-# def get_blocks_by_ids(report, block_ids):
-#     return [b for b in report.get("blocks", []) if b.get("block_id") in block_ids]
-
-
-# # =========================================================
-# # 🔧 HELPER: TYPE LEAK DETECTION (FAST FAIL)
-# # =========================================================
-# def detect_type_leakage(report):
-#     issues = []
-
-#     TYPE_MAP = {
-#         "narrative": ["paragraph"],
-#         "list": ["bullet"],
-#         "table": ["table"],
-#         "matrix": ["matrix"],
-#     }
-
-#     for block in report.get("blocks", []):
-#         block_id = block.get("block_id")
-#         block_type = block.get("block_type")
-#         micro_blocks = block.get("micro_blocks", [])
-
-#         # ❌ 1. Missing micro_blocks
-#         if not micro_blocks:
-#             issues.append(
-#                 {
-#                     "block_id": block_id,
-#                     "issue": "Missing micro_blocks",
-#                     "fix_instruction": "Create micro_block and move content into it",
-#                 }
-#             )
-#             continue
-
-#         expected_types = TYPE_MAP.get(block_type, [])
-
-#         for micro in micro_blocks:
-#             micro_id = micro.get("micro_id")
-#             ctype = micro.get("content_type")
-#             html = micro.get("html")
-#             data = micro.get("data")
-
-#             # ❌ 2. TYPE MISMATCH
-#             if ctype not in expected_types:
-#                 issues.append(
-#                     {
-#                         "block_id": block_id,
-#                         "micro_id": micro_id,
-#                         "issue": f"Type mismatch: block_type={block_type}, content_type={ctype}",
-#                         "fix_instruction": f"Convert to {expected_types[0]}",
-#                     }
-#                 )
-
-#             # ❌ 3. TYPE LEAKAGE (html in structured)
-#             if ctype in ["table", "matrix", "bullet"] and html:
-#                 issues.append(
-#                     {
-#                         "block_id": block_id,
-#                         "micro_id": micro_id,
-#                         "issue": "Structured type contains html",
-#                         "fix_instruction": "Remove html and use data field only",
-#                     }
-#                 )
-
-#             # ❌ 4. EMPTY DATA VALIDATION
-#             if ctype == "table" and not data.get("rows"):
-#                 issues.append(
-#                     {
-#                         "block_id": block_id,
-#                         "micro_id": micro_id,
-#                         "issue": "Table missing rows",
-#                         "fix_instruction": "Provide rows matching schema",
-#                     }
-#                 )
-
-#             if ctype == "bullet" and not data.get("items"):
-#                 issues.append(
-#                     {
-#                         "block_id": block_id,
-#                         "micro_id": micro_id,
-#                         "issue": "List missing items",
-#                         "fix_instruction": "Provide items array",
-#                     }
-#                 )
-
-#             if ctype == "matrix" and not data.get("matrix"):
-#                 issues.append(
-#                     {
-#                         "block_id": block_id,
-#                         "micro_id": micro_id,
-#                         "issue": "Matrix missing data",
-#                         "fix_instruction": "Provide full matrix",
-#                     }
-#                 )
-
-#             # ❌ 5. NARRATIVE RULE
-#             if ctype == "paragraph":
-#                 if not html:
-#                     issues.append(
-#                         {
-#                             "block_id": block_id,
-#                             "micro_id": micro_id,
-#                             "issue": "Narrative missing html",
-#                             "fix_instruction": "Provide html content",
-#                         }
-#                     )
-#                 if data:
-#                     issues.append(
-#                         {
-#                             "block_id": block_id,
-#                             "micro_id": micro_id,
-#                             "issue": "Narrative should not have data",
-#                             "fix_instruction": "Set data to {}",
-#                         }
-#                     )
-
-#     return issues
-
-
-# # =========================================================
-# # 🚀 MAIN ENGINE
-# # =========================================================
-# async def run_runbook_execution_engine(
-#     conn,
-#     credits,
-#     user_id,
-#     runbook,
-#     dbserver=LanceDBServer(),
-#     structure_file_payload=None,
-#     files=None,
-#     structure_file=None,
-#     result_id=None,
-#     is_prev_needed=False,
-# ):
-
-#     runbook_id = runbook["runbook_id"]
-
-#     main_source = runbook.get("main_source")
-#     data_sources = runbook.get("data_source")
-
-#     reference_sources = runbook.get("reference_sources")
-#     refernce_main_source = runbook.get("reference_main_source")
-
-#     if structure_file:
-#         structure_file_content = read_json_from_s3(structure_file)
-#     else:
-#         structure_file_content = None
-
-#     if not structure_file_payload:
-#         structure_file_payload = runbook["structure_theme"]
-
-#     execution_id = f"exec_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-#     new_result_id = f"result_{uuid.uuid4().hex[:6]}"
-#     started_at = int(time.time())
-
-#     refactor_result = {}
-#     risk_score = None
-
-#     await dbserver.insert_runbook_result(
-#         {
-#             "execution_id": execution_id,
-#             "result_id": new_result_id,
-#             "runbook_id": runbook_id,
-#             "user_id": user_id,
-#             "status": "running",
-#             "started_at": started_at,
-#             "input_mode": runbook.get("input_type"),
-#         }
-#     )
-
-#     try:
-#         # =========================================================
-#         # INPUT PREP
-#         # =========================================================
-#         runbook_yaml = render_runbook_yaml(runbook)
-
-#         analyze_input = runbook.get("analyze_input") or runbook.get("description", "")
-
-#         file_data = ""
-#         if not result_id:
-#             file_data = await collect_runbook_inputs(runbook)
-
-#         # =========================================================
-#         # LANGUAGE DETECTION
-#         # =========================================================
-#         output_language = "English"
-#         output_word_count = 800
-
-#         if analyze_input:
-#             lang_prompt = RADAR_TEMPLATE[
-#                 runbook_yaml["radar"]["language_prompt"]
-#             ].replace("{{analyze_input}}", analyze_input)
-
-#             result = await get_think_fire_response2_og(
-#                 user_message=lang_prompt,
-#                 user_id=user_id,
-#                 credits=credits,
-#                 total_input_chars=len(lang_prompt),
-#             )
-
-#             lang_data = json.loads(result)
-#             output_language = lang_data.get("language", "English")
-#             wc = lang_data.get("word_count")
-
-#             if isinstance(wc, int) and wc > 0:
-#                 output_word_count = wc
-#             else:
-#                 output_word_count = 800
-
-#         # =========================================================
-#         # DATA RETRIEVAL
-#         # =========================================================
-#         data_checked = []
-#         reference_RWA = []
-
-#         payload = None
-
-#         if main_source == "knowledge" or refernce_main_source == "knowledge":
-#             embedding = await get_firework_embedding()
-#             vector = embedding.embed_query(analyze_input)
-
-#             payload = QueryData(user_id=user_id, embedding=vector, top_k=3)
-
-#         if main_source:
-#             data_checked = await retreval_from_sources(
-#                 conn, dbserver, main_source, data_sources, user_id, payload
-#             )
-
-#         if refernce_main_source:
-#             reference_RWA = await retreval_from_sources(
-#                 conn,
-#                 dbserver,
-#                 refernce_main_source,
-#                 reference_sources,
-#                 user_id,
-#                 payload,
-#             )
-
-#         # =========================================================
-#         # BASE PROMPT
-#         # =========================================================
-#         structure_prompts = runbook_yaml["radar"]["structure_prompts"]
-
-#         review_temp = (
-#             RADAR_TEMPLATE.get(structure_prompts.get("review"))
-#             or RADAR_TEMPLATE.get(structure_prompts.get("analysis"))
-#             or RADAR_TEMPLATE.get(structure_prompts.get("recommendation"))
-#         )
-
-#         base_prompt = (
-#             review_temp.replace("{{analyze_input}}", analyze_input)
-#             .replace("{{file_data}}", file_data)
-#             .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
-#             .replace("{{data_sources}}", json.dumps(data_checked))
-#             .replace("{{reference_sources}}", json.dumps(reference_RWA))
-#             .replace("{{output_language}}", output_language)
-#             .replace("{{requested_word_count}}", str(output_word_count))
-#         )
-
-#         # =========================================================
-#         # INITIAL GENERATION
-#         # =========================================================
-#         result = await get_think_bedrok_response(
-#             user_message=base_prompt,
-#             user_id=user_id,
-#             credits=credits,
-#             total_input_chars=len(base_prompt),
-#             language=output_language,
-#             words_count=output_word_count,
-#         )
-
-#         merged_report = merge_runbook_chunks_deterministic(result)
-#         refactor_result = _safe_json_parse(merged_report)
-
-#         # =========================================================
-#         # 🔁 VALIDATION LOOP (BLOCK LEVEL)
-#         # =========================================================
-#         MAX_RETRIES = 3
-#         previous_error_set = set()
-
-#         for attempt in range(MAX_RETRIES):
-
-#             print(f"🔁 Validation Attempt {attempt+1}")
-
-#             # 🚨 FAST TYPE CHECK
-#             leakage_errors = detect_type_leakage(refactor_result)
-
-#             if leakage_errors:
-#                 vrefactor = {
-#                     "is_report_ok": False,
-#                     "errors": leakage_errors,
-#                     "affected_blocks": list(set(e["block_id"] for e in leakage_errors)),
-#                 }
-#             else:
-#                 verifier_prompt = (
-#                     RADAR_TEMPLATE["Report_verify_prompt"]
-#                     .replace("{{report_generated}}", json.dumps(refactor_result))
-#                     .replace(
-#                         "{{structure_file_data}}", json.dumps(structure_file_payload)
-#                     )
-#                 )
-
-#                 v_result = await get_think_fire_response2_og(
-#                     user_message=verifier_prompt,
-#                     user_id=user_id,
-#                     credits=credits,
-#                     total_input_chars=len(verifier_prompt),
-#                 )
-
-#                 vrefactor = _safe_json_parse(v_result)
-
-#             if not vrefactor:
-#                 break
-
-#             if vrefactor.get("is_report_ok"):
-#                 print("✅ VALID REPORT")
-#                 break
-
-#             errors = vrefactor.get("errors", [])
-#             affected_blocks = vrefactor.get("affected_blocks", [])
-
-#             if not errors or not affected_blocks:
-#                 break
-
-#             # 🧠 EARLY STOP CHECK
-#             current_error_set = set(e["issue"] for e in errors)
-#             if current_error_set == previous_error_set:
-#                 print("⚠️ No progress, stopping")
-#                 break
-
-#             previous_error_set = current_error_set
-
-#             # =========================================================
-#             # 🔧 PARTIAL BLOCK FIX
-#             # =========================================================
-#             blocks_to_fix = get_blocks_by_ids(refactor_result, affected_blocks)
-
-#             block_fix_prompt = (
-#                 RADAR_TEMPLATE["Report_block_fixer_prompt"]
-#                 .replace("{{blocks_to_fix}}", json.dumps(blocks_to_fix))
-#                 .replace("{{errors}}", json.dumps(errors))
-#                 .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
-#             )
-
-#             fix_result = await get_think_bedrok_response(
-#                 user_message=block_fix_prompt,
-#                 user_id=user_id,
-#                 credits=credits,
-#                 total_input_chars=len(block_fix_prompt),
-#                 language=output_language,
-#                 words_count=output_word_count,
-#             )
-
-#             parsed_fix = _safe_json_parse(fix_result)
-
-#             if not parsed_fix or "fixed_blocks" not in parsed_fix:
-#                 break
-
-#             refactor_result = merge_fixed_blocks(
-#                 refactor_result, parsed_fix["fixed_blocks"]
-#             )
-
-#         # =========================================================
-#         # RISK SCORE
-#         # =========================================================
-#         risk_prompt = RADAR_TEMPLATE["nist_risk_score_prompt"].replace(
-#             "{{analysis_result}}", json.dumps(refactor_result)
-#         )
-
-#         risk_llm_result = await get_think_fire_response2_og(
-#             user_message=risk_prompt,
-#             user_id=user_id,
-#             credits=credits,
-#             total_input_chars=len(risk_prompt),
-#         )
-
-#         risk_data = _safe_json_parse(risk_llm_result)
-#         risk_score = risk_data.get("final_risk_score", 0)
-
-#         refactor_result["risk_analysis"] = risk_data
-#         refactor_result["risk_score"] = risk_score
-
-#         # =========================================================
-#         # STORE RESULT
-#         # =========================================================
-#         await dbserver.insert_runbook_result(
-#             {
-#                 "execution_id": execution_id,
-#                 "result_id": new_result_id,
-#                 "runbook_id": runbook_id,
-#                 "user_id": user_id,
-#                 "status": "completed",
-#                 "risk_score": risk_score,
-#                 "result": refactor_result,
-#                 "started_at": started_at,
-#                 "ended_at": int(time.time()),
-#             }
-#         )
-
-#         return refactor_result
-
-#     except Exception as e:
-#         print("❌ ERROR:", e)
-#         print(traceback.format_exc())
-
-#         await dbserver.insert_runbook_result(
-#             {
-#                 "execution_id": execution_id,
-#                 "result_id": new_result_id,
-#                 "runbook_id": runbook_id,
-#                 "user_id": user_id,
-#                 "status": "failed",
-#                 "result": {},
-#                 "started_at": started_at,
-#                 "ended_at": int(time.time()),
-#             }
-#         )
-
-#         return {}
 
 
 async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record):
@@ -1457,9 +1121,9 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
         # print("📦 sample item:", analyzed_results[0] if analyzed_results else "None")
         if analyzed_results:
             merged = await merge_document_data(analyzed_results, instruction_data)
-            # runbook["runtime_input"] = json.dumps(merged["chat"])
-            document_data = merged.get("chat")
-            print("document_data : ", len(document_data))
+            runbook["runtime_input"] = json.dumps(merged["chat"])
+            # document_data = merged.get("chat")
+            # print("document_data : ", len(document_data))
             # print("🔍 After merge sample:", merged[0])
     else:
         runbook["runtime_input"] = json.dumps(instruction_data.get("chat", []))
@@ -1472,7 +1136,6 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
         runbook=runbook,
         structure_file=structure_file,
         structure_file_payload=structure_file_payload,
-        document_data=document_data,
     )
     # ws_service.emit(user_id=user_id,message=)
 
@@ -2073,7 +1736,7 @@ async def analyze_questions_with_references(
         batch_result = await analyze_single_question(chunk, context_text, user_id)
 
         if not batch_result:
-            log(f"⚠️ Batch {i//BATCH_SIZE + 1} returned empty")
+            # log(f"⚠️ Batch {i//BATCH_SIZE + 1} returned empty")
 
             print("⚠️ Empty batch result")
             continue

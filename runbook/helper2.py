@@ -23,6 +23,7 @@ from utils.base_logger import get_logger
 from .utils import *
 from .utils import _safe_json_parse_full
 from .utils import _safe_json_parse
+from runbook.helper import run_evidence_analysis, reduce_data_for_report
 
 dbserver = LanceDBServer()
 conn = connect_to_rds()
@@ -95,35 +96,6 @@ COLOR RULES:
 "#9C27B0" comparison
 """
 
-REPORT_MESSAGES = {
-    "start": "Initializing report generation...",
-    "phases": [
-        "Analyzing input data",
-        "Structuring report sections",
-        "Generating insights",
-        "Compiling report",
-    ],
-    "chunk_start": "Generating report section {current}/{total}...",
-    "chunk_success": "Report section {current} generated.",
-    "chunk_warning": "Section {current} had minor formatting issues.",
-    "chunk_error": "Issue while generating section {current}.",
-    "final": "Report generation completed successfully.",
-}
-RISK_MESSAGES = {
-    "start": "Initializing risk analysis...",
-    "phases": [
-        "Scanning risk inputs",
-        "Evaluating threats",
-        "Calculating impact",
-        "Finalizing risk report",
-    ],
-    "chunk_start": "Analyzing risk segment {current}/{total}...",
-    "chunk_success": "Risk segment {current} analyzed.",
-    "chunk_warning": "Partial issue in risk segment {current}.",
-    "chunk_error": "Error during risk analysis segment {current}.",
-    "final": "Risk analysis completed successfully.",
-}
-
 
 def has_chart_block(instructions):
     return any(b.get("block_type") == "chart" for b in instructions)
@@ -172,7 +144,7 @@ async def modify_run_runbook_execution_engine(
     runbook_id = runbook["runbook_id"]
 
     main_source = runbook.get("main_source")
-    data_sources = runbook.get("data_source")
+    data_sources = runbook.get("data_sources")
     reference_sources = runbook.get("reference_sources")
     refernce_main_source = runbook.get("reference_main_source")
 
@@ -185,6 +157,10 @@ async def modify_run_runbook_execution_engine(
 
     raw_structure = structure_file_payload or runbook.get("structure_theme")
     structure_file_payload = safe_json_load(raw_structure, {})
+    if data_sources and len(data_sources) > 1:
+        data_sources = normalize_json_field(data_sources)
+    if reference_sources and len(reference_sources) > 1:
+        reference_sources = normalize_json_field(reference_sources)
 
     if not structure_file_payload or "blocks" not in structure_file_payload:
         raise ValueError("structure_file_payload missing 'blocks'")
@@ -284,59 +260,6 @@ async def modify_run_runbook_execution_engine(
             total_chars=len(user_analyze_input),
             reference_id="embedding_generation",
         )
-    # --------------------------------------------------
-    # OPTIONAL RADAR DATA SOURCES
-    # --------------------------------------------------
-
-    data_checked = []
-    reference_RWA = []
-    if main_source and data_sources:
-
-        data_checked = await retreval_from_sources(
-            conn,
-            dbserver,
-            main_source,
-            data_sources,
-            user_id,
-            payload,
-        )
-        if data_checked and len(data_checked) > 10:
-            progress = 45
-
-            await emit(
-                msg_builder.job_progress(
-                    job_id,
-                    session_id,
-                    "report setup",
-                    "extracted information from selected Responses & Evidences",
-                    progress,
-                )
-            )
-
-    if refernce_main_source and reference_sources:
-        reference_RWA = await retreval_from_sources(
-            conn,
-            dbserver,
-            refernce_main_source,
-            reference_sources,
-            user_id,
-            payload,
-        )
-        if reference_RWA and len(reference_RWA) > 10:
-            if main_source and data_sources:
-                progress = 50
-            else:
-                progress = 45
-
-            await emit(
-                msg_builder.job_progress(
-                    job_id,
-                    session_id,
-                    "report setup",
-                    "extracted information from selected Governance Framework",
-                    progress,
-                )
-            )
 
     # ----------------------------
     # PREVIOUS RESULT
@@ -604,13 +527,95 @@ async def modify_run_runbook_execution_engine(
             print("NEW BLOCKS", new_blocks)
         # RESTRUCTURE
         if restructure_content:
+            # --------------------------------------------------
+            # OPTIONAL RADAR DATA SOURCES
+            # --------------------------------------------------
+
+            data_checked = []
+            reference_RWA = []
+            if main_source and data_sources:
+
+                data_checked = await retreval_from_sources(
+                    conn,
+                    dbserver,
+                    main_source,
+                    data_sources,
+                    user_id,
+                    payload,
+                )
+                if data_checked and len(data_checked) > 10:
+                    progress = 45
+
+                    await emit(
+                        msg_builder.job_progress(
+                            job_id,
+                            session_id,
+                            "report setup",
+                            "extracted information from selected Responses & Evidences",
+                            progress,
+                        )
+                    )
+
+            if refernce_main_source and reference_sources:
+                reference_RWA = await retreval_from_sources(
+                    conn,
+                    dbserver,
+                    refernce_main_source,
+                    reference_sources,
+                    user_id,
+                    payload,
+                )
+                if reference_RWA and len(reference_RWA) > 10:
+                    if main_source and data_sources:
+                        progress = 50
+                    else:
+                        progress = 45
+
+                    await emit(
+                        msg_builder.job_progress(
+                            job_id,
+                            session_id,
+                            "report setup",
+                            "extracted information from selected Governance Framework",
+                            progress,
+                        )
+                    )
+
+            # --------------------------------------------------
+            # REDUCE DATA TO STAY WITHIN TOKEN LIMITS
+            # --------------------------------------------------
+            reduced_datachecked = await reduce_data_for_report(
+                data_checked, structure_file_payload, user_id, credits, label="evidence"
+            )
+            reduced_referencerwa = await reduce_data_for_report(
+                reference_RWA,
+                structure_file_payload,
+                user_id,
+                credits,
+                label="governance framework",
+            )
+
             restructure_prompt = (
                 RADAR_TEMPLATE["radar_update_template_structure"]
                 .replace("{{structure_file_data}}", json.dumps(structure_file_payload))
                 .replace("{{last_radar_response}}", json.dumps(last_runbook_response))
                 .replace("{{analyze_input}}", json.dumps(restructure_content))
-                .replace("{{data_sources}}", json.dumps(data_checked))
-                .replace("{{reference_sources}}", json.dumps(reference_RWA))
+                .replace(
+                    "{{data_sources}}",
+                    (
+                        reduced_datachecked
+                        if isinstance(reduced_datachecked, str)
+                        else json.dumps(reduced_datachecked)
+                    ),
+                )
+                .replace(
+                    "{{reference_sources}}",
+                    (
+                        reduced_referencerwa
+                        if isinstance(reduced_referencerwa, str)
+                        else json.dumps(reduced_referencerwa)
+                    ),
+                )
                 .replace("{{file_data}}", file_data)
                 # 🔥 CONFIG
                 .replace("{{output_language}}", output_language)
@@ -624,12 +629,6 @@ async def modify_run_runbook_execution_engine(
                 total_input_chars=len(restructure_prompt),
                 language=output_language,
                 words_count=output_word_count,
-                emit=emit,
-                mprogress=66,
-                job_id=job_id,
-                session_id=session_id,
-                msg_builder=msg_builder,
-                progress_messages=REPORT_MESSAGES,  # ✅
             )
             merged_report = merge_runbook_chunks_deterministic(result)
 
@@ -705,18 +704,20 @@ async def modify_run_runbook_execution_engine(
         user_id=user_id,
         credits=credits,
         total_input_chars=len(risk_prompt),
-        emit=emit,
-        mprogress=80,
-        job_id=job_id,
-        session_id=session_id,
-        msg_builder=msg_builder,
-        progress_messages=RISK_MESSAGES,
     )
 
     risk_data = _safe_json_parse(risk_result)
 
     merged_result["risk_analysis"] = risk_data
     merged_result["risk_score"] = risk_data.get("final_risk_score", 0)
+
+    if data_checked:
+        report_viewer = data_sources.get("report_viewer")
+        evidence_analysis = await run_evidence_analysis(
+            data_checked, report_viewer, user_id, credits
+        )
+        merged_result["evidence_analysis"] = evidence_analysis
+
     await emit(
         msg_builder.job_progress(
             job_id,
@@ -752,7 +753,7 @@ async def modify_run_runbook_execution_engine(
         await emit(
             msg_builder.global_session_msg(
                 session_id=session_id,
-                message= f"generated report for {name}",
+                message=f"generated report for {name}",
             )
         )
 

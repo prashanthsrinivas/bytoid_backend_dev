@@ -3,6 +3,7 @@ from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch
 from db.rds_db import connect_to_rds
 from services.credit_system import CreditManager
 from utils.app_configs import ALLOWED_ORIGINS, ACCESSIBLE_IDS
+from db.db_checkers import ensure_starter_credits_for_user
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 
 import os
@@ -346,14 +347,33 @@ def saml_acs():
             )
            conn.commit()
            user_role = user_type
-    
-       # ================= ROLE VALIDATION =================
+        # ================= ROLE VALIDATION + SYNC =================
 
-       if role == "bytoid-admin" and user_role != "admin":
-           return jsonify({"error": "Role mismatch"}), 403
+       ROLE_MAP = {
+            "bytoid-admin": "admin",
+            "bytoid-user": "user"
+        }
 
-       if role == "bytoid-user" and user_role != "user":
-           return jsonify({"error": "Role mismatch"}), 403
+        # 1. STRICT VALIDATION (rule satisfied)
+       if role not in ROLE_MAP:
+            return jsonify({"error": "Invalid role from IDP"}), 403
+
+        # 2. SAFE MAPPING
+       new_role = ROLE_MAP[role]
+
+        # 3. SYNC DB IF DIFFERENT (no blind overwrite)
+       if user_role != new_role:
+            cursor.execute(
+                """
+                UPDATE users
+                SET user_type = %s
+                WHERE user_id = %s
+                """,
+                (new_role, user_id)
+            )
+            conn.commit()
+
+       user_role = new_role
 
        # ================= SESSION =================
        session["user_role"] = user_role
@@ -374,11 +394,24 @@ def saml_acs():
        )
 
        conn.commit()
+       # ================= CREDITS LOGIC =================
+       try:
+            # Ensure starter credits exist (IMPORTANT)
+            ensure_starter_credits_for_user(user_id, conn)
+            credits = CreditManager(conn)
+            avail_credits = credits.check_if_remaining(user_id=user_id)
+            credit_status = avail_credits.get("status")
+            credit_message = avail_credits.get("message")
+       except Exception as e:
+            print("CREDIT ERROR:", str(e))
+            credit_status = "error"
+            credit_message = "Could not fetch credits"
 
        redirect_base = session.get("saml_redirect", "https://app.bytoid.ai")
 
        return redirect(
            f"{redirect_base}/sso?status=success&userid={user_id}&service=saml"
+           f"&credits={credit_status}"
        )
 
    except Exception as e:

@@ -11,11 +11,6 @@ from utils.base_logger import get_logger
 
 from langchain_community.document_loaders import (
     DirectoryLoader,
-    TextLoader,
-    PyMuPDFLoader,
-    UnstructuredWordDocumentLoader,
-    UnstructuredPowerPointLoader,
-    UnstructuredExcelLoader,
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_fireworks import ChatFireworks
@@ -23,10 +18,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from utils.fireworkzz import get_firework_embedding, get_fireworks_response
 from db.lance_db_service import LanceDBServer
 from utils.normal import load_yaml_file
-from credits_route.route import Credits
-from request_context import current_user_id
 import numpy as np
-
+from utils.docu_extensions import extension_loader_map
 import re
 from html import unescape
 
@@ -166,23 +159,14 @@ class LanceClient:
     def langchainprocessDocs(self, file_path: str):
         all_documents = []
 
-        # Mapping file extensions to loader classes
-        extension_loader_map = {
-            ".txt": (TextLoader, {"autodetect_encoding": True}),
-            ".pdf": (PyMuPDFLoader, {}),
-            ".docx": (UnstructuredWordDocumentLoader, {}),
-            ".pptx": (UnstructuredPowerPointLoader, {}),
-            ".xlsx": (UnstructuredExcelLoader, {}),
-        }
-
+        # ----------- SINGLE FILE -----------
         if os.path.isfile(file_path):
             ext = os.path.splitext(file_path)[1].lower()
-            loader_cls_kwargs = extension_loader_map.get(ext)
+            loader_fn = extension_loader_map.get(ext)
 
-            if loader_cls_kwargs:
-                loader_cls, kwargs = loader_cls_kwargs
+            if loader_fn:
                 try:
-                    loader = loader_cls(file_path, **kwargs)
+                    loader = loader_fn(file_path)
                     loaded_docs = loader.load()
                     logger.info(f"[📄] Loaded 1 file: {file_path}")
                     all_documents.extend(loaded_docs)
@@ -193,29 +177,19 @@ class LanceClient:
             else:
                 logger.warning(f"[⚠️] Unsupported file extension: {ext}")
 
+        # ----------- DIRECTORY -----------
         elif os.path.isdir(file_path):
-            loaders = [
-                (TextLoader, "**/*.txt"),
-                (PyMuPDFLoader, "**/*.pdf"),
-                (UnstructuredWordDocumentLoader, "**/*.docx"),
-                (UnstructuredPowerPointLoader, "**/*.pptx"),
-                (UnstructuredExcelLoader, "**/*.xlsx"),
-            ]
+            for ext, loader_fn in extension_loader_map.items():
+                pattern = f"**/*{ext}"
 
-            for loader_cls, pattern in loaders:
                 try:
-                    kwargs = (
-                        {"loader_kwargs": {"autodetect_encoding": True}}
-                        if loader_cls is TextLoader
-                        else {}
-                    )
                     loader = DirectoryLoader(
                         file_path,
                         glob=pattern,
-                        loader_cls=loader_cls,
+                        loader_cls=lambda p: loader_fn(p),
                         show_progress=True,
-                        **kwargs,
                     )
+
                     loaded_docs = loader.load()
                     logger.info(
                         f"[+] Loaded {len(loaded_docs)} documents from pattern: {pattern}"
@@ -234,35 +208,35 @@ class LanceClient:
                     logger.error(
                         f"[!] Failed to load {pattern} files: {type(e).__name__}: {e}"
                     )
+
         else:
-            logger.error(
-                f"[!] Invalid path: {file_path} is neither file nor directory."
-            )
+            logger.error(f"[!] Invalid path: {file_path}")
             return []
 
+        # ----------- SAFETY CHECK -----------
         if not all_documents:
-            logger.warning(
-                "[⚠️] No documents loaded. Check file paths or encoding issues."
-            )
+            logger.warning("[⚠️] No documents loaded.")
+            return []
 
-        # splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        # Estimate dynamic chunk size
+        # ----------- DYNAMIC CHUNKING -----------
         doc_lengths = [len(doc.page_content) for doc in all_documents]
-        ##print("the docs lengths", doc_lengths)
         avg_length = sum(doc_lengths) // len(doc_lengths) if doc_lengths else 1000
-        ##print("the average length is ", avg_length)
 
-        # Heuristic: Clamp between 500 and 1500 characters
+        # clamp between 500–800 (you intentionally reduced upper bound)
         dynamic_chunk_size = max(500, min(800, avg_length))
+        chunk_overlap = int(dynamic_chunk_size * 0.2)
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=dynamic_chunk_size,
-            chunk_overlap=int(dynamic_chunk_size * 0.2),  # 20% overlap
+            chunk_overlap=chunk_overlap,
         )
+
         docs = splitter.split_documents(all_documents)
+
         logger.info(
-            f"[📄] Split into {len(docs)} chunks. and dynamic chunksize {dynamic_chunk_size} and overlap {int(dynamic_chunk_size * 0.2)}"
+            f"[📄] Split into {len(docs)} chunks | chunk_size={dynamic_chunk_size} | overlap={chunk_overlap}"
         )
+
         return docs
 
     async def process_document(self, file_path: str, filename: str, credits=None):

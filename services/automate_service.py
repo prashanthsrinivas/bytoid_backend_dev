@@ -1296,7 +1296,8 @@ class AutoMateService:
                     "B": "..."
                     }},
                     "user_answer": null,
-                    "comment":null
+                    "comment":null,
+                    "evidence_required": [],
                 }}
                 ]
 

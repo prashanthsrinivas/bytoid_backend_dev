@@ -1,0 +1,623 @@
+[
+  {
+    "type": "Process Evidence",
+    "number": 1,
+    "artifact": "Policies",
+    "nature": "Documentation",
+    "primaryUse": "Defines organizational rules and intent",
+    "expectations": "Approved; version controlled; owner; effective date; periodic review; communicated to stakeholders",
+    "id": "1"
+  },
+  {
+    "type": "Process Evidence",
+    "number": 2,
+    "artifact": "SOP / procedure",
+    "nature": "Document",
+    "primaryUse": "Defines control/process design",
+    "expectations": "Version, owner, approver, effective date, review cycle; mapped to control; no conflicting versions; aligned to actual execution",
+    "id": "2"
+  },
+  {
+    "type": "Process Evidence",
+    "number": 3,
+    "artifact": "Runbook / playbook",
+    "nature": "Document / system-linked",
+    "primaryUse": "Defines operational steps",
+    "expectations": "Step completeness; triggers; roles; escalation; last review; system linkage; matches execution traces",
+    "id": "3"
+  },
+  {
+    "type": "Process Evidence",
+    "number": 4,
+    "artifact": "Workflow diagram",
+    "nature": "Diagram export",
+    "primaryUse": "Visual control/process flow",
+    "expectations": "Roles/swimlanes; decision points; system handoffs; control points; version/date consistency",
+    "id": "4"
+  },
+  {
+    "type": "Process Evidence",
+    "number": 5,
+    "artifact": "AI workflow definition",
+    "nature": "Config / document",
+    "primaryUse": "AI orchestration, prompts, RAG",
+    "expectations": "Model/workflow version; prompt version; RAG sources; guardrails; approval; deployment environment; change history",
+    "id": "5"
+  },
+  {
+    "type": "Control Execution Evidence",
+    "number": 1,
+    "artifact": "System log file",
+    "nature": "Raw log/export",
+    "primaryUse": "Proves control execution",
+    "expectations": "Source system; generation mechanism; timestamps (TZ-consistent); event IDs; actor; outcome; completeness for period; integrity (hash/unaltered); correlates with related records",
+    "id": "6"
+  },
+  {
+    "type": "Control Execution Evidence",
+    "number": 2,
+    "artifact": "Screenshot",
+    "nature": "Image",
+    "primaryUse": "Point-in-time proof",
+    "expectations": "Visible system/URL; timestamp; environment; user/session context; no cropping of context; corroboration with stronger evidence when required",
+    "id": "7"
+  },
+  {
+    "type": "Control Execution Evidence",
+    "number": 3,
+    "artifact": "Scan output",
+    "nature": "Tool report",
+    "primaryUse": "Proves control/test run",
+    "expectations": "Tool/version; scan date; scope/assets; policy/profile; findings + raw data; false-positive handling; remediation linkage",
+    "id": "8"
+  },
+  {
+    "type": "Control Execution Evidence",
+    "number": 4,
+    "artifact": "AI guardrail log",
+    "nature": "Structured log",
+    "primaryUse": "Proves AI control enforcement",
+    "expectations": "Request ID; model/version; rule triggered; action; output status; timestamp; linkage to execution/conversation",
+    "id": "9"
+  },
+  {
+    "type": "Transactional Evidence",
+    "number": 1,
+    "artifact": "Ticket export",
+    "nature": "System export",
+    "primaryUse": "Lifecycle of activity",
+    "expectations": "Ticket ID; actors; timestamps; status transitions; approvals; history; closure; no orphan states",
+    "id": "10"
+  },
+  {
+    "type": "Transactional Evidence",
+    "number": 2,
+    "artifact": "Request record",
+    "nature": "System record",
+    "primaryUse": "Request initiation/processing",
+    "expectations": "Request ID; requester; business justification; approvals; fulfillment; final state",
+    "id": "11"
+  },
+  {
+    "type": "Transactional Evidence",
+    "number": 3,
+    "artifact": "AI execution log",
+    "nature": "Structured log",
+    "primaryUse": "AI task execution trace",
+    "expectations": "Execution ID; input/output; model/version; actor; timestamp; human validation where applicable",
+    "id": "12"
+  },
+  {
+    "type": "Transactional Evidence",
+    "number": 4,
+    "artifact": "Onboarding record",
+    "nature": "System/document",
+    "primaryUse": "Completion of onboarding",
+    "expectations": "Entity ID; steps completed; timestamps; approvals; linkage to access/risk/contract",
+    "id": "13"
+  },
+  {
+    "type": "Approval & Authorization",
+    "number": 1,
+    "artifact": "Email approval",
+    "nature": "Email record",
+    "primaryUse": "Informal approval",
+    "expectations": "Sender identity (header); authority; timestamp; approval scope; linked action",
+    "id": "14"
+  },
+  {
+    "type": "Approval & Authorization",
+    "number": 2,
+    "artifact": "Workflow sign-off",
+    "nature": "System log",
+    "primaryUse": "Formal approval",
+    "expectations": "Approver role; timestamp; action approved; sequence correctness; no unauthorized delegation",
+    "id": "15"
+  },
+  {
+    "type": "Approval & Authorization",
+    "number": 3,
+    "artifact": "Exception approval",
+    "nature": "Record/document",
+    "primaryUse": "Approved deviation",
+    "expectations": "Exception ID; control impacted; risk rationale; approver; expiry; compensating controls",
+    "id": "16"
+  },
+  {
+    "type": "Approval & Authorization",
+    "number": 4,
+    "artifact": "AI override decision",
+    "nature": "Log/record",
+    "primaryUse": "Human override of AI",
+    "expectations": "Override actor; original output; rationale; timestamp; audit trail intact",
+    "id": "17"
+  },
+  {
+    "type": "Access & Ownership",
+    "number": 1,
+    "artifact": "IAM export",
+    "nature": "System export",
+    "primaryUse": "Access state",
+    "expectations": "User-role mapping; least privilege; current snapshot; no stale access; SoD conflicts checked",
+    "id": "18"
+  },
+  {
+    "type": "Access & Ownership",
+    "number": 2,
+    "artifact": "RBAC matrix",
+    "nature": "Document",
+    "primaryUse": "Role design",
+    "expectations": "Role definitions; approval; mapping to systems; periodic review evidence",
+    "id": "19"
+  },
+  {
+    "type": "Access & Ownership",
+    "number": 3,
+    "artifact": "Access review record",
+    "nature": "System/document",
+    "primaryUse": "Periodic validation",
+    "expectations": "Reviewer; timestamp; decisions; coverage of population; remediation of excess access",
+    "id": "20"
+  },
+  {
+    "type": "Access & Ownership",
+    "number": 4,
+    "artifact": "Ownership register",
+    "nature": "Document",
+    "primaryUse": "Accountability",
+    "expectations": "Named owner; responsibility scope; last validation date",
+    "id": "21"
+  },
+  {
+    "type": "Monitoring & Review",
+    "number": 1,
+    "artifact": "Dashboard export",
+    "nature": "System snapshot",
+    "primaryUse": "Ongoing monitoring",
+    "expectations": "Timestamp; source linkage; completeness of metrics; anomaly visibility",
+    "id": "22"
+  },
+  {
+    "type": "Monitoring & Review",
+    "number": 2,
+    "artifact": "Review log",
+    "nature": "System/document",
+    "primaryUse": "Oversight activity",
+    "expectations": "Reviewer identity; review frequency adherence; findings; escalation tracking",
+    "id": "23"
+  },
+  {
+    "type": "Monitoring & Review",
+    "number": 3,
+    "artifact": "SOC report",
+    "nature": "Report",
+    "primaryUse": "Security monitoring summary",
+    "expectations": "Period coverage; incident linkage; completeness; independence of review",
+    "id": "24"
+  },
+  {
+    "type": "Monitoring & Review",
+    "number": 4,
+    "artifact": "AI monitoring output",
+    "nature": "Metrics/logs",
+    "primaryUse": "Model monitoring",
+    "expectations": "Drift metrics; anomalies; thresholds; timestamp; coverage across usage",
+    "id": "25"
+  },
+  {
+    "type": "Exception & Incident",
+    "number": 1,
+    "artifact": "Incident ticket",
+    "nature": "System record",
+    "primaryUse": "Incident handling",
+    "expectations": "Severity; timeline; full lifecycle; no unresolved critical gaps",
+    "id": "26"
+  },
+  {
+    "type": "Exception & Incident",
+    "number": 2,
+    "artifact": "Breach report",
+    "nature": "Document",
+    "primaryUse": "Formal breach record",
+    "expectations": "Impact; notification timeline; regulatory alignment",
+    "id": "27"
+  },
+  {
+    "type": "Exception & Incident",
+    "number": 3,
+    "artifact": "RCA document",
+    "nature": "Document",
+    "primaryUse": "Root cause",
+    "expectations": "Root cause; corrective action; closure validation",
+    "id": "28"
+  },
+  {
+    "type": "Exception & Incident",
+    "number": 4,
+    "artifact": "Exception log",
+    "nature": "Record",
+    "primaryUse": "Deviations",
+    "expectations": "Approval; expiry; residual risk; periodic review",
+    "id": "29"
+  },
+  {
+    "type": "Reporting",
+    "number": 1,
+    "artifact": "Risk/compliance report",
+    "nature": "Document",
+    "primaryUse": "Aggregated reporting",
+    "expectations": "Source traceability; calculation logic; approval; consistency",
+    "id": "30"
+  },
+  {
+    "type": "Reporting",
+    "number": 2,
+    "artifact": "Dashboard snapshot",
+    "nature": "Export",
+    "primaryUse": "Visual reporting",
+    "expectations": "Timestamp; matches source data; no manipulation",
+    "id": "31"
+  },
+  {
+    "type": "Reporting",
+    "number": 3,
+    "artifact": "AI-generated report",
+    "nature": "Document",
+    "primaryUse": "AI output",
+    "expectations": "Clearly labeled AI; human validation; trace to inputs",
+    "id": "32"
+  },
+  {
+    "type": "Reporting",
+    "number": 4,
+    "artifact": "Board summary",
+    "nature": "Presentation",
+    "primaryUse": "Executive reporting",
+    "expectations": "Approved version; consistency with detailed reports",
+    "id": "33"
+  },
+  {
+    "type": "Configuration / State",
+    "number": 1,
+    "artifact": "Cloud config export",
+    "nature": "System export",
+    "primaryUse": "Current config state",
+    "expectations": "Direct extract; environment tagged; no drift from baseline",
+    "id": "34"
+  },
+  {
+    "type": "Configuration / State",
+    "number": 2,
+    "artifact": "System screenshot",
+    "nature": "Image",
+    "primaryUse": "Config view",
+    "expectations": "Context visible; timestamp; corroboration needed",
+    "id": "35"
+  },
+  {
+    "type": "Configuration / State",
+    "number": 3,
+    "artifact": "Model config",
+    "nature": "Config record",
+    "primaryUse": "AI deployment state",
+    "expectations": "Version; parameters; deployment state; environment",
+    "id": "36"
+  },
+  {
+    "type": "Configuration / State",
+    "number": 4,
+    "artifact": "Security tool config",
+    "nature": "Export",
+    "primaryUse": "Control settings",
+    "expectations": "Policy settings; last modified; completeness",
+    "id": "37"
+  },
+  {
+    "type": "Change Evidence",
+    "number": 1,
+    "artifact": "Change ticket",
+    "nature": "System record",
+    "primaryUse": "Change lifecycle",
+    "expectations": "Approval before change; timestamps; scope; linkage to deployment",
+    "id": "38"
+  },
+  {
+    "type": "Change Evidence",
+    "number": 2,
+    "artifact": "Git commit",
+    "nature": "Repo log",
+    "primaryUse": "Code/config change",
+    "expectations": "Author; commit history; linkage to ticket; timestamps",
+    "id": "39"
+  },
+  {
+    "type": "Change Evidence",
+    "number": 3,
+    "artifact": "Config change log",
+    "nature": "Log",
+    "primaryUse": "System changes",
+    "expectations": "Before/after; timestamps; traceability",
+    "id": "40"
+  },
+  {
+    "type": "Change Evidence",
+    "number": 4,
+    "artifact": "Model version update",
+    "nature": "Version log",
+    "primaryUse": "AI changes",
+    "expectations": "Version history; deployment timestamps; rollback availability",
+    "id": "41"
+  },
+  {
+    "type": "Third-Party Evidence",
+    "number": 1,
+    "artifact": "Vendor report",
+    "nature": "Certification/report",
+    "primaryUse": "External assurance",
+    "expectations": "Validity; scope; issuer credibility; relevance",
+    "id": "42"
+  },
+  {
+    "type": "Third-Party Evidence",
+    "number": 2,
+    "artifact": "Contract/DPA",
+    "nature": "Legal doc",
+    "primaryUse": "Legal control",
+    "expectations": "Signed; scope; obligations defined",
+    "id": "43"
+  },
+  {
+    "type": "Third-Party Evidence",
+    "number": 3,
+    "artifact": "Assessment report",
+    "nature": "Audit doc",
+    "primaryUse": "External audit",
+    "expectations": "Scope; independence; findings",
+    "id": "44"
+  },
+  {
+    "type": "Third-Party Evidence",
+    "number": 4,
+    "artifact": "Attestation",
+    "nature": "Statement",
+    "primaryUse": "Assurance",
+    "expectations": "Authentic; scoped; corroborated",
+    "id": "45"
+  },
+  {
+    "type": "Training & Awareness",
+    "number": 1,
+    "artifact": "Training record",
+    "nature": "System export",
+    "primaryUse": "Completion",
+    "expectations": "User-level; timestamps; coverage",
+    "id": "46"
+  },
+  {
+    "type": "Training & Awareness",
+    "number": 2,
+    "artifact": "LMS export",
+    "nature": "Report",
+    "primaryUse": "Training data",
+    "expectations": "Course; scores; completion",
+    "id": "47"
+  },
+  {
+    "type": "Training & Awareness",
+    "number": 3,
+    "artifact": "Communication",
+    "nature": "Email/doc",
+    "primaryUse": "Awareness",
+    "expectations": "Distribution proof",
+    "id": "48"
+  },
+  {
+    "type": "Training & Awareness",
+    "number": 4,
+    "artifact": "Phishing simulation",
+    "nature": "Report",
+    "primaryUse": "Effectiveness",
+    "expectations": "Campaign results; coverage",
+    "id": "49"
+  },
+  {
+    "type": "Data & Records",
+    "number": 1,
+    "artifact": "DB export",
+    "nature": "Data extract",
+    "primaryUse": "Data evidence",
+    "expectations": "Integrity; completeness; schema consistency",
+    "id": "50"
+  },
+  {
+    "type": "Data & Records",
+    "number": 2,
+    "artifact": "Log extract",
+    "nature": "Raw log",
+    "primaryUse": "Activity data",
+    "expectations": "Source; unaltered; timestamp",
+    "id": "51"
+  },
+  {
+    "type": "Data & Records",
+    "number": 3,
+    "artifact": "Dataset",
+    "nature": "Data file",
+    "primaryUse": "Structured data",
+    "expectations": "Ownership; schema; completeness",
+    "id": "52"
+  },
+  {
+    "type": "Data & Records",
+    "number": 4,
+    "artifact": "AI dataset",
+    "nature": "Versioned data",
+    "primaryUse": "Model training",
+    "expectations": "Version; lineage; access control",
+    "id": "53"
+  },
+  {
+    "type": "Lifecycle",
+    "number": 1,
+    "artifact": "Retention policy",
+    "nature": "Document",
+    "primaryUse": "Lifecycle definition",
+    "expectations": "Approved; timelines defined",
+    "id": "54"
+  },
+  {
+    "type": "Lifecycle",
+    "number": 2,
+    "artifact": "Archival log",
+    "nature": "Log",
+    "primaryUse": "Archival proof",
+    "expectations": "Timestamp; completeness",
+    "id": "55"
+  },
+  {
+    "type": "Lifecycle",
+    "number": 3,
+    "artifact": "Deletion log",
+    "nature": "Log",
+    "primaryUse": "Deletion proof",
+    "expectations": "Verifiable deletion; identifiers",
+    "id": "56"
+  },
+  {
+    "type": "Lifecycle",
+    "number": 4,
+    "artifact": "Lifecycle workflow",
+    "nature": "Document",
+    "primaryUse": "Process",
+    "expectations": "Traceable across stages",
+    "id": "57"
+  },
+  {
+    "type": "Physical",
+    "number": 1,
+    "artifact": "Access log",
+    "nature": "System log",
+    "primaryUse": "Physical access",
+    "expectations": "Timestamp; identity; completeness",
+    "id": "58"
+  },
+  {
+    "type": "Physical",
+    "number": 2,
+    "artifact": "CCTV",
+    "nature": "Image/video",
+    "primaryUse": "Surveillance",
+    "expectations": "Time/location; integrity",
+    "id": "59"
+  },
+  {
+    "type": "Physical",
+    "number": 3,
+    "artifact": "Visitor log",
+    "nature": "Register",
+    "primaryUse": "Visitor tracking",
+    "expectations": "Signed; purpose",
+    "id": "60"
+  },
+  {
+    "type": "Physical",
+    "number": 4,
+    "artifact": "Facility audit",
+    "nature": "Report",
+    "primaryUse": "Physical controls",
+    "expectations": "Inspection results; date",
+    "id": "61"
+  },
+  {
+    "type": "Analytical / Assessment",
+    "number": 1,
+    "artifact": "Risk assessment",
+    "nature": "Report",
+    "primaryUse": "Risk analysis",
+    "expectations": "Methodology; completeness; timestamp",
+    "id": "62"
+  },
+  {
+    "type": "Analytical / Assessment",
+    "number": 2,
+    "artifact": "Control test",
+    "nature": "Test record",
+    "primaryUse": "Effectiveness",
+    "expectations": "Tester; reproducibility",
+    "id": "63"
+  },
+  {
+    "type": "Analytical / Assessment",
+    "number": 3,
+    "artifact": "Vulnerability scan",
+    "nature": "Tool output",
+    "primaryUse": "Security testing",
+    "expectations": "Coverage; severity; timestamp",
+    "id": "64"
+  },
+  {
+    "type": "Analytical / Assessment",
+    "number": 4,
+    "artifact": "AI evaluation",
+    "nature": "Report",
+    "primaryUse": "Model assessment",
+    "expectations": "Bias; accuracy; dataset reference",
+    "id": "65"
+  },
+  {
+    "type": "Attestation",
+    "number": 1,
+    "artifact": "Self-attestation",
+    "nature": "Signed doc",
+    "primaryUse": "Declaration",
+    "expectations": "Signed; scoped; corroborated",
+    "id": "66"
+  },
+  {
+    "type": "Attestation",
+    "number": 2,
+    "artifact": "Certification",
+    "nature": "Official doc",
+    "primaryUse": "Compliance",
+    "expectations": "Valid; issuer credible",
+    "id": "67"
+  },
+  {
+    "type": "Attestation",
+    "number": 3,
+    "artifact": "Mgmt sign-off",
+    "nature": "Approval",
+    "primaryUse": "Accountability",
+    "expectations": "Authority; timestamp",
+    "id": "68"
+  },
+  {
+    "type": "Attestation",
+    "number": 4,
+    "artifact": "AI attestation",
+    "nature": "Statement",
+    "primaryUse": "AI assurance",
+    "expectations": "Scoped; accountable owner",
+    "id": "69"
+  }
+]

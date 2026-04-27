@@ -5,27 +5,14 @@ import zipfile
 import rarfile
 import tarfile
 import py7zr
-from werkzeug.datastructures import FileStorage
 
 # Your loaders
-from langchain_community.document_loaders import (
-    TextLoader,
-    PyMuPDFLoader,
-    UnstructuredWordDocumentLoader,
-    UnstructuredPowerPointLoader,
-    UnstructuredExcelLoader,
-)
+from utils.docu_extensions import extension_loader_map
 
 
 class FileProcessor:
     def __init__(self):
-        self.extension_loader_map = {
-            ".txt": lambda p: TextLoader(p, autodetect_encoding=True),
-            ".pdf": lambda p: PyMuPDFLoader(p),
-            ".docx": lambda p: UnstructuredWordDocumentLoader(p),
-            ".pptx": lambda p: UnstructuredPowerPointLoader(p),
-            ".xlsx": lambda p: UnstructuredExcelLoader(p),
-        }
+        self.extension_loader_map = extension_loader_map
 
     # ================================
     # MAIN ENTRY

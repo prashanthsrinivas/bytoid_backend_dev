@@ -1,19 +1,11 @@
 import base64
 import tempfile
-from langchain_community.document_loaders import (
-    TextLoader,
-    PyMuPDFLoader,
-    UnstructuredWordDocumentLoader,
-    UnstructuredPowerPointLoader,
-    UnstructuredExcelLoader,
-    UnstructuredPDFLoader,
-)
 import os
 import json
 import re
 import html
 from utils.base_logger import get_logger
-
+from utils.docu_extensions import extension_loader_map
 logger = get_logger(__name__)
 
 
@@ -124,18 +116,6 @@ def normalize_text(text):
 def extract_files_content(files):
     all_file_data = []
 
-    extension_loader_map = {
-        ".txt": lambda p: TextLoader(p, autodetect_encoding=True),
-        ".pdf": lambda p: UnstructuredPDFLoader(
-            p,
-            mode="elements",
-            strategy="fast",
-            infer_table_structure=True,
-        ),
-        ".docx": lambda p: UnstructuredWordDocumentLoader(p, mode="elements"),
-        ".pptx": lambda p: UnstructuredPowerPointLoader(p, mode="elements"),
-        ".xlsx": lambda p: UnstructuredExcelLoader(p, mode="elements"),
-    }
 
     for f in files:
         filename = f.get("filename", "uploaded_file")
@@ -453,7 +433,6 @@ def process_file_payloads(
             logger.exception("Extraction failed for file: %s", filename)
 
 
-import asyncio
 
 
 async def merge_radar(raw_chunks, user_id, credits, output_language="english"):

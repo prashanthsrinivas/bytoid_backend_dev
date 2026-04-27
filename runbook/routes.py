@@ -26,7 +26,7 @@ from credits_route.route import Credits
 from radar.radar_helpers import (
     extract_file_payload,
 )
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, jsonify, request, session, g
 from runbook.helper2 import modify_run_runbook_execution_engine
 from runbook.utils import get_playbook_instruction, send
 from services.redis_service import RedisService
@@ -118,6 +118,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             "refernce_main_source": data.get("refernce_main_source"),
             "is_template": data.get("is_template"),
             "created_at": datetime.utcnow().isoformat(),
+            "runbook_evidence_config": None,
         }
 
         # ☁️ LOG FETCH
@@ -464,6 +465,7 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
             runbook_data = json.loads(runbook_data)
 
         runbook_data["analyze_input"] = analyze_input
+        # runbook_data["report_viewer"] = data.get("report_viewer")
 
         # -----------------------------
         # STRUCTURE FILE HANDLING
@@ -1049,7 +1051,7 @@ async def structure_extract():
         data = request.form.to_dict()
     # print(data)
     uploaded_file = request.files.get("structure_file")
-    print(request.files)
+    # print(request.files)
 
     if uploaded_file:
         # You can't pass a raw file object to a background job easily
@@ -1079,7 +1081,10 @@ async def structure_extract():
 @runbook_bp.route("/runbook/structure_extract_modify", methods=["POST"])
 async def structure_extract_modify():
     try:
-        data = request.get_json()
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
 
         user_id = data.get("user_id")
         runbook_id = data.get("runbook_id")
@@ -1098,108 +1103,6 @@ async def structure_extract_modify():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@runbook_bp.route("/test/check/runbooks", methods=["GET"])
-async def check_runbook_imple():
-    from utils.fireworkzz import get_think_fire_response2_og
-    from utils.normal import load_yaml_file
-    from cust_helpers import pathconfig
-    from radar.radar_helpers import _safe_json_parse
-
-    RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
-    print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
-    risk_prompt_template = RADAR_TEMPLATE.get("nist_risk_score_prompt")
-    user_id = "109161866299858012556"
-    result_id = "result_ee166f"
-    credits = Credits()
-    file_data = [
-        {
-            "filename": "Risk-Assessment-Report-Template.pdf",
-            "type": ".pdf",
-            "content": "I\nAPPENDIX C: RISK ASSESSMENT REPORT TEMPLATE\nRISK ASSESSMENT REPORT (RAR)\n<ORGANIZATION> <SYSTEM NAME> <DATE>\nRecord of Changes:\nVersion\nDate\nSections Modified\nDescription of Changes\n1.0\nDD MM YY\nInitial RAR\nSystem Description\nThe <System Name/Unique Identifier> consists of <System Description> processing <Classification Level> data. The risk categorization for this system is assessed as <e.g., Moderate-Low-Low>.\n< System Name/Unique Identifier> is located <insert physical environment details>. The system <list all system connections and inter-connections, or state “has no connections, (wired or wireless)>. This system is used for <system purpose/function>, in support of performance on the <list all program and/or contract information>. The system <provide any system-specific details, such as Mobility>.\nThe Information Owner is <insert POC information, including address and phone number>.\nThe Information System Security Manager (ISSM) is <insert Point of Contact (POC) information, including address and phone number>.\nThe Information System Security Officer (ISSO) is <insert POC information, including address and phone number>.\nScope\nThe scope of this risk assessment is focused on the system’s use of resources and controls to mitigate vulnerabilities exploitable by threat agents (internal and external) identified during the Risk Management Framework (RMF) control selection process, based on the system’s categorization.\nThis initial assessment will be a Tier 3 or “information system level” risk assessment. While not entirely comprehensive of all threats and vulnerabilities to the system, this assessment will include any known risks related to the incomplete or inadequate implementation of the National Institute of Standards and Technology (NIST) Special Publication (SP) 800-53 controls selected for this system. This document will be updated after certification testing to include any vulnerabilities or observations by the independent\nPage | 1\nI\nassessment team. Data collected during this assessment may be used to support higher level risk assessments at the mission/business or organization level.\n<Identify assumptions, constraints, timeframe. This section will include the following information:\nRange or scope of threats considered in the assessment\nSummary of tools/methods used to ensure NIST SP 800-53 compliance\nDetails regarding any instances of non-compliance\nRelevant operating conditions and physical security conditions\nTimeframe supported by the assessment (Example: security-relevant changes that are anticipated before the authorization, expiration of the existing authorization, etc.).>\nPurpose\n<Provide details on why this risk assessment is being conducted, including whether it is an initial or other subsequent assessment, and state the circumstances that prompted the assessment. Example: This initial risk assessment was conducted to document areas where the selection and implementation of RMF controls may have left residual risk. This will provide security control assessors and authorizing officials an upfront risk profile.>\nRisk Assessment Approach\nThis initial risk assessment was conducted using the guidelines outlined in the NIST SP 800-30, Guide for Conducting Risk Assessments. A <SELECT QUALITATIVE / QUANTITATIVE / SEMI-QUANTITATIVE> approach will be utilized for this assessment. Risk will be determined based on a threat event, the likelihood of that threat event occurring, known system vulnerabilities, mitigating factors, and consequences/impact to mission.\nThe following table is provided as a list of sample threat sources. Use this table to determine relevant threats to the system.\nTable 1: Sample Threat Sources (see NIST SP 800-30 for complete list)\nTYPE OF THREAT SOURCE\nDESCRIPTION\nADVERSARIAL - Individual (outsider, insider, trusted, privileged) - Group (ad-hoc or established) - Organization (competitor, supplier, partner,\ncustomer) - Nation state\nIndividuals, groups, organizations, or states that seek to exploit the organization’s dependence on cyber resources (e.g., information in electronic form, information and communications, and the communications and information-handling capabilities provided by those technologies.)\nPage | 2\nI\nTYPE OF THREAT SOURCE\nDESCRIPTION\nADVERSARIAL - Standard user - Privileged user/Administrator\nErroneous actions taken by individuals in the course of executing everyday responsibilities.\nSTRUCTURAL - IT Equipment (storage, processing, comm., display,\nsensor, controller)\nEnvironmental conditions\nFailures of equipment, environmental controls, or software due to aging, resource depletion, or other circumstances which exceed expected operating parameters.\nTemperature/humidity controls \uf0b7 Power supply\nSoftware\nOperating system \uf0b7 Networking \uf0b7 General-purpose application \uf0b7 Mission-specific application\nENVIRONMENTAL - Natural or man-made (fire, flood, earthquake, etc.) - Unusual natural event (e.g., sunspots) - Infrastructure failure/outage (electrical, telecomm)\nNatural disasters and failures of critical infrastructures on which the organization depends, but is outside the control of the organization. Can be characterized in terms of severity and duration.\nThe following tables from the NIST SP 800-30 were used to assign values to likelihood, impact, and risk:\nTable 2: Assessment Scale – Likelihood of Threat Event Initiation (Adversarial)\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery High\n96-100\n10\nAdversary is almost certain to initiate the threat event.\nHigh\n80-95\n8\nAdversary is highly likely to initiate the threat event.\nModerate\n21-79\n5\nAdversary is somewhat likely to initiate the threat event.\nLow\n5-20\n2\nAdversary is unlikely to initiate the threat event.\nVery Low\n0-4\n0\nAdversary is highly unlikely to initiate the threat event\nPage | 3\nI\nTable 3: Assessment Scale – Likelihood of Threat Event Occurrence (Non-adversarial)\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery High\n96-100\n10\nError, accident, or act of nature is almost certain to occur; or occurs more than 100 times per year.\nHigh\n80-95\n8\nError, accident, or act of nature is highly likely to occur; or occurs between 10-100 times per year.\nModerate\n21-79\n5\nError, accident, or act of nature is somewhat likely to occur; or occurs between 1-10 times per year.\nLow\n5-20\n2\nError, accident, or act of nature is unlikely to occur; or occurs less than once a year, but more than once every 10 years.\nVery Low\n0-4\n0\nError, accident, or act of nature is highly unlikely to occur; or occurs less than once every 10 years.\nTable 4: Assessment Scale – Impact of Threat Events\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery High\n96-100\n10\nThe threat event could be expected to have multiple severe or catastrophic adverse effects on organizational operations, organizational assets, individuals, other organizations, or the Nation.\nHigh\n80-95\n8\nThe threat event could be expected to have a severe or catastrophic adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation. A severe or catastrophic adverse effect means that, for example, the threat event might: (i) cause a severe degradation in or loss of mission capability to an extent and duration that the organization is not able to perform one or more of its primary functions; (ii) result in major damage to organizational assets; (iii) result in major financial loss; or (iv) result in severe or catastrophic harm to individuals involving loss of life or serious life threatening injuries.\nPage | 4\nI\nQualitative Values\nModerate\nLow\nVery Low\nQualitative Values\nVery High\nHigh\nModerate\nLow\nSemi-Quantitative Values\nDescription\n21-79\n5\nThe threat event could be expected to have a serious adverse effect on organizational operations, organizational assets, individuals other organizations, or the Nation. A serious adverse effect means that, for example, the threat event might: (i) cause a significant degradation in mission capability to an extent and duration that the organization is able to perform its primary functions, but the effectiveness of the functions is significantly reduced; (ii) result in significant damage to organizational assets; (iii) result in significant financial loss; or (iv) result in significant harm to individuals that does not involve loss of life or serious life threatening injuries.\n5-20\n2\nThe threat event could be expected to have a limited adverse effect on organizational operations, organizational assets, individuals other organizations, or the Nation. A limited adverse effect means that, for example, the threat event might: (i) cause a degradation in mission capability to an extent and duration that the organization is able to perform its primary functions, but the effectiveness of the functions is noticeably reduced; (ii) result in minor damage to organizational assets; (iii) result in minor financial loss; or (iv) result in minor harm to individuals.\n0-4\n0\nThe threat event could be expected to have a negligible adverse effect on organizational operations, organizational assets, individuals other organizations, or the Nation.\nTable 5: Assessment Scale – Level of Risk\nSemi-Quantitative Values\nDescription\n96-100\n10\nThreat event could be expected to have multiple severe or catastrophic adverse effects on organizational operations, organizational assets, individuals, other organizations, or the Nation.\n80-95\n8\nThreat event could be expected to have a severe or catastrophic adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\n21-79\n5\nThreat event could be expected to have a serious adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\n5-20\n2\nThreat event could be expected to have a limited adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\nPage | 5\nI\nQualitative Values\nSemi-Quantitative Values\nDescription\nVery Low\n0-4\n0\nThreat event could be expected to have a negligible adverse effect on organizational operations, organizational assets, individuals, other organizations, or the Nation.\nTable 6: Assessment Scale – Level of Risk (Combination of Likelihood and Impact)\nLikelihood (That Occurrence Results in Adverse Impact)\nVery Low\nLow\nLevel of Impact\nModerate\nHigh\nVery High\nVery High\nVery Low\nLow\nModerate\nHigh\nVery High\nHigh\nVery Low\nLow\nModerate\nHigh\nVery High\nModerate\nVery Low\nLow\nModerate\nModerate\nHigh\nLow\nVery Low\nLow\nLow\nLow\nModerate\nVery Low\nVery Low\nVery Low\nVery Low\nLow\nLow\nPage | 6\nI\nRisk Assessment Approach\nDetermine relevant threats to the system. List the risks to system in the Risk Assessment Results table below and detail the relevant mitigating factors and controls. Refer to NIST SP 800-30 for further guidance, examples, and suggestions.\nRisk Assessment Results\nThreat Event\nVulnerabilities / Predisposing Characteristics\nMitigating Factors\nSecurity Control(s)\nLikelihood (Tables 2 & 3)\nImpact (Table 4)\nRisk (Tables 5 & 6)\ne.g. Hurricane\nPower Outage\nBackup generators\nPE-12\nModerate\nLow\nLow\nLikelihood / Impact / Risk = Very High, High, Moderate, Low, or Very Low\n_____________________________\nSignature Government Information Owner\n_____________________________\nPrinted Name, Title, and Phone Number\nNote: Information Owner acknowledgment is only provided if necessary or required by the DCSA AO. (Examples: Legacy Operating Systems, Risk concerns raised based on the results of the RAR, deviations from the DCSA baseline, etc.)\nPage | 7",
-        }
-    ]
-    refactor_result = await dbserver.runbook_get_result(user_id, result_id)
-    risk_prompt = risk_prompt_template.replace(
-        "{{analysis_result}}", json.dumps(refactor_result)
-    ).replace("{{report_data}}", json.dumps(file_data) if file_data else "")
-
-    risk_llm_result = await get_think_fire_response2_og(
-        user_message=risk_prompt,
-        user_id=user_id,
-        credits=credits,
-        total_input_chars=len(risk_prompt),
-    )
-
-    # print("RISK RAW:", risk_llm_result)
-
-    risk_data = _safe_json_parse(risk_llm_result)
-
-    risk_score = risk_data.get("final_risk_score", 0)
-
-    return jsonify({"status": risk_data})
-
-
-@runbook_bp.route("/test/check_rst/runbooks", methods=["POST"])
-async def check_runbook_structure():
-    from utils.fireworkzz import get_think_fire_response2_og
-    from utils.normal import load_yaml_file
-    from cust_helpers import pathconfig
-    from radar.radar_helpers import _safe_json_parse, process_file_payloads
-
-    import json
-
-    # ✅ Get form-data instead of JSON
-    user_analyze_input = request.form.get("user_input")
-    user_file = request.files.get("userfile")  # file comes from form-data
-
-    RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
-    print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
-
-    credits = Credits()
-    structure_prompt = RADAR_TEMPLATE.get("structure_prompt_template")
-
-    user_id = "109161866299858012556"
-
-    structure_file_payload = []
-
-    # ✅ Process uploaded file
-    process_file_payloads(
-        user_id=user_id,
-        files=[user_file] if user_file else [],
-        inp_links=[],
-        extracted_payload=structure_file_payload,
-    )
-    print(structure_file_payload)
-
-    # ✅ Build prompt
-    structure_prompt = (
-        structure_prompt.replace(
-            "{{document_file_data}}", json.dumps(structure_file_payload)
-        )
-        .replace("{{file_links}}", "")
-        .replace(
-            "{{user_original_prompt_or_context}}",
-            user_analyze_input or "",
-        )
-        .replace("{{output_language}}", "English")
-    )
-
-    base_chars = len(structure_prompt)
-
-    # ✅ Call LLM
-    result = await get_think_fire_response2_og(
-        user_message=structure_prompt,
-        user_id=user_id,
-        credits=credits,
-        total_input_chars=base_chars,
-    )
-
-    structure_file_payloads = json.loads(result)
-    logger.info("✅ STRUCTURE GENERATED  %s", structure_file_payloads)
-
-    return jsonify({"status": structure_file_payloads})
 
 
 @runbook_bp.route("/check_pb_output", methods=["POST"])

@@ -39,7 +39,9 @@ from bytoid_pro_dev.routes import bytoid_dev_pro_bp
 from apiConnector.routes import apiconnector_bp
 from radar.routes import radar_bp
 from runbook.routes import runbook_bp
+from config_evidences.routes import config_evidences_bp
 from sso_by.routes import sso_bp
+from tab_tracker.routes import tracker_bp
 from websockets_custom.routes import ws_bp
 import os
 from dotenv import load_dotenv
@@ -150,8 +152,10 @@ blueprints = [
     apiconnector_bp,
     radar_bp,
     runbook_bp,
+    config_evidences_bp,
     sso_bp,
     ws_bp,
+    tracker_bp,
 ]
 
 for bp in blueprints:

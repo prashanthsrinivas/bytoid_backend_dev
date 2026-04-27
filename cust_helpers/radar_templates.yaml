@@ -23,6 +23,20 @@ radar_review_template_structure: |
 
   You MUST generate the ENTIRE output exclusively in: {{output_language}}
 
+  ─────────────────────────────
+  Hierarchy Rule Enforcement - HARD RULE
+  if {{file_data}} is present and if it contains questions or logs or api data  then
+    - file_data  (this is what user wanted to be evaluated)
+    - data_sources ( these are the evidences or reponses for the file data evaluation)
+    - reference_sources ( these are the reference data for the evaluation and report generation)
+  else
+    - analyze_input
+    - data_sources
+    - file_data
+    - file_links
+    - reference_sources
+    - last_radar_response
+
   ────────────────────────────────────────────────
   WORD COUNT ENFORCEMENT — HARD RULE
 
@@ -1331,6 +1345,20 @@ radar_analysis_prompt_structure: |
   - etc.
 
   This rule is mandatory and absolute.
+  ─────────────────────────────
+  Hierarchy Rule Enforcement - HARD RULE
+    if {{file_data}} is present and if it contains questions or logs or api data  then
+      - file_data  (this is what user wanted to be evaluated)
+      - data_sources ( these are the evidences or reponses for the file data evaluation)
+      - reference_sources ( these are the reference data for the evaluation and report generation)
+    else
+      - analyze_input
+      - data_sources
+      - file_data
+      - file_links
+      - reference_sources
+      - last_radar_response
+
 
   ────────────────────────────────────────────────
   WORD COUNT ENFORCEMENT — HARD RULE
@@ -1719,6 +1747,20 @@ radar_recommendations_prompt_structure: |
   - etc.
 
   This rule is mandatory and absolute.
+  ─────────────────────────────
+  Hierarchy Rule Enforcement - HARD RULE
+    if {{file_data}} is present and if it contains questions or logs or api data  then
+      - file_data  (this is what user wanted to be evaluated)
+      - data_sources ( these are the evidences or reponses for the file data evaluation)
+      - reference_sources ( these are the reference data for the evaluation and report generation)
+    else
+      - analyze_input
+      - data_sources
+      - file_data
+      - file_links
+      - reference_sources
+      - last_radar_response
+
 
   ────────────────────────────────────────────────
   WORD COUNT ENFORCEMENT — HARD RULE
