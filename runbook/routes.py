@@ -5,6 +5,7 @@ import os
 import traceback
 import json
 import time, uuid, traceback
+from utils.app_configs import IS_DEV
 from playbook.background_worker import JobManager
 from playbook.helperzz import assign_runbook_playbook
 from runbook.helper import (
@@ -38,6 +39,7 @@ from websockets_custom.ws_instance import ws_service, msg_builder_main
 
 runbook_bp = Blueprint("runbook", __name__)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 dbserver = LanceDBServer()
 
 ws_sender = ws_service
@@ -110,7 +112,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             "api_endpoint": data.get("endpoint_id"),
             "app_id": data.get("app_id"),
             "log_source": data.get("log_source"),
-            "files": data.get("files") or {},
+            "files": {},
             "links": json.dumps(data.get("links", {})),
             "data_sources": data_sources_full,
             "reference_sources": reference_sources_full,
@@ -347,7 +349,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
         return result
 
     except Exception as e:
-        print("runbook error:", e)
+        logger.error("Runbook execution error: %s", e, exc_info=IS_DEV)
 
         await emit(
             msg_builder.job_error(
@@ -560,7 +562,7 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
         )
 
     except Exception as e:
-        print("error", e)
+        logger.error("Runbook trigger error: %s", e, exc_info=IS_DEV)
 
 
 @runbook_bp.route("/runbook/modify", methods=["POST"])
@@ -821,7 +823,7 @@ async def check_playbook_runbook(playbook_id):
 
     try:
         result = await dbserver.get_runbook_by_playbookid(user_id, playbook_id)
-        print(result)
+        logger.debug("Runbook by playbook result: %s", result)
         if not result:
             return jsonify({"status": False, "message": "No runbook is present"}), 400
         return jsonify({"status": True, "result": result}), 200
@@ -1025,7 +1027,7 @@ async def execute_structure_extract(data, job_id=None, session_id=None, main=Fal
 
     except Exception as e:
         traceback_str = traceback.format_exc()
-        print("structure extract", e)
+        logger.error("Structure extraction error: %s", e, exc_info=IS_DEV)
 
         await emit(
             msg_builder.job_error(
@@ -1157,7 +1159,7 @@ async def check_pb_output():
 
             runbook["runtime_input"] = json.dumps(merged)
             document_data.append(merged.get("chat"))
-            print(document_data[0][:500])
+            logger.debug("Document data preview: %s", document_data[0][:500])
 
         else:
             runbook["runtime_input"] = json.dumps(runtime_input.get("chat", []))

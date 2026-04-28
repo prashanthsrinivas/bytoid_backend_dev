@@ -3,6 +3,7 @@ import os
 import uuid
 import re
 import logging
+from utils.app_configs import ACCESSIBLE_IDS
 from utils.s3_utils import save_any_s3, read_json_from_s3, s3bucket, S3_BUCKET
 from radar.radar_helpers import process_file_payloads
 from utils.fireworkzz import get_extract_response
@@ -40,6 +41,16 @@ def _get_user_evidence(user_id):
         logger.info(f"User evidence not found or error reading: {e}")
 
     return _load_default_evidence(), False
+
+
+def get_only_evidence(user_id):
+    is_super_admin = user_id in ACCESSIBLE_IDS
+
+    if is_super_admin:
+        evidence = _load_default_evidence()
+    else:
+        evidence, _ = _get_user_evidence(user_id)
+    return evidence
 
 
 def _save_user_evidence(user_id, data):
@@ -234,7 +245,7 @@ async def run_evidence_check_job(data, job_id=None):
         disallowed = [c for c in configurations if c.get("Decision") == False]
 
         # Step 3: Get user evidence expectations
-        user_evidence, _ = _get_user_evidence(user_id)
+        user_evidence = get_only_evidence(user_id)
 
         # Step 4: Run AI analysis
         conn = connect_to_rds()

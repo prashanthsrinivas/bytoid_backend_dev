@@ -18,6 +18,7 @@ from cust_helpers import pathconfig
 from db.db_checkers import get_notes_data
 
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 
 dbserver = LanceDBServer()
 conn = connect_to_rds()
@@ -26,7 +27,7 @@ credits = Credits(conn)
 
 RUNBOOK_TEMPLATE = load_yaml_file(path=pathconfig.runbook_prompts)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 import re, io
@@ -100,8 +101,7 @@ def _safe_json_parse_full(value):
     except Exception:
         pass
 
-    print("❌ JSON PARSE FAILED. RAW OUTPUT:")
-    print(value)
+    logger.error("JSON parse failed. Raw: %s", value)
 
     return None
 
@@ -154,8 +154,7 @@ def _safe_json_parse(value):
         pass
 
     # ❌ DO NOT hide failure silently anymore
-    print("❌ JSON PARSE FAILED. RAW OUTPUT:")
-    print(value)
+    logger.error("JSON parse failed. Raw: %s", value)
 
     return None
 
@@ -211,7 +210,7 @@ def read_csv_logs_from_s3(s3_key):
             return logs
 
     except Exception as e:
-        print("❌ S3 READ ERROR:", str(e))
+        logger.error("S3 read error: %s", e)
         raise Exception(f"S3 log read failed: {s3_key} | {str(e)}")
 
 
@@ -284,7 +283,7 @@ async def retreval_from_sources(
     from umail.routes import get_sorted_lance_emails
     from apiConnector.helpers import _execute_endpoint_internal
 
-    print(main_source, filesources)
+    logger.debug("Sources — main: %s  files: %s", main_source, filesources)
     filesources = normalize_json_field(filesources)
 
     data_for_review = []
@@ -355,7 +354,7 @@ async def retreval_from_sources(
             if file.get("type") == "docs":
                 fname = file.get("filename")
                 # print("payload", payload)
-                print("in full data extraction")
+                logger.debug("In full data extraction")
                 newdas = await dbserver.fetch_by_filename(
                     user_id=userid, filename=fname
                 )
@@ -402,7 +401,7 @@ async def retreval_from_sources(
                             "data": str(results.get("text", "")),
                         }
                     )
-    print(f"THE COMPLETE extracted is {extracted_text_len}")
+    logger.info("Total extracted text length: %d", extracted_text_len)
 
     return data_for_review
 

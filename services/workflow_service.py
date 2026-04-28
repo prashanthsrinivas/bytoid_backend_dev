@@ -15,6 +15,7 @@ from utils.fireworkzz import (
     get_fireworks_response,
     get_fireworks_response2,
     get_evaluator_fireworks,
+    get_think_fire_response_image,
 )
 from utils.normal import (
     can_reply_to_email,
@@ -2512,7 +2513,7 @@ class WorkflowRunnerV2:
             "all_answered": all_answered,
         }
 
-    async def answer_questions(self, answer: str,comment:str, qid: str, chid: str):
+    async def answer_questions(self, answer: str, comment: str, qid: str, chid: str):
         execution_data = self.previous_data
         chats = self.chat_history
 
@@ -3141,13 +3142,17 @@ class WorkflowRunnerV2:
 
         return output_data
 
-    async def answer_ques_file_bk(self, extracted_files, step_id, file_keys):
-
-        import json
+    async def answer_ques_file_bk(
+        self, extracted_files, step_id, file_keys, inp_links=None
+    ):
         import re
+        from config_evidences.evidence_helpers import get_only_evidence
+        from db.lance_db_service import LanceDBServer
+
+        if inp_links is None:
+            inp_links = []
 
         assigned_ques = self.workflow_json.get("assigned_questions", [])
-
         if not assigned_ques:
             return {"error": "No assigned questions found"}
 
@@ -3155,277 +3160,497 @@ class WorkflowRunnerV2:
         chats = self.chat_history
 
         # ===========================
-        # 🔍 GET ANSWERED QUESTION IDs
+        # GET ANSWERED QUESTION IDs
         # ===========================
         answered_qids = set()
-
         if isinstance(execution_data, dict):
             for s_id, step_data in execution_data.items():
-
                 if step_id and str(s_id) != str(step_id):
                     continue
-
-                outputs = step_data.get("output", [])
-                if not isinstance(outputs, list):
-                    continue
-
-                for out in outputs:
+                for out in step_data.get("output", []):
                     if out.get("user_answer"):
                         answered_qids.add(out.get("id"))
 
         # ===========================
-        # 🔥 COMBINE FILE CONTENT
+        # BUILD COMBINED TEXT
         # ===========================
         combined_text_parts = []
-
+        # print("actual file data", extracted_files)
         for f in extracted_files:
             content = f.get("content", "").strip()
-            filename = f.get("filename", "file")
-
+            fname = f.get("filename", "file")
             if content:
-                combined_text_parts.append(f"[FILE: {filename}]\n{content}")
+                combined_text_parts.append(f"[FILE: {fname}]\n{content}")
 
         combined_text = "\n\n".join(combined_text_parts)
+        print("len of the document characters", len(combined_text))
 
-        if not combined_text:
+        if not combined_text and not inp_links:
             return {"error": "No usable content found"}
 
-        # ===========================
-        # 🔥 CHUNKING
-        # ===========================
-        CHUNK_SIZE = 6000
+        CHUNK_SIZE = 8000
         OVERLAP = 500
 
-        chunks = []
-        i = 0
-        while i < len(combined_text):
-            chunks.append(combined_text[i : i + CHUNK_SIZE])
-            i += CHUNK_SIZE - OVERLAP
+        def _make_chunks(text):
+            result = []
+            i = 0
+            while i < len(text):
+                result.append(text[i : i + CHUNK_SIZE])
+                i += CHUNK_SIZE - OVERLAP
+            return result
+
+        def safe_json_load(text):
+            text = text.strip()
+            for start_char, end_char in [("[", "]"), ("{", "}")]:
+                try:
+                    s = text.find(start_char)
+                    e = text.rfind(end_char)
+                    if s != -1 and e != -1:
+                        fragment = re.sub(r",\s*([}\]])", r"\1", text[s : e + 1])
+                        return json.loads(fragment)
+                except Exception:
+                    pass
+            return {} if "{" in text else []
 
         # ===========================
-        # 🔧 SAFE JSON PARSER
+        # STEP 1: GET EVIDENCE CONFIGS
         # ===========================
-        def safe_json_load(response: str):
+        user_evidence = get_only_evidence(self.userid)
+        # print("user structur evidence", user_evidence) # OK
+        evidence_summary = json.dumps(
+            [
+                {
+                    "id": e.get("id"),
+                    "artifact": e.get("artifact"),
+                    "type": e.get("type"),
+                    "expectations": e.get("expectations"),
+                }
+                for e in user_evidence
+            ],
+            indent=2,
+        )
 
-            response = response.strip()
+        runbook_id = self.workflow_json.get("runbook_id", "")
+        print("runbookid", runbook_id)
+        runbook_evidence_config = []
+        allowed_artifacts = set()
+        disallowed_artifacts = set()
 
+        if runbook_id:
             try:
-                return json.loads(response)
-            except:
-                pass
+                dbserver = LanceDBServer()
+                runbook_list = await dbserver.get_runbook_by_id(self.userid, runbook_id)
+                if runbook_list:
+                    print(runbook_list)
+                    runbook = runbook_list[0]
+                    raw_config = runbook.get("runbook_evidence_config", "") or ""
+                    # print(type(raw_config), raw_config)
+                    if raw_config:
+                        config_data = json.loads(raw_config)
+                        if isinstance(config_data, list):
+                            runbook_evidence_config = config_data
+                        elif isinstance(config_data, dict):
+                            runbook_evidence_config = config_data.get(
+                                "configurations", []
+                            )
+            except Exception as e:
+                print(f"Runbook config fetch failed: {e}")
 
+        print("runbook evidence config", runbook_evidence_config)
+        for cfg in runbook_evidence_config:
+            artifact = cfg.get("artifact", "")
+            decision = (
+                cfg.get("decision")
+                if cfg.get("decision") is not None
+                else cfg.get("Decision")
+            )
+            if decision is True:
+                allowed_artifacts.add(artifact)
+            elif decision is False:
+                disallowed_artifacts.add(artifact)
+        print("allowed ", allowed_artifacts)
+        print("disallowed", disallowed_artifacts)
+
+        # ===========================
+        # STEP 2: CATEGORIZE EVIDENCE
+        # ===========================
+        evidence_map = {}  # artifact -> {snippets: [], files: set()}
+        print(len(evidence_summary))
+        print("before evidence classification")
+
+        cat_prompt_base = (
+            "You are an evidence classification expert.\n\n"
+            "KNOWN EVIDENCE TYPES:\n"
+            + evidence_summary
+            + "\n\nDOCUMENT CHUNK:\n{chunk}\n\n"
+            "Identify which evidence types from the list are present in this chunk. "
+            "Extract relevant content snippets.\n\n"
+            "Return ONLY valid JSON (no markdown):\n"
+            '[{"artifact": "<artifact name>", "content": "<relevant snippet>",}]'
+        )
+        print("starting evidence classification")
+
+        for chunk in _make_chunks(combined_text):
             try:
-                start = response.find("[")
-                end = response.rfind("]")
+                print("inside chunk", len(chunk))
+                prompt = cat_prompt_base.replace("{chunk}", chunk)
+                resp = await get_fireworks_response2(
+                    user_message=prompt,
+                    role="user",
+                    temp=0.1,
+                    user_id=self.userid,
+                    credits=self.credits,
+                )
+                parsed = safe_json_load(resp)
+                print("extracted ", parsed, type(parsed))
+                items = (
+                    parsed
+                    if isinstance(parsed, list)
+                    else parsed.get("found", []) if isinstance(parsed, dict) else []
+                )
+                for item in items:
+                    artifact = item.get("artifact", "")
+                    content = item.get("content", "")
+                    if artifact and content:
+                        entry = evidence_map.setdefault(
+                            artifact, {"snippets": [], "files": set()}
+                        )
+                        entry["snippets"].append(content)
+            except Exception as e:
+                print(f"Evidence categorization chunk failed: {e}")
 
-                if start != -1 and end != -1:
-                    json_str = response[start : end + 1]
-
-                    json_str = re.sub(r",\s*}", "}", json_str)
-                    json_str = re.sub(r",\s*]", "]", json_str)
-                    json_str = json_str.replace("\n", " ")
-
-                    return json.loads(json_str)
-            except:
-                pass
-
-            try:
-                objects = re.findall(r"{.*?}", response, re.DOTALL)
-                parsed = []
-
-                for obj in objects:
-                    try:
-                        clean_obj = re.sub(r",\s*}", "}", obj)
-                        parsed.append(json.loads(clean_obj))
-                    except:
-                        continue
-
-                if parsed:
-                    return parsed
-            except:
-                pass
-
-            raise ValueError("Invalid JSON")
-
-        # ===========================
-        # 🔁 PERSIST HELPER
-        # ===========================
-        def persist_partial(answers_map):
-            updated = 0
-
-            for qid, answer in answers_map.items():
-
-                # ---------------- EXECUTION ----------------
-                if isinstance(execution_data, dict):
-                    for s_id, step_data in execution_data.items():
-
-                        if step_id and str(s_id) != str(step_id):
-                            continue
-
-                        outputs = step_data.get("output", [])
-                        if not isinstance(outputs, list):
-                            continue
-
-                        for out in outputs:
-                            if out.get("id") == qid and not out.get("user_answer"):
-                                out["user_answer"] = answer
-                                updated += 1
-                                break
-
-                # ---------------- CHAT ----------------
-                for chat in chats:
-
-                    if step_id and str(chat.get("step_id")) != str(step_id):
-                        continue
-
-                    outputs = chat.get("output", [])
-                    if not isinstance(outputs, list):
-                        continue
-
-                    for out in outputs:
-                        if out.get("id") == qid and not out.get("user_answer"):
-                            out["user_answer"] = answer
-                            break
-
-            # save immediately
-            self.previous_data = execution_data
-            self.chat_history = chats
-            self.saveworkflowtos3()
-
-            return updated
+        if inp_links:
+            vision_prompt = (
+                f"KNOWN EVIDENCE TYPES:\n{evidence_summary}\n\n"
+                "Identify which evidence types are visible in these images.\n"
+                'Return ONLY valid JSON: {"found": [{"artifact": "<artifact name>", "content": "<description>", "file_reference": "image"}]}'
+            )
+            for batch in [inp_links[i : i + 5] for i in range(0, len(inp_links), 5)]:
+                try:
+                    resp = await get_think_fire_response_image(
+                        user_message=vision_prompt,
+                        role="user",
+                        user_id=self.userid,
+                        credits=self.credits,
+                        context="",
+                        image_url=batch,
+                    )
+                    parsed = safe_json_load(resp)
+                    for item in (
+                        parsed.get("found", []) if isinstance(parsed, dict) else []
+                    ):
+                        artifact = item.get("artifact", "")
+                        content = item.get("content", "")
+                        if artifact and content:
+                            entry = evidence_map.setdefault(
+                                artifact, {"snippets": [], "files": set()}
+                            )
+                            entry["snippets"].append(content)
+                            entry["files"].add("image")
+                except Exception as e:
+                    print(f"Vision categorization failed: {e}")
 
         # ===========================
-        # 🔁 PROCESS CHUNKS
+        # STEP 3: SPLIT ADMISSIBLE / INADMISSIBLE / DISCARDED
+        # ===========================
+        admissible_evidence = {}
+        inadmissible_evidence = {}
+        discarded_evidence = {}
+
+        for artifact, data in evidence_map.items():
+            if runbook_evidence_config:
+                if artifact in allowed_artifacts:
+                    admissible_evidence[artifact] = data
+                elif artifact in disallowed_artifacts:
+                    inadmissible_evidence[artifact] = data
+                else:
+                    discarded_evidence[artifact] = data
+            else:
+                # No runbook config → everything found is admissible
+                admissible_evidence[artifact] = data
+
+        print("admissible", list(admissible_evidence.keys()))
+        print("inadmissible", list(inadmissible_evidence.keys()))
+        print("discarded", list(discarded_evidence.keys()))
+        # ===========================
+        # STEP 4: ANSWER QUESTIONS
         # ===========================
         answers_map = {}
         total_updated = 0
 
-        for chunk_idx, chunk in enumerate(chunks):
-
-            # 🔁 recompute unanswered dynamically
-            unanswered_questions = [
-                q for q in assigned_ques if q.get("id") not in answered_qids
-            ]
-
-            if not unanswered_questions:
-                break
-
-            prompt = f"""
-            You are a STRICT QUESTION ANSWERING ENGINE.
-
-            🚫 NO HALLUCINATION
-            🚫 NO GUESSING
-            🚫 NO EXTERNAL KNOWLEDGE
-
-            ===========================
-            SOURCE TEXT
-            ===========================
-            {chunk}
-
-            ===========================
-            QUESTIONS
-            ===========================
-            {json.dumps(unanswered_questions, ensure_ascii=False)}
-
-            ===========================
-            TASK
-            ===========================
-            - Answer ONLY if answer is clearly present in SOURCE TEXT
-            - If answer is NOT found → keep user_answer as null
-            - DO NOT infer or assume
-            - DO NOT modify question text
-            - If exact phrase not found, return null
-
-            ===========================
-            OUTPUT FORMAT
-            ===========================
-            Return ONLY JSON ARRAY:
-
-            [
-                {{
-                    "id": "...",
-                    "user_answer": "..." OR null
-                }}
-            ]
-            """
-
-            try:
-                response = await get_fireworks_response2(
-                    user_message=prompt,
-                    role="system",
-                    temp=0.0,
-                    user_id=self.userid,
-                    credits=self.credits,
+        def persist_partial(new_answers):
+            updated = 0
+            for qid, ans_data in new_answers.items():
+                answer = ans_data["answer"] if isinstance(ans_data, dict) else ans_data
+                answered_by = (
+                    ans_data.get("answered_by_evidence")
+                    if isinstance(ans_data, dict)
+                    else None
                 )
 
-                try:
-                    chunk_answers = safe_json_load(response)
+                if isinstance(execution_data, dict):
+                    for s_id, step_data in execution_data.items():
+                        if step_id and str(s_id) != str(step_id):
+                            continue
+                        for out in step_data.get("output", []):
+                            if out.get("id") == qid and not out.get("user_answer"):
+                                out["user_answer"] = answer
+                                if answered_by:
+                                    out["answered_by_evidence"] = answered_by
+                                updated += 1
+                                break
 
-                    if not isinstance(chunk_answers, list):
+                for chat in chats:
+                    if step_id and str(chat.get("step_id")) != str(step_id):
                         continue
+                    for out in chat.get("output", []):
+                        if out.get("id") == qid and not out.get("user_answer"):
+                            out["user_answer"] = answer
+                            if answered_by:
+                                out["answered_by_evidence"] = answered_by
+                            break
 
-                    new_chunk_answers = {}
+            self.previous_data = execution_data
+            self.chat_history = chats
+            self.saveworkflowtos3()
+            return updated
 
-                    for ans in chunk_answers:
-                        if not isinstance(ans, dict):
-                            continue
+        for q in [q for q in assigned_ques if q.get("id") not in answered_qids]:
+            qid = q.get("id")
+            evidence_required = q.get("evidence_required", [])
 
-                        qid = ans.get("id")
-                        new_answer = ans.get("user_answer")
-
-                        if not qid:
-                            continue
-
-                        if new_answer in [None, "", "null", "N/A"]:
-                            continue
-
-                        if qid not in answered_qids:
-                            clean_answer = str(new_answer).strip()
-                            answers_map[qid] = clean_answer
-                            new_chunk_answers[qid] = clean_answer
-                            answered_qids.add(qid)
-
-                    # 🔥 SAVE AFTER EACH CHUNK
-                    if new_chunk_answers:
-                        updated = persist_partial(new_chunk_answers)
-                        total_updated += updated
-
-                except Exception as e:
-                    print(f"Chunk {chunk_idx} parsing failed: {str(e)}")
-                    continue
-
-            except Exception as e:
-                return {
-                    "error": f"Chunk {chunk_idx} failed",
-                    "details": str(e),
+            relevant_evidence = (
+                {
+                    k: admissible_evidence[k]
+                    for k in evidence_required
+                    if k in admissible_evidence
                 }
+                if evidence_required
+                else admissible_evidence
+            )
+            if not relevant_evidence:
+                continue
+
+            evidence_context = "\n\n".join(
+                f"[EVIDENCE TYPE: {art}]\n" + "\n".join(data["snippets"][:5])
+                for art, data in relevant_evidence.items()
+            )
+            evidence_sources = [
+                {
+                    "filename": fname,
+                    "typeof_evidence": art,
+                    "summary_subject_matter": (
+                        data["snippets"][0][:200] if data["snippets"] else ""
+                    ),
+                }
+                for art, data in relevant_evidence.items()
+                for fname in data["files"]
+            ]
+
+            for ev_chunk in _make_chunks(evidence_context):
+                if qid in answered_qids:
+                    break
+                try:
+                    prompt = (
+                        "You are a STRICT QUESTION ANSWERING ENGINE.\n"
+                        "Answer ONLY from EVIDENCE CONTEXT. NO hallucination. NO guessing.\n\n"
+                        f"EVIDENCE CONTEXT:\n{ev_chunk}\n\n"
+                        f"QUESTION ID: {qid}\n"
+                        f"Question: {q.get('question', '')}\n"
+                        f"Options: {json.dumps(q.get('options', {}), ensure_ascii=False)}\n\n"
+                        'Return ONLY JSON: {"id": "...", "user_answer": "..." OR null}'
+                    )
+                    resp = await get_fireworks_response2(
+                        user_message=prompt,
+                        role="user",
+                        temp=0.0,
+                        user_id=self.userid,
+                        credits=self.credits,
+                    )
+                    parsed = safe_json_load(resp)
+                    if isinstance(parsed, list):
+                        parsed = parsed[0] if parsed else {}
+                    answer = (
+                        parsed.get("user_answer") if isinstance(parsed, dict) else None
+                    )
+
+                    if answer and answer not in [None, "", "null", "N/A"]:
+                        answers_map[qid] = {
+                            "answer": str(answer).strip(),
+                            "answered_by_evidence": evidence_sources,
+                        }
+                        answered_qids.add(qid)
+                        total_updated += persist_partial({qid: answers_map[qid]})
+                        break
+                except Exception as e:
+                    print(f"Question {qid} answering failed: {e}")
 
         # ===========================
-        # 🔽 SAVE FILE REFERENCES
+        # STEP 5: EVIDENCE-BASED QUESTIONS
+        # ===========================
+        evidence_based_questions = self.workflow_json.get(
+            "evidence_based_questions", []
+        )
+        existing_ev_qids = {q.get("id") for q in evidence_based_questions}
+        new_ev_questions = []
+        ev_q_counter = len(evidence_based_questions) + 1
+
+        config_to_check = (
+            runbook_evidence_config if runbook_evidence_config else user_evidence
+        )
+        for ev_cfg in config_to_check:
+            artifact = ev_cfg.get("artifact", "")
+            decision = (
+                ev_cfg.get("decision")
+                if ev_cfg.get("decision") is not None
+                else ev_cfg.get("Decision")
+            )
+            if runbook_evidence_config and decision is False:
+                continue
+            expectations_str = ev_cfg.get("expectations", "")
+            if not expectations_str or not artifact or artifact not in admissible_evidence:
+                continue
+
+            expectation_points = [p.strip() for p in expectations_str.split(";") if p.strip()]
+            snippets_text = "\n".join(admissible_evidence[artifact]["snippets"][:3])
+
+            for point in expectation_points:
+                check_prompt = (
+                    f"ARTIFACT: {artifact}\n"
+                    f"EXPECTATION POINT: {point}\n\n"
+                    f"EVIDENCE:\n{snippets_text[:3000]}\n\n"
+                    "Does the evidence content satisfy this specific expectation point?\n"
+                    'Return ONLY JSON: {"met": true} or {"met": false}'
+                )
+                try:
+                    check_resp = await get_fireworks_response2(
+                        user_message=check_prompt,
+                        role="user",
+                        temp=0.0,
+                        user_id=self.userid,
+                        credits=self.credits,
+                    )
+                    check_data = safe_json_load(check_resp)
+                    met = check_data.get("met", True) if isinstance(check_data, dict) else True
+                    if not met:
+                        new_qid = f"evidence_{ev_q_counter}"
+                        if new_qid not in existing_ev_qids:
+                            new_ev_questions.append({
+                                "id": new_qid,
+                                "section": ev_cfg.get("type", "Evidence"),
+                                "subsection": artifact,
+                                "question": f"Please provide evidence for: {point}",
+                                "options": {
+                                    "A": "I will provide this information",
+                                    "B": "This is not applicable",
+                                },
+                                "discard_options": ["A", "B"],
+                                "user_answer": None,
+                                "comment": None,
+                                "evidence_artifact": artifact,
+                                "missing_expectation": point,
+                            })
+                            ev_q_counter += 1
+                except Exception as e:
+                    print(f"Expectation check failed for {artifact} / {point}: {e}")
+
+        if new_ev_questions:
+            evidence_based_questions.extend(new_ev_questions)
+            self.workflow_json["evidence_based_questions"] = evidence_based_questions
+
+        # ===========================
+        # SAVE EVIDENCE OVERVIEW + FILE REFS
         # ===========================
         cf_urls = [attach_CLDFRNT_url(k) for k in file_keys if k]
         self._question_answer_stats()
 
-        if "evidences_ques" not in self.workflow_json:
-            self.workflow_json["evidences_ques"] = cf_urls
-        else:
-            current = self.workflow_json.get("evidences_ques", [])
-            current.extend(cf_urls)
-            self.workflow_json["evidences_ques"] = current
+        current_urls = self.workflow_json.get("evidences_ques", [])
+        current_urls.extend(cf_urls)
+        self.workflow_json["evidences_ques"] = current_urls
 
+        self.workflow_json["evidence_overview"] = {
+            "admissible": [
+                {
+                    "artifact": k,
+                    "files": list(v["files"]),
+                    "summary": v["snippets"][0][:200] if v["snippets"] else "",
+                }
+                for k, v in admissible_evidence.items()
+            ],
+            "inadmissible": [
+                {"artifact": k, "files": list(v["files"])}
+                for k, v in inadmissible_evidence.items()
+            ],
+            "discarded": [
+                {"artifact": k, "files": list(v["files"])}
+                for k, v in discarded_evidence.items()
+            ],
+        }
         self.saveworkflowtos3()
 
-        # ===========================
-        # ✅ FINAL RESPONSE
-        # ===========================
-        # if len(assigned_ques) == len(answers_map):
-        #     pass    celery.delay()
+        remaining = [q for q in assigned_ques if q.get("id") not in answered_qids]
+        print(
+            {
+                "status": "success",
+                "updated_answers": total_updated,
+                "total_questions": len(assigned_ques),
+                "answered_now": len(answers_map),
+                "remaining_unanswered": len(remaining),
+                "evidence_based_questions_added": len(new_ev_questions),
+                "admissible_evidence_types": list(admissible_evidence.keys()),
+                "inadmissible_evidence_types": list(inadmissible_evidence.keys()),
+                "chunks_processed": len(_make_chunks(combined_text)),
+            }
+        )
         return {
             "status": "success",
             "updated_answers": total_updated,
             "total_questions": len(assigned_ques),
             "answered_now": len(answers_map),
-            "chunks_processed": len(chunks),
+            "remaining_unanswered": len(remaining),
+            "evidence_based_questions_added": len(new_ev_questions),
+            "admissible_evidence_types": list(admissible_evidence.keys()),
+            "inadmissible_evidence_types": list(inadmissible_evidence.keys()),
+            "chunks_processed": len(_make_chunks(combined_text)),
+        }
+
+    def answer_evidence_question(self, qid: str, user_answer, comment=None):
+        evidence_based_questions = self.workflow_json.get(
+            "evidence_based_questions", []
+        )
+        target = None
+        for q in evidence_based_questions:
+            if q.get("id") == qid:
+                target = q
+                break
+
+        if not target:
+            return {
+                "status": "error",
+                "message": f"Evidence question '{qid}' not found",
+            }
+
+        discard_options = target.get("discard_options", [])
+        if user_answer in discard_options:
+            self.workflow_json["evidence_based_questions"] = [
+                q for q in evidence_based_questions if q.get("id") != qid
+            ]
+        else:
+            target["user_answer"] = user_answer
+            if comment is not None:
+                target["comment"] = comment
+
+        save_playbook_to_s3(
+            self.workflow_json,
+            self.userid,
+            "evidence question answered",
+            self.workflow_json["filename"],
+        )
+
+        return {
+            "status": "success",
+            "qid": qid,
+            "discarded": user_answer in discard_options,
         }
 
     def edit_assigned_question(self, qid: str, new_question: str):
@@ -3570,4 +3795,37 @@ class WorkflowRunnerV2:
             "message": "Question morphed successfully",
             "qid": qid,
             "morph_type": morph_type,
+        }
+
+    def assign_evidence_required(self, qid: str, evidences_required: list):
+        workflow = self.workflow_json
+        assigned_questions = workflow.get("assigned_questions", [])
+        updated = False
+
+        for q in assigned_questions:
+            if q.get("id") == qid:
+                q["evidence_required"] = evidences_required
+                updated = True
+                break
+
+        if not updated:
+            return {
+                "status": "error",
+                "message": f"Question ID '{qid}' not found",
+            }
+
+        self.workflow_json["assigned_questions"] = assigned_questions
+
+        save_playbook_to_s3(
+            self.workflow_json,
+            self.userid,
+            "evidence assigned",
+            self.workflow_json["filename"],
+        )
+
+        return {
+            "status": "success",
+            "message": "Evidence requirements assigned successfully",
+            "qid": qid,
+            "evidence_required": evidences_required,
         }

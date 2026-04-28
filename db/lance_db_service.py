@@ -3007,6 +3007,7 @@ class LanceDBServer:
                 pa.field("reference_main_source", pa.string()),
                 pa.field("created_at", pa.timestamp("us")),
                 pa.field("runbook_evidence_config", pa.string()),
+                pa.field("tracker_configuration", pa.string()),
             ]
         )
 
@@ -3059,6 +3060,8 @@ class LanceDBServer:
             "reference_main_source": data.get("reference_main_source"),
             "created_at": data.get("created_at") or datetime.utcnow().isoformat(),
             "runbook_evidence_config": data.get("runbook_evidence_config", ""),
+            "tracker_configuration": data.get("tracker_configuration",{})
+
         }
 
         # print("ROW KEYS:", row.keys())
@@ -3140,38 +3143,75 @@ class LanceDBServer:
         if not existing:
             raise ValueError("Runbook not found")
 
-        # ✅ Normalize function (FINAL GUARD)
-        def normalize(value):
+        # -------------------------------
+        # Helper: merge tracker config
+        # -------------------------------
+        def merge_tracker_config(existing_str, new_dict):
+            try:
+                existing_map = json.loads(existing_str or "{}")
+            except:
+                existing_map = {}
+
+            existing_map.update(new_dict)
+            return json.dumps(existing_map)
+
+        # -------------------------------
+        # Handle tracker_configuration
+        # -------------------------------
+        if "tracker_configuration" in updates:
+            new_val = updates["tracker_configuration"]
+
+            # Ensure incoming value is dict
+            if isinstance(new_val, str):
+                try:
+                    new_val = json.loads(new_val)
+                except:
+                    new_val = {}
+
+            updates["tracker_configuration"] = merge_tracker_config(
+                existing.get("tracker_configuration"),
+                new_val
+            )
+
+        # -------------------------------
+        # Normalize function
+        # -------------------------------
+        def normalize(value, key=None):
+            # tracker_configuration already JSON string → don't re-dump
+            if key == "tracker_configuration":
+                return value or json.dumps({})
+
             if isinstance(value, (dict, list)):
                 return json.dumps(value)
+
             if value is None:
                 return ""
+
             return value
 
-        # Step 2: Merge + normalize EVERYTHING
+        # Step 2: Merge + normalize
         merged = {**existing, **updates}
+        updated_row = {k: normalize(v, k) for k, v in merged.items()}
 
-        updated_row = {k: normalize(v) for k, v in merged.items()}
-
-        # 🧪 DEBUG (optional - remove later)
-        for k, v in updated_row.items():
-            if isinstance(v, (dict, list)):
-                print(f"🚨 STRUCT STILL FOUND: {k} -> {type(v)}")
-
-        # Step 3: Delete old record
-        def _delete():
-            table.delete(f'runbook_id == "{runbook_id}"')  # ✅ FIXED
-
-        await asyncio.to_thread(_delete)
-
-        # Step 4: Insert updated record
+        # -------------------------------
+        # Prepare insert
+        # -------------------------------
         def _insert():
             table_fields = {f.name for f in table.schema}
             filtered = {k: v for k, v in updated_row.items() if k in table_fields}
             column_data = {k: [v] for k, v in filtered.items()}
             table.add(pa.Table.from_pydict(column_data))
 
+        # -------------------------------
+        # Delete old record
+        # -------------------------------
+        def _delete():
+            table.delete(f'runbook_id == "{runbook_id}"')
+
+        # ✅ IMPORTANT: insert first, then delete
+        await asyncio.to_thread(_delete)
         await asyncio.to_thread(_insert)
+        
 
         return updated_row
 
@@ -3439,7 +3479,7 @@ class LanceDBServer:
 
         return result
 
-    async def runbook_get_result(self, user_id, result_id):
+    async def   runbook_get_result(self, user_id, result_id):
         table = await self._open_or_create_runbook_results_table(user_id)
 
         def _query():
@@ -3510,3 +3550,4 @@ class LanceDBServer:
         await asyncio.to_thread(_update)
 
         return {"status": "updated", "runbook_id": runbook_id}
+

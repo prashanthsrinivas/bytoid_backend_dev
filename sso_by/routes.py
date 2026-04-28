@@ -8,6 +8,7 @@ from onelogin.saml2.auth import OneLogin_Saml2_Auth
 
 import os
 import json
+import requests
 
 # Admin CONTROL 
 ALLOWED_ADMINS = ["service@bytoid.ca", "beta@bytoid.ai"]
@@ -145,10 +146,83 @@ def is_admin(user_id, org):
    cursor.close()
    conn.close()
 
+
    return user and user[0] == "admin"
-           
 
 
+@sso_bp.route("/check-microsoft", methods=["GET"])
+def check_microsoft():
+   user_id = request.args.get("user_id")
+   if not user_id:
+       return jsonify({"connected": False})
+   conn = connect_to_rds()
+   cursor = conn.cursor()
+   cursor.execute(
+       "SELECT token FROM users WHERE user_id = %s",
+       (user_id,)
+   )
+   row = cursor.fetchone()
+   cursor.close()
+   conn.close()
+   return jsonify({"connected": bool(row and row[0])})
+
+TENANT_ID = os.getenv("AZURE_TENANT_ID")
+CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
+CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("AZURE_REDIRECT_URI")
+
+@sso_bp.route("/microsoft/login")
+def microsoft_login():
+    user_id = request.args.get("user_id")
+
+    auth_url = (
+        f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/authorize?"
+        f"client_id={CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&response_mode=query"
+        f"&scope=offline_access Mail.Send User.Read"
+        f"&state={user_id}"
+    )
+
+    return redirect(auth_url)
+
+
+@sso_bp.route("/microsoft/callback")
+def microsoft_callback():
+   code = request.args.get("code")
+   user_id = request.args.get("state")
+
+   if not code or not user_id:
+       return redirect(f"{os.getenv('BASE_FRNT_URL')}/login")
+    
+   token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+   data = {
+       "client_id": CLIENT_ID,
+       "client_secret": CLIENT_SECRET,
+       "code": code,
+       "redirect_uri": REDIRECT_URI,
+       "grant_type": "authorization_code",
+       "scope": "offline_access Mail.Send User.Read"
+   }
+   res = requests.post(token_url, data=data)
+   token_data = res.json()
+   access_token = token_data.get("access_token")
+   if not access_token:
+       return jsonify({"error": "Token not received"}), 400
+   conn = connect_to_rds()
+   cursor = conn.cursor()
+   cursor.execute(
+       "UPDATE users SET token=%s WHERE user_id=%s",
+       (access_token, user_id)
+   )
+   print("SESSION USER_ID:", session.get("user_id"))
+   conn.commit()
+   cursor.close()
+   conn.close()
+   return redirect(
+       f"{os.getenv('BASE_FRNT_URL')}/sso?status=success&userid={user_id}&service=microsoft"
+   )
 # =========================
 # VALIDATE ORG (FRONTEND)
 # =========================
@@ -201,7 +275,8 @@ def init_saml_auth(req):
 @sso_bp.route("/auth/saml/login", strict_slashes=False)
 @sso_bp.route("/auth/saml/login/", strict_slashes=False)
 def saml_login():
-   session.clear()
+   session.pop("saml_org", None)
+   session.pop("saml_redirect", None)
    org = (request.args.get("org") or "").strip().lower()
    
 

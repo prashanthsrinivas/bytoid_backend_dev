@@ -24,6 +24,13 @@ load_dotenv()
 
 # BASE ROLES APIS FOR AMIN
 
+def has_outlook_connected(user_id, cursor):
+   cursor.execute("""
+       SELECT token FROM users
+       WHERE user_id = %s
+   """, (user_id,))
+   row = cursor.fetchone()
+   return bool(row and row.get("token"))
 
 @inv_users_bp.route("/admin/roles-add", methods=["POST"])
 def add_role_admin():
@@ -410,7 +417,7 @@ def send_invite_user():
             )
             base_check = cursor.fetchone()
             if base_check:
-                return jsonify({"error": "user already exists"}), 404
+                return jsonify({"error": "user already exists"}), 409
             cursor.execute(
                 "SELECT email, roles_creation, permissions, social,user_type FROM users WHERE user_id=%s FOR UPDATE",
                 (userid,),
@@ -479,31 +486,38 @@ def send_invite_user():
             )
             business_info = cursor.fetchone() or {}
 
-        # generate invite link
-        base_invitation_link = generate_hashed_url(
-            base_url=f"{os.getenv('BASE_FRNT_URL')}/invite",
-            invited_to=email,
-            invited_by=user_email,
-        )
-        if user_source == "google":
-            # send email *after* updating DB, but still inside try
-            gmail_service = GmailService(user_id=userid)
-            gmail_service.send_invite_mail(
-                receipent_emails=email,
-                role=role,
-                invite_link=base_invitation_link,
-                business_info=business_info,
+            # generate invite link
+            base_invitation_link = generate_hashed_url(
+                base_url=f"{os.getenv('BASE_FRNT_URL')}/invite",
+                invited_to=email,
+                invited_by=user_email,
             )
-        elif user_source == "microsoft":
-            from services.outlook_service import OutlookService
-            outlook_service = OutlookService(user_id=userid)
-            outlook_service.send_invitation_email(
-                invitee=email,
-                inviter=user_email,
-                role=role,
-                invite_link=base_invitation_link,
-                business_info=business_info
-            )
+            
+            if user_source == "google":
+                gmail_service = GmailService(user_id=userid)
+                gmail_service.send_invite_mail(
+                    receipent_emails=email,
+                    role=role,
+                    invite_link=base_invitation_link,
+                    business_info=business_info,
+                )
+            else:
+            # ✅ For BOTH microsoft + saml
+                if has_outlook_connected(userid, cursor):
+                    from services.outlook_service import OutlookService
+                    outlook_service = OutlookService(user_id=userid)
+                    outlook_service.send_invitation_email(
+                        invitee=email,
+                        inviter=user_email,
+                        role=role,
+                        invite_link=base_invitation_link,
+                       business_info=business_info
+                    )
+                else:
+                   conn.rollback()
+                   return jsonify({
+                       "error": "Outlook not connected. Please connect Outlook first."
+                   }), 400
  
 
         # if everything succeeds -> commit
@@ -603,7 +617,7 @@ def resend_invite():
             if base_check:
                 return jsonify({"error": "user already exists"}), 404
             cursor.execute(
-                "SELECT permissions, email, roles_creation,user_type FROM users WHERE user_id=%s",
+                "SELECT permissions, email, roles_creation,user_type, social FROM users WHERE user_id=%s",
                 (user_id,),
             )
             row = cursor.fetchone()
@@ -660,15 +674,32 @@ def resend_invite():
                 invited_by=inviter_email,
             )
 
-            # send invite via Gmail
-            gmail_service = GmailService(user_id=user_id)
-            gmail_service.send_invite_mail(
-                inviter=inviter_email,
-                invitee=invited_email,
-                role=invited_user.get("role", "Member"),
-                invite_link=invite_link,
-                business_info=business_info,
-            )
+            user_source = (row.get("social") or "").strip().lower()
+            # GOOGLE → Gmail
+            if user_source == "google":
+               gmail_service = GmailService(user_id=user_id)
+               gmail_service.send_invite_mail(
+                   receipent_emails=invited_email,
+                   role=invited_user.get("role", {"name":"Member"}),
+                   invite_link=invite_link,
+                   business_info=business_info,
+                )
+            # MICROSOFT + SAML → Outlook (if connected)
+            else:
+               if has_outlook_connected(user_id, cursor):
+                   from services.outlook_service import OutlookService
+                   outlook_service = OutlookService(user_id=user_id)
+                   outlook_service.send_invitation_email(
+                       invitee=invited_email,
+                       inviter=inviter_email,
+                       role=invited_user.get("role", {"name":"Member"}),
+                       invite_link=invite_link,
+                       business_info=business_info
+                   )
+               else:
+                   return jsonify({
+                       "error": "Outlook not connected. Please connect Outlook first."
+               }), 400
 
             # persist updates back into DB
             cursor.execute(
@@ -742,7 +773,8 @@ def grant_special_access():
         return jsonify({"error": str(e)}), 500
 
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 # SHARED USER ROLES APIS
@@ -753,8 +785,9 @@ def request_special_access():
     requester_id = data.get("user_id")   # Admin A
     target_email = data.get("email")     # Admin B
 
-    conn = connect_to_rds()
+    conn = None
     try:
+        conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
 
             # get requester org
@@ -782,7 +815,6 @@ def request_special_access():
 
             if cursor.fetchone():
                 return jsonify({"error": "Access already exists"}), 400
-            # ✅ ADD THIS AFTER target found
             if requester_id == target["user_id"]:
                 return jsonify({"error": "Cannot request yourself"}), 400
             
@@ -791,8 +823,6 @@ def request_special_access():
                 INSERT INTO notifications (user_id, message)
                 VALUES (%s, %s)
             """, (target["user_id"], "Admin requested access to your data"))
-            conn.commit()
-
             # generate link (reuse your invite system)
             link = generate_hashed_url(
                 base_url=f"{os.getenv('BASE_FRNT_URL')}/admin-access",
@@ -814,43 +844,36 @@ def request_special_access():
             inviter_email = source_row["email"]
             
             print("DEBUG user_source:", user_source)
-            
-            EMAIL_PROVIDERS = {
-                "google": "gmail",
-                "gmail": "gmail",
-                "microsoft": "outlook",
-                "outlook": "outlook",
-            }
-            provider = EMAIL_PROVIDERS.get(user_source)
-
-            if not provider:
-                logger.error(f"Unsupported email provider: {user_source}")
-                return jsonify({"error": "Unsupported email provider"}), 400
-
-            if provider == "gmail":
-                gmail_service = GmailService(user_id=requester_id)
-                gmail_service.send_invite_mail(
-                    receipent_emails=target_email,
-                    role="Admin Access",
-                    invite_link=link,
-                    business_info={}
-                )
-
-            elif provider == "outlook":
-                from services.outlook_service import OutlookService
+            # ✅ GET TOKEN + SOCIAL
+            # check outlook connection
+            if not has_outlook_connected(requester_id, cursor):
+                conn.commit()
+                return jsonify({
+                    "error": "Outlook not connected. Please connect Outlook first."
+                }), 400
+            from services.outlook_service import OutlookService
+            try:
                 outlook_service = OutlookService(user_id=requester_id)
-                outlook_service.send_invitation_email(  
+                outlook_service.send_invitation_email(
                     invitee=target_email,
                     inviter=inviter_email,
-                    role="Admin Access",
+                    role={
+                        "name": "Admin Access",
+                        "id": "admin_access"
+                    },
                     invite_link=link,
                     business_info={}
                 )
- 
-        return jsonify({"message": "Request sent"}), 200
-
+                conn.commit()
+                return jsonify({"message": "Request sent via Outlook"}), 200
+            
+            except Exception as e:
+                logger.error(f"Outlook error: {str(e)}")
+                conn.rollback()
+                return jsonify({"error": "Failed to send email"}), 500
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @inv_users_bp.route("/admin/accept_special_access", methods=["POST"])
 def accept_special_access():
@@ -894,7 +917,8 @@ def accept_special_access():
             return jsonify({"message": "Access granted"}), 200
 
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @inv_users_bp.route("/admin/validate_invite/token=<token>", methods=["GET"])
 def validate_invite(token):
@@ -1115,7 +1139,8 @@ def edit_shared_user_role():
         return jsonify({"error": str(e)}), 500
 
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @inv_users_bp.route("/notifications/<user_id>", methods=["GET"])
 def get_notifications(user_id):
@@ -1138,7 +1163,8 @@ def get_notifications(user_id):
         return jsonify({"error": str(e)}), 500
 
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @inv_users_bp.route("/admin/revoke_shared_user_role", methods=["POST"])
 def revoke_shared_user_role():
@@ -1204,7 +1230,8 @@ def revoke_shared_user_role():
         return jsonify({"error": str(e)}), 500
 
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 @inv_users_bp.route("/admin/delete_shared_user_role", methods=["POST"])
@@ -1300,7 +1327,8 @@ def delete_shared_user_role():
         return jsonify({"error": str(e)}), 500
 
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 @inv_users_bp.route("/admin/activate_shared_user_role", methods=["POST"])
@@ -1367,4 +1395,5 @@ def activate_shared_user_role():
         return jsonify({"error": str(e)}), 500
 
     finally:
-        conn.close()
+        if conn:
+            conn.close()

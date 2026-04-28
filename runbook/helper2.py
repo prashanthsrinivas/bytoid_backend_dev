@@ -20,6 +20,7 @@ from utils.normal import load_yaml_file
 
 from cust_helpers import pathconfig
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 from .utils import *
 from .utils import _safe_json_parse_full
 from .utils import _safe_json_parse
@@ -32,7 +33,7 @@ credits = Credits(conn)
 
 RUNBOOK_TEMPLATE = load_yaml_file(path=pathconfig.runbook_prompts)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 CHART_BLOCK_PROMPT = """
 📊 CHART BLOCK SYSTEM (STRICT MODE)
@@ -297,7 +298,7 @@ async def modify_run_runbook_execution_engine(
     )
 
     analysis_json = safe_json_load(analysis_raw, {})
-    print("analysis raw", analysis_json)
+    logger.debug("Analysis raw: %s", analysis_json)
 
     add_blocks = analysis_json.get("addblocks", [])
     update_blocks = analysis_json.get("updateblocks", [])
@@ -426,7 +427,7 @@ async def modify_run_runbook_execution_engine(
                 updated_map.get(b["block_id"], b) for b in existing_blocks
             ]
 
-            print("UPDATED BLOCKS", updated_blocks)
+            logger.debug("Updated blocks: %s", updated_blocks)
 
         # ADD
         if add_blocks:
@@ -524,7 +525,7 @@ async def modify_run_runbook_execution_engine(
                 else:
                     existing_blocks.append(b)
 
-            print("NEW BLOCKS", new_blocks)
+            logger.debug("New blocks: %s", new_blocks)
         # RESTRUCTURE
         if restructure_content:
             # --------------------------------------------------

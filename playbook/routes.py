@@ -2095,7 +2095,9 @@ def updatequestionsworkflow():
         testing=True,
     ) as service:
         result = asyncio.run(
-            service.answer_questions(answer=answer,comment=comment, qid=question_id, chid=chat_id)
+            service.answer_questions(
+                answer=answer, comment=comment, qid=question_id, chid=chat_id
+            )
         )
 
     # current_user_id.reset(token)
@@ -2515,7 +2517,14 @@ async def generate_ques_by_file():
 
 
 async def answer_ques_file_bk(
-    user_id, extracted_files, filename, step_id, file_keys, job_id=None, session_id=None
+    user_id,
+    extracted_files,
+    filename,
+    step_id,
+    file_keys,
+    inp_links=None,
+    job_id=None,
+    session_id=None,
 ):
 
     credits = Credits()
@@ -2532,59 +2541,26 @@ async def answer_ques_file_bk(
         credits=credits,
     ) as runner:
 
-        result = await runner.answer_ques_file_bk(extracted_files, step_id, file_keys)
-
-    return result
-
-
-@playbook_bp.route("/make_ans_by_files_normal", methods=["POST"])
-def generate_ans_files_normal():
-    try:
-        # ✅ Get user_id
-        user_id = request.form.get("user_id")
-        file_name = request.form.get("filename")
-        step_id = request.form.get("step_id")
-        if not user_id or file_name:
-            return jsonify({"status": "error", "message": "user_id is required"}), 400
-
-        # ✅ Get multiple files (IMPORTANT)
-        files = request.files.getlist("files")
-        if not files or len(files) == 0:
-            return jsonify({"status": "error", "message": "No files uploaded"}), 400
-        handler = FileProcessor()
-        extracted_files = handler.process_files(files)
-
-        if not extracted_files:
-            return jsonify({"error": "Could not extract content from file"}), 400
-        print(extracted_files)
-
-        return (
-            jsonify(
-                {
-                    "status": "success",
-                    "user_id": user_id,
-                }
-            ),
-            200,
+        result = await runner.answer_ques_file_bk(
+            extracted_files, step_id, file_keys, inp_links=inp_links or []
         )
 
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    return result
 
 
 @playbook_bp.route("/make_ans_by_files", methods=["POST"])
 async def generate_ans_files():
     local_files = []
     try:
+        import mimetypes
+        import base64
         from utils.s3_utils import s3bucket
-
-        # data = request.get_json()
+        from radar.radar_helpers import extract_files_content, IMAGE_EXTENSIONS
 
         user_id = request.form.get("user_id")
         file_keys = request.form.getlist("file_keys")
         step_id = request.form.get("step_id")
         wf_name = request.form.get("wf_name")
-        # print("request form", request.form)
 
         if not user_id or not file_keys:
             return (
@@ -2595,46 +2571,66 @@ async def generate_ans_files():
             )
 
         s3 = s3bucket()
-        # print("files", file_keys)
         if type(file_keys) == str:
             file_keys = [file_keys]
 
-        # 🔥 Download files from S3
+        extracted_payload = []
+        inp_links = []
+
         for key in file_keys:
             if not key:
                 continue
-
             try:
-                temp_path = os.path.join(tempfile.gettempdir(), os.path.basename(key))
-
+                fname = os.path.basename(key)
+                temp_path = os.path.join(tempfile.gettempdir(), fname)
                 s3.download_file(Bucket=S3_BUCKET, Key=key, Filename=temp_path)
-
                 local_files.append(temp_path)
 
-            except Exception as e:
-                print(f"Failed to download {key}: {e}")
+                with open(temp_path, "rb") as fh:
+                    file_bytes = fh.read()
 
-        if not local_files:
+                ext = os.path.splitext(fname)[1].lower()
+                content_type = (
+                    mimetypes.guess_type(fname)[0] or "application/octet-stream"
+                )
+
+                if ext in IMAGE_EXTENSIONS:
+                    b64 = base64.b64encode(file_bytes).decode()
+                    inp_links.append(f"data:{content_type};base64,{b64}")
+                else:
+                    extracted = extract_files_content(
+                        [
+                            {
+                                "filename": fname,
+                                "data": file_bytes,
+                                "content_type": content_type,
+                            }
+                        ]
+                    )
+                    extracted_payload.extend(extracted)
+
+            except Exception as e:
+                print(f"Failed to process {key}: {e}")
+
+        if not extracted_payload and not inp_links:
             return (
                 jsonify(
-                    {"status": "error", "message": "Failed to download files from S3"}
+                    {
+                        "status": "error",
+                        "message": "Could not extract content from files",
+                    }
                 ),
                 400,
             )
 
-        # 🔥 Process files (your existing pipeline)
-        handler = FileProcessor()
-        extracted_files = handler.process_files(local_files)
-
-        if not extracted_files:
-            return (
-                jsonify({"status": "error", "message": "Could not extract content"}),
-                400,
-            )
-
-        # 🔥 SUBMIT BACKGROUND JOB (THIS WAS MISSING)
         job_id = await JobManager.submit_job(
-            answer_ques_file_bk, user_id, extracted_files, wf_name, step_id, file_keys
+            answer_ques_file_bk,
+            user_id,
+            extracted_payload,
+            wf_name,
+            step_id,
+            file_keys,
+            inp_links,
         )
 
         return jsonify(
@@ -2648,13 +2644,61 @@ async def generate_ans_files():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
-        # 🧹 CLEANUP (always runs)
         for path in local_files:
             try:
                 if os.path.exists(path):
                     os.remove(path)
             except Exception as cleanup_error:
                 print(f"Cleanup failed for {path}: {cleanup_error}")
+
+
+@playbook_bp.route("/evidence_ques_ans_attach_playbook", methods=["POST"])
+def evidence_ques_ans_attach_playbook():
+    try:
+        data = request.json or {}
+        userid = data.get("user_id")
+        filename = data.get("filename")
+        question_id = data.get("question_id")
+        user_answer = data.get("user_answer")
+        comment = data.get("comment")
+
+        if not userid or not filename or not question_id:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "user_id, filename, question_id are required",
+                    }
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as runner:
+            result = runner.answer_evidence_question(
+                qid=question_id,
+                user_answer=user_answer,
+                comment=comment,
+            )
+
+        status_code = 200 if result.get("status") == "success" else 400
+        return jsonify(result), status_code
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @playbook_bp.route("/make_s3upload", methods=["POST"])
@@ -3581,7 +3625,9 @@ def check_runbook_exists_playbook():
 
 
 @playbook_bp.route("/clear_runbook_exists_playbook", methods=["POST"])
-def clear_runbook_exists_playbook():
+async def clear_runbook_exists_playbook():
+    from db.lance_db_service import LanceDBServer
+
     try:
         data = request.json or {}
 
@@ -3623,6 +3669,11 @@ def clear_runbook_exists_playbook():
 
         # ✅ clear runbook
         workflow_json["runbook_id"] = None
+        dbserver = LanceDBServer()
+        runbook_details = await dbserver.get_runbook_by_id(userid, runbook_id)
+        if "playbook_id" in runbook_details:
+            runbook_details["playbook_id"] = None
+            dbserver.update_runbook(runbook_details)
 
         save_playbook_to_s3(
             workflow_json,
@@ -3717,6 +3768,66 @@ def morph_questions():
                 new_question=new_question_text,
                 morph_type=morph_type,
                 new_options=new_options,
+            )
+
+            status_code = 200 if result.get("status") == "success" else 400
+            return jsonify(result), status_code
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/assign_evidence_to_question", methods=["POST"])
+def assign_evidence_to_question():
+    try:
+        data = request.json or {}
+
+        userid = data.get("user_id")
+        filename = data.get("filename")
+        question_id = data.get("question_id")
+        evidences_required = data.get("evidences_required")
+
+        if not userid or not filename or not question_id:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "user_id, filename, question_id are required",
+                    }
+                ),
+                400,
+            )
+
+        if evidences_required is None or not isinstance(evidences_required, list):
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "evidences_required must be a list",
+                    }
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        workflow_json = read_json_from_s3(wf_loc)
+
+        if not workflow_json:
+            return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+        with WorkflowRunnerV2(
+            userid=userid,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as runner:
+
+            result = runner.assign_evidence_required(
+                qid=question_id,
+                evidences_required=evidences_required,
             )
 
             status_code = 200 if result.get("status") == "success" else 400

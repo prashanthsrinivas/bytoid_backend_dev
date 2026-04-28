@@ -463,6 +463,8 @@ async def create_playbook(
     filename = nfilename or f"{uuid.uuid4().hex[:8]}.json"
     ensure_dir(f"{pathconfig.basepath}/test/")
     filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
+    # response_dict = None
+    # response_dict1 = None
 
     # token = current_user_id.set(userid)
     # print("actuial social", actual_social)
@@ -568,9 +570,10 @@ async def create_playbook(
         raw_response = await get_fireworks_response2(
             user_message=full_prompt, role="system", user_id=userid, credits=credits
         )
-        # print("raw response", len(raw_response))
+        print("raw response", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
+        response_dict1 = json.loads(cleaned_j)
         try:
             response_dict1 = json.loads(cleaned_j)
         except json.JSONDecodeError as e:
@@ -588,9 +591,10 @@ async def create_playbook(
             user_id=userid,
             credits=credits,
         )
-        # print("raw response eval", len(raw_response))
+        print("raw response eval", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
+        response_dict = json.loads(cleaned_j)
         try:
             response_dict = json.loads(cleaned_j)
         except json.JSONDecodeError as e:

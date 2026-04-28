@@ -8,6 +8,7 @@ import uuid
 from agent_route.doc_clarity import QueryData
 import boto3
 import hashlib
+from config_evidences.evidence_helpers import _get_user_evidence
 from credits_route.route import Credits
 from db.lance_db_service import LanceDBServer
 from db.rds_db import connect_to_rds
@@ -29,6 +30,7 @@ from radar.radar_helpers import process_file_payloads
 
 from cust_helpers import pathconfig
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 from .utils import *
 from .utils import _safe_json_parse
 from .utils import _safe_json_parse_full
@@ -42,7 +44,7 @@ credits = Credits(conn)
 
 RUNBOOK_TEMPLATE = load_yaml_file(path=pathconfig.runbook_prompts)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 def schedule_runbook_log(runbook):
@@ -77,24 +79,24 @@ def schedule_runbook_log(runbook):
         replace_existing=True,
     )
 
-    print(f"✅ Scheduled runbook {runbook['runbook_id']}")
+    logger.info("Scheduled runbook: %s", runbook["runbook_id"])
 
 
 async def run_runbook_job(runbook):
     #  print(f"🔥 JOB TRIGGERED: {runbook['runbook_id']}")
 
     try:
-        print(f"🚀 Running runbook {runbook['runbook_id']}")
+        logger.info("Running runbook: %s", runbook["runbook_id"])
         dbserver = LanceDBServer()
         await run_runbook_execution_engine(
             dbserver=dbserver,
             user_id=runbook["user_id"],
             runbook=runbook,
         )
-        print(f"✅ COMPLETED: {runbook['runbook_id']}")
+        logger.info("Runbook completed: %s", runbook["runbook_id"])
     except Exception as e:
-        print("❌ FULL ERROR:", traceback.format_exc())
-        print(f"❌ Runbook failed: {e}")
+        logger.debug("Full traceback: %s", traceback.format_exc())
+        logger.error("Runbook failed: %s", e, exc_info=IS_DEV)
 
 
 def run_runbook_job_wrapper(runbook):
@@ -185,28 +187,6 @@ For Security / Privacy / AI Reviewers (Technical & Governance Validation)
 - Evidence is sufficient to technically validate effectiveness of controls across all domains
 """
 
-EVIDENCES_TYPES = """
-Governance Evidence (policies, standards, procedures, frameworks)
-
-- Process Evidence (process flows, SOPs, runbooks)
-- Control Execution Evidence (proof a control was performed)
-- Transactional Evidence (records of activities, events, operations)
-- Approval & Authorization Evidence (sign-offs, decisions, endorsements)
-- Access & Ownership Evidence (who has access, roles, responsibilities)
-- Monitoring & Review Evidence (reviews, oversight, supervision outputs)
-- Exception & Incident Evidence (issues, deviations, breaches, resolutions)
-- Reporting Evidence (summaries, dashboards, generated reports)
-- Configuration / State Evidence (current state or setup of a system/process)
-- Change Evidence (changes made, version history, updates)
-- Third-Party Evidence (vendor documents)
-- External Assurances (SOC 2 Type 2, ISO 27001, etc..)
-- Training & Awareness Evidence (training completion, communications)
-- Data & Record Evidence (datasets, records, stored information)
-- Lifecycle Evidence (creation, retention, archival, deletion)
-- Physical Evidence (onsite controls, physical access, environment)
-- Analytical / Assessment Evidence (risk assessments, evaluations, test results)
-- Self Attestation Evidence (self-declarations, certifications, confirmations)
-"""
 
 EVIDENCE_ANALYSIS_PROMPT = """You are a compliance and security evidence analyst.
 
@@ -255,6 +235,7 @@ async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
         files_map[source].append(str(item.get("data", "")))
 
     results = []
+    EVIDENCES_TYPES, _ = _get_user_evidence(user_id)
     for filename, chunks in files_map.items():
         combined_data = "\n\n".join(chunks)[:20000]
         prompt = (
@@ -341,8 +322,8 @@ async def run_runbook_execution_engine(
     refernce_main_source = (
         runbook["reference_main_source"] if "reference_main_source" in runbook else None
     )
-    print("DATA SOURCES", data_sources)
-    print("REFERENCE SOURCES ", refernce_main_source)
+    logger.debug("Data sources: %s", data_sources)
+    logger.debug("Reference sources: %s", refernce_main_source)
     if structure_file:
         structure_file_content = read_json_from_s3(structure_file)
     else:
@@ -404,7 +385,7 @@ async def run_runbook_execution_engine(
     # --------------------------------------------------
     # RESOLVE RUNBOOK INPUT
     # --------------------------------------------------
-    print("hello 2")
+    logger.debug("Entered structure section 2")
     try:
         analyze_input = ""
         if "analyze_input" in runbook and runbook["analyze_input"]:
@@ -491,7 +472,7 @@ async def run_runbook_execution_engine(
             reference_RWA.append(document_data)
 
         if main_source and data_sources:
-            print("in Data sources")
+            logger.debug("Processing data sources")
 
             data_checked = await retreval_from_sources(
                 conn,
@@ -515,7 +496,7 @@ async def run_runbook_execution_engine(
                 )
 
         if refernce_main_source and reference_sources:
-            print("in Data reference sources")
+            logger.debug("Processing reference sources")
 
             reference_RWA = await retreval_from_sources(
                 conn,
@@ -624,11 +605,11 @@ async def run_runbook_execution_engine(
         # --------------------------------------------------
         # REDUCE DATA TO STAY WITHIN TOKEN LIMITS
         # --------------------------------------------------
-        print("in reduce of data checked")
+        logger.debug("Reducing data_checked")
         reduced_datachecked = await reduce_data_for_report(
             data_checked, structure_file_payload, user_id, credits, label="evidence"
         )
-        print("in reduce of reduced_referencerwa")
+        logger.debug("Reducing reference_rwa")
         reduced_referencerwa = await reduce_data_for_report(
             reference_RWA,
             structure_file_payload,
@@ -637,7 +618,7 @@ async def run_runbook_execution_engine(
             label="governance framework",
         )
 
-        print("before generating report")
+        logger.debug("Before generating report")
         for idx, block in enumerate(structure_file_payload["blocks"]):
 
             block_payload = {"blocks": [block]}  # isolate single block
@@ -727,7 +708,7 @@ async def run_runbook_execution_engine(
                 70,
             )
         )
-        print(" hello 6")
+        logger.debug("Reached report section 6")
         if merged_result:
             progress = 85
 
@@ -742,7 +723,7 @@ async def run_runbook_execution_engine(
             )
         newdata_risk = ""
         if structure_file_content:
-            print("in the structure content")
+            logger.debug("Processing structure content")
             riskbaseprompt = """
                 You are a risk data compressor.
 
@@ -800,7 +781,7 @@ async def run_runbook_execution_engine(
                     progress,
                 )
             )
-        print("before risk")
+        logger.debug("Before risk analysis")
 
         risk_result = await get_think_bedrok_response(
             user_message=risk_prompt,
@@ -815,7 +796,7 @@ async def run_runbook_execution_engine(
         merged_result["risk_score"] = risk_data.get("final_risk_score", 0)
 
         if data_checked:
-            print("in data checked", len(data_checked))
+            logger.debug("data_checked length: %d", len(data_checked))
             report_viewer = data_sources.get("report_viewer")
             evidence_analysis = await run_evidence_analysis(
                 data_checked, report_viewer, user_id, credits
@@ -856,7 +837,7 @@ async def run_runbook_execution_engine(
         return merged_result
 
     except Exception as e:
-        print("runbook error:", e)
+        logger.error("Runbook error: %s", e, exc_info=IS_DEV)
         await dbserver.insert_runbook_result(
             {
                 "execution_id": execution_id,
@@ -876,7 +857,7 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
     try:
         dbserver = LanceDBServer()
 
-        print("🚀 trigger_runbooks_for_api_response START")
+        logger.info("trigger_runbooks_for_api_response started")
 
         # ✅ 1. GET TEMPLATE RUNBOOK
         runbook = await dbserver.get_runbooks_by_endpoint(
@@ -884,7 +865,7 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
         )
 
         if not runbook:
-            print("⚠️ No runbook found")
+            logger.warning("No runbook found")
             return
 
         # ✅ safety
@@ -892,10 +873,10 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
             runbook = json.loads(runbook)
 
         if not isinstance(runbook, dict):
-            print("❌ Invalid runbook format")
+            logger.warning("Invalid runbook format")
             return
 
-        print(f"Using runbook:{runbook.get('runbook_id')} - {runbook.get('name')}")
+        logger.info("Using runbook: %s - %s", runbook.get('runbook_id'), runbook.get('name'))
 
         # ✅ 2. PREPARE EXECUTION INPUT
         runtime_input = record.get("original") or record.get("text")
@@ -929,7 +910,7 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
             try:
                 files = json.loads(files)
             except Exception as e:
-                print("Failed to parse files:", e)
+                logger.warning("Failed to parse files: %s", e)
                 files = {}
 
         # now safely use it
@@ -950,7 +931,7 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
         return {"status": "success"}
 
     except Exception as e:
-        print("❌ Error in trigger_runbooks:", str(e))
+        logger.error("Error in trigger_runbooks: %s", e, exc_info=IS_DEV)
         raise
 
 
@@ -1049,8 +1030,8 @@ def reconstruct_sources(filenames):
 
 async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
     dbserver = LanceDBServer()
-    print("inside trigger playbook")
-    print("details", playbook_id, runbook_id, user_id)
+    logger.info("trigger_runbook_from_playbook started")
+    logger.debug("Details: playbook=%s runbook=%s user=%s", playbook_id, runbook_id, user_id)
 
     runbook = await dbserver.get_runbook_by_id(user_id=user_id, runbook_id=runbook_id)
     # print(type(runbook), len(runbook), runbook)
@@ -1060,7 +1041,7 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
     if isinstance(runbook, str):
         runbook = json.loads(runbook)
 
-    print(f"Using runbook:{runbook.get('runbook_id')} - {runbook.get('name')}")
+    logger.info("Using runbook: %s - %s", runbook.get('runbook_id'), runbook.get('name'))
     # print("out of range 2")
     structure_file = None
 
@@ -1071,7 +1052,7 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
         try:
             files = json.loads(files)
         except Exception as e:
-            print("Failed to parse files:", e)
+            logger.warning("Failed to parse files: %s", e)
             files = {}
 
     # now safely use it
@@ -1089,18 +1070,18 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
     elif isinstance(raw_structure, dict):
         structure_file_payload = raw_structure
     instruction_data = await get_playbook_instruction(user_id, playbook_id)
-    print("DEBUG KEYS:", instruction_data.keys())
+    logger.debug("Instruction data keys: %s", list(instruction_data.keys()))
     # runbook["runtime_input"] = json.dumps(runtime_input.get("chat", []))
 
-    print("runtime_input type:", type(instruction_data))
-    print("🚀 BEFORE extraction")
+    logger.debug("runtime_input type: %s", type(instruction_data))
+    logger.debug("Before question extraction")
     questions = await extract_qna_from_instruction(instruction_data)
-    print("✅ AFTER extraction")
+    logger.debug("After question extraction")
 
-    print(f"Total questions: {len(questions)}")
-    print("Sample question:", questions[0] if questions else "None")
+    logger.info("Total questions: %d", len(questions))
+    logger.debug("Sample question: %s", questions[0] if questions else "None")
 
-    print(runbook.get("reference_sources"))
+    logger.debug("Reference sources: %s", runbook.get("reference_sources"))
     document_data = None
     if runbook.get("reference_sources"):
         analyzed_results = await analyze_questions_with_references(
@@ -1111,14 +1092,10 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
             runbook,
         )
         if not analyzed_results:
-            print("⚠️ No analysis results generated")
+            logger.warning("No analysis results generated")
 
-        print("📦 analyzed_results type:", type(analyzed_results))
-        print(
-            "📦 first item type:",
-            type(analyzed_results[0]) if analyzed_results else "empty",
-        )
-        # print("📦 sample item:", analyzed_results[0] if analyzed_results else "None")
+        logger.debug("analyzed_results type: %s", type(analyzed_results))
+        logger.debug("analyzed_results first item type: %s", type(analyzed_results[0]) if analyzed_results else "empty")
         if analyzed_results:
             merged = await merge_document_data(analyzed_results, instruction_data)
             runbook["runtime_input"] = json.dumps(merged["chat"])
@@ -1129,7 +1106,7 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
         runbook["runtime_input"] = json.dumps(instruction_data.get("chat", []))
 
     # print("final: ", str(runbook.get("runtime_input"))[:100])
-    print("executing runbook playbook")
+    logger.info("Executing runbook playbook")
     await run_runbook_execution_engine(
         dbserver=dbserver,
         user_id=user_id,
@@ -1144,20 +1121,20 @@ async def extract_qna_from_instruction(instruction_data):
     result = []
 
     try:
-        print("inside extract qna---")
+        logger.debug("extract_qna_from_instruction started")
 
         # ✅ Handle string input
         if isinstance(instruction_data, str):
             instruction_data = json.loads(instruction_data)
 
-        print("DEBUG KEYS:", instruction_data.keys())
+        logger.debug("Instruction data keys: %s", list(instruction_data.keys()))
 
         chats = instruction_data.get("chat", [])
-        print(f"DEBUG: total chats = {len(chats)}")
+        logger.debug("Total chats: %d", len(chats))
 
         for chat in chats:
             outputs = chat.get("output", [])
-            print(f"DEBUG: outputs count = {len(outputs)}")
+            logger.debug("Outputs count: %d", len(outputs))
 
             for item in outputs:
                 if not isinstance(item, dict):
@@ -1195,10 +1172,10 @@ async def extract_qna_from_instruction(instruction_data):
                     }
                 )
 
-        print(f"✅ Extracted questions: {len(result)}")
+        logger.info("Extracted questions: %d", len(result))
 
     except Exception as e:
-        print(f"❌ Error extracting QnA: {e}")
+        logger.error("Error extracting QnA: %s", e)
 
     return result
 
@@ -1256,7 +1233,7 @@ async def merge_document_data(analyzed_results, instruction_data):
 
 async def playbook_runbook_execution(user_id, runbook):
 
-    print("Inside executing playbook runbook : ", runbook["runbook_id"])
+    logger.info("Executing playbook for runbook: %s", runbook["runbook_id"])
     await run_runbook_execution_engine(user_id=user_id, runbook=runbook)
 
 
@@ -1286,7 +1263,7 @@ async def create_runbook_for_playbook(playbook_id, user_id):
         "reference_sources": [],
         "created_at": int(time.time()),
     }
-    print("Creating new runbook for playbook : ", playbook_id)
+    logger.info("Creating runbook for playbook: %s", playbook_id)
     # Insert runbook details
     result = await dbserver.insert_runbook(runbook_data)
 
@@ -1626,7 +1603,7 @@ async def analyze_questions_with_references(
     progress_logs=None,
 ):
 
-    print("--inside analyze_questions_with_references ")
+    logger.debug("analyze_questions_with_references started")
     results = []
     payload = None
     if reference_main_source == "knowledge":
@@ -1649,8 +1626,8 @@ async def analyze_questions_with_references(
             reference_id="embedding_generation",
         )
     # 🔥 FETCH CONTEXT ONLY ONCE
-    print("reference_main_source: ", reference_main_source)
-    print("reference_source: ", reference_source)
+    logger.debug("reference_main_source: %s", reference_main_source)
+    logger.debug("reference_source: %s", reference_source)
 
     instruction_text = "\n".join(
         [
@@ -1663,7 +1640,7 @@ async def analyze_questions_with_references(
         try:
             reference_source = json.loads(reference_source)
         except Exception as e:
-            print("⚠️ Failed to parse reference_source:", e)
+            logger.warning("Failed to parse reference_source: %s", e)
             reference_source = {}
 
     if not isinstance(reference_source, dict):
@@ -1672,7 +1649,7 @@ async def analyze_questions_with_references(
         try:
             reference_source = json.loads(reference_source)
         except Exception as e:
-            print("⚠️ Second decode failed:", e)
+            logger.warning("Second decode failed: %s", e)
             reference_source = {}
     files = reference_source.get("filenames", [])
     all_source_contexts = {}
@@ -1696,7 +1673,7 @@ async def analyze_questions_with_references(
         instruction_text, all_source_contexts
     )
 
-    print("✅ Selected BEST SOURCE:", best_source)
+    logger.info("Selected best source: %s", best_source)
 
     # 🔥 Step D: Use ONLY that source
     context_text = ""
@@ -1731,19 +1708,19 @@ async def analyze_questions_with_references(
     for i in range(0, len(questions), BATCH_SIZE):
         chunk = questions[i : i + BATCH_SIZE]
 
-        print(f"🚀 Processing batch {i//BATCH_SIZE + 1}")
+        logger.debug("Processing batch %d", i//BATCH_SIZE + 1)
 
         batch_result = await analyze_single_question(chunk, context_text, user_id)
 
         if not batch_result:
             # log(f"⚠️ Batch {i//BATCH_SIZE + 1} returned empty")
 
-            print("⚠️ Empty batch result")
+            logger.warning("Empty batch result")
             continue
-        print(f"✅ Batch {i//BATCH_SIZE + 1} completed")
+        logger.debug("Batch %d completed", i//BATCH_SIZE + 1)
         all_results.extend(batch_result)
 
-    print(f"🎯 Total analyzed results: {len(results)}")
+    logger.info("Total analyzed results: %d", len(results))
 
     return all_results
 
@@ -1816,7 +1793,7 @@ async def analyze_single_question(
     try:
         parsed = json.loads(result)
     except Exception:
-        print("❌ Invalid JSON from LLM:", result[:500])
+        logger.error("Invalid JSON from LLM: %s", result[:500])
         return []
 
     return parsed

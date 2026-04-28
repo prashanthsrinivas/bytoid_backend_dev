@@ -113,19 +113,92 @@ def normalize_text(text):
     return " ".join(text.strip().split())
 
 
-def extract_files_content(files):
-    all_file_data = []
+_ARCHIVE_EXTENSIONS = {".tar.gz", ".tgz", ".tar", ".zip"}
 
+
+def _extract_archive_files(filename, file_bytes):
+    """Extract archive contents and return list of {filename, data, content_type} dicts."""
+    import tarfile
+    import zipfile
+    import mimetypes as _mimetypes
+
+    fname_lower = filename.lower()
+    extracted = []
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        if fname_lower.endswith(".tar.gz") or fname_lower.endswith(".tgz") or fname_lower.endswith(".tar"):
+            mode = "r:gz" if (fname_lower.endswith(".tar.gz") or fname_lower.endswith(".tgz")) else "r:"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            try:
+                with tarfile.open(tmp_path, mode) as tar:
+                    tar.extractall(tmpdir)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        elif fname_lower.endswith(".zip"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            try:
+                with zipfile.ZipFile(tmp_path, "r") as zf:
+                    zf.extractall(tmpdir)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        for root, _, files_in_dir in os.walk(tmpdir):
+            for inner_name in files_in_dir:
+                inner_path = os.path.join(root, inner_name)
+                ext = os.path.splitext(inner_name)[1].lower()
+                if ext not in extension_loader_map:
+                    continue
+                try:
+                    with open(inner_path, "rb") as fh:
+                        data = fh.read()
+                    content_type = _mimetypes.guess_type(inner_name)[0] or "application/octet-stream"
+                    extracted.append({"filename": inner_name, "data": data, "content_type": content_type})
+                except Exception as e:
+                    print(f"⚠️ Could not read archive member {inner_name}: {e}")
+
+    return extracted
+
+
+def extract_files_content(files):
+    import mimetypes as _mimetypes
+    all_file_data = []
 
     for f in files:
         filename = f.get("filename", "uploaded_file")
         content_type = f.get("content_type")
+        fname_lower = filename.lower()
 
+        # ── Archive: explode and recurse ──────────────────────────────
+        if any(fname_lower.endswith(ext) for ext in _ARCHIVE_EXTENSIONS):
+            raw_data = f.get("data") or b""
+            if not raw_data:
+                print(f"⚠️ Empty archive: {filename}")
+                continue
+            inner_files = _extract_archive_files(filename, raw_data)
+            if not inner_files:
+                print(f"⚠️ No extractable files found in archive: {filename}")
+                continue
+            nested = extract_files_content(inner_files)
+            all_file_data.extend(nested)
+            continue
+
+        # ── Normal file ───────────────────────────────────────────────
         name, ext = os.path.splitext(filename)
         ext = ext.lower()
 
         if not ext and content_type:
-            guessed_ext = mimetypes.guess_extension(content_type)
+            guessed_ext = _mimetypes.guess_extension(content_type)
             if guessed_ext:
                 ext = guessed_ext.lower()
                 filename = name + ext

@@ -79,23 +79,25 @@ class OutlookService:
                 """
                 SELECT client_id, client_secret, token, refresh_token, expiry, email
                 FROM users
-                WHERE user_id = %s AND social = 'microsoft'
+                WHERE user_id = %s 
                 """,
                 (str(user_id),),
             )
             row = cursor.fetchone()
 
             if not row:
-                raise ValueError(f"No Microsoft credentials found for user {user_id}")
-
-        (
-            self.client_id,
-            self.client_secret,
-            self.access_token,
-            self.refresh_token,
-            expiry,
-            self.user_email,
-        ) = row
+                raise ValueError(f"User not found: {user_id}")
+            (
+               self.client_id,
+               self.client_secret,
+               self.access_token,
+               self.refresh_token,
+               expiry,
+               self.user_email,
+            ) = row
+            # ✅ ADD THIS (VERY IMPORTANT)
+            if not self.access_token:
+               raise ValueError(f"Outlook not connected for user {user_id}")
 
         # Check token expiry and refresh if needed
         if expiry and isinstance(expiry, (str, datetime)):

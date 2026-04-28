@@ -45,7 +45,8 @@ def create_tracker_config(
     user_id,
     name,
     tracker_type,
-    runbook_id
+    runbook_id,
+    block_id=None
 ):
     local_path = _get_local_tmp_path()
     user_id = str(user_id)
@@ -72,6 +73,7 @@ def create_tracker_config(
         "name": name,
         "type": tracker_type,  # table | matrix | scorecard
         "runbook_id": runbook_id,
+        "block_id": block_id,
         "file_path": file_path
     }
 
@@ -174,7 +176,7 @@ def delete_tracker_config(
     os.remove(local_path)
 
     # Step 3: Delete tracker file (IMPORTANT)
-    delete_file_from_s3(f"{user_id}/tracker/{tracker_id}.json")
+    delete_file_from_s3(f"{user_id}/tracker/{tracker_id}/tracker.json")
 
     return True
 
@@ -279,7 +281,7 @@ def create_tracker_file(
     upload_any_file(
         file_path=local_path,
         user_id=user_id,
-        file_name=s3_path,
+        s3_key_C=s3_path,
         type="tracker"
     )
 
@@ -291,6 +293,98 @@ def create_tracker_file(
 
     return s3_path
 
+def normalize_block_for_append(block, tracker_type):
+    """
+    Transform LanceDB result block structure to expected append format.
+    Handles nested micro_blocks structure from runbook execution results.
+    """
+    if not isinstance(block, dict):
+        return block
+
+    # Extract data from nested micro_blocks structure if present
+    micro_blocks = block.get("micro_blocks", [])
+    if micro_blocks and isinstance(micro_blocks, list) and len(micro_blocks) > 0:
+        micro_block = micro_blocks[0]
+
+        # ✅ TABLE: Extract from micro_blocks[0].data.rows
+        if tracker_type == "table":
+            if micro_block.get("type") == "table_schema":
+                micro_data = micro_block.get("data", {})
+                rows = micro_data.get("rows", [])
+
+                if rows and isinstance(rows[0], dict):
+                    # Extract headers from first row keys
+                    block["headers"] = list(rows[0].keys())
+                    block["rows"] = rows
+                    return block
+
+        # ✅ MATRIX: Extract from micro_blocks[0].data.matrix with axes
+        elif tracker_type == "matrix":
+            if micro_block.get("type") == "matrix_schema":
+                micro_data = micro_block.get("data", {})
+                matrix = micro_data.get("matrix", [])
+
+                if matrix:
+                    # Extract axes information
+                    x_axis = micro_block.get("x_axis", {})
+                    y_axis = micro_block.get("y_axis", {})
+
+                    # Convert matrix array to cell format for append_matrix
+                    cells = []
+                    x_values = x_axis.get("values", [])
+                    y_values = y_axis.get("values", [])
+
+                    for row_idx, row in enumerate(matrix):
+                        if row_idx < len(y_values):
+                            row_label = y_values[row_idx]
+                            for col_idx, cell_value in enumerate(row):
+                                if col_idx < len(x_values):
+                                    col_label = x_values[col_idx]
+                                    cells.append({
+                                        "row": row_label,
+                                        "column": col_label,
+                                        "value": cell_value
+                                    })
+
+                    block["data"] = cells
+                    block["x_axis"] = x_axis
+                    block["y_axis"] = y_axis
+                    return block
+
+        # ✅ SCORECARD: Extract from micro_blocks[0].data.records or metrics
+        elif tracker_type == "scorecard":
+            if micro_block.get("type") == "scorecard_schema":
+                micro_data = micro_block.get("data", {})
+                records = micro_data.get("records", [])
+
+                if records:
+                    block["data"] = records
+                    return block
+
+    # Fallback: Handle alternative structures without micro_blocks
+    if tracker_type == "table":
+        if "headers" not in block and "rows" not in block:
+            if "data" in block and isinstance(block["data"], list):
+                if block["data"] and isinstance(block["data"][0], dict):
+                    block["headers"] = list(block["data"][0].keys())
+                    block["rows"] = block["data"]
+            elif "columns" in block and "rows" in block:
+                block["headers"] = [c.get("name", c) if isinstance(c, dict) else c for c in block.get("columns", [])]
+
+    elif tracker_type == "matrix":
+        if "data" not in block and "cells" in block:
+            block["data"] = block["cells"]
+
+    elif tracker_type == "scorecard":
+        if "data" not in block:
+            if "records" in block:
+                block["data"] = block["records"]
+            elif "metrics" in block and isinstance(block["metrics"], dict):
+                block["data"] = [{"metric": k, "value": v} for k, v in block["metrics"].items()]
+
+    return block
+
+
 def append_table(tracker, block, result_id):
     """
     block = {
@@ -299,40 +393,64 @@ def append_table(tracker, block, result_id):
         "headers": [...],
         "rows": [...]
     }
+
+    Returns metadata about schema changes and data appended.
     """
 
     schema_cols = tracker["schema"]["columns"]
 
     # Build column map: source_column → col_id
     col_map = {col["source_column"]: col["id"] for col in schema_cols}
+    existing_columns = set(col_map.keys())
+    new_columns_created = []
+    columns_matched = []
 
-    # Step 1: Add missing columns (schema evolution)
+    # Track all columns from incoming data
+    incoming_headers = set(block.get("headers", []))
+
+    # Step 1: Identify column discrepancies and add missing columns (schema evolution)
     for header in block.get("headers", []):
         if header not in col_map:
+            # New column - create it
             new_col_id = f"col_{len(schema_cols) + 1}"
-
             new_col = {
                 "id": new_col_id,
                 "name": header,
                 "source_column": header
             }
-
             schema_cols.append(new_col)
             col_map[header] = new_col_id
+            new_columns_created.append({
+                "column_name": header,
+                "column_id": new_col_id,
+                "reason": "Not found in tracker schema"
+            })
+        else:
+            # Existing column
+            columns_matched.append(header)
 
     # Step 2: Append rows
+    rows_appended = 0
+    rows_skipped_dedup = 0
+
     for idx, row in enumerate(block.get("rows", [])):
 
         micro_id = row.get("micro_id")
 
-        # 🔒 Dedup check
+        # 🔒 Dedup check: Use row_index if micro_id is missing
         exists = any(
             r["result_id"] == result_id and
             r["source"]["block_id"] == block["block_id"] and
-            r["source"]["micro_id"] == micro_id
+            (
+                # If micro_id exists, use it for dedup
+                (micro_id is not None and r["source"]["micro_id"] == micro_id) or
+                # If micro_id is missing, use row_index as unique identifier
+                (micro_id is None and r["source"]["row_index"] == idx)
+            )
             for r in tracker["rows"]
         )
         if exists:
+            rows_skipped_dedup += 1
             continue
 
         values = {}
@@ -342,17 +460,26 @@ def append_table(tracker, block, result_id):
             if key in col_map:
                 values[col_map[key]] = val
             else:
-                # handle unexpected key (new column)
+                # handle unexpected key (new column at row level)
                 new_col_id = f"col_{len(schema_cols) + 1}"
 
-                schema_cols.append({
+                new_col = {
                     "id": new_col_id,
                     "name": key,
                     "source_column": key
-                })
+                }
+                schema_cols.append(new_col)
 
                 col_map[key] = new_col_id
                 values[new_col_id] = val
+
+                # Track if this is a new column not in headers
+                if key not in new_columns_created:
+                    new_columns_created.append({
+                        "column_name": key,
+                        "column_id": new_col_id,
+                        "reason": "Found in row data but not in headers"
+                    })
 
         tracker["rows"].append({
             "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
@@ -366,12 +493,25 @@ def append_table(tracker, block, result_id):
             "last_updated_from": "report"
         })
 
+        rows_appended += 1
+
     # Step 3: Update source_blocks
     if block["block_id"] not in [b["block_id"] for b in tracker["source_blocks"]]:
         tracker["source_blocks"].append({
             "block_id": block["block_id"],
             "block_title": block.get("block_title", "")
         })
+
+    # Return metadata about changes
+    return {
+        "rows_appended": rows_appended,
+        "rows_skipped_dedup": rows_skipped_dedup,
+        "column_discrepancies": {
+            "matched_columns": sorted(list(columns_matched)),
+            "new_columns_created": new_columns_created,
+            "total_columns_in_schema": len(schema_cols)
+        }
+    }
 
 def append_matrix(tracker, block, result_id):
     """
@@ -382,9 +522,17 @@ def append_matrix(tracker, block, result_id):
             {"row": "...", "column": "...", "value": ...}
         ]
     }
+
+    Returns metadata about schema changes and cells appended.
     """
 
     schema = tracker["schema"]
+    existing_rows = set(schema["rows"])
+    existing_cols = set(schema["columns"])
+    new_rows_created = []
+    new_columns_created = []
+    cells_appended = 0
+    cells_skipped_dedup = 0
 
     for entry in block.get("data", []):
         row_key = entry.get("row")
@@ -394,12 +542,16 @@ def append_matrix(tracker, block, result_id):
         if row_key is None or col_key is None:
             continue  # skip invalid entries
 
-        # Step 1: Schema evolution
-        if row_key not in schema["rows"]:
+        # Step 1: Schema evolution - track new axes
+        if row_key not in existing_rows:
             schema["rows"].append(row_key)
+            existing_rows.add(row_key)
+            new_rows_created.append(row_key)
 
-        if col_key not in schema["columns"]:
+        if col_key not in existing_cols:
             schema["columns"].append(col_key)
+            existing_cols.add(col_key)
+            new_columns_created.append(col_key)
 
         # Step 2: Dedup check
         exists = any(
@@ -409,6 +561,7 @@ def append_matrix(tracker, block, result_id):
             for c in tracker["cells"]
         )
         if exists:
+            cells_skipped_dedup += 1
             continue
 
         # Step 3: Append
@@ -419,12 +572,26 @@ def append_matrix(tracker, block, result_id):
             "result_id": result_id
         })
 
+        cells_appended += 1
+
     # Step 4: Source tracking
     if block["block_id"] not in [b["block_id"] for b in tracker["source_blocks"]]:
         tracker["source_blocks"].append({
             "block_id": block["block_id"],
             "block_title": block.get("block_title", "")
         })
+
+    # Return metadata about changes
+    return {
+        "cells_appended": cells_appended,
+        "cells_skipped_dedup": cells_skipped_dedup,
+        "axis_discrepancies": {
+            "new_rows": new_rows_created,
+            "new_columns": new_columns_created,
+            "total_rows": len(schema["rows"]),
+            "total_columns": len(schema["columns"])
+        }
+    }
 
 
 def append_scorecard(tracker, block, result_id):
@@ -436,9 +603,15 @@ def append_scorecard(tracker, block, result_id):
             {"metric": "...", "value": ...}
         ]
     }
+
+    Returns metadata about schema changes and records appended.
     """
 
     schema = tracker["schema"]
+    existing_metrics = set(schema["metrics"])
+    new_metrics_created = []
+    records_appended = 0
+    records_skipped_dedup = 0
 
     for entry in block.get("data", []):
         metric = entry.get("metric")
@@ -447,9 +620,13 @@ def append_scorecard(tracker, block, result_id):
         if not metric:
             continue
 
-        # Step 1: Schema evolution
-        if metric not in schema["metrics"]:
+        # Step 1: Schema evolution - track new metrics
+        metric_is_new = False
+        if metric not in existing_metrics:
             schema["metrics"].append(metric)
+            existing_metrics.add(metric)
+            new_metrics_created.append(metric)
+            metric_is_new = True
 
         # Step 2: Dedup check
         exists = any(
@@ -458,6 +635,7 @@ def append_scorecard(tracker, block, result_id):
             for r in tracker["records"]
         )
         if exists:
+            records_skipped_dedup += 1
             continue
 
         # Step 3: Append
@@ -467,6 +645,8 @@ def append_scorecard(tracker, block, result_id):
             "result_id": result_id
         })
 
+        records_appended += 1
+
     # Step 4: Source tracking
     if block["block_id"] not in [b["block_id"] for b in tracker["source_blocks"]]:
         tracker["source_blocks"].append({
@@ -474,18 +654,303 @@ def append_scorecard(tracker, block, result_id):
             "block_title": block.get("block_title", "")
         })
 
-def append_to_tracker(tracker, block, result_id):
+    # Return metadata about changes
+    return {
+        "records_appended": records_appended,
+        "records_skipped_dedup": records_skipped_dedup,
+        "metric_discrepancies": {
+            "new_metrics": new_metrics_created,
+            "total_metrics": len(schema["metrics"])
+        }
+    }
 
+def append_to_tracker(tracker, block, result_id):
+    """
+    Append block data to tracker and return metadata about changes.
+
+    Returns dict with:
+    - rows_appended / cells_appended / records_appended: count of items added
+    - column/axis/metric_discrepancies: details about schema changes
+    """
     t_type = tracker.get("type")
 
+    # Normalize block to expected structure
+    block = normalize_block_for_append(block, t_type)
+
+    metadata = {}
+
     if t_type == "table":
-        append_table(tracker, block, result_id)
+        metadata = append_table(tracker, block, result_id)
 
     elif t_type == "matrix":
-        append_matrix(tracker, block, result_id)
+        metadata = append_matrix(tracker, block, result_id)
 
     elif t_type == "scorecard":
-        append_scorecard(tracker, block, result_id)
+        metadata = append_scorecard(tracker, block, result_id)
 
     else:
         raise ValueError("Unsupported tracker type")
+
+    return metadata
+
+
+def save_tracker_file(user_id, tracker_id, tracker_data):
+    local_path = f"/tmp/{tracker_id}_tracker.json"
+    s3_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
+
+    with open(local_path, "w") as f:
+        json.dump(tracker_data, f, indent=2)
+
+    upload_any_file(
+        file_path=local_path,
+        user_id=user_id,
+        s3_key_C=s3_path,  # Use custom key to bypass basename extraction
+        type="tracker"
+    )
+
+    try:
+        os.remove(local_path)
+    except Exception:
+        pass
+
+    return s3_path
+
+
+def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, block_config=None):
+    """
+    Check if tracker file exists. If not, create it with schema.
+    Returns (exists: bool, tracker_data: dict)
+    """
+    tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
+    tracker_data = read_json_from_s3(tracker_path)
+
+    if tracker_data:
+        return True, tracker_data
+
+    # File doesn't exist - create it with schema
+    tracker_data = {
+        "tracker_id": tracker_id,
+        "type": tracker_type,
+        "runbook_id": runbook_id,
+        "source_blocks": []
+    }
+
+    # Initialize schema based on type and block_config
+    if tracker_type == "table":
+        columns = []
+        if block_config and "columns" in block_config:
+            for idx, col in enumerate(block_config["columns"]):
+                columns.append({
+                    "id": f"col_{idx + 1}",
+                    "name": col.get("name", f"Column {idx + 1}"),
+                    "type": col.get("type", "text"),
+                    "source_column": col.get("name", f"Column {idx + 1}"),
+                    "enum": col.get("enum", [])
+                })
+
+        tracker_data.update({
+            "schema": {"columns": columns},
+            "rows": []
+        })
+
+    elif tracker_type == "matrix":
+        rows = []
+        columns = []
+        cell_value_label = "Value"
+
+        if block_config:
+            if "x_axis" in block_config:
+                columns = block_config["x_axis"].get("values", [])
+            if "y_axis" in block_config:
+                rows = block_config["y_axis"].get("values", [])
+            if "cell_value" in block_config:
+                cell_value_label = block_config["cell_value"]
+
+        tracker_data.update({
+            "schema": {
+                "rows": rows,
+                "columns": columns,
+                "cell_value_label": cell_value_label
+            },
+            "cells": []
+        })
+
+    elif tracker_type == "scorecard":
+        metrics = []
+        if block_config and "metrics" in block_config:
+            for metric in block_config["metrics"]:
+                metric_name = metric if isinstance(metric, str) else metric.get("name", "")
+                metrics.append(metric_name)
+
+        tracker_data.update({
+            "schema": {"metrics": metrics},
+            "records": []
+        })
+
+    # Save the newly created tracker
+    save_tracker_file(user_id, tracker_id, tracker_data)
+
+    return False, tracker_data
+
+
+def apply_entry_updates(tracker_data, tracker_type, result_id, entry_updates):
+    if tracker_type == "table":
+        for update in entry_updates:
+            row_id = update.get("row_id")
+            new_values = update.get("values", {})
+            for row in tracker_data.get("rows", []):
+                if row.get("row_id") == row_id and row.get("result_id") == result_id:
+                    row["values"].update(new_values)
+                    row["last_updated_from"] = "manual"
+                    break
+    elif tracker_type == "matrix":
+        for update in entry_updates:
+            row_label = update.get("row")
+            col_label = update.get("column")
+            new_value = update.get("value")
+            for cell in tracker_data.get("cells", []):
+                if cell.get("result_id") == result_id and cell.get("row") == row_label and cell.get("column") == col_label:
+                    cell["value"] = new_value
+                    break
+    elif tracker_type == "scorecard":
+        for update in entry_updates:
+            metric = update.get("metric")
+            new_value = update.get("value")
+            for record in tracker_data.get("records", []):
+                if record.get("result_id") == result_id and record.get("metric") == metric:
+                    record["value"] = new_value
+                    break
+
+
+def sync_block_to_tracker(user_id, tracker_id, block, result_id):
+    config_path, config_data = check_config_exist(user_id)
+    if not config_data:
+        return
+    tracker_entry = next((t for t in config_data.get("trackers", []) if t["tracker_id"] == tracker_id), None)
+    if not tracker_entry:
+        return
+    tracker_data = read_json_from_s3(tracker_entry["file_path"])
+    if not tracker_data:
+        return
+    _update_or_append_entries(tracker_data, block, result_id)
+    save_tracker_file(user_id, tracker_id, tracker_data)
+
+
+def _update_or_append_entries(tracker_data, block, result_id):
+    tracker_type = tracker_data.get("type")
+    block_id = block.get("block_id")
+    normalized = normalize_block_for_append(block, tracker_type)
+    if tracker_type == "table":
+        _update_or_append_table(tracker_data, normalized, result_id, block_id)
+    elif tracker_type == "matrix":
+        _update_or_append_matrix(tracker_data, normalized, result_id, block_id)
+    elif tracker_type == "scorecard":
+        _update_or_append_scorecard(tracker_data, normalized, result_id, block_id)
+
+
+def _update_or_append_table(tracker, block, result_id, block_id):
+    rows_to_update = [r for r in tracker.get("rows", []) if r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id]
+    if rows_to_update:
+        schema_cols = tracker["schema"]["columns"]
+        col_map = {col["source_column"]: col["id"] for col in schema_cols}
+        for idx, row in enumerate(block.get("rows", [])):
+            for tr in rows_to_update:
+                if tr["source"]["row_index"] == idx or (row.get("micro_id") and tr["source"]["micro_id"] == row.get("micro_id")):
+                    values = {}
+                    for key, val in row.items():
+                        if key in col_map:
+                            values[col_map[key]] = val
+                    tr["values"] = values
+                    tr["last_updated_from"] = "report"
+                    break
+    else:
+        append_table(tracker, block, result_id)
+
+
+def _update_or_append_matrix(tracker, block, result_id, block_id):
+    cells_to_update = [c for c in tracker.get("cells", []) if c.get("result_id") == result_id]
+    if cells_to_update:
+        tracker["cells"] = [c for c in tracker.get("cells", []) if not (c.get("result_id") == result_id and any(cd.get("result_id") == result_id for cd in block.get("data", [])))]
+        tracker["cells"].extend([dict(c, result_id=result_id) for c in block.get("data", [])])
+    else:
+        append_matrix(tracker, block, result_id)
+
+
+def _update_or_append_scorecard(tracker, block, result_id, block_id):
+    records_to_update = [rec for rec in tracker.get("records", []) if rec.get("result_id") == result_id]
+    if records_to_update:
+        tracker["records"] = [rec for rec in tracker.get("records", []) if rec.get("result_id") != result_id]
+        tracker["records"].extend([dict(rec, result_id=result_id) for rec in block.get("data", [])])
+    else:
+        append_scorecard(tracker, block, result_id)
+
+
+def sync_tracker_to_runbook_block(dbserver, user_id, result_id, block_id, tracker_data):
+    import asyncio
+    async def _sync():
+        result_data = await dbserver.runbook_get_result(user_id, result_id)
+        if result_data.get("status") != "completed":
+            return
+        result = result_data.get("data", {})
+        blocks = result.get("result", {}).get("blocks", [])
+        target_block = next((b for b in blocks if b.get("block_id") == block_id), None)
+        if not target_block:
+            return
+        updated_micro = _rebuild_micro_blocks_from_tracker(tracker_data, result_id, block_id)
+        target_block["micro_blocks"] = updated_micro
+        await dbserver.update_runbook_result(user_id, result_id, {"blocks": blocks})
+    asyncio.run(_sync())
+
+
+def _rebuild_micro_blocks_from_tracker(tracker_data, result_id, block_id):
+    tracker_type = tracker_data.get("type")
+    if tracker_type == "table":
+        rows = [r for r in tracker_data.get("rows", []) if r.get("result_id") == result_id]
+        if not rows:
+            return []
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        col_id_to_name = {col["id"]: col["source_column"] for col in schema_cols}
+        rebuilt_rows = []
+        for row in rows:
+            row_dict = {}
+            for col_id, val in row.get("values", {}).items():
+                col_name = col_id_to_name.get(col_id, col_id)
+                row_dict[col_name] = val
+            rebuilt_rows.append(row_dict)
+        return [{
+            "type": "table_schema",
+            "data": {
+                "rows": rebuilt_rows,
+                "columns": [{"name": col["source_column"], "id": col["id"]} for col in schema_cols]
+            }
+        }]
+    elif tracker_type == "matrix":
+        cells = [c for c in tracker_data.get("cells", []) if c.get("result_id") == result_id]
+        if not cells:
+            return []
+        schema = tracker_data.get("schema", {})
+        rows = schema.get("rows", [])
+        columns = schema.get("columns", [])
+        matrix = [[None for _ in columns] for _ in rows]
+        for cell in cells:
+            row_idx = rows.index(cell["row"]) if cell["row"] in rows else -1
+            col_idx = columns.index(cell["column"]) if cell["column"] in columns else -1
+            if row_idx >= 0 and col_idx >= 0:
+                matrix[row_idx][col_idx] = cell["value"]
+        return [{
+            "type": "matrix_schema",
+            "data": {"matrix": matrix},
+            "x_axis": {"values": columns},
+            "y_axis": {"values": rows}
+        }]
+    elif tracker_type == "scorecard":
+        records = [rec for rec in tracker_data.get("records", []) if rec.get("result_id") == result_id]
+        if not records:
+            return []
+        return [{
+            "type": "scorecard_schema",
+            "data": {"records": records}
+        }]
+    return []
+
+# def get_block_data(user_id,runbook_id):
