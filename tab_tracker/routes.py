@@ -1115,3 +1115,124 @@ async def add_tracker_entry():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
+@tracker_bp.route("/tracker/add-column", methods=["POST"])
+async def add_tracker_column():
+    """
+    Add a new column/axis/metric to an existing tracker schema.
+
+    Body depends on tracker type:
+      Table:
+        { user_id, tracker_id, column_name, default_value? }
+        — Adds column to schema; fills default_value in all existing rows (optional).
+
+      Matrix:
+        { user_id, tracker_id, axis: "row"|"column", value: "label" }
+        — Adds a new row-label or column-label to the matrix axes.
+
+      Scorecard:
+        { user_id, tracker_id, metric: "metric_name" }
+        — Adds a new metric to the schema.
+    """
+    try:
+        data = request.json
+        user_id = str(data.get("user_id"))
+        tracker_id = data.get("tracker_id")
+
+        if not all([user_id, tracker_id]):
+            return jsonify({"error": "Missing required fields: user_id, tracker_id"}), 400
+
+        config_path, config_data = check_config_exist(user_id)
+        tracker_meta = next(
+            (t for t in (config_data or {}).get("trackers", []) if t["tracker_id"] == tracker_id),
+            None
+        )
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+
+        tracker_type = tracker_meta.get("type")
+        tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        schema_change = None
+
+        if tracker_type == "table":
+            column_name = data.get("column_name")
+            if not column_name:
+                return jsonify({"error": "Table requires column_name"}), 400
+
+            schema_cols = tracker_data["schema"]["columns"]
+
+            # Prevent duplicate column names
+            existing_names = {col["source_column"] for col in schema_cols}
+            if column_name in existing_names:
+                return jsonify({"error": f"Column '{column_name}' already exists"}), 409
+
+            new_col_id = f"col_{len(schema_cols) + 1}"
+            new_col = {
+                "id": new_col_id,
+                "name": column_name,
+                "source_column": column_name
+            }
+            schema_cols.append(new_col)
+
+            # Backfill default_value into all existing rows
+            default_value = data.get("default_value", None)
+            if default_value is not None:
+                for row in tracker_data.get("rows", []):
+                    row["values"].setdefault(new_col_id, default_value)
+
+            schema_change = {
+                "type": "column_added",
+                "column_id": new_col_id,
+                "column_name": column_name,
+                "rows_backfilled": len(tracker_data.get("rows", [])) if default_value is not None else 0
+            }
+
+        elif tracker_type == "matrix":
+            axis = data.get("axis")
+            value = data.get("value")
+
+            if not axis or axis not in ("row", "column"):
+                return jsonify({"error": "Matrix requires axis ('row' or 'column')"}), 400
+            if not value:
+                return jsonify({"error": "Matrix requires value (axis label)"}), 400
+
+            schema = tracker_data["schema"]
+            axis_key = "rows" if axis == "row" else "columns"
+
+            if value in schema.get(axis_key, []):
+                return jsonify({"error": f"{axis.capitalize()} '{value}' already exists"}), 409
+
+            schema.setdefault(axis_key, []).append(value)
+            schema_change = {"type": f"{axis}_added", "value": value}
+
+        elif tracker_type == "scorecard":
+            metric = data.get("metric")
+            if not metric:
+                return jsonify({"error": "Scorecard requires metric"}), 400
+
+            existing_metrics = tracker_data["schema"].get("metrics", [])
+            if metric in existing_metrics:
+                return jsonify({"error": f"Metric '{metric}' already exists"}), 409
+
+            tracker_data["schema"].setdefault("metrics", []).append(metric)
+            schema_change = {"type": "metric_added", "metric": metric}
+
+        else:
+            return jsonify({"error": f"Unsupported tracker type: {tracker_type}"}), 400
+
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        return jsonify({
+            "message": "Schema updated successfully",
+            "tracker_id": tracker_id,
+            "tracker_type": tracker_type,
+            "schema_change": schema_change
+        }), 200
+
+    except Exception as e:
+        logging.error(f"Add tracker column error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+

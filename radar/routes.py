@@ -32,11 +32,12 @@ import os
 from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 
 radar_bp = Blueprint("radar", __name__)
 RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
 # print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 # # Run tests
 # run_language_tests()
@@ -95,7 +96,7 @@ async def retreval_from_sources(
 ):
 
     data_for_review = []
-    print(main_source, filesources)
+    logger.debug("Sources — main: %s  files: %s", main_source, filesources)
     filesources = normalize_json_field(filesources)
     # -------------------------
     # APP SOURCE

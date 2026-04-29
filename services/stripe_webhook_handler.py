@@ -4,6 +4,10 @@ from db.db_checkers import get_userid
 from db.rds_db import connect_to_rds
 from services.credit_system import CreditManager
 from utils.stripe_config import dev_stipe as stripe
+from utils.app_configs import IS_DEV
+from utils.base_logger import get_logger
+
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 # -------------------------------------------------
@@ -52,7 +56,7 @@ class StripeWebhookHandler:
 
             # --- 3️⃣ Fallback: use metadata from invoice/checkout session ---
             # You can pass invoice or session as a parameter if needed
-            print(f"⚠️ Price {price_id} not found in plans, fallback to metadata")
+            logger.warning("Price %s not found in plans, fallback to metadata", price_id)
             return 0
 
         finally:
@@ -344,7 +348,7 @@ class StripeWebhookHandler:
             conn.commit()
 
         except Exception as e:
-            print("⚠️ Error on save payment:", e)
+            logger.error("Error on save payment: %s", e, exc_info=IS_DEV)
 
         finally:
             if cur:
@@ -573,10 +577,10 @@ class StripeWebhookHandler:
                 #print(f"💰 Added {tokens} credits to user {user_id}")
 
             except Exception as e:
-                print(f"⚠️ Failed to add credits: {e}")
+                logger.error("Failed to add credits: %s", e, exc_info=IS_DEV)
 
     def checkout_failed(self):
-        print("❌ Checkout failed:", self.obj.get("id"))
+        logger.error("Checkout failed: %s", self.obj.get("id"))
 
     # -------------------------------------------------
     # PAYMENT INTENT (ONE-TIME ONLY)
@@ -752,18 +756,18 @@ class StripeWebhookHandler:
     # -------------------------------------------------
     def subscription_created(self):
         sub = self.obj
-        print("🔔 Subscription created:", sub.get("id"))
+        logger.info("Subscription created: %s", sub.get("id"))
 
         self._save_subscription_from_stripe(sub)
 
-        print("✅ Subscription created & saved")
+        logger.info("Subscription created & saved")
 
     def subscription_updated(self):
         sub = self.obj
 
         self._save_subscription_from_stripe(sub)
 
-        print("🔁 Subscription updated & saved")
+        logger.info("Subscription updated & saved")
 
     def subscription_deleted(self):
         sub = self.obj
@@ -783,7 +787,7 @@ class StripeWebhookHandler:
                 (sub.get("id"),),
             )
             conn.commit()
-            print("🛑 Subscription canceled:", sub.get("id"))
+            logger.info("Subscription canceled: %s", sub.get("id"))
         finally:
             cur.close()
             conn.close()
@@ -792,4 +796,4 @@ class StripeWebhookHandler:
     # FALLBACK
     # -------------------------------------------------
     def unhandled_event(self):
-        print("ℹ️ Unhandled Stripe event:", self.event_type)
+        logger.warning("Unhandled Stripe event: %s", self.event_type)

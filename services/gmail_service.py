@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from googleapiclient.http import BatchHttpRequest
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 from utils.s3_utils import attach_CLDFRNT_url, upload_any_file
 import random
 from typing import Optional, Tuple, List
@@ -28,7 +29,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 basefrntpath = f"{os.getenv('BASE_FRNT_URL')}"
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 topic_name = os.getenv("GMAIL_TOPIC_NAME")
 
@@ -917,7 +918,7 @@ class GmailService:
                     try:
                         os.remove(tmp_path)
                     except Exception as e:
-                        print(f"⚠️ Could not delete temp file {tmp_path}: {e}")
+                        logger.warning("Could not delete temp file %s: %s", tmp_path, e)
 
                 # ===== NON-CALENDAR FILES - STORE METADATA ONLY =====
                 else:
@@ -1580,7 +1581,7 @@ class GmailService:
                     )
                 body = fallback_body.strip()
             except Exception as e:
-                print(f"⚠️ Retry failed for message {msg.get('id')}: {e}")
+                logger.warning("Retry failed for message %s: %s", msg.get("id"), e)
 
         return body, attachments
 
@@ -1750,7 +1751,7 @@ class GmailService:
                     )
                 body = fallback_body.strip()
             except Exception as e:
-                print(f"⚠️ Retry failed for message {msg.get('id')}: {e}")
+                logger.warning("Retry failed for message %s: %s", msg.get("id"), e)
 
         # -------------------------------
         # Final plain-text fallback if still empty

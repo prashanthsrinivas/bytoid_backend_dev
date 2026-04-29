@@ -15,10 +15,11 @@ from utils.normal import can_reply_to_email, convert_human_date, convert_human_t
 from dotenv import load_dotenv
 from utils.g_scopes import g_basescopes
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 from markupsafe import escape
 
 load_dotenv()
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 class GoogleMeetService:

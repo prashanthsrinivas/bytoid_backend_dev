@@ -5,6 +5,9 @@ from redis.cluster import RedisCluster
 import asyncio
 from typing import Any, Optional
 from utils.app_configs import IS_DEV
+from utils.base_logger import get_logger
+
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 base_ip = os.getenv("CELERY_BROKER_URL")
 dev_val = os.getenv("DEV", "")
@@ -21,7 +24,7 @@ class RedisService:
         if not self.redis_host:
             raise ValueError("Missing REDIS_HOST_DEV")
         if IS_DEV or dev_val == "true":
-            print("connecting to Dev Redis")
+            logger.info("connecting to Dev Redis")
 
             self.client = redis.Redis(
                 host=self.redis_host,  # ElastiCache primary endpoint
@@ -32,7 +35,7 @@ class RedisService:
                 socket_connect_timeout=5,
             )
         else:
-            print("connecting to Prod Redis")
+            logger.info("connecting to Prod Redis")
             self.client = redis.Redis(
                 host=self.redis_host,
                 port=6379,
@@ -51,12 +54,12 @@ class RedisService:
 
     async def checker(self):
         try:
-            print("→ Trying to PING Redis...")
+            logger.debug("Trying to PING Redis...")
             pong = await self._run(self.client.ping)
-            print("→ Redis response:", pong)
+            logger.debug("Redis response: %s", pong)
             return True
         except Exception as e:
-            print("❌ Redis error:", e)
+            logger.error("Redis error: %s", e, exc_info=IS_DEV)
             return False
 
     async def set(self, key: str, value: Any, ex: Optional[int] = None) -> bool:

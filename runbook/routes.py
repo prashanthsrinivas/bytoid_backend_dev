@@ -27,7 +27,7 @@ from credits_route.route import Credits
 from radar.radar_helpers import (
     extract_file_payload,
 )
-from flask import Blueprint, jsonify, request, session, g
+from flask import Blueprint, jsonify, request, session
 from runbook.helper2 import modify_run_runbook_execution_engine
 from runbook.utils import get_playbook_instruction, send
 from services.redis_service import RedisService
@@ -112,7 +112,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             "api_endpoint": data.get("endpoint_id"),
             "app_id": data.get("app_id"),
             "log_source": data.get("log_source"),
-            "files": {},
+            "files": json_files,
             "links": json.dumps(data.get("links", {})),
             "data_sources": data_sources_full,
             "reference_sources": reference_sources_full,

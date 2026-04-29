@@ -1,4 +1,3 @@
-import logging
 from queue import Queue
 import re
 import requests
@@ -13,6 +12,8 @@ import tempfile
 import random
 from agent_route.s_t_s import Speech2TextService
 from utils.fireworkzz import get_firework_embedding
+from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 
 # Keep youtube_transcript_api as fallback
 try:
@@ -35,7 +36,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 class YouTubeScrapingClient:
@@ -152,7 +153,7 @@ class YouTubeScrapingClient:
     def extract_with_pytube(self, youtube_url):
         """Extract metadata and audio using PyTube"""
         if not PYTUBE_AVAILABLE:
-            print(f"[YOUTUBE] PyTube not available")
+            logger.warning("[YOUTUBE] PyTube not available")
             return None, None
 
         try:
@@ -428,7 +429,7 @@ class YouTubeScrapingClient:
                         return transcript_text
 
             except Exception as e:
-                print(f"[YOUTUBE] Selenium transcript button not found or failed: {e}")
+                logger.warning("[YOUTUBE] Selenium transcript button not found or failed: %s", e)
 
             # Try to extract title and basic info even if transcript fails
             try:
@@ -436,7 +437,7 @@ class YouTubeScrapingClient:
                     By.CSS_SELECTOR, "h1.ytd-video-primary-info-renderer"
                 )
                 title = title_element.text if title_element else "YouTube Video"
-                print(f"[YOUTUBE] Selenium extracted title: {title}")
+                logger.debug("[YOUTUBE] Selenium extracted title: %s", title)
 
                 # Could return basic metadata even without transcript
                 return None
@@ -446,7 +447,7 @@ class YouTubeScrapingClient:
             return None
 
         except Exception as e:
-            print(f"[YOUTUBE] Selenium transcript extraction failed: {e}")
+            logger.error("[YOUTUBE] Selenium transcript extraction failed: %s", e, exc_info=IS_DEV)
             return None
         finally:
             if "driver" in locals():
@@ -895,7 +896,7 @@ class YouTubeScrapingClient:
         """Main method to scrape YouTube video and extract transcript using yt-dlp + Whisper"""
         audio_file = None
         try:
-            print(f"[YOUTUBE] Processing video: {youtube_url}")
+            logger.info("[YOUTUBE] Processing video: %s", youtube_url)
 
             # Extract video ID
             video_id = self.extract_video_id(youtube_url)
@@ -905,13 +906,11 @@ class YouTubeScrapingClient:
             # Get video metadata and audio
             metadata, audio_file = self.get_video_metadata_and_audio(youtube_url)
             if not metadata or not audio_file:
-                print(f"[YOUTUBE] yt-dlp failed, trying fallback transcript API...")
+                logger.warning("[YOUTUBE] yt-dlp failed, trying fallback transcript API...")
                 # Try fallback to transcript API
                 transcript = self.get_transcript_fallback(video_id)
                 if transcript:
-                    print(
-                        f"[YOUTUBE] Fallback transcript successful: {len(transcript)} chars"
-                    )
+                    logger.info("[YOUTUBE] Fallback transcript successful: %d chars", len(transcript))
                     # Try to get comprehensive metadata using multiple methods
                     title = f"YouTube Video {video_id}"
                     author = "Unknown"
@@ -925,9 +924,9 @@ class YouTubeScrapingClient:
                             oembed_data = response.json()
                             title = oembed_data.get("title", title)
                             author = oembed_data.get("author_name", author)
-                            print(f"[YOUTUBE] oEmbed metadata: {title} by {author}")
+                            logger.debug("[YOUTUBE] oEmbed metadata: %s by %s", title, author)
                     except Exception as e:
-                        print(f"[YOUTUBE] oEmbed failed: {e}")
+                        logger.warning("[YOUTUBE] oEmbed failed: %s", e)
 
                     try:
                         # Method 2: Try yt-dlp info extraction without download
@@ -941,9 +940,9 @@ class YouTubeScrapingClient:
                             title = info.get("title", title)
                             author = info.get("uploader", info.get("channel", author))
                             duration = info.get("duration", duration)
-                            print(f"[YOUTUBE] yt-dlp info: {title} by {author}")
+                            logger.debug("[YOUTUBE] yt-dlp info: %s by %s", title, author)
                     except Exception as e:
-                        print(f"[YOUTUBE] yt-dlp info extraction failed: {e}")
+                        logger.warning("[YOUTUBE] yt-dlp info extraction failed: %s", e)
 
                     # Use extracted metadata
                     formatted_content = f"""
@@ -1049,7 +1048,7 @@ class YouTubeScrapingClient:
             }
 
         except Exception as e:
-            print(f"[YOUTUBE] Error processing video: {e}")
+            logger.error("[YOUTUBE] Error processing video: %s", e, exc_info=IS_DEV)
             return None
         finally:
             # Cleanup temporary audio file

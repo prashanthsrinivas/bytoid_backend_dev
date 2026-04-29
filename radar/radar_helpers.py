@@ -5,8 +5,9 @@ import json
 import re
 import html
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 from utils.docu_extensions import extension_loader_map
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 def build_documents(sources):
@@ -165,7 +166,7 @@ def _extract_archive_files(filename, file_bytes):
                     content_type = _mimetypes.guess_type(inner_name)[0] or "application/octet-stream"
                     extracted.append({"filename": inner_name, "data": data, "content_type": content_type})
                 except Exception as e:
-                    print(f"⚠️ Could not read archive member {inner_name}: {e}")
+                    logger.warning("Could not read archive member %s: %s", inner_name, e)
 
     return extracted
 
@@ -183,11 +184,11 @@ def extract_files_content(files):
         if any(fname_lower.endswith(ext) for ext in _ARCHIVE_EXTENSIONS):
             raw_data = f.get("data") or b""
             if not raw_data:
-                print(f"⚠️ Empty archive: {filename}")
+                logger.warning("Empty archive: %s", filename)
                 continue
             inner_files = _extract_archive_files(filename, raw_data)
             if not inner_files:
-                print(f"⚠️ No extractable files found in archive: {filename}")
+                logger.warning("No extractable files in archive: %s", filename)
                 continue
             nested = extract_files_content(inner_files)
             all_file_data.extend(nested)
@@ -204,7 +205,7 @@ def extract_files_content(files):
                 filename = name + ext
 
         if ext not in extension_loader_map:
-            print(f"⚠️ Skipping unsupported file: {filename}")
+            logger.debug("Skipping unsupported file: %s", filename)
             continue
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
@@ -218,7 +219,7 @@ def extract_files_content(files):
             # print(f"DEBUG: docs length = {len(docs)}")
 
             if not docs:
-                print(f"⚠️ No content extracted from {filename}")
+                logger.warning("No content extracted from %s", filename)
                 continue
 
             # 🔥 JUST COMBINE EVERYTHING
@@ -241,7 +242,7 @@ def extract_files_content(files):
             )
 
         except Exception as e:
-            print(f"❌ Extraction failed for {filename}: {str(e)}")
+            logger.error("Extraction failed for %s: %s", filename, e)
 
         finally:
             try:
@@ -383,7 +384,7 @@ def extract_file_payload(file_item, default_filename: str = "file"):
         }
 
     except Exception as e:
-        print("❌ extract_file_payload error:", str(e))
+        logger.error("extract_file_payload error: %s", e)
         return None
 
 

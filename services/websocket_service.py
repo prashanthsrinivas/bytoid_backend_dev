@@ -3,6 +3,10 @@ import time
 import boto3
 from services.redis_service import RedisService
 import os
+from utils.app_configs import IS_DEV
+from utils.base_logger import get_logger
+
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 class WebSocketService:
@@ -125,10 +129,10 @@ class WebSocketService:
                     await self.delete_connection(conn_id)
                     continue
 
-                print("WS error:", e)
+                logger.warning("WS error: %s", e)
 
             except Exception as e:
-                print("WS unexpected error:", e)
+                logger.error("WS unexpected error: %s", e, exc_info=IS_DEV)
                 await self.delete_connection(conn_id)
 
 

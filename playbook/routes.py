@@ -27,9 +27,11 @@ from utils.normal import (
 from .background_worker import JobManager
 import pytz, pymysql
 from utils.FileHandler import FileProcessor
-from utils.app_configs import ACCESSIBLE_IDS
+from utils.app_configs import ACCESSIBLE_IDS, IS_DEV
+from utils.base_logger import get_logger
 
 playbook_bp = Blueprint("playbook", __name__)
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 PLAY_TEMPLATE = load_yaml_file(path=pathconfig.play_template)
 MINOR_PROMPTS = load_yaml_file(path=pathconfig.minor_prompts)
 ALL_FUNCTIONS = read_function_jsons2(Full=True)
@@ -2387,7 +2389,7 @@ def autocheckstatusupdate():
             else:
                 return jsonify({"error": "failed to update the auto checker"})
     except Exception as e:
-        print(" auto status update check", e)
+        logger.error("Auto status update error: %s", e, exc_info=IS_DEV)
         return jsonify({"status": "error", "message": str(e)}), 500
     # finally:
     # current_user_id.reset(token)
@@ -2429,7 +2431,7 @@ async def workflow_conversation():
             return jsonify(result)
 
     except Exception as e:
-        print("auto update", e)
+        logger.error("Auto update error: %s", e, exc_info=IS_DEV)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -2610,7 +2612,7 @@ async def generate_ans_files():
                     extracted_payload.extend(extracted)
 
             except Exception as e:
-                print(f"Failed to process {key}: {e}")
+                logger.warning("Failed to process %s: %s", key, e)
 
         if not extracted_payload and not inp_links:
             return (
@@ -2649,7 +2651,7 @@ async def generate_ans_files():
                 if os.path.exists(path):
                     os.remove(path)
             except Exception as cleanup_error:
-                print(f"Cleanup failed for {path}: {cleanup_error}")
+                logger.debug("Cleanup failed for %s: %s", path, cleanup_error)
 
 
 @playbook_bp.route("/evidence_ques_ans_attach_playbook", methods=["POST"])
@@ -3100,7 +3102,7 @@ def share_pb_template():
         )
 
     except Exception as e:
-        print("Error:", e)
+        logger.error("Playbook error: %s", e, exc_info=IS_DEV)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -3247,7 +3249,7 @@ def make_global_playbook():
         )
 
     except Exception as e:
-        print("error", e)
+        logger.error("Playbook error: %s", e, exc_info=IS_DEV)
         return jsonify({"error": str(e)}), 500
 
 
@@ -3279,7 +3281,7 @@ def delete_global_playbook():
         )
 
     except Exception as e:
-        print("error", e)
+        logger.error("Playbook error: %s", e, exc_info=IS_DEV)
         return jsonify({"error": str(e)}), 500
 
 
@@ -3367,7 +3369,7 @@ def install_global_playbook():
             200,
         )
     except Exception as e:
-        print("error", e)
+        logger.error("Playbook error: %s", e, exc_info=IS_DEV)
 
 
 @playbook_bp.route("/undo_share_playbook_template", methods=["POST"])
@@ -3454,7 +3456,7 @@ def undo_share_pb_template():
                     failed_users.append(email)
 
             except Exception as e:
-                print(f"Error deleting for {email}:", e)
+                logger.warning("Error deleting for %s: %s", email, e)
                 failed_users.append(email)
 
         cursor.close()
@@ -3473,7 +3475,7 @@ def undo_share_pb_template():
         )
 
     except Exception as e:
-        print("Undo error:", e)
+        logger.error("Undo error: %s", e, exc_info=IS_DEV)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 

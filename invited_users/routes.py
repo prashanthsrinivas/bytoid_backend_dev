@@ -615,7 +615,7 @@ def resend_invite():
             )
             base_check = cursor.fetchone()
             if base_check:
-                return jsonify({"error": "user already exists"}), 404
+                return jsonify({"error": "user already exists"}), 409
             cursor.execute(
                 "SELECT permissions, email, roles_creation,user_type, social FROM users WHERE user_id=%s",
                 (user_id,),

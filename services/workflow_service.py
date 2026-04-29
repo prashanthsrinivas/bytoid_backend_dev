@@ -11,6 +11,7 @@ from db.db_checkers import fetch_contacts_by_user, fetch_user_Social, get_userin
 from db.rds_db import connect_to_rds
 from playbook.helperzz import save_execution_playbook_to_s3, save_playbook_to_s3
 from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 from utils.fireworkzz import (
     get_fireworks_response,
     get_fireworks_response2,
@@ -78,7 +79,7 @@ class WorkflowRunnerV2:
         self.chat_log = self.workflow_json.get("chat_log", {})
         self.execution_log: list[dict] = []
         self.previous_data = self.get_current_execution_data()
-        self.logger = get_logger(__name__)
+        self.logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
         self.ai_made_output = {}
         self.current_implemented_functions = read_function_jsons()
         self.started_at = datetime.now(timezone.utc).isoformat()
@@ -370,7 +371,7 @@ class WorkflowRunnerV2:
             result = await self.get_parsed_fireworks_response(prompt_text)
             return result
         except Exception as e:
-            print("e ai input intent classifier", e)
+            self.logger.error("ai input intent classifier error: %s", e, exc_info=IS_DEV)
 
     async def ai_conversation_handler(self, userinput):
         template_data = PLAY_TEMPLATE
@@ -2502,7 +2503,7 @@ class WorkflowRunnerV2:
             if self.workflow_json.get("runbook_id"):
                 from utils.celery_base import create_playbook_runbook_task
 
-                print("inside all answered")
+                self.logger.info("all questions answered, triggering runbook task")
 
                 rb_pb_id = self.workflow_json["runbook_id"]
                 create_playbook_runbook_task.delay(self.userid, self.filename, rb_pb_id)
@@ -3183,7 +3184,7 @@ class WorkflowRunnerV2:
                 combined_text_parts.append(f"[FILE: {fname}]\n{content}")
 
         combined_text = "\n\n".join(combined_text_parts)
-        print("len of the document characters", len(combined_text))
+        self.logger.info("Evidence document characters: %d", len(combined_text))
 
         if not combined_text and not inp_links:
             return {"error": "No usable content found"}
@@ -3231,7 +3232,7 @@ class WorkflowRunnerV2:
         )
 
         runbook_id = self.workflow_json.get("runbook_id", "")
-        print("runbookid", runbook_id)
+        self.logger.debug("runbook_id: %s", runbook_id)
         runbook_evidence_config = []
         allowed_artifacts = set()
         disallowed_artifacts = set()
@@ -3241,7 +3242,7 @@ class WorkflowRunnerV2:
                 dbserver = LanceDBServer()
                 runbook_list = await dbserver.get_runbook_by_id(self.userid, runbook_id)
                 if runbook_list:
-                    print(runbook_list)
+                    self.logger.debug("runbook_list: %s", runbook_list)
                     runbook = runbook_list[0]
                     raw_config = runbook.get("runbook_evidence_config", "") or ""
                     # print(type(raw_config), raw_config)
@@ -3254,9 +3255,9 @@ class WorkflowRunnerV2:
                                 "configurations", []
                             )
             except Exception as e:
-                print(f"Runbook config fetch failed: {e}")
+                self.logger.error("Runbook config fetch failed: %s", e, exc_info=IS_DEV)
 
-        print("runbook evidence config", runbook_evidence_config)
+        self.logger.debug("runbook evidence config: %s", runbook_evidence_config)
         for cfg in runbook_evidence_config:
             artifact = cfg.get("artifact", "")
             decision = (
@@ -3268,15 +3269,15 @@ class WorkflowRunnerV2:
                 allowed_artifacts.add(artifact)
             elif decision is False:
                 disallowed_artifacts.add(artifact)
-        print("allowed ", allowed_artifacts)
-        print("disallowed", disallowed_artifacts)
+        self.logger.debug("allowed artifacts: %s", allowed_artifacts)
+        self.logger.debug("disallowed artifacts: %s", disallowed_artifacts)
 
         # ===========================
         # STEP 2: CATEGORIZE EVIDENCE
         # ===========================
         evidence_map = {}  # artifact -> {snippets: [], files: set()}
-        print(len(evidence_summary))
-        print("before evidence classification")
+        self.logger.debug("evidence summary length: %d", len(evidence_summary))
+        self.logger.info("Starting evidence classification")
 
         cat_prompt_base = (
             "You are an evidence classification expert.\n\n"
@@ -3288,11 +3289,11 @@ class WorkflowRunnerV2:
             "Return ONLY valid JSON (no markdown):\n"
             '[{"artifact": "<artifact name>", "content": "<relevant snippet>",}]'
         )
-        print("starting evidence classification")
+        self.logger.info("Starting evidence classification (text chunks)")
 
         for chunk in _make_chunks(combined_text):
             try:
-                print("inside chunk", len(chunk))
+                self.logger.debug("Processing chunk of %d chars", len(chunk))
                 prompt = cat_prompt_base.replace("{chunk}", chunk)
                 resp = await get_fireworks_response2(
                     user_message=prompt,
@@ -3302,7 +3303,7 @@ class WorkflowRunnerV2:
                     credits=self.credits,
                 )
                 parsed = safe_json_load(resp)
-                print("extracted ", parsed, type(parsed))
+                self.logger.debug("evidence extracted: %s", parsed)
                 items = (
                     parsed
                     if isinstance(parsed, list)
@@ -3317,7 +3318,7 @@ class WorkflowRunnerV2:
                         )
                         entry["snippets"].append(content)
             except Exception as e:
-                print(f"Evidence categorization chunk failed: {e}")
+                self.logger.error("Evidence categorization chunk failed: %s", e, exc_info=IS_DEV)
 
         if inp_links:
             vision_prompt = (
@@ -3348,7 +3349,7 @@ class WorkflowRunnerV2:
                             entry["snippets"].append(content)
                             entry["files"].add("image")
                 except Exception as e:
-                    print(f"Vision categorization failed: {e}")
+                    self.logger.error("Vision categorization failed: %s", e, exc_info=IS_DEV)
 
         # ===========================
         # STEP 3: SPLIT ADMISSIBLE / INADMISSIBLE / DISCARDED
@@ -3369,9 +3370,9 @@ class WorkflowRunnerV2:
                 # No runbook config → everything found is admissible
                 admissible_evidence[artifact] = data
 
-        print("admissible", list(admissible_evidence.keys()))
-        print("inadmissible", list(inadmissible_evidence.keys()))
-        print("discarded", list(discarded_evidence.keys()))
+        self.logger.info("Admissible evidence: %s", list(admissible_evidence.keys()))
+        self.logger.info("Inadmissible evidence: %s", list(inadmissible_evidence.keys()))
+        self.logger.debug("Discarded evidence: %s", list(discarded_evidence.keys()))
         # ===========================
         # STEP 4: ANSWER QUESTIONS
         # ===========================
@@ -3483,7 +3484,7 @@ class WorkflowRunnerV2:
                         total_updated += persist_partial({qid: answers_map[qid]})
                         break
                 except Exception as e:
-                    print(f"Question {qid} answering failed: {e}")
+                    self.logger.error("Question %s answering failed: %s", qid, e, exc_info=IS_DEV)
 
         # ===========================
         # STEP 5: EVIDENCE-BASED QUESTIONS
@@ -3552,7 +3553,7 @@ class WorkflowRunnerV2:
                             })
                             ev_q_counter += 1
                 except Exception as e:
-                    print(f"Expectation check failed for {artifact} / {point}: {e}")
+                    self.logger.error("Expectation check failed for %s / %s: %s", artifact, point, e, exc_info=IS_DEV)
 
         if new_ev_questions:
             evidence_based_questions.extend(new_ev_questions)
@@ -3589,18 +3590,13 @@ class WorkflowRunnerV2:
         self.saveworkflowtos3()
 
         remaining = [q for q in assigned_ques if q.get("id") not in answered_qids]
-        print(
-            {
-                "status": "success",
-                "updated_answers": total_updated,
-                "total_questions": len(assigned_ques),
-                "answered_now": len(answers_map),
-                "remaining_unanswered": len(remaining),
-                "evidence_based_questions_added": len(new_ev_questions),
-                "admissible_evidence_types": list(admissible_evidence.keys()),
-                "inadmissible_evidence_types": list(inadmissible_evidence.keys()),
-                "chunks_processed": len(_make_chunks(combined_text)),
-            }
+        self.logger.info(
+            "Evidence pipeline complete: updated=%d answered=%d remaining=%d ev_questions=%d admissible=%s",
+            total_updated,
+            len(answers_map),
+            len(remaining),
+            len(new_ev_questions),
+            list(admissible_evidence.keys()),
         )
         return {
             "status": "success",

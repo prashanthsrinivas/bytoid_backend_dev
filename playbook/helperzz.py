@@ -1,3 +1,6 @@
+import logging
+from utils.base_logger import get_logger
+from utils.app_configs import IS_DEV
 import asyncio
 import json
 import re
@@ -25,6 +28,8 @@ from db.db_checkers import (
 )
 from cust_helpers import pathconfig
 from utils.s3_utils import upload_exefileany_file
+
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 def base_name(filename):
@@ -570,7 +575,7 @@ async def create_playbook(
         raw_response = await get_fireworks_response2(
             user_message=full_prompt, role="system", user_id=userid, credits=credits
         )
-        print("raw response", len(raw_response))
+        logger.debug("Raw response length: %d", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
         response_dict1 = json.loads(cleaned_j)
@@ -591,7 +596,7 @@ async def create_playbook(
             user_id=userid,
             credits=credits,
         )
-        print("raw response eval", len(raw_response))
+        logger.debug("Raw response eval length: %d", len(raw_response))
         # Clean AI response
         cleaned_j = clean_json_block(raw_response)
         response_dict = json.loads(cleaned_j)
@@ -601,7 +606,7 @@ async def create_playbook(
             raise ValueError(f"Invalid JSON from AI:\n{raw_response}\nError: {e}")
 
     except Exception as e:
-        print("error on playbook creation", e)
+        logger.error("Error on playbook creation: %s", e, exc_info=IS_DEV)
 
     first_char = base_name(filename=filename)
 
@@ -926,10 +931,10 @@ def assign_runbook_playbook(runbook_id, playbook, userid):
     filename = playbook
     wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
     main_workflow = read_json_from_s3(wf_loc) or {}
-    print(runbook_id)
+    logger.debug("Runbook id: %s", runbook_id)
     # Always overwrite to keep source of truth
     main_workflow["runbook_id"] = runbook_id
-    print("assigning runbook to playbook")
+    logger.info("Assigning runbook to playbook")
     return save_playbook_to_s3(
         main_workflow,
         userid,
