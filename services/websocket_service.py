@@ -1,7 +1,7 @@
 import json
 import time
 import boto3
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 import os
 from utils.app_configs import IS_DEV
 from utils.base_logger import get_logger
@@ -11,7 +11,7 @@ logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 class WebSocketService:
     def __init__(self):
-        self.redis = RedisService()
+        self.redis = get_redis()
         self.ws_endpoint = os.getenv("WEBSOCKETURL")
 
         self.client = boto3.client(

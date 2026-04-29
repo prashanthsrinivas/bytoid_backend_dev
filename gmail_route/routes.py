@@ -1855,10 +1855,9 @@ def delete_user_cache(primary_user_id):
 
 
 async def _delete_cache_async(user_id):
-    from services.redis_service import RedisService
+    from services.redis_service import get_redis
 
-    client = RedisService()
-    return await client.delete(f"umail_{user_id}")
+    return await get_redis().delete(f"umail_{user_id}")
 
 
 def delete_all_user_data(user_id):

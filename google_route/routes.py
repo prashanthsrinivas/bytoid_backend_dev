@@ -22,7 +22,7 @@ from db.db_checkers import (
     ensure_starter_credits_for_user,
     fetch_apikey_from_launch,
 )
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from utils.base_logger import get_logger
 from session_manager_route.routes import session_login
 from integrations.integrations_helpers import get_all_integrations
@@ -430,7 +430,7 @@ async def user_alive():
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
 
-    redis = RedisService()
+    redis = get_redis()
 
     await update_user_alive(redis, user_id, is_alive)
 
@@ -552,7 +552,7 @@ async def receive_browser_url():
             )
         )
         # print("response from browser_url", response)
-        redis = RedisService()
+        redis = get_redis()
         await update_user_alive(redis, user_id, True)
 
         # Set secure session cookie (HttpOnly, Secure)

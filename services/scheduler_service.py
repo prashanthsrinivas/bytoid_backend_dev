@@ -3,12 +3,12 @@ from datetime import date, datetime, timedelta, time
 import pytz
 import uuid
 from utils.celery_base import celery
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 
 
 class SchedulerService:
 
-    redis_service = RedisService()  # your existing async Redis wrapper
+    redis_service = get_redis()  # your existing async Redis wrapper
 
     @staticmethod
     def to_utc(dt: datetime, timezone: str):
@@ -340,7 +340,7 @@ class SchedulerService:
 # API Connector Scheduler Service
 # =========================================================
 class APIConnectorScheduler:
-    redis_service = RedisService()
+    redis_service = get_redis()
 
     # ========================
     # Timezone Helpers

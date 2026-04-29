@@ -21,7 +21,7 @@ from radar.radar_helpers import (
     process_file_payloads,
 )
 from runbook.utils import normalize_json_field
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from umail.routes import get_sorted_lance_emails
 from utils.fireworkzz import (
     get_firework_embedding,
@@ -427,7 +427,7 @@ async def run_radar_review_redis(
     structure_file=None,
     session_id=None,
 ):
-    redis = RedisService()
+    redis = get_redis()
     from runbook.utils import send
     from websockets_custom.ws_instance import ws_service, msg_builder_main
 
@@ -888,7 +888,7 @@ async def run_radar_review_redis(
 
 async def create_radar_job(userid, data, mode):
 
-    redis = RedisService()
+    redis = get_redis()
 
     now = int(time.time())
     job_id = f"{mode}_{uuid.uuid4().hex[:8]}"
@@ -1095,7 +1095,7 @@ async def radar_status():
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
 
-    redis = RedisService()
+    redis = get_redis()
 
     job = await redis.get(f"radar:job:{job_id}")
 
@@ -1110,7 +1110,7 @@ async def radar_current():
 
     userid = request.args.get("userid")
 
-    redis = RedisService()
+    redis = get_redis()
 
     job_id = await redis.get(f"radar:user_lock:{userid}")
 

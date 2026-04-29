@@ -371,7 +371,9 @@ class WorkflowRunnerV2:
             result = await self.get_parsed_fireworks_response(prompt_text)
             return result
         except Exception as e:
-            self.logger.error("ai input intent classifier error: %s", e, exc_info=IS_DEV)
+            self.logger.error(
+                "ai input intent classifier error: %s", e, exc_info=IS_DEV
+            )
 
     async def ai_conversation_handler(self, userinput):
         template_data = PLAY_TEMPLATE
@@ -3318,7 +3320,9 @@ class WorkflowRunnerV2:
                         )
                         entry["snippets"].append(content)
             except Exception as e:
-                self.logger.error("Evidence categorization chunk failed: %s", e, exc_info=IS_DEV)
+                self.logger.error(
+                    "Evidence categorization chunk failed: %s", e, exc_info=IS_DEV
+                )
 
         if inp_links:
             vision_prompt = (
@@ -3349,7 +3353,9 @@ class WorkflowRunnerV2:
                             entry["snippets"].append(content)
                             entry["files"].add("image")
                 except Exception as e:
-                    self.logger.error("Vision categorization failed: %s", e, exc_info=IS_DEV)
+                    self.logger.error(
+                        "Vision categorization failed: %s", e, exc_info=IS_DEV
+                    )
 
         # ===========================
         # STEP 3: SPLIT ADMISSIBLE / INADMISSIBLE / DISCARDED
@@ -3371,7 +3377,9 @@ class WorkflowRunnerV2:
                 admissible_evidence[artifact] = data
 
         self.logger.info("Admissible evidence: %s", list(admissible_evidence.keys()))
-        self.logger.info("Inadmissible evidence: %s", list(inadmissible_evidence.keys()))
+        self.logger.info(
+            "Inadmissible evidence: %s", list(inadmissible_evidence.keys())
+        )
         self.logger.debug("Discarded evidence: %s", list(discarded_evidence.keys()))
         # ===========================
         # STEP 4: ANSWER QUESTIONS
@@ -3484,7 +3492,9 @@ class WorkflowRunnerV2:
                         total_updated += persist_partial({qid: answers_map[qid]})
                         break
                 except Exception as e:
-                    self.logger.error("Question %s answering failed: %s", qid, e, exc_info=IS_DEV)
+                    self.logger.error(
+                        "Question %s answering failed: %s", qid, e, exc_info=IS_DEV
+                    )
 
         # ===========================
         # STEP 5: EVIDENCE-BASED QUESTIONS
@@ -3509,10 +3519,16 @@ class WorkflowRunnerV2:
             if runbook_evidence_config and decision is False:
                 continue
             expectations_str = ev_cfg.get("expectations", "")
-            if not expectations_str or not artifact or artifact not in admissible_evidence:
+            if (
+                not expectations_str
+                or not artifact
+                or artifact not in admissible_evidence
+            ):
                 continue
 
-            expectation_points = [p.strip() for p in expectations_str.split(";") if p.strip()]
+            expectation_points = [
+                p.strip() for p in expectations_str.split(";") if p.strip()
+            ]
             snippets_text = "\n".join(admissible_evidence[artifact]["snippets"][:3])
 
             for point in expectation_points:
@@ -3532,28 +3548,72 @@ class WorkflowRunnerV2:
                         credits=self.credits,
                     )
                     check_data = safe_json_load(check_resp)
-                    met = check_data.get("met", True) if isinstance(check_data, dict) else True
+                    met = (
+                        check_data.get("met", True)
+                        if isinstance(check_data, dict)
+                        else True
+                    )
                     if not met:
                         new_qid = f"evidence_{ev_q_counter}"
                         if new_qid not in existing_ev_qids:
-                            new_ev_questions.append({
-                                "id": new_qid,
-                                "section": ev_cfg.get("type", "Evidence"),
-                                "subsection": artifact,
-                                "question": f"Please provide evidence for: {point}",
-                                "options": {
-                                    "A": "I will provide this information",
-                                    "B": "This is not applicable",
-                                },
-                                "discard_options": ["A", "B"],
-                                "user_answer": None,
-                                "comment": None,
-                                "evidence_artifact": artifact,
-                                "missing_expectation": point,
-                            })
+                            gen_prompt = (
+                                f"ARTIFACT TYPE: {artifact}\n"
+                                f"MISSING EXPECTATION: {point}\n\n"
+                                "The uploaded evidence does NOT satisfy the above expectation.\n"
+                                "Generate:\n"
+                                "1. A clear, specific question asking the user to address this gap.\n"
+                                "2. An 'information' field (1-2 sentences) explaining WHY this question "
+                                "is being asked and what evidence or detail the user should provide.\n\n"
+                                'Return ONLY JSON: {"question": "...", "information": "..."}'
+                            )
+                            try:
+                                gen_resp = await get_fireworks_response2(
+                                    user_message=gen_prompt,
+                                    role="user",
+                                    temp=0.4,
+                                    user_id=self.userid,
+                                    credits=self.credits,
+                                )
+                                gen_data = safe_json_load(gen_resp) or {}
+                            except Exception:
+                                gen_data = {}
+                            ai_question = (
+                                gen_data.get("question")
+                                or f"Please provide evidence for: {point}"
+                            )
+                            ai_information = gen_data.get("information") or (
+                                f"This question is raised because the '{artifact}' evidence did not satisfy: {point}."
+                            )
+                            new_ev_questions.append(
+                                {
+                                    "id": new_qid,
+                                    "section": ev_cfg.get("type", "Evidence"),
+                                    "subsection": artifact,
+                                    "question": ai_question,
+                                    "information": ai_information,
+                                    "options": {
+                                        "A": "Provide a verbal / text answer",
+                                        "B": "Upload new evidence",
+                                        "C": "Discard — not applicable",
+                                    },
+                                    "discard_options": ["C"],
+                                    "upload_options": ["B"],
+                                    "text_options": ["A"],
+                                    "user_answer": None,
+                                    "comment": None,
+                                    "evidence_artifact": artifact,
+                                    "missing_expectation": point,
+                                }
+                            )
                             ev_q_counter += 1
                 except Exception as e:
-                    self.logger.error("Expectation check failed for %s / %s: %s", artifact, point, e, exc_info=IS_DEV)
+                    self.logger.error(
+                        "Expectation check failed for %s / %s: %s",
+                        artifact,
+                        point,
+                        e,
+                        exc_info=IS_DEV,
+                    )
 
         if new_ev_questions:
             evidence_based_questions.extend(new_ev_questions)
@@ -3574,7 +3634,7 @@ class WorkflowRunnerV2:
                 {
                     "artifact": k,
                     "files": list(v["files"]),
-                    "summary": v["snippets"][0][:200] if v["snippets"] else "",
+                    "summary": v["snippets"][0] if v["snippets"] else "",
                 }
                 for k, v in admissible_evidence.items()
             ],
@@ -3590,8 +3650,18 @@ class WorkflowRunnerV2:
         self.saveworkflowtos3()
 
         remaining = [q for q in assigned_ques if q.get("id") not in answered_qids]
+        questions_needing_evidence = [
+            {
+                "id": q["id"],
+                "question_number": q.get("question_number"),
+                "question": q["question"],
+                "evidence_required": q["evidence_required"],
+            }
+            for q in remaining
+            if q.get("evidence_required")
+        ]
         self.logger.info(
-            "Evidence pipeline complete: updated=%d answered=%d remaining=%d ev_questions=%d admissible=%s",
+            "Evidence pipeline complete: updated=%d  answered=%d remaining=%d ev_questions=%d admissible=%s",
             total_updated,
             len(answers_map),
             len(remaining),
@@ -3607,10 +3677,12 @@ class WorkflowRunnerV2:
             "evidence_based_questions_added": len(new_ev_questions),
             "admissible_evidence_types": list(admissible_evidence.keys()),
             "inadmissible_evidence_types": list(inadmissible_evidence.keys()),
-            "chunks_processed": len(_make_chunks(combined_text)),
+            "questions_needing_evidence": questions_needing_evidence,
         }
 
-    def answer_evidence_question(self, qid: str, user_answer, comment=None):
+    def answer_evidence_question(
+        self, qid: str, user_answer, comment=None, evidence_url=None
+    ):
         evidence_based_questions = self.workflow_json.get(
             "evidence_based_questions", []
         )
@@ -3627,14 +3699,41 @@ class WorkflowRunnerV2:
             }
 
         discard_options = target.get("discard_options", [])
+        upload_options = target.get("upload_options", [])
+        text_options = target.get("text_options", [])
+
         if user_answer in discard_options:
             self.workflow_json["evidence_based_questions"] = [
                 q for q in evidence_based_questions if q.get("id") != qid
             ]
-        else:
+            answer_type = "discarded"
+        elif user_answer in upload_options:
             target["user_answer"] = user_answer
+            target["answer_type"] = "upload"
+            if evidence_url:
+                current_urls = self.workflow_json.get("evidences_ques", [])
+                current_urls.extend(attach_CLDFRNT_url(evidence_url))
+                self.workflow_json["evidences_ques"] = current_urls
             if comment is not None:
                 target["comment"] = comment
+            answer_type = "upload"
+        elif user_answer in text_options:
+            if not comment or not str(comment).strip():
+                return {
+                    "status": "error",
+                    "message": "A text answer requires a non-empty comment.",
+                }
+            target["user_answer"] = user_answer
+            target["answer_type"] = "text"
+            target["comment"] = str(comment).strip()
+            answer_type = "text"
+        else:
+            # Legacy / unknown option — store as-is
+            target["user_answer"] = user_answer
+            target["answer_type"] = "unknown"
+            if comment is not None:
+                target["comment"] = comment
+            answer_type = "unknown"
 
         save_playbook_to_s3(
             self.workflow_json,
@@ -3646,7 +3745,7 @@ class WorkflowRunnerV2:
         return {
             "status": "success",
             "qid": qid,
-            "discarded": user_answer in discard_options,
+            "answer_type": answer_type,
         }
 
     def edit_assigned_question(self, qid: str, new_question: str):

@@ -14,9 +14,8 @@ from datetime import datetime, timedelta
 import requests
 import json
 from utils.base_logger import get_logger
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from db.rds_db import connect_to_rds
-
 
 logger = get_logger(__name__)
 
@@ -388,7 +387,7 @@ async def retrieve_auth_state_from_redis(state_key: str) -> dict:
         #     return None
 
         # client = await GlideClusterClient.create(redis_config_glide)
-        client = RedisService()
+        client = get_redis()
         key = f"microsoft_auth_state:{state_key}"
 
         # Retrieve state data from Redis
@@ -399,13 +398,11 @@ async def retrieve_auth_state_from_redis(state_key: str) -> dict:
                 f"✅ Retrieved auth state from Redis for state: {state_key[:20]}..."
             )
             await client.delete(key)  # Delete after retrieval (one-time use)
-            await client.close()
             return state_json
         else:
             logger.warning(
                 f"❌ No auth state found in Redis for state: {state_key[:20]}..."
             )
-            await client.close()
             return None
     except Exception as e:
         logger.error(f"❌ Failed to retrieve auth state from Redis: {str(e)}")

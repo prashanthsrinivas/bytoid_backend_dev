@@ -88,13 +88,17 @@ class OutlookService:
             if not row:
                 raise ValueError(f"User not found: {user_id}")
             (
-               self.client_id,
-               self.client_secret,
+               db_client_id,
+               db_client_secret,
                self.access_token,
                self.refresh_token,
                expiry,
                self.user_email,
             ) = row
+            self.client_id = db_client_id or os.getenv("MICROSOFT_CLIENT_ID2")
+            self.client_secret = db_client_secret or os.getenv("MICROSOFT_CLIENT_SECRET2")
+
+
             # ✅ ADD THIS (VERY IMPORTANT)
             if not self.access_token:
                raise ValueError(f"Outlook not connected for user {user_id}")
@@ -121,6 +125,7 @@ class OutlookService:
         """Refresh the Microsoft access token using refresh token"""
         try:
             refresh_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
 
             data = {
                 "client_id": self.client_id,

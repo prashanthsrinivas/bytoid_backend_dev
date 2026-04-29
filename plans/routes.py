@@ -5,7 +5,7 @@ from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, make_response
 import pymysql
 import json
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from dotenv import load_dotenv
 from utils.stripe_config import dev_stipe as stripe
 from utils.stripe_config import (
@@ -18,7 +18,7 @@ load_dotenv()
 plans_bp = Blueprint("plans_bp", __name__)
 
 
-redis_service = RedisService()
+redis_service = get_redis()
 REDIS_PLANS_KEY = "plans_cache"
 
 BASE_CURRENCY = "USD"

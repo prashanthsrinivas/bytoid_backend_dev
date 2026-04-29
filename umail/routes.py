@@ -3,7 +3,7 @@ import time
 from db.db_checkers import get_email_by_id, get_existing_umail_json
 from flask import request, jsonify, Blueprint
 from datetime import datetime, timezone
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from utils.base_logger import get_logger
 from cust_helpers import pathconfig
 from utils.normal import ensure_dir
@@ -54,7 +54,7 @@ def getall_route2(user_id):
 @umail_bp.route("/check_redis", methods=["GET"])
 async def check_redis():
     print("check redis initalized")
-    val = RedisService()
+    val = get_redis()
     # print("in the checker redis", val)
     res = await val.checker()
     return jsonify({"redis state": res})
@@ -402,7 +402,7 @@ def get_latest_conversations_og(user_id, next_cursor):
             async def _inner():
                 ## client = await GlideClusterClient.create(redis_config_glide)
                 # print("fetching from cache ")
-                client = RedisService()
+                client = get_redis()
                 return await client.get(f"umail_{user_id}")
 
             return asyncio.run(_inner())
@@ -527,7 +527,7 @@ def background_convo_fetch(user_id, next_cursor):
 # -----------------------
 def get_cache_sync(user_id):
     async def _inner():
-        client = RedisService()
+        client = get_redis()
         return await client.get(f"umail_{user_id}")
 
     loop = asyncio.new_event_loop()
@@ -749,7 +749,7 @@ async def get_selected_conv(conversation_id, user_id):
         # print(f"existing_json : {existing_json}")
 
         async def get_cahced_data():
-            redis_service = RedisService()
+            redis_service = get_redis()
             cached_json = await redis_service.get(
                 f"umail_{user_id}"
             )  # auto JSON decoded

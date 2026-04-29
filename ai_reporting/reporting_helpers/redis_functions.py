@@ -2,7 +2,7 @@
 #     GlideClusterClient,
 #     ClusterScanCursor,
 # )
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 
 import json
 
@@ -20,16 +20,13 @@ async def get_report_data(user_id: str):
     """
     key = f"user:{user_id}:clarification_state"
 
-    # Create Redis client
-    # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
 
     try:
         # Get the stored data
         data = await client.get(key)
 
         if not data:
-            # print(f"[Redis] No clarification state found for user {user_id}.")
             return None
 
         # Decode JSON string
@@ -37,18 +34,11 @@ async def get_report_data(user_id: str):
 
         # Delete the key after retrieving
         await client.delete(key)
-        # print(f"[Redis] Retrieved and deleted clarification state for user {user_id}.")
 
         return clarification_data
 
     except Exception as e:
-        # print(
-        #     f"[Redis Error] Failed to retrieve clarification state for user {user_id}: {e}"
-        # )
         return None
-
-    finally:
-        await client.close()
 
 
 async def save_clarification_state_to_redis(user_id, state_data):
@@ -62,9 +52,7 @@ async def save_clarification_state_to_redis(user_id, state_data):
     key = f"user:{user_id}:clarification_state"
 
     try:
-        # Create Redis client (sync version)
-        # client = await GlideClusterClient.create(redis_config_glide)
-        client = RedisService()
+        client = get_redis()
 
         # Convert to JSON string
         json_data = json.dumps(state_data)
@@ -73,16 +61,8 @@ async def save_clarification_state_to_redis(user_id, state_data):
         await client.set(key, json_data)
         await client.expire(key, 3600)
 
-    # print(
-    #     f"[Redis] Saved clarification state for user {user_id} (expires in 3600s)."
-    # )
-
     except Exception as e:
-        # print(f"[Redis Error] Failed to save clarification state: {e}")
         return None
-
-    finally:
-        await client.close()
 
 
 async def save_ambiguous_report_to_redis(
@@ -100,9 +80,7 @@ async def save_ambiguous_report_to_redis(
 
     key = f"user:{user_id}:ambiguous_report"
 
-    # Create the Redis client
-    # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
 
     try:
         # Prepare the data as JSON
@@ -120,14 +98,8 @@ async def save_ambiguous_report_to_redis(
         await client.set(key, json_data)
         await client.expire(key, 3600)
 
-    # print(f"[Redis] Saved ambiguous report for user {user_id} (expires in 3600s).")
-
     except Exception as e:
-        # print(f"[Redis Error] Failed to save ambiguous report: {e}")
         return None
-
-    finally:
-        await client.close()
 
 
 async def get_ambiguous_report_from_redis(user_id):
@@ -141,24 +113,17 @@ async def get_ambiguous_report_from_redis(user_id):
         dict | None: The stored ambiguous report data or None if not found
     """
     key = f"user:{user_id}:ambiguous_report"
-    # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
 
     try:
         json_data = await client.get(key)
 
         if json_data:
             data = json.loads(json_data)
-            # print(f"[Redis] Retrieved ambiguous report for user {user_id}.")
             await client.delete(f"user:{user_id}:ambiguous_report")
             return data
         else:
-            # print(f"[Redis] No ambiguous report found for user {user_id}.")
             return None
 
     except Exception as e:
-        # print(f"[Redis Error] Failed to retrieve ambiguous report: {e}")
         return None
-
-    finally:
-        await client.close()

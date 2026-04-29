@@ -1,9 +1,9 @@
 import uuid
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 
-redis_service = RedisService()
+redis_service = get_redis()
 
 # worker pool
 executor = ThreadPoolExecutor(max_workers=4)

@@ -8,7 +8,7 @@ import time
 import json
 from datetime import datetime, timedelta, timezone
 # from glide import GlideClusterClient
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from utils.base_logger import get_logger
 
 
@@ -38,7 +38,7 @@ class SyncManager:
         """
         try:
             # client = await GlideClusterClient.create(redis_config_glide)
-            client = RedisService()
+            client = get_redis()
             cache_key = f"sync_time:{user_id}"
             cached_data = await client.get(cache_key)
 
@@ -89,7 +89,7 @@ class SyncManager:
         """
         try:
             # client = await GlideClusterClient.create(redis_config_glide)
-            client = RedisService()
+            client = get_redis()
             cache_key = f"sync_time:{user_id}"
             now = datetime.now(timezone.utc)
 
@@ -186,7 +186,7 @@ class SyncManager:
         """
         try:
             # client = await GlideClusterClient.create(redis_config_glide)
-            client = RedisService()
+            client = get_redis()
             cache_key = f"sync_time:{user_id}"
             result = await client.delete([cache_key])
             logger.info(f"Cleared sync timer for {user_id}")

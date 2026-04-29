@@ -4,7 +4,7 @@ import hashlib
 import secrets
 from datetime import datetime, timezone, timedelta
 import os
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from utils.base_logger import get_logger
 
 
@@ -38,8 +38,7 @@ async def session_login_redis(user_id, request_data):  # during login
     access_expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
     refresh_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
 
-    # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
 
     await client.hset(
         f"session:{session_id}",
@@ -56,8 +55,6 @@ async def session_login_redis(user_id, request_data):  # during login
         },
     )
 
-    await client.close()
-
     return {
         "session_id": session_hash,
         "access_token": access_token,
@@ -67,8 +64,7 @@ async def session_login_redis(user_id, request_data):  # during login
 
 async def get_session(session_hash, request):
 
-    # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
 
     session_keys = []
     try:
@@ -113,10 +109,8 @@ async def get_session(session_hash, request):
                         for k, v in session_data.items()
                     }
 
-                    await client.close()
                     return session_data, key_str
 
-    await client.close()
     return None, None
 
 
@@ -148,8 +142,7 @@ async def update_session_tokens(
 
 async def validate_and_refresh_tokens(session_hash, session, access_token, key_str):
 
-    # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
 
     previous_token_expiry_str = session.get("previous_token_expiry")
     if previous_token_expiry_str:
@@ -204,14 +197,12 @@ async def validate_and_refresh_tokens(session_hash, session, access_token, key_s
         "access_expiry": new_access_expiry.isoformat(),
     }
 
-    await client.close()
     return True, new_tokens
 
 
 async def delete_all_session_cookies(key_str):
     """Delete session from Redis"""
-    # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
     try:
         session_data = await client.hgetall(key_str)
         if session_data:
@@ -220,5 +211,4 @@ async def delete_all_session_cookies(key_str):
     except:
         logger.warning(f"Could not find session to delete: {key_str}")
 
-    await client.close()
     return True

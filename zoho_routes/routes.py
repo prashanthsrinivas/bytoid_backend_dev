@@ -26,7 +26,7 @@ import json
 from email.utils import getaddresses
 from gmail_route.routes import add_lead_contact, add_customer_contact, safe_json_load
 from umail_helper.ticketalloc import TicketAllocator
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from db.db_checkers import update_umail_json
 import shutil
 from services.credit_system import CreditManager
@@ -888,7 +888,7 @@ async def v2all_continuous_zoho(user_id, integration=None, min_days=2):
             )
             embedding_futures.append(task)
 
-        redis_service = RedisService()
+        redis_service = get_redis()
         await update_user_message_cache(
             redis_service, user_id, all_results, newly_creation=True
         )

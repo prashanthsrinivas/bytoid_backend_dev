@@ -29,6 +29,7 @@ from ai_reporting.ast_generation.ast_generation_class import ASTGenerator
 from ai_reporting.parse_llm import parse_llm_response
 from .ast_component_extraction.intention_extraction import QueryIntentionExtractor
 from .reporting_helpers.redis_functions import *
+from services.redis_service import get_redis
 from request_context import current_user_id
 
 
@@ -222,12 +223,11 @@ async def save_draft_report(user_id, new_report):
     Each report is stored under its own key with a 1-hour TTL.
     """
     # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
     report_id = new_report["report_id"]
     key = f"user:{user_id}:draft_report:{report_id}"
     await client.set(key, json.dumps(new_report))
     await client.expire(key, 3600)
-    await client.close()
 
 
 async def get_draft_report(client, user_id, report_id):
@@ -2284,7 +2284,7 @@ async def finalize_report():
     user_id = data.get("user_id", "").strip()
 
     # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
     report_data = await get_draft_report(client, user_id, report_id)
     if report_data:
         try:
@@ -2328,7 +2328,7 @@ async def change_name():
     user_id = data.get("user_id", "").strip()
 
     # client = await GlideClusterClient.create(redis_config_glide)
-    client = RedisService()
+    client = get_redis()
     report_data = await get_draft_report(client, user_id, report_id)
 
     if report_data:
@@ -2341,7 +2341,6 @@ async def change_name():
             report_data["brief_summary"] = name
             await save_draft_report(user_id, report_data)
 
-            await client.close()
             return (
                 jsonify(
                     {
@@ -2353,12 +2352,10 @@ async def change_name():
             )
 
         except Exception as e:
-            await client.close()
             return jsonify({"success": False, "error": str(e)}), 500
 
     # If report not in Redis, check MySQL
     else:
-        await client.close()
         try:
             conn = await get_db_connection()  # your async DB connection function
             async with conn.cursor() as cursor:

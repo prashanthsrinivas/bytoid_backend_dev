@@ -21,7 +21,7 @@ import os
 from .outlook_class import OutlookService
 import shutil
 from db.db_checkers import update_umail_json, update_umail_json_integration
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 import json, threading
 
 
@@ -724,7 +724,7 @@ async def v2all_continuous_outlook(user_id, integration=None, min_days=2):
         # print(f"saved to redis: {all_results}")
         # print("------------------------")
 
-        redis_service = RedisService()
+        redis_service = get_redis()
         await update_user_message_cache(
             redis_service, user_id, all_results, newly_creation=True
         )

@@ -12,7 +12,7 @@ from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 import json, uuid
 from cust_helpers import pathconfig
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from services.scheduler_service import SchedulerService
 from services.workflow_service import WorkflowRunnerV2
 from utils.fireworkzz import get_fireworks_response2
@@ -302,9 +302,7 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
 
 @playbook_bp.route("/playbook/jbs/<job_id>", methods=["GET"])
 async def job_status(job_id):
-    from services.redis_service import RedisService
-
-    redisservice = RedisService()
+    redisservice = get_redis()
 
     job = await redisservice.get(f"job:{job_id}")
 
@@ -2657,12 +2655,13 @@ async def generate_ans_files():
 @playbook_bp.route("/evidence_ques_ans_attach_playbook", methods=["POST"])
 def evidence_ques_ans_attach_playbook():
     try:
-        data = request.json or {}
+        data = request.form
         userid = data.get("user_id")
         filename = data.get("filename")
         question_id = data.get("question_id")
         user_answer = data.get("user_answer")
         comment = data.get("comment")
+        evidence_url = data.get("evidence_url")
 
         if not userid or not filename or not question_id:
             return (
@@ -2694,6 +2693,7 @@ def evidence_ques_ans_attach_playbook():
                 qid=question_id,
                 user_answer=user_answer,
                 comment=comment,
+                evidence_url=evidence_url,
             )
 
         status_code = 200 if result.get("status") == "success" else 400
@@ -3029,7 +3029,7 @@ def share_pb_template():
             return jsonify({"status": "error", "message": "no users found"}), 404
 
         # 🔥 REDIS TRACKING
-        redis_service = RedisService()
+        redis_service = get_redis()
 
         share_id = f"share:{uuid.uuid4().hex}"
 

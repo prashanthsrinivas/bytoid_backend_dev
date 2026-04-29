@@ -4,7 +4,7 @@ import json
 from db.rds_db import connect_to_rds
 from db.db_checkers import get_email_by_id
 from flask import Blueprint, request, jsonify
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 import pymysql
 from services.stripe_webhook_handler import StripeWebhookHandler
 from utils.stripe_config import (
@@ -15,7 +15,7 @@ from utils.stripe_config import (
 
 payments_bp = Blueprint("payments", __name__)
 
-redis_service = RedisService()
+redis_service = get_redis()
 REDIS_PLANS_KEY = "plans_cache"
 
 

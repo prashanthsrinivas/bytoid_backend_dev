@@ -3516,15 +3516,38 @@ class LanceDBServer:
     ):
         table = await self._open_or_create_runbook_results_table(user_id)
 
-        payload = {
-            "result": json.dumps(new_result),
-            "status": "completed",
+        # LanceDB's table.update() is append-only: it writes a new fragment and
+        # marks old rows for deletion but does not immediately remove the old
+        # fragment. Queries via to_list() can return both versions before
+        # compaction runs, causing duplicate rows to appear.
+        # Fix: delete the existing row, then re-insert with updated fields.
+        def _fetch():
+            rows = table.search().where(f'result_id == "{result_id}"').to_list()
+            return rows[0] if rows else None
+
+        existing = await asyncio.to_thread(_fetch)
+        if not existing:
+            return
+
+        await asyncio.to_thread(lambda: table.delete(f'result_id == "{result_id}"'))
+
+        # Explicitly cast to Python native types to avoid numpy/PyArrow type
+        # coercion issues (e.g. numpy.float32 silently becoming 0.0 on re-insert).
+        updated_row = {
+            "result_id":          str(existing.get("result_id", "")),
+            "runbook_id":         str(existing.get("runbook_id", "")),
+            "execution_id":       str(existing.get("execution_id", "")),
+            "user_id":            str(existing.get("user_id", "")),
+            "input_mode":         str(existing.get("input_mode") or ""),
+            "status":             "completed",
+            "risk_score":         float(existing.get("risk_score") or 0.0),
+            "started_at":         int(existing.get("started_at") or 0),
+            "ended_at":           int(existing.get("ended_at") or 0),
+            "execution_time_ms":  int(existing.get("execution_time_ms") or 0),
+            "result":             json.dumps(new_result),
         }
 
-        def _update():
-            table.update(where=f'result_id == "{result_id}"', values=payload)
-
-        await asyncio.to_thread(_update)
+        await asyncio.to_thread(lambda: table.add([updated_row]))
 
     async def update_runbook_schedule(self, user_id, runbook_id, schedule):
         table = await self._open_or_create_runbook_table(user_id)

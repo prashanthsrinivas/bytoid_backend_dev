@@ -1,6 +1,6 @@
 import re
 from db.rds_db import connect_to_rds
-from services.redis_service import RedisService
+from services.redis_service import RedisService, get_redis
 import json
 from datetime import datetime
 import asyncio
@@ -124,7 +124,7 @@ def get_contact_by_identity(user_id, participant, direction):
             "name": full_name,
             "channels": {k: v for k, v in standardized_channels.items() if v},
         }
-        #print(f"contact data for {participant} : {contact_data}")
+        # print(f"contact data for {participant} : {contact_data}")
         CONTACTS[user_id][contact_data["id"]] = {
             "name": contact_data["name"],
             "channels": contact_data["channels"],
@@ -181,7 +181,7 @@ def get_contact_by_identity(user_id, participant, direction):
             clean_channels = {k: v for k, v in user_channels.items() if v}
 
             CONTACTS[user_id][user_id] = {"name": full_name, "channels": clean_channels}
-            #print(f"contact data for {participant} : {CONTACTS}")
+            # print(f"contact data for {participant} : {CONTACTS}")
 
             for v in clean_channels.values():
                 IDENTITY_MAP[user_id][v] = {
@@ -340,46 +340,38 @@ async def store_integrations_in_redis(
     user_id: str, value: list, ttl: int = 600
 ) -> bool:
     try:
-        # client = await GlideClusterClient.create(redis_config_glide)
-        client = RedisService()
+        client = get_redis()
         key = f"{user_id}_integrations"
 
         await client.set(key, json.dumps(value))
         await client.expire(key, ttl)  # Set expiration separately (Glide API)
-        #print(f"✅ Stored integrations in Redis for user id: {user_id}")
+        # print(f"✅ Stored integrations in Redis for user id: {user_id}")
         return True
     except Exception as e:
-        #print(f"⚠️ Failed to store integrations in Redis: {str(e)}")
+        # print(f"⚠️ Failed to store integrations in Redis: {str(e)}")
         return False
-    finally:
-        if client:
-            await client.close()
 
 
 async def get_integrations_from_redis(user_id: str):
-    client = None
     try:
-        client = RedisService()
+        client = get_redis()
         key = f"{user_id}_integrations"
 
         data = await client.get(key)
         if not data:
-            #print(f"ℹ️ No integrations found in Redis for user id: {user_id}")
+            # print(f"ℹ️ No integrations found in Redis for user id: {user_id}")
             return None
 
         return json.loads(data)
 
     except Exception as e:
-        #print(f"⚠️ Failed to fetch integrations from Redis: {str(e)}")
+        # print(f"⚠️ Failed to fetch integrations from Redis: {str(e)}")
         return None
-
-    finally:
-        if client:
-            await client.close()
 
 
 import os
- # status_data = read_status_file()
+
+# status_data = read_status_file()
 OUTLOOK_SYNC_LOG_DIR = "data"
 OUTLOOK_SYNC_LOG_FILE = os.path.join(OUTLOOK_SYNC_LOG_DIR, "outlook_mail_sync_log.json")
 ZOHO_SYNC_LOG_FILE = os.path.join(OUTLOOK_SYNC_LOG_DIR, "zoho_mail_sync_log.json")
@@ -388,6 +380,7 @@ os.makedirs(OUTLOOK_SYNC_LOG_DIR, exist_ok=True)
 
 # --------- mail sync time for outlook -----------------#
 
+
 def get_last_sync_time(user_id):
     """
     Return the sync time for the given user_id only if the file exists.
@@ -395,7 +388,7 @@ def get_last_sync_time(user_id):
     """
     if not os.path.exists(OUTLOOK_SYNC_LOG_FILE):
         return None  # file not present
-    
+
     try:
         with open(OUTLOOK_SYNC_LOG_FILE, "r") as f:
             data = json.load(f)
@@ -460,6 +453,7 @@ def delete_user_sync_time(user_id):
 
 # ---------- mail sync time for zoho ------------------#
 
+
 def get_last_sync_time_zoho(user_id):
     """
     Return the sync time for the given user_id only if the file exists.
@@ -467,7 +461,7 @@ def get_last_sync_time_zoho(user_id):
     """
     if not os.path.exists(ZOHO_SYNC_LOG_FILE):
         return None  # file not present
-    
+
     try:
         with open(ZOHO_SYNC_LOG_FILE, "r") as f:
             data = json.load(f)
@@ -529,14 +523,13 @@ def delete_user_sync_time_zoho(user_id):
 
     return True
 
+
 # --------------------------------- #
+
 
 def delete_from_cache_sync(user_id):
     async def _inner():
-        #print("deleting from cache")
-        client = RedisService()
-        return await client.delete(f"umail_{user_id}")
+        # print("deleting from cache")
+        return await get_redis().delete(f"umail_{user_id}")
 
     return asyncio.run(_inner())
-
-

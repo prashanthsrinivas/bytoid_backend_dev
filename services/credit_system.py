@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional
 from db.rds_db import connect_to_rds
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 
 # ---------------------------------------------------------
 # DATA MODELS
@@ -50,7 +50,7 @@ class CreditManager:
 
     def __init__(self, db_conn):
         self.db = db_conn
-        self.redis = RedisService()
+        self.redis = get_redis()
 
     # -----------------------------------------------------
     # REDIS HELPERS

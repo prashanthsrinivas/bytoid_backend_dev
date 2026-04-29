@@ -16,7 +16,7 @@ from runbook.helper import (
     trigger_scheduled_api_runbook,
     trigger_scheduled_playbook_runbook,
 )
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 
 from umail_helper.asyn_functions import fetchnextmonthmails, v2all_continuous
 import json
@@ -39,7 +39,7 @@ load_dotenv()
 dev_val = os.getenv("DEV", "")
 base_ip = os.getenv("CELERY_BROKER_URL")
 # lock_client = redis.StrictRedis.from_url(base_ip)  # or your broker Redis
-lock_client = RedisService()
+lock_client = get_redis()
 
 LOCK_TTL = 600  # 10 minutes
 

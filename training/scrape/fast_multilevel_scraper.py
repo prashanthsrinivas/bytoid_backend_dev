@@ -20,7 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from dotenv import load_dotenv
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from services.youtube_scrape_service import YouTubeScrapingClient
 from training.scrape.helper import (
     _save_scrape_to_lancedb,
@@ -54,7 +54,7 @@ class FastMultilevelScraper:
         self.max_links_per_level = 4  # Maximum 4 links per level
         self.visited = set()  # Track visited URLs
         self.page_cache = {}  # Cache for page content to avoid re-scraping
-        self.service = RedisService()
+        self.service = get_redis()
         # ---- NEW: Create driver pool ----
         self.driver_pool = Queue()
 

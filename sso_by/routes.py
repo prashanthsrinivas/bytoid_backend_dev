@@ -171,6 +171,26 @@ CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("AZURE_REDIRECT_URI")
 
+@sso_bp.route("/microsoft/disconnect", methods=["POST"])
+def disconnect_microsoft():
+   data = request.get_json()
+   user_id = data.get("user_id")
+   if not user_id:
+       return jsonify({"error": "user_id required"}), 400
+   try:
+       conn = connect_to_rds()
+       cursor = conn.cursor()
+       cursor.execute(
+           "UPDATE users SET token = NULL WHERE user_id = %s",
+           (user_id,)
+       )
+       conn.commit()
+       cursor.close()
+       conn.close()
+       return jsonify({"message": "Outlook disconnected successfully"}), 200
+   except Exception as e:
+       return jsonify({"error": str(e)}), 500
+
 @sso_bp.route("/microsoft/login")
 def microsoft_login():
     user_id = request.args.get("user_id")
@@ -398,30 +418,39 @@ def saml_acs():
        existing_user = cursor.fetchone()
 
        # ================= AUTO ONBOARDING =================
+       # ================= AUTO ONBOARDING =================
+
        if existing_user:
-           if not existing_user["company_name"]:
-               cursor.execute(
-                   """
-                   UPDATE users 
-                   SET company_name = %s
-                   WHERE user_id = %s
-                   """,
-                   (org, user_id)
-                )
-               conn.commit()
-           user_role = existing_user["user_type"]
+        # ✅ Only update if this is INVITED USER
+            if existing_user["user_id"] == email:
+                cursor.execute("""
+                    UPDATE users
+                    SET user_id = %s,
+                        company_name = %s,
+                        social = 'saml',
+                        has_access = 1  
+                    WHERE email = %s
+                """, (user_id, org, email))
+                conn.commit()
+
+        # ✅ If already real user → DO NOT overwrite
+            else:
+                user_id = existing_user["user_id"]    
+            user_role = existing_user["user_type"]
        else:
-           user_type = "admin" if role == "bytoid-admin" else "user"
-           cursor.execute(
-               """
-               INSERT INTO users 
-               (user_id, email, user_type, company_name, created_by, has_access)
-               VALUES (%s, %s, %s, %s, %s, 1)
-               """,
-               (user_id, email, user_type, org, user_id)
+            # normal new user flow (keep your existing code)
+            user_type = "admin" if role == "bytoid-admin" else "user"
+            cursor.execute(
+                """
+                INSERT INTO users
+                (user_id, email, user_type, company_name, created_by, has_access)
+                VALUES (%s, %s, %s, %s, %s, 1)
+                """,
+                (user_id, email, user_type, org, user_id)
             )
-           conn.commit()
-           user_role = user_type
+            conn.commit()
+            user_role = user_type
+ 
         # ================= ROLE VALIDATION + SYNC =================
 
        ROLE_MAP = {

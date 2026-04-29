@@ -46,7 +46,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 # from glide import GlideClusterClient
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from integrations.google_integration import get_integration_access_token
 from umail_helper.ticketalloc import TicketAllocator
 
@@ -223,7 +223,7 @@ async def store_auth_state_in_redis(
     """
     try:
         # client = await GlideClusterClient.create(redis_config_glide)
-        client = RedisService()
+        client = get_redis()
         key = f"microsoft_auth_state:{state_key}"
 
         # Store only the essential PKCE verifier as JSON
@@ -236,7 +236,6 @@ async def store_auth_state_in_redis(
         await client.set(key, json.dumps(state_data))
         await client.expire(key, ttl)  # Set expiration separately (Glide API)
         logger.info(f"✅ Stored auth state in Redis for state: {state_key[:20]}...")
-        await client.close()
         return True
     except Exception as e:
         logger.warning(f"⚠️ Failed to store auth state in Redis: {str(e)}")
@@ -908,7 +907,7 @@ async def microsoft_callback():
                 }
             )
         )
-        redis = RedisService()
+        redis = get_redis()
         await update_user_alive(redis, user_id, True)
 
         # Set secure cookies
@@ -3544,7 +3543,7 @@ async def outlook_webhook():
     user_id = resource.split("Users/")[1].split("/Messages")[0]
     message_id = change.get("resourceData", {}).get("id")
     received_at = datetime.now(timezone.utc).isoformat()
-    redis = RedisService()
+    redis = get_redis()
 
     val = await redis.exists(f"user_alive:{user_id}")
     if not val:

@@ -6,7 +6,7 @@ from credits_route.route import Credits
 from cust_helpers import pathconfig
 from db.db_checkers import get_business_info, get_userid
 from flask import Blueprint, request, jsonify
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from services.uamil_auto_service import UmailAutoService
 from suggest_assist.suggest_helper import helper_make_reply_email, normalize_ai_response
 from umail_helper.mails_process import check_mailbox_email
@@ -46,7 +46,7 @@ async def receive_gmail_notification():
     if not user_email or not history_id:
         return "Invalid Pub/Sub message data", 400
     print("got hook from", user_email)
-    redis = RedisService()
+    redis = get_redis()
     user_id = get_userid(user_email)
     val = await redis.exists(f"user_alive:{user_id}")
     if not val:

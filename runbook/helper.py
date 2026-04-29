@@ -298,6 +298,7 @@ async def run_runbook_execution_engine(
     job_id=None,
     session_id=None,
     progress=None,
+    is_playbook_based_execution=False,
 ):
     from websockets_custom.ws_instance import ws_service, msg_builder_main
     from runbook.utils import send
@@ -314,6 +315,10 @@ async def run_runbook_execution_engine(
     conn = connect_to_rds()
     credits = Credits(conn)
     runbook_id = runbook["runbook_id"]
+    if not is_playbook_based_execution:
+        if "playbook_id" in runbook and runbook["playbook_id"]:
+            is_playbook_based_execution = True
+
     main_source = runbook["main_source"] if "main_source" in runbook else None
     data_sources = runbook["data_sources"] if "data_sources" in runbook else None
     reference_sources = (
@@ -876,7 +881,9 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
             logger.warning("Invalid runbook format")
             return
 
-        logger.info("Using runbook: %s - %s", runbook.get('runbook_id'), runbook.get('name'))
+        logger.info(
+            "Using runbook: %s - %s", runbook.get("runbook_id"), runbook.get("name")
+        )
 
         # ✅ 2. PREPARE EXECUTION INPUT
         runtime_input = record.get("original") or record.get("text")
@@ -1031,7 +1038,9 @@ def reconstruct_sources(filenames):
 async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
     dbserver = LanceDBServer()
     logger.info("trigger_runbook_from_playbook started")
-    logger.debug("Details: playbook=%s runbook=%s user=%s", playbook_id, runbook_id, user_id)
+    logger.debug(
+        "Details: playbook=%s runbook=%s user=%s", playbook_id, runbook_id, user_id
+    )
 
     runbook = await dbserver.get_runbook_by_id(user_id=user_id, runbook_id=runbook_id)
     # print(type(runbook), len(runbook), runbook)
@@ -1041,7 +1050,9 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
     if isinstance(runbook, str):
         runbook = json.loads(runbook)
 
-    logger.info("Using runbook: %s - %s", runbook.get('runbook_id'), runbook.get('name'))
+    logger.info(
+        "Using runbook: %s - %s", runbook.get("runbook_id"), runbook.get("name")
+    )
     # print("out of range 2")
     structure_file = None
 
@@ -1095,7 +1106,10 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
             logger.warning("No analysis results generated")
 
         logger.debug("analyzed_results type: %s", type(analyzed_results))
-        logger.debug("analyzed_results first item type: %s", type(analyzed_results[0]) if analyzed_results else "empty")
+        logger.debug(
+            "analyzed_results first item type: %s",
+            type(analyzed_results[0]) if analyzed_results else "empty",
+        )
         if analyzed_results:
             merged = await merge_document_data(analyzed_results, instruction_data)
             runbook["runtime_input"] = json.dumps(merged["chat"])
@@ -1113,6 +1127,7 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
         runbook=runbook,
         structure_file=structure_file,
         structure_file_payload=structure_file_payload,
+        is_playbook_based_execution=True,
     )
     # ws_service.emit(user_id=user_id,message=)
 
@@ -1708,7 +1723,7 @@ async def analyze_questions_with_references(
     for i in range(0, len(questions), BATCH_SIZE):
         chunk = questions[i : i + BATCH_SIZE]
 
-        logger.debug("Processing batch %d", i//BATCH_SIZE + 1)
+        logger.debug("Processing batch %d", i // BATCH_SIZE + 1)
 
         batch_result = await analyze_single_question(chunk, context_text, user_id)
 
@@ -1717,7 +1732,7 @@ async def analyze_questions_with_references(
 
             logger.warning("Empty batch result")
             continue
-        logger.debug("Batch %d completed", i//BATCH_SIZE + 1)
+        logger.debug("Batch %d completed", i // BATCH_SIZE + 1)
         all_results.extend(batch_result)
 
     logger.info("Total analyzed results: %d", len(results))

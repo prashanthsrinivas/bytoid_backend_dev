@@ -46,9 +46,36 @@ class RedisService:
                 socket_connect_timeout=5,
             )
 
+    def _reconnect(self) -> None:
+        logger.warning("Redis reconnecting...")
+        if IS_DEV or dev_val == "true":
+            self.client = redis.Redis(
+                host=self.redis_host,
+                port=6379,
+                ssl=True,
+                ssl_cert_reqs=None,
+                decode_responses=True,
+                socket_connect_timeout=5,
+            )
+        else:
+            self.client = redis.Redis(
+                host=self.redis_host,
+                port=6379,
+                ssl=True,
+                ssl_ca_certs="/home/ec2-user/bytoid_python/awsredis.pem",
+                ssl_cert_reqs="required",
+                decode_responses=True,
+                socket_connect_timeout=5,
+            )
+
     async def _run(self, func, *args, **kwargs):
-        """Run any blocking Redis command in a background thread."""
-        return await asyncio.to_thread(func, *args, **kwargs)
+        """Run any blocking Redis command in a background thread, with one reconnect retry."""
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        except (redis.ConnectionError, redis.TimeoutError) as exc:
+            logger.warning("Redis error (%s), reconnecting and retrying once...", exc)
+            self._reconnect()
+            return await asyncio.to_thread(func, *args, **kwargs)
 
     # --------------------- BASIC CRUD ----------------------
 
@@ -153,3 +180,14 @@ class RedisService:
     async def close(self):
         if self.client:
             await self._run(self.client.close)
+
+
+_instance: Optional[RedisService] = None
+
+
+def get_redis() -> RedisService:
+    """Return the shared RedisService singleton, creating it on first call."""
+    global _instance
+    if _instance is None:
+        _instance = RedisService()
+    return _instance

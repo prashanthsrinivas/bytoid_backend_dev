@@ -30,7 +30,7 @@ from radar.radar_helpers import (
 from flask import Blueprint, jsonify, request, session
 from runbook.helper2 import modify_run_runbook_execution_engine
 from runbook.utils import get_playbook_instruction, send
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from utils.s3_utils import upload_any_file
 import time, uuid, os, json
 from datetime import datetime
@@ -416,7 +416,7 @@ async def create_runbook():
 @runbook_bp.route("/runbook/status/<job_id>", methods=["GET"])
 async def get_job_status(job_id):
     try:
-        redis_service = RedisService()
+        redis_service = get_redis()
 
         job = await redis_service.get(f"job:{job_id}")
 

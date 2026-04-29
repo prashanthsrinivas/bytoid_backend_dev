@@ -431,7 +431,7 @@ def send_invite_user():
                 return jsonify({"error": "unAuthrotized access"}), 404
 
             user_email = row["email"]
-            user_source = row["social"]
+            user_source = (row.get("social") or "").strip().lower()
 
             # load roles
             roles = json.loads(row["roles_creation"]) if row["roles_creation"] else []
@@ -1030,6 +1030,17 @@ def validate_invite(token):
                 "UPDATE users SET permissions = %s WHERE email = %s",
                 (json.dumps(permissions), invited_by),
             )
+            cursor.execute("SELECT user_id FROM users WHERE email=%s", (invited_by,))
+            inviter_row = cursor.fetchone()
+            
+            if inviter_row:
+               cursor.execute("""
+                   INSERT INTO notifications (user_id, message)
+                   VALUES (%s, %s)
+               """, (
+                  inviter_row["user_id"],
+                  f"{invited_to} accepted your invitation"
+               ))
             conn.commit()
 
         conn.close()

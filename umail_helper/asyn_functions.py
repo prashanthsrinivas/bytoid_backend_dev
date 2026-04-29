@@ -11,7 +11,7 @@ from db.db_checkers import (
 from db.rds_db import get_cursor
 from services.gmail_service import GmailService
 from gmail_route.routes import v2fetch_gmail_messages_batch
-from services.redis_service import RedisService
+from services.redis_service import get_redis
 from umail_helper.auto_rep import autoReplyhelper
 from umail_helper.helper import update_user_message_cache
 from umail_helper.mails_process import (
@@ -354,7 +354,7 @@ async def v2all_continuous(user_id, integration=None):
         #     json.dumps(cache_payload, default=str),
         #     TTL_90_DAYS,
         # )
-        redis_service = RedisService()
+        redis_service = get_redis()
 
         await update_user_message_cache(
             redis_service, user_id, all_results, newly_creation=newly_creation
@@ -621,7 +621,7 @@ async def fetchnextmonthmails(user_id, startDate):
         #         json.dumps(cache_payload, default=str),
         #         TTL_90_DAYS,
         #     )
-        redis_service = RedisService()
+        redis_service = get_redis()
 
         await update_user_message_cache(
             redis_service, user_id, all_results, newly_creation=newly_creation
@@ -840,7 +840,7 @@ dummy_batch_results = [
 
 
 async def test_cache_insertion():
-    redis_service = RedisService()
+    redis_service = get_redis()
 
     # print("\nChecking Redis connection:")
     await redis_service.checker()
