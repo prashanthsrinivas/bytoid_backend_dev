@@ -3522,7 +3522,7 @@ class LanceDBServer:
         # compaction runs, causing duplicate rows to appear.
         # Fix: delete the existing row, then re-insert with updated fields.
         def _fetch():
-            rows = table.search().where(f'result_id == "{result_id}"').to_list()
+            rows = table.search().where(f'result_id == "{result_id}" and status == "completed"').to_list()
             return rows[0] if rows else None
 
         existing = await asyncio.to_thread(_fetch)
@@ -3531,21 +3531,9 @@ class LanceDBServer:
 
         await asyncio.to_thread(lambda: table.delete(f'result_id == "{result_id}"'))
 
-        # Explicitly cast to Python native types to avoid numpy/PyArrow type
-        # coercion issues (e.g. numpy.float32 silently becoming 0.0 on re-insert).
-        updated_row = {
-            "result_id":          str(existing.get("result_id", "")),
-            "runbook_id":         str(existing.get("runbook_id", "")),
-            "execution_id":       str(existing.get("execution_id", "")),
-            "user_id":            str(existing.get("user_id", "")),
-            "input_mode":         str(existing.get("input_mode") or ""),
-            "status":             "completed",
-            "risk_score":         float(existing.get("risk_score") or 0.0),
-            "started_at":         int(existing.get("started_at") or 0),
-            "ended_at":           int(existing.get("ended_at") or 0),
-            "execution_time_ms":  int(existing.get("execution_time_ms") or 0),
-            "result":             json.dumps(new_result),
-        }
+        # Only replace the result field; all other columns stay exactly as stored.
+        updated_row = dict(existing)
+        updated_row["result"] = json.dumps(new_result)
 
         await asyncio.to_thread(lambda: table.add([updated_row]))
 

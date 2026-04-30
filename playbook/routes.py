@@ -7,6 +7,7 @@ from db.db_checkers import (
     get_subagent_by_userid,
     get_email_by_id,
     get_userid,
+    get_userinfo,
 )
 from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, Response, stream_with_context
@@ -2607,7 +2608,11 @@ async def generate_ans_files():
                             }
                         ]
                     )
-                    extracted_payload.extend(extracted)
+                    for item in extracted:
+                        if item.get("type") in IMAGE_EXTENSIONS:
+                            inp_links.append(item["content"])
+                        else:
+                            extracted_payload.append(item)
 
             except Exception as e:
                 logger.warning("Failed to process %s: %s", key, e)
@@ -2886,6 +2891,58 @@ def pb_temp_clone_min():
         # ✅ Response
         # ---------------------------------
         return jsonify({"status": "success", "new_filename": new_filename})
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/pb_delete_clone", methods=["POST"])
+def pb_delete_clone():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+        filename = data.get("filename")
+
+        if not user_id or not filename:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename required"}
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        base = base_name(filename=filename)
+
+        # Delete the clone file from S3
+        clone_path = f"{user_id}/workflow/{base}/{filename}"
+        delete_file_from_s3(filepath=clone_path)
+
+        # Update chat_config — remove this clone from the runs list
+        config_path = f"{user_id}/workflow/chat_config.json"
+        config_data = read_json_from_s3(config_path) or []
+
+        for pb in config_data:
+            pb["runs"] = [r for r in pb.get("runs", []) if r.get("name") != filename]
+
+        # Remove top-level entry if this clone was stored as its own entry
+        config_data = [pb for pb in config_data if pb.get("name") != filename]
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(config_data, tmp, indent=2)
+            temp_config_path = tmp.name
+
+        upload_any_file(
+            file_path=temp_config_path,
+            user_id=user_id,
+            s3_key_C=config_path,
+        )
+
+        os.remove(temp_config_path)
+
+        return jsonify({"status": "success", "deleted_filename": filename})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -3834,6 +3891,295 @@ def assign_evidence_to_question():
 
             status_code = 200 if result.get("status") == "success" else 400
             return jsonify(result), status_code
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Evidence confirmation
+# ---------------------------------------------------------------------------
+
+
+def _build_evidence_template(full_name: str, playbook_title: str) -> str:
+    return f"""
+    <div class="agreement-container" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 24px; max-width: 700px; margin: 0 auto; color: #333; line-height: 1.6;">
+        <div class="agreement-header" style="border-bottom: 2px solid #007bff; padding-bottom: 16px; margin-bottom: 24px;">
+            <h2 style="margin: 0; color: #007bff; font-size: 20px;">Agreement for Evidence Analysis</h2>
+            <p style="margin: 8px 0 0 0; color: #666; font-size: 14px;">Playbook: <strong>{playbook_title}</strong></p>
+        </div>
+
+        <div class="agreement-body">
+            <p style="margin: 0 0 16px 0;">Dear <strong>{full_name}</strong>,</p>
+
+            <p style="margin: 0 0 20px 0;">
+                By confirming this agreement, you authorize Bytoid AI to process the evidence files you will upload or have uploaded
+                in connection with "<strong>{playbook_title}</strong>" for the purpose of automated analysis and report generation.
+            </p>
+
+            <div class="scope-section" style="background-color: #f8f9fa; padding: 16px; border-radius: 6px; margin: 20px 0;">
+                <h3 style="margin: 0 0 12px 0; color: #333; font-size: 16px;">Scope of Use</h3>
+                <ul style="margin: 0; padding-left: 20px; color: #555;">
+                    <li style="margin: 8px 0;">Uploaded files will be used solely to generate insights and reports tied to this playbook.</li>
+                    <li style="margin: 8px 0;">Data will not be sold or used for unrelated third-party purposes.</li>
+                    <li style="margin: 8px 0;">You may withdraw consent at any time by revoking confirmation.</li>
+                </ul>
+            </div>
+
+            <p style="margin: 20px 0 0 0; color: #666; font-size: 14px; font-style: italic;">
+                Please confirm your acceptance to proceed.
+            </p>
+        </div>
+
+        <div class="agreement-footer" style="border-top: 1px solid #ddd; padding-top: 16px; margin-top: 24px; text-align: right;">
+            <p style="margin: 0; color: #666; font-size: 12px;">— Bytoid.ai</p>
+        </div>
+    </div>
+    """.strip()
+
+
+@playbook_bp.route("/evidence_confirmation", methods=["GET"])
+def get_evidence_confirmation():
+    try:
+        user_id = request.args.get("user_id")
+        filename = request.args.get("filename")
+
+        if not user_id or not filename:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename are required"}
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+        playbook = read_json_from_s3(wf_loc)
+        if not playbook:
+            return jsonify({"status": "error", "message": "Playbook not found"}), 404
+
+        confirmation = playbook.get("evidence_confirmation", {})
+        if confirmation.get("confirmed") is True:
+            return (
+                jsonify(
+                    {
+                        "template": confirmation.get("template"),
+                        "already_confirmed": True,
+                        "confirmed_at": confirmation.get("confirmed_at"),
+                    }
+                ),
+                200,
+            )
+
+        user_data = get_userinfo(user_id)
+        full_name = f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip()
+        playbook_title = (
+            playbook.get("input_data", {}).get("title")
+            or playbook.get("workflow", {}).get("name")
+            or "this playbook"
+        )
+
+        template = _build_evidence_template(full_name, playbook_title)
+        return (
+            jsonify(
+                {
+                    "already_confirmed": False,
+                    "template": template,
+                    "playbook_title": playbook_title,
+                    "user_name": full_name,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/evidence_confirmation", methods=["POST"])
+def post_evidence_confirmation():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+        filename = data.get("filename")
+        confirmation = data.get("confirmation", False)
+        template = data.get("template")
+
+        if not user_id or not filename or not template:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename are required"}
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+        playbook = read_json_from_s3(wf_loc)
+        if not playbook:
+            return jsonify({"status": "error", "message": "Playbook not found"}), 404
+
+        if playbook.get("evidence_confirmation", {}).get("confirmed") is True:
+            return jsonify({"status": "already_confirmed"}), 200
+
+        playbook["evidence_confirmation"] = {
+            "template": template,
+            "confirmed": bool(confirmation),
+            "confirmed_at": datetime.utcnow().isoformat() if confirmation else None,
+        }
+
+        save_playbook_to_s3(playbook, user_id, "Evidence confirmation saved", filename)
+        return jsonify({"status": "success", "confirmed": bool(confirmation)}), 200
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Questionnaire confirmation
+# ---------------------------------------------------------------------------
+
+
+def _build_questionnaire_template(full_name: str, playbook_title: str) -> str:
+    return f"""
+    <div class="agreement-container" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 24px; max-width: 700px; margin: 0 auto; color: #333; line-height: 1.6;">
+        <div class="agreement-header" style="border-bottom: 2px solid #28a745; padding-bottom: 16px; margin-bottom: 24px;">
+            <h2 style="margin: 0; color: #28a745; font-size: 20px;">Agreement for Questionnaire Analysis</h2>
+            <p style="margin: 8px 0 0 0; color: #666; font-size: 14px;">Playbook: <strong>{playbook_title}</strong></p>
+        </div>
+
+        <div class="agreement-body">
+            <p style="margin: 0 0 16px 0;">Dear <strong>{full_name}</strong>,</p>
+
+            <p style="margin: 0 0 20px 0;">
+                By confirming this agreement, you authorize Bytoid AI to process the questionnaire responses
+                associated with "<strong>{playbook_title}</strong>" for the purpose of automated analysis and report generation.
+            </p>
+
+            <div class="scope-section" style="background-color: #f8f9fa; padding: 16px; border-radius: 6px; margin: 20px 0;">
+                <h3 style="margin: 0 0 12px 0; color: #333; font-size: 16px;">Scope of Use</h3>
+                <ul style="margin: 0; padding-left: 20px; color: #555;">
+                    <li style="margin: 8px 0;">Questionnaire responses will be used solely to generate insights and reports tied to this playbook.</li>
+                    <li style="margin: 8px 0;">Data will not be sold or used for unrelated third-party purposes.</li>
+                    <li style="margin: 8px 0;">You may withdraw consent at any time by revoking confirmation.</li>
+                </ul>
+            </div>
+
+            <p style="margin: 20px 0 0 0; color: #666; font-size: 14px; font-style: italic;">
+                Please confirm your acceptance to proceed.
+            </p>
+        </div>
+
+        <div class="agreement-footer" style="border-top: 1px solid #ddd; padding-top: 16px; margin-top: 24px; text-align: right;">
+            <p style="margin: 0; color: #666; font-size: 12px;">— Bytoid.ai</p>
+        </div>
+    </div>
+    """.strip()
+
+
+@playbook_bp.route("/questionarie_confirmation", methods=["GET"])
+def get_questionarie_confirmation():
+    try:
+        user_id = request.args.get("user_id")
+        filename = request.args.get("filename")
+
+        if not user_id or not filename:
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename are required"}
+                ),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+        playbook = read_json_from_s3(wf_loc)
+        if not playbook:
+            return jsonify({"status": "error", "message": "Playbook not found"}), 404
+
+        confirmation = playbook.get("questionarie_confirmation", {})
+        if confirmation.get("confirmed") is True:
+            return (
+                jsonify(
+                    {
+                        "template": confirmation.get("template"),
+                        "already_confirmed": True,
+                        "confirmed_at": confirmation.get("confirmed_at"),
+                    }
+                ),
+                200,
+            )
+
+        user_data = get_userinfo(user_id)
+        full_name = (
+            f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip()
+            or "user"
+        )
+        playbook_title = (
+            playbook.get("input_data", {}).get("title")
+            or playbook.get("workflow", {}).get("name")
+            or "this playbook"
+        )
+
+        template = _build_questionnaire_template(full_name, playbook_title)
+        return (
+            jsonify(
+                {
+                    "already_confirmed": False,
+                    "template": template,
+                    "playbook_title": playbook_title,
+                    "user_name": full_name,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/questionarie_confirmation", methods=["POST"])
+def post_questionarie_confirmation():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+        filename = data.get("filename")
+        confirmation = data.get("confirmation", False)
+        template = data.get("template")
+
+        if not user_id or not filename or not template:
+            return (
+                jsonify({"status": "error", "message": "credentials are required"}),
+                400,
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename = f"{filename}.json"
+
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+        playbook = read_json_from_s3(wf_loc)
+        if not playbook:
+            return jsonify({"status": "error", "message": "Playbook not found"}), 404
+
+        if playbook.get("questionarie_confirmation", {}).get("confirmed") is True:
+            return jsonify({"status": "already_confirmed"}), 200
+
+        playbook["questionarie_confirmation"] = {
+            "template": template,
+            "confirmed": bool(confirmation),
+            "confirmed_at": datetime.utcnow().isoformat() if confirmation else None,
+        }
+
+        save_playbook_to_s3(
+            playbook, user_id, "Questionnaire confirmation saved", filename
+        )
+        return jsonify({"status": "success", "confirmed": bool(confirmation)}), 200
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

@@ -1,10 +1,11 @@
 from time import time
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, redirect
 import pymysql
 from services.gmail_service import GmailService
 import uuid
 from db.rds_db import connect_to_rds
 import json
+from flask import redirect
 from datetime import datetime
 from gmail_route.routes import delete_all_user_data
 from utils.permissions_map import PERMISSIONS
@@ -15,6 +16,7 @@ from invited_users.uszr_helper import (
 )
 from utils.base_logger import get_logger
 from dotenv import load_dotenv
+from services.outlook_service import OutlookService
 import os
 
 inv_users_bp = Blueprint("invited_users", __name__)
@@ -141,8 +143,8 @@ def get_roles(userid):
                 if user["user_type"] != "admin":
                     continue
 
-                if user["user_id"] == userid:
-                    continue
+                #if user["user_id"] == userid:
+                #    continue
 
                 email = user["email"]
 
@@ -504,7 +506,6 @@ def send_invite_user():
             else:
             # ✅ For BOTH microsoft + saml
                 if has_outlook_connected(userid, cursor):
-                    from services.outlook_service import OutlookService
                     outlook_service = OutlookService(user_id=userid)
                     outlook_service.send_invitation_email(
                         invitee=email,
@@ -687,7 +688,6 @@ def resend_invite():
             # MICROSOFT + SAML → Outlook (if connected)
             else:
                if has_outlook_connected(user_id, cursor):
-                   from services.outlook_service import OutlookService
                    outlook_service = OutlookService(user_id=user_id)
                    outlook_service.send_invitation_email(
                        invitee=invited_email,
@@ -724,6 +724,70 @@ def resend_invite():
     finally:
         if conn:
             conn.close()
+
+@inv_users_bp.route("/admin/accept_from_link", methods=["GET"])
+def accept_from_link():
+   token = request.args.get("token")
+   if not token:
+       return jsonify({"error": "Missing token"}), 400
+   try:
+       # ✅ decode token
+       invited_by, invited_to, expiry = dehashed_url(token)
+       # ⛔ expiry check
+       if int(time()) > expiry:
+           return jsonify({"error": "Link expired"}), 400
+       conn = connect_to_rds()
+       with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+           # 👉 requester (Admin A)
+           cursor.execute(
+               "SELECT user_id, email FROM users WHERE email=%s",
+               (invited_by,)
+           )
+           requester = cursor.fetchone()
+           # 👉 target (Admin B)
+           cursor.execute(
+               "SELECT user_id, email FROM users WHERE email=%s",
+               (invited_to,)
+           )
+           target = cursor.fetchone()
+           if not requester or not target:
+               return jsonify({"error": "Invalid users"}), 400
+           # ✅ GIVE ACCESS (B → A)
+           cursor.execute("""
+               INSERT IGNORE INTO special_access
+               (grantor_admin_id, target_admin_id)
+               VALUES (%s, %s)
+           """, (target["user_id"], requester["user_id"]))
+           # ✅ notification
+           cursor.execute("""
+               INSERT INTO notifications (user_id, message)
+               VALUES (%s, %s)
+           """, (
+               requester["user_id"],
+               "Your admin access request was accepted"
+           ))
+           conn.commit()
+       # ✅ SEND EMAIL BACK TO REQUESTER (IMPORTANT)
+       try:
+           outlook_service = OutlookService(user_id=target["user_id"])
+           outlook_service.send_invitation_email(
+               invitee=requester["email"],  # send to Admin A
+               inviter=target["email"],    # from Admin B
+               role={"name": "Admin Access Granted"},
+               invite_link="",
+               business_info={}
+           )
+       except Exception as e:
+           logger.error(f"Email sending failed: {str(e)}")
+       # ✅ REDIRECT TO FRONTEND
+       return redirect(f"{os.getenv('BASE_FRNT_URL')}/admin-access?success=true")
+   except Exception as e:
+       logger.error(f"Accept link error: {str(e)}")
+       return jsonify({"error": str(e)}), 500
+   finally:
+       if conn:
+           conn.close()
+ 
 
 @inv_users_bp.route("/admin/grant_special_access", methods=["POST"])
 def grant_special_access():
@@ -815,34 +879,36 @@ def request_special_access():
 
             if cursor.fetchone():
                 return jsonify({"error": "Access already exists"}), 400
-            if requester_id == target["user_id"]:
-                return jsonify({"error": "Cannot request yourself"}), 400
+            #if requester_id == target["user_id"]:
+             #   return jsonify({"error": "Cannot request yourself"}), 400
             
             # 🔔 notification for Admin B
             cursor.execute("""
                 INSERT INTO notifications (user_id, message)
                 VALUES (%s, %s)
             """, (target["user_id"], "Admin requested access to your data"))
-            # generate link (reuse your invite system)
-            link = generate_hashed_url(
-                base_url=f"{os.getenv('BASE_FRNT_URL')}/admin-access",
-                invited_to=target_email,
-                invited_by=requester_id
-            )
 
             # get user source
 
             cursor.execute(
-                "SELECT social, email FROM users WHERE user_id=%s",
-                (requester_id,)
+               "SELECT social, email FROM users WHERE user_id=%s",
+               (requester_id,)
             )
             source_row = cursor.fetchone()
+        
             if not source_row:
-                return jsonify({"error": "Requester not found"}), 400
-    
-            user_source = (source_row.get("social") or "").strip().lower()
-            inviter_email = source_row["email"]
+               return jsonify({"error": "Requester not found"}), 400
             
+            inviter_email = source_row["email"]
+            user_source = (source_row.get("social") or "").strip().lower()
+            
+            # generate link (reuse your invite system)
+            link = generate_hashed_url(
+                base_url=f"{os.getenv('BASE_API_URL')}/admin/accept_from_link",
+                invited_to=target_email,
+                invited_by=inviter_email
+            )
+
             print("DEBUG user_source:", user_source)
             # ✅ GET TOKEN + SOCIAL
             # check outlook connection
@@ -851,7 +917,6 @@ def request_special_access():
                 return jsonify({
                     "error": "Outlook not connected. Please connect Outlook first."
                 }), 400
-            from services.outlook_service import OutlookService
             try:
                 outlook_service = OutlookService(user_id=requester_id)
                 outlook_service.send_invitation_email(
@@ -875,7 +940,7 @@ def request_special_access():
         if conn:
             conn.close()
 
-@inv_users_bp.route("/admin/accept_special_access", methods=["POST"])
+@inv_users_bp.route("/admin/accept_special_access", methods=["GET", "POST"])
 def accept_special_access():
     data = request.get_json()
 
@@ -919,6 +984,56 @@ def accept_special_access():
     finally:
         if conn:
             conn.close()
+
+@inv_users_bp.route("/admin/revoke_special_access", methods=["POST"])
+
+def revoke_special_access():
+
+    data = request.get_json()
+    requester_id = data.get("user_id")   # Admin A (who HAS access)
+    target_id = data.get("target_id")    # Admin B (who GAVE access)
+
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Validate admins
+            cursor.execute(
+                "SELECT user_type, company_name FROM users WHERE user_id=%s",
+                (requester_id,)
+            )
+            req = cursor.fetchone()
+            cursor.execute(
+                "SELECT user_type, company_name FROM users WHERE user_id=%s",
+                (target_id,)
+            )
+            tgt = cursor.fetchone()
+            if not req or not tgt:
+                return jsonify({"error": "Users not found"}), 404
+            if req["user_type"] != "admin" or tgt["user_type"] != "admin":
+                return jsonify({"error": "Only admins allowed"}), 403
+            if req["company_name"] != tgt["company_name"]:
+                return jsonify({"error": "Different organization"}), 403
+            # 🔥 DELETE ACCESS (THIS IS THE KEY PART)
+            cursor.execute("""
+                DELETE FROM special_access
+                WHERE grantor_admin_id=%s AND target_admin_id=%s
+            """, (target_id, requester_id))
+            # Notification
+            cursor.execute("""
+                INSERT INTO notifications (user_id, message)
+                VALUES (%s, %s)
+            """, (
+                requester_id,
+                "Your admin access has been revoked"
+            ))
+            conn.commit()
+        return jsonify({"message": "Access revoked successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+ 
 
 @inv_users_bp.route("/admin/validate_invite/token=<token>", methods=["GET"])
 def validate_invite(token):

@@ -279,7 +279,7 @@ def get_microsoft_redirect_uri(request):
         return f"{base_api}/microsoft/callback"
 
     # Final fallback: use current working endpoint
-    return "https://v0eoj1kl71.execute-api.us-east-1.amazonaws.com/microsoft/callback"
+    return "https://rtdtj5q9dh.execute-api.us-east-1.amazonaws.com/microsoft/callback"
 
 
 def is_microsoft_allowed_origin(origin):

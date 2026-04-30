@@ -1130,6 +1130,109 @@ Generate part {i+1}/{num_chunks}.
     return aggregated_text
 
 
+async def get_think_bedrock_vision_image(
+    data_uri: str,
+    evidence_summary: str,
+    user_id: str,
+    credits,
+) -> dict:
+    """
+    Process a single base64 image through Qwen VL on Bedrock.
+    Passes the image as a proper image_url content block (not embedded in text)
+    to avoid context overflow. Extracts all key information from the image.
+
+    Returns a dict:
+      {
+        "found": [{"artifact": str, "content": str, "file_reference": "image"}],
+        "image_meta": {
+          "image_type": str,       # screenshot / log / chart / document / photo / unknown
+          "timestamps": [str],     # any visible dates or times
+          "log_entries": [str],    # log lines if the image is a log
+          "extracted_text": str,   # all visible text
+        }
+      }
+    Returns {} on failure.
+    """
+    import re as _re
+
+    # -- Estimate credit cost from the data URI size ----------------------
+    try:
+        token_cost = image_credit_cost(data_uri)
+    except Exception:
+        token_cost = len(data_uri) // 4
+
+    if not await credits.has_ai_credits(total_chars=token_cost, user_id=user_id):
+        return {}
+
+    extraction_prompt = (
+        "You are an expert evidence analyst. Analyze the image provided and extract EVERY piece of information.\n\n"
+        f"KNOWN EVIDENCE TYPES:\n{evidence_summary}\n\n"
+        "Return ONLY valid JSON with this structure (no markdown, no explanation):\n"
+        "{\n"
+        '  "found": [\n'
+        '    {"artifact": "<evidence type name>", "content": "<what you see that matches this evidence>", "file_reference": "image"}\n'
+        "  ],\n"
+        '  "image_meta": {\n'
+        '    "image_type": "<screenshot|log|chart|document|photo|diagram|unknown>",\n'
+        '    "timestamps": ["<any visible date or time strings>"],\n'
+        '    "log_entries": ["<each log line if this is a log image>"],\n'
+        '    "extracted_text": "<all visible text in the image, verbatim>"\n'
+        "  }\n"
+        "}"
+    )
+
+    prompt_chars = len(extraction_prompt) + len(evidence_summary)
+
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                    {"type": "text", "text": extraction_prompt},
+                ],
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": 4096,
+    }
+
+    try:
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=THINK_MODEL,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+        raw_body = response["body"].read()
+        response_body = json.loads(raw_body)
+        response_text = extract_bedrock_text(response_body)
+    except Exception as e:
+        import logging as _log
+        _log.getLogger(__name__).error("get_think_bedrock_vision_image failed: %s", e)
+        return {}
+
+    # -- Clean and parse JSON --------------------------------------------
+    cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", response_text.strip(), flags=_re.MULTILINE)
+    try:
+        result = json.loads(cleaned)
+    except Exception:
+        result = {}
+
+    # -- Deduct credits --------------------------------------------------
+    output_chars = len(response_text)
+    total_chars = token_cost + prompt_chars + output_chars
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_chars,
+        user_id=user_id,
+        reference_id="get_think_bedrock_vision_image",
+    )
+
+    return result
+
+
 async def get_think_fire_response_image(
     user_message: str,
     role: str,

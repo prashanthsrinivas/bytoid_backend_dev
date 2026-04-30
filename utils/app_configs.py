@@ -20,6 +20,7 @@ DEV_ORIGINS = {
     "preview--bytoiddev.lovable.app",
     "preview--bytoid-45.lovable.app",
     "dev.bytoid.ai",
+    "http://localhost:8080",
 }
 
 ALLOWED_ORIGINS = PROD_ORIGINS | (DEV_ORIGINS if IS_DEV else set())

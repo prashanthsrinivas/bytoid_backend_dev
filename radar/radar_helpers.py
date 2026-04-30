@@ -158,7 +158,7 @@ def _extract_archive_files(filename, file_bytes):
             for inner_name in files_in_dir:
                 inner_path = os.path.join(root, inner_name)
                 ext = os.path.splitext(inner_name)[1].lower()
-                if ext not in extension_loader_map:
+                if ext not in extension_loader_map and ext not in IMAGE_EXTENSIONS:
                     continue
                 try:
                     with open(inner_path, "rb") as fh:
@@ -203,6 +203,18 @@ def extract_files_content(files):
             if guessed_ext:
                 ext = guessed_ext.lower()
                 filename = name + ext
+
+        if ext in IMAGE_EXTENSIONS:
+            import base64 as _b64
+            raw = f.get("data") or b""
+            ct = content_type or _mimetypes.guess_type(filename)[0] or "image/jpeg"
+            b64 = _b64.b64encode(raw).decode()
+            all_file_data.append({
+                "filename": filename,
+                "type": ext,
+                "content": f"data:{ct};base64,{b64}",
+            })
+            continue
 
         if ext not in extension_loader_map:
             logger.debug("Skipping unsupported file: %s", filename)
@@ -388,7 +400,10 @@ def extract_file_payload(file_item, default_filename: str = "file"):
         return None
 
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".webp", ".gif",
+    ".bmp", ".svg", ".ico", ".tiff", ".tif",
+}
 
 
 def process_file_payloads(

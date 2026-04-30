@@ -16,7 +16,7 @@ from utils.fireworkzz import (
     get_fireworks_response,
     get_fireworks_response2,
     get_evaluator_fireworks,
-    get_think_fire_response_image,
+    get_think_bedrock_vision_image,
 )
 from utils.normal import (
     can_reply_to_email,
@@ -3244,7 +3244,7 @@ class WorkflowRunnerV2:
                 dbserver = LanceDBServer()
                 runbook_list = await dbserver.get_runbook_by_id(self.userid, runbook_id)
                 if runbook_list:
-                    self.logger.debug("runbook_list: %s", runbook_list)
+                    # self.logger.debug("runbook_list: %s", runbook_list)
                     runbook = runbook_list[0]
                     raw_config = runbook.get("runbook_evidence_config", "") or ""
                     # print(type(raw_config), raw_config)
@@ -3325,25 +3325,32 @@ class WorkflowRunnerV2:
                 )
 
         if inp_links:
-            vision_prompt = (
-                f"KNOWN EVIDENCE TYPES:\n{evidence_summary}\n\n"
-                "Identify which evidence types are visible in these images.\n"
-                'Return ONLY valid JSON: {"found": [{"artifact": "<artifact name>", "content": "<description>", "file_reference": "image"}]}'
-            )
-            for batch in [inp_links[i : i + 5] for i in range(0, len(inp_links), 5)]:
+            self.logger.info("INSIDE IMAGES EXTRACTION — %d image(s)", len(inp_links))
+            for idx, data_uri in enumerate(inp_links):
                 try:
-                    resp = await get_think_fire_response_image(
-                        user_message=vision_prompt,
-                        role="user",
+                    self.logger.info("Processing image %d/%d", idx + 1, len(inp_links))
+                    result = await get_think_bedrock_vision_image(
+                        data_uri=data_uri,
+                        evidence_summary=evidence_summary,
                         user_id=self.userid,
                         credits=self.credits,
-                        context="",
-                        image_url=batch,
                     )
-                    parsed = safe_json_load(resp)
-                    for item in (
-                        parsed.get("found", []) if isinstance(parsed, dict) else []
-                    ):
+                    if not result:
+                        self.logger.warning("No result for image %d", idx + 1)
+                        continue
+                    # self.logger.info("extracted from image %s", result)
+
+                    # Log image metadata for debugging
+                    meta = result.get("image_meta", {})
+                    self.logger.info(
+                        "Image %d meta — type=%s timestamps=%s log_entries=%d",
+                        idx + 1,
+                        meta.get("image_type", "unknown"),
+                        meta.get("timestamps", []),
+                        len(meta.get("log_entries", [])),
+                    )
+
+                    for item in result.get("found", []):
                         artifact = item.get("artifact", "")
                         content = item.get("content", "")
                         if artifact and content:
@@ -3351,10 +3358,13 @@ class WorkflowRunnerV2:
                                 artifact, {"snippets": [], "files": set()}
                             )
                             entry["snippets"].append(content)
-                            entry["files"].add("image")
+                            # entry["files"].add("image")
                 except Exception as e:
                     self.logger.error(
-                        "Vision categorization failed: %s", e, exc_info=IS_DEV
+                        "Vision categorization failed for image %d: %s",
+                        idx + 1,
+                        e,
+                        exc_info=IS_DEV,
                     )
 
         # ===========================
@@ -3712,7 +3722,7 @@ class WorkflowRunnerV2:
             target["answer_type"] = "upload"
             if evidence_url:
                 current_urls = self.workflow_json.get("evidences_ques", [])
-                current_urls.extend(attach_CLDFRNT_url(evidence_url))
+                current_urls.append(attach_CLDFRNT_url(evidence_url))
                 self.workflow_json["evidences_ques"] = current_urls
             if comment is not None:
                 target["comment"] = comment

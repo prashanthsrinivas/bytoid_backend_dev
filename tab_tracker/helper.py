@@ -1,10 +1,11 @@
 import uuid
+from datetime import datetime
 
 from utils.normal import ensure_dir
 import os
 import json
 
-from utils.s3_utils import delete_file_from_s3, read_json_from_s3, upload_any_file
+from utils.s3_utils import delete_file_from_s3, read_json_from_s3, upload_any_file, save_any_s3
 
 def _get_local_tmp_path():
     path = "data/tmp_json/config_tracker.json"
@@ -311,12 +312,23 @@ def normalize_block_for_append(block, tracker_type):
             if micro_block.get("type") == "table_schema":
                 micro_data = micro_block.get("data", {})
                 rows = micro_data.get("rows", [])
+                headers = micro_data.get("headers", [])
 
-                if rows and isinstance(rows[0], dict):
-                    # Extract headers from first row keys
-                    block["headers"] = list(rows[0].keys())
-                    block["rows"] = rows
-                    return block
+                if rows:
+                    # Case 1: rows are dicts (standard format)
+                    if isinstance(rows[0], dict):
+                        block["headers"] = list(rows[0].keys())
+                        block["rows"] = rows
+                        return block
+                    # Case 2: rows are arrays, headers are separate
+                    elif isinstance(rows[0], (list, tuple)) and headers:
+                        converted_rows = []
+                        for row_array in rows:
+                            row_dict = {headers[i]: row_array[i] for i in range(min(len(headers), len(row_array)))}
+                            converted_rows.append(row_dict)
+                        block["headers"] = headers
+                        block["rows"] = converted_rows
+                        return block
 
         # ✅ MATRIX: Extract from micro_blocks[0].data.matrix with axes
         elif tracker_type == "matrix":
@@ -849,22 +861,100 @@ def _update_or_append_entries(tracker_data, block, result_id):
 
 
 def _update_or_append_table(tracker, block, result_id, block_id):
-    rows_to_update = [r for r in tracker.get("rows", []) if r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id]
-    if rows_to_update:
-        schema_cols = tracker["schema"]["columns"]
-        col_map = {col["source_column"]: col["id"] for col in schema_cols}
-        for idx, row in enumerate(block.get("rows", [])):
-            for tr in rows_to_update:
-                if tr["source"]["row_index"] == idx or (row.get("micro_id") and tr["source"]["micro_id"] == row.get("micro_id")):
-                    values = {}
-                    for key, val in row.items():
-                        if key in col_map:
-                            values[col_map[key]] = val
-                    tr["values"] = values
-                    tr["last_updated_from"] = "report"
-                    break
-    else:
+    # Check if rows for this result_id + block_id already exist in the tracker
+    rows_to_delete = [r for r in tracker.get("rows", []) if r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id]
+
+    if rows_to_delete:
+        # Delete old rows for this result_id + block_id, then append new ones
+        tracker["rows"] = [r for r in tracker.get("rows", []) if not (r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id)]
         append_table(tracker, block, result_id)
+    else:
+        # No existing rows found, just append normally
+        append_table(tracker, block, result_id)
+
+
+def _extract_normalized_rows(block, tracker_type):
+    """
+    Normalize a block and extract its rows as a list of dicts.
+    Used for comparing blocks before and after editing.
+    """
+    normalized = normalize_block_for_append(block, tracker_type)
+    return normalized.get("rows", [])
+
+
+def _detect_row_changes(current_rows, new_rows):
+    """
+    Compare two lists of row dicts and return indices of changed and new rows.
+
+    Returns:
+        (changed_indices, new_indices)
+        - changed_indices: list of indices where rows differ
+        - new_indices: list of indices beyond len(current_rows)
+    """
+    changed_indices = [
+        i for i in range(min(len(current_rows), len(new_rows)))
+        if current_rows[i] != new_rows[i]
+    ]
+    new_indices = list(range(len(current_rows), len(new_rows)))
+    return changed_indices, new_indices
+
+
+def _apply_row_changes_to_tracker(tracker_data, new_rows, result_id, block_id, changed_indices, new_indices):
+    """
+    Surgically update tracker rows: only update changed rows, append new ones.
+    Preserves unchanged rows in the tracker.
+    """
+    schema_cols = tracker_data.get("schema", {}).get("columns", [])
+    col_map = {col["source_column"]: col["id"] for col in schema_cols}
+
+    # Step 1: Update changed rows
+    for idx in changed_indices:
+        if idx < len(new_rows):
+            row_dict = new_rows[idx]
+            # Find tracker row with matching row_index
+            matching_rows = [
+                r for r in tracker_data.get("rows", [])
+                if r.get("result_id") == result_id and r.get("source", {}).get("row_index") == idx
+            ]
+            for tr in matching_rows:
+                values = {}
+                for key, val in row_dict.items():
+                    if key in col_map:
+                        values[col_map[key]] = val
+                tr["values"] = values
+                tr["last_updated_from"] = "sync"
+
+    # Step 2: Append new rows
+    for idx in new_indices:
+        if idx < len(new_rows):
+            row_dict = new_rows[idx]
+            values = {}
+            for key, val in row_dict.items():
+                if key not in col_map:
+                    # New column found in row, add to schema
+                    new_col_id = f"col_{len(schema_cols) + 1}"
+                    new_col = {
+                        "id": new_col_id,
+                        "name": key,
+                        "source_column": key
+                    }
+                    schema_cols.append(new_col)
+                    col_map[key] = new_col_id
+                    values[new_col_id] = val
+                else:
+                    values[col_map[key]] = val
+
+            tracker_data.get("rows", []).append({
+                "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
+                "result_id": result_id,
+                "source": {
+                    "block_id": block_id,
+                    "micro_id": None,
+                    "row_index": idx
+                },
+                "values": values,
+                "last_updated_from": "sync"
+            })
 
 
 def _update_or_append_matrix(tracker, block, result_id, block_id):
@@ -952,5 +1042,258 @@ def _rebuild_micro_blocks_from_tracker(tracker_data, result_id, block_id):
             "data": {"records": records}
         }]
     return []
+
+
+def update_tracker_from_block(tracker_data, block, result_id, block_id):
+    """
+    Update tracker rows/cells/records from a modified block.
+    This is used when a block is edited in the report - we want to update
+    the corresponding tracker data, not just append.
+
+    For tables: Remove old rows from this result_id+block_id, add new ones
+    For matrices: Remove old cells, add new ones
+    For scorecards: Remove old records, add new ones
+
+    Returns dict with update summary
+    """
+    tracker_type = tracker_data.get("type")
+    summary = {
+        "type": tracker_type,
+        "rows_removed": 0,
+        "rows_added": 0,
+        "cells_removed": 0,
+        "cells_added": 0,
+        "records_removed": 0,
+        "records_added": 0,
+    }
+
+    if tracker_type == "table":
+        rows = tracker_data.get("rows", [])
+
+        # Step 1: Remove existing rows from this result_id and block_id
+        initial_count = len(rows)
+        tracker_data["rows"] = [
+            r for r in rows
+            if not (r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id)
+        ]
+        summary["rows_removed"] = initial_count - len(tracker_data["rows"])
+
+        # Step 2: Add new rows from the updated block
+        block_data = normalize_block_for_append(block, tracker_type)
+        schema_cols = tracker_data["schema"]["columns"]
+        col_map = {col["source_column"]: col["id"] for col in schema_cols}
+
+        # Ensure all columns from block exist in tracker schema
+        for header in block_data.get("headers", []):
+            if header not in col_map:
+                new_col_id = f"col_{len(schema_cols) + 1}"
+                schema_cols.append({
+                    "id": new_col_id,
+                    "name": header,
+                    "source_column": header
+                })
+                col_map[header] = new_col_id
+
+        # Add new rows
+        for idx, row_data in enumerate(block_data.get("rows", [])):
+            values = {}
+            for key, val in row_data.items():
+                if key in col_map:
+                    values[col_map[key]] = val
+
+            tracker_data["rows"].append({
+                "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
+                "result_id": result_id,
+                "source": {
+                    "block_id": block_id,
+                    "micro_id": row_data.get("micro_id"),
+                    "row_index": idx
+                },
+                "values": values,
+                "last_updated_from": "report"
+            })
+            summary["rows_added"] += 1
+
+    elif tracker_type == "matrix":
+        cells = tracker_data.get("cells", [])
+
+        # Step 1: Remove existing cells from this result_id
+        initial_count = len(cells)
+        tracker_data["cells"] = [c for c in cells if c.get("result_id") != result_id]
+        summary["cells_removed"] = initial_count - len(tracker_data["cells"])
+
+        # Step 2: Add new cells from the updated block
+        block_data = normalize_block_for_append(block, tracker_type)
+        schema = tracker_data["schema"]
+
+        for entry in block_data.get("data", []):
+            row_key = entry.get("row")
+            col_key = entry.get("column")
+            value = entry.get("value")
+
+            if row_key is None or col_key is None:
+                continue
+
+            # Ensure schema has these axes
+            if row_key not in schema["rows"]:
+                schema["rows"].append(row_key)
+            if col_key not in schema["columns"]:
+                schema["columns"].append(col_key)
+
+            tracker_data["cells"].append({
+                "row": row_key,
+                "column": col_key,
+                "value": value,
+                "result_id": result_id
+            })
+            summary["cells_added"] += 1
+
+    elif tracker_type == "scorecard":
+        records = tracker_data.get("records", [])
+
+        # Step 1: Remove existing records from this result_id
+        initial_count = len(records)
+        tracker_data["records"] = [r for r in records if r.get("result_id") != result_id]
+        summary["records_removed"] = initial_count - len(tracker_data["records"])
+
+        # Step 2: Add new records from the updated block
+        block_data = normalize_block_for_append(block, tracker_type)
+        schema = tracker_data["schema"]
+
+        for entry in block_data.get("data", []):
+            metric = entry.get("metric")
+            value = entry.get("value")
+
+            if not metric:
+                continue
+
+            # Ensure metric exists in schema
+            if metric not in schema["metrics"]:
+                schema["metrics"].append(metric)
+
+            tracker_data["records"].append({
+                "metric": metric,
+                "value": value,
+                "result_id": result_id
+            })
+            summary["records_added"] += 1
+
+    return summary
+
+
+def upload_evidence_file(user_id, tracker_id, row_id, column_id, file_obj, filename):
+    """
+    Upload evidence file to S3 and return the S3 key.
+
+    Args:
+        user_id: User ID
+        tracker_id: Tracker ID
+        row_id: Row ID (or row_index if row_id not available)
+        column_id: Column ID where evidence will be stored
+        file_obj: File object from request.files
+        filename: Original filename
+
+    Returns:
+        dict with s3_key, file_info, and metadata
+    """
+    try:
+        # Generate unique filename with timestamp
+        date = datetime.utcnow().strftime("%Y-%m-%d")
+        file_uuid = uuid.uuid4().hex[:8]
+        file_ext = filename.rsplit(".", 1)[-1] if "." in filename else "bin"
+        safe_name = filename.replace(" ", "_")
+
+        # S3 path structure: {user_id}/tracker/{tracker_id}/evidence/{row_id}/{date}_{uuid}_{filename}
+        s3_key = f"{user_id}/tracker/{tracker_id}/evidence/{row_id}/{date}_{file_uuid}_{safe_name}"
+
+        # Upload to S3
+        local_path = f"/tmp/{file_uuid}_{safe_name}"
+        file_obj.save(local_path)
+
+        save_any_s3(local_path, s3_key)
+
+        # Clean up local file
+        try:
+            os.remove(local_path)
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "s3_key": s3_key,
+            "filename": safe_name,
+            "file_size": os.path.getsize(local_path) if os.path.exists(local_path) else 0,
+            "upload_timestamp": datetime.utcnow().isoformat(),
+            "column_id": column_id,
+            "row_id": row_id
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def update_tracker_evidence(user_id, tracker_id, row_id, column_id, s3_key):
+    """
+    Update a tracker row's evidence column with the S3 key.
+
+    Args:
+        user_id: User ID
+        tracker_id: Tracker ID
+        row_id: Row ID (internal row_id from tracker, not row_index)
+        column_id: Column ID to update
+        s3_key: S3 key of the uploaded file
+
+    Returns:
+        dict with success status and updated tracker info
+    """
+    try:
+        tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
+        tracker_data = read_json_from_s3(tracker_path)
+
+        if not tracker_data:
+            return {"success": False, "error": "Tracker not found"}
+
+        tracker_type = tracker_data.get("type")
+
+        if tracker_type != "table":
+            return {"success": False, "error": "Evidence upload only supported for table trackers"}
+
+        rows = tracker_data.get("rows", [])
+        row_found = False
+
+        for row in rows:
+            if row.get("row_id") == row_id:
+                # Update the column value with S3 key
+                if "values" not in row:
+                    row["values"] = {}
+
+                row["values"][column_id] = s3_key
+                row["last_updated_from"] = "evidence_upload"
+                row_found = True
+                break
+
+        if not row_found:
+            return {"success": False, "error": f"Row '{row_id}' not found in tracker"}
+
+        # Save updated tracker
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        return {
+            "success": True,
+            "message": "Evidence file linked to tracker row",
+            "tracker_id": tracker_id,
+            "row_id": row_id,
+            "column_id": column_id,
+            "s3_key": s3_key
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 # def get_block_data(user_id,runbook_id):

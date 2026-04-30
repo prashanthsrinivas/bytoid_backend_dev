@@ -17,8 +17,8 @@ def get_logger(name="app", log_level="INFO", log_file="logs/app.log"):
     # Avoid duplicate handlers
     if not logger.handlers:
         formatter = logging.Formatter(
-            "%(asctime)s - %(levelname)s - [%(name)s] - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+            "%(asctime)s | %(levelname).1s | %(name)s | %(message)s",
+            datefmt="%H:%M:%S",
         )
 
         # Console handler

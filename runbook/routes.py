@@ -537,7 +537,8 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
                 )
         else:
             files_obj = json.loads(runbook_data.get("files") or "{}")
-            structure_file = files_obj.get("structure_file")
+            if isinstance(files_obj, dict):
+                structure_file = files_obj.get("structure_file")
             await emit(
                 msg_builder.job_progress(
                     job_id,

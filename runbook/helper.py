@@ -16,7 +16,7 @@ from db.rds_db import connect_to_rds
 # from services.scheduler_service import SchedulerService
 from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file
-from utils.s3_utils import read_json_from_s3, upload_any_file
+from utils.s3_utils import read_json_from_s3, upload_any_file, s3bucket, S3_BUCKET
 from utils.fireworkzz import (
     get_firework_embedding,
     get_fireworks_response2,
@@ -24,9 +24,14 @@ from utils.fireworkzz import (
     get_think_fire_response2_og,
     get_think_fire_response2_og2,
     get_extract_response,
+    get_think_bedrock_vision_image,
 )
 from utils.normal import load_yaml_file
-from radar.radar_helpers import process_file_payloads
+from radar.radar_helpers import (
+    process_file_payloads,
+    extract_files_content,
+    IMAGE_EXTENSIONS,
+)
 
 from cust_helpers import pathconfig
 from utils.base_logger import get_logger
@@ -236,6 +241,14 @@ async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
 
     results = []
     EVIDENCES_TYPES, _ = _get_user_evidence(user_id)
+    if isinstance(EVIDENCES_TYPES, list):
+        EVIDENCES_TYPES = "\n".join(
+            f"- {e.get('artifact', '')}: {e.get('expectations', '')}"
+            for e in EVIDENCES_TYPES
+        )
+    elif not isinstance(EVIDENCES_TYPES, str):
+        EVIDENCES_TYPES = json.dumps(EVIDENCES_TYPES)
+
     for filename, chunks in files_map.items():
         combined_data = "\n\n".join(chunks)[:20000]
         prompt = (
@@ -283,6 +296,88 @@ async def reduce_data_for_report(
         credits=credits,
     )
     return extracted if extracted else json.dumps(data_items)
+
+
+async def _reduce_by_admissible_evidence(
+    data_checked, admissible_evidence, user_id, credits
+):
+    """
+    For playbook-based executions: extract from data_checked only the information
+    that satisfies each admissible artifact's expectations (from the user evidence config).
+    Unmatched items are dropped — only admissible content reaches the report.
+    """
+    if not data_checked or not admissible_evidence:
+        return json.dumps(data_checked)
+
+    # artifact → [expectation, ...] from the user evidence config
+    user_ev_list, _ = _get_user_evidence(user_id)
+    artifact_expectations = {
+        entry.get("artifact", ""): [
+            e.strip() for e in entry.get("expectations", "").split(";") if e.strip()
+        ]
+        for entry in (user_ev_list if isinstance(user_ev_list, list) else [])
+    }
+
+    # filename → artifact from the admissible_evidence list
+    filename_to_artifact = {}
+    for ev in admissible_evidence:
+        artifact = ev.get("artifact", "")
+        for fname in ev.get("files", []):
+            filename_to_artifact[os.path.basename(fname)] = artifact
+            filename_to_artifact[fname] = artifact
+
+    # Group data_checked items by their admissible artifact
+    artifact_groups = {}
+    for item in data_checked:
+        source = item.get("source", "")
+        artifact = filename_to_artifact.get(
+            os.path.basename(source)
+        ) or filename_to_artifact.get(source)
+        if artifact:
+            artifact_groups.setdefault(artifact, []).append(str(item.get("data", "")))
+
+    extracted_parts = []
+    for artifact, chunks in artifact_groups.items():
+        expectations = artifact_expectations.get(artifact, [])
+        combined_data = "\n\n".join(chunks)[:15000]
+        expectations_str = (
+            "; ".join(expectations) if expectations else "general compliance criteria"
+        )
+
+        prompt = (
+            f"ARTIFACT: {artifact}\n"
+            f"EXPECTATIONS: {expectations_str}\n\n"
+            f"DATA:\n{combined_data}\n\n"
+            "Extract ONLY the information from the data that is relevant to satisfying "
+            "the above expectations. Include specific facts, values, dates, and references. "
+            "Discard anything not related to these expectations.\n"
+            f'Return ONLY JSON: {{"artifact": "{artifact}", "extracted": "..."}}'
+        )
+        try:
+            raw = await get_fireworks_response2(
+                user_message=prompt,
+                role="user",
+                temp=0.0,
+                user_id=user_id,
+                credits=credits,
+            )
+            parsed = json.loads(raw) if raw else {}
+            content = parsed.get("extracted") if isinstance(parsed, dict) else None
+            extracted_parts.append(
+                {
+                    "artifact": artifact,
+                    "extracted": content or combined_data[:3000],
+                }
+            )
+        except Exception:
+            extracted_parts.append(
+                {
+                    "artifact": artifact,
+                    "extracted": combined_data[:3000],
+                }
+            )
+
+    return json.dumps(extracted_parts)
 
 
 async def run_runbook_execution_engine(
@@ -471,15 +566,144 @@ async def run_runbook_execution_engine(
         # OPTIONAL RADAR DATA SOURCES
         # --------------------------------------------------
 
+        import mimetypes as _mimetypes, tempfile as _tempfile
+
+        # Pop playbook evidence blobs (always, so they don't pollute the runbook dict)
+        _evidences_urls = runbook.pop("_playbook_evidences_urls", [])
+        _ev_overview = runbook.pop("_playbook_evidence_overview", {})
+        _ev_questions = runbook.pop("_playbook_ev_questions", [])
+
         data_checked = []
         reference_RWA = []
         if document_data:
             reference_RWA.append(document_data)
 
+        if is_playbook_based_execution and _evidences_urls:
+            _cf_prefix = (os.getenv("CLOUDFRNT", "")).rstrip("/") + "/"
+            _s3_client = s3bucket()
+
+            for url in _evidences_urls:
+                s3_key = (
+                    url.replace(_cf_prefix, "", 1)
+                    if url.startswith(_cf_prefix)
+                    else url
+                )
+                fname = os.path.basename(s3_key)
+                ext = os.path.splitext(fname)[1].lower()
+                try:
+                    tmp_path = os.path.join(_tempfile.gettempdir(), fname)
+                    _s3_client.download_file(
+                        Bucket=S3_BUCKET, Key=s3_key, Filename=tmp_path
+                    )
+                    with open(tmp_path, "rb") as fh:
+                        file_bytes = fh.read()
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+
+                    ct = _mimetypes.guess_type(fname)[0] or "application/octet-stream"
+                    extracted = extract_files_content(
+                        [{"filename": fname, "data": file_bytes, "content_type": ct}]
+                    )
+                    for item in extracted:
+                        if item.get("type") in IMAGE_EXTENSIONS:
+                            ct = _mimetypes.guess_type(fname)[0] or "image/jpeg"
+                            import base64 as _b64
+
+                            b64 = _b64.b64encode(file_bytes).decode()
+                            data_uri = f"data:{ct};base64,{b64}"
+
+                            _ev_admissible = _ev_overview.get("admissible", [])
+                            _evidence_summary = (
+                                "\n".join(
+                                    f"- {ev.get('artifact', '')}"
+                                    for ev in _ev_admissible
+                                )
+                                or "No specific evidence types configured."
+                            )
+
+                            logger.info("Running vision extraction on image: %s", fname)
+                            vision_result = await get_think_bedrock_vision_image(
+                                data_uri=data_uri,
+                                evidence_summary=_evidence_summary,
+                                user_id=user_id,
+                                credits=credits,
+                            )
+
+                            if vision_result:
+                                meta = vision_result.get("image_meta", {})
+                                logger.info(
+                                    "Image vision result — type=%s timestamps=%s log_entries=%d",
+                                    meta.get("image_type", "unknown"),
+                                    meta.get("timestamps", []),
+                                    len(meta.get("log_entries", [])),
+                                )
+                                # Build a single text blob with all extracted info
+                                parts = []
+                                if meta.get("extracted_text"):
+                                    parts.append(
+                                        f"Extracted text:\n{meta['extracted_text']}"
+                                    )
+                                if meta.get("timestamps"):
+                                    parts.append(
+                                        "Timestamps: " + ", ".join(meta["timestamps"])
+                                    )
+                                if meta.get("log_entries"):
+                                    parts.append(
+                                        "Log entries:\n"
+                                        + "\n".join(meta["log_entries"])
+                                    )
+                                for found_item in vision_result.get("found", []):
+                                    artifact = found_item.get("artifact", "")
+                                    content = found_item.get("content", "")
+                                    if artifact and content:
+                                        parts.append(f"[{artifact}] {content}")
+                                if parts:
+                                    data_checked.append(
+                                        {
+                                            "type": "image",
+                                            "source": s3_key,
+                                            "data": "\n\n".join(parts),
+                                        }
+                                    )
+                            continue
+                        else:
+                            data_checked.append(
+                                {
+                                    "type": "docs",
+                                    "source": s3_key,
+                                    "data": item["content"],
+                                }
+                            )
+                except Exception as _e:
+                    logger.warning(
+                        "Playbook evidence extraction failed for %s: %s", s3_key, _e
+                    )
+
+        _playbook_ev_ctx = None
+        if is_playbook_based_execution and _ev_overview:
+            _playbook_ev_ctx = {
+                "admissible_evidence": _ev_overview.get("admissible", []),
+                "inadmissible_evidence": _ev_overview.get("inadmissible", []),
+                "evidence_gap_responses": [
+                    {
+                        "question": q.get("question"),
+                        "information": q.get("information"),
+                        "answer_type": q.get("answer_type"),
+                        "comment": q.get("comment"),
+                        "artifact": q.get("evidence_artifact"),
+                        "expectation": q.get("missing_expectation"),
+                    }
+                    for q in _ev_questions
+                    if q.get("user_answer") is not None
+                ],
+            }
+
         if main_source and data_sources:
             logger.debug("Processing data sources")
 
-            data_checked = await retreval_from_sources(
+            retrieved = await retreval_from_sources(
                 conn,
                 dbserver,
                 main_source,
@@ -487,6 +711,7 @@ async def run_runbook_execution_engine(
                 user_id,
                 payload,
             )
+            data_checked.extend(retrieved)
             if data_checked and len(data_checked) > 10:
                 progress = 45
 
@@ -611,9 +836,17 @@ async def run_runbook_execution_engine(
         # REDUCE DATA TO STAY WITHIN TOKEN LIMITS
         # --------------------------------------------------
         logger.debug("Reducing data_checked")
-        reduced_datachecked = await reduce_data_for_report(
-            data_checked, structure_file_payload, user_id, credits, label="evidence"
-        )
+        if is_playbook_based_execution and _playbook_ev_ctx:
+            reduced_datachecked = await _reduce_by_admissible_evidence(
+                data_checked,
+                _playbook_ev_ctx.get("admissible_evidence", []),
+                user_id,
+                credits,
+            )
+        else:
+            reduced_datachecked = await reduce_data_for_report(
+                data_checked, structure_file_payload, user_id, credits, label="evidence"
+            )
         logger.debug("Reducing reference_rwa")
         reduced_referencerwa = await reduce_data_for_report(
             reference_RWA,
@@ -802,11 +1035,19 @@ async def run_runbook_execution_engine(
 
         if data_checked:
             logger.debug("data_checked length: %d", len(data_checked))
-            report_viewer = data_sources.get("report_viewer")
-            evidence_analysis = await run_evidence_analysis(
+            report_viewer = (data_sources or {}).get("report_viewer")
+            evidence_items = await run_evidence_analysis(
                 data_checked, report_viewer, user_id, credits
             )
-            merged_result["evidence_analysis"] = evidence_analysis
+            merged_result["evidence_analysis"] = evidence_items
+
+        if _playbook_ev_ctx:
+            merged_result["evidence_analysis"] = {
+                "items": merged_result.get("evidence_analysis", []),
+                "admissible_evidence": _playbook_ev_ctx["admissible_evidence"],
+                "inadmissible_evidence": _playbook_ev_ctx["inadmissible_evidence"],
+                "evidence_gap_responses": _playbook_ev_ctx["evidence_gap_responses"],
+            }
 
         await emit(
             msg_builder.job_progress(
@@ -1082,6 +1323,15 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
         structure_file_payload = raw_structure
     instruction_data = await get_playbook_instruction(user_id, playbook_id)
     logger.debug("Instruction data keys: %s", list(instruction_data.keys()))
+
+    # Stash playbook evidence data for the execution engine
+    runbook["_playbook_evidences_urls"] = instruction_data.get("evidences_ques", [])
+    runbook["_playbook_evidence_overview"] = instruction_data.get(
+        "evidence_overview", {}
+    )
+    runbook["_playbook_ev_questions"] = instruction_data.get(
+        "evidence_based_questions", []
+    )
     # runbook["runtime_input"] = json.dumps(runtime_input.get("chat", []))
 
     logger.debug("runtime_input type: %s", type(instruction_data))

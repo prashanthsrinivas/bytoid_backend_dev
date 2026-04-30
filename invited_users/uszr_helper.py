@@ -19,7 +19,7 @@ def generate_hashed_url(base_url: str, invited_by: str, invited_to: str) -> str:
     # Encrypt the payload
     token = fernet.encrypt(payload.encode()).decode()
 
-    return f"{base_url}/{token}"
+    return f"{base_url}?token={token}"
 
 
 def dehashed_url(token: str) -> dict:

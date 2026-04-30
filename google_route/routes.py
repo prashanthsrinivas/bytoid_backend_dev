@@ -215,8 +215,7 @@ def oauth2callback(url, state):
 
                         internal_subscription_id = f"starter_{user_id}"
 
-                        cursor.execute(
-                            """
+                        cursor.execute("""
                             SELECT plan_code, monthly_token_limit
                             FROM plans
                             WHERE plan_code IN ('STARTER','FREE')
@@ -226,8 +225,7 @@ def oauth2callback(url, state):
                                 WHEN 'FREE' THEN 2
                             END
                             LIMIT 1
-                        """
-                        )
+                        """)
 
                         starter_plan = cursor.fetchone()
 

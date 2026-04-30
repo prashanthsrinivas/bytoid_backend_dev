@@ -1,6 +1,7 @@
 from datetime import datetime
 import json
-from flask import Flask, request
+from utils.base_logger import get_logger
+from flask import Flask, request, g
 from flask_compress import Compress
 from google_route.routes import google_bp
 from facebook_route.routes import facebook_bp
@@ -215,6 +216,32 @@ def save_routes_to_json(file_path="all_apis.json"):
         json.dump(data, f, indent=2)
 
     return file_path
+
+
+# logger = get_logger("api")
+import time, uuid
+
+
+@app.before_request
+def before_request():
+    g.start_time = time.time()
+    g.request_id = str(uuid.uuid4())[:8]
+
+
+@app.after_request
+def after_request(response):
+    duration = round((time.time() - g.start_time) * 1000, 2)
+
+    blueprint_name = request.blueprint or "root"
+    logger = get_logger(blueprint_name)
+
+    logger.info(
+        f"[{g.request_id}] {request.method} {request.path} "
+        f"{response.status_code} {duration}ms "
+        f"IP={request.remote_addr}"
+    )
+
+    return response
 
 
 # save_routes_to_json()
