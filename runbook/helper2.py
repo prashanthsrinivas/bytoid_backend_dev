@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import uuid
 from agent_route.doc_clarity import QueryData
@@ -9,13 +10,15 @@ from db.rds_db import connect_to_rds
 
 # from services.scheduler_service import SchedulerService
 from utils.normal import load_yaml_file
-from utils.s3_utils import read_json_from_s3
+from utils.s3_utils import read_json_from_s3, s3bucket, S3_BUCKET
 from utils.fireworkzz import (
     get_firework_embedding,
     get_think_bedrok_response,
     get_think_fire_response2_og,
     get_think_fire_response2_og2,
+    get_think_bedrock_vision_image,
 )
+from radar.radar_helpers import extract_files_content, IMAGE_EXTENSIONS
 from utils.normal import load_yaml_file
 
 from cust_helpers import pathconfig
@@ -114,6 +117,7 @@ async def modify_run_runbook_execution_engine(
     job_id=None,
     session_id=None,
     progress=None,
+    is_playbook_based_execution=False,
 ):
     import json, time, uuid
     from websockets_custom.ws_instance import ws_service, msg_builder_main
@@ -143,6 +147,13 @@ async def modify_run_runbook_execution_engine(
     credits = Credits(conn)
 
     runbook_id = runbook["runbook_id"]
+
+    # Pop playbook evidence blobs (always, so they don't pollute the runbook dict)
+    _evidences_urls = runbook.pop("_playbook_evidences_urls", [])
+    _ev_overview = runbook.pop("_playbook_evidence_overview", {})
+    _ev_questions = runbook.pop("_playbook_ev_questions", [])
+    if _evidences_urls:
+        is_playbook_based_execution = True
 
     main_source = runbook.get("main_source")
     data_sources = runbook.get("data_sources")
@@ -534,6 +545,134 @@ async def modify_run_runbook_execution_engine(
 
             data_checked = []
             reference_RWA = []
+
+            # --------------------------------------------------
+            # PLAYBOOK EVIDENCE FILES (images + docs)
+            # Injected into data_checked; no re-analysis — the
+            # previous result's evidence blocks are preserved.
+            # --------------------------------------------------
+            if is_playbook_based_execution and _evidences_urls:
+                import mimetypes as _mimetypes, tempfile as _tempfile, base64 as _b64
+
+                _cf_prefix = (os.getenv("CLOUDFRNT", "")).rstrip("/") + "/"
+                _s3_client = s3bucket()
+                _ev_admissible = _ev_overview.get("admissible", [])
+                _evidence_summary = (
+                    "\n".join(f"- {ev.get('artifact', '')}" for ev in _ev_admissible)
+                    or "No specific evidence types configured."
+                )
+
+                for url in _evidences_urls:
+                    s3_key = (
+                        url.replace(_cf_prefix, "", 1)
+                        if url.startswith(_cf_prefix)
+                        else url
+                    )
+                    fname = os.path.basename(s3_key)
+                    ext = os.path.splitext(fname)[1].lower()
+                    try:
+                        tmp_path = os.path.join(_tempfile.gettempdir(), fname)
+                        _s3_client.download_file(
+                            Bucket=S3_BUCKET, Key=s3_key, Filename=tmp_path
+                        )
+                        with open(tmp_path, "rb") as fh:
+                            file_bytes = fh.read()
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
+
+                        ct = (
+                            _mimetypes.guess_type(fname)[0]
+                            or "application/octet-stream"
+                        )
+                        extracted = extract_files_content(
+                            [
+                                {
+                                    "filename": fname,
+                                    "data": file_bytes,
+                                    "content_type": ct,
+                                }
+                            ]
+                        )
+                        for item in extracted:
+                            if item.get("type") in IMAGE_EXTENSIONS:
+                                ct = _mimetypes.guess_type(fname)[0] or "image/jpeg"
+                                import base64 as _b64
+
+                                b64 = _b64.b64encode(file_bytes).decode()
+                                data_uri = f"data:{ct};base64,{b64}"
+
+                                _ev_admissible = _ev_overview.get("admissible", [])
+                                _evidence_summary = (
+                                    "\n".join(
+                                        f"- {ev.get('artifact', '')}"
+                                        for ev in _ev_admissible
+                                    )
+                                    or "No specific evidence types configured."
+                                )
+
+                                logger.info(
+                                    "Running vision extraction on image: %s", fname
+                                )
+                                vision_result = await get_think_bedrock_vision_image(
+                                    data_uri=data_uri,
+                                    evidence_summary=_evidence_summary,
+                                    user_id=user_id,
+                                    credits=credits,
+                                )
+
+                                if vision_result:
+                                    meta = vision_result.get("image_meta", {})
+                                    logger.info(
+                                        "Image vision result — type=%s timestamps=%s log_entries=%d",
+                                        meta.get("image_type", "unknown"),
+                                        meta.get("timestamps", []),
+                                        len(meta.get("log_entries", [])),
+                                    )
+                                    # Build a single text blob with all extracted info
+                                    parts = []
+                                    if meta.get("extracted_text"):
+                                        parts.append(
+                                            f"Extracted text:\n{meta['extracted_text']}"
+                                        )
+                                    if meta.get("timestamps"):
+                                        parts.append(
+                                            "Timestamps: "
+                                            + ", ".join(meta["timestamps"])
+                                        )
+                                    if meta.get("log_entries"):
+                                        parts.append(
+                                            "Log entries:\n"
+                                            + "\n".join(meta["log_entries"])
+                                        )
+                                    for found_item in vision_result.get("found", []):
+                                        artifact = found_item.get("artifact", "")
+                                        content = found_item.get("content", "")
+                                        if artifact and content:
+                                            parts.append(f"[{artifact}] {content}")
+                                    if parts:
+                                        data_checked.append(
+                                            {
+                                                "type": "image",
+                                                "source": s3_key,
+                                                "data": "\n\n".join(parts),
+                                            }
+                                        )
+                                continue
+                            else:
+                                data_checked.append(
+                                    {
+                                        "type": "docs",
+                                        "source": s3_key,
+                                        "data": item["content"],
+                                    }
+                                )
+                    except Exception as _e:
+                        logger.warning(
+                            "Modify evidence extraction failed for %s: %s", s3_key, _e
+                        )
+
             if main_source and data_sources:
 
                 data_checked = await retreval_from_sources(

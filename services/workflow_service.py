@@ -3146,7 +3146,7 @@ class WorkflowRunnerV2:
         return output_data
 
     async def answer_ques_file_bk(
-        self, extracted_files, step_id, file_keys, inp_links=None
+        self, extracted_files, step_id, file_keys, inp_links=None, inp_link_keys=None
     ):
         import re
         from config_evidences.evidence_helpers import get_only_evidence
@@ -3154,6 +3154,8 @@ class WorkflowRunnerV2:
 
         if inp_links is None:
             inp_links = []
+        if inp_link_keys is None:
+            inp_link_keys = []
 
         assigned_ques = self.workflow_json.get("assigned_questions", [])
         if not assigned_ques:
@@ -3175,20 +3177,9 @@ class WorkflowRunnerV2:
                         answered_qids.add(out.get("id"))
 
         # ===========================
-        # BUILD COMBINED TEXT
+        # EARLY EXIT
         # ===========================
-        combined_text_parts = []
-        # print("actual file data", extracted_files)
-        for f in extracted_files:
-            content = f.get("content", "").strip()
-            fname = f.get("filename", "file")
-            if content:
-                combined_text_parts.append(f"[FILE: {fname}]\n{content}")
-
-        combined_text = "\n\n".join(combined_text_parts)
-        self.logger.info("Evidence document characters: %d", len(combined_text))
-
-        if not combined_text and not inp_links:
+        if not extracted_files and not inp_links:
             return {"error": "No usable content found"}
 
         CHUNK_SIZE = 8000
@@ -3216,7 +3207,7 @@ class WorkflowRunnerV2:
             return {} if "{" in text else []
 
         # ===========================
-        # STEP 1: GET EVIDENCE CONFIGS
+        # STEP 1: GET EVIDENCE CONFIGS  (combined_text no longer needed — files processed individually)
         # ===========================
         user_evidence = get_only_evidence(self.userid)
         # print("user structur evidence", user_evidence) # OK
@@ -3291,44 +3282,55 @@ class WorkflowRunnerV2:
             "Return ONLY valid JSON (no markdown):\n"
             '[{"artifact": "<artifact name>", "content": "<relevant snippet>",}]'
         )
-        self.logger.info("Starting evidence classification (text chunks)")
+        self.logger.info("Starting evidence classification (text chunks — per file)")
 
-        for chunk in _make_chunks(combined_text):
-            try:
-                self.logger.debug("Processing chunk of %d chars", len(chunk))
-                prompt = cat_prompt_base.replace("{chunk}", chunk)
-                resp = await get_fireworks_response2(
-                    user_message=prompt,
-                    role="user",
-                    temp=0.1,
-                    user_id=self.userid,
-                    credits=self.credits,
-                )
-                parsed = safe_json_load(resp)
-                self.logger.debug("evidence extracted: %s", parsed)
-                items = (
-                    parsed
-                    if isinstance(parsed, list)
-                    else parsed.get("found", []) if isinstance(parsed, dict) else []
-                )
-                for item in items:
-                    artifact = item.get("artifact", "")
-                    content = item.get("content", "")
-                    if artifact and content:
-                        entry = evidence_map.setdefault(
-                            artifact, {"snippets": [], "files": set()}
-                        )
-                        entry["snippets"].append(content)
-            except Exception as e:
-                self.logger.error(
-                    "Evidence categorization chunk failed: %s", e, exc_info=IS_DEV
-                )
+        # Process each file independently so findings are attributed to the correct file
+        for f in extracted_files:
+            content = f.get("content", "").strip()
+            if not content:
+                continue
+            s3_key = f.get("s3_key", "")
+            cf_url = attach_CLDFRNT_url(s3_key) if s3_key else f.get("filename", "")
+            self.logger.debug("Classifying file %s (%d chars)", cf_url or "?", len(content))
+
+            for chunk in _make_chunks(content):
+                try:
+                    prompt = cat_prompt_base.replace("{chunk}", chunk)
+                    resp = await get_fireworks_response2(
+                        user_message=prompt,
+                        role="user",
+                        temp=0.1,
+                        user_id=self.userid,
+                        credits=self.credits,
+                    )
+                    parsed = safe_json_load(resp)
+                    items = (
+                        parsed
+                        if isinstance(parsed, list)
+                        else parsed.get("found", []) if isinstance(parsed, dict) else []
+                    )
+                    for item in items:
+                        artifact = item.get("artifact", "")
+                        snippet = item.get("content", "")
+                        if artifact and snippet:
+                            entry = evidence_map.setdefault(
+                                artifact, {"snippets": [], "files": set()}
+                            )
+                            entry["snippets"].append(snippet)
+                            if cf_url:
+                                entry["files"].add(cf_url)
+                except Exception as e:
+                    self.logger.error(
+                        "Evidence categorization chunk failed: %s", e, exc_info=IS_DEV
+                    )
 
         if inp_links:
             self.logger.info("INSIDE IMAGES EXTRACTION — %d image(s)", len(inp_links))
             for idx, data_uri in enumerate(inp_links):
                 try:
                     self.logger.info("Processing image %d/%d", idx + 1, len(inp_links))
+                    img_s3_key = inp_link_keys[idx] if idx < len(inp_link_keys) else ""
+                    img_cf_url = attach_CLDFRNT_url(img_s3_key) if img_s3_key else ""
                     result = await get_think_bedrock_vision_image(
                         data_uri=data_uri,
                         evidence_summary=evidence_summary,
@@ -3338,9 +3340,7 @@ class WorkflowRunnerV2:
                     if not result:
                         self.logger.warning("No result for image %d", idx + 1)
                         continue
-                    # self.logger.info("extracted from image %s", result)
 
-                    # Log image metadata for debugging
                     meta = result.get("image_meta", {})
                     self.logger.info(
                         "Image %d meta — type=%s timestamps=%s log_entries=%d",
@@ -3358,7 +3358,8 @@ class WorkflowRunnerV2:
                                 artifact, {"snippets": [], "files": set()}
                             )
                             entry["snippets"].append(content)
-                            # entry["files"].add("image")
+                            if img_cf_url:
+                                entry["files"].add(img_cf_url)
                 except Exception as e:
                     self.logger.error(
                         "Vision categorization failed for image %d: %s",

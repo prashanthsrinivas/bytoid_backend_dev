@@ -2524,6 +2524,7 @@ async def answer_ques_file_bk(
     step_id,
     file_keys,
     inp_links=None,
+    inp_link_keys=None,
     job_id=None,
     session_id=None,
 ):
@@ -2543,7 +2544,11 @@ async def answer_ques_file_bk(
     ) as runner:
 
         result = await runner.answer_ques_file_bk(
-            extracted_files, step_id, file_keys, inp_links=inp_links or []
+            extracted_files,
+            step_id,
+            file_keys,
+            inp_links=inp_links or [],
+            inp_link_keys=inp_link_keys or [],
         )
 
     return result
@@ -2577,6 +2582,7 @@ async def generate_ans_files():
 
         extracted_payload = []
         inp_links = []
+        inp_link_keys = []  # parallel to inp_links — tracks source S3 key per image
 
         for key in file_keys:
             if not key:
@@ -2598,6 +2604,7 @@ async def generate_ans_files():
                 if ext in IMAGE_EXTENSIONS:
                     b64 = base64.b64encode(file_bytes).decode()
                     inp_links.append(f"data:{content_type};base64,{b64}")
+                    inp_link_keys.append(key)
                 else:
                     extracted = extract_files_content(
                         [
@@ -2611,7 +2618,9 @@ async def generate_ans_files():
                     for item in extracted:
                         if item.get("type") in IMAGE_EXTENSIONS:
                             inp_links.append(item["content"])
+                            inp_link_keys.append(key)
                         else:
+                            item["s3_key"] = key
                             extracted_payload.append(item)
 
             except Exception as e:
@@ -2636,6 +2645,7 @@ async def generate_ans_files():
             step_id,
             file_keys,
             inp_links,
+            inp_link_keys=inp_link_keys,
         )
 
         return jsonify(

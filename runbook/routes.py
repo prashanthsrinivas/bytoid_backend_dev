@@ -470,6 +470,20 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
         # runbook_data["report_viewer"] = data.get("report_viewer")
 
         # -----------------------------
+        # PLAYBOOK EVIDENCE STASH
+        # -----------------------------
+        playbook_id = runbook_data.get("playbook_id")
+        if playbook_id:
+            try:
+                instruction_data = await get_playbook_instruction(user_id, playbook_id)
+                logger.debug("Modify: instruction data keys: %s", list(instruction_data.keys()))
+                runbook_data["_playbook_evidences_urls"] = instruction_data.get("evidences_ques", [])
+                runbook_data["_playbook_evidence_overview"] = instruction_data.get("evidence_overview", {})
+                runbook_data["_playbook_ev_questions"] = instruction_data.get("evidence_based_questions", [])
+            except Exception as _pb_err:
+                logger.warning("Could not load playbook evidence for modify: %s", _pb_err)
+
+        # -----------------------------
         # STRUCTURE FILE HANDLING
         # -----------------------------
         structure_file = data.get("structure_file")
