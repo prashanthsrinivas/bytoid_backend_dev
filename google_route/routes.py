@@ -818,7 +818,7 @@ def get_token(inuser=None, value=None, in_connection=None):
                             SET token=%s, expiry=%s
                             WHERE user_id=%s
                         """,
-                            (token, expiry.isoformat(), user_id),
+                            (creds.token, creds.expiry.isoformat(), user_id),
                         )
                     else:
                         cursor.execute(
@@ -828,7 +828,7 @@ def get_token(inuser=None, value=None, in_connection=None):
                             WHERE user_id=%s
                             AND platform='google'
                         """,
-                            (token, expiry.isoformat(), user_id),
+                            (creds.token, creds.expiry.isoformat(), user_id),
                         )
                     connection.commit()
                     if value:
@@ -840,17 +840,10 @@ def get_token(inuser=None, value=None, in_connection=None):
                     # print(f"Token refresh failed: {e}")
                     return redirect(f"{dev_val}/login")
 
-            # Return existing token if not refreshed
-            cursor.execute("SELECT token FROM users WHERE user_id = %s", (user_id,))
-            user_row = cursor.fetchone()
-            ##print("token not expired")
-
-            if user_row is None:
-                return jsonify({"error": "Token missing after fallback"}), 400
-            ##print("returning token", user_row[0])
+            # Return existing (non-expired) token — use the value already fetched from DB
             if value:
-                return user_row[0]
-            return jsonify({"token": user_row[0]})
+                return token
+            return jsonify({"token": token})
 
     except Exception as e:
         # print(f"Error occurred: {e}")

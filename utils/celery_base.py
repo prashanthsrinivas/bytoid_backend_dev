@@ -129,11 +129,11 @@ def umail_sync(self, user_id):
 
     connection = None
     cursor = None
+    _release_lock = True  # hold lock during retries; release only on final success/failure
 
     try:
         connection = connect_to_rds()
 
-        # FIX: validate connection
         if connection is None:
             raise Exception("Database connection failed (connect_to_rds returned None)")
 
@@ -162,72 +162,71 @@ def umail_sync(self, user_id):
 
         mailbox_setting = check_mailbox(user_id)
 
-        if mailbox_setting:
+        if not mailbox_setting:
+            return {"status": "skipped", "user_id": user_id, "reason": "mailbox_disabled"}
 
-            if social == "google":
-                result = asyncio.run(v2all_continuous(user_id, integration=integration))
+        if social == "google":
+            result = asyncio.run(v2all_continuous(user_id, integration=integration))
+        elif social == "outlook":
+            result = asyncio.run(
+                v2all_continuous_outlook(user_id, integration=integration)
+            )
+        else:
+            result = asyncio.run(
+                v2all_continuous_zoho(user_id, integration=integration)
+            )
 
-            elif social == "outlook":
-                result = asyncio.run(
-                    v2all_continuous_outlook(user_id, integration=integration)
-                )
-
-            else:
-                result = asyncio.run(
-                    v2all_continuous_zoho(user_id, integration=integration)
-                )
-
-            return {"status": "completed", "user_id": user_id, "result": result}
+        return {"status": "completed", "user_id": user_id, "result": result}
 
     except Exception as exc:
-
-        countdown = backoff(self.request.retries)
-
-        raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+        if self.request.retries < 5:
+            _release_lock = False  # keep lock held so a concurrent sync cannot start
+            raise self.retry(exc=exc, countdown=backoff(self.request.retries), max_retries=5)
+        logger.error("umail_sync permanently failed for user %s: %s", user_id, exc)
+        raise
 
     finally:
-
-        # close cursor safely
         if cursor:
             cursor.close()
-
-        # close connection safely
         if connection:
             connection.close()
-
-        release_user_lock(user_id)
+        if _release_lock:
+            release_user_lock(user_id)
 
 
 @new_celery.task(bind=True, name="webhook.umailSync")
 def web_umail_sync(self, user_id, channel=None, integration=None):
 
+    _release_lock = True  # hold lock during retries; release only on final success/failure
+
     try:
-        # print(f"integration inside web_umail_sync : {integration}")
-        # print(f"channel inside web_umail_sync : {channel}")
         mailbox_setting = check_mailbox(user_id)
-        if mailbox_setting:
-            if channel == "google":
-                result = asyncio.run(v2all_continuous(user_id, integration=integration))
-                return {"status": "completed", "user_id": user_id, "result": result}
-            elif channel == "microsoft":
-                result = asyncio.run(
-                    v2all_continuous_outlook(user_id, integration=integration)
-                )
-                # print(f"results")
-                return {"status": "completed", "user_id": user_id, "result": result}
-            else:
-                result = asyncio.run(
-                    v2all_continuous_zoho(user_id, integration=integration)
-                )
-                # print(f"results")
-                return {"status": "completed", "user_id": user_id, "result": result}
+        if not mailbox_setting:
+            return {"status": "skipped", "user_id": user_id, "reason": "mailbox_disabled"}
+
+        if channel == "google":
+            result = asyncio.run(v2all_continuous(user_id, integration=integration))
+        elif channel == "microsoft":
+            result = asyncio.run(
+                v2all_continuous_outlook(user_id, integration=integration)
+            )
+        else:
+            result = asyncio.run(
+                v2all_continuous_zoho(user_id, integration=integration)
+            )
+
+        return {"status": "completed", "user_id": user_id, "result": result}
 
     except Exception as exc:
-        countdown = backoff(self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown, max_retries=5)
+        if self.request.retries < 5:
+            _release_lock = False  # keep lock held so a concurrent sync cannot start
+            raise self.retry(exc=exc, countdown=backoff(self.request.retries), max_retries=5)
+        logger.error("web_umail_sync permanently failed for user %s: %s", user_id, exc)
+        raise
+
     finally:
-        # always release lock at end so new task can start
-        release_user_lock(user_id)
+        if _release_lock:
+            release_user_lock(user_id)
 
 
 @new_celery.task(bind=True, name="umail_helper.delayed_trigger")
