@@ -3,16 +3,14 @@ g_basescopes = (
     "openid",
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/userinfo.email",
-    # Gmail – FULL access
+    # Gmail — compose covers drafts.create/update and messages.send (superset of gmail.send)
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.compose",
-    # Drive – Full Access
-    "https://www.googleapis.com/auth/drive",
+    # Drive — drive.file (non-restricted) + metadata.readonly for browsing
+    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/drive.metadata.readonly",
-    # Calendar – READ ONLY
+    # Calendar
     "https://www.googleapis.com/auth/calendar",
-    # Contacts – READ ONLY
+    # Contacts
     "https://www.googleapis.com/auth/contacts.readonly",
 )
