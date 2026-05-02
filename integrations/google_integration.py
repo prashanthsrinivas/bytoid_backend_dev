@@ -121,7 +121,6 @@ def get_integration_access_token(user_id, provider):
                         token_uri="https://oauth2.googleapis.com/token",
                         client_id=client_id,
                         client_secret=client_secret,
-                        scopes=g_basescopes,
                     )
 
                     creds.refresh(g_request())

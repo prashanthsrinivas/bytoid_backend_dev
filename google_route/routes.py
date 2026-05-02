@@ -805,7 +805,6 @@ def get_token(inuser=None, value=None, in_connection=None):
                         token_uri="https://oauth2.googleapis.com/token",
                         client_id=client_id,
                         client_secret=client_secret,
-                        scopes=g_basescopes,
                     )
 
                     creds.refresh(g_request())
@@ -960,7 +959,6 @@ def refresh_google_if_needed(
                 token_uri="https://oauth2.googleapis.com/token",
                 client_id=client_id,
                 client_secret=client_secret,
-                scopes=g_basescopes,
             )
 
             creds.refresh(g_request())
