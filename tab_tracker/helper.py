@@ -289,8 +289,8 @@ def create_tracker_file(
     # Step 5: Cleanup
     try:
         os.remove(local_path)
-    except Exception as e:
-        print(f"⚠️ Failed to delete temp file: {e}")
+    except Exception:
+        pass
 
     return s3_path
 

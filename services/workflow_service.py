@@ -3291,7 +3291,9 @@ class WorkflowRunnerV2:
                 continue
             s3_key = f.get("s3_key", "")
             cf_url = attach_CLDFRNT_url(s3_key) if s3_key else f.get("filename", "")
-            self.logger.debug("Classifying file %s (%d chars)", cf_url or "?", len(content))
+            self.logger.debug(
+                "Classifying file %s (%d chars)", cf_url or "?", len(content)
+            )
 
             for chunk in _make_chunks(content):
                 try:
@@ -3654,8 +3656,7 @@ class WorkflowRunnerV2:
                 for k, v in inadmissible_evidence.items()
             ],
             "discarded": [
-                {"artifact": k, "files": list(v["files"])}
-                for k, v in discarded_evidence.items()
+                {"artifact": k, "files": []} for k, v in discarded_evidence.items()
             ],
         }
         self.saveworkflowtos3()
