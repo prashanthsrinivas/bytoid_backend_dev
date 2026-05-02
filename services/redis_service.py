@@ -89,10 +89,10 @@ class RedisService:
             logger.error("Redis error: %s", e, exc_info=IS_DEV)
             return False
 
-    async def set(self, key: str, value: Any, ex: Optional[int] = None) -> bool:
+    async def set(self, key: str, value: Any, ex: Optional[int] = None, nx: bool = False) -> bool:
         if isinstance(value, (dict, list)):
             value = json.dumps(value)
-        return bool(await self._run(self.client.set, key, value, ex))
+        return bool(await self._run(self.client.set, key, value, ex=ex, nx=nx))
 
     async def get(self, key: str) -> Optional[Any]:
         value = await self._run(self.client.get, key)

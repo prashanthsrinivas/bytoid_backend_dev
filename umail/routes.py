@@ -701,7 +701,7 @@ def get_sorted_lance_emails(connection, user_id, client_id):
                     # print(f"❌ Failed to read or parse {e}")
                     continue
         else:
-            return {}
+            return []
 
     if all_messages:
         sorted_conversations = sorted(

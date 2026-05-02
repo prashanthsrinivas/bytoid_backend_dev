@@ -3539,143 +3539,152 @@ async def outlook_webhook():
             # print("Invalid clientState, ignoring notification")
             continue
 
-    resource = change.get("resource", "")
-    user_id = resource.split("Users/")[1].split("/Messages")[0]
-    message_id = change.get("resourceData", {}).get("id")
-    received_at = datetime.now(timezone.utc).isoformat()
-    redis = get_redis()
+        resource = change.get("resource", "")
+        user_id = resource.split("Users/")[1].split("/Messages")[0]
+        message_id = change.get("resourceData", {}).get("id")
+        received_at = datetime.now(timezone.utc).isoformat()
+        redis = get_redis()
 
-    val = await redis.exists(f"user_alive:{user_id}")
-    if not val:
-        return "user skipped not alive", 200
+        val = await redis.exists(f"user_alive:{user_id}")
+        if not val:
+            continue
 
-    # -------------------------
-    # 1. Extract historyId from Outlook webhook (equivalent to Gmail historyId)
-    # -------------------------
-    # Outlook doesn't send historyId, so we emulate it using message_id + etag
-    history_id = change.get("resourceData", {}).get("@odata.etag")
+        # -------------------------
+        # 1. Extract historyId from Outlook webhook (equivalent to Gmail historyId)
+        # -------------------------
+        # Outlook doesn't send historyId, so we emulate it using message_id + etag
+        history_id = change.get("resourceData", {}).get("@odata.etag")
 
-    if not history_id:
-        # fallback so dedupe still works
-        history_id = f"{user_id}:{message_id}"
+        if not history_id:
+            # fallback so dedupe still works
+            history_id = f"{user_id}:{message_id}"
 
-    # -------------------------
-    # 2. DEDUP using Redis (lock_client)
-    # -------------------------
-    dedup_key = f"webhook_dedup:{user_id}:{history_id}"
+        # -------------------------
+        # 2. DEDUP using Redis (lock_client)
+        # -------------------------
+        dedup_key = f"webhook_dedup:{user_id}:{history_id}"
 
-    recent = await lock_client.get(dedup_key)
-    if recent:
-        logger.info(f"Duplicate webhook skipped for {user_id}, historyId={history_id}")
-        return "Duplicate webhook skipped", 200
+        recent = await lock_client.get(dedup_key)
+        if recent:
+            logger.info(f"Duplicate webhook skipped for {user_id}, historyId={history_id}")
+            continue
 
-    await lock_client.set(dedup_key, "1", ex=300)  # 5-minute dedupe window
+        await lock_client.set(dedup_key, "1", ex=300)  # 5-minute dedupe window
 
-    logger.info(f"Processing webhook for {user_id}, historyId={history_id}")
+        logger.info(f"Processing webhook for {user_id}, historyId={history_id}")
 
-    # -------------------------
-    # 3. Trigger Celery Worker
-    # -------------------------
-    conn = connect_to_rds()
-    cursor = conn.cursor()
+        # -------------------------
+        # 3. Trigger Celery Worker
+        # -------------------------
+        conn = connect_to_rds()
+        cursor = conn.cursor()
 
-    integration = False
-    email = ""
-    cursor.execute("SELECT email FROM integrations WHERE user_id=%s", (user_id,))
-    row = cursor.fetchone()
-    if row:
-        email = row[0]
-        integration = True
-    else:
-        cursor.execute("SELECT email FROM users WHERE user_id=%s", (user_id,))
+        integration = False
+        email = ""
+        cursor.execute("SELECT email FROM integrations WHERE user_id=%s", (user_id,))
         row = cursor.fetchone()
         if row:
             email = row[0]
+            integration = True
         else:
-            return ("User not found", 404)
-
-    try:
-        # check if it is expired and refresh if expired
-        if integration:
-            check_result = check_and_refresh_token(user_id, cursor, conn)  # TODO ....
-            # print(f"check_result : {check_result}")
-            if not check_result:
-                # print("cannot refresh token")
-                return ("Token refresh failed", 400)
-
-        else:
-            check_result, token = check_microsoft_token_expiry_normal(
-                cursor, conn, user_id
-            )
-            if not check_result:
-                # print("cannot refresh token")
-                return ("Could not refresh token ", 401)
-
-        delayed_trigger.delay(
-            email, history_id, channel="microsoft", integration=integration
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to trigger delayed task for {email}: {e}")
-        cursor.close()
-        conn.close()
-
-        status_data = read_status_file()
-        user_info = status_data.get(user_id)
-        if user_info:
-            user_info["status"] = "complete"
-            user_info["timestamp"] = datetime.now(timezone.utc).isoformat()
-            status_data[user_id] = user_info
-            # print("complete made ok")
-            write_status_file(status_data)
-
-        return ("Internal Server Error", 500)
-
-    # -------------------------
-    # 4. Append to local JSON log (your original logic)
-    # -------------------------
-    WEBHOOK_LOG_DIR = "data/test"
-    WEBHOOK_LOG_FILE = os.path.join(WEBHOOK_LOG_DIR, "outlook_webhook_log.json")
-    os.makedirs(WEBHOOK_LOG_DIR, exist_ok=True)
-
-    # Load old logs
-    if os.path.isfile(WEBHOOK_LOG_FILE):
-        try:
-            with open(WEBHOOK_LOG_FILE, "r") as f:
-                log_data = json.load(f)
-            if not isinstance(log_data, dict):
-                log_data = {}
-        except json.JSONDecodeError:
-            log_data = {}
-    else:
-        log_data = {}
-
-    # Append new entry
-    new_entry = {"timestamp": received_at, "message_id": message_id}
-    log_data.setdefault(email, []).append(new_entry)
-
-    # Clean old entries > 2 days
-    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
-    cleaned_log = {}
-
-    for email, entries in log_data.items():
-        valid_entries = []
-        for e in entries:
-            try:
-                ts = datetime.fromisoformat(e["timestamp"])
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-            except Exception:
+            cursor.execute("SELECT email FROM users WHERE user_id=%s", (user_id,))
+            row = cursor.fetchone()
+            if row:
+                email = row[0]
+            else:
+                cursor.close()
+                conn.close()
                 continue
 
-            if ts > cutoff:
-                valid_entries.append(e)
+        try:
+            # check if it is expired and refresh if expired
+            if integration:
+                check_result = check_and_refresh_token(user_id, cursor, conn)  # TODO ....
+                # print(f"check_result : {check_result}")
+                if not check_result:
+                    # print("cannot refresh token")
+                    cursor.close()
+                    conn.close()
+                    continue
 
-        if valid_entries:
-            cleaned_log[email] = valid_entries
+            else:
+                check_result, token = check_microsoft_token_expiry_normal(
+                    cursor, conn, user_id
+                )
+                if not check_result:
+                    # print("cannot refresh token")
+                    cursor.close()
+                    conn.close()
+                    continue
 
-    with open(WEBHOOK_LOG_FILE, "w") as f:
-        json.dump(cleaned_log, f, indent=2)
+            delayed_trigger.delay(
+                email, history_id, channel="microsoft", integration=integration
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to trigger delayed task for {email}: {e}")
+            cursor.close()
+            conn.close()
+
+            status_data = read_status_file()
+            user_info = status_data.get(user_id)
+            if user_info:
+                user_info["status"] = "complete"
+                user_info["timestamp"] = datetime.now(timezone.utc).isoformat()
+                status_data[user_id] = user_info
+                # print("complete made ok")
+                write_status_file(status_data)
+
+            continue
+
+        # -------------------------
+        # 4. Append to local JSON log (your original logic)
+        # -------------------------
+        WEBHOOK_LOG_DIR = "data/test"
+        WEBHOOK_LOG_FILE = os.path.join(WEBHOOK_LOG_DIR, "outlook_webhook_log.json")
+        os.makedirs(WEBHOOK_LOG_DIR, exist_ok=True)
+
+        # Load old logs
+        if os.path.isfile(WEBHOOK_LOG_FILE):
+            try:
+                with open(WEBHOOK_LOG_FILE, "r") as f:
+                    log_data = json.load(f)
+                if not isinstance(log_data, dict):
+                    log_data = {}
+            except json.JSONDecodeError:
+                log_data = {}
+        else:
+            log_data = {}
+
+        # Append new entry
+        new_entry = {"timestamp": received_at, "message_id": message_id}
+        log_data.setdefault(email, []).append(new_entry)
+
+        # Clean old entries > 2 days
+        cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+        cleaned_log = {}
+
+        for user_email_key, entries in log_data.items():
+            valid_entries = []
+            for e in entries:
+                try:
+                    ts = datetime.fromisoformat(e["timestamp"])
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+
+                if ts > cutoff:
+                    valid_entries.append(e)
+
+            if valid_entries:
+                cleaned_log[user_email_key] = valid_entries
+
+        with open(WEBHOOK_LOG_FILE, "w") as f:
+            json.dump(cleaned_log, f, indent=2)
+
+        cursor.close()
+        conn.close()
 
     return "OK", 200
 

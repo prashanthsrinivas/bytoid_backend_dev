@@ -92,41 +92,53 @@ def get_active_customers():
     if not user_id:
         return jsonify({"error": "user id needed"}), 400
 
-    connection = connect_to_rds()
-    if connection is None:
-        # print("❌ [DEBUG] Database connection failed")
-        return jsonify({"error": "Database connection failed"}), 500
-    cursor = connection.cursor()
+    connection = None
+    cursor = None
+    try:
+        connection = connect_to_rds()
+        if connection is None:
+            # print("❌ [DEBUG] Database connection failed")
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = connection.cursor()
 
-    content_dict = {}
-    query = """
-        SELECT 
-            m.sender_id,
-            m.content_ref as content
-        FROM messages m
-        JOIN users_clients uc ON m.sender_id = uc.users_clients_id
-        JOIN communication c ON uc.communication_id_fk = c.communication_id
-        WHERE uc.type = 'Customer'
-        AND m.message_type = 'inbound'
-        AND m.created_at >= NOW() - INTERVAL 7 DAY
-        AND c.user_id_fk = %s
-        GROUP BY m.sender_id
-        ORDER BY MAX(m.created_at) DESC
+        content_dict = {}
+        query = """
+            SELECT
+                m.sender_id,
+                m.content_ref as content
+            FROM messages m
+            JOIN users_clients uc ON m.sender_id = uc.users_clients_id
+            JOIN communication c ON uc.communication_id_fk = c.communication_id
+            WHERE uc.type = 'Customer'
+            AND m.message_type = 'inbound'
+            AND m.created_at >= NOW() - INTERVAL 7 DAY
+            AND c.user_id_fk = %s
+            GROUP BY m.sender_id
+            ORDER BY MAX(m.created_at) DESC
 
-        """
-    cursor.execute(query, (user_id,))
-    rows = cursor.fetchall()
+            """
+        cursor.execute(query, (user_id,))
+        rows = cursor.fetchall()
 
-    if rows:
-        for row in rows:
-            msg_id = row[0]
-            content_ref = row[1]
-            content_dict[msg_id] = content_ref
+        if rows:
+            for row in rows:
+                msg_id = row[0]
+                content_ref = row[1]
+                content_dict[msg_id] = content_ref
 
-    # print(f"content_dict lenght : {len(content_dict)}")
-    messages = get_latest_msg(content_dict, user_id)
+        # print(f"content_dict lenght : {len(content_dict)}")
+        messages = get_latest_msg(content_dict, user_id)
 
-    return jsonify(messages)
+        return jsonify(messages)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 @unified_bp.route("/get_dormant_customers", methods=["POST"])
@@ -137,40 +149,52 @@ def get_dormant_customers():
     if not user_id:
         return jsonify({"error": "user id needed"}), 400
 
-    connection = connect_to_rds()
-    if connection is None:
-        # print("❌ [DEBUG] Database connection failed")
-        return jsonify({"error": "Database connection failed"}), 500
-    cursor = connection.cursor()
+    connection = None
+    cursor = None
+    try:
+        connection = connect_to_rds()
+        if connection is None:
+            # print("❌ [DEBUG] Database connection failed")
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = connection.cursor()
 
-    content_dict = {}
-    query = """
-        SELECT 
-            m.sender_id,
-            m.content_ref as content
-        FROM messages m
-        JOIN users_clients uc ON m.sender_id = uc.users_clients_id
-        JOIN communication c ON uc.communication_id_fk = c.communication_id
-        WHERE uc.type = 'Customer'
-        AND m.message_type = 'inbound'
-        AND m.created_at <= NOW() - INTERVAL 7 DAY
-        AND c.user_id_fk = %s
-        GROUP BY m.sender_id
-        ORDER BY MAX(m.created_at) DESC
-        """
-    cursor.execute(query, (user_id,))
-    rows = cursor.fetchall()
+        content_dict = {}
+        query = """
+            SELECT
+                m.sender_id,
+                m.content_ref as content
+            FROM messages m
+            JOIN users_clients uc ON m.sender_id = uc.users_clients_id
+            JOIN communication c ON uc.communication_id_fk = c.communication_id
+            WHERE uc.type = 'Customer'
+            AND m.message_type = 'inbound'
+            AND m.created_at <= NOW() - INTERVAL 7 DAY
+            AND c.user_id_fk = %s
+            GROUP BY m.sender_id
+            ORDER BY MAX(m.created_at) DESC
+            """
+        cursor.execute(query, (user_id,))
+        rows = cursor.fetchall()
 
-    if rows:
-        for row in rows:
-            msg_id = row[0]
-            content_ref = row[1]
-            content_dict[msg_id] = content_ref
+        if rows:
+            for row in rows:
+                msg_id = row[0]
+                content_ref = row[1]
+                content_dict[msg_id] = content_ref
 
-    # print(f"content_dict lenght : {len(content_dict)}")
-    messages = get_latest_msg(content_dict, user_id)
+        # print(f"content_dict lenght : {len(content_dict)}")
+        messages = get_latest_msg(content_dict, user_id)
 
-    return jsonify(messages)
+        return jsonify(messages)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 @unified_bp.route("/get_active_leads", methods=["POST"])
@@ -181,41 +205,53 @@ def get_active_leads():
     if not user_id:
         return jsonify({"error": "user id needed"}), 400
 
-    connection = connect_to_rds()
-    if connection is None:
-        # print("❌ [DEBUG] Database connection failed")
-        return jsonify({"error": "Database connection failed"}), 500
-    cursor = connection.cursor()
+    connection = None
+    cursor = None
+    try:
+        connection = connect_to_rds()
+        if connection is None:
+            # print("❌ [DEBUG] Database connection failed")
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = connection.cursor()
 
-    content_dict = {}
-    query = """
-        SELECT 
-            m.sender_id,
-            m.content_ref as content
-        FROM messages m
-        JOIN users_clients uc ON m.sender_id = uc.users_clients_id
-        JOIN communication c ON uc.communication_id_fk = c.communication_id
-        WHERE uc.type = 'Lead'
-        AND m.message_type = 'inbound'
-        AND m.created_at >= NOW() - INTERVAL 7 DAY
-        AND c.user_id_fk = %s
-        GROUP BY m.sender_id
-        ORDER BY MAX(m.created_at) DESC
+        content_dict = {}
+        query = """
+            SELECT
+                m.sender_id,
+                m.content_ref as content
+            FROM messages m
+            JOIN users_clients uc ON m.sender_id = uc.users_clients_id
+            JOIN communication c ON uc.communication_id_fk = c.communication_id
+            WHERE uc.type = 'Lead'
+            AND m.message_type = 'inbound'
+            AND m.created_at >= NOW() - INTERVAL 7 DAY
+            AND c.user_id_fk = %s
+            GROUP BY m.sender_id
+            ORDER BY MAX(m.created_at) DESC
 
-        """
-    cursor.execute(query, (user_id,))
-    rows = cursor.fetchall()
+            """
+        cursor.execute(query, (user_id,))
+        rows = cursor.fetchall()
 
-    if rows:
-        for row in rows:
-            msg_id = row[0]
-            content_ref = row[1]
-            content_dict[msg_id] = content_ref
+        if rows:
+            for row in rows:
+                msg_id = row[0]
+                content_ref = row[1]
+                content_dict[msg_id] = content_ref
 
-    # print(f"content_dict lenght : {len(content_dict)}")
-    messages = get_latest_msg(content_dict, user_id)
+        # print(f"content_dict lenght : {len(content_dict)}")
+        messages = get_latest_msg(content_dict, user_id)
 
-    return jsonify(messages)
+        return jsonify(messages)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 @unified_bp.route("/get_dormant_leads", methods=["POST"])
@@ -226,46 +262,59 @@ def get_dormant_leads():
     if not user_id:
         return jsonify({"error": "user id needed"}), 400
 
-    connection = connect_to_rds()
-    if connection is None:
-        # print("❌ [DEBUG] Database connection failed")
-        return jsonify({"error": "Database connection failed"}), 500
-    cursor = connection.cursor()
+    connection = None
+    cursor = None
+    try:
+        connection = connect_to_rds()
+        if connection is None:
+            # print("❌ [DEBUG] Database connection failed")
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = connection.cursor()
 
-    content_dict = {}
-    query = """
-        SELECT 
-            m.message_id,
-            m.content_ref as content
-        FROM messages m
-        JOIN users_clients uc ON m.sender_id = uc.users_clients_id
-        JOIN communication c ON uc.communication_id_fk = c.communication_id
-        WHERE uc.type = 'Lead'
-        AND m.message_type = 'inbound'
-        AND m.created_at <= NOW() - INTERVAL 7 DAY
-        AND c.user_id_fk = %s
-        GROUP BY m.sender_id
-        ORDER BY MAX(m.created_at) DESC
-    
-        """
-    cursor.execute(query, (user_id,))
-    rows = cursor.fetchall()
+        content_dict = {}
+        query = """
+            SELECT
+                m.sender_id,
+                m.content_ref as content
+            FROM messages m
+            JOIN users_clients uc ON m.sender_id = uc.users_clients_id
+            JOIN communication c ON uc.communication_id_fk = c.communication_id
+            WHERE uc.type = 'Lead'
+            AND m.message_type = 'inbound'
+            AND m.created_at <= NOW() - INTERVAL 7 DAY
+            AND c.user_id_fk = %s
+            GROUP BY m.sender_id
+            ORDER BY MAX(m.created_at) DESC
 
-    if rows:
-        for row in rows:
-            msg_id = row[0]
-            content_ref = row[1]
-            content_dict[msg_id] = content_ref
+            """
+        cursor.execute(query, (user_id,))
+        rows = cursor.fetchall()
 
-    print(f"content_dict lenght : {len(content_dict)}")
-    messages = get_latest_msg(content_dict, user_id)
+        if rows:
+            for row in rows:
+                msg_id = row[0]
+                content_ref = row[1]
+                content_dict[msg_id] = content_ref
 
-    return jsonify(messages)
+        messages = get_latest_msg(content_dict, user_id)
+
+        return jsonify(messages)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 @unified_bp.route("/get_snoozed_customers", methods=["POST"])
 def get_snoozed_customers():
 
+    connection = None
+    cursor = None
     try:
 
         data = request.get_json()
@@ -317,6 +366,8 @@ def get_snoozed_customers():
 @unified_bp.route("/snooze_customer", methods=["POST"])
 def snooze_customer():
 
+    connection = None
+    cursor = None
     try:
         data = request.get_json()
         user_id = data.get("user_id")

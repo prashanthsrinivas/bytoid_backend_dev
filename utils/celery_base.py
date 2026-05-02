@@ -48,7 +48,7 @@ QUEUE_PREFIX = "user_embed_queue:"
 
 def acquire_user_lock(user_id):
     # returns True if we got the lock, False otherwise
-    return run_async(lock_client.set(f"umail_lock:{user_id}", "1", ex=LOCK_TTL))
+    return run_async(lock_client.set(f"umail_lock:{user_id}", "1", ex=LOCK_TTL, nx=True))
 
 
 def release_user_lock(user_id):
@@ -57,7 +57,7 @@ def release_user_lock(user_id):
 
 def acquire_scrape_lock(user_id, url):
     # returns True if we got the lock, False otherwise
-    return run_async(lock_client.set(f"scrape_lock:{user_id}", str(url), ex=LOCK_TTL))
+    return run_async(lock_client.set(f"scrape_lock:{user_id}", str(url), ex=LOCK_TTL, nx=True))
 
 
 async def get_scrape_lock(user_id):
@@ -239,7 +239,7 @@ def delayed_trigger(self, user_email, history_id, channel=None, integration=None
 
     lock_key = f"umail_delayed_lock:{user_email}"
     # Try to acquire lock for 10 minutes
-    acquired = asyncio.run(lock_client.set(lock_key, "1", ex=LOCK_TTL))
+    acquired = run_async(lock_client.set(lock_key, "1", ex=LOCK_TTL, nx=True))
     if not acquired:
         # Another task is already running or recently completed
         logger.info(

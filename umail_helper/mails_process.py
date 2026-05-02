@@ -25,7 +25,7 @@ async def vtooanalyze_and_collect_messages_for_batch(
     if integration:
         cursor.execute(
             """
-                        SELECT primary_user_id_fk 
+                        SELECT primary_user_id_fk
                         FROM integrations
                         WHERE user_id = %s
                         """,
@@ -33,6 +33,8 @@ async def vtooanalyze_and_collect_messages_for_batch(
         )
 
         row = cursor.fetchone()
+        if not row:
+            return []
         primary_user_id = row[0]
 
     user_folder = os.path.join(pathconfig.basepath, "messages", user_id)
