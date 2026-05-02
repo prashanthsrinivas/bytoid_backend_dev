@@ -11,6 +11,4 @@ g_basescopes = (
     "https://www.googleapis.com/auth/drive.metadata.readonly",
     # Calendar
     "https://www.googleapis.com/auth/calendar",
-    # Contacts
-    "https://www.googleapis.com/auth/contacts.readonly",
 )
