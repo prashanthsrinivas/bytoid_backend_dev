@@ -2793,70 +2793,64 @@ def trigger_sync_on_login(user_id):
         "context": "login"
     }
     """
-    # try:
-    #     # Check if sync should happen (respects 30-minute interval)
-    #     sync_check = asyncio.run(SyncManager.should_sync_on_login(user_id))
+    try:
+        sync_check = asyncio.run(SyncManager.should_sync_on_login(user_id))
 
-    #     logger.info(f"Login sync trigger for {user_id}: {sync_check}")
+        logger.info(f"Login sync trigger for {user_id}: {sync_check}")
 
-    #     # If sync should not happen, return rate limited
-    #     if not sync_check["should_sync"]:
-    #         logger.info(f"Login sync skipped for {user_id}: {sync_check['reason']}")
-    #         return (
-    #             jsonify(
-    #                 {
-    #                     "status": "rate_limited",
-    #                     "message": sync_check["reason"],
-    #                     "user_id": user_id,
-    #                     "last_sync": sync_check.get("last_sync"),
-    #                     "next_allowed_sync": sync_check.get("next_allowed_sync"),
-    #                     "time_until_next_sync": sync_check.get("time_until_next_sync"),
-    #                     "context": "login",
-    #                 }
-    #             ),
-    #             429,  # Too Many Requests
-    #         )
+        if not sync_check["should_sync"]:
+            logger.info(f"Login sync skipped for {user_id}: {sync_check['reason']}")
+            return (
+                jsonify(
+                    {
+                        "status": "rate_limited",
+                        "message": sync_check["reason"],
+                        "user_id": user_id,
+                        "last_sync": sync_check.get("last_sync"),
+                        "next_allowed_sync": sync_check.get("next_allowed_sync"),
+                        "time_until_next_sync": sync_check.get("time_until_next_sync"),
+                        "context": "login",
+                    }
+                ),
+                429,
+            )
 
-    #     # Check if already syncing
-    #     if not acquire_user_lock(user_id):
-    #         logger.info(f"Sync task already running for {user_id}")
-    #         return (
-    #             jsonify(
-    #                 {
-    #                     "status": "already_syncing",
-    #                     "message": "Sync task is already running for this user",
-    #                     "user_id": user_id,
-    #                     "context": "login",
-    #                 }
-    #             ),
-    #             202,
-    #         )
+        if not acquire_user_lock(user_id):
+            logger.info(f"Sync task already running for {user_id}")
+            return (
+                jsonify(
+                    {
+                        "status": "already_syncing",
+                        "message": "Sync task is already running for this user",
+                        "user_id": user_id,
+                        "context": "login",
+                    }
+                ),
+                202,
+            )
 
-    #     # Trigger the sync
-    #     async_result = umail_sync.delay(user_id)
+        async_result = umail_sync.delay(user_id)
 
-    #     # Record this sync time
-    #     asyncio.run(SyncManager.record_sync_time(user_id))
+        asyncio.run(SyncManager.record_sync_time(user_id))
 
-    #     logger.info(f"Login sync triggered for {user_id}, task_id={async_result.id}")
+        logger.info(f"Login sync triggered for {user_id}, task_id={async_result.id}")
 
-    #     return (
-    #         jsonify(
-    #             {
-    #                 "status": "syncing",
-    #                 "message": "Email sync triggered on login",
-    #                 "user_id": user_id,
-    #                 "task_id": async_result.id,
-    #                 "last_sync": sync_check.get("last_sync"),
-    #                 "context": "login",
-    #             }
-    #         ),
-    #         202,
-    #     )
-    # except Exception as e:
-    #     logger.error(f"Error in trigger_sync_on_login: {e}")
-    #     return jsonify({"error": str(e), "context": "login"}), 500
-    return {"status": "syncing"}
+        return (
+            jsonify(
+                {
+                    "status": "syncing",
+                    "message": "Email sync triggered on login",
+                    "user_id": user_id,
+                    "task_id": async_result.id,
+                    "last_sync": sync_check.get("last_sync"),
+                    "context": "login",
+                }
+            ),
+            202,
+        )
+    except Exception as e:
+        logger.error(f"Error in trigger_sync_on_login: {e}")
+        return jsonify({"error": str(e), "context": "login"}), 500
 
 
 @umail_bp.route("/sync/trigger_manual/<user_id>", methods=["GET"])

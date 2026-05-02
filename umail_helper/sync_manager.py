@@ -100,7 +100,7 @@ class SyncManager:
 
             # Set with TTL of 2x sync interval
             ttl = SYNC_INTERVAL * 2
-            await client.set(cache_key, json.dumps(sync_data), {"EX": ttl})
+            await client.set(cache_key, json.dumps(sync_data), ex=ttl)
 
             logger.info(f"Recorded sync time for {user_id}")
             return True
