@@ -9,6 +9,7 @@ from google.oauth2 import id_token
 from datetime import datetime, timedelta
 import uuid
 import os
+os.environ.setdefault('OAUTHLIB_RELAX_TOKEN_SCOPE', '1')
 import requests
 from db.rds_db import connect_to_rds
 from dotenv import load_dotenv
@@ -80,7 +81,7 @@ def login():
     # google_bp.logger.info(f"{flow}")
 
     auth_url, state = flow.authorization_url(
-        access_type="offline", prompt="consent", include_granted_scopes="false"
+        access_type="offline", prompt="consent", include_granted_scopes=False
     )
     session["state"] = state
     # print(auth_url)

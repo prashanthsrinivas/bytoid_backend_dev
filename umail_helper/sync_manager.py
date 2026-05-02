@@ -45,7 +45,7 @@ class SyncManager:
             now = datetime.now(timezone.utc)
 
             if cached_data:
-                sync_data = json.loads(cached_data)
+                sync_data = cached_data
                 last_sync_str = sync_data.get("last_sync")
                 last_sync = datetime.fromisoformat(last_sync_str)
                 next_allowed = last_sync + timedelta(seconds=SYNC_INTERVAL)
