@@ -193,29 +193,89 @@ For Security / Privacy / AI Reviewers (Technical & Governance Validation)
 """
 
 
-EVIDENCE_ANALYSIS_PROMPT = """You are a compliance and security evidence analyst.
+EVIDENCE_ANALYSIS_PROMPT = """
+You are a senior compliance and security evidence analyst.
 
-Analyze the provided document and return a structured assessment.
+Your task is to perform a deep, audit-level evaluation of the provided document.
 
-EVIDENCE TYPES (select exactly ONE that best fits):
+--------------------------------------------------
+INPUTS
+--------------------------------------------------
+EVIDENCE TYPES (select EXACTLY ONE best match):
 {{evidence_types}}
 
-FILE NAME: {{filename}}
+FILE NAME:
+{{filename}}
 
 FILE CONTENT:
 {{file_data}}
 
-REPORT VIEWER TYPE: {{viewer_type}}
+REPORT VIEWER TYPE:
+{{viewer_type}}
 
 REVIEW CRITERIA FOR {{viewer_type}}:
 {{viewer_criteria}}
 
-OUTPUT (strict JSON only, no markdown):
+--------------------------------------------------
+CORE INSTRUCTIONS
+--------------------------------------------------
+1. You MUST select exactly ONE evidence_type from the provided list.
+2. Your decision MUST be strictly based on the document content.
+3. Do NOT assume missing data — explicitly state absence.
+4. Evaluate ALL viewer criteria.
+5. Every statement must be justified with evidence or clearly marked as missing.
+
+--------------------------------------------------
+SUMMARY REQUIREMENTS
+--------------------------------------------------
+- "summary" MUST be a SINGLE HTML string.
+- Must be long, detailed, and dynamically structured.
+- Use multiple sections with dynamic headings.
+
+--------------------------------------------------
+ANALYSIS REQUIREMENTS (CRITICAL)
+--------------------------------------------------
+- "analysis" MUST be a STRUCTURED OBJECT.
+- Each field inside analysis MUST contain HTML content.
+
+ALLOWED HTML TAGS:
+<h3>, <p>, <ul>, <ol>, <li>, <b>, <strong>, <i>, <br>
+
+STRICT RULES:
+- NO markdown
+- NO inline styles/scripts
+- Proper HTML formatting
+
+--------------------------------------------------
+OUTPUT FORMAT (STRICT JSON ONLY)
+--------------------------------------------------
 {
-  "evidence_type": "<one exact type from the list above>",
-  "summary": "<the summary should be detailed and very well defined. make sure it is long as possible.>",
-  "analysis": "<detailed analysis tailored for the {{viewer_type}}, covering what the evidence demonstrates, gaps, and relevant control observations. it must conclude why the evidence type is made and how and why it comes and viewer criteria.>"
-}"""
+  "evidence_type": "<exact match from list>",
+
+  "summary": "<FULL HTML STRING WITH MULTIPLE SECTIONS>",
+
+  "analysis": {
+    "criteria_evaluation": [
+      {
+        "criterion": "<criterion from viewer_criteria>",
+        "status": "<present | partially_present | not_present>",
+        "is_valid": "<true | false>",
+        "details_html": "<HTML explaining if it is present, why valid/invalid, and supporting evidence or absence>"
+      }
+    ],
+
+    "detailed_assessment_html": "<HTML with deep explanation of what the document demonstrates>",
+
+    "gaps_and_risks_html": "<HTML describing missing elements and associated risks>",
+
+    "evidence_type_justification_html": "<HTML explaining why this evidence type was selected>",
+
+    "rejection_reasoning_html": "<HTML explaining why other types were not selected>",
+
+    "audit_readiness_html": "<HTML explaining whether the document is audit-ready and why>"
+  }
+}
+"""
 
 
 async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
@@ -250,10 +310,11 @@ async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
         EVIDENCES_TYPES = json.dumps(EVIDENCES_TYPES)
 
     for filename, chunks in files_map.items():
+        display_name = os.path.basename(filename)
         combined_data = "\n\n".join(chunks)[:20000]
         prompt = (
             EVIDENCE_ANALYSIS_PROMPT.replace("{{evidence_types}}", EVIDENCES_TYPES)
-            .replace("{{filename}}", filename)
+            .replace("{{filename}}", display_name)
             .replace("{{file_data}}", combined_data)
             .replace("{{viewer_type}}", report_viewer or "Assessor")
             .replace("{{viewer_criteria}}", viewer_data)
@@ -266,7 +327,7 @@ async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
         )
         parsed = _safe_json_parse(raw)
         if parsed:
-            parsed["filename"] = filename
+            parsed["filename"] = display_name
             results.append(parsed)
 
     return results
@@ -909,16 +970,41 @@ async def run_runbook_execution_engine(
             # STRICT BLOCK EXTRACTION
             # -----------------------------
             if not parsed:
-                raise ValueError(
-                    f"LLM returned invalid JSON at block {idx}: RAW parse failed"
-                )
+                logger.warning("LLM returned invalid JSON at block %d, skipping", idx)
+                continue
+
+            # LLM sometimes wraps output in {"raw_text": "..."} — unwrap and re-parse
+            if (
+                isinstance(parsed, dict)
+                and "raw_text" in parsed
+                and "block_id" not in parsed
+                and "blocks" not in parsed
+            ):
+                inner = _safe_json_parse(parsed["raw_text"])
+                if inner and isinstance(inner, dict):
+                    parsed = inner
+                else:
+                    logger.warning(
+                        "Could not extract block from raw_text at block %d, skipping",
+                        idx,
+                    )
+                    continue
 
             if isinstance(parsed, dict) and "blocks" in parsed:
                 final_blocks.append(parsed["blocks"][0])
             elif isinstance(parsed, dict) and "block_id" in parsed:
                 final_blocks.append(parsed)
             else:
-                raise ValueError(f"Unexpected schema at block {idx}: {parsed}")
+                logger.warning(
+                    "Unexpected schema at block %d, skipping: keys=%s",
+                    idx,
+                    (
+                        list(parsed.keys())
+                        if isinstance(parsed, dict)
+                        else type(parsed).__name__
+                    ),
+                )
+                continue
         # -----------------------------
         # FINAL MERGE
         # -----------------------------
