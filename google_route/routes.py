@@ -458,8 +458,11 @@ async def receive_browser_url():
 
         mailbox_setting = check_mailbox(user_id)
         if mailbox_setting:
-            service = GmailService(user_id=user_id)
-            service.create_watch_req()
+            try:
+                service = GmailService(user_id=user_id)
+                service.create_watch_req()
+            except Exception as e:
+                logger.warning("Gmail watch setup failed for user %s: %s", user_id, e)
 
         connection = connect_to_rds()
         cursor = connection.cursor()
