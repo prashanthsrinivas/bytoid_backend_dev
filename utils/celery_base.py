@@ -24,7 +24,7 @@ from umail_helper.mails_process import check_mailbox
 from umail_lance.umail_lance_agent import UmailLanceClient
 from utils.app_configs import IS_DEV
 from utils.async_check import run_async
-from microsoft_route.get_microsoft_emails import v2all_continuous_outlook
+from microsoft_route.get_microsoft_emails import v2all_continuous_outlook, v2all_continuous_teams
 from db.rds_db import connect_to_rds
 from request_context import current_user_id
 from playbook.helperzz import returnconfigandpath
@@ -209,6 +209,10 @@ def web_umail_sync(self, user_id, channel=None, integration=None):
         elif channel == "microsoft":
             result = asyncio.run(
                 v2all_continuous_outlook(user_id, integration=integration)
+            )
+        elif channel == "teams":
+            result = asyncio.run(
+                v2all_continuous_teams(user_id, integration=integration)
             )
         else:
             result = asyncio.run(

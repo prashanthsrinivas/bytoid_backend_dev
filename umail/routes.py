@@ -1594,6 +1594,21 @@ async def send_messages():
                         integration=integration,
                     )
 
+            elif channel == "teams":
+                from microsoft_route.routes import teams_send_message
+                try:
+                    result = teams_send_message(
+                        user_id=user_id,
+                        chat_id=thread_id,
+                        message_text=text,
+                        integration=integration,
+                    )
+                    if not result or result.get("status") != "success":
+                        return jsonify({"error": "Teams send failed"}), 500
+                except Exception as e:
+                    logger.error("Teams send failed: %s", e)
+                    return jsonify({"error": "Teams send failed"}), 500
+
             elif channel == "zoho":
                 # print("📧 [DEBUG] Processing Zoho send...")
                 try:

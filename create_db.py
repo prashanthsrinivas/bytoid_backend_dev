@@ -1190,10 +1190,10 @@ def modify_messages():
     cursor = connection.cursor()
     try:
         alter_table_sql = """
-            ALTER TABLE messages 
+            ALTER TABLE messages
             MODIFY sender_type ENUM(
-                'gmail','website','zoho','outlook','whatsapp','sms','phone','instagram_dm','facebook_messenger'
-            ) 
+                'gmail','website','zoho','outlook','whatsapp','sms','phone','instagram_dm','facebook_messenger','teams'
+            )
             DEFAULT NULL;
         """
         cursor.execute(alter_table_sql)

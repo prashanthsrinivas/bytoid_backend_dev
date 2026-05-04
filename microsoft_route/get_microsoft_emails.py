@@ -19,10 +19,12 @@ import asyncio
 from umail_helper.ticketalloc import TicketAllocator
 import os
 from .outlook_class import OutlookService
+from .microsoft_helpers import check_microsoft_token_expiry_normal
 import shutil
 from db.db_checkers import update_umail_json, update_umail_json_integration
 from services.redis_service import get_redis
 import json, threading
+import requests as _ms_requests
 
 
 async def get_outlook_thread_count_dynamic(
@@ -813,3 +815,116 @@ def parse_iso_utc(value):
         value = value.replace("Z", "+00:00")
 
     return datetime.fromisoformat(value)
+
+
+async def v2all_continuous_teams(user_id, integration=None):
+    """
+    Fetch Teams chats + recent messages and store them as taskbox conversations.
+    Each chat becomes a conversation; messages stored at
+    {user_id}/messages/{client_id}/{conversation_id}.json in S3.
+    """
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+    try:
+        if integration:
+            cursor.execute(
+                """
+                SELECT access_token, refresh_token
+                FROM integrations
+                WHERE primary_user_id_fk = %s
+                AND platform IN ('teams', 'microsoft')
+                AND status = 'active'
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return
+            access_token, refresh_token = row
+        else:
+            _, access_token = check_microsoft_token_expiry_normal(cursor, conn, user_id)
+            if not access_token:
+                return
+    finally:
+        cursor.close()
+        conn.close()
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    # Fetch list of chats (1:1 and group)
+    chats_resp = _ms_requests.get(
+        "https://graph.microsoft.com/v1.0/me/chats?$expand=members&$top=50",
+        headers=headers,
+        timeout=30,
+    )
+    if chats_resp.status_code != 200:
+        return
+    chats = chats_resp.json().get("value", [])
+
+    client_id = get_users_client_id(user_id)
+
+    for chat in chats:
+        chat_id = chat.get("id")
+        if not chat_id:
+            continue
+
+        topic = chat.get("topic") or "Teams Chat"
+        conversation_id = f"{user_id}_{chat_id}"
+
+        # Fetch recent messages in this chat
+        msgs_resp = _ms_requests.get(
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages?$top=50",
+            headers=headers,
+            timeout=30,
+        )
+        if msgs_resp.status_code != 200:
+            continue
+        raw_msgs = msgs_resp.json().get("value", [])
+
+        messages = []
+        for m in raw_msgs:
+            if m.get("messageType") != "message":
+                continue
+            sender = ((m.get("from") or {}).get("user")) or {}
+            messages.append({
+                "id": m.get("id"),
+                "from": sender.get("displayName", "Unknown"),
+                "from_id": sender.get("id", ""),
+                "body": (m.get("body") or {}).get("content", ""),
+                "timestamp": m.get("createdDateTime", ""),
+                "channel": "teams",
+                "direction": "inbound",
+                "subject": topic,
+                "chat_id": chat_id,
+                "conversation_id": conversation_id,
+            })
+
+        if not messages:
+            continue
+
+        conv_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
+        existing = read_json_from_s3(conv_key) or {}
+        existing_ids = {msg["id"] for msg in existing.get("input_data", [])}
+        new_msgs = [msg for msg in messages if msg["id"] not in existing_ids]
+        if not new_msgs:
+            continue
+
+        merged = existing.get("input_data", []) + new_msgs
+        upload_any_file(conv_key, {"input_data": merged})
+
+        # Upsert entry in config.json
+        config_key = f"{user_id}/messages/{client_id}/config.json"
+        config = read_json_from_s3(config_key) or {"conversations": []}
+        convs = config.get("conversations", [])
+        if not any(c.get("conversation_id") == conversation_id for c in convs):
+            convs.append({
+                "conversation_id": conversation_id,
+                "chat_id": chat_id,
+                "thread_id": chat_id,
+                "subject": topic,
+                "channel": "teams",
+                "client_email": "",
+            })
+            config["conversations"] = convs
+            upload_any_file(config_key, config)

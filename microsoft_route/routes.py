@@ -2918,6 +2918,69 @@ def outlook_send_mail(
     }
 
 
+def teams_send_message(user_id, chat_id, message_text, integration=None):
+    """
+    Send a message to a Microsoft Teams chat via Graph API.
+    Returns {"status": "success", "message_id": "...", "chat_id": "..."} or raises.
+    """
+    conn = connect_to_rds()
+    cursor = conn.cursor()
+
+    if integration:
+        cursor.execute(
+            """
+            SELECT user_id, access_token, refresh_token
+            FROM integrations
+            WHERE primary_user_id_fk = %s
+            AND platform IN ('teams', 'microsoft')
+            AND status = 'active'
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            raise Exception("No active Teams/Microsoft integration found.")
+        integration_user_id, access_token, refresh_token = row
+        expired = check_microsoft_token_expiry(cursor, user_id)
+        if expired:
+            resp = refresh_expired_microsoft_tokens_for_integrations(
+                refresh_token, cursor, conn, None, integration_user_id
+            )
+            access_token = resp.get_json()["token"]
+    else:
+        cursor.execute(
+            "SELECT token, refresh_token FROM users WHERE user_id = %s",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            raise Exception("No active Microsoft user found.")
+        access_token, refresh_token = row
+        expired, access_token = check_microsoft_token_expiry_normal(cursor, conn, user_id)
+
+    cursor.close()
+    conn.close()
+
+    url = f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages"
+    graph_headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    payload = {"body": {"contentType": "html", "content": message_text}}
+    res = requests.post(url, headers=graph_headers, json=payload, timeout=30)
+
+    if res.status_code not in [200, 201]:
+        raise Exception(f"Failed to send Teams message: {res.text}")
+
+    data = res.json()
+    return {"status": "success", "message_id": data.get("id"), "chat_id": chat_id}
+
+
 # ---------------- related to onedrive ----------------------- #
 
 
