@@ -99,6 +99,9 @@ class GmailService:
                 raise ValueError(f"No Gmail credentials found for user {user_id}")
         client_id, client_secret, access_token, refresh_token, expiry = row
         expiryed = datetime.fromisoformat(expiry) if isinstance(expiry, str) else expiry
+        # Normalize to timezone-naive UTC — google-auth Credentials.expired uses utcnow() (naive)
+        if expiryed is not None and expiryed.tzinfo is not None:
+            expiryed = expiryed.replace(tzinfo=None)
         # Build credentials object
         self.creds = Credentials(
             token=access_token,

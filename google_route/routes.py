@@ -789,14 +789,18 @@ def get_token(inuser=None, value=None, in_connection=None):
 
             client_id, client_secret, token, refresh_token, expiry = row
 
-            # Ensure expiry is a datetime object
+            # Ensure expiry is a timezone-naive datetime object
             if isinstance(expiry, str):
                 expiry = datetime.fromisoformat(expiry)
+            if expiry is None:
+                expiry = datetime.utcnow() - timedelta(seconds=1)
+            elif expiry.tzinfo is not None:
+                expiry = expiry.replace(tzinfo=None)
 
-            time_to_expiry = expiry - datetime.now()
+            time_to_expiry = expiry - datetime.utcnow()
 
             # Refresh only if token is close to expiring
-            if expiry <= datetime.now() or time_to_expiry <= timedelta(minutes=10):
+            if expiry <= datetime.utcnow() or time_to_expiry <= timedelta(minutes=10):
                 ##print("token time expired")
                 try:
                     creds = Credentials(
@@ -895,6 +899,10 @@ def token_update_and_check():
 
             if isinstance(expiry, str):
                 expiry = datetime.fromisoformat(expiry)
+            if expiry is None:
+                expiry = datetime.utcnow() - timedelta(seconds=1)
+            elif expiry.tzinfo is not None:
+                expiry = expiry.replace(tzinfo=None)
 
             # print(f"{social} | {client_id} | {expiry}")
             logger.info("social got is %s - %s", social, client_id)
@@ -942,9 +950,17 @@ def refresh_google_if_needed(
     refresh_token,
     expiry,
 ):
-    time_to_expiry = expiry - datetime.utcnow()
+    now = datetime.utcnow()
 
-    if expiry <= datetime.utcnow() or time_to_expiry <= timedelta(minutes=10):
+    # Normalize expiry: handle None (treat as expired) and timezone-aware datetimes
+    if expiry is None:
+        expiry = now - timedelta(seconds=1)
+    elif expiry.tzinfo is not None:
+        expiry = expiry.replace(tzinfo=None)
+
+    time_to_expiry = expiry - now
+
+    if expiry <= now or time_to_expiry <= timedelta(minutes=10):
         try:
             creds = Credentials(
                 token=token,

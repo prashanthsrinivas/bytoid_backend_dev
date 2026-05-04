@@ -81,7 +81,9 @@ class GoogleMeetService:
                 expiryed = None
             else:
                 try:
-                    expiryed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                    expiryed = datetime.fromisoformat(expiry.replace("Z", ""))
+                    if expiryed.tzinfo is not None:
+                        expiryed = expiryed.replace(tzinfo=None)
                 except Exception:
                     expiryed = None
         else:
