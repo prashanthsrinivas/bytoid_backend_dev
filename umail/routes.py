@@ -1702,19 +1702,15 @@ async def send_messages():
 
             except Exception as e:
                 connection.rollback()
-                # print(f"❌ [DEBUG] Database operation failed — rolled back: {e}")
+                logger.error("Database operation failed — rolled back: %s", e)
                 return jsonify({"error": "Database operation failed"}), 500
 
             # Update Conversation File
-            ##print("📄 [DEBUG] Updating conversation file...")
             try:
                 if isinstance(input_data, dict):
                     input_data = [input_data]
                 input_data.append(message)
                 conversation_data = {"input_data": input_data}
-                # print(f"📄 [DEBUG] Total messages in conversation: {len(input_data)}")
-                # print(f"conversation_data : {conversation_data}")
-                # print(f"💾 [DEBUG] Writing to local file: {conv_filepath}")
                 with open(conv_filepath, "w", encoding="utf-8") as f:
                     json.dump(conversation_data, f, indent=2)
 
@@ -2552,7 +2548,7 @@ async def send_messages_test():
 
         except Exception as e:
             connection.rollback()
-            # print(f"❌ [DEBUG] Database operation failed — rolled back: {e}")
+            logger.error("Database operation failed — rolled back: %s", e)
             return jsonify({"error": "Database operation failed"}), 500
 
         # Update Conversation File

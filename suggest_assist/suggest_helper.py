@@ -522,7 +522,7 @@ async def send_pilot_messages(
 
         except Exception as e:
             connection.rollback()
-            # print(f"❌ [DEBUG] Database operation failed — rolled back: {e}")
+            logger.error("Database operation failed — rolled back: %s", e)
             return {"error": "Database operation failed"}, 500
 
         # Update Conversation File
