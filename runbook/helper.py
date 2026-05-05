@@ -554,6 +554,7 @@ async def run_runbook_execution_engine(
     session_id=None,
     progress=None,
     is_playbook_based_execution=False,
+    custom_playbook_id=None,
 ):
     from websockets_custom.ws_instance import ws_service, msg_builder_main
     from runbook.utils import send
@@ -1243,6 +1244,8 @@ async def run_runbook_execution_engine(
                 95,
             )
         )
+        if custom_playbook_id:
+            merged_result["document_meta"]["base_playbook_id"] = custom_playbook_id
 
         await dbserver.insert_runbook_result(
             {
@@ -1566,6 +1569,7 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
         structure_file=structure_file,
         structure_file_payload=structure_file_payload,
         is_playbook_based_execution=True,
+        custom_playbook_id=playbook_id,
     )
     # ws_service.emit(user_id=user_id,message=)
 

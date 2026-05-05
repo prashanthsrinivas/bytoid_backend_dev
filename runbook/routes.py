@@ -476,12 +476,22 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
         if playbook_id:
             try:
                 instruction_data = await get_playbook_instruction(user_id, playbook_id)
-                logger.debug("Modify: instruction data keys: %s", list(instruction_data.keys()))
-                runbook_data["_playbook_evidences_urls"] = instruction_data.get("evidences_ques", [])
-                runbook_data["_playbook_evidence_overview"] = instruction_data.get("evidence_overview", {})
-                runbook_data["_playbook_ev_questions"] = instruction_data.get("evidence_based_questions", [])
+                logger.debug(
+                    "Modify: instruction data keys: %s", list(instruction_data.keys())
+                )
+                runbook_data["_playbook_evidences_urls"] = instruction_data.get(
+                    "evidences_ques", []
+                )
+                runbook_data["_playbook_evidence_overview"] = instruction_data.get(
+                    "evidence_overview", {}
+                )
+                runbook_data["_playbook_ev_questions"] = instruction_data.get(
+                    "evidence_based_questions", []
+                )
             except Exception as _pb_err:
-                logger.warning("Could not load playbook evidence for modify: %s", _pb_err)
+                logger.warning(
+                    "Could not load playbook evidence for modify: %s", _pb_err
+                )
 
         # -----------------------------
         # STRUCTURE FILE HANDLING
@@ -890,7 +900,7 @@ async def result_by_id(result_id):
         return jsonify({"error": str(e)}), 500
 
 
-@runbook_bp.route("/result/<result_id>/evidence_analysis", methods=["PATCH"])
+@runbook_bp.route("/result/<result_id>/evidence_analysis", methods=["PUT"])
 async def patch_evidence_analysis(result_id):
     try:
         data = request.get_json() or {}
@@ -918,7 +928,10 @@ async def patch_evidence_analysis(result_id):
             return jsonify({"error": "No evidence_analysis in result"}), 404
 
         if not (0 <= index < len(items)):
-            return jsonify({"error": f"Index {index} out of range (len={len(items)})"}), 400
+            return (
+                jsonify({"error": f"Index {index} out of range (len={len(items)})"}),
+                400,
+            )
 
         target = items[index]
         for key, val in updates.items():
