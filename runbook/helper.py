@@ -17,6 +17,12 @@ from db.rds_db import connect_to_rds
 from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file
 from utils.s3_utils import read_json_from_s3, upload_any_file, s3bucket, S3_BUCKET
+from tab_tracker.helper import (
+    check_config_exist,
+    append_to_tracker,
+    save_tracker_file,
+    update_tracker_config,
+)
 from utils.fireworkzz import (
     get_firework_embedding,
     get_fireworks_response2,
@@ -439,6 +445,99 @@ async def _reduce_by_admissible_evidence(
             )
 
     return json.dumps(extracted_parts)
+
+
+async def _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_id):
+    try:
+        tracker_cfg = runbook.get("tracker_configuration")
+        if not tracker_cfg:
+            return
+        if isinstance(tracker_cfg, str):
+            try:
+                tracker_cfg = json.loads(tracker_cfg)
+            except Exception:
+                logger.warning(
+                    "tracker_configuration is not valid JSON, skipping tracker push"
+                )
+                return
+        if not isinstance(tracker_cfg, dict) or not tracker_cfg:
+            return
+
+        blocks = merged_result.get("blocks", [])
+        block_map = {b["block_id"]: b for b in blocks if "block_id" in b}
+
+        config_path, config_data = check_config_exist(user_id)
+        if not config_data:
+            logger.warning(
+                "No tracker config found for user %s, skipping tracker push", user_id
+            )
+            return
+
+        for block_id, tracker_id in tracker_cfg.items():
+            try:
+                block = block_map.get(block_id)
+                if not block:
+                    logger.warning(
+                        "Block %s not in merged_result, skipping tracker %s",
+                        block_id,
+                        tracker_id,
+                    )
+                    continue
+
+                tracker_meta = next(
+                    (
+                        t
+                        for t in config_data.get("trackers", [])
+                        if t["tracker_id"] == tracker_id
+                    ),
+                    None,
+                )
+                if not tracker_meta:
+                    logger.warning(
+                        "Tracker %s not in config, skipping block %s",
+                        tracker_id,
+                        block_id,
+                    )
+                    continue
+
+                file_path = tracker_meta.get(
+                    "file_path", f"{user_id}/tracker/{tracker_id}/tracker.json"
+                )
+                tracker_data = read_json_from_s3(file_path)
+                if not tracker_data:
+                    logger.warning(
+                        "Tracker file missing at %s, skipping tracker %s",
+                        file_path,
+                        tracker_id,
+                    )
+                    continue
+
+                append_to_tracker(tracker_data, block, new_result_id)
+                save_tracker_file(user_id, tracker_id, tracker_data)
+                update_tracker_config(
+                    config_path=config_path,
+                    user_id=user_id,
+                    tracker_id=tracker_id,
+                    updates={"last_result_id": new_result_id},
+                )
+                logger.info(
+                    "Pushed block %s → tracker %s (result=%s)",
+                    block_id,
+                    tracker_id,
+                    new_result_id,
+                )
+
+            except Exception as e:
+                logger.error(
+                    "Failed to push block %s to tracker %s: %s",
+                    block_id,
+                    tracker_id,
+                    e,
+                    exc_info=IS_DEV,
+                )
+
+    except Exception as e:
+        logger.error("_push_blocks_to_trackers error: %s", e, exc_info=IS_DEV)
 
 
 async def run_runbook_execution_engine(
@@ -1157,6 +1256,9 @@ async def run_runbook_execution_engine(
                 "started_at": int(time.time()),
                 "ended_at": int(time.time()),
             }
+        )
+        asyncio.create_task(
+            _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_id)
         )
         if merged_result:
             name = runbook["name"] or runbook_id
