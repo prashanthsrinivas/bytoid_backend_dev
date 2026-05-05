@@ -890,6 +890,57 @@ async def result_by_id(result_id):
         return jsonify({"error": str(e)}), 500
 
 
+@runbook_bp.route("/result/<result_id>/evidence_analysis", methods=["PATCH"])
+async def patch_evidence_analysis(result_id):
+    try:
+        data = request.get_json() or {}
+        user_id = session.get("user_id") or data.get("user_id")
+        if not user_id:
+            return jsonify({"error": "user_id required"}), 400
+
+        index = data.get("index")
+        updates = data.get("updates")
+        if index is None or not isinstance(updates, dict):
+            return jsonify({"error": "index and updates are required"}), 400
+
+        res = await dbserver.runbook_get_result(user_id, result_id)
+        if not res or res.get("status") == "not_found":
+            return jsonify({"error": "Result not found"}), 404
+
+        result_doc = res.get("result") or res
+
+        ev = result_doc.get("evidence_analysis")
+        if isinstance(ev, dict):
+            items = ev.get("items", [])
+        elif isinstance(ev, list):
+            items = ev
+        else:
+            return jsonify({"error": "No evidence_analysis in result"}), 404
+
+        if not (0 <= index < len(items)):
+            return jsonify({"error": f"Index {index} out of range (len={len(items)})"}), 400
+
+        target = items[index]
+        for key, val in updates.items():
+            if isinstance(val, dict) and isinstance(target.get(key), dict):
+                target[key] = {**target[key], **val}
+            else:
+                target[key] = val
+
+        if isinstance(ev, dict):
+            ev["items"] = items
+            result_doc["evidence_analysis"] = ev
+        else:
+            result_doc["evidence_analysis"] = items
+
+        await dbserver.update_runbook_result(user_id, result_id, result_doc)
+        return jsonify({"success": True, "message": "Evidence analysis updated"}), 200
+
+    except Exception as e:
+        logger.exception("patch_evidence_analysis error")
+        return jsonify({"error": str(e)}), 500
+
+
 @runbook_bp.route("/schedule_runbook", methods=["POST"])
 async def schedule_runbook():
     import json
