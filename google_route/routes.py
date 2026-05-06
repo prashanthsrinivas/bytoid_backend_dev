@@ -9,7 +9,8 @@ from google.oauth2 import id_token
 from datetime import datetime, timedelta
 import uuid
 import os
-os.environ.setdefault('OAUTHLIB_RELAX_TOKEN_SCOPE', '1')
+
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 import requests
 from db.rds_db import connect_to_rds
 from dotenv import load_dotenv
@@ -586,6 +587,7 @@ async def receive_browser_url():
         return response
 
     except Exception as e:
+        logger.info("Error at login at browser_url", e)
         return jsonify({"error": str(e)}), 500
 
 

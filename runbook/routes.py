@@ -4,10 +4,12 @@ import logging
 import os
 import traceback
 import json
+from urllib.parse import urlparse
 import time, uuid, traceback
 from utils.app_configs import IS_DEV
 from playbook.background_worker import JobManager
-from playbook.helperzz import assign_runbook_playbook
+from playbook.helperzz import assign_runbook_playbook, save_playbook_to_s3
+from utils.celery_base import create_playbook_runbook_task
 from runbook.helper import (
     Modify_default_structure,
     analyze_questions_with_references,
@@ -951,6 +953,210 @@ async def patch_evidence_analysis(result_id):
 
     except Exception as e:
         logger.exception("patch_evidence_analysis error")
+        return jsonify({"error": str(e)}), 500
+
+
+def _normalize_file(f: str) -> str:
+    if not f:
+        return None
+    try:
+        if isinstance(f, dict):
+            f = f.get("file")
+
+        if f and f.startswith("http"):
+            return os.path.basename(urlparse(f).path)
+        return os.path.basename(f)
+    except Exception:
+        return f
+
+
+def _toggle_file_in_overview(ev_overview, file_url, target_status):
+    if target_status not in ("admissible", "inadmissible"):
+        raise ValueError("Invalid target_status")
+
+    source_key = "inadmissible" if target_status == "admissible" else "admissible"
+    target_key = target_status
+
+    source_list = ev_overview.get(source_key) or []
+    target_list = ev_overview.get(target_key) or []
+
+    incoming_name = _normalize_file(file_url)
+
+    affected_artifacts = []
+    removed_files_map = {}
+
+    # 🔥 STEP 1: Remove from ALL artifacts
+    for entry in source_list:
+        artifact = entry.get("artifact")
+        files = entry.get("files") or []
+
+        # remove ALL matching files
+        new_files = []
+        removed = None
+
+        for f in files:
+            if _normalize_file(f) == incoming_name:
+                removed = f
+            else:
+                new_files.append(f)
+
+        if removed:
+            entry["files"] = new_files
+            affected_artifacts.append(artifact)
+            removed_files_map[artifact] = removed
+
+    if not affected_artifacts:
+        raise ValueError(f"File not found in {source_key} evidence")
+
+    # 🔥 STEP 2: Remove EMPTY artifacts
+    source_list = [e for e in source_list if e.get("files")]
+    ev_overview[source_key] = source_list
+
+    # 🔁 STEP 3: Add to target artifacts
+    for artifact in affected_artifacts:
+        file_to_add = removed_files_map.get(artifact) or file_url
+
+        target_entry = next(
+            (e for e in target_list if e.get("artifact") == artifact), None
+        )
+
+        if target_entry:
+            target_files = target_entry.setdefault("files", [])
+
+            # prevent duplicates
+            if not any(_normalize_file(f) == incoming_name for f in target_files):
+                target_files.append(file_to_add)
+        else:
+            new_entry = {"artifact": artifact, "files": [file_to_add]}
+
+            if target_key == "admissible":
+                new_entry.setdefault("summary", "")
+
+            target_list.append(new_entry)
+
+    ev_overview[target_key] = target_list
+
+    return ev_overview, affected_artifacts
+
+
+@runbook_bp.route("/result/<result_id>/evidence_admissibility", methods=["POST"])
+async def toggle_evidence_admissibility(result_id):
+    try:
+        data = request.get_json() or {}
+        user_id = session.get("user_id") or data.get("user_id")
+
+        if not user_id:
+            return jsonify({"error": "user_id required"}), 400
+
+        file_url = data.get("file")
+        target_status = data.get("target_status")
+
+        if not file_url or target_status not in ("admissible", "inadmissible"):
+            return (
+                jsonify(
+                    {
+                        "error": "file and target_status ('admissible'|'inadmissible') required"
+                    }
+                ),
+                400,
+            )
+
+        # 1. Fetch result
+        res = await dbserver.runbook_get_result(user_id, result_id)
+        if not res or res.get("status") == "not_found":
+            return jsonify({"error": "Result not found"}), 404
+
+        runbook_id = res.get("runbook_id")
+        result_doc = res.get("result") or res
+        playbook_id = (result_doc.get("document_meta") or {}).get("base_playbook_id")
+
+        if not playbook_id:
+            return (
+                jsonify({"error": "Result is not from a playbook-based execution"}),
+                400,
+            )
+
+        # 2. Load playbook
+        playbook_json = await get_playbook_instruction(user_id, playbook_id)
+        if not playbook_json:
+            return jsonify({"error": "Playbook data not found"}), 404
+
+        ev_overview = playbook_json.get("evidence_overview") or {}
+
+        try:
+            ev_overview, affected_artifacts = _toggle_file_in_overview(
+                ev_overview, file_url, target_status
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        # 3. Save playbook
+        playbook_json["evidence_overview"] = ev_overview
+
+        filename = (
+            playbook_id if playbook_id.endswith(".json") else f"{playbook_id}.json"
+        )
+
+        save_playbook_to_s3(playbook_json, user_id, "evidence updated", filename)
+
+        # 4. Update DB config
+        runbook_rows = await dbserver.get_runbook_by_id(user_id, runbook_id)
+
+        if runbook_rows:
+            runbook_row = (
+                runbook_rows[0] if isinstance(runbook_rows, list) else runbook_rows
+            )
+
+            try:
+                ev_config = json.loads(
+                    runbook_row.get("runbook_evidence_config") or "[]"
+                )
+            except Exception:
+                ev_config = []
+
+            admissible_list = ev_overview.get("admissible") or []
+
+            for artifact_name in affected_artifacts:
+                # 🔥 FIX: must check files exist
+                still_admissible = any(
+                    e.get("artifact") == artifact_name and e.get("files")
+                    for e in admissible_list
+                )
+
+                found = False
+                for entry in ev_config:
+                    if entry.get("artifact") == artifact_name:
+                        entry["decision"] = still_admissible
+                        found = True
+                        break
+
+                if not found:
+                    ev_config.append(
+                        {"artifact": artifact_name, "decision": still_admissible}
+                    )
+
+            await dbserver.update_runbook(
+                user_id, runbook_id, {"runbook_evidence_config": ev_config}
+            )
+
+        # 5. Trigger async regeneration
+        create_playbook_runbook_task.delay(user_id, playbook_id, runbook_id)
+
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "message": "Report regeneration started",
+                    "file": file_url,
+                    "new_status": target_status,
+                    "affected_artifacts": affected_artifacts,
+                }
+            ),
+            202,
+        )
+
+    except Exception as e:
+        logger.exception("toggle_evidence_admissibility error")
         return jsonify({"error": str(e)}), 500
 
 

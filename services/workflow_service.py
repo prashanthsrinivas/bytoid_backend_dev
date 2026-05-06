@@ -3269,13 +3269,37 @@ class WorkflowRunnerV2:
         # STEP 2: CATEGORIZE EVIDENCE
         # ===========================
         evidence_map = {}  # artifact -> {snippets: [], files: set()}
+
+        # Build a doc-safe evidence summary that excludes image-only artifacts.
+        # PDFs and other text files cannot satisfy evidence whose nature requires
+        # an actual image (Screenshot, System screenshot, CCTV, etc.).
+        _image_natures = {"Image", "Image/video", "Screenshot"}
+        _image_only_artifacts = {
+            e.get("artifact")
+            for e in user_evidence
+            if e.get("nature") in _image_natures
+        }
+        evidence_summary_docs = json.dumps(
+            [
+                {
+                    "id": e.get("id"),
+                    "artifact": e.get("artifact"),
+                    "type": e.get("type"),
+                    "expectations": e.get("expectations"),
+                }
+                for e in user_evidence
+                if e.get("nature") not in _image_natures
+            ],
+            indent=2,
+        )
+
         self.logger.debug("evidence summary length: %d", len(evidence_summary))
         self.logger.info("Starting evidence classification")
 
         cat_prompt_base = (
             "You are an evidence classification expert.\n\n"
             "KNOWN EVIDENCE TYPES:\n"
-            + evidence_summary
+            + evidence_summary_docs
             + "\n\nDOCUMENT CHUNK:\n{chunk}\n\n"
             "Identify which evidence types from the list are present in this chunk. "
             "Extract relevant content snippets.\n\n"

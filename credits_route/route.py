@@ -3,7 +3,6 @@ from db.rds_db import connect_to_rds
 import pymysql
 from services.credit_system import CreditManager, InsufficientCreditsError
 
-
 # load_dotenv()  # Load from .env into environment variables
 credits_bp = Blueprint("credits", __name__)
 
@@ -74,16 +73,16 @@ class Credits:
 
         if not user_id or not total_chars:
             return None
-        print(f"credit type: {credit_type}")
-        print("actual chars", total_chars)
-        print("reference id", reference_id)
+        # print(f"credit type: {credit_type}")
+        # print("actual chars", total_chars)
+        # print("reference id", reference_id)
 
         # 🔹 Refresh DB connection
         self.db = self.get_db()
         self.cm.db = self.db
 
         credits_to_consume = int(total_chars * self.CREDIT_MULTIPLIER)
-        print("credits needed to decrease", credits_to_consume)
+        # print("credits needed to decrease", credits_to_consume)
         if credits_to_consume <= 0:
             return None
 

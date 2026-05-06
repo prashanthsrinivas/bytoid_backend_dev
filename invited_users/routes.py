@@ -136,34 +136,48 @@ def get_roles(userid):
             )
             all_users = cursor.fetchall()
 
-            emails = [] 
+            emails = []
             special_access_status = {}
-
+            invites = []
+            shared = []
+            
             for user in all_users:
                 if user["user_type"] != "admin":
                     continue
-
-                #if user["user_id"] == userid:
-                #    continue
-
                 email = user["email"]
-
-                # check special access (bidirectional)
                 cursor.execute("""
                     SELECT 1 FROM special_access
                     WHERE (grantor_admin_id=%s AND target_admin_id=%s)
                     OR (grantor_admin_id=%s AND target_admin_id=%s)
                 """, (userid, user["user_id"], user["user_id"], userid))
-
                 access = cursor.fetchone()
-
+                has_access = bool(access)
+            
                 emails.append(email)
-                special_access_status[email] = bool(access)
+                special_access_status[email] = has_access
+                user_obj = {
+                   "email": email,
+                   "role": {
+                       "id": "admin_access",
+                       "name": "Admin",
+                       "permissions": []
+                   },
+                   "status": "active" if has_access else "pending"
+               }
+                if has_access:
+                   shared.append(user_obj)
+                else:
+                   invites.append(user_obj)
+                
         return (
             jsonify(
                 {
                     "roles": roles,
                     "invited_users": emails,
+                    "invited_users_structured": {
+                        "invites": invites,
+                        "shared": shared
+                    },
                     "special_access_status": special_access_status,
                 }
             ),
@@ -1517,6 +1531,44 @@ def activate_shared_user_role():
 
     except Exception as e:
         conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if conn:
+            conn.close()
+
+
+@inv_users_bp.route("/admin/all_special_access_users/<userid>", methods=["GET"])
+def all_special_access_users(userid):
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+
+            cursor.execute(
+                "SELECT user_type FROM users WHERE user_id=%s", (userid,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+            if row["user_type"] == "user":
+                return jsonify({"error": "Unauthorized access"}), 403
+
+            cursor.execute(
+                """
+                SELECT sa.target_admin_id, u.email
+                FROM special_access sa
+                JOIN users u ON u.user_id = sa.target_admin_id
+                WHERE sa.grantor_admin_id = %s
+                """,
+                (userid,),
+            )
+            rows = cursor.fetchall()
+
+        result = {r["email"]: r["target_admin_id"] for r in rows}
+        return jsonify({"special_access_users": result}), 200
+
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
     finally:
