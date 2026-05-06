@@ -744,6 +744,7 @@ def accept_from_link():
    token = request.args.get("token")
    if not token:
        return jsonify({"error": "Missing token"}), 400
+   conn = None
    try:
        # ✅ decode token
        invited_by, invited_to, expiry = dehashed_url(token)
@@ -810,6 +811,7 @@ def grant_special_access():
     current_admin_id = data.get("user_id")
     target_admin_id = data.get("target_admin_id")
 
+    conn = None
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -889,7 +891,7 @@ def request_special_access():
             cursor.execute("""
                 SELECT 1 FROM special_access
                 WHERE grantor_admin_id=%s AND target_admin_id=%s
-            """, (requester_id, target["user_id"]))
+            """, (target["user_id"], requester_id))
 
             if cursor.fetchone():
                 return jsonify({"error": "Access already exists"}), 400
@@ -961,8 +963,9 @@ def accept_special_access():
     requester_id = data.get("requester_id")  # Admin A
     target_id = data.get("target_id")        # Admin B
 
-    conn = connect_to_rds()
+    conn = None
     try:
+        conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
 
             # ✅ 1. ADMIN CHECK
@@ -971,6 +974,9 @@ def accept_special_access():
 
             cursor.execute("SELECT user_type, company_name FROM users WHERE user_id=%s", (target_id,))
             tgt = cursor.fetchone()
+
+            if not req or not tgt:
+                return jsonify({"error": "User(s) not found"}), 404
 
             if req["user_type"] != "admin" or tgt["user_type"] != "admin":
                 return jsonify({"error": "Only admins allowed"}), 403
@@ -995,6 +1001,8 @@ def accept_special_access():
             conn.commit()
             return jsonify({"message": "Access granted"}), 200
 
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -1007,6 +1015,7 @@ def revoke_special_access():
     requester_id = data.get("user_id")   # Admin A (who HAS access)
     target_id = data.get("target_id")    # Admin B (who GAVE access)
 
+    conn = None
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
