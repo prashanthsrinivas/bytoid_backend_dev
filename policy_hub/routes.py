@@ -263,17 +263,15 @@ async def generate_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
     prompt = body.get("prompt")
-    doc_type = body.get("type")          # optional filter: "policy" | "procedure"
+    doc_type = body.get("type")          # kept for metadata only — generation always covers both types
     frameworks = body.get("frameworks", [])
 
     if not user_id or not prompt:
         return jsonify({"error": "user_id and prompt are required"}), 400
 
     fw_list = ", ".join(frameworks) if frameworks else "general compliance"
-    type_filter = (
-        f"Only include documents of type '{doc_type}'." if doc_type
-        else "Include both policies and procedures."
-    )
+    # Always enumerate both policies AND procedures regardless of the tab the frontend is on
+    type_filter = "Include both policies and procedures."
 
     # Phase 1: enumerate all required documents (fast, completes well within timeout)
     credits = Credits()
