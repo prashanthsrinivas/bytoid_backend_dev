@@ -29,11 +29,16 @@ from credits_route.route import Credits
 from radar.radar_helpers import (
     extract_file_payload,
 )
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, jsonify, request, session, g
 from runbook.helper2 import modify_run_runbook_execution_engine
 from runbook.utils import get_playbook_instruction, send
 from services.redis_service import get_redis
 from utils.s3_utils import upload_any_file
+from services.audit_log_service import (
+    log_audit_event,
+    RUNBOOK_CREATED, RUNBOOK_UPDATED, RUNBOOK_DELETED,
+    RUNBOOK_BULK_DELETED, RUNBOOK_SCHEDULED,
+)
 import time, uuid, os, json
 from datetime import datetime
 
@@ -409,6 +414,14 @@ async def create_runbook():
             session_id=session_id,
         )
 
+        log_audit_event(
+            action=RUNBOOK_CREATED, endpoint="/runbook/create",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"job_id": job_id, "runbook_name": data.get("name")},
+        )
+        g.audit_logged = True
+
         return jsonify({"success": True, "job_id": job_id, "status": "queued"})
 
     except Exception as e:
@@ -636,6 +649,14 @@ async def modify_runbook():
         execute_modify_runbook, data, session_id=session_id
     )
 
+    log_audit_event(
+        action=RUNBOOK_UPDATED, endpoint="/runbook/modify",
+        ip=request.remote_addr, status="success",
+        actor_user_id=user_id,
+        metadata={"job_id": job_id, "runbook_id": data.get("runbook_id")},
+    )
+    g.audit_logged = True
+
     return jsonify({"success": True, "job_id": job_id, "status": "queued"})
 
 
@@ -734,6 +755,14 @@ async def delete_runbook(runbook_id):
         await dbserver.delete_runbook(user_id, runbook_id)
         await dbserver.delete_runbook_result(user_id, runbook_id)
 
+        log_audit_event(
+            action=RUNBOOK_DELETED, endpoint="/runbook/delete",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"runbook_id": runbook_id},
+        )
+        g.audit_logged = True
+
         return jsonify({"success": True}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -749,6 +778,14 @@ async def delete_all():
             return jsonify({"error": "Unauthorized"}), 401
         # dbserver = LanceDBServer()
         await dbserver.delete_all_runbook(user_id, runbook_id)
+
+        log_audit_event(
+            action=RUNBOOK_BULK_DELETED, endpoint="/runbook/delete_all",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"runbook_count": len(runbook_id), "runbook_ids": runbook_id[:10]},
+        )
+        g.audit_logged = True
 
         return jsonify({"success": True, "deleted_ids": len(runbook_id)}), 200
     except Exception as e:
@@ -797,6 +834,14 @@ async def update_runbook_api(runbook_id):
         updates = normalize_payload(updates)
 
         updated = await dbserver.update_runbook(user_id, runbook_id, updates)
+
+        log_audit_event(
+            action=RUNBOOK_UPDATED, endpoint="/runbook/update",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"runbook_id": runbook_id, "fields_updated": list(updates.keys())},
+        )
+        g.audit_logged = True
 
         return jsonify({"success": True, "runbook": updated}), 200
 
@@ -1205,6 +1250,14 @@ async def schedule_runbook():
     # STEP 2: ACTIVATE SCHEDULE (CELERY)
     # ========================================
     # result = await activate_runbook_schedule(user_id, runbook_id)
+
+    log_audit_event(
+        action=RUNBOOK_SCHEDULED, endpoint="/schedule_runbook",
+        ip=request.remote_addr, status="success",
+        actor_user_id=user_id,
+        metadata={"runbook_id": runbook_id, "schedule_type": schedule_type, "timezone": timezone},
+    )
+    g.audit_logged = True
 
     return jsonify(
         {

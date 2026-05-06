@@ -1,0 +1,1249 @@
+import json
+import asyncio
+import uuid
+import traceback
+from flask import Blueprint, request, jsonify
+from credits_route.route import Credits
+from db.rds_db import connect_to_rds
+from db.lance_db_service import LanceDBServer, QueryData
+from playbook.background_worker import JobManager
+from tab_tracker.helper import save_tracker_file
+from utils.fireworkzz import get_fireworks_response2, get_firework_embedding, extract_json_safe
+from utils.base_logger import get_logger
+from websockets_custom.ws_instance import ws_service, msg_builder_main
+
+tracker_ai_bp = Blueprint("tracker_ai", __name__)
+logger = get_logger(__name__)
+ws_sender = ws_service
+msg_builder = msg_builder_main
+
+
+async def send(ws_sndr, msg, user_id):
+    if not msg:
+        return
+    await ws_sndr.emit(
+        user_id=user_id,
+        message=msg.get("message"),
+        scope=msg.get("scope", "global"),
+        session_id=msg.get("session_id"),
+        job_id=msg.get("job_id"),
+        msg_type=msg.get("type"),
+        stage=msg.get("stage"),
+        progress=msg.get("progress"),
+        feature="tracker_ai",
+    )
+
+
+async def get_intent(user_id: str, message: str, credits) -> str:
+    """Classify user message into one of five intents."""
+    prompt = f"""You are an intent classifier for a data tracker assistant.
+
+The user is working with a data tracker (table, matrix, or scorecard). They sent this message:
+"{message}"
+
+Classify this message into EXACTLY ONE of these intents:
+- "reduce": user wants to shorten, condense, summarize, minimize, or trim content in the tracker
+- "increase": user wants to expand, elaborate, add more rows, add sections, add detail, or grow the tracker
+- "modify_content": user wants to change specific values, text, labels, or content in the tracker
+- "explain": user wants an explanation, analysis, insight, or is asking a question about the data
+- "normal_greeting": greeting, small talk, inappropriate content, out-of-context request, or unclear intent
+
+Return ONLY valid JSON with no explanation, no markdown:
+{{"intent": "<one of the five values above>"}}"""
+
+    try:
+        response = await get_fireworks_response2(
+            user_id, prompt, role="system", credits=credits, temp=0.0
+        )
+        if not response or response == "INSUFFICIENT":
+            return "normal_greeting"
+        parsed = extract_json_safe(response)
+        if parsed and isinstance(parsed, dict):
+            intent = parsed.get("intent", "normal_greeting")
+            if intent in [
+                "reduce",
+                "increase",
+                "modify_content",
+                "explain",
+                "normal_greeting",
+            ]:
+                return intent
+    except Exception as e:
+        logger.exception("Error in get_intent: %s", e)
+    return "normal_greeting"
+
+
+async def detect_language(user_id: str, message: str, credits) -> str:
+    """Detect the natural language of the user's message."""
+    prompt = f"""Detect the language of this message: "{message}"
+
+Return ONLY valid JSON:
+{{"language": "<full language name in English, e.g. English, French, Spanish>"}}
+
+If the language cannot be determined, return "English"."""
+
+    try:
+        response = await get_fireworks_response2(
+            user_id, prompt, role="system", credits=credits, temp=0.0
+        )
+        if not response or response == "INSUFFICIENT":
+            return "English"
+        parsed = extract_json_safe(response)
+        if parsed and isinstance(parsed, dict):
+            lang = parsed.get("language", "English")
+            return lang if lang else "English"
+    except Exception as e:
+        logger.exception("Error in detect_language: %s", e)
+    return "English"
+
+
+def _validate_tracker_schema(original: dict, modified: dict) -> tuple:
+    """Validate that modified tracker preserves structure of original. Returns (is_valid, error_msg)."""
+    try:
+        if original.get("tracker_id") != modified.get("tracker_id"):
+            return (False, "tracker_id was modified")
+        if original.get("type") != modified.get("type"):
+            return (False, "tracker type was modified")
+
+        orig_schema = original.get("schema", {})
+        mod_schema = modified.get("schema", {})
+
+        tracker_type = original.get("type", "")
+
+        if tracker_type == "table":
+            orig_cols = {c["id"] for c in orig_schema.get("columns", [])}
+            mod_cols = {c["id"] for c in mod_schema.get("columns", [])}
+            if orig_cols != mod_cols:
+                return (False, "column schema was modified")
+            orig_row_ids = {r["row_id"] for r in original.get("rows", [])}
+            mod_row_ids = {r["row_id"] for r in modified.get("rows", [])}
+            if not orig_row_ids.issubset(mod_row_ids):
+                return (False, "existing rows were removed")
+
+        elif tracker_type == "matrix":
+            orig_rows = set(orig_schema.get("rows", []))
+            mod_rows = set(mod_schema.get("rows", []))
+            if not orig_rows.issubset(mod_rows):
+                return (False, "matrix rows were removed")
+            orig_cols = set(orig_schema.get("columns", []))
+            mod_cols = set(mod_schema.get("columns", []))
+            if not orig_cols.issubset(mod_cols):
+                return (False, "matrix columns were removed")
+
+        elif tracker_type == "scorecard":
+            orig_metrics = {m["id"] for m in orig_schema.get("metrics", [])}
+            mod_metrics = {m["id"] for m in mod_schema.get("metrics", [])}
+            if not orig_metrics.issubset(mod_metrics):
+                return (False, "scorecard metrics were removed")
+
+        return (True, "")
+    except Exception as e:
+        logger.exception("Error in _validate_tracker_schema: %s", e)
+        return (False, f"validation error: {str(e)}")
+
+
+def _build_scope_context_str(scope: dict, tracker_data: dict) -> str:
+    """Build human-readable scope description for AI prompts."""
+    scope_type = scope.get("type", "complete")
+    if scope_type == "complete":
+        return "Scope: Full tracker"
+    elif scope_type == "selected_element":
+        elem = scope.get("selected_element", {})
+        return f"Selected cell: Row {elem.get('row_id')}, Column {elem.get('col_id')}, Current value: {elem.get('value')}"
+    elif scope_type == "selected_row":
+        row = scope.get("selected_row", {})
+        return f"Selected row ID: {row.get('row_id')}\nRow data: {json.dumps(row.get('data', {}))}"
+    elif scope_type == "selected_column":
+        col = scope.get("selected_column", {})
+        return f"Selected column: {col.get('name')} (ID: {col.get('col_id')})"
+    elif scope_type == "selected_rows":
+        rows = scope.get("selected_rows", [])
+        return f"Selected {len(rows)} rows"
+    elif scope_type == "selected_columns":
+        cols = scope.get("selected_columns", [])
+        return f"Selected {len(cols)} columns"
+    return "Scope: Full tracker"
+
+
+def _build_truncated_tracker_str(tracker_data: dict, max_items: int = 20) -> str:
+    """Build truncated but structurally complete tracker JSON string."""
+    try:
+        tracker_type = tracker_data.get("type", "")
+        truncated = {
+            "tracker_id": tracker_data.get("tracker_id"),
+            "type": tracker_type,
+            "schema": tracker_data.get("schema", {}),
+        }
+
+        if tracker_type == "table":
+            rows = tracker_data.get("rows", [])
+            if len(rows) > max_items:
+                truncated["rows"] = rows[:max_items]
+                note = f"\n... ({len(rows) - max_items} more rows truncated)"
+            else:
+                truncated["rows"] = rows
+                note = ""
+        elif tracker_type == "matrix":
+            cells = tracker_data.get("cells", [])
+            if len(cells) > max_items:
+                truncated["cells"] = cells[:max_items]
+                note = f"\n... ({len(cells) - max_items} more cells truncated)"
+            else:
+                truncated["cells"] = cells
+                note = ""
+        elif tracker_type == "scorecard":
+            records = tracker_data.get("records", [])
+            if len(records) > max_items:
+                truncated["records"] = records[:max_items]
+                note = f"\n... ({len(records) - max_items} more records truncated)"
+            else:
+                truncated["records"] = records
+                note = ""
+        else:
+            note = ""
+
+        result = json.dumps(truncated, indent=2)
+        if len(result) > 12000:
+            result = result[:12000] + "\n... (truncated)"
+        return result + note
+    except Exception as e:
+        logger.exception("Error truncating tracker: %s", e)
+        return json.dumps({"error": "truncation_failed"})
+
+
+def _merge_scoped_changes(tracker_data: dict, scope: dict, ai_result: dict) -> dict:
+    """Merge AI-generated scoped changes back into full tracker_data."""
+    scope_type = scope.get("type", "complete")
+
+    if scope_type == "complete":
+        return ai_result
+
+    rows_by_id = {row["row_id"]: row for row in tracker_data.get("rows", [])}
+
+    if scope_type == "selected_element":
+        row_id = ai_result.get("row_id")
+        col_id = ai_result.get("col_id")
+        new_value = ai_result.get("new_value")
+        if row_id in rows_by_id:
+            rows_by_id[row_id]["values"][col_id] = new_value
+
+    elif scope_type == "selected_row":
+        row_id = ai_result.get("row_id")
+        new_values = ai_result.get("values", {})
+        if row_id in rows_by_id:
+            rows_by_id[row_id]["values"].update(new_values)
+
+    elif scope_type == "selected_column":
+        col_id = scope.get("selected_column", {}).get("col_id")
+        for item in ai_result:
+            row_id = item.get("row_id")
+            new_value = item.get("new_value")
+            if row_id in rows_by_id:
+                rows_by_id[row_id]["values"][col_id] = new_value
+
+    elif scope_type == "selected_rows":
+        for item in ai_result:
+            row_id = item.get("row_id")
+            if row_id in rows_by_id:
+                rows_by_id[row_id]["values"].update(item.get("values", {}))
+
+    elif scope_type == "selected_columns":
+        selected_cols = scope.get("selected_columns", [])
+        col_ids = {col.get("col_id") for col in selected_cols}
+        for item in ai_result:
+            row_id = item.get("row_id")
+            if row_id in rows_by_id:
+                for col_id, value in item.get("values", {}).items():
+                    if col_id in col_ids:
+                        rows_by_id[row_id]["values"][col_id] = value
+
+    tracker_data["rows"] = list(rows_by_id.values())
+    return tracker_data
+
+
+async def _handle_greeting(
+    user_id, message, language, credits, job_id, session_id, emit
+) -> dict:
+    """Handle normal_greeting intent."""
+    await emit(msg_builder.job_progress(job_id, session_id, "processing", "Processing your message...", 50))
+
+    prompt = f"""You are a helpful assistant for a data tracker tool.
+
+The user is working with a data tracker. They sent this message:
+"{message}"
+
+This message is either a greeting, off-topic, or not directly actionable for the tracker.
+
+Respond warmly and briefly in {language}. Let the user know you are here to help with tracker operations like:
+- Summarizing or condensing tracker content
+- Expanding or adding new data rows
+- Modifying specific values
+- Explaining the data in the tracker
+
+Do not include markdown, emojis, or HTML. Plain text only, 1-3 sentences maximum."""
+
+    response = await get_fireworks_response2(
+        user_id, prompt, role="system", credits=credits, temp=0.7
+    )
+    if not response or response == "INSUFFICIENT":
+        response = "I'm here to help you manage your tracker data. You can ask me to summarize, expand, modify, or explain your tracker."
+
+    return {
+        "intent": "normal_greeting",
+        "tracker_modified": False,
+        "response": response,
+    }
+
+
+async def _handle_explain(
+    user_id, message, language, scope, credits, job_id, session_id, emit
+) -> dict:
+    """Handle explain intent with LanceDB context."""
+    await emit(
+        msg_builder.job_progress(
+            job_id, session_id, "processing", "Searching knowledge base...", 50
+        )
+    )
+
+    dbserver = LanceDBServer()
+    embedding_model = await get_firework_embedding()
+    embedding = await asyncio.to_thread(embedding_model.embed_query, message)
+    query = QueryData(user_id=user_id, embedding=embedding, top_k=3)
+
+    try:
+        lance_results = await dbserver.query_vector(query)
+        context_texts = [r.get("text", "") for r in lance_results if r.get("text")]
+        context_str = "\n\n".join(context_texts) if context_texts else "No additional context found."
+    except Exception as e:
+        logger.exception("LanceDB query error: %s", e)
+        context_str = "No additional context found."
+
+    await emit(
+        msg_builder.job_progress(
+            job_id, session_id, "vector_search", "Querying knowledge base...", 40
+        )
+    )
+
+    tracker_data = scope.get("tracker_data", {})
+    tracker_json_str = _build_truncated_tracker_str(tracker_data)
+    scope_context = _build_scope_context_str(scope, tracker_data)
+
+    prompt = f"""You are a data analyst assistant for a tracker tool.
+
+User question: "{message}"
+Language for response: {language}
+
+{scope_context}
+
+Tracker data (current state):
+{tracker_json_str}
+
+Additional knowledge base context:
+{context_str}
+
+INSTRUCTIONS:
+- Answer the user's question clearly and concisely in {language}.
+- Base your answer primarily on the tracker data.
+- Use the knowledge base context only if directly relevant.
+- Do NOT modify or suggest changes to the tracker.
+- Do NOT include markdown fences.
+- Maximum 300 words.
+- Plain text only."""
+
+    await emit(
+        msg_builder.job_progress(
+            job_id, session_id, "processing", "Generating explanation...", 50
+        )
+    )
+
+    response = await get_fireworks_response2(
+        user_id, prompt, role="system", credits=credits, temp=0.7
+    )
+    if not response or response == "INSUFFICIENT":
+        response = "I could not generate an explanation at this time."
+
+    await emit(msg_builder.job_progress(job_id, session_id, "ai_complete", "Explanation ready.", 80))
+
+    return {
+        "intent": "explain",
+        "tracker_modified": False,
+        "response": response,
+    }
+
+
+async def _handle_reduce(
+    user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit
+) -> dict:
+    """Handle reduce intent."""
+    await emit(
+        msg_builder.job_progress(job_id, session_id, "processing", "Applying AI changes...", 50)
+    )
+
+    tracker_data = scope.get("tracker_data", {})
+    scope_type = scope.get("type", "complete")
+
+    if scope_type == "complete":
+        tracker_json_str = _build_truncated_tracker_str(tracker_data)
+        prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Current tracker JSON:
+{tracker_json_str}
+
+TASK: Shorten and condense the text content values in this tracker.
+Apply the user's reduce request to ALL text values across the tracker.
+
+CRITICAL FORMAT RULES:
+1. You MUST return ONLY valid JSON.
+2. The output JSON must have EXACTLY the same structure as the input tracker JSON.
+3. Do NOT add, remove, or rename any keys, column IDs, row IDs, or schema fields.
+4. Do NOT change tracker_id, type, runbook_id, source_blocks, schema.columns[*].id, schema.columns[*].name, or any row_id values.
+5. Only change the "values" dict content within each row (for table), cell "value" fields (for matrix), or record "value" fields (for scorecard).
+6. Preserve numeric values unchanged.
+7. Return the complete modified tracker JSON, not a diff."""
+
+        response = await get_fireworks_response2(
+            user_id, prompt, role="system", credits=credits, temp=0.7
+        )
+        if not response or response == "INSUFFICIENT":
+            return {"error": "insufficient_credits"}
+        parsed = extract_json_safe(response)
+        if not parsed or not isinstance(parsed, dict):
+            return {"error": "invalid_response"}
+        ai_result = parsed
+    else:
+        elem = scope.get("selected_element", {})
+        if elem:
+            row_id = elem.get("row_id")
+            col_id = elem.get("col_id")
+            value = elem.get("value", "")
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Selected cell data:
+Row ID: {row_id}
+Column ID: {col_id}
+Current value: "{value}"
+
+TASK: Shorten/condense the value for this specific cell only.
+
+Return ONLY valid JSON:
+{{"row_id": "{row_id}", "col_id": "{col_id}", "new_value": "<shortened value>"}}"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, dict):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+        else:
+            return {"error": "invalid_scope"}
+
+    await emit(msg_builder.job_progress(job_id, session_id, "ai_complete", "AI changes ready.", 80))
+
+    if scope_type != "complete":
+        tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+    else:
+        tracker_data = ai_result
+
+    is_valid, error_msg = _validate_tracker_schema(scope.get("tracker_data", {}), tracker_data)
+    if not is_valid:
+        logger.warning("Schema validation failed for reduce: %s", error_msg)
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "ai_complete", f"Could not apply safely: {error_msg}", 80
+            )
+        )
+        return {
+            "error": "schema_validation_failed",
+            "message": f"The AI changes could not be safely applied. {error_msg}",
+        }
+
+    await emit(msg_builder.job_progress(job_id, session_id, "saving", "Saving updated tracker...", 90))
+    await asyncio.to_thread(save_tracker_file, user_id, tracker_id, tracker_data)
+
+    return {
+        "intent": "reduce",
+        "tracker_modified": True,
+        "tracker_data": tracker_data,
+        "tracker_id": tracker_id,
+    }
+
+
+async def _handle_increase(
+    user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit
+) -> dict:
+    """Handle increase intent."""
+    await emit(
+        msg_builder.job_progress(job_id, session_id, "processing", "Applying AI changes...", 50)
+    )
+
+    tracker_data = scope.get("tracker_data", {})
+    scope_type = scope.get("type", "complete")
+    tracker_type = tracker_data.get("type", "")
+
+    add_keywords = {"add", "new", "insert", "append", "sections", "rows"}
+    should_add = any(kw in message.lower() for kw in add_keywords)
+
+    if scope_type == "complete":
+        tracker_json_str = _build_truncated_tracker_str(tracker_data)
+
+        if should_add and tracker_type == "table":
+            schema = tracker_data.get("schema", {})
+            columns = schema.get("columns", [])
+            col_ids = [c["id"] for c in columns]
+            col_ids_str = ', '.join([f'"{id}"' for id in col_ids])
+
+            first_rows = tracker_data.get("rows", [])[:5]
+            first_rows_json = json.dumps(first_rows, indent=2)
+
+            prompt = f"""You are a data entry assistant for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Current tracker JSON (table type):
+{tracker_json_str}
+
+Column schema: {col_ids_str}
+
+Existing rows (context):
+{first_rows_json}
+
+TASK: Generate new rows for this tracker following the user's request.
+Infer appropriate content from the existing rows as context.
+
+CRITICAL FORMAT RULES:
+1. Return ONLY valid JSON array of new row objects.
+2. Each row must use EXACTLY these column IDs: {col_ids_str}
+3. Generate meaningful content values in {language}.
+4. Do NOT include row_id in your output - it will be assigned by the system.
+
+Return JSON array: [{{"values": {{"{col_ids[0]}": "...", "{col_ids[-1] if len(col_ids) > 1 else col_ids[0]}": "..."}}}}]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+
+            for new_row_values in parsed:
+                if isinstance(new_row_values, dict) and "values" in new_row_values:
+                    row_id = f"trk_r_{uuid.uuid4().hex[:8]}"
+                    tracker_data["rows"].append(
+                        {"row_id": row_id, "values": new_row_values["values"]}
+                    )
+            ai_result = tracker_data
+        else:
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Current tracker JSON:
+{tracker_json_str}
+
+TASK: Expand and elaborate the text content values in this tracker.
+Make descriptions more detailed and comprehensive while staying on-topic.
+
+CRITICAL FORMAT RULES:
+1. You MUST return ONLY valid JSON.
+2. The output JSON must have EXACTLY the same structure as the input tracker JSON.
+3. Do NOT add, remove, or rename any keys, column IDs, row IDs, or schema fields.
+4. Do NOT change tracker_id, type, runbook_id, source_blocks, schema.columns[*].id, schema.columns[*].name, or any row_id values.
+5. Only expand string "values" content. Preserve numeric values unchanged.
+6. Return the complete modified tracker JSON, not a diff."""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, dict):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+    else:
+        return {"error": "scoped_increase_not_implemented"}
+
+    await emit(msg_builder.job_progress(job_id, session_id, "ai_complete", "AI changes ready.", 80))
+
+    if scope_type != "complete":
+        tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+    else:
+        tracker_data = ai_result
+
+    is_valid, error_msg = _validate_tracker_schema(scope.get("tracker_data", {}), tracker_data)
+    if not is_valid:
+        logger.warning("Schema validation failed for increase: %s", error_msg)
+        return {
+            "error": "schema_validation_failed",
+            "message": f"The AI changes could not be safely applied. {error_msg}",
+        }
+
+    await emit(msg_builder.job_progress(job_id, session_id, "saving", "Saving updated tracker...", 90))
+    await asyncio.to_thread(save_tracker_file, user_id, tracker_id, tracker_data)
+
+    return {
+        "intent": "increase",
+        "tracker_modified": True,
+        "tracker_data": tracker_data,
+        "tracker_id": tracker_id,
+    }
+
+
+async def _handle_modify_content(
+    user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit
+) -> dict:
+    """Handle modify_content intent."""
+    await emit(
+        msg_builder.job_progress(job_id, session_id, "processing", "Applying AI changes...", 50)
+    )
+
+    tracker_data = scope.get("tracker_data", {})
+    scope_type = scope.get("type", "complete")
+
+    if scope_type == "complete":
+        tracker_json_str = _build_truncated_tracker_str(tracker_data)
+        prompt = f"""You are a data editor for a tracker tool.
+
+User instruction: "{message}"
+Language: {language}
+
+Current tracker JSON:
+{tracker_json_str}
+
+TASK: Apply the user's modification instruction to the relevant content values.
+Only change what the user explicitly requested.
+
+CRITICAL FORMAT RULES:
+1. You MUST return ONLY valid JSON - complete tracker JSON.
+2. The output JSON must have EXACTLY the same structure as the input JSON.
+3. Do NOT add, remove, or rename any keys, column IDs, row IDs, or schema fields.
+4. Do NOT change tracker_id, type, runbook_id, source_blocks, schema.columns[*].id, schema.columns[*].name, or any row_id values.
+5. Only change "values" content as instructed.
+6. Leave unchanged rows/cells/records exactly as they are.
+7. Return the complete modified tracker JSON."""
+
+        response = await get_fireworks_response2(
+            user_id, prompt, role="system", credits=credits, temp=0.7
+        )
+        if not response or response == "INSUFFICIENT":
+            return {"error": "insufficient_credits"}
+        parsed = extract_json_safe(response)
+        if not parsed or not isinstance(parsed, dict):
+            return {"error": "invalid_response"}
+        ai_result = parsed
+    else:
+        elem = scope.get("selected_element", {})
+        if elem:
+            row_id = elem.get("row_id")
+            col_id = elem.get("col_id")
+            current_value = elem.get("value", "")
+            prompt = f"""You are a data editor for a tracker tool.
+
+User instruction: "{message}"
+Language: {language}
+
+Cell to modify:
+Row ID: {row_id}, Column ID: {col_id}
+Current value: "{current_value}"
+
+Apply the user's instruction to this specific cell value only.
+
+Return ONLY valid JSON:
+{{"row_id": "{row_id}", "col_id": "{col_id}", "new_value": "<modified value>"}}"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, dict):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+        else:
+            return {"error": "invalid_scope"}
+
+    await emit(msg_builder.job_progress(job_id, session_id, "ai_complete", "AI changes ready.", 80))
+
+    if scope_type != "complete":
+        tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+    else:
+        tracker_data = ai_result
+
+    is_valid, error_msg = _validate_tracker_schema(scope.get("tracker_data", {}), tracker_data)
+    if not is_valid:
+        logger.warning("Schema validation failed for modify_content: %s", error_msg)
+        return {
+            "error": "schema_validation_failed",
+            "message": f"The AI changes could not be safely applied. {error_msg}",
+        }
+
+    await emit(msg_builder.job_progress(job_id, session_id, "saving", "Saving updated tracker...", 90))
+    await asyncio.to_thread(save_tracker_file, user_id, tracker_id, tracker_data)
+
+    return {
+        "intent": "modify_content",
+        "tracker_modified": True,
+        "tracker_data": tracker_data,
+        "tracker_id": tracker_id,
+    }
+
+
+async def _dispatch_intent(
+    intent, user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit
+) -> dict:
+    """Central router from intent to handler."""
+    if intent == "normal_greeting":
+        return await _handle_greeting(user_id, message, language, credits, job_id, session_id, emit)
+    elif intent == "explain":
+        return await _handle_explain(user_id, message, language, scope, credits, job_id, session_id, emit)
+    elif intent == "reduce":
+        return await _handle_reduce(user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit)
+    elif intent == "increase":
+        return await _handle_increase(user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit)
+    elif intent == "modify_content":
+        return await _handle_modify_content(
+            user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit
+        )
+    else:
+        return await _handle_greeting(user_id, message, language, credits, job_id, session_id, emit)
+
+
+async def _complete_tracker_worker(data, job_id=None, session_id=None):
+    """Background worker for complete_tracker_change."""
+    user_id = data.get("user_id")
+    tracker_id = data.get("tracker_id")
+    message = data.get("message")
+    tracker_data = data.get("tracker_data")
+
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_sender, msg, user_id)
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        credits = Credits(conn)
+
+        await emit(msg_builder.job_progress(job_id, session_id, "init", "Starting tracker AI...", 5))
+
+        if not all([user_id, tracker_id, message, tracker_data]):
+            await emit(msg_builder.job_error(job_id, session_id, "Missing required fields"))
+            return {"error": "missing_fields"}
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "detecting_intent", "Analyzing your request...", 15)
+        )
+        intent = await get_intent(user_id, message, credits)
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "intent_detected", f"Intent: {intent}", 25
+            )
+        )
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "language_detection", "Detecting language...", 30)
+        )
+        language = await detect_language(user_id, message, credits)
+
+        scope = {"type": "complete", "tracker_data": tracker_data}
+        result = await _dispatch_intent(
+            intent=intent,
+            user_id=user_id,
+            tracker_id=tracker_id,
+            message=message,
+            language=language,
+            scope=scope,
+            credits=credits,
+            job_id=job_id,
+            session_id=session_id,
+            emit=emit,
+        )
+
+        if "error" not in result:
+            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            await emit(msg_builder.job_success(job_id, session_id, msg_text))
+        else:
+            await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
+
+        return result
+
+    except Exception as e:
+        logger.exception("complete_tracker_worker error: %s", e)
+        await emit(msg_builder.job_error(job_id, session_id, f"An error occurred: {str(e)}"))
+        raise
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+async def _selected_element_worker(data, job_id=None, session_id=None):
+    """Background worker for selected_tracker_change."""
+    user_id = data.get("user_id")
+    tracker_id = data.get("tracker_id")
+    message = data.get("message")
+    tracker_data = data.get("tracker_data")
+    selected_element = data.get("selected_element", {})
+
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_sender, msg, user_id)
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        credits = Credits(conn)
+
+        await emit(msg_builder.job_progress(job_id, session_id, "init", "Starting tracker AI...", 5))
+
+        if not all([user_id, tracker_id, message, tracker_data]):
+            await emit(msg_builder.job_error(job_id, session_id, "Missing required fields"))
+            return {"error": "missing_fields"}
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "detecting_intent", "Analyzing your request...", 15)
+        )
+        intent = await get_intent(user_id, message, credits)
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "intent_detected", f"Intent: {intent}", 25
+            )
+        )
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "language_detection", "Detecting language...", 30)
+        )
+        language = await detect_language(user_id, message, credits)
+
+        scope = {"type": "selected_element", "tracker_data": tracker_data, "selected_element": selected_element}
+        result = await _dispatch_intent(
+            intent=intent,
+            user_id=user_id,
+            tracker_id=tracker_id,
+            message=message,
+            language=language,
+            scope=scope,
+            credits=credits,
+            job_id=job_id,
+            session_id=session_id,
+            emit=emit,
+        )
+
+        if "error" not in result:
+            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            await emit(msg_builder.job_success(job_id, session_id, msg_text))
+        else:
+            await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
+
+        return result
+
+    except Exception as e:
+        logger.exception("selected_element_worker error: %s", e)
+        await emit(msg_builder.job_error(job_id, session_id, f"An error occurred: {str(e)}"))
+        raise
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+async def _selected_row_worker(data, job_id=None, session_id=None):
+    """Background worker for selected_row_tracker_change."""
+    user_id = data.get("user_id")
+    tracker_id = data.get("tracker_id")
+    message = data.get("message")
+    tracker_data = data.get("tracker_data")
+    selected_row = data.get("selected_row", {})
+
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_sender, msg, user_id)
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        credits = Credits(conn)
+
+        await emit(msg_builder.job_progress(job_id, session_id, "init", "Starting tracker AI...", 5))
+
+        if not all([user_id, tracker_id, message, tracker_data]):
+            await emit(msg_builder.job_error(job_id, session_id, "Missing required fields"))
+            return {"error": "missing_fields"}
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "detecting_intent", "Analyzing your request...", 15)
+        )
+        intent = await get_intent(user_id, message, credits)
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "intent_detected", f"Intent: {intent}", 25
+            )
+        )
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "language_detection", "Detecting language...", 30)
+        )
+        language = await detect_language(user_id, message, credits)
+
+        scope = {"type": "selected_row", "tracker_data": tracker_data, "selected_row": selected_row}
+        result = await _dispatch_intent(
+            intent=intent,
+            user_id=user_id,
+            tracker_id=tracker_id,
+            message=message,
+            language=language,
+            scope=scope,
+            credits=credits,
+            job_id=job_id,
+            session_id=session_id,
+            emit=emit,
+        )
+
+        if "error" not in result:
+            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            await emit(msg_builder.job_success(job_id, session_id, msg_text))
+        else:
+            await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
+
+        return result
+
+    except Exception as e:
+        logger.exception("selected_row_worker error: %s", e)
+        await emit(msg_builder.job_error(job_id, session_id, f"An error occurred: {str(e)}"))
+        raise
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+async def _selected_column_worker(data, job_id=None, session_id=None):
+    """Background worker for selected_column_tracker_change."""
+    user_id = data.get("user_id")
+    tracker_id = data.get("tracker_id")
+    message = data.get("message")
+    tracker_data = data.get("tracker_data")
+    selected_column = data.get("selected_column", {})
+
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_sender, msg, user_id)
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        credits = Credits(conn)
+
+        await emit(msg_builder.job_progress(job_id, session_id, "init", "Starting tracker AI...", 5))
+
+        if not all([user_id, tracker_id, message, tracker_data]):
+            await emit(msg_builder.job_error(job_id, session_id, "Missing required fields"))
+            return {"error": "missing_fields"}
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "detecting_intent", "Analyzing your request...", 15)
+        )
+        intent = await get_intent(user_id, message, credits)
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "intent_detected", f"Intent: {intent}", 25
+            )
+        )
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "language_detection", "Detecting language...", 30)
+        )
+        language = await detect_language(user_id, message, credits)
+
+        scope = {"type": "selected_column", "tracker_data": tracker_data, "selected_column": selected_column}
+        result = await _dispatch_intent(
+            intent=intent,
+            user_id=user_id,
+            tracker_id=tracker_id,
+            message=message,
+            language=language,
+            scope=scope,
+            credits=credits,
+            job_id=job_id,
+            session_id=session_id,
+            emit=emit,
+        )
+
+        if "error" not in result:
+            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            await emit(msg_builder.job_success(job_id, session_id, msg_text))
+        else:
+            await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
+
+        return result
+
+    except Exception as e:
+        logger.exception("selected_column_worker error: %s", e)
+        await emit(msg_builder.job_error(job_id, session_id, f"An error occurred: {str(e)}"))
+        raise
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+async def _selected_rows_worker(data, job_id=None, session_id=None):
+    """Background worker for selected_rows_tracker_change."""
+    user_id = data.get("user_id")
+    tracker_id = data.get("tracker_id")
+    message = data.get("message")
+    tracker_data = data.get("tracker_data")
+    selected_rows = data.get("selected_rows", [])
+
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_sender, msg, user_id)
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        credits = Credits(conn)
+
+        await emit(msg_builder.job_progress(job_id, session_id, "init", "Starting tracker AI...", 5))
+
+        if not all([user_id, tracker_id, message, tracker_data]):
+            await emit(msg_builder.job_error(job_id, session_id, "Missing required fields"))
+            return {"error": "missing_fields"}
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "detecting_intent", "Analyzing your request...", 15)
+        )
+        intent = await get_intent(user_id, message, credits)
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "intent_detected", f"Intent: {intent}", 25
+            )
+        )
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "language_detection", "Detecting language...", 30)
+        )
+        language = await detect_language(user_id, message, credits)
+
+        scope = {"type": "selected_rows", "tracker_data": tracker_data, "selected_rows": selected_rows}
+        result = await _dispatch_intent(
+            intent=intent,
+            user_id=user_id,
+            tracker_id=tracker_id,
+            message=message,
+            language=language,
+            scope=scope,
+            credits=credits,
+            job_id=job_id,
+            session_id=session_id,
+            emit=emit,
+        )
+
+        if "error" not in result:
+            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            await emit(msg_builder.job_success(job_id, session_id, msg_text))
+        else:
+            await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
+
+        return result
+
+    except Exception as e:
+        logger.exception("selected_rows_worker error: %s", e)
+        await emit(msg_builder.job_error(job_id, session_id, f"An error occurred: {str(e)}"))
+        raise
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+async def _selected_columns_worker(data, job_id=None, session_id=None):
+    """Background worker for selected_columns_tracker_change."""
+    user_id = data.get("user_id")
+    tracker_id = data.get("tracker_id")
+    message = data.get("message")
+    tracker_data = data.get("tracker_data")
+    selected_columns = data.get("selected_columns", [])
+
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_sender, msg, user_id)
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        credits = Credits(conn)
+
+        await emit(msg_builder.job_progress(job_id, session_id, "init", "Starting tracker AI...", 5))
+
+        if not all([user_id, tracker_id, message, tracker_data]):
+            await emit(msg_builder.job_error(job_id, session_id, "Missing required fields"))
+            return {"error": "missing_fields"}
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "detecting_intent", "Analyzing your request...", 15)
+        )
+        intent = await get_intent(user_id, message, credits)
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "intent_detected", f"Intent: {intent}", 25
+            )
+        )
+
+        await emit(
+            msg_builder.job_progress(job_id, session_id, "language_detection", "Detecting language...", 30)
+        )
+        language = await detect_language(user_id, message, credits)
+
+        scope = {"type": "selected_columns", "tracker_data": tracker_data, "selected_columns": selected_columns}
+        result = await _dispatch_intent(
+            intent=intent,
+            user_id=user_id,
+            tracker_id=tracker_id,
+            message=message,
+            language=language,
+            scope=scope,
+            credits=credits,
+            job_id=job_id,
+            session_id=session_id,
+            emit=emit,
+        )
+
+        if "error" not in result:
+            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            await emit(msg_builder.job_success(job_id, session_id, msg_text))
+        else:
+            await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
+
+        return result
+
+    except Exception as e:
+        logger.exception("selected_columns_worker error: %s", e)
+        await emit(msg_builder.job_error(job_id, session_id, f"An error occurred: {str(e)}"))
+        raise
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+@tracker_ai_bp.route("/tracker/ai/complete_tracker_change", methods=["POST"])
+async def complete_tracker_change():
+    try:
+        data = request.json
+        if not data.get("user_id"):
+            return jsonify({"error": "user_id is required"}), 400
+        session_id = data.get("session_id") or None
+        job_id = await JobManager.submit_job(_complete_tracker_worker, data, session_id=session_id)
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+    except Exception as e:
+        logger.exception("Error in complete_tracker_change: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_ai_bp.route("/tracker/ai/selected_tracker_change", methods=["POST"])
+async def selected_tracker_change():
+    try:
+        data = request.json
+        if not data.get("user_id"):
+            return jsonify({"error": "user_id is required"}), 400
+        session_id = data.get("session_id") or None
+        job_id = await JobManager.submit_job(_selected_element_worker, data, session_id=session_id)
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+    except Exception as e:
+        logger.exception("Error in selected_tracker_change: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_ai_bp.route("/tracker/ai/selected_row_tracker_change", methods=["POST"])
+async def selected_row_tracker_change():
+    try:
+        data = request.json
+        if not data.get("user_id"):
+            return jsonify({"error": "user_id is required"}), 400
+        session_id = data.get("session_id") or None
+        job_id = await JobManager.submit_job(_selected_row_worker, data, session_id=session_id)
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+    except Exception as e:
+        logger.exception("Error in selected_row_tracker_change: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_ai_bp.route("/tracker/ai/selected_column_tracker_change", methods=["POST"])
+async def selected_column_tracker_change():
+    try:
+        data = request.json
+        if not data.get("user_id"):
+            return jsonify({"error": "user_id is required"}), 400
+        session_id = data.get("session_id") or None
+        job_id = await JobManager.submit_job(_selected_column_worker, data, session_id=session_id)
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+    except Exception as e:
+        logger.exception("Error in selected_column_tracker_change: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_ai_bp.route("/tracker/ai/selected_rows_tracker_change", methods=["POST"])
+async def selected_rows_tracker_change():
+    try:
+        data = request.json
+        if not data.get("user_id"):
+            return jsonify({"error": "user_id is required"}), 400
+        session_id = data.get("session_id") or None
+        job_id = await JobManager.submit_job(_selected_rows_worker, data, session_id=session_id)
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+    except Exception as e:
+        logger.exception("Error in selected_rows_tracker_change: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_ai_bp.route("/tracker/ai/selected_columns_tracker_change", methods=["POST"])
+async def selected_columns_tracker_change():
+    try:
+        data = request.json
+        if not data.get("user_id"):
+            return jsonify({"error": "user_id is required"}), 400
+        session_id = data.get("session_id") or None
+        job_id = await JobManager.submit_job(_selected_columns_worker, data, session_id=session_id)
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+    except Exception as e:
+        logger.exception("Error in selected_columns_tracker_change: %s", e)
+        return jsonify({"error": str(e)}), 500

@@ -4,8 +4,12 @@ import uuid
 import base64
 import traceback
 import logging
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 from db.lance_db_service import LanceDBServer
+from services.audit_log_service import (
+    log_audit_event,
+    EVIDENCE_CONFIG_ADDED, EVIDENCE_CONFIG_UPDATED, EVIDENCE_CONFIG_DELETED,
+)
 from playbook.background_worker import JobManager
 from services.redis_service import RedisService
 from utils.s3_utils import save_any_s3, read_json_from_s3, s3bucket, S3_BUCKET
@@ -119,6 +123,14 @@ def update_evidence_config():
             if result.get("status") != "success":
                 return jsonify(result), 500
 
+        log_audit_event(
+            action=EVIDENCE_CONFIG_UPDATED, endpoint="/runbook/evidence/config",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"entry_id": entry_id},
+        )
+        g.audit_logged = True
+
         return (
             jsonify(
                 {
@@ -167,6 +179,14 @@ def delete_evidence_config():
 
             if result.get("status") != "success":
                 return jsonify(result), 500
+
+        log_audit_event(
+            action=EVIDENCE_CONFIG_DELETED, endpoint="/runbook/evidence/config",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"entry_id": entry_id, "artifact": deleted_entry.get("artifact")},
+        )
+        g.audit_logged = True
 
         return (
             jsonify(
@@ -228,6 +248,14 @@ def add_evidence_entry():
 
             if result.get("status") != "success":
                 return jsonify(result), 500
+
+        log_audit_event(
+            action=EVIDENCE_CONFIG_ADDED, endpoint="/runbook/evidence/add",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"evidence_type": entry_data.get("type"), "artifact": entry_data.get("artifact")},
+        )
+        g.audit_logged = True
 
         return (
             jsonify(

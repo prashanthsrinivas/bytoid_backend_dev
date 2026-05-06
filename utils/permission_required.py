@@ -68,6 +68,8 @@ def permission_required(required_permission):
                             if not access:
                                 return jsonify({"error": "Admin access restricted"}), 403
 
+                            # Tag request context with cross-admin context (for audit logging)
+                            g.acting_on_behalf_of_user_id = owner_user_id
                             return f(*args, **kwargs)
 
                         # check same org (old logic - kept as you asked)

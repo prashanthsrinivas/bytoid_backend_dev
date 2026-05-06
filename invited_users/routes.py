@@ -1,5 +1,5 @@
 from time import time
-from flask import Blueprint, request, jsonify, redirect
+from flask import Blueprint, request, jsonify, redirect, g
 import pymysql
 from services.gmail_service import GmailService
 import uuid
@@ -22,6 +22,13 @@ import os
 inv_users_bp = Blueprint("invited_users", __name__)
 
 logger = get_logger(__name__)
+from services.audit_log_service import (
+    log_audit_event,
+    SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SPECIAL_ACCESS_REQUESTED,
+    ROLE_CREATED, ROLE_UPDATED, ROLE_DELETED,
+    USER_INVITED, INVITE_CANCELLED, INVITE_RESENT, USER_INVITE_ACCEPTED,
+    USER_ROLE_CHANGED, USER_ACCESS_REVOKED, USER_ACCESS_ACTIVATED, USER_DELETED,
+)
 load_dotenv()
 
 # BASE ROLES APIS FOR AMIN
@@ -82,6 +89,14 @@ def add_role_admin():
             )
             conn.commit()
 
+        log_audit_event(
+            action=ROLE_CREATED, endpoint="/admin/roles-add",
+            ip=request.remote_addr, status="success",
+            actor_user_id=userid,
+            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            metadata={"role_name": name, "permissions_count": len(permissions)},
+        )
+        g.audit_logged = True
         conn.close()
         return jsonify({"message": "Role added successfully", "role": roles}), 201
     except Exception as e:
@@ -322,6 +337,13 @@ def update_role():
                         )
 
             conn.commit()
+        log_audit_event(
+            action=ROLE_UPDATED, endpoint="/admin/roles-update",
+            ip=request.remote_addr, status="success",
+            actor_user_id=data.get("userid"),
+            metadata={"role_id": data.get("role_id"), "role_name": data.get("name")},
+        )
+        g.audit_logged = True
         conn.close()
         return jsonify({"message": "Role updated successfully"}), 200
     except Exception as e:
@@ -396,6 +418,13 @@ def delete_role(userid, role_id):
             )
             conn.commit()
 
+        log_audit_event(
+            action=ROLE_DELETED, endpoint="/admin/roles-delete",
+            ip=request.remote_addr, status="success",
+            actor_user_id=userid,
+            metadata={"role_id": role_id},
+        )
+        g.audit_logged = True
         conn.close()
         return jsonify({"message": "Role deleted successfully"}), 200
 
@@ -537,6 +566,18 @@ def send_invite_user():
 
         # if everything succeeds -> commit
         conn.commit()
+
+        log_audit_event(
+            action=USER_INVITED, endpoint="/admin/invite_user",
+            ip=request.remote_addr, status="success",
+            actor_user_id=userid,
+            actor_email=user_email,
+            target_email=email,
+            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            metadata={"role_id": role_id, "role_name": role.get("name")},
+        )
+        g.audit_logged = True
+
         return jsonify({"message": "Invitation sent successfully"}), 200
 
     except Exception as e:
@@ -596,6 +637,14 @@ def delete_invite():
                 (json.dumps(permissions), userid),
             )
             conn.commit()
+
+        log_audit_event(
+            action=INVITE_CANCELLED, endpoint="/admin/delete-invite",
+            ip=request.remote_addr, status="success",
+            actor_user_id=userid,
+            target_email=invited_email,
+        )
+        g.audit_logged = True
 
         conn.close()
         return (
@@ -722,6 +771,14 @@ def resend_invite():
             )
             conn.commit()
 
+        log_audit_event(
+            action=INVITE_RESENT, endpoint="/admin/resend-invite",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            target_email=invited_email,
+        )
+        g.audit_logged = True
+
         return (
             jsonify(
                 {
@@ -782,6 +839,18 @@ def accept_from_link():
                "Your admin access request was accepted"
            ))
            conn.commit()
+
+       log_audit_event(
+           action=SPECIAL_ACCESS_GRANTED, endpoint="/admin/accept_from_link",
+           ip=request.remote_addr, status="success",
+           actor_user_id=target["user_id"] if target else None,
+           actor_email=invited_to,
+           target_user_id=requester["user_id"] if requester else None,
+           target_email=invited_by,
+           metadata={"grant_type": "email_link"},
+       )
+       g.audit_logged = True
+
        # ✅ SEND EMAIL BACK TO REQUESTER (IMPORTANT)
        try:
            outlook_service = OutlookService(user_id=target["user_id"])
@@ -818,14 +887,14 @@ def grant_special_access():
 
             # check current admin
             cursor.execute(
-                "SELECT user_type, company_name FROM users WHERE user_id=%s",
+                "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
                 (current_admin_id,),
             )
             current = cursor.fetchone()
 
             # check target admin
             cursor.execute(
-                 "SELECT user_type, company_name FROM users WHERE user_id=%s",
+                 "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
             (target_admin_id,),
             )
             target = cursor.fetchone()
@@ -847,6 +916,16 @@ def grant_special_access():
 
             conn.commit()
 
+        log_audit_event(
+            action=SPECIAL_ACCESS_GRANTED,
+            endpoint="/admin/grant_special_access",
+            ip=request.remote_addr, status="success",
+            actor_user_id=current_admin_id,
+            actor_email=current.get("email") if current else None,
+            target_user_id=target_admin_id,
+            target_email=target.get("email") if target else None,
+            metadata={"grant_type": "direct_grant"},
+        )
         return jsonify({"message": "Access granted"}), 200
 
     except Exception as e:
@@ -946,8 +1025,19 @@ def request_special_access():
                     business_info={}
                 )
                 conn.commit()
+
+                log_audit_event(
+                    action=SPECIAL_ACCESS_REQUESTED, endpoint="/admin/request_special_access",
+                    ip=request.remote_addr, status="success",
+                    actor_user_id=requester_id,
+                    actor_email=inviter_email,
+                    target_email=target_email,
+                    metadata={"target_found": target is not None},
+                )
+                g.audit_logged = True
+
                 return jsonify({"message": "Request sent via Outlook"}), 200
-            
+
             except Exception as e:
                 logger.error(f"Outlook error: {str(e)}")
                 conn.rollback()
@@ -969,10 +1059,10 @@ def accept_special_access():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
 
             # ✅ 1. ADMIN CHECK
-            cursor.execute("SELECT user_type, company_name FROM users WHERE user_id=%s", (requester_id,))
+            cursor.execute("SELECT user_type, company_name, email FROM users WHERE user_id=%s", (requester_id,))
             req = cursor.fetchone()
 
-            cursor.execute("SELECT user_type, company_name FROM users WHERE user_id=%s", (target_id,))
+            cursor.execute("SELECT user_type, company_name, email FROM users WHERE user_id=%s", (target_id,))
             tgt = cursor.fetchone()
 
             if not req or not tgt:
@@ -999,7 +1089,18 @@ def accept_special_access():
             """, (requester_id, "Your admin access request has been approved"))
 
             conn.commit()
-            return jsonify({"message": "Access granted"}), 200
+
+        log_audit_event(
+            action=SPECIAL_ACCESS_GRANTED,
+            endpoint="/admin/accept_special_access",
+            ip=request.remote_addr, status="success",
+            actor_user_id=target_id,
+            actor_email=tgt.get("email") if tgt else None,
+            target_user_id=requester_id,
+            target_email=req.get("email") if req else None,
+            metadata={"grant_type": "accept_request"},
+        )
+        return jsonify({"message": "Access granted"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1021,12 +1122,12 @@ def revoke_special_access():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # Validate admins
             cursor.execute(
-                "SELECT user_type, company_name FROM users WHERE user_id=%s",
+                "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
                 (requester_id,)
             )
             req = cursor.fetchone()
             cursor.execute(
-                "SELECT user_type, company_name FROM users WHERE user_id=%s",
+                "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
                 (target_id,)
             )
             tgt = cursor.fetchone()
@@ -1054,13 +1155,22 @@ def revoke_special_access():
                 "Your admin access has been revoked"
             ))
             conn.commit()
+        log_audit_event(
+            action=SPECIAL_ACCESS_REVOKED,
+            endpoint="/admin/revoke_special_access",
+            ip=request.remote_addr, status="success",
+            actor_user_id=requester_id,
+            actor_email=req.get("email") if req else None,
+            target_user_id=target_id,
+            target_email=tgt.get("email") if tgt else None,
+        )
         return jsonify({"message": "Access revoked successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
         if conn:
             conn.close()
- 
+
 
 @inv_users_bp.route("/admin/validate_invite/token=<token>", methods=["GET"])
 def validate_invite(token):
@@ -1185,6 +1295,16 @@ def validate_invite(token):
                ))
             conn.commit()
 
+        log_audit_event(
+            action=USER_INVITE_ACCEPTED, endpoint="/admin/validate_invite",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_created.get("user_id") if isinstance(user_created, dict) else None,
+            actor_email=invited_to,
+            target_email=invited_by,
+            metadata={"invite_accepted_via_token": True},
+        )
+        g.audit_logged = True
+
         conn.close()
         return (
             jsonify({"message": "Invitation accepted and user created successfully"}),
@@ -1285,6 +1405,16 @@ def edit_shared_user_role():
 
             conn.commit()
 
+        log_audit_event(
+            action=USER_ROLE_CHANGED, endpoint="/admin/edit_shared_user_role",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            target_email=email,
+            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            metadata={"new_role_id": role_id},
+        )
+        g.audit_logged = True
+
         return jsonify({"message": "Role updated successfully"}), 200
 
     except Exception as e:
@@ -1374,6 +1504,14 @@ def revoke_shared_user_role():
             )
 
             conn.commit()
+
+        log_audit_event(
+            action=USER_ACCESS_REVOKED, endpoint="/admin/revoke_shared_user_role",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            target_email=email,
+        )
+        g.audit_logged = True
 
         return jsonify({"message": "Role revoked successfully"}), 200
 
@@ -1472,6 +1610,17 @@ def delete_shared_user_role():
                 500,
             )
 
+        log_audit_event(
+            action=USER_DELETED, endpoint="/admin/delete_shared_user_role",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            target_user_id=invited_user_id,
+            target_email=email,
+            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            metadata={"permanent_deletion": True},
+        )
+        g.audit_logged = True
+
         return jsonify({"message": "Shared user removed and deleted successfully"}), 200
 
     except Exception as e:
@@ -1539,6 +1688,14 @@ def activate_shared_user_role():
             )
 
             conn.commit()
+
+        log_audit_event(
+            action=USER_ACCESS_ACTIVATED, endpoint="/admin/activate_shared_user_role",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            target_email=email,
+        )
+        g.audit_logged = True
 
         return jsonify({"message": "Role activated successfully"}), 200
 

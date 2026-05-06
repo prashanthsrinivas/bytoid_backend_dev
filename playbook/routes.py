@@ -10,8 +10,12 @@ from db.db_checkers import (
     get_userinfo,
 )
 from db.rds_db import connect_to_rds
-from flask import Blueprint, request, jsonify, Response, stream_with_context
+from flask import Blueprint, request, jsonify, Response, stream_with_context, g
 import json, uuid
+from services.audit_log_service import (
+    log_audit_event,
+    PLAYBOOK_CREATED, PLAYBOOK_DELETED, PLAYBOOK_CLONED, PLAYBOOK_MADE_GLOBAL,
+)
 from cust_helpers import pathconfig
 from services.redis_service import get_redis
 from services.scheduler_service import SchedulerService
@@ -47,8 +51,17 @@ executor = ThreadPoolExecutor(max_workers=4)
 async def create_new_instruction():
 
     data = request.json
+    user_id = data.get("user_id")
 
     job_id = await JobManager.submit_job(create_instruction_worker, data)
+
+    log_audit_event(
+        action=PLAYBOOK_CREATED, endpoint="/create_instruction",
+        ip=request.remote_addr, status="success",
+        actor_user_id=user_id,
+        metadata={"job_id": job_id, "playbook_name": data.get("name")},
+    )
+    g.audit_logged = True
 
     return jsonify({"status": "accepted", "job_id": job_id})
 
@@ -409,6 +422,15 @@ def delete_instruction():
         success = deleteConfigdata(config_path, user_id, filename)
         if not success:
             return jsonify({"error": "Failed to delete instruction"}), 500
+
+        log_audit_event(
+            action=PLAYBOOK_DELETED, endpoint="/delete_instruction",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"playbook_filename": filename},
+        )
+        g.audit_logged = True
+
         return jsonify({"message": "Instruction deleted successfully"}), 200
     except Exception as e:
         return jsonify({"error": f"Failed to delete instruction: {str(e)}"}), 500
@@ -2900,6 +2922,14 @@ def pb_temp_clone_min():
         # ---------------------------------
         # ✅ Response
         # ---------------------------------
+        log_audit_event(
+            action=PLAYBOOK_CLONED, endpoint="/pb_temp_clone",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"original_filename": filename, "clone_filename": new_filename},
+        )
+        g.audit_logged = True
+
         return jsonify({"status": "success", "new_filename": new_filename})
 
     except Exception as e:
@@ -3303,6 +3333,14 @@ def make_global_playbook():
         # cleanup
         os.remove(temp_file_path)
         os.remove(temp_config_path)
+
+        log_audit_event(
+            action=PLAYBOOK_MADE_GLOBAL, endpoint="/make_global_playbook",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            metadata={"original_filename": filename, "global_template_name": new_filename},
+        )
+        g.audit_logged = True
 
         return (
             jsonify(

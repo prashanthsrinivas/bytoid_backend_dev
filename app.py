@@ -1,7 +1,7 @@
 from datetime import datetime
 import json
 from utils.base_logger import get_logger
-from flask import Flask, request, g
+from flask import Flask, request, g, session
 from flask_compress import Compress
 from google_route.routes import google_bp
 from facebook_route.routes import facebook_bp
@@ -43,6 +43,7 @@ from runbook.routes import runbook_bp
 from config_evidences.routes import config_evidences_bp
 from sso_by.routes import sso_bp
 from tab_tracker.routes import tracker_bp
+from tab_tracker.tab_ai_tracker.routes import tracker_ai_bp
 from websockets_custom.routes import ws_bp
 from policy_hub.routes import policy_hub_bp
 import os
@@ -158,6 +159,7 @@ blueprints = [
     sso_bp,
     ws_bp,
     tracker_bp,
+    tracker_ai_bp,
     policy_hub_bp,
 ]
 
@@ -230,6 +232,13 @@ def before_request():
     g.request_id = str(uuid.uuid4())[:8]
 
 
+@app.before_request
+def audit_before_request():
+    """Stamp audit context on the request."""
+    g.audit_logged = False  # Duplicate-guard flag (set True by direct calls)
+    g.session_user_id = session.get("user_id")  # Partial identity; may be None
+
+
 @app.after_request
 def after_request(response):
     duration = round((time.time() - g.start_time) * 1000, 2)
@@ -242,6 +251,92 @@ def after_request(response):
         f"{response.status_code} {duration}ms "
         f"IP={request.remote_addr}"
     )
+
+    return response
+
+
+# Sensitive path patterns for audit logging (via middleware fallback)
+_AUDIT_SENSITIVE_PATHS = {
+    # Auth
+    "/user_login", "/delete_session",
+    # User management
+    "/admin/invite_user", "/admin/delete-invite", "/admin/resend-invite",
+    "/admin/validate_invite", "/admin/edit_shared_user_role",
+    "/admin/revoke_shared_user_role", "/admin/delete_shared_user_role",
+    "/admin/activate_shared_user_role",
+    # Roles
+    "/admin/roles-add", "/admin/roles-update", "/admin/roles-delete",
+    # Special access
+    "/admin/grant_special_access", "/admin/accept_special_access",
+    "/admin/revoke_special_access", "/admin/request_special_access",
+    "/admin/accept_from_link",
+    # Security
+    "/update_password", "/reset_password", "/totp_setup", "/totp_verify",
+    "/rotate-encryption-key", "/update_user_type",
+    "/add_domain", "/delete_domain",
+    # Runbook / Playbook
+    "/runbook/create", "/runbook/delete", "/runbook/delete_all",
+    "/create_instruction", "/delete_instruction",
+    # Evidence
+    "/runbook/evidence/add", "/runbook/evidence/config",
+}
+
+# Skip these even if method is mutating
+_AUDIT_EXEMPT_PATHS = {
+    "/health", "/ping", "/favicon.ico",
+    "/browser_url", "/user/alive",
+    "/ws/", "/socket.io/",
+    "/notifications",
+}
+
+# Mutating methods
+_AUDIT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@app.after_request
+def audit_after_request(response):
+    """Thin audit hook for middleware fallback coverage."""
+    try:
+        # Skip if already logged by direct call instrumentation
+        if getattr(g, "audit_logged", False):
+            return response
+
+        method = request.method
+        path = request.path
+
+        # Only log mutating methods
+        if method not in _AUDIT_METHODS:
+            return response
+
+        # Only log sensitive paths
+        if not any(path.startswith(p) for p in _AUDIT_SENSITIVE_PATHS):
+            return response
+
+        # Skip exempt paths
+        if any(path.startswith(p) for p in _AUDIT_EXEMPT_PATHS):
+            return response
+
+        # Use session identity (partial coverage)
+        actor_user_id = getattr(g, "session_user_id", None)
+
+        from services.audit_log_service import log_audit_event
+
+        log_audit_event(
+            action="API_MUTATION",
+            endpoint=path,
+            ip=request.remote_addr,
+            status="success" if response.status_code < 400 else "failure",
+            actor_user_id=actor_user_id,
+            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            metadata={
+                "method": method,
+                "status_code": response.status_code,
+                "blueprint": request.blueprint,
+                "source": "middleware_fallback",
+            },
+        )
+    except Exception:
+        pass
 
     return response
 

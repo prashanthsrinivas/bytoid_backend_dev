@@ -2,7 +2,7 @@ import secrets
 import traceback
 from urllib.parse import urlencode
 
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, g
 import pymysql
 import os
 import uuid
@@ -34,6 +34,13 @@ from db.db_checkers import make_api_key
 users_bp = Blueprint("users", __name__)
 
 logger = get_logger(__name__)
+from services.audit_log_service import (
+    log_audit_event,
+    LOGIN_SUCCESS, LOGIN_FAILED,
+    TOTP_SETUP, TOTP_VERIFIED,
+    PASSWORD_CHANGED, PASSWORD_RESET,
+    USER_TYPE_CHANGED, ENCRYPTION_KEY_ROTATED,
+)
 
 SECRET_KEY = os.getenv("SECRETKEY")
 fernet = Fernet(base64.urlsafe_b64encode(SECRET_KEY.encode("utf-8").ljust(32)[:32]))
@@ -844,11 +851,23 @@ def user_login():
 
         if not user:
             logger.error("Incorrect email address")
+            log_audit_event(
+                action=LOGIN_FAILED, endpoint="/user_login",
+                ip=request.remote_addr, status="failure",
+                actor_email=email,
+                metadata={"reason": "unknown_email"},
+            )
             return jsonify({"error": "Incorrect email address"}), 400
 
         password_hash = user["password_hash"]
         if not check_password_hash(password_hash, password):
             logger.error("Incorrect password")
+            log_audit_event(
+                action=LOGIN_FAILED, endpoint="/user_login",
+                ip=request.remote_addr, status="failure",
+                actor_user_id=user["user_id"], actor_email=user["email"],
+                metadata={"reason": "wrong_password"},
+            )
             return jsonify({"error": "Incorrect password"}), 400
 
         # onboarding check
@@ -872,6 +891,11 @@ def user_login():
         conn.close()
         logger.info("Login successfull")
         session["user_id"] = user["user_id"]
+        log_audit_event(
+            action=LOGIN_SUCCESS, endpoint="/user_login",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user["user_id"], actor_email=user["email"],
+        )
         return response, 200
     except Exception as e:
         logger.error(f"Unexpected error occured : {str(e)}")
@@ -897,6 +921,12 @@ def totp_setup():
                 (secret, user_id),
             )
             conn.commit()
+            log_audit_event(
+                action=TOTP_SETUP, endpoint="/totp_setup",
+                ip=request.remote_addr, status="success",
+                actor_user_id=user_id,
+            )
+            g.audit_logged = True
             user["totp_secret"] = secret
         email = user["email"]
         # secret = user["totp_secret"]
@@ -946,6 +976,12 @@ def totp_verify():
             logger.error("TOTP verification failed")
             return jsonify({"error": "TOTP not verified"}), 400
         logger.info("TOTP verified successfully")
+        log_audit_event(
+            action=TOTP_VERIFIED, endpoint="/totp_verify",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+        )
+        g.audit_logged = True
         return jsonify({"message": "TOTP verified successfully", "verified": True}), 200
     except Exception as e:
         logger.error(f"Unexpected error occured : {str(e)}")
@@ -974,6 +1010,13 @@ def update_user_type():
             (user_type, user_id),
         )
         conn.commit()
+        log_audit_event(
+            action=USER_TYPE_CHANGED, endpoint="/update_user_type",
+            ip=request.remote_addr, status="success",
+            actor_user_id=data.get("user_id"),
+            metadata={"new_user_type": user_type},
+        )
+        g.audit_logged = True
         conn.close()
         logger.info("user_type updated successfully")
         return jsonify({"message": "User type updated successsfully"}), 200
@@ -1020,6 +1063,12 @@ def update_password():
         )
 
         conn.commit()
+        log_audit_event(
+            action=PASSWORD_CHANGED, endpoint="/update_password",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+        )
+        g.audit_logged = True
         conn.close()
         logger.info("New password updated successfully")
         return jsonify({"message": "Password updated successsfully"}), 200
@@ -1170,6 +1219,13 @@ def reset_password():
         )
 
         conn.commit()
+        log_audit_event(
+            action=PASSWORD_RESET, endpoint="/reset_password",
+            ip=request.remote_addr, status="success",
+            actor_email=email,
+            metadata={"method": "forgot_password_flow"},
+        )
+        g.audit_logged = True
         conn.close()
         logger.info("Password reset successfully")
         return jsonify({"message": "Password reset successfully"})
@@ -1656,6 +1712,13 @@ def rotate_encryption_key():
         is_admin = result["user_type"] == "admin"
         kms_service = SecureKMSService()
         rotate = kms_service.rotate_user_key(user_id, is_admin)
+
+        log_audit_event(
+            action=ENCRYPTION_KEY_ROTATED, endpoint="/rotate-encryption-key",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+        )
+        g.audit_logged = True
 
         return jsonify({"encryption_key": rotate["encrypted_key"]}), 200
     except Exception as e:
