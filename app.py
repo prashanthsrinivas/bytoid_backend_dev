@@ -44,6 +44,7 @@ from config_evidences.routes import config_evidences_bp
 from sso_by.routes import sso_bp
 from tab_tracker.routes import tracker_bp
 from websockets_custom.routes import ws_bp
+from policy_hub.routes import policy_hub_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -157,6 +158,7 @@ blueprints = [
     sso_bp,
     ws_bp,
     tracker_bp,
+    policy_hub_bp,
 ]
 
 for bp in blueprints:
