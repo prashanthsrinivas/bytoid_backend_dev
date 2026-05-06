@@ -2,6 +2,8 @@ from flask import Blueprint, request, jsonify
 from db.rds_db import connect_to_rds
 import pymysql
 from services.credit_system import CreditManager, InsufficientCreditsError
+from datetime import datetime, timedelta
+from utils.app_configs import ACCESSIBLE_IDS
 
 # load_dotenv()  # Load from .env into environment variables
 credits_bp = Blueprint("credits", __name__)
@@ -415,3 +417,63 @@ def credit_summary():
     conn.close()
 
     return jsonify({"user_id": user_id, "summary": summary})
+
+
+# ====================================================
+# 6. ADD CREDITS (ADMIN TOP-UP)
+# ====================================================
+@credits_bp.route("/credits/add", methods=["POST"])
+def add_credits_route():
+    body = request.get_json()
+
+    if not body:
+        return jsonify({"error": "Request body is required"}), 400
+
+    user_id = body.get("user_id")
+    customer_id = body.get("customer_id")
+    customer_email = body.get("customer_email")
+    number_credits = body.get("number_credits")
+
+    if not user_id or (not customer_id and not customer_email) or number_credits is None:
+        return jsonify({"error": "user_id, number_credits, and either customer_id or customer_email are required"}), 400
+
+    if user_id not in ACCESSIBLE_IDS:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    expires_at = datetime.utcnow() + timedelta(days=365)
+
+    conn = connect_to_rds()
+    try:
+        cur = conn.cursor()
+
+        if customer_email:
+            cur.execute("SELECT user_id FROM users WHERE email = %s", (customer_email,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "No user found with that email"}), 404
+            resolved_customer_id = row[0]
+        else:
+            cur.execute("SELECT user_id FROM users WHERE user_id = %s", (customer_id,))
+            if not cur.fetchone():
+                return jsonify({"error": "No user found with that customer_id"}), 404
+            resolved_customer_id = customer_id
+
+        cur.close()
+
+        cm = CreditManager(conn)
+        bucket_id = cm.add_credits(
+            user_id=resolved_customer_id,
+            credits=number_credits,
+            source_type="TOPUP",
+            expires_at=expires_at,
+        )
+        return jsonify({
+            "success": True,
+            "bucket_id": bucket_id,
+            "customer_id": resolved_customer_id,
+            "credits_added": number_credits,
+            "expires_at": expires_at.isoformat(),
+        }), 200
+    finally:
+        if conn:
+            conn.close()
