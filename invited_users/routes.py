@@ -1270,17 +1270,16 @@ def edit_shared_user_role():
 
 @inv_users_bp.route("/notifications/<user_id>", methods=["GET"])
 def get_notifications(user_id):
+    conn = None
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-
             cursor.execute("""
                 SELECT id, message, is_read, created_at
                 FROM notifications
                 WHERE user_id=%s
                 ORDER BY created_at DESC
             """, (user_id,))
-
             data = cursor.fetchall()
 
         return jsonify({"notifications": data}), 200

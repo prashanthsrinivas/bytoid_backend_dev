@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, Response, request, jsonify, stream_with_context
 
 from credits_route.route import Credits
+from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
 from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response2
 from utils.s3_utils import s3bucket, load_yaml_from_s3, delete_file_from_s3, list_all_files
@@ -195,14 +196,24 @@ def generate_policy():
         finally:
             loop.close()
 
+    origin = request.headers.get("Origin", "")
+    resp_headers = {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    if origin and (
+        origin.rstrip("/") in ALLOWED_ORIGINS
+        or (IS_DEV and origin.startswith("http://localhost:"))
+    ):
+        resp_headers["Access-Control-Allow-Origin"] = origin
+        resp_headers["Access-Control-Allow-Credentials"] = "true"
+        resp_headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+
     return Response(
         stream_with_context(event_stream()),
         mimetype="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
+        headers=resp_headers,
     )
 
 

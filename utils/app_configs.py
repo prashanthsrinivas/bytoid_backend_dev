@@ -12,18 +12,22 @@ PROD_ORIGINS = {
     "https://api.bytoid.ai",
 }
 
-# Dev-only origins
-DEV_ORIGINS = {
-    "https://preview--bytoid-45.lovable.app",
+# Lovable preview frontends — always allowed (dev & prod server)
+STAGING_ORIGINS = {
     "https://preview--bytoiddev.lovable.app",
-    "https://dev.bytoid.ai",
+    "https://preview--bytoid-45.lovable.app",
     "preview--bytoiddev.lovable.app",
     "preview--bytoid-45.lovable.app",
+}
+
+# Dev-only origins
+DEV_ORIGINS = {
+    "https://dev.bytoid.ai",
     "dev.bytoid.ai",
     "http://localhost:8080",
 }
 
-ALLOWED_ORIGINS = PROD_ORIGINS | (DEV_ORIGINS if IS_DEV else set())
+ALLOWED_ORIGINS = PROD_ORIGINS | STAGING_ORIGINS | (DEV_ORIGINS if IS_DEV else set())
 if IS_DEV:
     ACCESSIBLE_IDS = ["109161866299858012556", "113605503284012967393"]
 else:
