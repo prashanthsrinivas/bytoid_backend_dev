@@ -29,8 +29,8 @@ def _s3_key(user_id: str, policy_id: str) -> str:
     return f"{user_id}/policies/{policy_id}.yaml"
 
 
-def _job_s3_key(user_id: str, job_id: str) -> str:
-    return f"{user_id}/policies/jobs/{job_id}.json"
+def _job_s3_key(job_id: str) -> str:
+    return f"policy_hub_jobs/{job_id}.json"
 
 
 def _write_yaml_to_s3(key: str, data: dict):
@@ -45,13 +45,13 @@ def _write_json_to_s3(key: str, data: dict):
     s3.upload_fileobj(io.BytesIO(body), S3_BUCKET, key)
 
 
-def _read_job(user_id: str, job_id: str) -> dict | None:
-    return read_json_from_s3(_job_s3_key(user_id, job_id))
+def _read_job(job_id: str) -> dict | None:
+    return read_json_from_s3(_job_s3_key(job_id))
 
 
-def _save_job(user_id: str, job_id: str, state: dict):
+def _save_job(job_id: str, state: dict):
     with _jobs_lock:
-        _write_json_to_s3(_job_s3_key(user_id, job_id), state)
+        _write_json_to_s3(_job_s3_key(job_id), state)
 
 
 # ── Prompt helpers ────────────────────────────────────────────────────────────
@@ -193,10 +193,10 @@ def _generation_worker(user_id: str, job_id: str, docs: list,
 
                 if content == "INSUFFICIENT":
                     logger.warning("Insufficient credits — stopping generation at index %d", i)
-                    job = _read_job(user_id, job_id) or {}
+                    job = _read_job(job_id) or {}
                     job["status"] = "error"
                     job["error"] = "Insufficient credits"
-                    _save_job(user_id, job_id, job)
+                    _save_job(job_id, job)
                     return
 
                 policy_id = str(uuid.uuid4())
@@ -218,23 +218,23 @@ def _generation_worker(user_id: str, job_id: str, docs: list,
                 item = None
 
             # Update job state with completed item
-            job = _read_job(user_id, job_id) or {"items": [], "completed": 0}
+            job = _read_job(job_id) or {"items": [], "completed": 0}
             job["completed"] = i + 1
             if item:
                 job["items"].append(item)
             if i + 1 >= total:
                 job["status"] = "done"
-            _save_job(user_id, job_id, job)
+            _save_job(job_id, job)
 
         logger.info("Policy generation complete for user %s: %d documents", user_id, total)
 
     except Exception as e:
         logger.error("Generation worker crashed for job %s: %s", job_id, e)
         try:
-            job = _read_job(user_id, job_id) or {}
+            job = _read_job(job_id) or {}
             job["status"] = "error"
             job["error"] = str(e)
-            _save_job(user_id, job_id, job)
+            _save_job(job_id, job)
         except Exception:
             pass
     finally:
@@ -290,7 +290,7 @@ async def generate_policy():
         "frameworks": frameworks,
         "error": None,
     }
-    _save_job(user_id, job_id, job_state)
+    _save_job(job_id, job_state)
 
     # Phase 2: generate all documents in background — runs to completion regardless of client
     thread = threading.Thread(
@@ -313,12 +313,11 @@ async def generate_policy():
 @policy_hub_bp.route("/status", methods=["GET"])
 def generate_status():
     job_id = request.args.get("job_id")
-    user_id = request.args.get("user_id")
 
-    if not job_id or not user_id:
-        return jsonify({"error": "job_id and user_id are required"}), 400
+    if not job_id:
+        return jsonify({"error": "job_id is required"}), 400
 
-    job = _read_job(user_id, job_id)
+    job = _read_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
