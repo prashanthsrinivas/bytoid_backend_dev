@@ -1028,11 +1028,15 @@ def revoke_special_access():
             if req["company_name"] != tgt["company_name"]:
                 return jsonify({"error": "Different organization"}), 403
             # 🔥 DELETE ACCESS (THIS IS THE KEY PART)
+            # user_id  = Admin A (grantee — who HAS access)  → target_admin_id
+            # target_id = Admin B (grantor — who GAVE access) → grantor_admin_id
             cursor.execute("""
                 DELETE FROM special_access
                 WHERE grantor_admin_id=%s AND target_admin_id=%s
             """, (target_id, requester_id))
-            # Notification
+            if cursor.rowcount == 0:
+                return jsonify({"error": "Access record not found — no matching grant exists"}), 404
+            # Notification (only fires when a row was actually deleted)
             cursor.execute("""
                 INSERT INTO notifications (user_id, message)
                 VALUES (%s, %s)
