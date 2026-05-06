@@ -843,7 +843,7 @@ def grant_special_access():
                 INSERT IGNORE INTO special_access
                 (grantor_admin_id, target_admin_id)
                 VALUES (%s, %s)
-            """, (current_admin_id, target_admin_id))
+            """, (target_admin_id, current_admin_id))
 
             conn.commit()
 
@@ -1580,6 +1580,45 @@ def all_special_access_users(userid):
 
         result = {r["email"]: r["target_admin_id"] for r in rows}
         return jsonify({"special_access_users": result}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if conn:
+            conn.close()
+
+
+@inv_users_bp.route("/admin/all_special_access_sources/<userid>", methods=["GET"])
+def all_special_access_sources(userid):
+    """Get all admins whose data I can access (I am target, they are grantor)"""
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+
+            cursor.execute(
+                "SELECT user_type FROM users WHERE user_id=%s", (userid,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "User not found"}), 404
+            if row["user_type"] == "user":
+                return jsonify({"error": "Unauthorized access"}), 403
+
+            cursor.execute(
+                """
+                SELECT sa.grantor_admin_id, u.email
+                FROM special_access sa
+                JOIN users u ON u.user_id = sa.grantor_admin_id
+                WHERE sa.target_admin_id = %s
+                """,
+                (userid,),
+            )
+            rows = cursor.fetchall()
+
+        result = {r["email"]: r["grantor_admin_id"] for r in rows}
+        return jsonify({"special_access_sources": result}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

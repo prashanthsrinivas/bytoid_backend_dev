@@ -5,8 +5,7 @@ import json
 import uuid
 
 from db.lance_db_service import LanceDBServer
-from flask import Blueprint, jsonify, request, session
-from services.redis_service import RedisService
+from flask import Blueprint, jsonify, request
 from tab_tracker.helper import (
     check_config_exist,
     create_empty_tracker_config,
@@ -16,11 +15,7 @@ from tab_tracker.helper import (
     save_tracker_file,
     ensure_tracker_file_exists,
     apply_entry_updates,
-    _update_or_append_entries,
     _rebuild_micro_blocks_from_tracker,
-    _extract_normalized_rows,
-    _detect_row_changes,
-    _apply_row_changes_to_tracker,
 )
 from utils.s3_utils import upload_any_file, read_json_from_s3, delete_file_from_s3
 
@@ -300,15 +295,22 @@ async def delete_tracker():
         tracker_id = data.get("tracker_id")
 
         if not all([user_id, tracker_id]):
-            return jsonify({"error": "Missing required fields: user_id, tracker_id"}), 400
+            return (
+                jsonify({"error": "Missing required fields: user_id, tracker_id"}),
+                400,
+            )
 
         config_path, config_data = check_config_exist(user_id)
         if not config_data:
             return jsonify({"error": "No tracker config found for this user"}), 404
 
         tracker_meta = next(
-            (t for t in config_data.get("trackers", []) if t["tracker_id"] == tracker_id),
-            None
+            (
+                t
+                for t in config_data.get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
+            None,
         )
         if not tracker_meta:
             return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
@@ -324,7 +326,9 @@ async def delete_tracker():
         local_path = f"/tmp/config_tracker_{user_id}.json"
         with open(local_path, "w") as f:
             json.dump(config_data, f, indent=2)
-        upload_any_file(file_path=local_path, user_id=user_id, file_name=config_path, type="tracker")
+        upload_any_file(
+            file_path=local_path, user_id=user_id, file_name=config_path, type="tracker"
+        )
         os.remove(local_path)
 
         # Step 2: Delete the tracker data file from S3
@@ -333,7 +337,9 @@ async def delete_tracker():
         # Step 2: Remove the block_id entry from the runbook's tracker_configuration
         if runbook_id and block_id:
             try:
-                runbook = await dbserver.get_runbook_by_id(user_id=user_id, runbook_id=runbook_id)
+                runbook = await dbserver.get_runbook_by_id(
+                    user_id=user_id, runbook_id=runbook_id
+                )
                 if runbook:
                     if isinstance(runbook, list):
                         runbook = runbook[0]
@@ -344,17 +350,24 @@ async def delete_tracker():
                     await dbserver.update_runbook(
                         user_id=user_id,
                         runbook_id=runbook_id,
-                        updates={"tracker_configuration": tracker_conf}
+                        updates={"tracker_configuration": tracker_conf},
                     )
             except Exception:
-                logging.warning(f"Could not clean up tracker_configuration for runbook {runbook_id}: {traceback.format_exc()}")
+                logging.warning(
+                    f"Could not clean up tracker_configuration for runbook {runbook_id}: {traceback.format_exc()}"
+                )
 
-        return jsonify({
-            "message": "Tracker deleted successfully",
-            "tracker_id": tracker_id,
-            "block_id": block_id,
-            "runbook_id": runbook_id
-        }), 200
+        return (
+            jsonify(
+                {
+                    "message": "Tracker deleted successfully",
+                    "tracker_id": tracker_id,
+                    "block_id": block_id,
+                    "runbook_id": runbook_id,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         logging.error(f"Tracker delete error: {traceback.format_exc()}")
@@ -1053,9 +1066,14 @@ async def sync_block_to_tracker_api():
 
         # Validate required fields
         if not all([user_id, result_id, block_id, changed_block]):
-            return jsonify({
-                "error": "Missing required fields: user_id, result_id (or review_id), block_id, and changed_block"
-            }), 400
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, result_id (or review_id), block_id, and changed_block"
+                    }
+                ),
+                400,
+            )
 
         # Step 1: Fetch the result (similar to /radar/changeblock/confirm)
         record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
@@ -1083,18 +1101,25 @@ async def sync_block_to_tracker_api():
                                 # 🔒 Only update data fields, preserve micro_block structure
                                 if "data" in changed_block:
                                     micro_block["data"] = changed_block["data"]
-                                if "type" in changed_block and micro_block.get("type") != "":
+                                if (
+                                    "type" in changed_block
+                                    and micro_block.get("type") != ""
+                                ):
                                     # Validate type matches before updating
                                     original_type = micro_block.get("type")
                                     if original_type == changed_block.get("type"):
                                         micro_block["type"] = changed_block["type"]
 
                                 block_found = True
-                                logging.info(f"Updated micro_block {micro_id} in block {block_id}")
+                                logging.info(
+                                    f"Updated micro_block {micro_id} in block {block_id}"
+                                )
                                 break
                     else:
                         # Update entire micro_blocks array, but validate structure
-                        block["micro_blocks"] = changed_block.get("micro_blocks", block.get("micro_blocks", []))
+                        block["micro_blocks"] = changed_block.get(
+                            "micro_blocks", block.get("micro_blocks", [])
+                        )
                         block_found = True
                         logging.info(f"Updated micro_blocks for block {block_id}")
                 else:
@@ -1103,7 +1128,10 @@ async def sync_block_to_tracker_api():
                     if "data" in changed_block:
                         if block.get("micro_blocks"):
                             for micro_block in block.get("micro_blocks", []):
-                                if not micro_id or micro_block.get("micro_id") == micro_id:
+                                if (
+                                    not micro_id
+                                    or micro_block.get("micro_id") == micro_id
+                                ):
                                     micro_block["data"] = changed_block["data"]
                         block_found = True
                         logging.info(f"Updated data in block {block_id}")
@@ -1112,20 +1140,32 @@ async def sync_block_to_tracker_api():
                 break
 
         if not block_found:
-            return jsonify({
-                "error": f"Block '{block_id}' or micro_block '{micro_id}' not found in result"
-            }), 404
+            return (
+                jsonify(
+                    {
+                        "error": f"Block '{block_id}' or micro_block '{micro_id}' not found in result"
+                    }
+                ),
+                404,
+            )
 
         # Verify block structure is preserved
         if current_block:
             if not current_block.get("block_id"):
                 logging.error(f"⚠️ WARNING: block_id was removed during update!")
-                return jsonify({
-                    "error": "Block structure validation failed: block_id was lost during update",
-                    "block_id": block_id
-                }), 500
+                return (
+                    jsonify(
+                        {
+                            "error": "Block structure validation failed: block_id was lost during update",
+                            "block_id": block_id,
+                        }
+                    ),
+                    500,
+                )
             if not current_block.get("block_type"):
-                logging.warning(f"⚠️ WARNING: block_type missing in updated block {block_id}")
+                logging.warning(
+                    f"⚠️ WARNING: block_type missing in updated block {block_id}"
+                )
 
         # Step 3: Save the updated result back to the database
         await dbserver.update_runbook_result(user_id, result_id, updated_json)
@@ -1138,14 +1178,22 @@ async def sync_block_to_tracker_api():
 
         try:
             runbook_id = data.get("runbook_id")
-            logging.info(f"[TRACKER_UPDATE] Step 4: Checking tracker link for block {block_id}, runbook_id={runbook_id}")
+            logging.info(
+                f"[TRACKER_UPDATE] Step 4: Checking tracker link for block {block_id}, runbook_id={runbook_id}"
+            )
 
             if not runbook_id:
-                logging.info(f"[TRACKER_UPDATE] No runbook_id provided, skipping tracker update")
+                logging.info(
+                    f"[TRACKER_UPDATE] No runbook_id provided, skipping tracker update"
+                )
                 tracker_debug_info["reason"] = "No runbook_id provided"
             else:
-                runbook = await dbserver.get_runbook_by_id(user_id=user_id, runbook_id=runbook_id)
-                logging.info(f"[TRACKER_UPDATE] Runbook fetch result: runbook exists = {bool(runbook)}")
+                runbook = await dbserver.get_runbook_by_id(
+                    user_id=user_id, runbook_id=runbook_id
+                )
+                logging.info(
+                    f"[TRACKER_UPDATE] Runbook fetch result: runbook exists = {bool(runbook)}"
+                )
 
                 if not runbook:
                     logging.warning(f"[TRACKER_UPDATE] Runbook {runbook_id} not found")
@@ -1155,67 +1203,104 @@ async def sync_block_to_tracker_api():
                         runbook = runbook[0]
 
                     raw_conf = runbook.get("tracker_configuration") or "{}"
-                    tracker_conf = json.loads(raw_conf) if isinstance(raw_conf, str) else raw_conf
-                    logging.info(f"[TRACKER_UPDATE] Tracker configuration: {tracker_conf}")
+                    tracker_conf = (
+                        json.loads(raw_conf) if isinstance(raw_conf, str) else raw_conf
+                    )
+                    logging.info(
+                        f"[TRACKER_UPDATE] Tracker configuration: {tracker_conf}"
+                    )
 
                     linked_tracker_id = tracker_conf.get(block_id)
-                    logging.info(f"[TRACKER_UPDATE] Linked tracker_id for block {block_id}: {linked_tracker_id}")
+                    logging.info(
+                        f"[TRACKER_UPDATE] Linked tracker_id for block {block_id}: {linked_tracker_id}"
+                    )
 
                     # Step 5: If linked to tracker, update the tracker as well
                     if not linked_tracker_id:
-                        logging.info(f"[TRACKER_UPDATE] Block {block_id} is not linked to any tracker")
+                        logging.info(
+                            f"[TRACKER_UPDATE] Block {block_id} is not linked to any tracker"
+                        )
                         tracker_debug_info["reason"] = "Block not linked to tracker"
                     elif not current_block:
                         logging.error(f"[TRACKER_UPDATE] current_block is None!")
                         tracker_debug_info["reason"] = "current_block is None"
                     else:
                         config_path, config_data = check_config_exist(user_id)
-                        logging.info(f"[TRACKER_UPDATE] Config found: {bool(config_data)}")
+                        logging.info(
+                            f"[TRACKER_UPDATE] Config found: {bool(config_data)}"
+                        )
 
                         tracker_meta = next(
-                            (t for t in (config_data or {}).get("trackers", []) if t["tracker_id"] == linked_tracker_id),
+                            (
+                                t
+                                for t in (config_data or {}).get("trackers", [])
+                                if t["tracker_id"] == linked_tracker_id
+                            ),
                             None,
                         )
-                        logging.info(f"[TRACKER_UPDATE] Tracker metadata found: {bool(tracker_meta)}")
+                        logging.info(
+                            f"[TRACKER_UPDATE] Tracker metadata found: {bool(tracker_meta)}"
+                        )
 
                         if not tracker_meta:
-                            logging.error(f"[TRACKER_UPDATE] Tracker {linked_tracker_id} not in config")
+                            logging.error(
+                                f"[TRACKER_UPDATE] Tracker {linked_tracker_id} not in config"
+                            )
                             tracker_debug_info["reason"] = "Tracker not in config"
                         else:
                             tracker_file_path = tracker_meta.get("file_path")
                             tracker_type = tracker_meta.get("type")
-                            logging.info(f"[TRACKER_UPDATE] Tracker type: {tracker_type}, file_path: {tracker_file_path}")
+                            logging.info(
+                                f"[TRACKER_UPDATE] Tracker type: {tracker_type}, file_path: {tracker_file_path}"
+                            )
 
                             try:
                                 tracker_data = read_json_from_s3(tracker_file_path)
-                                logging.info(f"[TRACKER_UPDATE] Tracker data loaded: {bool(tracker_data)}")
+                                logging.info(
+                                    f"[TRACKER_UPDATE] Tracker data loaded: {bool(tracker_data)}"
+                                )
 
                                 if not tracker_data:
-                                    logging.error(f"[TRACKER_UPDATE] Failed to read tracker file from {tracker_file_path}")
-                                    tracker_debug_info["reason"] = "Tracker file not found on S3"
+                                    logging.error(
+                                        f"[TRACKER_UPDATE] Failed to read tracker file from {tracker_file_path}"
+                                    )
+                                    tracker_debug_info["reason"] = (
+                                        "Tracker file not found on S3"
+                                    )
                                 else:
-                                    logging.info(f"[TRACKER_UPDATE] Tracker structure: rows={len(tracker_data.get('rows', []))}, "
-                                                f"cells={len(tracker_data.get('cells', []))}, "
-                                                f"records={len(tracker_data.get('records', []))}")
-
-                                    # Update tracker with the new block data (not append, but replace)
-                                    from tab_tracker.helper import update_tracker_from_block
-
-                                    logging.info(f"[TRACKER_UPDATE] Calling update_tracker_from_block with block_id={block_id}, result_id={result_id}")
-                                    logging.info(f"[TRACKER_UPDATE] Current block micro_blocks count: {len(current_block.get('micro_blocks', []))}")
-
-                                    update_summary = update_tracker_from_block(
-                                        tracker_data,
-                                        current_block,
-                                        result_id,
-                                        block_id
+                                    logging.info(
+                                        f"[TRACKER_UPDATE] Tracker structure: rows={len(tracker_data.get('rows', []))}, "
+                                        f"cells={len(tracker_data.get('cells', []))}, "
+                                        f"records={len(tracker_data.get('records', []))}"
                                     )
 
-                                    logging.info(f"[TRACKER_UPDATE] Update summary: {update_summary}")
+                                    # Update tracker with the new block data (not append, but replace)
+                                    from tab_tracker.helper import (
+                                        update_tracker_from_block,
+                                    )
+
+                                    logging.info(
+                                        f"[TRACKER_UPDATE] Calling update_tracker_from_block with block_id={block_id}, result_id={result_id}"
+                                    )
+                                    logging.info(
+                                        f"[TRACKER_UPDATE] Current block micro_blocks count: {len(current_block.get('micro_blocks', []))}"
+                                    )
+
+                                    update_summary = update_tracker_from_block(
+                                        tracker_data, current_block, result_id, block_id
+                                    )
+
+                                    logging.info(
+                                        f"[TRACKER_UPDATE] Update summary: {update_summary}"
+                                    )
 
                                     # Save updated tracker
-                                    save_result = save_tracker_file(user_id, linked_tracker_id, tracker_data)
-                                    logging.info(f"[TRACKER_UPDATE] Tracker file saved: {save_result}")
+                                    save_result = save_tracker_file(
+                                        user_id, linked_tracker_id, tracker_data
+                                    )
+                                    logging.info(
+                                        f"[TRACKER_UPDATE] Tracker file saved: {save_result}"
+                                    )
 
                                     tracker_updated = True
                                     tracker_debug_info["updated"] = True
@@ -1227,7 +1312,9 @@ async def sync_block_to_tracker_api():
                                         f"added {update_summary.get('rows_added', 0)} rows"
                                     )
                             except Exception as e:
-                                logging.error(f"[TRACKER_UPDATE] Exception during tracker update: {str(e)}")
+                                logging.error(
+                                    f"[TRACKER_UPDATE] Exception during tracker update: {str(e)}"
+                                )
                                 logging.error(traceback.format_exc())
                                 tracker_debug_info["error"] = str(e)
                                 # Don't fail the API if tracker update fails - result update is primary
@@ -1255,7 +1342,7 @@ async def sync_block_to_tracker_api():
         response_data["tracker_debug"] = {
             "runbook_id": data.get("runbook_id"),
             "linked_tracker_id": linked_tracker_id,
-            **tracker_debug_info
+            **tracker_debug_info,
         }
 
         return jsonify(response_data), 200
@@ -1567,7 +1654,7 @@ async def add_tracker_column():
 
         if tracker_type == "table":
             column_name = data.get("column_name")
-            column_type = data.get("column_type") 
+            column_type = data.get("column_type")
             if not column_name:
                 return jsonify({"error": "Table requires column_name"}), 400
 
@@ -1687,12 +1774,19 @@ async def delete_tracker_column():
         tracker_id = data.get("tracker_id")
 
         if not all([user_id, tracker_id]):
-            return jsonify({"error": "Missing required fields: user_id, tracker_id"}), 400
+            return (
+                jsonify({"error": "Missing required fields: user_id, tracker_id"}),
+                400,
+            )
 
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
-            (t for t in (config_data or {}).get("trackers", []) if t["tracker_id"] == tracker_id),
-            None
+            (
+                t
+                for t in (config_data or {}).get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
+            None,
         )
         if not tracker_meta:
             return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
@@ -1712,9 +1806,14 @@ async def delete_tracker_column():
             schema_cols = tracker_data["schema"]["columns"]
             col_to_remove = next((c for c in schema_cols if c["id"] == column_id), None)
             if not col_to_remove:
-                return jsonify({"error": f"Column '{column_id}' not found in schema"}), 404
+                return (
+                    jsonify({"error": f"Column '{column_id}' not found in schema"}),
+                    404,
+                )
 
-            tracker_data["schema"]["columns"] = [c for c in schema_cols if c["id"] != column_id]
+            tracker_data["schema"]["columns"] = [
+                c for c in schema_cols if c["id"] != column_id
+            ]
 
             # Strip the deleted column from all existing row values
             rows_affected = 0
@@ -1727,7 +1826,7 @@ async def delete_tracker_column():
                 "type": "column_deleted",
                 "column_id": column_id,
                 "column_name": col_to_remove.get("name"),
-                "rows_affected": rows_affected
+                "rows_affected": rows_affected,
             }
 
         elif tracker_type == "matrix":
@@ -1735,28 +1834,41 @@ async def delete_tracker_column():
             value = data.get("value")
 
             if not axis or axis not in ("row", "column"):
-                return jsonify({"error": "Matrix requires axis ('row' or 'column')"}), 400
+                return (
+                    jsonify({"error": "Matrix requires axis ('row' or 'column')"}),
+                    400,
+                )
             if not value:
-                return jsonify({"error": "Matrix requires value (axis label to delete)"}), 400
+                return (
+                    jsonify({"error": "Matrix requires value (axis label to delete)"}),
+                    400,
+                )
 
             schema = tracker_data["schema"]
             axis_key = "rows" if axis == "row" else "columns"
 
             if value not in schema.get(axis_key, []):
-                return jsonify({"error": f"{axis.capitalize()} '{value}' not found in schema"}), 404
+                return (
+                    jsonify(
+                        {"error": f"{axis.capitalize()} '{value}' not found in schema"}
+                    ),
+                    404,
+                )
 
             schema[axis_key] = [v for v in schema[axis_key] if v != value]
 
             # Remove all cells on the deleted axis label
             cell_field = "row" if axis == "row" else "column"
             before_count = len(tracker_data.get("cells", []))
-            tracker_data["cells"] = [c for c in tracker_data.get("cells", []) if c.get(cell_field) != value]
+            tracker_data["cells"] = [
+                c for c in tracker_data.get("cells", []) if c.get(cell_field) != value
+            ]
             cells_removed = before_count - len(tracker_data["cells"])
 
             schema_change = {
                 "type": f"{axis}_deleted",
                 "value": value,
-                "cells_removed": cells_removed
+                "cells_removed": cells_removed,
             }
 
         elif tracker_type == "scorecard":
@@ -1768,16 +1880,20 @@ async def delete_tracker_column():
             if metric not in existing_metrics:
                 return jsonify({"error": f"Metric '{metric}' not found in schema"}), 404
 
-            tracker_data["schema"]["metrics"] = [m for m in existing_metrics if m != metric]
+            tracker_data["schema"]["metrics"] = [
+                m for m in existing_metrics if m != metric
+            ]
 
             before_count = len(tracker_data.get("records", []))
-            tracker_data["records"] = [r for r in tracker_data.get("records", []) if r.get("metric") != metric]
+            tracker_data["records"] = [
+                r for r in tracker_data.get("records", []) if r.get("metric") != metric
+            ]
             records_removed = before_count - len(tracker_data["records"])
 
             schema_change = {
                 "type": "metric_deleted",
                 "metric": metric,
-                "records_removed": records_removed
+                "records_removed": records_removed,
             }
 
         else:
@@ -1821,14 +1937,15 @@ async def delete_tracker_column():
         for result_id_val in result_ids_to_update:
             try:
                 # Fetch the result
-                result_row = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id_val)
+                result_row = await dbserver.runbook_get_result(
+                    user_id=user_id, result_id=result_id_val
+                )
 
                 if not result_row or result_row.get("status") == "not_found":
                     logging.warning(f"Result {result_id_val} not found, skipping")
-                    results_failed.append({
-                        "result_id": result_id_val,
-                        "reason": "Result not found"
-                    })
+                    results_failed.append(
+                        {"result_id": result_id_val, "reason": "Result not found"}
+                    )
                     continue
 
                 result_content = result_row.get("result", {})
@@ -1865,25 +1982,41 @@ async def delete_tracker_column():
                                 # Remove from axis values
                                 axis_data = micro_block.get(axis_key, {})
                                 if "values" in axis_data:
-                                    axis_data["values"] = [v for v in axis_data["values"] if v != value]
+                                    axis_data["values"] = [
+                                        v for v in axis_data["values"] if v != value
+                                    ]
 
                                 # Remove matrix cells for this axis
                                 matrix = micro_block.get("data", {}).get("matrix", [])
                                 if axis == "row":
                                     # Remove entire row
                                     row_idx = next(
-                                        (i for i, label in enumerate(micro_block.get("y_axis", {}).get("values", []))
-                                         if label == value),
-                                        -1
+                                        (
+                                            i
+                                            for i, label in enumerate(
+                                                micro_block.get("y_axis", {}).get(
+                                                    "values", []
+                                                )
+                                            )
+                                            if label == value
+                                        ),
+                                        -1,
                                     )
                                     if row_idx >= 0 and row_idx < len(matrix):
                                         del matrix[row_idx]
                                 else:
                                     # Remove column from each row
                                     col_idx = next(
-                                        (i for i, label in enumerate(micro_block.get("x_axis", {}).get("values", []))
-                                         if label == value),
-                                        -1
+                                        (
+                                            i
+                                            for i, label in enumerate(
+                                                micro_block.get("x_axis", {}).get(
+                                                    "values", []
+                                                )
+                                            )
+                                            if label == value
+                                        ),
+                                        -1,
                                     )
                                     if col_idx >= 0:
                                         for row in matrix:
@@ -1893,28 +2026,34 @@ async def delete_tracker_column():
                                 blocks_modified += 1
 
                     # For scorecard: remove metric from micro_blocks
-                    elif block_type_result == "scorecard" and tracker_type == "scorecard":
+                    elif (
+                        block_type_result == "scorecard" and tracker_type == "scorecard"
+                    ):
                         metric = data.get("metric")
                         for micro_block in micro_blocks:
                             if micro_block.get("type") == "scorecard_schema":
-                                data_records = micro_block.get("data", {}).get("records", [])
-                                micro_block["data"]["records"] = [r for r in data_records if r.get("metric") != metric]
+                                data_records = micro_block.get("data", {}).get(
+                                    "records", []
+                                )
+                                micro_block["data"]["records"] = [
+                                    r for r in data_records if r.get("metric") != metric
+                                ]
                                 blocks_modified += 1
 
                 # Update the result in the database
                 if blocks_modified > 0:
-                    await dbserver.update_runbook_result(user_id, result_id_val, result_content)
-                    results_updated.append({
-                        "result_id": result_id_val,
-                        "blocks_modified": blocks_modified
-                    })
+                    await dbserver.update_runbook_result(
+                        user_id, result_id_val, result_content
+                    )
+                    results_updated.append(
+                        {"result_id": result_id_val, "blocks_modified": blocks_modified}
+                    )
 
             except Exception as e:
-                logging.error(f"Failed to update result {result_id_val}: {traceback.format_exc()}")
-                results_failed.append({
-                    "result_id": result_id_val,
-                    "reason": str(e)
-                })
+                logging.error(
+                    f"Failed to update result {result_id_val}: {traceback.format_exc()}"
+                )
+                results_failed.append({"result_id": result_id_val, "reason": str(e)})
 
         # Build response with result update information
         response_data = {
@@ -1926,11 +2065,8 @@ async def delete_tracker_column():
                 "tracker_updated": True,
                 "results_updated": len(results_updated),
                 "results_failed": len(results_failed),
-                "details": {
-                    "updated": results_updated,
-                    "failed": results_failed
-                }
-            }
+                "details": {"updated": results_updated, "failed": results_failed},
+            },
         }
 
         return jsonify(response_data), 200
@@ -1965,9 +2101,14 @@ def upload_evidence_api():
         column_id = request.form.get("column_id")
 
         if not all([user_id, tracker_id, row_id, column_id]):
-            return jsonify({
-                "error": "Missing required fields: user_id, tracker_id, row_id, column_id"
-            }), 400
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, tracker_id, row_id, column_id"
+                    }
+                ),
+                400,
+            )
 
         if "file" not in request.files:
             return jsonify({"error": "No file provided"}), 400
@@ -1983,13 +2124,14 @@ def upload_evidence_api():
             row_id=row_id,
             column_id=column_id,
             file_obj=file_obj,
-            filename=file_obj.filename
+            filename=file_obj.filename,
         )
 
         if not upload_result.get("success"):
-            return jsonify({
-                "error": f"File upload failed: {upload_result.get('error')}"
-            }), 500
+            return (
+                jsonify({"error": f"File upload failed: {upload_result.get('error')}"}),
+                500,
+            )
 
         s3_key = upload_result.get("s3_key")
 
@@ -1999,33 +2141,40 @@ def upload_evidence_api():
             tracker_id=tracker_id,
             row_id=row_id,
             column_id=column_id,
-            s3_key=s3_key
+            s3_key=s3_key,
         )
 
         if not update_result.get("success"):
-            return jsonify({
-                "error": f"Failed to link evidence to tracker: {update_result.get('error')}"
-            }), 500
+            return (
+                jsonify(
+                    {
+                        "error": f"Failed to link evidence to tracker: {update_result.get('error')}"
+                    }
+                ),
+                500,
+            )
 
-        return jsonify({
-            "message": "Evidence file uploaded and linked successfully",
-            "tracker_id": tracker_id,
-            "row_id": row_id,
-            "column_id": column_id,
-            "file_info": {
-                "s3_key": s3_key,
-                "filename": upload_result.get("filename"),
-                "upload_timestamp": upload_result.get("upload_timestamp")
-            },
-            "tracker_update": update_result
-        }), 200
+        return (
+            jsonify(
+                {
+                    "message": "Evidence file uploaded and linked successfully",
+                    "tracker_id": tracker_id,
+                    "row_id": row_id,
+                    "column_id": column_id,
+                    "file_info": {
+                        "s3_key": s3_key,
+                        "filename": upload_result.get("filename"),
+                        "upload_timestamp": upload_result.get("upload_timestamp"),
+                    },
+                    "tracker_update": update_result,
+                }
+            ),
+            200,
+        )
 
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
 
     except Exception as e:
         logging.error(f"Evidence upload error: {traceback.format_exc()}")
-        return jsonify({
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }), 500
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
