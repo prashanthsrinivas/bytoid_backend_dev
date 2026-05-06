@@ -57,6 +57,11 @@ def _save_job(user_id: str, job_id: str, state: dict):
 # ── Prompt helpers ────────────────────────────────────────────────────────────
 
 def _extract_title(content: str, fallback: str) -> str:
+    # Try HTML <h1> first
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", content, re.IGNORECASE | re.DOTALL)
+    if m:
+        return re.sub(r"<[^>]+>", "", m.group(1)).strip()
+    # Fallback: markdown # heading
     for line in content.splitlines():
         line = line.strip()
         if line.startswith("# "):
@@ -104,23 +109,52 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
         f"for an organization that must comply with: {fw_list}.\n\n"
         f"Document purpose: {description}\n"
         f"Organization context: {user_context}\n\n"
-        "Requirements:\n"
-        f"- First line must be exactly: # {title}\n"
-        "- Include these sections in order:\n"
-        "  ## Purpose\n"
-        "  ## Scope\n"
-        f"  ## {stmt_heading}\n"
-        "  ## Roles and Responsibilities\n"
-        f"  ## {enforce_heading}\n"
-        "  ## References\n"
-        "  ## Document Control\n"
-        "- Write specific, actionable content — no generic filler\n"
-        "- Reference relevant framework clauses where applicable "
-        "(e.g., ISO 27001 Annex A.9, HIPAA §164.312, SOC 2 CC6)\n"
-        "- Document Control must include: Version, Effective Date (placeholder), "
-        "Review Cycle, Document Owner\n"
-        "- Professional tone appropriate for a regulated organization\n\n"
-        "Output ONLY the document content in markdown. No preamble."
+        "Output the document as a self-contained HTML fragment (no <html>, <head>, or <body> tags). "
+        "Use only inline CSS styles. Follow this exact structure and styling:\n\n"
+        "<div style=\"font-family: 'Segoe UI', Arial, sans-serif; max-width: 860px; "
+        "margin: 0 auto; color: #1a202c; line-height: 1.7; padding: 32px;\">\n\n"
+        f"  <h1 style=\"font-size: 26px; font-weight: 700; color: #1a365d; "
+        "border-bottom: 3px solid #2b6cb0; padding-bottom: 12px; margin-bottom: 8px;\">"
+        f"{title}</h1>\n\n"
+        "  <p style=\"font-size: 13px; color: #718096; margin-bottom: 32px;\">"
+        f"Type: {doc_type.title()} &nbsp;|&nbsp; Frameworks: {fw_list}</p>\n\n"
+        "  <!-- Repeat this block for each section -->\n"
+        "  <h2 style=\"font-size: 18px; font-weight: 600; color: #2c5282; "
+        "margin-top: 32px; margin-bottom: 10px; border-left: 4px solid #2b6cb0; "
+        "padding-left: 12px;\">Section Title</h2>\n"
+        "  <p style=\"margin: 0 0 16px 0;\">Section content...</p>\n\n"
+        "  <!-- For lists use: -->\n"
+        "  <ul style=\"margin: 0 0 16px 20px; padding: 0;\">\n"
+        "    <li style=\"margin-bottom: 6px;\">Item</li>\n"
+        "  </ul>\n\n"
+        "  <!-- Document Control table -->\n"
+        "  <table style=\"border-collapse: collapse; width: 100%; margin-top: 8px;\">\n"
+        "    <thead>\n"
+        "      <tr>\n"
+        "        <th style=\"background: #2b6cb0; color: #fff; text-align: left; "
+        "padding: 10px 14px; font-size: 13px;\">Field</th>\n"
+        "        <th style=\"background: #2b6cb0; color: #fff; text-align: left; "
+        "padding: 10px 14px; font-size: 13px;\">Information</th>\n"
+        "      </tr>\n"
+        "    </thead>\n"
+        "    <tbody>\n"
+        "      <tr style=\"background: #f7fafc;\">\n"
+        "        <td style=\"padding: 9px 14px; border-bottom: 1px solid #e2e8f0; "
+        "font-weight: 600; font-size: 13px;\">Version</td>\n"
+        "        <td style=\"padding: 9px 14px; border-bottom: 1px solid #e2e8f0; "
+        "font-size: 13px;\">1.0</td>\n"
+        "      </tr>\n"
+        "      <!-- more rows -->\n"
+        "    </tbody>\n"
+        "  </table>\n\n"
+        "</div>\n\n"
+        "Include these sections in order: Purpose, Scope, "
+        f"{stmt_heading}, Roles and Responsibilities, {enforce_heading}, References, Document Control.\n"
+        "Write specific actionable content — no filler. "
+        "Reference framework clauses where applicable (e.g., ISO 27001 Annex A.9, HIPAA §164.312). "
+        "Document Control table rows: Version (1.0), Effective Date ([Insert Date]), "
+        "Review Cycle, Document Owner.\n\n"
+        "Output ONLY the HTML fragment. No markdown. No preamble. No code fences."
     )
 
 
