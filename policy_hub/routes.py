@@ -3,34 +3,58 @@ import io
 import json
 import os
 import re
+import threading
 import uuid
 import yaml
 from datetime import datetime, timezone
 
-from flask import Blueprint, Response, request, jsonify, stream_with_context
+from flask import Blueprint, request, jsonify
 
 from credits_route.route import Credits
 from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
 from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response2
-from utils.s3_utils import s3bucket, load_yaml_from_s3, delete_file_from_s3, list_all_files
+from utils.s3_utils import s3bucket, load_yaml_from_s3, read_json_from_s3, delete_file_from_s3, list_all_files
 
 S3_BUCKET = os.getenv("S3_BUCKET")
 logger = get_logger(__name__)
 policy_hub_bp = Blueprint("policy_hub", __name__, url_prefix="/policy-hub")
 
+_jobs_lock = threading.Lock()
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+
+# ── S3 helpers ────────────────────────────────────────────────────────────────
 
 def _s3_key(user_id: str, policy_id: str) -> str:
     return f"{user_id}/policies/{policy_id}.yaml"
 
 
-def _write_policy_to_s3(key: str, data: dict):
+def _job_s3_key(user_id: str, job_id: str) -> str:
+    return f"{user_id}/policies/jobs/{job_id}.json"
+
+
+def _write_yaml_to_s3(key: str, data: dict):
     s3 = s3bucket()
     yaml_bytes = yaml.safe_dump(data, sort_keys=False).encode("utf-8")
     s3.upload_fileobj(io.BytesIO(yaml_bytes), S3_BUCKET, key)
 
+
+def _write_json_to_s3(key: str, data: dict):
+    s3 = s3bucket()
+    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    s3.upload_fileobj(io.BytesIO(body), S3_BUCKET, key)
+
+
+def _read_job(user_id: str, job_id: str) -> dict | None:
+    return read_json_from_s3(_job_s3_key(user_id, job_id))
+
+
+def _save_job(user_id: str, job_id: str, state: dict):
+    with _jobs_lock:
+        _write_json_to_s3(_job_s3_key(user_id, job_id), state)
+
+
+# ── Prompt helpers ────────────────────────────────────────────────────────────
 
 def _extract_title(content: str, fallback: str) -> str:
     for line in content.splitlines():
@@ -100,10 +124,93 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
     )
 
 
-# ── 1. GENERATE (SSE streaming) ───────────────────────────────────────────────
+# ── Background generation worker ──────────────────────────────────────────────
+
+def _generation_worker(user_id: str, job_id: str, docs: list,
+                       frameworks: list, prompt: str, fw_list: str, doc_type_filter):
+    """
+    Runs in a background thread. Generates every document in `docs`,
+    saves each as a separate YAML file, and updates the job state in S3
+    after each one so the frontend can poll for progress.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        credits = Credits()
+        total = len(docs)
+
+        for i, doc in enumerate(docs):
+            title = doc.get("title", "Compliance Document")
+            d_type = doc.get("type", doc_type_filter or "policy")
+            description = doc.get("description", "")
+
+            try:
+                content = loop.run_until_complete(
+                    get_fireworks_response2(
+                        user_id=user_id,
+                        user_message=_doc_generation_prompt(
+                            title, d_type, description, fw_list, prompt
+                        ),
+                        role="user",
+                        credits=credits,
+                        temp=0.1,
+                    )
+                )
+
+                if content == "INSUFFICIENT":
+                    logger.warning("Insufficient credits — stopping generation at index %d", i)
+                    job = _read_job(user_id, job_id) or {}
+                    job["status"] = "error"
+                    job["error"] = "Insufficient credits"
+                    _save_job(user_id, job_id, job)
+                    return
+
+                policy_id = str(uuid.uuid4())
+                created_at = datetime.now(timezone.utc).isoformat()
+                key = _s3_key(user_id, policy_id)
+                item = {
+                    "policy_id": policy_id,
+                    "title": _extract_title(content, fallback=title),
+                    "type": d_type,
+                    "frameworks": frameworks,
+                    "content": content,
+                    "s3_key": key,
+                    "created_at": created_at,
+                }
+                _write_yaml_to_s3(key, item)
+
+            except Exception as e:
+                logger.error("Failed to generate '%s': %s", title, e)
+                item = None
+
+            # Update job state with completed item
+            job = _read_job(user_id, job_id) or {"items": [], "completed": 0}
+            job["completed"] = i + 1
+            if item:
+                job["items"].append(item)
+            if i + 1 >= total:
+                job["status"] = "done"
+            _save_job(user_id, job_id, job)
+
+        logger.info("Policy generation complete for user %s: %d documents", user_id, total)
+
+    except Exception as e:
+        logger.error("Generation worker crashed for job %s: %s", job_id, e)
+        try:
+            job = _read_job(user_id, job_id) or {}
+            job["status"] = "error"
+            job["error"] = str(e)
+            _save_job(user_id, job_id, job)
+        except Exception:
+            pass
+    finally:
+        loop.close()
+
+
+# ── 1. GENERATE ───────────────────────────────────────────────────────────────
 
 @policy_hub_bp.route("/generate", methods=["POST"])
-def generate_policy():
+async def generate_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
     prompt = body.get("prompt")
@@ -119,102 +226,77 @@ def generate_policy():
         else "Include both policies and procedures."
     )
 
-    def event_stream():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            credits = Credits()
-
-            # Phase 1: enumerate all required documents
-            enum_resp = loop.run_until_complete(
-                get_fireworks_response2(
-                    user_id=user_id,
-                    user_message=_enumeration_prompt(prompt, fw_list, type_filter),
-                    role="user",
-                    credits=credits,
-                    temp=0.1,
-                )
-            )
-            if enum_resp == "INSUFFICIENT":
-                yield f"data: {json.dumps({'error': 'Insufficient credits'})}\n\n"
-                return
-
-            docs = _parse_docs_list(enum_resp)
-            if not docs:
-                yield f"data: {json.dumps({'error': 'Could not enumerate documents — try again'})}\n\n"
-                return
-
-            yield f"data: {json.dumps({'total': len(docs), 'documents': docs})}\n\n"
-
-            # Phase 2: generate each document individually
-            for i, doc in enumerate(docs):
-                title = doc.get("title", "Compliance Document")
-                d_type = doc.get("type", doc_type or "policy")
-                description = doc.get("description", "")
-
-                content = loop.run_until_complete(
-                    get_fireworks_response2(
-                        user_id=user_id,
-                        user_message=_doc_generation_prompt(
-                            title, d_type, description, fw_list, prompt
-                        ),
-                        role="user",
-                        credits=credits,
-                        temp=0.1,
-                    )
-                )
-                if content == "INSUFFICIENT":
-                    yield f"data: {json.dumps({'error': 'Insufficient credits', 'index': i})}\n\n"
-                    return
-
-                policy_id = str(uuid.uuid4())
-                created_at = datetime.now(timezone.utc).isoformat()
-                key = _s3_key(user_id, policy_id)
-                item = {
-                    "policy_id": policy_id,
-                    "title": _extract_title(content, fallback=title),
-                    "type": d_type,
-                    "frameworks": frameworks,
-                    "content": content,
-                    "s3_key": key,
-                    "created_at": created_at,
-                }
-                try:
-                    _write_policy_to_s3(key, item)
-                except Exception as e:
-                    logger.error("S3 save failed for '%s': %s", title, e)
-                    yield f"data: {json.dumps({'error': f'Failed to save {title}', 'index': i})}\n\n"
-                    continue
-
-                yield f"data: {json.dumps({'item': item, 'index': i, 'total': len(docs)})}\n\n"
-
-            yield f"data: {json.dumps({'done': True, 'total': len(docs)})}\n\n"
-
-        except Exception as e:
-            logger.error("Policy generation stream error: %s", e)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        finally:
-            loop.close()
-
-    origin = request.headers.get("Origin", "")
-    resp_headers = {
-        "X-Accel-Buffering": "no",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-    }
-    if origin and (
-        origin.rstrip("/") in ALLOWED_ORIGINS
-        or (IS_DEV and origin.startswith("http://localhost:"))
-    ):
-        resp_headers["Access-Control-Allow-Origin"] = origin
-        resp_headers["Access-Control-Allow-Credentials"] = "true"
-        resp_headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
-
-    return Response(
-        stream_with_context(event_stream()),
-        mimetype="text/event-stream",
-        headers=resp_headers,
+    # Phase 1: enumerate all required documents (fast, completes well within timeout)
+    credits = Credits()
+    enum_resp = await get_fireworks_response2(
+        user_id=user_id,
+        user_message=_enumeration_prompt(prompt, fw_list, type_filter),
+        role="user",
+        credits=credits,
+        temp=0.1,
     )
+
+    if enum_resp == "INSUFFICIENT":
+        return jsonify({"error": "Insufficient credits"}), 402
+
+    docs = _parse_docs_list(enum_resp)
+    if not docs:
+        return jsonify({"error": "Could not enumerate documents — try again"}), 500
+
+    # Create job and save initial state to S3
+    job_id = str(uuid.uuid4())
+    job_state = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "status": "processing",
+        "total": len(docs),
+        "completed": 0,
+        "items": [],
+        "documents": docs,
+        "frameworks": frameworks,
+        "error": None,
+    }
+    _save_job(user_id, job_id, job_state)
+
+    # Phase 2: generate all documents in background — runs to completion regardless of client
+    thread = threading.Thread(
+        target=_generation_worker,
+        args=(user_id, job_id, docs, frameworks, prompt, fw_list, doc_type),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({
+        "job_id": job_id,
+        "status": "PROCESSING",
+        "total": len(docs),
+        "documents": docs,
+    }), 202
+
+
+# ── 1b. GENERATE STATUS (polling) ─────────────────────────────────────────────
+
+@policy_hub_bp.route("/generate/status", methods=["GET"])
+def generate_status():
+    job_id = request.args.get("job_id")
+    user_id = request.args.get("user_id")
+
+    if not job_id or not user_id:
+        return jsonify({"error": "job_id and user_id are required"}), 400
+
+    job = _read_job(user_id, job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    return jsonify({
+        "job_id": job_id,
+        "status": job.get("status", "processing").upper(),
+        "total": job.get("total", 0),
+        "completed": job.get("completed", 0),
+        "items": job.get("items", []),
+        "documents": job.get("documents", []),
+        "error": job.get("error"),
+    }), 200
 
 
 # ── 2. LIST ───────────────────────────────────────────────────────────────────
@@ -231,7 +313,8 @@ def list_policies():
     items = []
     for obj in s3_objects:
         key = obj.get("Key", "")
-        if not key.endswith(".yaml"):
+        # skip job state files
+        if not key.endswith(".yaml") or "/jobs/" in key:
             continue
         data = load_yaml_from_s3(key)
         if data:
@@ -266,7 +349,7 @@ def update_policy():
     existing["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     try:
-        _write_policy_to_s3(key, existing)
+        _write_yaml_to_s3(key, existing)
     except Exception as e:
         logger.error("Failed to update policy in S3: %s", e)
         return jsonify({"error": "Failed to update policy"}), 500
