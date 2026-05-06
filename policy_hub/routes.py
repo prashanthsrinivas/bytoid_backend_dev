@@ -276,7 +276,7 @@ async def generate_policy():
 
 # ── 1b. GENERATE STATUS (polling) ─────────────────────────────────────────────
 
-@policy_hub_bp.route("/generate/status", methods=["GET"])
+@policy_hub_bp.route("/status", methods=["GET"])
 def generate_status():
     job_id = request.args.get("job_id")
     user_id = request.args.get("user_id")
