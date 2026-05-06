@@ -85,6 +85,12 @@ def _parse_docs_list(response: str) -> list:
         return []
 
 
+def _extract_tag(text: str, tag: str) -> str:
+    """Extract content between [TAG]...[/TAG] delimiters, stripping whitespace."""
+    m = re.search(rf"\[{tag}\](.*?)\[/{tag}\]", text, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
 def _enumeration_prompt(prompt: str, fw_list: str, type_filter: str) -> str:
     return (
         f"You are a compliance expert. An organization needs to comply with: {fw_list}.\n"
@@ -342,6 +348,133 @@ def generate_status():
         "items": job.get("items", []),
         "documents": job.get("documents", []),
         "error": job.get("error"),
+    }), 200
+
+
+# ── 1c. EDIT ──────────────────────────────────────────────────────────────────
+
+@policy_hub_bp.route("/edit", methods=["POST"])
+async def edit_policy():
+    body = request.get_json(silent=True) or {}
+    user_id          = body.get("user_id")
+    policy_id        = body.get("policy_id")
+    document_title   = body.get("document_title", "")
+    document_content = body.get("document_content", "")
+    instruction      = body.get("instruction", "")
+    selected_text    = body.get("selected_text", "").strip()
+
+    if not user_id or not policy_id or not document_content or not instruction:
+        return jsonify({"error": "user_id, policy_id, document_content, and instruction are required"}), 400
+
+    credits = Credits()
+
+    if selected_text:
+        # ── Scoped edit: rewrite only the highlighted fragment ────────────────
+        ai_prompt = (
+            "You are an expert GRC (Governance, Risk, Compliance) policy writer "
+            "editing a formal compliance document.\n\n"
+            f"Document title: {document_title}\n"
+            f"User instruction: {instruction}\n\n"
+            "The user has highlighted the following text to edit specifically:\n\n"
+            f"{selected_text}\n\n"
+            "Rewrite ONLY this fragment per the instruction. "
+            "Keep the rest of the document unchanged.\n\n"
+            "Return your response in EXACTLY this format — no other text:\n"
+            "[EXPLANATION]\n"
+            "1–2 sentence summary of what was changed.\n"
+            "[/EXPLANATION]\n"
+            "[FRAGMENT]\n"
+            "The rewritten HTML fragment only (valid HTML, inline styles preserved, "
+            "no surrounding document structure, no markdown, no code fences).\n"
+            "[/FRAGMENT]\n\n"
+            "Rules:\n"
+            "- Output valid HTML for the fragment only\n"
+            "- Preserve all existing inline styles and tag structure within the fragment\n"
+            "- Keep all compliance framework citations intact unless explicitly asked to change them\n"
+            "- Do not wrap the fragment in <html>, <body>, or <div> container tags "
+            "unless they were already present in the original fragment"
+        )
+
+        response = await get_fireworks_response2(
+            user_id=user_id,
+            user_message=ai_prompt,
+            role="user",
+            credits=credits,
+            temp=0.1,
+        )
+
+        if response == "INSUFFICIENT":
+            return jsonify({"error": "Insufficient credits"}), 402
+
+        explanation = _extract_tag(response, "EXPLANATION")
+        fragment    = _extract_tag(response, "FRAGMENT")
+
+        if not fragment:
+            return jsonify({"error": "AI did not return a valid fragment"}), 500
+
+        # Replace first occurrence of selected_text in the full document HTML
+        updated_content = document_content.replace(selected_text, fragment, 1)
+        if updated_content == document_content:
+            # Fuzzy fallback: strip HTML tags from selected_text and try plain-text replace
+            plain = re.sub(r"<[^>]+>", "", selected_text).strip()
+            if plain and plain in document_content:
+                updated_content = document_content.replace(plain, fragment, 1)
+
+    else:
+        # ── Full-document edit ────────────────────────────────────────────────
+        ai_prompt = (
+            "You are an expert GRC (Governance, Risk, Compliance) policy writer "
+            "editing a formal compliance document.\n\n"
+            f"Document title: {document_title}\n"
+            f"User instruction: {instruction}\n\n"
+            "Return your response in EXACTLY this format — no other text:\n"
+            "[EXPLANATION]\n"
+            "1–2 sentence summary of what was changed.\n"
+            "[/EXPLANATION]\n"
+            "[HTML]\n"
+            "The full updated document HTML.\n"
+            "[/HTML]\n\n"
+            "Rules:\n"
+            "- Return ONLY valid HTML — no markdown, no code fences\n"
+            "- Preserve all existing HTML structure, inline styles, heading hierarchy, and tables\n"
+            "- Keep all compliance framework citations (ISO 27001, NIST, HIPAA, etc.) intact "
+            "unless the instruction explicitly asks to change them\n"
+            "- Do not add or remove top-level sections unless explicitly instructed\n"
+            "- Do not truncate — output the complete document\n\n"
+            f"Current document HTML:\n{document_content}"
+        )
+
+        response = await get_fireworks_response2(
+            user_id=user_id,
+            user_message=ai_prompt,
+            role="user",
+            credits=credits,
+            temp=0.1,
+        )
+
+        if response == "INSUFFICIENT":
+            return jsonify({"error": "Insufficient credits"}), 402
+
+        explanation     = _extract_tag(response, "EXPLANATION")
+        updated_content = _extract_tag(response, "HTML")
+
+        if not updated_content:
+            return jsonify({"error": "AI did not return valid HTML"}), 500
+
+    # Persist the updated content back to S3
+    key      = _s3_key(user_id, policy_id)
+    existing = load_yaml_from_s3(key)
+    if existing:
+        existing["content"]    = updated_content
+        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            _write_yaml_to_s3(key, existing)
+        except Exception as e:
+            logger.error("Failed to persist edit for policy %s: %s", policy_id, e)
+
+    return jsonify({
+        "updated_content": updated_content,
+        "explanation": explanation or "The document has been updated per your instruction.",
     }), 200
 
 
