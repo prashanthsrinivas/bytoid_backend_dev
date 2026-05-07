@@ -1430,19 +1430,25 @@ def get_notifications(user_id):
     conn = None
     try:
         conn = connect_to_rds()
+        if conn is None:
+            return jsonify({"notifications": []}), 200
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute("""
                 SELECT id, message, is_read, created_at
                 FROM notifications
                 WHERE user_id=%s
                 ORDER BY created_at DESC
+                LIMIT 50
             """, (user_id,))
-            data = cursor.fetchall()
-
-        return jsonify({"notifications": data}), 200
+            rows = cursor.fetchall()
+            for row in rows:
+                if row.get("created_at") is not None and hasattr(row["created_at"], "isoformat"):
+                    row["created_at"] = row["created_at"].isoformat()
+        return jsonify({"notifications": rows}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error("Notifications fetch error for user %s: %s", user_id, e)
+        return jsonify({"notifications": []}), 200
 
     finally:
         if conn:
