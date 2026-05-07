@@ -4,6 +4,7 @@ import pymysql
 from services.gmail_service import GmailService
 import uuid
 from db.rds_db import connect_to_rds
+from db.db_checkers import get_email_by_id
 import json
 from flask import redirect
 from datetime import datetime
@@ -28,6 +29,7 @@ from services.audit_log_service import (
     ROLE_CREATED, ROLE_UPDATED, ROLE_DELETED,
     USER_INVITED, INVITE_CANCELLED, INVITE_RESENT, USER_INVITE_ACCEPTED,
     USER_ROLE_CHANGED, USER_ACCESS_REVOKED, USER_ACCESS_ACTIVATED, USER_DELETED,
+    WORKSPACE_ACCESSED,
 )
 load_dotenv()
 
@@ -1203,6 +1205,60 @@ def revoke_special_access():
             conn.close()
 
 
+@inv_users_bp.route("/admin/access-workspace", methods=["POST"])
+def access_workspace():
+    """
+    Called by frontend when an admin enters another admin's workspace via secondary access.
+    Logs a WORKSPACE_ACCESSED event so the workspace owner can see who accessed their account.
+    """
+    try:
+        actor_user_id = session.get("user_id")
+        if not actor_user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        data = request.get_json() or {}
+        workspace_owner_id = data.get("workspace_owner_id")
+        if not workspace_owner_id:
+            return jsonify({"error": "workspace_owner_id required"}), 400
+
+        # Verify the special access grant exists
+        conn = connect_to_rds()
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM special_access WHERE grantor_admin_id = %s AND target_admin_id = %s",
+                    (workspace_owner_id, actor_user_id),
+                )
+                grant = cursor.fetchone()
+        finally:
+            conn.close()
+
+        if not grant:
+            return jsonify({"error": "Access not granted"}), 403
+
+        actor_email = get_email_by_id(actor_user_id)
+        workspace_owner_email = get_email_by_id(workspace_owner_id)
+
+        log_audit_event(
+            action=WORKSPACE_ACCESSED,
+            endpoint="/admin/access-workspace",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=workspace_owner_id,
+            acting_on_behalf_of_email=workspace_owner_email,
+            metadata={"delegation_type": "secondary_access"},
+        )
+        g.audit_logged = True
+
+        return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        logger.error(f"Error in access_workspace: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 @inv_users_bp.route("/admin/validate_invite/token=<token>", methods=["GET"])
 def validate_invite(token):
     if not token:
@@ -1878,6 +1934,7 @@ def get_audit_logs():
         actor_filter     = request.args.get("actor_user_id")
         from_ts          = request.args.get("from_ts")
         to_ts            = request.args.get("to_ts")
+        workspace_owner_filter = request.args.get("workspace_owner_id")
 
         # 4. READ + PARSE logs/audit.log
         log_path = os.path.join(os.path.dirname(__file__), "..", "logs", "audit.log")
@@ -1909,6 +1966,7 @@ def get_audit_logs():
             if actor_filter    and e.get("actor_user_id")  != actor_filter:    return False
             if from_ts         and e.get("timestamp", "")  <  from_ts:         return False
             if to_ts           and e.get("timestamp", "")  >  to_ts:           return False
+            if workspace_owner_filter and e.get("acting_on_behalf_of_user_id") != workspace_owner_filter: return False
             return True
 
         filtered = [e for e in entries if matches(e)]
