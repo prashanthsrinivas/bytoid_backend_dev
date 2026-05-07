@@ -429,13 +429,54 @@ async def edit_policy():
         if not fragment:
             return jsonify({"error": "AI did not return a valid fragment"}), 500
 
-        # Replace first occurrence of selected_text in the full document HTML
+        # Attempt 1: exact match of selected_text in the HTML
         updated_content = document_content.replace(selected_text, fragment, 1)
+
+        # Attempt 2: strip HTML tags from selected_text and try plain-text match
         if updated_content == document_content:
-            # Fuzzy fallback: strip HTML tags from selected_text and try plain-text replace
             plain = re.sub(r"<[^>]+>", "", selected_text).strip()
             if plain and plain in document_content:
                 updated_content = document_content.replace(plain, fragment, 1)
+
+        # Attempt 3: the selected text spans multiple HTML tags (e.g. across <td> cells)
+        # — fall back to a full-document rewrite, passing the selection as focused context
+        if updated_content == document_content:
+            fallback_prompt = (
+                "You are an expert GRC (Governance, Risk, Compliance) policy writer "
+                "editing a formal compliance document.\n\n"
+                f"Document title: {document_title}\n"
+                f"User instruction: {instruction}\n\n"
+                "The user selected the following text to target (it may span multiple HTML elements):\n\n"
+                f"{selected_text}\n\n"
+                "Apply the instruction to the relevant part of the document that corresponds "
+                "to this selected content. Rewrite only what is necessary.\n\n"
+                "Return your response in EXACTLY this format — no other text:\n"
+                "[EXPLANATION]\n"
+                "1–2 sentence summary of what was changed.\n"
+                "[/EXPLANATION]\n"
+                "[HTML]\n"
+                "The full updated document HTML.\n"
+                "[/HTML]\n\n"
+                "Rules:\n"
+                "- Return ONLY valid HTML — no markdown, no code fences\n"
+                "- Preserve all existing HTML structure, inline styles, heading hierarchy, and tables\n"
+                "- Keep all compliance framework citations intact unless explicitly asked to change them\n"
+                "- Do not add or remove top-level sections unless explicitly instructed\n"
+                "- Do not truncate — output the complete document\n\n"
+                f"Current document HTML:\n{document_content}"
+            )
+            fallback_response = await get_fireworks_response2(
+                user_id=user_id,
+                user_message=fallback_prompt,
+                role="user",
+                credits=credits,
+                temp=0.1,
+            )
+            if fallback_response == "INSUFFICIENT":
+                return jsonify({"error": "Insufficient credits"}), 402
+
+            explanation     = _extract_tag(fallback_response, "EXPLANATION") or explanation
+            updated_content = _extract_tag(fallback_response, "HTML") or document_content
 
     else:
         # ── Full-document edit ────────────────────────────────────────────────
