@@ -8,6 +8,8 @@ import uuid
 import yaml
 from datetime import datetime, timezone
 
+import pandas as pd
+
 from flask import Blueprint, request, jsonify
 
 from credits_route.route import Credits
@@ -593,4 +595,157 @@ def delete_policy():
     if not ok:
         return jsonify({"error": "Delete failed or file not found"}), 500
 
+    return jsonify({"status": "ok"}), 200
+
+
+# ── 5. FRAMEWORKS (service@bytoid.ca only) ────────────────────────────────────
+
+FRAMEWORK_OWNER = "service@bytoid.ca"
+ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv", ".xlsb", ".xlsm", ".ods", ".tsv"}
+
+
+def _fw_key(framework_id: str) -> str:
+    return f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
+
+
+def _require_owner(user_id: str):
+    if user_id != FRAMEWORK_OWNER:
+        return jsonify({"error": "Access denied"}), 403
+    return None
+
+
+def _parse_framework_file(file_bytes: bytes, filename: str) -> list[dict]:
+    """Parse an Excel/CSV file into a list of row dicts."""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".csv":
+        df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+    elif ext == ".tsv":
+        df = pd.read_csv(io.BytesIO(file_bytes), sep="\t", dtype=str)
+    else:
+        df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+
+    df = df.where(pd.notna(df), None)
+    return df.to_dict(orient="records")
+
+
+@policy_hub_bp.route("/frameworks", methods=["GET"])
+def list_frameworks():
+    user_id = request.args.get("user_id", "")
+    denied = _require_owner(user_id)
+    if denied:
+        return denied
+
+    prefix = f"{FRAMEWORK_OWNER}/frameworks/"
+    objects = list_all_files(folder=prefix)
+
+    frameworks = []
+    for obj in objects:
+        key = obj.get("Key", "")
+        if not key.endswith(".yaml"):
+            continue
+        data = load_yaml_from_s3(key)
+        if data:
+            frameworks.append(data)
+
+    frameworks.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return jsonify({"frameworks": frameworks}), 200
+
+
+@policy_hub_bp.route("/frameworks/upload", methods=["POST"])
+def upload_framework_preview():
+    """Parse an uploaded file and return a preview — nothing is saved yet."""
+    user_id = request.form.get("user_id", "")
+    denied = _require_owner(user_id)
+    if denied:
+        return denied
+
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"error": "No file provided"}), 400
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return jsonify({"error": f"Unsupported file type '{ext}'. Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}"}), 400
+
+    try:
+        rows = _parse_framework_file(file.read(), file.filename)
+    except Exception as e:
+        logger.error("Framework parse error: %s", e)
+        return jsonify({"error": "Could not parse file. Please check the format and try again."}), 422
+
+    return jsonify({
+        "rows": rows,
+        "columns": list(rows[0].keys()) if rows else [],
+        "row_count": len(rows),
+        "source_filename": file.filename,
+    }), 200
+
+
+@policy_hub_bp.route("/frameworks/save", methods=["POST"])
+def save_framework():
+    """Confirm and persist a framework (new or update)."""
+    body = request.get_json(silent=True) or {}
+    user_id = body.get("user_id", "")
+    denied = _require_owner(user_id)
+    if denied:
+        return denied
+
+    name = (body.get("name") or "").strip()
+    rows = body.get("rows")
+    source_filename = body.get("source_filename", "")
+    framework_id = body.get("framework_id") or str(uuid.uuid4())
+
+    if not name:
+        return jsonify({"error": "Framework name is required"}), 400
+    if not isinstance(rows, list):
+        return jsonify({"error": "rows must be a list"}), 400
+
+    now = datetime.now(timezone.utc).isoformat()
+    key = _fw_key(framework_id)
+
+    existing = load_yaml_from_s3(key)
+    record = {
+        "id": framework_id,
+        "name": name,
+        "source_filename": source_filename,
+        "rows": rows,
+        "columns": list(rows[0].keys()) if rows else [],
+        "row_count": len(rows),
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+    }
+
+    try:
+        _write_yaml_to_s3(key, record)
+    except Exception as e:
+        logger.error("Failed to save framework %s: %s", framework_id, e)
+        return jsonify({"error": "Failed to save framework"}), 500
+
+    return jsonify({"framework": record}), 200
+
+
+@policy_hub_bp.route("/frameworks/<framework_id>", methods=["GET"])
+def get_framework(framework_id: str):
+    user_id = request.args.get("user_id", "")
+    denied = _require_owner(user_id)
+    if denied:
+        return denied
+
+    data = load_yaml_from_s3(_fw_key(framework_id))
+    if not data:
+        return jsonify({"error": "Framework not found"}), 404
+    return jsonify({"framework": data}), 200
+
+
+@policy_hub_bp.route("/frameworks/<framework_id>", methods=["DELETE"])
+def delete_framework(framework_id: str):
+    body = request.get_json(silent=True) or {}
+    user_id = body.get("user_id", "")
+    denied = _require_owner(user_id)
+    if denied:
+        return denied
+
+    ok = delete_file_from_s3(_fw_key(framework_id))
+    if not ok:
+        return jsonify({"error": "Delete failed or framework not found"}), 500
     return jsonify({"status": "ok"}), 200
