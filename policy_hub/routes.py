@@ -13,6 +13,7 @@ import pandas as pd
 from flask import Blueprint, request, jsonify, g
 
 from credits_route.route import Credits
+from db.db_checkers import get_email_by_id
 from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
 from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response2
@@ -609,22 +610,16 @@ def _fw_key(framework_id: str) -> str:
 
 
 def _require_framework_owner():
-    """Verify the authenticated session belongs to service@bytoid.ca.
-
-    Reads identity from Flask g (populated by session_middleware before_request),
-    never from client-supplied request parameters.
-    """
-    user_id = getattr(g, "user_id", None)
+    # g.user_id is set by session middleware; g.session_user_id is the Flask-session fallback
+    # set by app.py's before_request when the session middleware is inactive.
+    user_id = getattr(g, "user_id", None) or getattr(g, "session_user_id", None)
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-
-    # g.user_id is the email-as-ID for the service account; also check g.user.email as fallback.
+    # Prefer email from g.user (session middleware); fall back to a DB lookup.
     user = getattr(g, "user", None) or {}
-    user_email = user.get("email", "")
-
-    if user_id != FRAMEWORK_OWNER and user_email != FRAMEWORK_OWNER:
+    email = user.get("email") or get_email_by_id(user_id)
+    if email != FRAMEWORK_OWNER:
         return jsonify({"error": "Access denied"}), 403
-
     return None
 
 
