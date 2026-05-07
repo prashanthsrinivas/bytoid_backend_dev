@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request, session, redirect, g
-from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch
+from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch, get_email_by_id
 from db.rds_db import connect_to_rds
 from services.credit_system import CreditManager
 from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED
@@ -846,13 +846,17 @@ def grant_access():
    cursor.close()
    conn.close()
 
+   actor_email = get_email_by_id(admin_id)
+   target_email = get_email_by_id(target_user)
    log_audit_event(
        action=SPECIAL_ACCESS_GRANTED,
        endpoint="/admin/grant-access",
        ip=request.remote_addr,
        status="success",
        actor_user_id=admin_id,
+       actor_email=actor_email,
        target_user_id=target_user,
+       target_email=target_email,
        metadata={"org": org},
    )
    g.audit_logged = True
@@ -891,13 +895,17 @@ def revoke_access():
    cursor.close()
    conn.close()
 
+   actor_email = get_email_by_id(admin_id)
+   target_email = get_email_by_id(target_user)
    log_audit_event(
        action=SPECIAL_ACCESS_REVOKED,
        endpoint="/admin/revoke-access",
        ip=request.remote_addr,
        status="success",
        actor_user_id=admin_id,
+       actor_email=actor_email,
        target_user_id=target_user,
+       target_email=target_email,
        metadata={"org": org},
    )
    g.audit_logged = True

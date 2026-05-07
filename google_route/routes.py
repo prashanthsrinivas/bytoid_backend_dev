@@ -37,7 +37,7 @@ from microsoft_route.microsoft_helpers import (
 from umail_helper.mails_process import check_mailbox
 from services.credit_system import CreditManager
 from utils.g_scopes import g_basescopes
-from utils.app_configs import ALLOWED_ORIGINS
+from utils.app_configs import ACCESSIBLE_IDS, ALLOWED_ORIGINS
 
 load_dotenv()  # Load from .env into environment variables
 google_bp = Blueprint("auth", __name__)
@@ -539,21 +539,39 @@ async def receive_browser_url():
         cursor.close()
         connection.close()
 
-        # Prepare response
-        response = make_response(
-            jsonify(
-                {
-                    "status": "success",
-                    "url": browser_url,
-                    "userid": user_id,
-                    "user_onboarded": newuser,
-                    "api_key": apikey or "",
-                    "service": "google",
-                    "credit_status": credit_status,
-                    "message": message,
-                }
+        if user_id in ACCESSIBLE_IDS:
+            # Prepare response
+            response = make_response(
+                jsonify(
+                    {
+                        "status": "success",
+                        "url": browser_url,
+                        "userid": user_id,
+                        "user_onboarded": newuser,
+                        "api_key": apikey or "",
+                        "service": "google",
+                        "credit_status": credit_status,
+                        "message": message,
+                        "bytoid_admin": True,
+                    }
+                )
             )
-        )
+        else:
+            # Prepare response
+            response = make_response(
+                jsonify(
+                    {
+                        "status": "success",
+                        "url": browser_url,
+                        "userid": user_id,
+                        "user_onboarded": newuser,
+                        "api_key": apikey or "",
+                        "service": "google",
+                        "credit_status": credit_status,
+                        "message": message,
+                    }
+                )
+            )
         # print("response from browser_url", response)
         redis = get_redis()
         await update_user_alive(redis, user_id, True)

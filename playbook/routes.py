@@ -15,6 +15,7 @@ import json, uuid
 from services.audit_log_service import (
     log_audit_event,
     PLAYBOOK_CREATED, PLAYBOOK_DELETED, PLAYBOOK_CLONED, PLAYBOOK_MADE_GLOBAL,
+    build_audit_actor,
 )
 from cust_helpers import pathconfig
 from services.redis_service import get_redis
@@ -55,10 +56,14 @@ async def create_new_instruction():
 
     job_id = await JobManager.submit_job(create_instruction_worker, data)
 
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
         action=PLAYBOOK_CREATED, endpoint="/create_instruction",
         ip=request.remote_addr, status="success",
-        actor_user_id=user_id,
+        actor_user_id=actor_uid,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=behalf_uid,
+        acting_on_behalf_of_email=behalf_email,
         metadata={"job_id": job_id, "playbook_name": data.get("name")},
     )
     g.audit_logged = True
@@ -423,10 +428,14 @@ def delete_instruction():
         if not success:
             return jsonify({"error": "Failed to delete instruction"}), 500
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=PLAYBOOK_DELETED, endpoint="/delete_instruction",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"playbook_filename": filename},
         )
         g.audit_logged = True
@@ -2922,10 +2931,14 @@ def pb_temp_clone_min():
         # ---------------------------------
         # ✅ Response
         # ---------------------------------
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=PLAYBOOK_CLONED, endpoint="/pb_temp_clone",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"original_filename": filename, "clone_filename": new_filename},
         )
         g.audit_logged = True
@@ -3185,6 +3198,18 @@ def share_pb_template():
         cursor.close()
         conn.close()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=PLAYBOOK_MADE_GLOBAL, endpoint="/share_playbook_template",
+            ip=request.remote_addr, status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"template_name": data.get("wf_filename"), "is_global": is_for_all},
+        )
+        g.audit_logged = True
+
         return (
             jsonify(
                 {
@@ -3334,10 +3359,14 @@ def make_global_playbook():
         os.remove(temp_file_path)
         os.remove(temp_config_path)
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=PLAYBOOK_MADE_GLOBAL, endpoint="/make_global_playbook",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"original_filename": filename, "global_template_name": new_filename},
         )
         g.audit_logged = True

@@ -23,7 +23,7 @@ inv_users_bp = Blueprint("invited_users", __name__)
 
 logger = get_logger(__name__)
 from services.audit_log_service import (
-    log_audit_event,
+    log_audit_event, build_audit_actor,
     SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SPECIAL_ACCESS_REQUESTED,
     ROLE_CREATED, ROLE_UPDATED, ROLE_DELETED,
     USER_INVITED, INVITE_CANCELLED, INVITE_RESENT, USER_INVITE_ACCEPTED,
@@ -90,11 +90,14 @@ def add_role_admin():
             )
             conn.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(userid)
         log_audit_event(
             action=ROLE_CREATED, endpoint="/admin/roles-add",
             ip=request.remote_addr, status="success",
-            actor_user_id=userid,
-            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"role_name": name, "permissions_count": len(permissions)},
         )
         g.audit_logged = True
@@ -341,10 +344,15 @@ def update_role():
                         )
 
             conn.commit()
+        userid = data.get("userid")
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(userid)
         log_audit_event(
             action=ROLE_UPDATED, endpoint="/admin/roles-update",
             ip=request.remote_addr, status="success",
-            actor_user_id=data.get("userid"),
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"role_id": data.get("role_id"), "role_name": data.get("name")},
         )
         g.audit_logged = True
@@ -424,10 +432,14 @@ def delete_role(userid, role_id):
             )
             conn.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(userid)
         log_audit_event(
             action=ROLE_DELETED, endpoint="/admin/roles-delete",
             ip=request.remote_addr, status="success",
-            actor_user_id=userid,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"role_id": role_id},
         )
         g.audit_logged = True
@@ -575,13 +587,15 @@ def send_invite_user():
         # if everything succeeds -> commit
         conn.commit()
 
+        actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(userid)
         log_audit_event(
             action=USER_INVITED, endpoint="/admin/invite_user",
             ip=request.remote_addr, status="success",
-            actor_user_id=userid,
-            actor_email=user_email,
+            actor_user_id=actor_uid,
+            actor_email=actor_email_v,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             target_email=email,
-            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
             metadata={"role_id": role_id, "role_name": role.get("name")},
         )
         g.audit_logged = True
@@ -646,10 +660,14 @@ def delete_invite():
             )
             conn.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(userid)
         log_audit_event(
             action=INVITE_CANCELLED, endpoint="/admin/delete-invite",
             ip=request.remote_addr, status="success",
-            actor_user_id=userid,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             target_email=invited_email,
         )
         g.audit_logged = True
@@ -779,10 +797,14 @@ def resend_invite():
             )
             conn.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=INVITE_RESENT, endpoint="/admin/resend-invite",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             target_email=invited_email,
         )
         g.audit_logged = True
@@ -934,6 +956,7 @@ def grant_special_access():
             target_email=target.get("email") if target else None,
             metadata={"grant_type": "direct_grant"},
         )
+        g.audit_logged = True
         return jsonify({"message": "Access granted"}), 200
 
     except Exception as e:
@@ -1108,6 +1131,7 @@ def accept_special_access():
             target_email=req.get("email") if req else None,
             metadata={"grant_type": "accept_request"},
         )
+        g.audit_logged = True
         return jsonify({"message": "Access granted"}), 200
 
     except Exception as e:
@@ -1121,8 +1145,8 @@ def accept_special_access():
 def revoke_special_access():
 
     data = request.get_json()
-    requester_id = data.get("user_id")   # Admin A (who HAS access)
-    target_id = data.get("target_id")    # Admin B (who GAVE access)
+    grantor_id = data.get("user_id")   # logged-in data owner (grantor_admin_id)
+    target_id = data.get("target_id")  # accessor being revoked (target_admin_id)
 
     conn = None
     try:
@@ -1131,27 +1155,25 @@ def revoke_special_access():
             # Validate admins
             cursor.execute(
                 "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
-                (requester_id,)
+                (grantor_id,)
             )
-            req = cursor.fetchone()
+            grantor = cursor.fetchone()
             cursor.execute(
                 "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
                 (target_id,)
             )
-            tgt = cursor.fetchone()
-            if not req or not tgt:
+            target = cursor.fetchone()
+            if not grantor or not target:
                 return jsonify({"error": "Users not found"}), 404
-            if req["user_type"] != "admin" or tgt["user_type"] != "admin":
+            if grantor["user_type"] != "admin" or target["user_type"] != "admin":
                 return jsonify({"error": "Only admins allowed"}), 403
-            if req["company_name"] != tgt["company_name"]:
+            if grantor["company_name"] != target["company_name"]:
                 return jsonify({"error": "Different organization"}), 403
-            # 🔥 DELETE ACCESS (THIS IS THE KEY PART)
-            # user_id  = Admin A (grantee — who HAS access)  → target_admin_id
-            # target_id = Admin B (grantor — who GAVE access) → grantor_admin_id
+            # Delete access: (grantor = data owner, target = accessor being revoked)
             cursor.execute("""
                 DELETE FROM special_access
                 WHERE grantor_admin_id=%s AND target_admin_id=%s
-            """, (target_id, requester_id))
+            """, (grantor_id, target_id))
             if cursor.rowcount == 0:
                 return jsonify({"error": "Access record not found — no matching grant exists"}), 404
             # Notification (only fires when a row was actually deleted)
@@ -1159,7 +1181,7 @@ def revoke_special_access():
                 INSERT INTO notifications (user_id, message)
                 VALUES (%s, %s)
             """, (
-                requester_id,
+                target_id,
                 "Your admin access has been revoked"
             ))
             conn.commit()
@@ -1167,11 +1189,12 @@ def revoke_special_access():
             action=SPECIAL_ACCESS_REVOKED,
             endpoint="/admin/revoke_special_access",
             ip=request.remote_addr, status="success",
-            actor_user_id=requester_id,
-            actor_email=req.get("email") if req else None,
+            actor_user_id=grantor_id,
+            actor_email=grantor.get("email") if grantor else None,
             target_user_id=target_id,
-            target_email=tgt.get("email") if tgt else None,
+            target_email=target.get("email") if target else None,
         )
+        g.audit_logged = True
         return jsonify({"message": "Access revoked successfully"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1413,12 +1436,15 @@ def edit_shared_user_role():
 
             conn.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=USER_ROLE_CHANGED, endpoint="/admin/edit_shared_user_role",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             target_email=email,
-            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
             metadata={"new_role_id": role_id},
         )
         g.audit_logged = True
@@ -1519,10 +1545,14 @@ def revoke_shared_user_role():
 
             conn.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=USER_ACCESS_REVOKED, endpoint="/admin/revoke_shared_user_role",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             target_email=email,
         )
         g.audit_logged = True
@@ -1624,13 +1654,16 @@ def delete_shared_user_role():
                 500,
             )
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=USER_DELETED, endpoint="/admin/delete_shared_user_role",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             target_user_id=invited_user_id,
             target_email=email,
-            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
             metadata={"permanent_deletion": True},
         )
         g.audit_logged = True
@@ -1703,10 +1736,14 @@ def activate_shared_user_role():
 
             conn.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=USER_ACCESS_ACTIVATED, endpoint="/admin/activate_shared_user_role",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             target_email=email,
         )
         g.audit_logged = True

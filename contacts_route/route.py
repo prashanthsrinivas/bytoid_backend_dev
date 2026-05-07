@@ -10,7 +10,7 @@ from utils.s3_utils import (
 )
 from umail_helper.ticketalloc import TicketAllocator
 from threading import Thread
-from services.audit_log_service import log_audit_event, CONTACT_BULK_DELETED, CONTACT_GROUP_DELETED
+from services.audit_log_service import log_audit_event, CONTACT_BULK_DELETED, CONTACT_GROUP_DELETED, build_audit_actor
 
 
 # from session_middleware import session_check
@@ -565,14 +565,16 @@ def delete_contacts():
         # else:
         #    #print("No cache found")
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=CONTACT_BULK_DELETED,
             endpoint="/users/delete_contacts",
             ip=request.remote_addr,
             status="success",
-            actor_user_id=user_id,
-            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
-            acting_on_behalf_of_email=getattr(g, "acting_on_behalf_of_email", None),
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"contact_ids": client_ids, "count": len(client_ids)},
         )
         g.audit_logged = True
@@ -1041,14 +1043,16 @@ def delete_group():
                 )
                 connection.commit()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=CONTACT_GROUP_DELETED,
             endpoint="/users/delete_group",
             ip=request.remote_addr,
             status="success",
-            actor_user_id=user_id,
-            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
-            acting_on_behalf_of_email=getattr(g, "acting_on_behalf_of_email", None),
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"group_ids": group_id, "count": len(group_id)},
         )
         g.audit_logged = True

@@ -320,13 +320,16 @@ def audit_after_request(response):
         actor_user_id = getattr(g, "session_user_id", None)
 
         from services.audit_log_service import log_audit_event
+        from db.db_checkers import get_email_by_id
 
+        actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
         log_audit_event(
             action="API_MUTATION",
             endpoint=path,
             ip=request.remote_addr,
             status="success" if response.status_code < 400 else "failure",
             actor_user_id=actor_user_id,
+            actor_email=actor_email,
             acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
             metadata={
                 "method": method,

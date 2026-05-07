@@ -66,3 +66,6 @@ uploads/*
 uploads_*
 jobs_file.json
 awsredis.pem
+
+tab_tracker/tab_ai_tracker/res.json
+tab_tracker/tab_ai_tracker/tes.json

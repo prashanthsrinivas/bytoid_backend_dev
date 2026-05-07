@@ -1,4 +1,5 @@
 import json
+import re
 import asyncio
 import uuid
 import traceback
@@ -10,6 +11,7 @@ from playbook.background_worker import JobManager
 from tab_tracker.helper import save_tracker_file
 from utils.fireworkzz import (
     get_fireworks_response2,
+    get_think_fire_response2_og,
     get_firework_embedding,
     extract_json_safe,
 )
@@ -30,6 +32,14 @@ INTENT_MESSAGES = {
     "modify_content": "Modifying content",
     "explain": "Generating explanation",
     "normal_greeting": "Handling greeting",
+}
+
+_ERROR_LABELS = {
+    "invalid_response": "AI returned an unexpected format — try rephrasing",
+    "insufficient_credits": "Insufficient credits",
+    "schema_validation_failed": "AI changes could not be applied safely",
+    "invalid_scope": "Operation not supported for the selected scope",
+    "missing_column_name": "Column name is required",
 }
 
 
@@ -352,11 +362,23 @@ Do not include markdown, emojis, or HTML. Plain text only, 1-3 sentences maximum
     }
 
 
-_KB_TRIGGER_PHRASES = frozenset({
-    "knowledge base", "knowledgebase", " kb ", " kb.", " kb,", " kb?",
-    "uploaded document", "uploaded doc", "my document", "my doc",
-    "in documents", "from documents", "search document",
-})
+_KB_TRIGGER_PHRASES = frozenset(
+    {
+        "knowledge base",
+        "knowledgebase",
+        " kb ",
+        " kb.",
+        " kb,",
+        " kb?",
+        "uploaded document",
+        "uploaded doc",
+        "my document",
+        "my doc",
+        "in documents",
+        "from documents",
+        "search document",
+    }
+)
 
 
 def _wants_kb_search(message: str) -> bool:
@@ -398,8 +420,12 @@ async def _handle_explain(
             lance_results = await dbserver.query_vector(query)
             context_texts = [r.get("text", "") for r in lance_results if r.get("text")]
             if context_texts:
-                context_section = f"\nKnowledge base context:\n{''.join(context_texts)}\n"
-                logger.info(f"_handle_explain: KB returned {len(context_texts)} results")
+                context_section = (
+                    f"\nKnowledge base context:\n{''.join(context_texts)}\n"
+                )
+                logger.info(
+                    f"_handle_explain: KB returned {len(context_texts)} results"
+                )
             else:
                 logger.info("_handle_explain: KB search returned no results")
         except Exception as e:
@@ -499,7 +525,12 @@ CRITICAL FORMAT RULES:
         ai_result = parsed
     else:
         elem = scope.get("selected_element", {})
-        if elem:
+        sel_row = scope.get("selected_row", {})
+        sel_col = scope.get("selected_column", {})
+        sel_rows = scope.get("selected_rows", [])
+        sel_cols = scope.get("selected_columns", [])
+
+        if scope_type == "selected_element" and elem:
             row_id = elem.get("row_id")
             col_id = elem.get("col_id")
             value = elem.get("value", "")
@@ -508,12 +539,11 @@ CRITICAL FORMAT RULES:
 User request: "{message}"
 Language: {language}
 
-Selected cell data:
-Row ID: {row_id}
-Column ID: {col_id}
+Selected cell:
+Row ID: {row_id}, Column ID: {col_id}
 Current value: "{value}"
 
-TASK: Shorten/condense the value for this specific cell only.
+TASK: Shorten/condense this specific cell value per the user's request.
 
 Return ONLY valid JSON:
 {{"row_id": "{row_id}", "col_id": "{col_id}", "new_value": "<shortened value>"}}"""
@@ -527,6 +557,178 @@ Return ONLY valid JSON:
             if not parsed or not isinstance(parsed, dict):
                 return {"error": "invalid_response"}
             ai_result = parsed
+
+        elif scope_type == "selected_row" and sel_row:
+            row_id = sel_row.get("row_id")
+            col_schema = tracker_data.get("schema", {}).get("columns", [])
+            col_map = ", ".join(
+                f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema
+            )
+            row_values_json = json.dumps(sel_row.get("values", {}))
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column ID mapping: {col_map}
+Row ID: {row_id}
+Current values: {row_values_json}
+
+TASK: Shorten/condense the text values in this row per the user's request.
+Preserve numeric values unchanged.
+
+Return ONLY valid JSON:
+{{"row_id": "{row_id}", "values": {{"col_id": "shortened value", ...}}}}"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, dict):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_column" and sel_col:
+            col_id = sel_col.get("col_id")
+            col_name = sel_col.get("name", col_id)
+            rows_with_col = json.dumps(
+                [
+                    {
+                        "row_id": r["row_id"],
+                        "value": r.get("values", {}).get(col_id, ""),
+                    }
+                    for r in tracker_data.get("rows", [])
+                ]
+            )
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column to reduce: {col_name} (ID: {col_id})
+Current values across all rows:
+{rows_with_col}
+
+TASK: Shorten/condense the value in column "{col_name}" for every row listed.
+
+Return ONLY valid JSON array:
+[{{"row_id": "...", "new_value": "<shortened value>"}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("rows") or parsed.get("data")
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_rows" and sel_rows:
+            col_schema = tracker_data.get("schema", {}).get("columns", [])
+            col_map = ", ".join(
+                f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema
+            )
+            rows_json = json.dumps(sel_rows, indent=2)
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column ID mapping: {col_map}
+
+Selected rows to condense:
+{rows_json}
+
+TASK: Apply the user's request to the text values in the selected rows.
+Preserve numeric values and row_id unchanged.
+
+Return ONLY a valid JSON array — no wrapper object, no markdown:
+[{{"row_id": "...", "values": {{"col_id": "shortened value", ...}}}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if isinstance(parsed, dict):
+                parsed = (
+                    parsed.get("rows") or parsed.get("data") or parsed.get("result")
+                )
+            if not parsed or not isinstance(parsed, list):
+                logger.warning(
+                    "invalid_response in selected_rows reduce, trying AI fallback"
+                )
+                fallback = await _ai_fallback(
+                    user_id,
+                    message,
+                    tracker_data,
+                    language,
+                    credits,
+                    hint="reduce selected rows",
+                )
+                if fallback:
+                    is_valid, _ = _validate_tracker_schema(
+                        scope.get("tracker_data", {}), fallback
+                    )
+                    if is_valid:
+                        return {
+                            "intent": "reduce",
+                            "tracker_modified": True,
+                            "pending_confirmation": True,
+                            "tracker_data": fallback,
+                            "tracker_id": tracker_id,
+                        }
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_columns" and sel_cols:
+            col_ids_to_reduce = [c.get("col_id") for c in sel_cols if c.get("col_id")]
+            col_names = {c.get("col_id"): c.get("name") for c in sel_cols}
+            rows_view = json.dumps(
+                [
+                    {
+                        "row_id": r["row_id"],
+                        "values": {
+                            cid: r.get("values", {}).get(cid, "")
+                            for cid in col_ids_to_reduce
+                        },
+                    }
+                    for r in tracker_data.get("rows", [])
+                ]
+            )
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Columns to reduce: {json.dumps(col_names)}
+Current values in selected columns (all rows):
+{rows_view}
+
+TASK: Shorten/condense values in the selected columns only.
+Leave all other columns untouched.
+
+Return ONLY valid JSON array:
+[{{"row_id": "...", "values": {{"col_id": "shortened value", ...}}}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("rows") or parsed.get("data")
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
         else:
             return {"error": "invalid_scope"}
 
@@ -787,7 +989,9 @@ Return ONLY valid JSON array:
 
         elif scope_type == "selected_rows" and sel_rows:
             col_schema = tracker_data.get("schema", {}).get("columns", [])
-            col_map = ", ".join(f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema)
+            col_map = ", ".join(
+                f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema
+            )
             rows_json = json.dumps(sel_rows, indent=2)
 
             prompt = f"""You are a data content editor for a tracker tool.
@@ -814,14 +1018,33 @@ Return ONLY a valid JSON array — no wrapper object, no markdown:
             parsed = extract_json_safe(response)
             # Tolerate {"rows": [...]} wrapper from AI
             if isinstance(parsed, dict):
-                parsed = parsed.get("rows") or parsed.get("data") or parsed.get("result")
+                parsed = (
+                    parsed.get("rows") or parsed.get("data") or parsed.get("result")
+                )
             if not parsed or not isinstance(parsed, list):
-                logger.warning("invalid_response in selected_rows increase, trying AI fallback")
-                fallback = await _ai_fallback(user_id, message, tracker_data, language, credits, hint="expand selected rows")
+                logger.warning(
+                    "invalid_response in selected_rows increase, trying AI fallback"
+                )
+                fallback = await _ai_fallback(
+                    user_id,
+                    message,
+                    tracker_data,
+                    language,
+                    credits,
+                    hint="expand selected rows",
+                )
                 if fallback:
-                    is_valid, _ = _validate_tracker_schema(scope.get("tracker_data", {}), fallback)
+                    is_valid, _ = _validate_tracker_schema(
+                        scope.get("tracker_data", {}), fallback
+                    )
                     if is_valid:
-                        return {"intent": "increase", "tracker_modified": True, "pending_confirmation": True, "tracker_data": fallback, "tracker_id": tracker_id}
+                        return {
+                            "intent": "increase",
+                            "tracker_modified": True,
+                            "pending_confirmation": True,
+                            "tracker_data": fallback,
+                            "tracker_id": tracker_id,
+                        }
                 return {"error": "invalid_response"}
             ai_result = parsed
 
@@ -863,12 +1086,29 @@ Return ONLY valid JSON array:
                 return {"error": "insufficient_credits"}
             parsed = extract_json_safe(response)
             if not parsed or not isinstance(parsed, list):
-                logger.warning("invalid_response in selected_columns increase, trying AI fallback")
-                fallback = await _ai_fallback(user_id, message, tracker_data, language, credits, hint="expand selected columns")
+                logger.warning(
+                    "invalid_response in selected_columns increase, trying AI fallback"
+                )
+                fallback = await _ai_fallback(
+                    user_id,
+                    message,
+                    tracker_data,
+                    language,
+                    credits,
+                    hint="expand selected columns",
+                )
                 if fallback:
-                    is_valid, _ = _validate_tracker_schema(scope.get("tracker_data", {}), fallback)
+                    is_valid, _ = _validate_tracker_schema(
+                        scope.get("tracker_data", {}), fallback
+                    )
                     if is_valid:
-                        return {"intent": "increase", "tracker_modified": True, "pending_confirmation": True, "tracker_data": fallback, "tracker_id": tracker_id}
+                        return {
+                            "intent": "increase",
+                            "tracker_modified": True,
+                            "pending_confirmation": True,
+                            "tracker_data": fallback,
+                            "tracker_id": tracker_id,
+                        }
                 return {"error": "invalid_response"}
             ai_result = parsed
 
@@ -990,7 +1230,9 @@ Return ONLY valid JSON:
         elif scope_type == "selected_row" and sel_row:
             row_id = sel_row.get("row_id")
             col_schema = tracker_data.get("schema", {}).get("columns", [])
-            col_map = ", ".join(f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema)
+            col_map = ", ".join(
+                f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema
+            )
             row_values_json = json.dumps(sel_row.get("values", {}))
 
             prompt = f"""You are a data editor for a tracker tool.
@@ -1022,7 +1264,10 @@ Return ONLY valid JSON:
             col_name = sel_col.get("name", col_id)
             rows_with_col = json.dumps(
                 [
-                    {"row_id": r["row_id"], "value": r.get("values", {}).get(col_id, "")}
+                    {
+                        "row_id": r["row_id"],
+                        "value": r.get("values", {}).get(col_id, ""),
+                    }
                     for r in tracker_data.get("rows", [])
                 ]
             )
@@ -1055,7 +1300,9 @@ Return ONLY valid JSON array:
 
         elif scope_type == "selected_rows" and sel_rows:
             col_schema = tracker_data.get("schema", {}).get("columns", [])
-            col_map = ", ".join(f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema)
+            col_map = ", ".join(
+                f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema
+            )
             rows_json = json.dumps(sel_rows, indent=2)
 
             prompt = f"""You are a data editor for a tracker tool.
@@ -1080,14 +1327,33 @@ Return ONLY a valid JSON array — no wrapper object, no markdown:
                 return {"error": "insufficient_credits"}
             parsed = extract_json_safe(response)
             if isinstance(parsed, dict):
-                parsed = parsed.get("rows") or parsed.get("data") or parsed.get("result")
+                parsed = (
+                    parsed.get("rows") or parsed.get("data") or parsed.get("result")
+                )
             if not parsed or not isinstance(parsed, list):
-                logger.warning("invalid_response in selected_rows modify_content, trying AI fallback")
-                fallback = await _ai_fallback(user_id, message, tracker_data, language, credits, hint="modify selected rows")
+                logger.warning(
+                    "invalid_response in selected_rows modify_content, trying AI fallback"
+                )
+                fallback = await _ai_fallback(
+                    user_id,
+                    message,
+                    tracker_data,
+                    language,
+                    credits,
+                    hint="modify selected rows",
+                )
                 if fallback:
-                    is_valid, _ = _validate_tracker_schema(scope.get("tracker_data", {}), fallback)
+                    is_valid, _ = _validate_tracker_schema(
+                        scope.get("tracker_data", {}), fallback
+                    )
                     if is_valid:
-                        return {"intent": "modify_content", "tracker_modified": True, "pending_confirmation": True, "tracker_data": fallback, "tracker_id": tracker_id}
+                        return {
+                            "intent": "modify_content",
+                            "tracker_modified": True,
+                            "pending_confirmation": True,
+                            "tracker_data": fallback,
+                            "tracker_id": tracker_id,
+                        }
                 return {"error": "invalid_response"}
             ai_result = parsed
 
@@ -1098,7 +1364,10 @@ Return ONLY a valid JSON array — no wrapper object, no markdown:
                 [
                     {
                         "row_id": r["row_id"],
-                        "values": {cid: r.get("values", {}).get(cid, "") for cid in col_ids_to_modify},
+                        "values": {
+                            cid: r.get("values", {}).get(cid, "")
+                            for cid in col_ids_to_modify
+                        },
                     }
                     for r in tracker_data.get("rows", [])
                 ]
@@ -1156,6 +1425,148 @@ Return ONLY valid JSON array:
 
     return {
         "intent": "modify_content",
+        "tracker_modified": True,
+        "pending_confirmation": True,
+        "tracker_data": tracker_data,
+        "tracker_id": tracker_id,
+    }
+
+
+async def _handle_complex_think(
+    user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit
+) -> dict:
+    """Handle complex multi-intent requests on selected rows/columns using the think model."""
+    logger.info(
+        f"_handle_complex_think: user={user_id}, tracker_id={tracker_id}, scope={scope.get('type')}"
+    )
+    await emit(
+        msg_builder.job_progress(
+            job_id, session_id, "processing", "Applying all changes simultaneously...", 50
+        )
+    )
+
+    tracker_data = scope.get("tracker_data", {})
+    scope_type = scope.get("type", "")
+    sel_rows = scope.get("selected_rows", [])
+    sel_cols = scope.get("selected_columns", [])
+
+    col_schema = tracker_data.get("schema", {}).get("columns", [])
+    col_map = ", ".join(f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema)
+
+    if scope_type == "selected_rows" and sel_rows:
+        rows_json = json.dumps(sel_rows, indent=2)
+        prompt = f"""You are a precise data editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column ID mapping: {col_map}
+
+The user has selected {len(sel_rows)} rows. Apply ALL aspects of the request simultaneously.
+Do not split the task — treat every part of the request as one unified operation.
+
+Selected rows (full data):
+{rows_json}
+
+Return ONLY a valid JSON array — no wrapper object, no markdown fences:
+[{{"row_id": "...", "values": {{"col_id": "new value", ...}}}}, ...]
+
+Rules:
+1. Every selected row_id must appear in the output.
+2. Preserve numeric values unchanged.
+3. Do NOT add, remove, or rename column IDs.
+4. Apply every aspect of the user request (resize, sync, rewrite, etc.) simultaneously."""
+
+    elif scope_type == "selected_columns" and sel_cols:
+        col_ids = [c.get("col_id") for c in sel_cols if c.get("col_id")]
+        col_names = {c.get("col_id"): c.get("name") for c in sel_cols}
+        rows_view = json.dumps(
+            [
+                {
+                    "row_id": r["row_id"],
+                    "values": {cid: r.get("values", {}).get(cid, "") for cid in col_ids},
+                }
+                for r in tracker_data.get("rows", [])
+            ],
+            indent=2,
+        )
+        prompt = f"""You are a precise data editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Selected columns: {json.dumps(col_names)}
+
+Apply ALL aspects of the request simultaneously to the selected columns across all rows.
+Do not split the task — treat every part of the request as one unified operation.
+
+Current values in selected columns:
+{rows_view}
+
+Return ONLY a valid JSON array — no wrapper object, no markdown fences:
+[{{"row_id": "...", "values": {{"col_id": "new value", ...}}}}, ...]
+
+Rules:
+1. Every row_id must appear in the output.
+2. Preserve numeric values unchanged.
+3. Do NOT add, remove, or rename column IDs.
+4. Apply every aspect of the user request simultaneously."""
+
+    else:
+        return {"error": "invalid_scope"}
+
+    response = await get_think_fire_response2_og(
+        user_message=prompt, user_id=user_id, credits=credits, total_input_chars=len(prompt)
+    )
+    if not response or response == "INSUFFICIENT":
+        return {"error": "insufficient_credits"}
+
+    cleaned = response.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned).rstrip("`").strip()
+
+    ai_result = None
+    try:
+        candidate = json.loads(cleaned)
+        if isinstance(candidate, list):
+            ai_result = candidate
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    if not ai_result:
+        array_match = re.search(r"\[.*\]", cleaned, re.DOTALL)
+        if array_match:
+            try:
+                candidate = json.loads(array_match.group(0))
+                if isinstance(candidate, list):
+                    ai_result = candidate
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    if not ai_result:
+        obj = extract_json_safe(cleaned)
+        if isinstance(obj, dict):
+            ai_result = obj.get("rows") or obj.get("data") or obj.get("result")
+
+    if not ai_result or not isinstance(ai_result, list):
+        logger.error("_handle_complex_think: invalid_response from think model")
+        return {"error": "invalid_response"}
+
+    await emit(
+        msg_builder.job_progress(job_id, session_id, "ai_complete", "AI changes ready.", 80)
+    )
+
+    tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+    is_valid, error_msg = _validate_tracker_schema(scope.get("tracker_data", {}), tracker_data)
+    if not is_valid:
+        logger.error(f"Schema validation FAILED in _handle_complex_think: {error_msg}")
+        return {
+            "error": "schema_validation_failed",
+            "message": f"The AI changes could not be safely applied. {error_msg}",
+        }
+
+    return {
+        "intent": "complex_think",
         "tracker_modified": True,
         "pending_confirmation": True,
         "tracker_data": tracker_data,
@@ -1256,7 +1667,12 @@ def _find_column(schema_cols: list, name: str):
 
 
 async def _ai_fallback(
-    user_id: str, message: str, tracker_data: dict, language: str, credits, hint: str = ""
+    user_id: str,
+    message: str,
+    tracker_data: dict,
+    language: str,
+    credits,
+    hint: str = "",
 ) -> dict | None:
     """Universal AI fallback: pass full tracker + request to AI and let it apply the change.
     Used when structured handlers fail (invalid format, column not found, etc.).
@@ -1297,7 +1713,16 @@ CRITICAL FORMAT RULES:
 
 
 async def _handle_delete_column(
-    user_id, tracker_id, intent_obj, tracker_data, language, message, credits, job_id, session_id, emit
+    user_id,
+    tracker_id,
+    intent_obj,
+    tracker_data,
+    language,
+    message,
+    credits,
+    job_id,
+    session_id,
+    emit,
 ) -> dict:
     """Delete a column from the tracker."""
     column_name = intent_obj.get("column_name", "").strip()
@@ -1307,7 +1732,9 @@ async def _handle_delete_column(
     target = _find_column(schema_cols, column_name)
     if not target:
         logger.info(f"_handle_delete_column: falling back to AI")
-        fallback = await _ai_fallback(user_id, message, tracker_data, language, credits, hint="delete column")
+        fallback = await _ai_fallback(
+            user_id, message, tracker_data, language, credits, hint="delete column"
+        )
         if fallback:
             return {
                 "intent": "delete_column",
@@ -1336,7 +1763,16 @@ async def _handle_delete_column(
 
 
 async def _handle_change_column_name(
-    user_id, tracker_id, intent_obj, tracker_data, language, message, credits, job_id, session_id, emit
+    user_id,
+    tracker_id,
+    intent_obj,
+    tracker_data,
+    language,
+    message,
+    credits,
+    job_id,
+    session_id,
+    emit,
 ) -> dict:
     """Rename a column in the tracker."""
     old_name = intent_obj.get("old_column_name", "").strip()
@@ -1347,7 +1783,9 @@ async def _handle_change_column_name(
     target = _find_column(schema_cols, old_name)
     if not target:
         logger.info(f"_handle_change_column_name: falling back to AI")
-        fallback = await _ai_fallback(user_id, message, tracker_data, language, credits, hint="rename column")
+        fallback = await _ai_fallback(
+            user_id, message, tracker_data, language, credits, hint="rename column"
+        )
         if fallback:
             return {
                 "intent": "change_column_name",
@@ -1496,6 +1934,52 @@ async def _dispatch_intents(
     last_response = None
     intent_errors = []
 
+    _COMPLEX_CONTENT_INTENTS = {"reduce", "increase", "modify_content"}
+    _COMPLEX_TRIGGER_SCOPES = {"selected_rows", "selected_columns"}
+    scope_type = scope.get("type", "complete")
+    intent_types = {obj.get("type") for obj in intents}
+    content_intents_present = intent_types & _COMPLEX_CONTENT_INTENTS
+
+    if scope_type in _COMPLEX_TRIGGER_SCOPES and len(content_intents_present) >= 2:
+        logger.info(
+            f"_dispatch_intents: routing to _handle_complex_think "
+            f"(scope={scope_type}, content_intents={content_intents_present})"
+        )
+        await emit(
+            msg_builder.job_progress(
+                job_id, session_id, "step_complex", "Applying changes simultaneously...", 50
+            )
+        )
+        try:
+            result = await _handle_complex_think(
+                user_id, tracker_id, message, language, scope, credits, job_id, session_id, emit
+            )
+        except Exception as e:
+            logger.exception(f"Exception in _handle_complex_think: {e}")
+            result = {"error": str(e)}
+
+        if "error" in result:
+            err_code = result.get("error")
+            detail = _ERROR_LABELS.get(str(err_code), str(err_code))
+            error_msg = f"Combined operation: {detail}"
+            logger.error(f"_handle_complex_think failed for job {job_id}: {error_msg}")
+            return {
+                "intents": [i.get("type") for i in intents],
+                "tracker_modified": False,
+                "pending_confirmation": False,
+                "error": "processing_failed",
+                "message": error_msg,
+            }
+
+        return {
+            "intents": [i.get("type") for i in intents],
+            "tracker_modified": result.get("tracker_modified", True),
+            "pending_confirmation": result.get("pending_confirmation", True),
+            "tracker_data": result.get("tracker_data"),
+            "response": result.get("response"),
+            "intent_errors": None,
+        }
+
     for idx, intent_obj in enumerate(intents):
         intent_type = intent_obj.get("type", "normal_greeting")
         step_label = (
@@ -1541,15 +2025,7 @@ async def _dispatch_intents(
             logger.exception(f"Exception in intent {intent_type}: {e}")
             intent_errors.append({intent_type: str(e)})
 
-    _ERROR_LABELS = {
-        "invalid_response": "AI returned an unexpected format — try rephrasing",
-        "insufficient_credits": "Insufficient credits",
-        "schema_validation_failed": "AI changes could not be applied safely",
-        "invalid_scope": "Operation not supported for the selected scope",
-        "missing_column_name": "Column name is required",
-    }
-
-    if intent_errors and not all_modified:
+    if intent_errors:
         parts = []
         for err_dict in intent_errors:
             for intent_type, err_code in err_dict.items():
@@ -1557,12 +2033,11 @@ async def _dispatch_intents(
                 detail = _ERROR_LABELS.get(str(err_code), str(err_code))
                 parts.append(f"{label}: {detail}")
         error_msg = "; ".join(parts)
-        logger.error(f"All intents failed for job {job_id}: {error_msg}")
+        logger.error(f"Intents failed for job {job_id}: {error_msg}")
         return {
             "intents": [i.get("type") for i in intents],
             "tracker_modified": False,
             "pending_confirmation": False,
-            "tracker_data": current_tracker,
             "response": None,
             "intent_errors": intent_errors,
             "error": "processing_failed",

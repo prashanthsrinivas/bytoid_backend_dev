@@ -6,6 +6,7 @@ import traceback
 import logging
 from flask import Blueprint, jsonify, request, g
 from db.lance_db_service import LanceDBServer
+from db.db_checkers import get_email_by_id
 from services.audit_log_service import (
     log_audit_event,
     EVIDENCE_CONFIG_ADDED, EVIDENCE_CONFIG_UPDATED, EVIDENCE_CONFIG_DELETED,
@@ -123,10 +124,12 @@ def update_evidence_config():
             if result.get("status") != "success":
                 return jsonify(result), 500
 
+        actor_email = get_email_by_id(user_id)
         log_audit_event(
             action=EVIDENCE_CONFIG_UPDATED, endpoint="/runbook/evidence/config",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=actor_email,
             metadata={"entry_id": entry_id},
         )
         g.audit_logged = True
@@ -180,10 +183,12 @@ def delete_evidence_config():
             if result.get("status") != "success":
                 return jsonify(result), 500
 
+        actor_email = get_email_by_id(user_id)
         log_audit_event(
             action=EVIDENCE_CONFIG_DELETED, endpoint="/runbook/evidence/config",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=actor_email,
             metadata={"entry_id": entry_id, "artifact": deleted_entry.get("artifact")},
         )
         g.audit_logged = True
@@ -249,10 +254,12 @@ def add_evidence_entry():
             if result.get("status") != "success":
                 return jsonify(result), 500
 
+        actor_email = get_email_by_id(user_id)
         log_audit_event(
             action=EVIDENCE_CONFIG_ADDED, endpoint="/runbook/evidence/add",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=actor_email,
             metadata={"evidence_type": entry_data.get("type"), "artifact": entry_data.get("artifact")},
         )
         g.audit_logged = True

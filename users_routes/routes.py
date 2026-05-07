@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
 from services.totp_service import TOTPService
-from db.db_checkers import check_onboarding_user, delete_user_domain, fetch_user_domains
+from db.db_checkers import check_onboarding_user, delete_user_domain, fetch_user_domains, get_email_by_id
 from cryptography.fernet import Fernet
 import base64
 import time
@@ -40,6 +40,7 @@ from services.audit_log_service import (
     TOTP_SETUP, TOTP_VERIFIED,
     PASSWORD_CHANGED, PASSWORD_RESET,
     USER_TYPE_CHANGED, ENCRYPTION_KEY_ROTATED,
+    DOMAIN_ADDED, DOMAIN_DELETED, USER_CREATED,
 )
 
 SECRET_KEY = os.getenv("SECRETKEY")
@@ -767,6 +768,20 @@ def create_new_user():
         conn.commit()
         conn.close()
         logger.info("New user created")
+
+        actor_user_id = data.get("user_id")
+        actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+        log_audit_event(
+            action=USER_CREATED, endpoint="/create_new_user",
+            ip=request.remote_addr, status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_user_id=user_id,
+            target_email=email,
+            metadata={"user_type": "admin"},
+        )
+        g.audit_logged = True
+
         return (
             jsonify(
                 {"message": "New user created successfully", "user_id": f"{user_id}"}
@@ -857,6 +872,7 @@ def user_login():
                 actor_email=email,
                 metadata={"reason": "unknown_email"},
             )
+            g.audit_logged = True
             return jsonify({"error": "Incorrect email address"}), 400
 
         password_hash = user["password_hash"]
@@ -868,6 +884,7 @@ def user_login():
                 actor_user_id=user["user_id"], actor_email=user["email"],
                 metadata={"reason": "wrong_password"},
             )
+            g.audit_logged = True
             return jsonify({"error": "Incorrect password"}), 400
 
         # onboarding check
@@ -896,6 +913,7 @@ def user_login():
             ip=request.remote_addr, status="success",
             actor_user_id=user["user_id"], actor_email=user["email"],
         )
+        g.audit_logged = True
         return response, 200
     except Exception as e:
         logger.error(f"Unexpected error occured : {str(e)}")
@@ -925,6 +943,7 @@ def totp_setup():
                 action=TOTP_SETUP, endpoint="/totp_setup",
                 ip=request.remote_addr, status="success",
                 actor_user_id=user_id,
+                actor_email=user["email"],
             )
             g.audit_logged = True
             user["totp_secret"] = secret
@@ -980,6 +999,7 @@ def totp_verify():
             action=TOTP_VERIFIED, endpoint="/totp_verify",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=email,
         )
         g.audit_logged = True
         return jsonify({"message": "TOTP verified successfully", "verified": True}), 200
@@ -1010,10 +1030,13 @@ def update_user_type():
             (user_type, user_id),
         )
         conn.commit()
+        actor_user_id = data.get("user_id")
+        actor_email = get_email_by_id(actor_user_id)
         log_audit_event(
             action=USER_TYPE_CHANGED, endpoint="/update_user_type",
             ip=request.remote_addr, status="success",
-            actor_user_id=data.get("user_id"),
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
             metadata={"new_user_type": user_type},
         )
         g.audit_logged = True
@@ -1063,10 +1086,12 @@ def update_password():
         )
 
         conn.commit()
+        actor_email = get_email_by_id(user_id)
         log_audit_event(
             action=PASSWORD_CHANGED, endpoint="/update_password",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=actor_email,
         )
         g.audit_logged = True
         conn.close()
@@ -1568,6 +1593,17 @@ def add_domain():
 
         conn.commit()
         conn.close()
+
+        actor_email = get_email_by_id(user_id)
+        log_audit_event(
+            action=DOMAIN_ADDED, endpoint="/add_domain",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            actor_email=actor_email,
+            metadata={"domain": new_domain},
+        )
+        g.audit_logged = True
+
         return jsonify({"message": "Domain added successfully", "domains": domains})
 
     except Exception as e:
@@ -1625,6 +1661,17 @@ def delete_domain():
         result = delete_user_domain(user_id, domain_name, conn)
 
         conn.close()
+
+        actor_email = get_email_by_id(user_id)
+        log_audit_event(
+            action=DOMAIN_DELETED, endpoint="/delete_domain",
+            ip=request.remote_addr, status="success",
+            actor_user_id=user_id,
+            actor_email=actor_email,
+            metadata={"domain": domain_name},
+        )
+        g.audit_logged = True
+
         return jsonify({"status": True, "message": "Deleted successfully"}), 200
 
     except Exception as e:
@@ -1713,10 +1760,12 @@ def rotate_encryption_key():
         kms_service = SecureKMSService()
         rotate = kms_service.rotate_user_key(user_id, is_admin)
 
+        actor_email = get_email_by_id(user_id)
         log_audit_event(
             action=ENCRYPTION_KEY_ROTATED, endpoint="/rotate-encryption-key",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=actor_email,
         )
         g.audit_logged = True
 
