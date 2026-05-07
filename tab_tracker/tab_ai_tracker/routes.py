@@ -1043,6 +1043,30 @@ async def _handle_add_column(
     }
 
 
+def _find_column(schema_cols: list, name: str):
+    """Find a column by exact then partial name match (case-insensitive).
+    Partial match handles cases where the user says 'category' but the column
+    is named 'Category / Type'.
+    """
+    lname = name.lower()
+    # Exact match first
+    target = next(
+        (c for c in schema_cols
+         if c.get("source_column", "").lower() == lname
+         or c.get("name", "").lower() == lname),
+        None,
+    )
+    if target:
+        return target
+    # Partial: user's input is a substring of the column name
+    return next(
+        (c for c in schema_cols
+         if lname in c.get("source_column", "").lower()
+         or lname in c.get("name", "").lower()),
+        None,
+    )
+
+
 async def _handle_delete_column(
     user_id, tracker_id, intent_obj, tracker_data, language, job_id, session_id, emit
 ) -> dict:
@@ -1051,15 +1075,7 @@ async def _handle_delete_column(
     logger.info(f"_handle_delete_column: column_name={column_name}")
 
     schema_cols = tracker_data.get("schema", {}).get("columns", [])
-    target = next(
-        (
-            c
-            for c in schema_cols
-            if c.get("source_column", "").lower() == column_name.lower()
-            or c.get("name", "").lower() == column_name.lower()
-        ),
-        None,
-    )
+    target = _find_column(schema_cols, column_name)
     if not target:
         return {
             "error": "column_not_found",
@@ -1088,15 +1104,7 @@ async def _handle_change_column_name(
     logger.info(f"_handle_change_column_name: {old_name} → {new_name}")
 
     schema_cols = tracker_data.get("schema", {}).get("columns", [])
-    target = next(
-        (
-            c
-            for c in schema_cols
-            if c.get("source_column", "").lower() == old_name.lower()
-            or c.get("name", "").lower() == old_name.lower()
-        ),
-        None,
-    )
+    target = _find_column(schema_cols, old_name)
     if not target:
         return {
             "error": "column_not_found",
