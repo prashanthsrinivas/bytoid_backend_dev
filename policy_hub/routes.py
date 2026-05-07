@@ -352,7 +352,18 @@ async def generate_policy():
     if not user_id or not prompt:
         return jsonify({"error": "user_id and prompt are required"}), 400
 
-    fw_list = ", ".join(frameworks) if frameworks else "general compliance"
+    # Resolve uploaded framework names from S3 — never trust client-supplied names for these
+    uploaded_fw_names = []
+    for fw_id in framework_ids:
+        try:
+            meta = load_yaml_from_s3(_fw_key(fw_id))
+            if meta and meta.get("name"):
+                uploaded_fw_names.append(meta["name"])
+        except Exception:
+            pass
+
+    all_frameworks = frameworks + uploaded_fw_names  # static/custom + S3-resolved uploaded
+    fw_list = ", ".join(all_frameworks) if all_frameworks else "general compliance"
     # Always enumerate both policies AND procedures regardless of the tab the frontend is on
     type_filter = "Include both policies and procedures."
 
@@ -383,7 +394,7 @@ async def generate_policy():
         "completed": 0,
         "items": [],
         "documents": docs,
-        "frameworks": frameworks,
+        "frameworks": all_frameworks,
         "framework_ids": framework_ids,
         "error": None,
     }
@@ -392,7 +403,7 @@ async def generate_policy():
     # Phase 2: generate all documents in background — runs to completion regardless of client
     thread = threading.Thread(
         target=_generation_worker,
-        args=(user_id, job_id, docs, frameworks, framework_ids, prompt, fw_list, doc_type),
+        args=(user_id, job_id, docs, all_frameworks, framework_ids, prompt, fw_list, doc_type),
         daemon=True,
     )
     thread.start()
