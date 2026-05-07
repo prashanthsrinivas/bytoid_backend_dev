@@ -866,7 +866,7 @@ def verify_email():
 # user sign in method
 @users_bp.route("/user_login", methods=["POST"])
 def user_login():
-    data = request.get_json() or {}
+    data = request.get_json()
     email = data.get("email")
     password = data.get("password")
 
@@ -876,12 +876,6 @@ def user_login():
 
         if not email or not password:
             logger.error("Email and password are required")
-            log_audit_event(
-                action=LOGIN_FAILED, endpoint="/user_login",
-                ip=request.remote_addr, status="failure",
-                actor_email=email, metadata={"reason": "missing_credentials"},
-            )
-            g.audit_logged = True
             return jsonify({"error": "Email and password are required"}), 400
 
         query = "SELECT * FROM users WHERE email=%s"
@@ -940,7 +934,6 @@ def user_login():
         g.audit_logged = True
         return response, 200
     except Exception as e:
-        g.audit_logged = True
         logger.error(f"Unexpected error occured : {str(e)}")
         return jsonify({"error": str(e)}), 500
 

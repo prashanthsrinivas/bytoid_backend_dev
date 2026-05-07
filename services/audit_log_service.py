@@ -10,7 +10,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from flask import g, session
+from flask import g, session, request
 from db.db_checkers import get_email_by_id
 
 # Action constants
@@ -38,6 +38,7 @@ ROLE_DELETED = "ROLE_DELETED"
 SPECIAL_ACCESS_GRANTED = "SPECIAL_ACCESS_GRANTED"
 SPECIAL_ACCESS_REVOKED = "SPECIAL_ACCESS_REVOKED"
 SPECIAL_ACCESS_REQUESTED = "SPECIAL_ACCESS_REQUESTED"
+WORKSPACE_ACCESS_ENTERED = "WORKSPACE_ACCESS_ENTERED"
 
 # USER_MANAGEMENT
 USER_CREATED = "USER_CREATED"
@@ -118,9 +119,6 @@ ONBOARDING_COMPLETED = "ONBOARDING_COMPLETED"
 ORG_CREATED = "ORG_CREATED"
 SAML_USER_PROVISIONED = "SAML_USER_PROVISIONED"
 
-# DELEGATION / SECONDARY ACCESS
-WORKSPACE_ACCESSED = "WORKSPACE_ACCESSED"
-
 # SECURITY extensions
 API_KEY_CREATED = "API_KEY_CREATED"
 OAUTH_TOKEN_STORED = "OAUTH_TOKEN_STORED"
@@ -152,7 +150,7 @@ ACTION_CATEGORY = {
     "SPECIAL_ACCESS_GRANTED": "admin_access",
     "SPECIAL_ACCESS_REVOKED": "admin_access",
     "SPECIAL_ACCESS_REQUESTED": "admin_access",
-    "WORKSPACE_ACCESSED": "admin_access",
+    "WORKSPACE_ACCESS_ENTERED": "admin_access",
     "ROLE_CREATED": "admin_access",
     "ROLE_UPDATED": "admin_access",
     "ROLE_DELETED": "admin_access",
@@ -302,6 +300,8 @@ def build_audit_actor(body_user_id):
     When the session's authenticated user differs from body_user_id, the session user is
     the true actor (Kavya) and body_user_id is the workspace owner (Prashanth).
     When they match (normal operation), acting_on_behalf_of fields are None.
+
+    Auto-fires WORKSPACE_ACCESS_ENTERED event once per request when delegation is detected.
     """
     try:
         session_uid = getattr(g, "session_user_id", None) or session.get("user_id")
@@ -309,20 +309,30 @@ def build_audit_actor(body_user_id):
         session_uid = None
 
     if session_uid and session_uid != body_user_id:
-        # Delegated cross-admin access: kavya in session, test in body
+        # Delegated cross-admin access
         actor_user_id = session_uid
         actor_email = get_email_by_id(session_uid)
         acting_on_behalf_of_user_id = body_user_id
         acting_on_behalf_of_email = get_email_by_id(body_user_id) if body_user_id else None
-    elif session_uid:
-        # Self-access: session_uid == body_user_id (normal case)
-        # Use session value (server-verified), not body value (client-supplied)
-        actor_user_id = session_uid
-        actor_email = get_email_by_id(session_uid)
-        acting_on_behalf_of_user_id = None
-        acting_on_behalf_of_email = None
+
+        # Auto-fire workspace access event once per request
+        if not getattr(g, "workspace_access_logged", False):
+            try:
+                log_audit_event(
+                    action=WORKSPACE_ACCESS_ENTERED,
+                    endpoint=request.path,
+                    ip=request.remote_addr,
+                    status="success",
+                    actor_user_id=actor_user_id,
+                    actor_email=actor_email,
+                    acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+                    acting_on_behalf_of_email=acting_on_behalf_of_email,
+                )
+                g.workspace_access_logged = True
+            except Exception:
+                pass
     else:
-        # No session (unauthenticated / expired) — body_user_id as best-effort
+        # Self-access (normal case)
         actor_user_id = body_user_id
         actor_email = get_email_by_id(body_user_id) if body_user_id else None
         acting_on_behalf_of_user_id = None
