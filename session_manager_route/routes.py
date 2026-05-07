@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, make_response, session, redirect, g
 from functools import wraps
 from db.rds_db import connect_to_rds
+from db.db_checkers import get_email_by_id
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -42,12 +43,14 @@ def logout():
 
     delete_status = asyncio.run(delete_all_session_cookies(key_str))
 
+    actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
     log_audit_event(
         action=USER_LOGGED_OUT,
         endpoint="/delete_session",
         ip=request.remote_addr,
         status="success" if delete_status else "failure",
         actor_user_id=actor_user_id,
+        actor_email=actor_email,
     )
     g.audit_logged = True
 

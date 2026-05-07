@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
 from services.totp_service import TOTPService
-from db.db_checkers import check_onboarding_user, delete_user_domain, fetch_user_domains
+from db.db_checkers import check_onboarding_user, delete_user_domain, fetch_user_domains, get_email_by_id
 from cryptography.fernet import Fernet
 import base64
 import time
@@ -925,6 +925,7 @@ def totp_setup():
                 action=TOTP_SETUP, endpoint="/totp_setup",
                 ip=request.remote_addr, status="success",
                 actor_user_id=user_id,
+                actor_email=user["email"],
             )
             g.audit_logged = True
             user["totp_secret"] = secret
@@ -980,6 +981,7 @@ def totp_verify():
             action=TOTP_VERIFIED, endpoint="/totp_verify",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=email,
         )
         g.audit_logged = True
         return jsonify({"message": "TOTP verified successfully", "verified": True}), 200
@@ -1063,10 +1065,12 @@ def update_password():
         )
 
         conn.commit()
+        actor_email = get_email_by_id(user_id)
         log_audit_event(
             action=PASSWORD_CHANGED, endpoint="/update_password",
             ip=request.remote_addr, status="success",
             actor_user_id=user_id,
+            actor_email=actor_email,
         )
         g.audit_logged = True
         conn.close()
