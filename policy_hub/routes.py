@@ -14,9 +14,10 @@ from flask import Blueprint, request, jsonify, g
 
 from credits_route.route import Credits
 from db.db_checkers import get_email_by_id
+from db.lance_db_service import LanceDBServer, VectorData, QueryData
 from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
 from utils.base_logger import get_logger
-from utils.fireworkzz import get_fireworks_response2
+from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
 from utils.s3_utils import s3bucket, load_yaml_from_s3, read_json_from_s3, delete_file_from_s3, list_all_files
 
 S3_BUCKET = os.getenv("S3_BUCKET")
@@ -603,6 +604,7 @@ def delete_policy():
 
 FRAMEWORK_OWNER = "service@bytoid.ca"
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv", ".xlsb", ".xlsm", ".ods", ".tsv"}
+FRAMEWORK_LANCE_USER = "frameworks"  # LanceDB table: index_frameworks
 
 
 def _fw_key(framework_id: str) -> str:
@@ -656,6 +658,46 @@ def _parse_framework_file(file_bytes: bytes, filename: str) -> list[dict]:
     ]
 
 
+async def _async_index_framework(framework_id: str, rows: list[dict]):
+    """Embed every row and upsert into LanceDB index_frameworks table."""
+    texts = []
+    for row in rows:
+        parts = [f"{k}: {v}" for k, v in row.items() if v is not None and str(v).strip()]
+        if parts:
+            texts.append(" | ".join(parts))
+    if not texts:
+        return
+
+    embeddings = await get_firework_embedding()
+    vecs = await asyncio.to_thread(embeddings.embed_documents, texts)
+
+    vectors = [
+        VectorData(
+            user_id=FRAMEWORK_LANCE_USER,
+            id=str(uuid.uuid4()),
+            text=text,
+            embedding=[float(x) for x in vec],
+            foldername=framework_id,
+        )
+        for text, vec in zip(texts, vecs)
+    ]
+    lance = LanceDBServer()
+    await lance.insert_batch(vectors)
+    logger.info("Indexed %d rows for framework %s in LanceDB", len(vectors), framework_id)
+
+
+def _lance_index_worker(framework_id: str, rows: list[dict]):
+    """Daemon thread: run LanceDB indexing without blocking the HTTP response."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_async_index_framework(framework_id, rows))
+    except Exception as e:
+        logger.error("LanceDB framework indexing failed for %s: %s", framework_id, e)
+    finally:
+        loop.close()
+
+
 @policy_hub_bp.route("/frameworks/access", methods=["GET"])
 def check_framework_access():
     """Return whether the authenticated session has framework access.
@@ -684,7 +726,9 @@ def list_frameworks():
             continue
         data = load_yaml_from_s3(key)
         if data:
-            frameworks.append(data)
+            # Rows live in LanceDB — strip them from the listing response
+            meta = {k: v for k, v in data.items() if k != "rows"}
+            frameworks.append(meta)
 
     frameworks.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return jsonify({"frameworks": frameworks}), 200
@@ -758,7 +802,53 @@ def save_framework():
         logger.error("Failed to save framework %s: %s", framework_id, e)
         return jsonify({"error": "Failed to save framework"}), 500
 
+    # Index rows in LanceDB in the background — don't block the HTTP response
+    threading.Thread(
+        target=_lance_index_worker,
+        args=(framework_id, rows),
+        daemon=True,
+    ).start()
+
     return jsonify({"framework": record}), 200
+
+
+@policy_hub_bp.route("/frameworks/search", methods=["GET"])
+async def search_frameworks():
+    """Semantic search over framework rows stored in LanceDB."""
+    denied = _require_framework_owner()
+    if denied:
+        return denied
+
+    q = request.args.get("q", "").strip()
+    framework_id = request.args.get("framework_id", "").strip()
+    top_k = min(int(request.args.get("top_k", 20)), 100)
+
+    if not q:
+        return jsonify({"error": "q (query) is required"}), 400
+
+    embeddings = await get_firework_embedding()
+    vec = await asyncio.to_thread(embeddings.embed_query, q)
+
+    lance = LanceDBServer()
+    query = QueryData(user_id=FRAMEWORK_LANCE_USER, embedding=vec, top_k=top_k)
+
+    if framework_id:
+        results = await lance.query_vector_filename(query, framework_id)
+    else:
+        results = await lance.query_vector(query)
+
+    return jsonify({
+        "results": [
+            {
+                "text": r["text"],
+                "framework_id": r.get("foldername"),
+                "score": r.get("_distance"),
+            }
+            for r in results
+        ],
+        "query": q,
+        "total": len(results),
+    }), 200
 
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["GET"])
@@ -774,7 +864,7 @@ def get_framework(framework_id: str):
 
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["DELETE"])
-def delete_framework(framework_id: str):
+async def delete_framework(framework_id: str):
     denied = _require_framework_owner()
     if denied:
         return denied
@@ -782,4 +872,12 @@ def delete_framework(framework_id: str):
     ok = delete_file_from_s3(_fw_key(framework_id))
     if not ok:
         return jsonify({"error": "Delete failed or framework not found"}), 500
+
+    # Remove vectors from LanceDB
+    try:
+        lance = LanceDBServer()
+        await lance.delete_folder_async(FRAMEWORK_LANCE_USER, framework_id)
+    except Exception as e:
+        logger.error("LanceDB delete failed for framework %s: %s", framework_id, e)
+
     return jsonify({"status": "ok"}), 200
