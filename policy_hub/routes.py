@@ -113,12 +113,39 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
                             fw_list: str, user_context: str, controls: str = "") -> str:
     stmt_heading = "Policy Statement" if doc_type == "policy" else "Procedure Steps"
     enforce_heading = "Enforcement" if doc_type == "policy" else "Compliance Monitoring"
-    controls_block = (
-        "REQUIRED CONTROLS (sourced directly from the selected compliance frameworks — "
-        "every control listed below MUST be explicitly addressed with a named clause reference "
-        "and a corresponding SHALL/MUST statement in this document):\n"
-        + controls + "\n\n"
-    ) if controls else ""
+
+    if controls:
+        controls_block = (
+            "━━━ AUTHORIZED CONTROLS — SOLE PERMITTED SOURCE FOR ALL CITATIONS ━━━\n"
+            "The rows below were retrieved verbatim from the uploaded framework files.\n"
+            "They are the ONLY control references you are allowed to use anywhere in this document.\n\n"
+            + controls + "\n\n"
+            "━━━ END OF AUTHORIZED CONTROLS ━━━\n\n"
+        )
+        control_quality_rule = (
+            "2. [NON-NEGOTIABLE — GROUNDING] Every control ID, clause number, requirement "
+            "reference, or framework citation in this document MUST appear verbatim in the "
+            "AUTHORIZED CONTROLS list above. You MUST NOT invent, infer, paraphrase, or "
+            "supplement with any control from your training data — this includes widely known "
+            "identifiers such as 'ISO 27001 A.8.3', 'HIPAA §164.312', 'SOC 2 CC6.1', or "
+            "'NIST AC-2' unless they are explicitly present in the list above. "
+            "If a section cannot be supported by the listed controls, write only what the "
+            "controls directly state — never fabricate coverage.\n"
+        )
+        output_gate = (
+            "MANDATORY PRE-OUTPUT CHECK: Before writing the HTML, mentally scan every sentence "
+            "that contains a control ID, clause number, or requirement identifier. "
+            "Verify each one exists in the AUTHORIZED CONTROLS list. "
+            "Remove any that do not. There are no exceptions.\n\n"
+        )
+    else:
+        controls_block = ""
+        control_quality_rule = (
+            "2. Every control or requirement is tied to a named framework clause "
+            "(e.g., ISO 27001:2022 Annex A.8.3, HIPAA §164.312(a)(1), SOC 2 CC6.1, NIST SP 800-53 AC-2)\n"
+        )
+        output_gate = ""
+
     return (
         f"You are a world-class compliance officer, legal counsel, and technical writer with 20+ years of "
         f"experience authoring enterprise-grade {doc_type} documents for Fortune 500 companies and regulated "
@@ -131,8 +158,7 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
         + controls_block +
         "QUALITY STANDARDS (every standard must be met — failure on any = unacceptable quality):\n"
         "1. Every section contains substantive, specific content — zero generic filler or placeholder text\n"
-        "2. Every control or requirement is tied to a named framework clause "
-        "(e.g., ISO 27001:2022 Annex A.8.3, HIPAA §164.312(a)(1), SOC 2 CC6.1, NIST SP 800-53 AC-2)\n"
+        + control_quality_rule +
         "3. Policy/procedure statements are written in clear imperative language "
         "(\"The organization SHALL...\", \"All employees MUST...\")\n"
         "4. Roles are named precisely (e.g., CISO, IT Security Team, System Owners, Data Custodians) "
@@ -140,6 +166,7 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
         "5. The enforcement/compliance section specifies concrete consequences and audit mechanisms\n"
         "6. The document reads as if it has already passed an external compliance audit\n"
         "7. Minimum depth: each major section must contain at least 3–5 specific, actionable sub-points\n\n"
+        + output_gate +
         "Output the document as a self-contained HTML fragment (no <html>, <head>, or <body> tags). "
         "Use only inline CSS styles. Follow this exact structure and styling:\n\n"
         "<div style=\"font-family: 'Segoe UI', Arial, sans-serif; max-width: 860px; "
