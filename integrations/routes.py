@@ -1,5 +1,7 @@
-from flask import Blueprint, request, redirect
+from flask import Blueprint, request, redirect, g, jsonify
 from db.rds_db import connect_to_rds
+from services.audit_log_service import log_audit_event, INTEGRATION_DELETED
+from db.db_checkers import get_email_by_id
 import pymysql
 from utils.base_logger import get_logger
 from .google_integration import google_integration_login
@@ -360,6 +362,19 @@ async def delete_integration():
 
         result = delete_user_sync_time(user_id)
         if result:
+            # Audit logging
+            actor_email = get_email_by_id(primary_user_id)
+            log_audit_event(
+                action=INTEGRATION_DELETED,
+                endpoint="/delete/integration",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=primary_user_id,
+                actor_email=actor_email,
+                metadata={"integration_type": platform},
+            )
+            g.audit_logged = True
+
             return jsonify({"message": "successfully deleted"}), 200
         else:
             return jsonify({"error": "not deleted"}), 400

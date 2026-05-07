@@ -255,39 +255,35 @@ def after_request(response):
     return response
 
 
-# Sensitive path patterns for audit logging (via middleware fallback)
-_AUDIT_SENSITIVE_PATHS = {
-    # Auth
-    "/user_login", "/delete_session",
-    # User management
-    "/admin/invite_user", "/admin/delete-invite", "/admin/resend-invite",
-    "/admin/validate_invite", "/admin/edit_shared_user_role",
-    "/admin/revoke_shared_user_role", "/admin/delete_shared_user_role",
-    "/admin/activate_shared_user_role",
-    # Roles
-    "/admin/roles-add", "/admin/roles-update", "/admin/roles-delete",
-    # Special access
-    "/admin/grant_special_access", "/admin/accept_special_access",
-    "/admin/revoke_special_access", "/admin/request_special_access",
-    "/admin/accept_from_link",
-    # Security
-    "/update_password", "/reset_password", "/totp_setup", "/totp_verify",
-    "/rotate-encryption-key", "/update_user_type",
-    "/add_domain", "/delete_domain",
-    # Runbook / Playbook
-    "/runbook/create", "/runbook/delete", "/runbook/delete_all",
-    "/create_instruction", "/delete_instruction",
-    # Evidence
-    "/runbook/evidence/add", "/runbook/evidence/config",
-}
-
-# Skip these even if method is mutating
+# Paths that should NOT be audited (system and read-only endpoints)
 _AUDIT_EXEMPT_PATHS = {
+    # System endpoints
     "/health", "/ping", "/favicon.ico",
     "/browser_url", "/user/alive",
     "/ws/", "/socket.io/",
     "/notifications",
+    # Routes with explicit instrumentation — prevent any fallback
+    "/user_login",        # → LOGIN_SUCCESS / LOGIN_FAILED
+    "/delete_session",    # → USER_LOGGED_OUT
+    # Known read-only POST endpoints (CQRS-style)
+    "/users/get_group", "/users/get_all_groups",
+    "/get_onboarding", "/email_exist",
+    "/check_integrations", "/get_all_integrations",
+    "/check_pb_output", "/autocheck-workflow", "/schedule-workflow-checker",
+    "/bytoidpro/get_a_chat", "/bytoidpro/chat_history", "/bytoidpro/think/status",
+    "/list_all_draft_reports",
+    "/get_google_client_id", "/get_microsoft_client_id",
+    "/admin/audit-logs",   # prevent recursive logging of the audit viewer
 }
+
+# Pattern indicators for read-only operations (CQRS-style)
+_AUDIT_READ_INDICATORS = (
+    "/get_",    # /get_active_customers, /get_conversation_notes, /get_user_notes ...
+    "/check_",  # /check_runbook_exists, /check_pb_output ...
+    "/search",  # /search_users_for_sharing, /search-emails
+    "/fetch_",  # /fetch_all_emails, /microsoft/fetch_all_emails
+    "/list_",   # /list_all_draft_reports, /list_chat_config
+)
 
 # Mutating methods
 _AUDIT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -295,7 +291,7 @@ _AUDIT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 @app.after_request
 def audit_after_request(response):
-    """Thin audit hook for middleware fallback coverage."""
+    """Audit hook for middleware fallback coverage (denylist-based: log all mutations except exempted paths)."""
     try:
         # Skip if already logged by direct call instrumentation
         if getattr(g, "audit_logged", False):
@@ -308,21 +304,33 @@ def audit_after_request(response):
         if method not in _AUDIT_METHODS:
             return response
 
-        # Only log sensitive paths
-        if not any(path.startswith(p) for p in _AUDIT_SENSITIVE_PATHS):
-            return response
-
-        # Skip exempt paths
+        # Layer 1: Skip explicitly exempted paths (system endpoints and fully-instrumented routes)
         if any(path.startswith(p) for p in _AUDIT_EXEMPT_PATHS):
             return response
 
-        # Use session identity (partial coverage)
+        # Layer 2: Skip read-only patterns (CQRS-style data queries)
+        if any(indicator in path for indicator in _AUDIT_READ_INDICATORS):
+            return response
+
+        # Log all other mutation routes (denylist-based fallback coverage)
         actor_user_id = getattr(g, "session_user_id", None)
 
         from services.audit_log_service import log_audit_event
         from db.db_checkers import get_email_by_id
 
         actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+
+        # Detect delegation from request body (cross-check session vs. body user_id)
+        acting_on_behalf_of_user_id = None
+        acting_on_behalf_of_email = None
+        try:
+            body_uid = (request.get_json(silent=True) or {}).get("user_id")
+            if body_uid and actor_user_id and str(body_uid) != str(actor_user_id):
+                acting_on_behalf_of_user_id = body_uid
+                acting_on_behalf_of_email = get_email_by_id(body_uid)
+        except Exception:
+            pass
+
         log_audit_event(
             action="API_MUTATION",
             endpoint=path,
@@ -330,12 +338,14 @@ def audit_after_request(response):
             status="success" if response.status_code < 400 else "failure",
             actor_user_id=actor_user_id,
             actor_email=actor_email,
-            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id or getattr(g, "acting_on_behalf_of_user_id", None),
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
             metadata={
                 "method": method,
                 "status_code": response.status_code,
                 "blueprint": request.blueprint,
                 "source": "middleware_fallback",
+                "route_rule": request.url_rule.rule if request.url_rule else None,
             },
         )
     except Exception:

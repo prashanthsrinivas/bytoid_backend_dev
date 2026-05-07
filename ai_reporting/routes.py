@@ -1,7 +1,9 @@
 from credits_route.route import Credits
-from flask import request, jsonify, Blueprint
+from flask import request, jsonify, Blueprint, g
 import logging
 from db.rds_db import connect_to_rds
+from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_MODIFIED
+from db.db_checkers import get_email_by_id
 import json
 from utils.normal import load_yaml_file
 from cust_helpers import pathconfig
@@ -2432,9 +2434,22 @@ async def set_special_access():
             sql = "UPDATE users SET special_access = %s WHERE email = %s"
             cursor.execute(sql, (special_access, user_email))
             conn.commit()
-            # print(
-            #     f"✅ Special access set to {special_access} for user_email {user_email}"
-            # )
+
+            # Audit logging
+            actor_user_id = getattr(g, "session_user_id", None)
+            actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+            log_audit_event(
+                action=SPECIAL_ACCESS_MODIFIED,
+                endpoint="/ai_reporting/set_special_access",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                target_email=user_email,
+                metadata={"special_access": special_access},
+            )
+            g.audit_logged = True
+
             return jsonify({"message": "Special access updated successfully"}), 200
 
     except Exception as e:

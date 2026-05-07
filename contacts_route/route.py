@@ -10,7 +10,8 @@ from utils.s3_utils import (
 )
 from umail_helper.ticketalloc import TicketAllocator
 from threading import Thread
-from services.audit_log_service import log_audit_event, CONTACT_BULK_DELETED, CONTACT_GROUP_DELETED, build_audit_actor
+from services.audit_log_service import log_audit_event, CONTACT_BULK_DELETED, CONTACT_GROUP_DELETED, build_audit_actor, CONTACT_CREATED, CONTACT_UPDATED, CONTACT_GROUP_CREATED, CONTACT_GROUP_UPDATED
+from db.db_checkers import get_email_by_id
 
 
 # from session_middleware import session_check
@@ -207,6 +208,25 @@ def save_contact():
                 cursor.execute(link_sql, (users_clients_id, communication_id))
                 connection.commit()
 
+                # Audit logging
+                actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+                log_audit_event(
+                    action=CONTACT_CREATED,
+                    endpoint="/contacts/save",
+                    ip=request.remote_addr,
+                    status="success",
+                    actor_user_id=actor_user_id,
+                    actor_email=actor_email,
+                    acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+                    acting_on_behalf_of_email=acting_on_behalf_of_email,
+                    metadata={
+                        "contact_type": type,
+                        "has_email": bool(email_id),
+                        "has_phone": bool(phone_number),
+                    },
+                )
+                g.audit_logged = True
+
             else:
                 return jsonify({"message": "This contact is already saved"}), 201
             return jsonify(
@@ -376,6 +396,25 @@ def save_edit_contact():
                     clear_values = ("", "", "", "", users_clients_id)
                     cursor.execute(clear_query, clear_values)
                 connection.commit()
+
+                # Audit logging
+                actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+                log_audit_event(
+                    action=CONTACT_UPDATED,
+                    endpoint="/contacts/save_edit",
+                    ip=request.remote_addr,
+                    status="success",
+                    actor_user_id=actor_user_id,
+                    actor_email=actor_email,
+                    acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+                    acting_on_behalf_of_email=acting_on_behalf_of_email,
+                    metadata={
+                        "contact_type": type,
+                        "fields_changed": len([k for k, v in fields.items() if v is not None]),
+                    },
+                )
+                g.audit_logged = True
+
             return jsonify(
                 {
                     "status": "successfully updated",
@@ -834,6 +873,25 @@ def save_group():
             )
             connection.commit()
 
+            # Audit logging
+            actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+            log_audit_event(
+                action=CONTACT_GROUP_CREATED,
+                endpoint="/users/save_group",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+                acting_on_behalf_of_email=acting_on_behalf_of_email,
+                metadata={
+                    "group_id": group_id,
+                    "group_name": group_name,
+                    "contact_count": len(client_ids),
+                },
+            )
+            g.audit_logged = True
+
         return (
             jsonify({"message": "Group saved successfully", "group_id": group_id}),
             200,
@@ -899,6 +957,25 @@ def edit_group():
                 (json.dumps(existing_json), user_id),
             )
             connection.commit()
+
+            # Audit logging
+            actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+            log_audit_event(
+                action=CONTACT_GROUP_UPDATED,
+                endpoint="/users/edit_group",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+                acting_on_behalf_of_email=acting_on_behalf_of_email,
+                metadata={
+                    "group_id": group_id,
+                    "group_name": group_name,
+                    "contact_count": len(client_ids),
+                },
+            )
+            g.audit_logged = True
 
         return (
             jsonify({"message": "Group updated successfully", "groups": existing_json}),

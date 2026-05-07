@@ -1,7 +1,9 @@
 import asyncio
 from db.lance_db_service import LanceDBServer
 from db.rds_db import get_cursor, safe_execute
-from flask import Blueprint, current_app, request, jsonify, session, send_file
+from flask import Blueprint, current_app, request, jsonify, session, send_file, g
+from services.audit_log_service import log_audit_event, USER_DELETED
+from db.db_checkers import get_email_by_id
 from services.gmail_service import GmailService
 from umail_helper.ticketalloc import TicketAllocator
 
@@ -2020,6 +2022,23 @@ def delete_all_user_data(user_id):
 @gmail_bp.route("/delete_user/<user_id>", methods=["DELETE"])
 def delete_user(user_id):
     result = delete_all_user_data(user_id)
+
+    # Audit logging
+    actor_user_id = getattr(g, "session_user_id", None)
+    actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+    status = "success" if result.get("status") == "success" else "failure"
+    log_audit_event(
+        action=USER_DELETED,
+        endpoint="/gmail/delete_user/<user_id>",
+        ip=request.remote_addr,
+        status=status,
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_user_id=user_id,
+        metadata={"deletion_source": "gmail_admin"},
+    )
+    g.audit_logged = True
+
     return jsonify(result)
 
 

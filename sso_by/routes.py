@@ -2,7 +2,7 @@ from flask import Blueprint, jsonify, request, session, redirect, g
 from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch, get_email_by_id
 from db.rds_db import connect_to_rds
 from services.credit_system import CreditManager
-from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED
+from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SAML_USER_PROVISIONED, ORG_CREATED
 from utils.app_configs import ALLOWED_ORIGINS, ACCESSIBLE_IDS
 from db.db_checkers import ensure_starter_credits_for_user
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
@@ -420,6 +420,7 @@ def saml_acs():
 
        # ================= AUTO ONBOARDING =================
        # ================= AUTO ONBOARDING =================
+       is_new_user = not bool(existing_user)
 
        if existing_user:
         # ✅ Only update if this is INVITED USER
@@ -511,6 +512,22 @@ def saml_acs():
             print("CREDIT ERROR:", str(e))
             credit_status = "error"
             credit_message = "Could not fetch credits"
+
+       # Audit logging
+       log_audit_event(
+           action=SAML_USER_PROVISIONED,
+           endpoint="/auth/saml/acs",
+           ip=request.remote_addr,
+           status="success",
+           actor_user_id=user_id,
+           actor_email=email,
+           metadata={
+               "saml_org": org,
+               "is_new_user": is_new_user,
+               "role": role,
+           },
+       )
+       g.audit_logged = True
 
        redirect_base = session.get("saml_redirect", "https://app.bytoid.ai")
 
@@ -694,6 +711,24 @@ def create_org():
            )
 
            conn.commit()
+
+           # Audit logging (only for create, not update)
+           actor_user_id = getattr(g, "session_user_id", None)
+           actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+           log_audit_event(
+               action=ORG_CREATED,
+               endpoint="/org/create",
+               ip=request.remote_addr,
+               status="success",
+               actor_user_id=actor_user_id,
+               actor_email=actor_email,
+               metadata={
+                   "org_name": company_name,
+                   "primary_domain": primary,
+                   "secondary_domains": secondary_clean,
+               },
+           )
+           g.audit_logged = True
 
            return jsonify({"message": "Company created"}), 200
 

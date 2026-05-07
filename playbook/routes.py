@@ -15,6 +15,7 @@ import json, uuid
 from services.audit_log_service import (
     log_audit_event,
     PLAYBOOK_CREATED, PLAYBOOK_DELETED, PLAYBOOK_CLONED, PLAYBOOK_MADE_GLOBAL,
+    PLAYBOOK_UPDATED, PLAYBOOK_SCHEDULED,
     build_audit_actor,
 )
 from cust_helpers import pathconfig
@@ -336,6 +337,26 @@ async def updateInstruction():
     data = request.json
 
     job_id = await JobManager.submit_job(updateInstruction_worker, data)
+
+    # Audit logging
+    user_id = data.get("user_id")
+    playbook_name = data.get("name")
+    actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+    log_audit_event(
+        action=PLAYBOOK_UPDATED,
+        endpoint="/update_instruction",
+        ip=request.remote_addr,
+        status="success",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+        acting_on_behalf_of_email=acting_on_behalf_of_email,
+        metadata={
+            "playbook_name": playbook_name,
+            "job_id": job_id,
+        },
+    )
+    g.audit_logged = True
 
     return jsonify({"status": "accepted", "job_id": job_id})
 
@@ -2069,6 +2090,25 @@ async def schedule_workflow():
         },
         status="scheduled",
     )
+
+    # Audit logging
+    actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(userid)
+    log_audit_event(
+        action=PLAYBOOK_SCHEDULED,
+        endpoint="/schedule-workflow",
+        ip=request.remote_addr,
+        status="success",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+        acting_on_behalf_of_email=acting_on_behalf_of_email,
+        metadata={
+            "filename": filename,
+            "schedule_type": schedule_type,
+            "timezone": timezone,
+        },
+    )
+    g.audit_logged = True
 
     return jsonify(
         {

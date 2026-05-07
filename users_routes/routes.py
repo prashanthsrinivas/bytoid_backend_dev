@@ -20,6 +20,7 @@ from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
 from services.totp_service import TOTPService
 from db.db_checkers import check_onboarding_user, delete_user_domain, fetch_user_domains, get_email_by_id
+from services.audit_log_service import log_audit_event, OAUTH_TOKEN_STORED, API_KEY_CREATED
 from cryptography.fernet import Fernet
 import base64
 import time
@@ -496,7 +497,24 @@ def generate_api_key():
     user_id = data.get("userid") or session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-    return make_api_key(user_id=user_id)
+
+    result = make_api_key(user_id=user_id)
+
+    # Audit logging
+    actor_email = get_email_by_id(user_id)
+    is_success = isinstance(result, tuple) and result[1] == 201
+    log_audit_event(
+        action=API_KEY_CREATED,
+        endpoint="/generate-website-api-key",
+        ip=request.remote_addr,
+        status="success" if is_success else "failure",
+        actor_user_id=user_id,
+        actor_email=actor_email,
+        metadata={"key_prefix": "***"},
+    )
+    g.audit_logged = True
+
+    return result
 
 
 @users_bp.route("/get_leads", methods=["GET"])
@@ -848,7 +866,7 @@ def verify_email():
 # user sign in method
 @users_bp.route("/user_login", methods=["POST"])
 def user_login():
-    data = request.get_json()
+    data = request.get_json() or {}
     email = data.get("email")
     password = data.get("password")
 
@@ -858,6 +876,12 @@ def user_login():
 
         if not email or not password:
             logger.error("Email and password are required")
+            log_audit_event(
+                action=LOGIN_FAILED, endpoint="/user_login",
+                ip=request.remote_addr, status="failure",
+                actor_email=email, metadata={"reason": "missing_credentials"},
+            )
+            g.audit_logged = True
             return jsonify({"error": "Email and password are required"}), 400
 
         query = "SELECT * FROM users WHERE email=%s"
@@ -916,6 +940,7 @@ def user_login():
         g.audit_logged = True
         return response, 200
     except Exception as e:
+        g.audit_logged = True
         logger.error(f"Unexpected error occured : {str(e)}")
         return jsonify({"error": str(e)}), 500
 
@@ -1387,6 +1412,22 @@ def universal_oauth_callback():
             client_secret=client_secret,
             expiry=expiry,
         )
+
+        # Audit logging
+        actor_email = get_email_by_id(user_id)
+        log_audit_event(
+            action=OAUTH_TOKEN_STORED,
+            endpoint="/oauth/connect/callback",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=user_id,
+            actor_email=actor_email,
+            metadata={
+                "provider": provider,
+                "external_user_id": external_user_id,
+            },
+        )
+        g.audit_logged = True
 
         return jsonify({"connected": True, "platform": provider, "email": email}), 200
 

@@ -70,8 +70,63 @@ EVIDENCE_CONFIG_DELETED = "EVIDENCE_CONFIG_DELETED"
 CREDIT_ADDED_MANUALLY = "CREDIT_ADDED_MANUALLY"
 
 # CONTACTS
+CONTACT_CREATED = "CONTACT_CREATED"
+CONTACT_UPDATED = "CONTACT_UPDATED"
+CONTACT_DELETED = "CONTACT_DELETED"
 CONTACT_BULK_DELETED = "CONTACT_BULK_DELETED"
+CONTACT_GROUP_CREATED = "CONTACT_GROUP_CREATED"
+CONTACT_GROUP_UPDATED = "CONTACT_GROUP_UPDATED"
 CONTACT_GROUP_DELETED = "CONTACT_GROUP_DELETED"
+
+# TRACKER (new)
+TRACKER_CREATED = "TRACKER_CREATED"
+TRACKER_DELETED = "TRACKER_DELETED"
+TRACKER_MODIFIED = "TRACKER_MODIFIED"
+TRACKER_ENTRY_ADDED = "TRACKER_ENTRY_ADDED"
+TRACKER_COLUMN_ADDED = "TRACKER_COLUMN_ADDED"
+TRACKER_COLUMN_DELETED = "TRACKER_COLUMN_DELETED"
+TRACKER_EVIDENCE_UPLOADED = "TRACKER_EVIDENCE_UPLOADED"
+
+# NOTES (new)
+NOTE_CREATED = "NOTE_CREATED"
+NOTE_UPDATED = "NOTE_UPDATED"
+NOTE_DELETED = "NOTE_DELETED"
+NOTE_SHARED = "NOTE_SHARED"
+
+# INTEGRATIONS (new)
+INTEGRATION_CONNECTED = "INTEGRATION_CONNECTED"
+INTEGRATION_DISCONNECTED = "INTEGRATION_DISCONNECTED"
+INTEGRATION_DELETED = "INTEGRATION_DELETED"
+
+# PLAYBOOK extensions
+PLAYBOOK_UPDATED = "PLAYBOOK_UPDATED"
+PLAYBOOK_STEP_ADDED = "PLAYBOOK_STEP_ADDED"
+PLAYBOOK_STEP_UPDATED = "PLAYBOOK_STEP_UPDATED"
+PLAYBOOK_STEP_DELETED = "PLAYBOOK_STEP_DELETED"
+PLAYBOOK_SCHEDULED = "PLAYBOOK_SCHEDULED"
+PLAYBOOK_INSTALLED = "PLAYBOOK_INSTALLED"
+PLAYBOOK_SHARED = "PLAYBOOK_SHARED"
+
+# RUNBOOK extensions
+RUNBOOK_RESULT_DELETED = "RUNBOOK_RESULT_DELETED"
+RUNBOOK_EVIDENCE_UPDATED = "RUNBOOK_EVIDENCE_UPDATED"
+RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED = "RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED"
+
+# ACCOUNT (new)
+PROFILE_UPDATED = "PROFILE_UPDATED"
+ONBOARDING_COMPLETED = "ONBOARDING_COMPLETED"
+ORG_CREATED = "ORG_CREATED"
+SAML_USER_PROVISIONED = "SAML_USER_PROVISIONED"
+
+# SECURITY extensions
+API_KEY_CREATED = "API_KEY_CREATED"
+OAUTH_TOKEN_STORED = "OAUTH_TOKEN_STORED"
+MICROSOFT_DISCONNECTED = "MICROSOFT_DISCONNECTED"
+
+# AI_REPORTING (new)
+REPORT_CREATED = "REPORT_CREATED"
+REPORT_FINALIZED = "REPORT_FINALIZED"
+SPECIAL_ACCESS_MODIFIED = "SPECIAL_ACCESS_MODIFIED"
 
 # Category mapping for structured queries
 ACTION_CATEGORY = {
@@ -124,8 +179,55 @@ ACTION_CATEGORY = {
     # BILLING
     "CREDIT_ADDED_MANUALLY": "billing",
     # CONTACTS
+    "CONTACT_CREATED": "contacts",
+    "CONTACT_UPDATED": "contacts",
+    "CONTACT_DELETED": "contacts",
     "CONTACT_BULK_DELETED": "contacts",
+    "CONTACT_GROUP_CREATED": "contacts",
+    "CONTACT_GROUP_UPDATED": "contacts",
     "CONTACT_GROUP_DELETED": "contacts",
+    # TRACKER
+    "TRACKER_CREATED": "tracker",
+    "TRACKER_DELETED": "tracker",
+    "TRACKER_MODIFIED": "tracker",
+    "TRACKER_ENTRY_ADDED": "tracker",
+    "TRACKER_COLUMN_ADDED": "tracker",
+    "TRACKER_COLUMN_DELETED": "tracker",
+    "TRACKER_EVIDENCE_UPLOADED": "tracker",
+    # NOTES
+    "NOTE_CREATED": "notes",
+    "NOTE_UPDATED": "notes",
+    "NOTE_DELETED": "notes",
+    "NOTE_SHARED": "notes",
+    # INTEGRATIONS
+    "INTEGRATION_CONNECTED": "integrations",
+    "INTEGRATION_DISCONNECTED": "integrations",
+    "INTEGRATION_DELETED": "integrations",
+    # PLAYBOOK
+    "PLAYBOOK_UPDATED": "workflow",
+    "PLAYBOOK_STEP_ADDED": "workflow",
+    "PLAYBOOK_STEP_UPDATED": "workflow",
+    "PLAYBOOK_STEP_DELETED": "workflow",
+    "PLAYBOOK_SCHEDULED": "workflow",
+    "PLAYBOOK_INSTALLED": "workflow",
+    "PLAYBOOK_SHARED": "workflow",
+    # RUNBOOK
+    "RUNBOOK_RESULT_DELETED": "workflow",
+    "RUNBOOK_EVIDENCE_UPDATED": "evidence",
+    "RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED": "evidence",
+    # ACCOUNT
+    "PROFILE_UPDATED": "account",
+    "ONBOARDING_COMPLETED": "account",
+    "ORG_CREATED": "account",
+    "SAML_USER_PROVISIONED": "account",
+    # SECURITY
+    "API_KEY_CREATED": "security",
+    "OAUTH_TOKEN_STORED": "security",
+    "MICROSOFT_DISCONNECTED": "security",
+    # AI_REPORTING
+    "REPORT_CREATED": "ai_reporting",
+    "REPORT_FINALIZED": "ai_reporting",
+    "SPECIAL_ACCESS_MODIFIED": "admin_access",
 }
 
 _AUDIT_LOG_FILE = "logs/audit.log"
@@ -203,13 +305,20 @@ def build_audit_actor(body_user_id):
         session_uid = None
 
     if session_uid and session_uid != body_user_id:
-        # Delegated cross-admin access
+        # Delegated cross-admin access: kavya in session, test in body
         actor_user_id = session_uid
         actor_email = get_email_by_id(session_uid)
         acting_on_behalf_of_user_id = body_user_id
         acting_on_behalf_of_email = get_email_by_id(body_user_id) if body_user_id else None
+    elif session_uid:
+        # Self-access: session_uid == body_user_id (normal case)
+        # Use session value (server-verified), not body value (client-supplied)
+        actor_user_id = session_uid
+        actor_email = get_email_by_id(session_uid)
+        acting_on_behalf_of_user_id = None
+        acting_on_behalf_of_email = None
     else:
-        # Self-access (normal case)
+        # No session (unauthenticated / expired) — body_user_id as best-effort
         actor_user_id = body_user_id
         actor_email = get_email_by_id(body_user_id) if body_user_id else None
         acting_on_behalf_of_user_id = None

@@ -37,8 +37,11 @@ from utils.s3_utils import upload_any_file
 from services.audit_log_service import (
     log_audit_event,
     RUNBOOK_CREATED, RUNBOOK_UPDATED, RUNBOOK_DELETED,
-    RUNBOOK_BULK_DELETED, RUNBOOK_SCHEDULED, build_audit_actor,
+    RUNBOOK_BULK_DELETED, RUNBOOK_SCHEDULED,
+    RUNBOOK_EVIDENCE_UPDATED, RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
+    build_audit_actor,
 )
+from db.db_checkers import get_email_by_id
 import time, uuid, os, json
 from datetime import datetime
 
@@ -1025,6 +1028,26 @@ async def patch_evidence_analysis(result_id):
             result_doc["evidence_analysis"] = items
 
         await dbserver.update_runbook_result(user_id, result_id, result_doc)
+
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=RUNBOOK_EVIDENCE_UPDATED,
+            endpoint="/result/<result_id>/evidence_analysis",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "result_id": result_id,
+                "index_updated": index,
+                "fields_changed": len(updates),
+            },
+        )
+        g.audit_logged = True
+
         return jsonify({"success": True, "message": "Evidence analysis updated"}), 200
 
     except Exception as e:
@@ -1221,6 +1244,26 @@ async def toggle_evidence_admissibility(result_id):
 
         # 🔹 5. Trigger async regeneration
         create_playbook_runbook_task.delay(user_id, playbook_id, runbook_id)
+
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
+            endpoint="/result/<result_id>/evidence_admissibility",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "result_id": result_id,
+                "file_url": file_url,
+                "new_status": target_status,
+                "affected_artifacts": affected_artifacts,
+            },
+        )
+        g.audit_logged = True
 
         return (
             jsonify(

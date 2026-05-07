@@ -5,7 +5,14 @@ import json
 import uuid
 
 from db.lance_db_service import LanceDBServer
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
+from services.audit_log_service import (
+    log_audit_event, build_audit_actor,
+    TRACKER_CREATED, TRACKER_DELETED, TRACKER_MODIFIED,
+    TRACKER_ENTRY_ADDED, TRACKER_COLUMN_ADDED, TRACKER_COLUMN_DELETED,
+    TRACKER_EVIDENCE_UPLOADED
+)
+from db.db_checkers import get_email_by_id
 from tab_tracker.helper import (
     check_config_exist,
     create_empty_tracker_config,
@@ -271,6 +278,26 @@ async def create_tracker_api():
             response_data["data_appended"] = data_appended
             response_data["result_id"] = result_id
 
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_CREATED,
+            endpoint="/tracker/create",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "tracker_name": name,
+                "tracker_type": tracker_type,
+                "runbook_id": runbook_id,
+            },
+        )
+        g.audit_logged = True
+
         return jsonify(response_data), 200
 
     except ValueError as ve:
@@ -356,6 +383,24 @@ async def delete_tracker():
                 logging.warning(
                     f"Could not clean up tracker_configuration for runbook {runbook_id}: {traceback.format_exc()}"
                 )
+
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_DELETED,
+            endpoint="/tracker/delete",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "runbook_id": runbook_id,
+            },
+        )
+        g.audit_logged = True
 
         return (
             jsonify(
@@ -1023,6 +1068,26 @@ async def append_tracker_api():
                 ),
             }
 
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_MODIFIED,
+            endpoint="/tracker/append",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "result_id": result_id,
+                "tracker_type": tracker_type,
+                "append_count": append_metadata.get("rows_appended") or append_metadata.get("cells_appended") or append_metadata.get("records_appended"),
+            },
+        )
+        g.audit_logged = True
+
         return jsonify(response_data), 200
 
     except ValueError as ve:
@@ -1345,6 +1410,26 @@ async def sync_block_to_tracker_api():
             **tracker_debug_info,
         }
 
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_MODIFIED,
+            endpoint="/tracker/sync-from-block",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "result_id": result_id,
+                "block_id": block_id,
+                "linked_tracker_id": linked_tracker_id,
+                "tracker_updated": tracker_updated,
+            },
+        )
+        g.audit_logged = True
+
         return jsonify(response_data), 200
 
     except Exception as e:
@@ -1422,6 +1507,25 @@ async def modify_tracker_details():
                     tracker_data, result_id, block_id
                 )
                 await dbserver.update_runbook_result(user_id, result_id, result_content)
+
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_MODIFIED,
+            endpoint="/tracker/modify",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "result_id": result_id,
+                "entries_updated": len(entry_updates),
+            },
+        )
+        g.audit_logged = True
 
         return (
             jsonify(
@@ -1587,6 +1691,25 @@ async def add_tracker_entry():
 
         save_tracker_file(user_id, tracker_id, tracker_data)
 
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_ENTRY_ADDED,
+            endpoint="/tracker/add-entry",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "result_id": result_id,
+                "entry_type": entry_added.get("type") if entry_added else None,
+            },
+        )
+        g.audit_logged = True
+
         return (
             jsonify(
                 {
@@ -1731,6 +1854,25 @@ async def add_tracker_column():
             return jsonify({"error": f"Unsupported tracker type: {tracker_type}"}), 400
 
         save_tracker_file(user_id, tracker_id, tracker_data)
+
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_COLUMN_ADDED,
+            endpoint="/tracker/add-column",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "tracker_type": tracker_type,
+                "schema_change": schema_change,
+            },
+        )
+        g.audit_logged = True
 
         return (
             jsonify(
@@ -2069,6 +2211,26 @@ async def delete_tracker_column():
             },
         }
 
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_COLUMN_DELETED,
+            endpoint="/tracker/delete-column",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "tracker_type": tracker_type,
+                "schema_change": schema_change,
+                "results_updated": len(results_updated),
+            },
+        )
+        g.audit_logged = True
+
         return jsonify(response_data), 200
 
     except Exception as e:
@@ -2153,6 +2315,27 @@ def upload_evidence_api():
                 ),
                 500,
             )
+
+        # Audit logging
+        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_EVIDENCE_UPLOADED,
+            endpoint="/tracker/upload-evidence",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "row_id": row_id,
+                "column_id": column_id,
+                "s3_key": s3_key,
+                "filename": upload_result.get("filename"),
+            },
+        )
+        g.audit_logged = True
 
         return (
             jsonify(
