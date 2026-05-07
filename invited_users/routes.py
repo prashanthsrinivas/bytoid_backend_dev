@@ -1,5 +1,5 @@
 from time import time
-from flask import Blueprint, request, jsonify, redirect, g
+from flask import Blueprint, request, jsonify, redirect, g, session
 import pymysql
 from services.gmail_service import GmailService
 import uuid
@@ -1797,3 +1797,103 @@ def all_special_access_sources(userid):
     finally:
         if conn:
             conn.close()
+
+
+@inv_users_bp.route("/admin/audit-logs", methods=["GET"])
+def get_audit_logs():
+    """
+    Serve audit log entries from logs/audit.log as paginated JSON.
+    Admin-only. Frontend expects: items, total, page, pageSize.
+    """
+    try:
+        # 1. AUTH CHECK
+        user_id = session.get("user_id")
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        # 2. ADMIN TYPE CHECK (DB)
+        conn = connect_to_rds()
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT user_type FROM users WHERE user_id = %s", (user_id,)
+                )
+                row = cursor.fetchone()
+            if not row or row["user_type"] != "admin":
+                return jsonify({"error": "Unauthorized"}), 403
+        finally:
+            conn.close()
+
+        # 3. PARSE QUERY PARAMS
+        try:
+            page = max(1, int(request.args.get("page", 1)))
+        except (ValueError, TypeError):
+            page = 1
+
+        try:
+            page_size = min(200, max(1, int(request.args.get("pageSize", 50))))
+        except (ValueError, TypeError):
+            page_size = 50
+
+        action_filter    = request.args.get("action")
+        category_filter  = request.args.get("category")
+        status_filter    = request.args.get("status")
+        actor_filter     = request.args.get("actor_user_id")
+        from_ts          = request.args.get("from_ts")
+        to_ts            = request.args.get("to_ts")
+
+        # 4. READ + PARSE logs/audit.log
+        log_path = os.path.join(os.path.dirname(__file__), "..", "logs", "audit.log")
+        log_path = os.path.normpath(log_path)
+
+        entries = []
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        # Normalize missing fields for older entries
+                        entry.setdefault("category", "api_activity")
+                        entry.setdefault("acting_on_behalf_of_user_id", None)
+                        entry.setdefault("acting_on_behalf_of_email", None)
+                        entry.setdefault("metadata", {})
+                        entries.append(entry)
+                    except (json.JSONDecodeError, ValueError):
+                        continue  # skip malformed lines silently
+
+        # 5. APPLY FILTERS
+        def matches(e):
+            if action_filter   and e.get("action")        != action_filter:   return False
+            if category_filter and e.get("category")       != category_filter: return False
+            if status_filter   and e.get("status")         != status_filter:   return False
+            if actor_filter    and e.get("actor_user_id")  != actor_filter:    return False
+            if from_ts         and e.get("timestamp", "")  <  from_ts:         return False
+            if to_ts           and e.get("timestamp", "")  >  to_ts:           return False
+            return True
+
+        filtered = [e for e in entries if matches(e)]
+
+        # 6. SORT (newest first)
+        filtered.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+
+        # 7. PAGINATE
+        total  = len(filtered)
+        offset = (page - 1) * page_size
+        items  = filtered[offset : offset + page_size]
+
+        # 8. RETURN
+        return jsonify({
+            "items": items,
+            "total": total,
+            "page": page,
+            "pageSize": page_size,
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_audit_logs: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error"}), 500
