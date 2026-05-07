@@ -38,7 +38,7 @@ pool = PooledDB(
     creator=pymysql,
     maxconnections=120,
     mincached=10,
-    blocking=True,
+    blocking=False,
     host=rd_host,
     user=creds["username"],
     password=creds["password"],
@@ -48,15 +48,10 @@ pool = PooledDB(
 )
 
 
-# print("creds", creds)
-
-
 def connect_to_rds():
-    # creds = get_secret()
     try:
         return pool.connection()
-    except pymysql.MySQLError as e:
-        # print("\u274c Error connecting to RDS:", e)
+    except Exception:
         return None
 
 

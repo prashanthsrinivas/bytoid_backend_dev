@@ -55,6 +55,7 @@ def add_role_admin():
             400,
         )
 
+    conn = None
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -97,10 +98,12 @@ def add_role_admin():
             metadata={"role_name": name, "permissions_count": len(permissions)},
         )
         g.audit_logged = True
-        conn.close()
         return jsonify({"message": "Role added successfully", "role": roles}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @inv_users_bp.route("/admin/roles-get/<userid>", methods=["GET"])
@@ -249,6 +252,7 @@ def update_role():
     name = data.get("name")
     permissions = data.get("permissions")
 
+    conn = None
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -344,16 +348,18 @@ def update_role():
             metadata={"role_id": data.get("role_id"), "role_name": data.get("name")},
         )
         g.audit_logged = True
-        conn.close()
         return jsonify({"message": "Role updated successfully"}), 200
     except Exception as e:
-        # print(e)
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @inv_users_bp.route("/admin/roles-delete/<userid>/<role_id>", methods=["DELETE"])
 def delete_role(userid, role_id):
     """Delete role by role_id (only if not associated with invites or shared users)"""
+    conn = None
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -425,11 +431,13 @@ def delete_role(userid, role_id):
             metadata={"role_id": role_id},
         )
         g.audit_logged = True
-        conn.close()
         return jsonify({"message": "Role deleted successfully"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 # INVITE USER APIS
