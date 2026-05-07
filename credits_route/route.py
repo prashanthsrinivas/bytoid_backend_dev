@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify, g
 from db.rds_db import connect_to_rds
+from db.db_checkers import get_email_by_id
 import pymysql
 from services.credit_system import CreditManager, InsufficientCreditsError
 from datetime import datetime, timedelta
@@ -468,12 +469,14 @@ def add_credits_route():
             source_type="TOPUP",
             expires_at=expires_at,
         )
+        actor_email = get_email_by_id(user_id)
         log_audit_event(
             action=CREDIT_ADDED_MANUALLY,
             endpoint="/credits/add",
             ip=request.remote_addr,
             status="success",
             actor_user_id=user_id,
+            actor_email=actor_email,
             target_user_id=resolved_customer_id,
             target_email=customer_email,
             metadata={

@@ -37,7 +37,7 @@ from utils.s3_utils import upload_any_file
 from services.audit_log_service import (
     log_audit_event,
     RUNBOOK_CREATED, RUNBOOK_UPDATED, RUNBOOK_DELETED,
-    RUNBOOK_BULK_DELETED, RUNBOOK_SCHEDULED,
+    RUNBOOK_BULK_DELETED, RUNBOOK_SCHEDULED, build_audit_actor,
 )
 import time, uuid, os, json
 from datetime import datetime
@@ -755,10 +755,14 @@ async def delete_runbook(runbook_id):
         await dbserver.delete_runbook(user_id, runbook_id)
         await dbserver.delete_runbook_result(user_id, runbook_id)
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=RUNBOOK_DELETED, endpoint="/runbook/delete",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"runbook_id": runbook_id},
         )
         g.audit_logged = True
@@ -779,10 +783,14 @@ async def delete_all():
         # dbserver = LanceDBServer()
         await dbserver.delete_all_runbook(user_id, runbook_id)
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=RUNBOOK_BULK_DELETED, endpoint="/runbook/delete_all",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"runbook_count": len(runbook_id), "runbook_ids": runbook_id[:10]},
         )
         g.audit_logged = True

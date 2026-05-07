@@ -499,7 +499,12 @@ CRITICAL FORMAT RULES:
         ai_result = parsed
     else:
         elem = scope.get("selected_element", {})
-        if elem:
+        sel_row = scope.get("selected_row", {})
+        sel_col = scope.get("selected_column", {})
+        sel_rows = scope.get("selected_rows", [])
+        sel_cols = scope.get("selected_columns", [])
+
+        if scope_type == "selected_element" and elem:
             row_id = elem.get("row_id")
             col_id = elem.get("col_id")
             value = elem.get("value", "")
@@ -508,12 +513,11 @@ CRITICAL FORMAT RULES:
 User request: "{message}"
 Language: {language}
 
-Selected cell data:
-Row ID: {row_id}
-Column ID: {col_id}
+Selected cell:
+Row ID: {row_id}, Column ID: {col_id}
 Current value: "{value}"
 
-TASK: Shorten/condense the value for this specific cell only.
+TASK: Shorten/condense this specific cell value per the user's request.
 
 Return ONLY valid JSON:
 {{"row_id": "{row_id}", "col_id": "{col_id}", "new_value": "<shortened value>"}}"""
@@ -527,6 +531,149 @@ Return ONLY valid JSON:
             if not parsed or not isinstance(parsed, dict):
                 return {"error": "invalid_response"}
             ai_result = parsed
+
+        elif scope_type == "selected_row" and sel_row:
+            row_id = sel_row.get("row_id")
+            col_schema = tracker_data.get("schema", {}).get("columns", [])
+            col_map = ", ".join(f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema)
+            row_values_json = json.dumps(sel_row.get("values", {}))
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column ID mapping: {col_map}
+Row ID: {row_id}
+Current values: {row_values_json}
+
+TASK: Shorten/condense the text values in this row per the user's request.
+Preserve numeric values unchanged.
+
+Return ONLY valid JSON:
+{{"row_id": "{row_id}", "values": {{"col_id": "shortened value", ...}}}}"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, dict):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_column" and sel_col:
+            col_id = sel_col.get("col_id")
+            col_name = sel_col.get("name", col_id)
+            rows_with_col = json.dumps(
+                [
+                    {"row_id": r["row_id"], "value": r.get("values", {}).get(col_id, "")}
+                    for r in tracker_data.get("rows", [])
+                ]
+            )
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column to reduce: {col_name} (ID: {col_id})
+Current values across all rows:
+{rows_with_col}
+
+TASK: Shorten/condense the value in column "{col_name}" for every row listed.
+
+Return ONLY valid JSON array:
+[{{"row_id": "...", "new_value": "<shortened value>"}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("rows") or parsed.get("data")
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_rows" and sel_rows:
+            col_schema = tracker_data.get("schema", {}).get("columns", [])
+            col_map = ", ".join(f'{c["id"]} = "{c.get("name", c["id"])}"' for c in col_schema)
+            rows_json = json.dumps(sel_rows, indent=2)
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column ID mapping: {col_map}
+
+Selected rows to condense:
+{rows_json}
+
+TASK: Apply the user's request to the text values in the selected rows.
+Preserve numeric values and row_id unchanged.
+
+Return ONLY a valid JSON array — no wrapper object, no markdown:
+[{{"row_id": "...", "values": {{"col_id": "shortened value", ...}}}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("rows") or parsed.get("data") or parsed.get("result")
+            if not parsed or not isinstance(parsed, list):
+                logger.warning("invalid_response in selected_rows reduce, trying AI fallback")
+                fallback = await _ai_fallback(user_id, message, tracker_data, language, credits, hint="reduce selected rows")
+                if fallback:
+                    is_valid, _ = _validate_tracker_schema(scope.get("tracker_data", {}), fallback)
+                    if is_valid:
+                        return {"intent": "reduce", "tracker_modified": True, "pending_confirmation": True, "tracker_data": fallback, "tracker_id": tracker_id}
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_columns" and sel_cols:
+            col_ids_to_reduce = [c.get("col_id") for c in sel_cols if c.get("col_id")]
+            col_names = {c.get("col_id"): c.get("name") for c in sel_cols}
+            rows_view = json.dumps(
+                [
+                    {
+                        "row_id": r["row_id"],
+                        "values": {cid: r.get("values", {}).get(cid, "") for cid in col_ids_to_reduce},
+                    }
+                    for r in tracker_data.get("rows", [])
+                ]
+            )
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Columns to reduce: {json.dumps(col_names)}
+Current values in selected columns (all rows):
+{rows_view}
+
+TASK: Shorten/condense values in the selected columns only.
+Leave all other columns untouched.
+
+Return ONLY valid JSON array:
+[{{"row_id": "...", "values": {{"col_id": "shortened value", ...}}}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("rows") or parsed.get("data")
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
         else:
             return {"error": "invalid_scope"}
 

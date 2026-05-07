@@ -10,6 +10,8 @@ import logging
 import os
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from flask import g, session
+from db.db_checkers import get_email_by_id
 
 # Action constants
 # AUTH
@@ -185,3 +187,32 @@ def log_audit_event(
         # _upload_to_s3(entry)   # uncomment when S3 is ready
     except Exception:
         pass
+
+
+def build_audit_actor(body_user_id):
+    """
+    Returns (actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email).
+
+    When the session's authenticated user differs from body_user_id, the session user is
+    the true actor (Kavya) and body_user_id is the workspace owner (Prashanth).
+    When they match (normal operation), acting_on_behalf_of fields are None.
+    """
+    try:
+        session_uid = getattr(g, "session_user_id", None) or session.get("user_id")
+    except RuntimeError:
+        session_uid = None
+
+    if session_uid and session_uid != body_user_id:
+        # Delegated cross-admin access
+        actor_user_id = session_uid
+        actor_email = get_email_by_id(session_uid)
+        acting_on_behalf_of_user_id = body_user_id
+        acting_on_behalf_of_email = get_email_by_id(body_user_id) if body_user_id else None
+    else:
+        # Self-access (normal case)
+        actor_user_id = body_user_id
+        actor_email = get_email_by_id(body_user_id) if body_user_id else None
+        acting_on_behalf_of_user_id = None
+        acting_on_behalf_of_email = None
+
+    return actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email

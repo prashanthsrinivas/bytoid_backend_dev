@@ -15,6 +15,7 @@ import json, uuid
 from services.audit_log_service import (
     log_audit_event,
     PLAYBOOK_CREATED, PLAYBOOK_DELETED, PLAYBOOK_CLONED, PLAYBOOK_MADE_GLOBAL,
+    build_audit_actor,
 )
 from cust_helpers import pathconfig
 from services.redis_service import get_redis
@@ -55,10 +56,14 @@ async def create_new_instruction():
 
     job_id = await JobManager.submit_job(create_instruction_worker, data)
 
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
         action=PLAYBOOK_CREATED, endpoint="/create_instruction",
         ip=request.remote_addr, status="success",
-        actor_user_id=user_id,
+        actor_user_id=actor_uid,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=behalf_uid,
+        acting_on_behalf_of_email=behalf_email,
         metadata={"job_id": job_id, "playbook_name": data.get("name")},
     )
     g.audit_logged = True
@@ -423,10 +428,14 @@ def delete_instruction():
         if not success:
             return jsonify({"error": "Failed to delete instruction"}), 500
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=PLAYBOOK_DELETED, endpoint="/delete_instruction",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"playbook_filename": filename},
         )
         g.audit_logged = True
