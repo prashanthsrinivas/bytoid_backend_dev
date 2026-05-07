@@ -621,7 +621,13 @@ def _require_framework_owner():
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
     user = getattr(g, "user", None) or {}
-    email = user.get("email") or get_email_by_id(user_id)
+    email = user.get("email")
+    if not email:
+        try:
+            email = get_email_by_id(user_id)
+        except Exception:
+            # DB unavailable — fail fast rather than blocking the worker
+            return jsonify({"error": "Unauthorized"}), 401
     if email != FRAMEWORK_OWNER:
         return jsonify({"error": "Access denied"}), 403
     return None
