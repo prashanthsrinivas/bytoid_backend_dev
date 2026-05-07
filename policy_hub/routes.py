@@ -635,6 +635,8 @@ def _require_framework_owner():
 
 def _parse_framework_file(file_bytes: bytes, filename: str) -> list[dict]:
     """Parse an Excel/CSV file into a list of row dicts."""
+    import math
+
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".csv":
         df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
@@ -643,8 +645,15 @@ def _parse_framework_file(file_bytes: bytes, filename: str) -> list[dict]:
     else:
         df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
 
-    df = df.where(pd.notna(df), None)
-    return df.to_dict(orient="records")
+    records = df.to_dict(orient="records")
+    # pandas may leave float NaN in cells even with dtype=str; NaN is not valid JSON
+    return [
+        {
+            k: (None if (isinstance(v, float) and math.isnan(v)) else v)
+            for k, v in row.items()
+        }
+        for row in records
+    ]
 
 
 @policy_hub_bp.route("/frameworks/access", methods=["GET"])
