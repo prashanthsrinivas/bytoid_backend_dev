@@ -414,10 +414,14 @@ async def create_runbook():
             session_id=session_id,
         )
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=RUNBOOK_CREATED, endpoint="/runbook/create",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"job_id": job_id, "runbook_name": data.get("name")},
         )
         g.audit_logged = True
@@ -649,10 +653,14 @@ async def modify_runbook():
         execute_modify_runbook, data, session_id=session_id
     )
 
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
         action=RUNBOOK_UPDATED, endpoint="/runbook/modify",
         ip=request.remote_addr, status="success",
-        actor_user_id=user_id,
+        actor_user_id=actor_uid,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=behalf_uid,
+        acting_on_behalf_of_email=behalf_email,
         metadata={"job_id": job_id, "runbook_id": data.get("runbook_id")},
     )
     g.audit_logged = True
@@ -843,10 +851,14 @@ async def update_runbook_api(runbook_id):
 
         updated = await dbserver.update_runbook(user_id, runbook_id, updates)
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=RUNBOOK_UPDATED, endpoint="/runbook/update",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"runbook_id": runbook_id, "fields_updated": list(updates.keys())},
         )
         g.audit_logged = True
@@ -1259,10 +1271,14 @@ async def schedule_runbook():
     # ========================================
     # result = await activate_runbook_schedule(user_id, runbook_id)
 
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
         action=RUNBOOK_SCHEDULED, endpoint="/schedule_runbook",
         ip=request.remote_addr, status="success",
-        actor_user_id=user_id,
+        actor_user_id=actor_uid,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=behalf_uid,
+        acting_on_behalf_of_email=behalf_email,
         metadata={"runbook_id": runbook_id, "schedule_type": schedule_type, "timezone": timezone},
     )
     g.audit_logged = True

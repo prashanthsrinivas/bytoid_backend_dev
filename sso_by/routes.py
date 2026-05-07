@@ -847,6 +847,7 @@ def grant_access():
    conn.close()
 
    actor_email = get_email_by_id(admin_id)
+   target_email = get_email_by_id(target_user)
    log_audit_event(
        action=SPECIAL_ACCESS_GRANTED,
        endpoint="/admin/grant-access",
@@ -855,6 +856,7 @@ def grant_access():
        actor_user_id=admin_id,
        actor_email=actor_email,
        target_user_id=target_user,
+       target_email=target_email,
        metadata={"org": org},
    )
    g.audit_logged = True
@@ -894,6 +896,7 @@ def revoke_access():
    conn.close()
 
    actor_email = get_email_by_id(admin_id)
+   target_email = get_email_by_id(target_user)
    log_audit_event(
        action=SPECIAL_ACCESS_REVOKED,
        endpoint="/admin/revoke-access",
@@ -902,6 +905,7 @@ def revoke_access():
        actor_user_id=admin_id,
        actor_email=actor_email,
        target_user_id=target_user,
+       target_email=target_email,
        metadata={"org": org},
    )
    g.audit_logged = True

@@ -2931,10 +2931,14 @@ def pb_temp_clone_min():
         # ---------------------------------
         # ✅ Response
         # ---------------------------------
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=PLAYBOOK_CLONED, endpoint="/pb_temp_clone",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"original_filename": filename, "clone_filename": new_filename},
         )
         g.audit_logged = True
@@ -3194,6 +3198,18 @@ def share_pb_template():
         cursor.close()
         conn.close()
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=PLAYBOOK_MADE_GLOBAL, endpoint="/share_playbook_template",
+            ip=request.remote_addr, status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"template_name": data.get("wf_filename"), "is_global": is_for_all},
+        )
+        g.audit_logged = True
+
         return (
             jsonify(
                 {
@@ -3343,10 +3359,14 @@ def make_global_playbook():
         os.remove(temp_file_path)
         os.remove(temp_config_path)
 
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
             action=PLAYBOOK_MADE_GLOBAL, endpoint="/make_global_playbook",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
             metadata={"original_filename": filename, "global_template_name": new_filename},
         )
         g.audit_logged = True
