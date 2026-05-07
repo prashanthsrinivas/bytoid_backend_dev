@@ -351,25 +351,23 @@ def generate_status():
     }), 200
 
 
-# ── 1c. EDIT ──────────────────────────────────────────────────────────────────
+# ── Edit job helpers ──────────────────────────────────────────────────────────
 
-@policy_hub_bp.route("/edit", methods=["POST"])
-async def edit_policy():
-    body = request.get_json(silent=True) or {}
-    user_id          = body.get("user_id")
-    policy_id        = body.get("policy_id")
-    document_title   = body.get("document_title", "")
-    document_content = body.get("document_content", "")
-    instruction      = body.get("instruction", "")
-    selected_text    = body.get("selected_text", "").strip()
-    section_title    = body.get("section_title", "").strip()
+def _edit_job_s3_key(edit_job_id: str) -> str:
+    return f"policy_hub_edit_jobs/{edit_job_id}.json"
 
-    if not user_id or not policy_id or not document_content or not instruction:
-        return jsonify({"error": "user_id, policy_id, document_content, and instruction are required"}), 400
 
-    credits = Credits()
+def _read_edit_job(edit_job_id: str) -> dict | None:
+    return read_json_from_s3(_edit_job_s3_key(edit_job_id))
 
-    # Build focus hint — tells the AI where to concentrate changes
+
+def _save_edit_job(edit_job_id: str, state: dict):
+    with _jobs_lock:
+        _write_json_to_s3(_edit_job_s3_key(edit_job_id), state)
+
+
+def _build_edit_prompt(document_title: str, document_content: str,
+                       instruction: str, selected_text: str, section_title: str) -> str:
     if selected_text:
         focus_hint = (
             "The user has selected the following text to target "
@@ -385,8 +383,7 @@ async def edit_policy():
     else:
         focus_hint = ""
 
-    # Single AI call — always returns the full updated document
-    ai_prompt = (
+    return (
         "You are an expert GRC (Governance, Risk, Compliance) policy writer "
         "editing a formal compliance document.\n\n"
         f"Document title: {document_title}\n"
@@ -409,38 +406,108 @@ async def edit_policy():
         f"Current document HTML:\n{document_content}"
     )
 
-    response = await get_fireworks_response2(
-        user_id=user_id,
-        user_message=ai_prompt,
-        role="user",
-        credits=credits,
-        temp=0.1,
-    )
 
-    if response == "INSUFFICIENT":
-        return jsonify({"error": "Insufficient credits"}), 402
+def _edit_worker(edit_job_id: str, user_id: str, policy_id: str,
+                 document_title: str, document_content: str,
+                 instruction: str, selected_text: str, section_title: str):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        credits = Credits()
+        ai_prompt = _build_edit_prompt(
+            document_title, document_content, instruction, selected_text, section_title
+        )
+        response = loop.run_until_complete(
+            get_fireworks_response2(
+                user_id=user_id,
+                user_message=ai_prompt,
+                role="user",
+                credits=credits,
+                temp=0.1,
+            )
+        )
 
-    explanation     = _extract_tag(response, "EXPLANATION")
-    updated_content = _extract_tag(response, "HTML")
+        if response == "INSUFFICIENT":
+            _save_edit_job(edit_job_id, {"status": "error", "error": "Insufficient credits"})
+            return
 
-    if not updated_content:
-        return jsonify({"error": "AI did not return valid HTML"}), 500
+        explanation     = _extract_tag(response, "EXPLANATION")
+        updated_content = _extract_tag(response, "HTML")
 
-    # Persist the updated content back to S3
-    key      = _s3_key(user_id, policy_id)
-    existing = load_yaml_from_s3(key)
-    if existing:
-        existing["content"]    = updated_content
-        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if not updated_content:
+            _save_edit_job(edit_job_id, {"status": "error", "error": "AI did not return valid HTML"})
+            return
+
+        # Persist updated content back to S3
+        key      = _s3_key(user_id, policy_id)
+        existing = load_yaml_from_s3(key)
+        if existing:
+            existing["content"]    = updated_content
+            existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                _write_yaml_to_s3(key, existing)
+            except Exception as e:
+                logger.error("Failed to persist edit for policy %s: %s", policy_id, e)
+
+        _save_edit_job(edit_job_id, {
+            "status": "done",
+            "updated_content": updated_content,
+            "explanation": explanation or "The document has been updated per your instruction.",
+        })
+
+    except Exception as e:
+        logger.error("Edit worker crashed for job %s: %s", edit_job_id, e)
         try:
-            _write_yaml_to_s3(key, existing)
-        except Exception as e:
-            logger.error("Failed to persist edit for policy %s: %s", policy_id, e)
+            _save_edit_job(edit_job_id, {"status": "error", "error": str(e)})
+        except Exception:
+            pass
+    finally:
+        loop.close()
 
-    return jsonify({
-        "updated_content": updated_content,
-        "explanation": explanation or "The document has been updated per your instruction.",
-    }), 200
+
+# ── 1c. EDIT ──────────────────────────────────────────────────────────────────
+
+@policy_hub_bp.route("/edit", methods=["POST"])
+def edit_policy():
+    body = request.get_json(silent=True) or {}
+    user_id          = body.get("user_id")
+    policy_id        = body.get("policy_id")
+    document_title   = body.get("document_title", "")
+    document_content = body.get("document_content", "")
+    instruction      = body.get("instruction", "")
+    selected_text    = body.get("selected_text", "").strip()
+    section_title    = body.get("section_title", "").strip()
+
+    if not user_id or not policy_id or not document_content or not instruction:
+        return jsonify({"error": "user_id, policy_id, document_content, and instruction are required"}), 400
+
+    edit_job_id = str(uuid.uuid4())
+    _save_edit_job(edit_job_id, {"status": "processing"})
+
+    thread = threading.Thread(
+        target=_edit_worker,
+        args=(edit_job_id, user_id, policy_id, document_title,
+              document_content, instruction, selected_text, section_title),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"edit_job_id": edit_job_id, "status": "PROCESSING"}), 202
+
+
+# ── 1d. EDIT STATUS (polling) ─────────────────────────────────────────────────
+
+@policy_hub_bp.route("/edit-status", methods=["GET"])
+def edit_status():
+    edit_job_id = request.args.get("edit_job_id")
+    if not edit_job_id:
+        return jsonify({"error": "edit_job_id is required"}), 400
+
+    job = _read_edit_job(edit_job_id)
+    if not job:
+        return jsonify({"error": "Edit job not found"}), 404
+
+    return jsonify(job), 200
 
 
 # ── 2. LIST ───────────────────────────────────────────────────────────────────
