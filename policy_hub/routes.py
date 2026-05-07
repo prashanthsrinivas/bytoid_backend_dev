@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 
 from credits_route.route import Credits
 from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
@@ -608,9 +608,23 @@ def _fw_key(framework_id: str) -> str:
     return f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
 
 
-def _require_owner(user_id: str):
-    if user_id != FRAMEWORK_OWNER:
+def _require_framework_owner():
+    """Verify the authenticated session belongs to service@bytoid.ca.
+
+    Reads identity from Flask g (populated by session_middleware before_request),
+    never from client-supplied request parameters.
+    """
+    user_id = getattr(g, "user_id", None)
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # g.user_id is the email-as-ID for the service account; also check g.user.email as fallback.
+    user = getattr(g, "user", None) or {}
+    user_email = user.get("email", "")
+
+    if user_id != FRAMEWORK_OWNER and user_email != FRAMEWORK_OWNER:
         return jsonify({"error": "Access denied"}), 403
+
     return None
 
 
@@ -628,10 +642,21 @@ def _parse_framework_file(file_bytes: bytes, filename: str) -> list[dict]:
     return df.to_dict(orient="records")
 
 
+@policy_hub_bp.route("/frameworks/access", methods=["GET"])
+def check_framework_access():
+    """Return whether the authenticated session has framework access.
+
+    Always returns 200 so the frontend can check the flag without error handling.
+    """
+    denied = _require_framework_owner()
+    if denied:
+        return jsonify({"has_access": False}), 200
+    return jsonify({"has_access": True}), 200
+
+
 @policy_hub_bp.route("/frameworks", methods=["GET"])
 def list_frameworks():
-    user_id = request.args.get("user_id", "")
-    denied = _require_owner(user_id)
+    denied = _require_framework_owner()
     if denied:
         return denied
 
@@ -654,8 +679,7 @@ def list_frameworks():
 @policy_hub_bp.route("/frameworks/upload", methods=["POST"])
 def upload_framework_preview():
     """Parse an uploaded file and return a preview — nothing is saved yet."""
-    user_id = request.form.get("user_id", "")
-    denied = _require_owner(user_id)
+    denied = _require_framework_owner()
     if denied:
         return denied
 
@@ -684,12 +708,11 @@ def upload_framework_preview():
 @policy_hub_bp.route("/frameworks/save", methods=["POST"])
 def save_framework():
     """Confirm and persist a framework (new or update)."""
-    body = request.get_json(silent=True) or {}
-    user_id = body.get("user_id", "")
-    denied = _require_owner(user_id)
+    denied = _require_framework_owner()
     if denied:
         return denied
 
+    body = request.get_json(silent=True) or {}
     name = (body.get("name") or "").strip()
     rows = body.get("rows")
     source_filename = body.get("source_filename", "")
@@ -726,8 +749,7 @@ def save_framework():
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["GET"])
 def get_framework(framework_id: str):
-    user_id = request.args.get("user_id", "")
-    denied = _require_owner(user_id)
+    denied = _require_framework_owner()
     if denied:
         return denied
 
@@ -739,9 +761,7 @@ def get_framework(framework_id: str):
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["DELETE"])
 def delete_framework(framework_id: str):
-    body = request.get_json(silent=True) or {}
-    user_id = body.get("user_id", "")
-    denied = _require_owner(user_id)
+    denied = _require_framework_owner()
     if denied:
         return denied
 
