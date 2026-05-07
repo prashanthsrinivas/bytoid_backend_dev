@@ -369,161 +369,62 @@ async def edit_policy():
 
     credits = Credits()
 
+    # Build focus hint — tells the AI where to concentrate changes
     if selected_text:
-        # ── Scoped edit: rewrite highlighted fragment or auto-detected section ─
-        if section_title:
-            # Auto-detected full section — heading must be preserved in the output
-            section_ctx = f"The following text is the entire \"{section_title}\" section:\n\n"
-            scope_instruction = (
-                "Rewrite the body of this section per the instruction. "
-                "IMPORTANT: Your output MUST include the original section heading as the first element, "
-                "followed by the updated body content. Do not drop the heading.\n\n"
-                "Keep all other sections of the document unchanged.\n\n"
-            )
-        else:
-            # User-highlighted fragment — return only the rewritten snippet
-            section_ctx = "The following text has been selected for editing:\n\n"
-            scope_instruction = (
-                "Rewrite ONLY this fragment per the instruction. "
-                "Keep the rest of the document unchanged.\n\n"
-            )
-
-        ai_prompt = (
-            "You are an expert GRC (Governance, Risk, Compliance) policy writer "
-            "editing a formal compliance document.\n\n"
-            f"Document title: {document_title}\n"
-            f"User instruction: {instruction}\n\n"
-            + section_ctx
-            + f"{selected_text}\n\n"
-            + scope_instruction
-            + "Return your response in EXACTLY this format — no other text:\n"
-              "[EXPLANATION]\n"
-              "1–2 sentence summary of what was changed.\n"
-              "[/EXPLANATION]\n"
-              "[FRAGMENT]\n"
-              "The rewritten HTML (valid HTML, inline styles preserved, "
-              "no surrounding document structure, no markdown, no code fences).\n"
-              "[/FRAGMENT]\n\n"
-              "Rules:\n"
-              "- Output valid HTML only\n"
-              "- Preserve all existing inline styles and tag structure\n"
-              "- Keep all compliance framework citations intact unless explicitly asked to change them\n"
-              "- Do not wrap in <html>, <body>, or <div> container tags "
-              "unless they were already present in the original"
+        focus_hint = (
+            "The user has selected the following text to target "
+            "(it may span multiple HTML elements — locate the corresponding area in the document):\n\n"
+            f"{selected_text}\n\n"
+            "Apply the instruction to that area only. Keep all other content unchanged.\n\n"
         )
-
-        response = await get_fireworks_response2(
-            user_id=user_id,
-            user_message=ai_prompt,
-            role="user",
-            credits=credits,
-            temp=0.1,
-        )
-
-        if response == "INSUFFICIENT":
-            return jsonify({"error": "Insufficient credits"}), 402
-
-        explanation = _extract_tag(response, "EXPLANATION")
-        fragment    = _extract_tag(response, "FRAGMENT")
-
-        if not fragment:
-            return jsonify({"error": "AI did not return a valid fragment"}), 500
-
-        # Attempt 1: exact match of selected_text in the HTML
-        updated_content = document_content.replace(selected_text, fragment, 1)
-
-        # Attempt 2: strip HTML tags from selected_text and try plain-text match
-        if updated_content == document_content:
-            plain = re.sub(r"<[^>]+>", "", selected_text).strip()
-            if plain and plain in document_content:
-                updated_content = document_content.replace(plain, fragment, 1)
-
-        # Attempt 3: the selected text spans multiple HTML tags (e.g. across <td> cells)
-        # — fall back to a full-document rewrite, passing the selection as focused context
-        if updated_content == document_content:
-            fallback_prompt = (
-                "You are an expert GRC (Governance, Risk, Compliance) policy writer "
-                "editing a formal compliance document.\n\n"
-                f"Document title: {document_title}\n"
-                f"User instruction: {instruction}\n\n"
-                "The user selected the following text to target (it may span multiple HTML elements):\n\n"
-                f"{selected_text}\n\n"
-                "Apply the instruction to the relevant part of the document that corresponds "
-                "to this selected content. Rewrite only what is necessary.\n\n"
-                "Return your response in EXACTLY this format — no other text:\n"
-                "[EXPLANATION]\n"
-                "1–2 sentence summary of what was changed.\n"
-                "[/EXPLANATION]\n"
-                "[HTML]\n"
-                "The full updated document HTML.\n"
-                "[/HTML]\n\n"
-                "Rules:\n"
-                "- Return ONLY valid HTML — no markdown, no code fences\n"
-                "- Preserve all existing HTML structure, inline styles, heading hierarchy, and tables\n"
-                "- Keep all compliance framework citations intact unless explicitly asked to change them\n"
-                "- Do not add or remove top-level sections unless explicitly instructed\n"
-                "- Do not truncate — output the complete document\n\n"
-                f"Current document HTML:\n{document_content}"
-            )
-            fallback_response = await get_fireworks_response2(
-                user_id=user_id,
-                user_message=fallback_prompt,
-                role="user",
-                credits=credits,
-                temp=0.1,
-            )
-            if fallback_response == "INSUFFICIENT":
-                return jsonify({"error": "Insufficient credits"}), 402
-
-            explanation     = _extract_tag(fallback_response, "EXPLANATION") or explanation
-            updated_content = _extract_tag(fallback_response, "HTML") or document_content
-
-    else:
-        # ── Full-document edit ────────────────────────────────────────────────
-        section_hint = (
-            f"The instruction specifically targets the section titled \"{section_title}\". "
+    elif section_title:
+        focus_hint = (
+            f"The instruction targets the section titled \"{section_title}\". "
             "Edit only that section unless the instruction requires broader changes.\n\n"
-            if section_title else ""
         )
-        ai_prompt = (
-            "You are an expert GRC (Governance, Risk, Compliance) policy writer "
-            "editing a formal compliance document.\n\n"
-            f"Document title: {document_title}\n"
-            f"User instruction: {instruction}\n\n"
-            + section_hint +
-            "Return your response in EXACTLY this format — no other text:\n"
-            "[EXPLANATION]\n"
-            "1–2 sentence summary of what was changed.\n"
-            "[/EXPLANATION]\n"
-            "[HTML]\n"
-            "The full updated document HTML.\n"
-            "[/HTML]\n\n"
-            "Rules:\n"
-            "- Return ONLY valid HTML — no markdown, no code fences\n"
-            "- Preserve all existing HTML structure, inline styles, heading hierarchy, and tables\n"
-            "- Keep all compliance framework citations (ISO 27001, NIST, HIPAA, etc.) intact "
-            "unless the instruction explicitly asks to change them\n"
-            "- Do not add or remove top-level sections unless explicitly instructed\n"
-            "- Do not truncate — output the complete document\n\n"
-            f"Current document HTML:\n{document_content}"
-        )
+    else:
+        focus_hint = ""
 
-        response = await get_fireworks_response2(
-            user_id=user_id,
-            user_message=ai_prompt,
-            role="user",
-            credits=credits,
-            temp=0.1,
-        )
+    # Single AI call — always returns the full updated document
+    ai_prompt = (
+        "You are an expert GRC (Governance, Risk, Compliance) policy writer "
+        "editing a formal compliance document.\n\n"
+        f"Document title: {document_title}\n"
+        f"User instruction: {instruction}\n\n"
+        + focus_hint +
+        "Return your response in EXACTLY this format — no other text:\n"
+        "[EXPLANATION]\n"
+        "1–2 sentence summary of what was changed.\n"
+        "[/EXPLANATION]\n"
+        "[HTML]\n"
+        "The full updated document HTML.\n"
+        "[/HTML]\n\n"
+        "Rules:\n"
+        "- Return ONLY valid HTML — no markdown, no code fences\n"
+        "- Preserve all existing HTML structure, inline styles, heading hierarchy, and tables\n"
+        "- Keep all compliance framework citations (ISO 27001, NIST, HIPAA, etc.) intact "
+        "unless the instruction explicitly asks to change them\n"
+        "- Do not add or remove top-level sections unless explicitly instructed\n"
+        "- Do not truncate — output the complete document\n\n"
+        f"Current document HTML:\n{document_content}"
+    )
 
-        if response == "INSUFFICIENT":
-            return jsonify({"error": "Insufficient credits"}), 402
+    response = await get_fireworks_response2(
+        user_id=user_id,
+        user_message=ai_prompt,
+        role="user",
+        credits=credits,
+        temp=0.1,
+    )
 
-        explanation     = _extract_tag(response, "EXPLANATION")
-        updated_content = _extract_tag(response, "HTML")
+    if response == "INSUFFICIENT":
+        return jsonify({"error": "Insufficient credits"}), 402
 
-        if not updated_content:
-            return jsonify({"error": "AI did not return valid HTML"}), 500
+    explanation     = _extract_tag(response, "EXPLANATION")
+    updated_content = _extract_tag(response, "HTML")
+
+    if not updated_content:
+        return jsonify({"error": "AI did not return valid HTML"}), 500
 
     # Persist the updated content back to S3
     key      = _s3_key(user_id, policy_id)
