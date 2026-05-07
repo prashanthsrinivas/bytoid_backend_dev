@@ -466,12 +466,10 @@ Return ONLY valid JSON:
             "message": f"The AI changes could not be safely applied. {error_msg}",
         }
 
-    await emit(msg_builder.job_progress(job_id, session_id, "saving", "Saving updated tracker...", 90))
-    await asyncio.to_thread(save_tracker_file, user_id, tracker_id, tracker_data)
-
     return {
         "intent": "reduce",
         "tracker_modified": True,
+        "pending_confirmation": True,
         "tracker_data": tracker_data,
         "tracker_id": tracker_id,
     }
@@ -574,7 +572,176 @@ CRITICAL FORMAT RULES:
                 return {"error": "invalid_response"}
             ai_result = parsed
     else:
-        return {"error": "scoped_increase_not_implemented"}
+        elem = scope.get("selected_element", {})
+        sel_row = scope.get("selected_row", {})
+        sel_col = scope.get("selected_column", {})
+        sel_rows = scope.get("selected_rows", [])
+        sel_cols = scope.get("selected_columns", [])
+
+        if scope_type == "selected_element" and elem:
+            row_id = elem.get("row_id")
+            col_id = elem.get("col_id")
+            value = elem.get("value", "")
+            col_name = next(
+                (c["name"] for c in tracker_data.get("schema", {}).get("columns", []) if c["id"] == col_id),
+                col_id,
+            )
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Selected cell:
+Row ID: {row_id}
+Column: {col_name} (ID: {col_id})
+Current value: "{value}"
+
+TASK: Expand and elaborate this cell value per the user's request.
+
+Return ONLY valid JSON:
+{{"row_id": "{row_id}", "col_id": "{col_id}", "new_value": "<expanded value>"}}"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, dict):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_row" and sel_row:
+            row_id = sel_row.get("row_id")
+            row_data = sel_row.get("data", {})
+            col_schema = json.dumps(tracker_data.get("schema", {}).get("columns", []))
+            row_values_json = json.dumps(row_data)
+
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Selected row:
+Row ID: {row_id}
+Current values: {row_values_json}
+Column schema: {col_schema}
+
+TASK: Expand and elaborate the text values in this row per the user's request.
+Preserve numeric values unchanged.
+
+Return ONLY valid JSON:
+{{"row_id": "{row_id}", "values": {{<col_id>: <expanded_value>, ...}}}}"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, dict):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_column" and sel_col:
+            col_id = sel_col.get("col_id")
+            col_name = sel_col.get("name", col_id)
+            rows_with_col = json.dumps([
+                {"row_id": r["row_id"], "value": r.get("values", {}).get(col_id, "")}
+                for r in tracker_data.get("rows", [])
+            ])
+
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Column to expand: {col_name} (ID: {col_id})
+Current values across all rows:
+{rows_with_col}
+
+TASK: Expand and elaborate the value in column "{col_name}" for every row listed.
+
+Return ONLY valid JSON array:
+[{{"row_id": "...", "new_value": "<expanded value>"}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_rows" and sel_rows:
+            col_schema = json.dumps(tracker_data.get("schema", {}).get("columns", []))
+            rows_json = json.dumps(sel_rows, indent=2)
+
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Selected rows to expand:
+{rows_json}
+Column schema: {col_schema}
+
+TASK: Expand and elaborate text values in the selected rows per the user's request.
+Preserve numeric values unchanged.
+
+Return ONLY valid JSON array:
+[{{"row_id": "...", "values": {{<col_id>: <expanded_value>, ...}}}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        elif scope_type == "selected_columns" and sel_cols:
+            col_ids_to_expand = [c.get("col_id") for c in sel_cols if c.get("col_id")]
+            col_names = {c.get("col_id"): c.get("name") for c in sel_cols}
+            rows_view = json.dumps([
+                {"row_id": r["row_id"], "values": {
+                    cid: r.get("values", {}).get(cid, "")
+                    for cid in col_ids_to_expand
+                }}
+                for r in tracker_data.get("rows", [])
+            ])
+
+            prompt = f"""You are a data content editor for a tracker tool.
+
+User request: "{message}"
+Language: {language}
+
+Columns to expand: {json.dumps(col_names)}
+Current values in selected columns (all rows):
+{rows_view}
+
+TASK: Expand and elaborate values in the selected columns only.
+Leave all other columns untouched.
+
+Return ONLY valid JSON array:
+[{{"row_id": "...", "values": {{<col_id>: <expanded_value>, ...}}}}, ...]"""
+
+            response = await get_fireworks_response2(
+                user_id, prompt, role="system", credits=credits, temp=0.7
+            )
+            if not response or response == "INSUFFICIENT":
+                return {"error": "insufficient_credits"}
+            parsed = extract_json_safe(response)
+            if not parsed or not isinstance(parsed, list):
+                return {"error": "invalid_response"}
+            ai_result = parsed
+
+        else:
+            return {"error": "invalid_scope"}
 
     await emit(msg_builder.job_progress(job_id, session_id, "ai_complete", "AI changes ready.", 80))
 
@@ -591,12 +758,10 @@ CRITICAL FORMAT RULES:
             "message": f"The AI changes could not be safely applied. {error_msg}",
         }
 
-    await emit(msg_builder.job_progress(job_id, session_id, "saving", "Saving updated tracker...", 90))
-    await asyncio.to_thread(save_tracker_file, user_id, tracker_id, tracker_data)
-
     return {
         "intent": "increase",
         "tracker_modified": True,
+        "pending_confirmation": True,
         "tracker_data": tracker_data,
         "tracker_id": tracker_id,
     }
@@ -691,12 +856,10 @@ Return ONLY valid JSON:
             "message": f"The AI changes could not be safely applied. {error_msg}",
         }
 
-    await emit(msg_builder.job_progress(job_id, session_id, "saving", "Saving updated tracker...", 90))
-    await asyncio.to_thread(save_tracker_file, user_id, tracker_id, tracker_data)
-
     return {
         "intent": "modify_content",
         "tracker_modified": True,
+        "pending_confirmation": True,
         "tracker_data": tracker_data,
         "tracker_id": tracker_id,
     }
@@ -776,7 +939,7 @@ async def _complete_tracker_worker(data, job_id=None, session_id=None):
         )
 
         if "error" not in result:
-            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            msg_text = "Changes ready. Please confirm to save." if result.get("pending_confirmation") else result.get("response", "Done.")
             await emit(msg_builder.job_success(job_id, session_id, msg_text))
         else:
             await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
@@ -835,6 +998,10 @@ async def _selected_element_worker(data, job_id=None, session_id=None):
         )
         language = await detect_language(user_id, message, credits)
 
+        # Normalize column_id → col_id (clients may send either field name)
+        if "column_id" in selected_element and "col_id" not in selected_element:
+            selected_element = {**selected_element, "col_id": selected_element["column_id"]}
+
         scope = {"type": "selected_element", "tracker_data": tracker_data, "selected_element": selected_element}
         result = await _dispatch_intent(
             intent=intent,
@@ -850,7 +1017,7 @@ async def _selected_element_worker(data, job_id=None, session_id=None):
         )
 
         if "error" not in result:
-            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            msg_text = "Changes ready. Please confirm to save." if result.get("pending_confirmation") else result.get("response", "Done.")
             await emit(msg_builder.job_success(job_id, session_id, msg_text))
         else:
             await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
@@ -924,7 +1091,7 @@ async def _selected_row_worker(data, job_id=None, session_id=None):
         )
 
         if "error" not in result:
-            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            msg_text = "Changes ready. Please confirm to save." if result.get("pending_confirmation") else result.get("response", "Done.")
             await emit(msg_builder.job_success(job_id, session_id, msg_text))
         else:
             await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
@@ -998,7 +1165,7 @@ async def _selected_column_worker(data, job_id=None, session_id=None):
         )
 
         if "error" not in result:
-            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            msg_text = "Changes ready. Please confirm to save." if result.get("pending_confirmation") else result.get("response", "Done.")
             await emit(msg_builder.job_success(job_id, session_id, msg_text))
         else:
             await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
@@ -1072,7 +1239,7 @@ async def _selected_rows_worker(data, job_id=None, session_id=None):
         )
 
         if "error" not in result:
-            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            msg_text = "Changes ready. Please confirm to save." if result.get("pending_confirmation") else result.get("response", "Done.")
             await emit(msg_builder.job_success(job_id, session_id, msg_text))
         else:
             await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
@@ -1146,7 +1313,7 @@ async def _selected_columns_worker(data, job_id=None, session_id=None):
         )
 
         if "error" not in result:
-            msg_text = "Tracker updated successfully." if result.get("tracker_modified") else result.get("response", "Done.")
+            msg_text = "Changes ready. Please confirm to save." if result.get("pending_confirmation") else result.get("response", "Done.")
             await emit(msg_builder.job_success(job_id, session_id, msg_text))
         else:
             await emit(msg_builder.job_error(job_id, session_id, result.get("message", "An error occurred")))
@@ -1246,4 +1413,42 @@ async def selected_columns_tracker_change():
         return jsonify({"success": True, "job_id": job_id, "status": "queued"})
     except Exception as e:
         logger.exception("Error in selected_columns_tracker_change: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_ai_bp.route("/tracker/ai/save_tracker_change", methods=["POST"])
+async def save_tracker_change():
+    """
+    Persist confirmed AI-modified tracker data to S3.
+
+    Call this after the user confirms the proposed changes from any
+    *_tracker_change endpoint. Accepts the tracker_data returned by
+    the AI job and writes it to S3.
+
+    Body:
+      user_id     string (required)
+      tracker_id  string (required)
+      tracker_data object (required) — the confirmed modified tracker JSON
+
+    Returns:
+      { "success": true, "tracker_id": "..." }
+    """
+    try:
+        data = request.json
+        user_id = data.get("user_id")
+        tracker_id = data.get("tracker_id")
+        tracker_data = data.get("tracker_data")
+
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+        if not tracker_id:
+            return jsonify({"error": "tracker_id is required"}), 400
+        if not tracker_data or not isinstance(tracker_data, dict):
+            return jsonify({"error": "tracker_data is required and must be an object"}), 400
+
+        await asyncio.to_thread(save_tracker_file, user_id, tracker_id, tracker_data)
+
+        return jsonify({"success": True, "tracker_id": tracker_id})
+    except Exception as e:
+        logger.exception("Error in save_tracker_change: %s", e)
         return jsonify({"error": str(e)}), 500

@@ -1,7 +1,8 @@
-from flask import Blueprint, jsonify, request, session, redirect
+from flask import Blueprint, jsonify, request, session, redirect, g
 from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch
 from db.rds_db import connect_to_rds
 from services.credit_system import CreditManager
+from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED
 from utils.app_configs import ALLOWED_ORIGINS, ACCESSIBLE_IDS
 from db.db_checkers import ensure_starter_credits_for_user
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
@@ -845,6 +846,17 @@ def grant_access():
    cursor.close()
    conn.close()
 
+   log_audit_event(
+       action=SPECIAL_ACCESS_GRANTED,
+       endpoint="/admin/grant-access",
+       ip=request.remote_addr,
+       status="success",
+       actor_user_id=admin_id,
+       target_user_id=target_user,
+       metadata={"org": org},
+   )
+   g.audit_logged = True
+
    return jsonify({"message": "Access granted"})
 @sso_bp.route("/admin/revoke-access", methods=["POST"])
 def revoke_access():
@@ -878,6 +890,17 @@ def revoke_access():
    conn.commit()
    cursor.close()
    conn.close()
+
+   log_audit_event(
+       action=SPECIAL_ACCESS_REVOKED,
+       endpoint="/admin/revoke-access",
+       ip=request.remote_addr,
+       status="success",
+       actor_user_id=admin_id,
+       target_user_id=target_user,
+       metadata={"org": org},
+   )
+   g.audit_logged = True
 
    return jsonify({"message": "Access revoked"})
 

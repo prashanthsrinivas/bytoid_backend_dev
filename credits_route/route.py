@@ -1,9 +1,10 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from db.rds_db import connect_to_rds
 import pymysql
 from services.credit_system import CreditManager, InsufficientCreditsError
 from datetime import datetime, timedelta
 from utils.app_configs import ACCESSIBLE_IDS
+from services.audit_log_service import log_audit_event, CREDIT_ADDED_MANUALLY
 
 # load_dotenv()  # Load from .env into environment variables
 credits_bp = Blueprint("credits", __name__)
@@ -467,6 +468,21 @@ def add_credits_route():
             source_type="TOPUP",
             expires_at=expires_at,
         )
+        log_audit_event(
+            action=CREDIT_ADDED_MANUALLY,
+            endpoint="/credits/add",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=user_id,
+            target_user_id=resolved_customer_id,
+            target_email=customer_email,
+            metadata={
+                "credits_added": number_credits,
+                "bucket_id": bucket_id,
+                "source_type": "TOPUP",
+            },
+        )
+        g.audit_logged = True
         return jsonify({
             "success": True,
             "bucket_id": bucket_id,

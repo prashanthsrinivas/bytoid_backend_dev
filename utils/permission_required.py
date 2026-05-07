@@ -43,8 +43,8 @@ def permission_required(required_permission):
 
                         # check same org
                         cursor.execute("""
-                            SELECT user_type, launch_id_fk 
-                            FROM users 
+                            SELECT user_type, launch_id_fk, email
+                            FROM users
                             WHERE user_id=%s
                         """, (owner_user_id,))
                         owner = cursor.fetchone()
@@ -68,13 +68,14 @@ def permission_required(required_permission):
                             if not access:
                                 return jsonify({"error": "Admin access restricted"}), 403
 
-                            # Tag request context with cross-admin context (for audit logging)
+                            # Tag request context with cross-admin identity (for audit logging)
                             g.acting_on_behalf_of_user_id = owner_user_id
+                            g.acting_on_behalf_of_email = owner.get("email")
                             return f(*args, **kwargs)
 
                         # check same org (old logic - kept as you asked)
                         cursor.execute("""
-                            SELECT launch_id_fk FROM users WHERE user_id=%s
+                            SELECT launch_id_fk, email FROM users WHERE user_id=%s
                         """, (owner_user_id,))
                         owner = cursor.fetchone()
 
@@ -92,6 +93,9 @@ def permission_required(required_permission):
                         if not access:
                             return jsonify({"error": "Admin access restricted"}), 403
 
+                        # Tag request context with cross-admin identity (for audit logging)
+                        g.acting_on_behalf_of_user_id = owner_user_id
+                        g.acting_on_behalf_of_email = owner.get("email")
                         return f(*args, **kwargs)
 
                     #  NORMAL USER FLOW

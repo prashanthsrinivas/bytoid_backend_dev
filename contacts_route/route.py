@@ -1,6 +1,6 @@
 import json
 import traceback
-from flask import request, jsonify, session, Blueprint
+from flask import request, jsonify, session, Blueprint, g
 from db.rds_db import connect_to_rds
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +10,7 @@ from utils.s3_utils import (
 )
 from umail_helper.ticketalloc import TicketAllocator
 from threading import Thread
+from services.audit_log_service import log_audit_event, CONTACT_BULK_DELETED, CONTACT_GROUP_DELETED
 
 
 # from session_middleware import session_check
@@ -564,6 +565,18 @@ def delete_contacts():
         # else:
         #    #print("No cache found")
 
+        log_audit_event(
+            action=CONTACT_BULK_DELETED,
+            endpoint="/users/delete_contacts",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=user_id,
+            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            acting_on_behalf_of_email=getattr(g, "acting_on_behalf_of_email", None),
+            metadata={"contact_ids": client_ids, "count": len(client_ids)},
+        )
+        g.audit_logged = True
+
         return (
             jsonify(
                 {"message": "Contacts deleted successfully", "deleted_ids": client_ids}
@@ -1027,6 +1040,18 @@ def delete_group():
                     (json.dumps(groups_json), user_id),
                 )
                 connection.commit()
+
+        log_audit_event(
+            action=CONTACT_GROUP_DELETED,
+            endpoint="/users/delete_group",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=user_id,
+            acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            acting_on_behalf_of_email=getattr(g, "acting_on_behalf_of_email", None),
+            metadata={"group_ids": group_id, "count": len(group_id)},
+        )
+        g.audit_logged = True
 
         return (
             jsonify({"message": "Group deleted successfully", "groups": groups_json}),
