@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, session, redirect, make_response
+from flask import Blueprint, request, jsonify, session, redirect, make_response, g
 from google_route.google_helpers import update_user_alive
 from services.gmail_service import GmailService
 from pydrive.auth import GoogleAuth
@@ -23,7 +23,9 @@ from db.db_checkers import (
     check_onboarding_user,
     ensure_starter_credits_for_user,
     fetch_apikey_from_launch,
+    get_email_by_id,
 )
+from services.audit_log_service import log_audit_event, LOGIN_SUCCESS
 from services.redis_service import get_redis
 from utils.base_logger import get_logger
 from session_manager_route.routes import session_login
@@ -602,9 +604,21 @@ async def receive_browser_url():
             max_age=60 * 60 * 24 * 7,
         )
 
+        log_audit_event(
+            action=LOGIN_SUCCESS,
+            endpoint="/browser_url",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=user_id,
+            actor_email=get_email_by_id(user_id),
+            metadata={"provider": "google", "new_user": newuser},
+        )
+        g.audit_logged = True
+
         return response
 
     except Exception as e:
+        g.audit_logged = True
         logger.info("Error at login at browser_url", e)
         return jsonify({"error": str(e)}), 500
 

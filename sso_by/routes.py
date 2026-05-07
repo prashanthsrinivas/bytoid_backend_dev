@@ -2,7 +2,7 @@ from flask import Blueprint, jsonify, request, session, redirect, g
 from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch, get_email_by_id
 from db.rds_db import connect_to_rds
 from services.credit_system import CreditManager
-from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SAML_USER_PROVISIONED, ORG_CREATED
+from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SAML_USER_PROVISIONED, ORG_CREATED, LOGIN_SUCCESS
 from utils.app_configs import ALLOWED_ORIGINS, ACCESSIBLE_IDS
 from db.db_checkers import ensure_starter_credits_for_user
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
@@ -513,20 +513,27 @@ def saml_acs():
             credit_status = "error"
             credit_message = "Could not fetch credits"
 
-       # Audit logging
-       log_audit_event(
-           action=SAML_USER_PROVISIONED,
-           endpoint="/auth/saml/acs",
-           ip=request.remote_addr,
-           status="success",
-           actor_user_id=user_id,
-           actor_email=email,
-           metadata={
-               "saml_org": org,
-               "is_new_user": is_new_user,
-               "role": role,
-           },
-       )
+       # Audit logging: distinguish first-time provisioning from returning logins
+       if is_new_user:
+           log_audit_event(
+               action=SAML_USER_PROVISIONED,
+               endpoint="/auth/saml/acs",
+               ip=request.remote_addr,
+               status="success",
+               actor_user_id=user_id,
+               actor_email=email,
+               metadata={"saml_org": org, "is_new_user": True, "role": role},
+           )
+       else:
+           log_audit_event(
+               action=LOGIN_SUCCESS,
+               endpoint="/auth/saml/acs",
+               ip=request.remote_addr,
+               status="success",
+               actor_user_id=user_id,
+               actor_email=email,
+               metadata={"provider": "saml", "saml_org": org, "role": role},
+           )
        g.audit_logged = True
 
        redirect_base = session.get("saml_redirect", "https://app.bytoid.ai")
