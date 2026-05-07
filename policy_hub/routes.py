@@ -362,6 +362,7 @@ async def edit_policy():
     document_content = body.get("document_content", "")
     instruction      = body.get("instruction", "")
     selected_text    = body.get("selected_text", "").strip()
+    section_title    = body.get("section_title", "").strip()
 
     if not user_id or not policy_id or not document_content or not instruction:
         return jsonify({"error": "user_id, policy_id, document_content, and instruction are required"}), 400
@@ -369,30 +370,46 @@ async def edit_policy():
     credits = Credits()
 
     if selected_text:
-        # ── Scoped edit: rewrite only the highlighted fragment ────────────────
+        # ── Scoped edit: rewrite highlighted fragment or auto-detected section ─
+        if section_title:
+            # Auto-detected full section — heading must be preserved in the output
+            section_ctx = f"The following text is the entire \"{section_title}\" section:\n\n"
+            scope_instruction = (
+                "Rewrite the body of this section per the instruction. "
+                "IMPORTANT: Your output MUST include the original section heading as the first element, "
+                "followed by the updated body content. Do not drop the heading.\n\n"
+                "Keep all other sections of the document unchanged.\n\n"
+            )
+        else:
+            # User-highlighted fragment — return only the rewritten snippet
+            section_ctx = "The following text has been selected for editing:\n\n"
+            scope_instruction = (
+                "Rewrite ONLY this fragment per the instruction. "
+                "Keep the rest of the document unchanged.\n\n"
+            )
+
         ai_prompt = (
             "You are an expert GRC (Governance, Risk, Compliance) policy writer "
             "editing a formal compliance document.\n\n"
             f"Document title: {document_title}\n"
             f"User instruction: {instruction}\n\n"
-            "The user has highlighted the following text to edit specifically:\n\n"
-            f"{selected_text}\n\n"
-            "Rewrite ONLY this fragment per the instruction. "
-            "Keep the rest of the document unchanged.\n\n"
-            "Return your response in EXACTLY this format — no other text:\n"
-            "[EXPLANATION]\n"
-            "1–2 sentence summary of what was changed.\n"
-            "[/EXPLANATION]\n"
-            "[FRAGMENT]\n"
-            "The rewritten HTML fragment only (valid HTML, inline styles preserved, "
-            "no surrounding document structure, no markdown, no code fences).\n"
-            "[/FRAGMENT]\n\n"
-            "Rules:\n"
-            "- Output valid HTML for the fragment only\n"
-            "- Preserve all existing inline styles and tag structure within the fragment\n"
-            "- Keep all compliance framework citations intact unless explicitly asked to change them\n"
-            "- Do not wrap the fragment in <html>, <body>, or <div> container tags "
-            "unless they were already present in the original fragment"
+            + section_ctx
+            + f"{selected_text}\n\n"
+            + scope_instruction
+            + "Return your response in EXACTLY this format — no other text:\n"
+              "[EXPLANATION]\n"
+              "1–2 sentence summary of what was changed.\n"
+              "[/EXPLANATION]\n"
+              "[FRAGMENT]\n"
+              "The rewritten HTML (valid HTML, inline styles preserved, "
+              "no surrounding document structure, no markdown, no code fences).\n"
+              "[/FRAGMENT]\n\n"
+              "Rules:\n"
+              "- Output valid HTML only\n"
+              "- Preserve all existing inline styles and tag structure\n"
+              "- Keep all compliance framework citations intact unless explicitly asked to change them\n"
+              "- Do not wrap in <html>, <body>, or <div> container tags "
+              "unless they were already present in the original"
         )
 
         response = await get_fireworks_response2(
@@ -422,11 +439,17 @@ async def edit_policy():
 
     else:
         # ── Full-document edit ────────────────────────────────────────────────
+        section_hint = (
+            f"The instruction specifically targets the section titled \"{section_title}\". "
+            "Edit only that section unless the instruction requires broader changes.\n\n"
+            if section_title else ""
+        )
         ai_prompt = (
             "You are an expert GRC (Governance, Risk, Compliance) policy writer "
             "editing a formal compliance document.\n\n"
             f"Document title: {document_title}\n"
             f"User instruction: {instruction}\n\n"
+            + section_hint +
             "Return your response in EXACTLY this format — no other text:\n"
             "[EXPLANATION]\n"
             "1–2 sentence summary of what was changed.\n"
