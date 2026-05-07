@@ -610,12 +610,16 @@ def _fw_key(framework_id: str) -> str:
 
 
 def _require_framework_owner():
-    # g.user_id is set by session middleware; g.session_user_id is the Flask-session fallback
-    # set by app.py's before_request when the session middleware is inactive.
-    user_id = getattr(g, "user_id", None) or getattr(g, "session_user_id", None)
+    # Resolution order: session middleware → Flask session → request (form/args/body)
+    user_id = (
+        getattr(g, "user_id", None)
+        or getattr(g, "session_user_id", None)
+        or request.form.get("user_id")
+        or request.args.get("user_id")
+        or (request.get_json(silent=True) or {}).get("user_id")
+    )
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-    # Prefer email from g.user (session middleware); fall back to a DB lookup.
     user = getattr(g, "user", None) or {}
     email = user.get("email") or get_email_by_id(user_id)
     if email != FRAMEWORK_OWNER:
