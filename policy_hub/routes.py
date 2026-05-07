@@ -110,9 +110,15 @@ def _enumeration_prompt(prompt: str, fw_list: str, type_filter: str) -> str:
 
 
 def _doc_generation_prompt(title: str, doc_type: str, description: str,
-                            fw_list: str, user_context: str) -> str:
+                            fw_list: str, user_context: str, controls: str = "") -> str:
     stmt_heading = "Policy Statement" if doc_type == "policy" else "Procedure Steps"
     enforce_heading = "Enforcement" if doc_type == "policy" else "Compliance Monitoring"
+    controls_block = (
+        "REQUIRED CONTROLS (sourced directly from the selected compliance frameworks — "
+        "every control listed below MUST be explicitly addressed with a named clause reference "
+        "and a corresponding SHALL/MUST statement in this document):\n"
+        + controls + "\n\n"
+    ) if controls else ""
     return (
         f"You are a world-class compliance officer, legal counsel, and technical writer with 20+ years of "
         f"experience authoring enterprise-grade {doc_type} documents for Fortune 500 companies and regulated "
@@ -122,6 +128,7 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
         f"for an organization that must comply with: {fw_list}.\n\n"
         f"Document purpose: {description}\n"
         f"Organization context: {user_context}\n\n"
+        + controls_block +
         "QUALITY STANDARDS (every standard must be met — failure on any = unacceptable quality):\n"
         "1. Every section contains substantive, specific content — zero generic filler or placeholder text\n"
         "2. Every control or requirement is tied to a named framework clause "
@@ -185,8 +192,37 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
 
 # ── Background generation worker ──────────────────────────────────────────────
 
+async def _fetch_framework_controls(framework_ids: list, title: str, description: str) -> str:
+    """Query LanceDB for controls relevant to this document from each selected framework."""
+    if not framework_ids:
+        return ""
+
+    query_text = f"{title} — {description}"
+    embeddings = await get_firework_embedding()
+    vec = await asyncio.to_thread(embeddings.embed_query, query_text)
+
+    lance = LanceDBServer()
+    query = QueryData(user_id=FRAMEWORK_LANCE_USER, embedding=vec, top_k=10)
+
+    seen: set = set()
+    snippets: list = []
+    for fw_id in framework_ids:
+        try:
+            results = await lance.query_vector_filename(query, fw_id)
+            for r in results:
+                t = r.get("text", "")
+                if t and t not in seen:
+                    seen.add(t)
+                    snippets.append(t)
+        except Exception as e:
+            logger.warning("LanceDB query failed for framework %s: %s", fw_id, e)
+
+    return "\n".join(f"- {s}" for s in snippets[:30])
+
+
 def _generation_worker(user_id: str, job_id: str, docs: list,
-                       frameworks: list, prompt: str, fw_list: str, doc_type_filter):
+                       frameworks: list, framework_ids: list,
+                       prompt: str, fw_list: str, doc_type_filter):
     """
     Runs in a background thread. Generates every document in `docs`,
     saves each as a separate YAML file, and updates the job state in S3
@@ -203,12 +239,21 @@ def _generation_worker(user_id: str, job_id: str, docs: list,
             d_type = doc.get("type", doc_type_filter or "policy")
             description = doc.get("description", "")
 
+            controls = ""
+            if framework_ids:
+                try:
+                    controls = loop.run_until_complete(
+                        _fetch_framework_controls(framework_ids, title, description)
+                    )
+                except Exception as e:
+                    logger.warning("Framework controls fetch failed for '%s': %s", title, e)
+
             try:
                 content = loop.run_until_complete(
                     get_fireworks_response2(
                         user_id=user_id,
                         user_message=_doc_generation_prompt(
-                            title, d_type, description, fw_list, prompt
+                            title, d_type, description, fw_list, prompt, controls
                         ),
                         role="user",
                         credits=credits,
@@ -275,6 +320,7 @@ async def generate_policy():
     prompt = body.get("prompt")
     doc_type = body.get("type")          # kept for metadata only — generation always covers both types
     frameworks = body.get("frameworks", [])
+    framework_ids = body.get("framework_ids", [])  # UUIDs of uploaded frameworks to draw controls from
 
     if not user_id or not prompt:
         return jsonify({"error": "user_id and prompt are required"}), 400
@@ -311,6 +357,7 @@ async def generate_policy():
         "items": [],
         "documents": docs,
         "frameworks": frameworks,
+        "framework_ids": framework_ids,
         "error": None,
     }
     _save_job(job_id, job_state)
@@ -318,7 +365,7 @@ async def generate_policy():
     # Phase 2: generate all documents in background — runs to completion regardless of client
     thread = threading.Thread(
         target=_generation_worker,
-        args=(user_id, job_id, docs, frameworks, prompt, fw_list, doc_type),
+        args=(user_id, job_id, docs, frameworks, framework_ids, prompt, fw_list, doc_type),
         daemon=True,
     )
     thread.start()
@@ -696,6 +743,41 @@ def _lance_index_worker(framework_id: str, rows: list[dict]):
         logger.error("LanceDB framework indexing failed for %s: %s", framework_id, e)
     finally:
         loop.close()
+
+
+@policy_hub_bp.route("/frameworks/available", methods=["GET"])
+def list_available_frameworks():
+    """Return all framework names + IDs for the Select Frameworks dropdown.
+
+    No admin check — any authenticated user (user_id present) may call this.
+    Returns only metadata; row content stays in LanceDB.
+    """
+    user_id = (
+        getattr(g, "user_id", None)
+        or getattr(g, "session_user_id", None)
+        or request.args.get("user_id")
+    )
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    prefix = f"{FRAMEWORK_OWNER}/frameworks/"
+    objects = list_all_files(folder=prefix)
+
+    frameworks = []
+    for obj in objects:
+        key = obj.get("Key", "")
+        if not key.endswith(".yaml"):
+            continue
+        data = load_yaml_from_s3(key)
+        if data:
+            frameworks.append({
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "row_count": data.get("row_count", 0),
+            })
+
+    frameworks.sort(key=lambda x: (x.get("name") or "").lower())
+    return jsonify({"frameworks": frameworks}), 200
 
 
 @policy_hub_bp.route("/frameworks/access", methods=["GET"])
