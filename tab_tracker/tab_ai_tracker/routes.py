@@ -474,8 +474,10 @@ Language: {language}
 Current tracker JSON:
 {tracker_json_str}
 
-TASK: Shorten and condense the text content values in this tracker.
-Apply the user's reduce request to ALL text values across the tracker.
+TASK: Apply the user's request precisely.
+- If the user specifies a particular row ID, item name, column, or any specific element, ONLY shorten/condense that element.
+- If no specific target is mentioned, shorten ALL text content values.
+- Leave every element not explicitly targeted by the user's request completely unchanged.
 
 CRITICAL FORMAT RULES:
 1. You MUST return ONLY valid JSON.
@@ -648,15 +650,17 @@ Language: {language}
 Current tracker JSON:
 {tracker_json_str}
 
-TASK: Expand and elaborate the text content values in this tracker.
-Make descriptions more detailed and comprehensive while staying on-topic.
+TASK: Apply the user's request precisely.
+- If the user specifies a particular row ID, item name, column, or any specific element, ONLY expand/elaborate that element.
+- If no specific target is mentioned, expand ALL text content values.
+- Leave every element not explicitly targeted by the user's request completely unchanged.
 
 CRITICAL FORMAT RULES:
 1. You MUST return ONLY valid JSON.
 2. The output JSON must have EXACTLY the same structure as the input tracker JSON.
 3. Do NOT add, remove, or rename any keys, column IDs, row IDs, or schema fields.
 4. Do NOT change tracker_id, type, runbook_id, source_blocks, schema.columns[*].id, schema.columns[*].name, or any row_id values.
-5. Only expand string "values" content. Preserve numeric values unchanged.
+5. Only modify string "values" content as instructed. Preserve numeric values unchanged.
 6. Return the complete modified tracker JSON, not a diff."""
 
             response = await get_fireworks_response2(
