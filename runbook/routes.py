@@ -94,6 +94,12 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
                 structure_file, default_filename="structure_file"
             )
 
+        # When no structure file is provided, fall back to the default template
+        # so the execution engine always receives a valid blocks payload.
+        if not structure_file_data and not default_view_template:
+            with open("runbook/default_temp.json", "r", encoding="utf-8") as _f:
+                default_view_template = json.load(_f)
+
         files_data = [
             extract_file_payload(f, default_filename=f"file_{i}")
             for i, f in enumerate(json_files)
@@ -119,7 +125,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             "api_endpoint": data.get("endpoint_id"),
             "app_id": data.get("app_id"),
             "log_source": data.get("log_source"),
-            "files": json_files,
+            "files": {},
             "links": json.dumps(data.get("links", {})),
             "data_sources": data_sources_full,
             "reference_sources": reference_sources_full,
