@@ -401,6 +401,29 @@ async def retreval_from_sources(
                             "data": str(results.get("text", "")),
                         }
                     )
+    # -------------------------
+    # POLICIES & PROCEDURES (always appended as governance context regardless of main_source)
+    # -------------------------
+    policy_ids = (filesources or {}).get("policy_ids", [])
+    if policy_ids:
+        from utils.s3_utils import load_yaml_from_s3
+        for policy_id in policy_ids:
+            s3_key = f"{userid}/policies/{policy_id}.yaml"
+            try:
+                policy_data = load_yaml_from_s3(s3_key)
+                if policy_data:
+                    content = policy_data.get("content", "")
+                    title = policy_data.get("title", policy_id)
+                    policy_type = policy_data.get("type", "policy")
+                    extracted_text_len += len(content)
+                    data_for_review.append({
+                        "type": "policy",
+                        "source": title,
+                        "data": f"[{policy_type.upper()}] {title}\n\n{content}",
+                    })
+            except Exception as e:
+                logger.warning("Failed to load policy %s: %s", policy_id, e)
+
     logger.info("Total extracted text length: %d", extracted_text_len)
 
     return data_for_review
