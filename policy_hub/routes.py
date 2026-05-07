@@ -381,8 +381,100 @@ def _find_section(html: str, needle: str) -> tuple[str, int, int] | None:
 
 # ── 1c. EDIT ──────────────────────────────────────────────────────────────────
 
+def _edit_worker(user_id, job_id, policy_id, document_title, document_content,
+                 instruction, selected_text, section_title):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        credits = Credits()
+        needle = selected_text or section_title
+        section_result = _find_section(document_content, needle) if needle else None
+
+        if section_result:
+            section_html, sec_start, sec_end = section_result
+            before = document_content[:sec_start]
+            after  = document_content[sec_end:]
+            focus = (
+                f"The user selected: \"{selected_text[:120]}\"\n"
+                if selected_text else
+                f"Target section: \"{section_title}\"\n"
+            )
+            ai_prompt = (
+                "You are an expert GRC policy writer editing a compliance document section.\n\n"
+                f"Document title: {document_title}\n"
+                f"Instruction: {instruction}\n" + focus +
+                "\nRewrite this section per the instruction:\n\n" + section_html +
+                "\n\nReturn EXACTLY:\n"
+                "[EXPLANATION]\n1–2 sentence summary.\n[/EXPLANATION]\n"
+                "[SECTION]\nRewritten section HTML only — no surrounding document, no code fences.\n[/SECTION]\n\n"
+                "Rules:\n- Preserve all inline styles and heading tags\n"
+                "- Keep framework citations intact unless instructed to change\n- Do not truncate"
+            )
+            response = loop.run_until_complete(
+                get_fireworks_response2(user_id=user_id, user_message=ai_prompt,
+                                       role="user", credits=credits, temp=0.1)
+            )
+            if response == "INSUFFICIENT":
+                _save_job(job_id, {"status": "error", "error": "Insufficient credits"})
+                return
+            explanation = _extract_tag(response, "EXPLANATION")
+            new_section = _extract_tag(response, "SECTION") or response.strip()
+            updated_content = before + new_section + after
+        else:
+            ai_prompt = (
+                "You are an expert GRC policy writer editing a compliance document.\n\n"
+                f"Document title: {document_title}\n"
+                f"Instruction: {instruction}\n\n"
+                "Return EXACTLY:\n"
+                "[EXPLANATION]\n1–2 sentence summary.\n[/EXPLANATION]\n"
+                "[HTML]\nFull updated document HTML.\n[/HTML]\n\n"
+                "Rules:\n- Return ONLY valid HTML — no markdown, no code fences\n"
+                "- Preserve all inline styles and structure\n"
+                "- Keep framework citations intact unless instructed\n"
+                "- Do not truncate\n\n"
+                f"Current document HTML:\n{document_content}"
+            )
+            response = loop.run_until_complete(
+                get_fireworks_response2(user_id=user_id, user_message=ai_prompt,
+                                       role="user", credits=credits, temp=0.1)
+            )
+            if response == "INSUFFICIENT":
+                _save_job(job_id, {"status": "error", "error": "Insufficient credits"})
+                return
+            explanation = _extract_tag(response, "EXPLANATION")
+            updated_content = _extract_tag(response, "HTML")
+            if not updated_content:
+                _save_job(job_id, {"status": "error", "error": "AI did not return valid HTML"})
+                return
+
+        key = _s3_key(user_id, policy_id)
+        existing = load_yaml_from_s3(key)
+        if existing:
+            existing["content"]    = updated_content
+            existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                _write_yaml_to_s3(key, existing)
+            except Exception as e:
+                logger.error("Failed to persist edit for policy %s: %s", policy_id, e)
+
+        _save_job(job_id, {
+            "status": "done",
+            "updated_content": updated_content,
+            "explanation": explanation or "The document has been updated per your instruction.",
+        })
+
+    except Exception as e:
+        logger.error("Edit worker crashed for job %s: %s", job_id, e)
+        try:
+            _save_job(job_id, {"status": "error", "error": str(e)})
+        except Exception:
+            pass
+    finally:
+        loop.close()
+
+
 @policy_hub_bp.route("/edit", methods=["POST"])
-async def edit_policy():
+def edit_policy():
     body = request.get_json(silent=True) or {}
     user_id          = body.get("user_id")
     policy_id        = body.get("policy_id")
@@ -395,90 +487,35 @@ async def edit_policy():
     if not user_id or not policy_id or not document_content or not instruction:
         return jsonify({"error": "user_id, policy_id, document_content, and instruction are required"}), 400
 
-    credits = Credits()
+    job_id = str(uuid.uuid4())
+    _save_job(job_id, {"status": "processing"})
 
-    # Isolate the relevant <h2> section so AI only reads/writes ~500-2000 tokens
-    needle = selected_text or section_title
-    section_result = _find_section(document_content, needle) if needle else None
+    thread = threading.Thread(
+        target=_edit_worker,
+        args=(user_id, job_id, policy_id, document_title, document_content,
+              instruction, selected_text, section_title),
+        daemon=True,
+    )
+    thread.start()
 
-    if section_result:
-        section_html, sec_start, sec_end = section_result
-        before = document_content[:sec_start]
-        after  = document_content[sec_end:]
+    return jsonify({"edit_job_id": job_id, "status": "PROCESSING"}), 202
 
-        focus = (
-            f"The user selected: \"{selected_text[:120]}\"\n"
-            if selected_text else
-            f"Target section: \"{section_title}\"\n"
-        )
-        ai_prompt = (
-            "You are an expert GRC policy writer editing a compliance document section.\n\n"
-            f"Document title: {document_title}\n"
-            f"Instruction: {instruction}\n"
-            + focus +
-            "\nRewrite this section per the instruction:\n\n"
-            + section_html +
-            "\n\nReturn EXACTLY:\n"
-            "[EXPLANATION]\n1–2 sentence summary.\n[/EXPLANATION]\n"
-            "[SECTION]\nRewritten section HTML only — no surrounding document, no code fences.\n[/SECTION]\n\n"
-            "Rules:\n"
-            "- Preserve all inline styles and heading tags\n"
-            "- Keep framework citations intact unless instructed to change\n"
-            "- Do not truncate"
-        )
-        response = await get_fireworks_response2(
-            user_id=user_id, user_message=ai_prompt,
-            role="user", credits=credits, temp=0.1,
-        )
-        if response == "INSUFFICIENT":
-            return jsonify({"error": "Insufficient credits"}), 402
 
-        explanation     = _extract_tag(response, "EXPLANATION")
-        new_section     = _extract_tag(response, "SECTION") or response.strip()
-        updated_content = before + new_section + after
+@policy_hub_bp.route("/edit-status", methods=["GET"])
+def edit_status():
+    job_id = request.args.get("job_id")
+    if not job_id:
+        return jsonify({"error": "job_id is required"}), 400
 
-    else:
-        # Full-document edit (no selection, no section title)
-        ai_prompt = (
-            "You are an expert GRC policy writer editing a compliance document.\n\n"
-            f"Document title: {document_title}\n"
-            f"Instruction: {instruction}\n\n"
-            "Return EXACTLY:\n"
-            "[EXPLANATION]\n1–2 sentence summary.\n[/EXPLANATION]\n"
-            "[HTML]\nFull updated document HTML.\n[/HTML]\n\n"
-            "Rules:\n"
-            "- Return ONLY valid HTML — no markdown, no code fences\n"
-            "- Preserve all inline styles and structure\n"
-            "- Keep framework citations intact unless instructed\n"
-            "- Do not truncate\n\n"
-            f"Current document HTML:\n{document_content}"
-        )
-        response = await get_fireworks_response2(
-            user_id=user_id, user_message=ai_prompt,
-            role="user", credits=credits, temp=0.1,
-        )
-        if response == "INSUFFICIENT":
-            return jsonify({"error": "Insufficient credits"}), 402
-
-        explanation     = _extract_tag(response, "EXPLANATION")
-        updated_content = _extract_tag(response, "HTML")
-        if not updated_content:
-            return jsonify({"error": "AI did not return valid HTML"}), 500
-
-    # Persist to S3
-    key = _s3_key(user_id, policy_id)
-    existing = load_yaml_from_s3(key)
-    if existing:
-        existing["content"]    = updated_content
-        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
-        try:
-            _write_yaml_to_s3(key, existing)
-        except Exception as e:
-            logger.error("Failed to persist edit for policy %s: %s", policy_id, e)
+    job = _read_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
 
     return jsonify({
-        "updated_content": updated_content,
-        "explanation": explanation or "The document has been updated per your instruction.",
+        "status": job.get("status", "processing").upper(),
+        "updated_content": job.get("updated_content"),
+        "explanation": job.get("explanation"),
+        "error": job.get("error"),
     }), 200
 
 
