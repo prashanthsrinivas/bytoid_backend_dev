@@ -110,7 +110,7 @@ def register_session_check(app):
             conn = connect_to_rds()
             with conn.cursor(pymysql.cursors.DictCursor) as cursor:
                 cursor.execute(
-                    "SELECT user_id, user_type, permissions FROM users WHERE user_id=%s",
+                    "SELECT user_id, user_type, permissions, email FROM users WHERE user_id=%s",
                     (session["user_id"],),
                 )
                 user_row = cursor.fetchone()
