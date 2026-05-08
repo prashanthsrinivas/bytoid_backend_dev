@@ -926,6 +926,7 @@ def user_login():
         conn.close()
         logger.info("Login successfull")
         session["user_id"] = user["user_id"]
+        session.pop("active_workspace_id", None)
         log_audit_event(
             action=LOGIN_SUCCESS, endpoint="/user_login",
             ip=request.remote_addr, status="success",

@@ -390,6 +390,7 @@ def saml_acs():
        )[0]).strip()
 
        session["user_id"] = user_id
+       session.pop("active_workspace_id", None)
        session["auth_type"] = "saml"
 
        domain = email.split("@")[-1]

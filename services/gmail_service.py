@@ -71,79 +71,181 @@ class GmailService:
         self.workflow = workflow
         self.current_wf_id = wf_id
 
+        logger.info(
+            f"[GmailService.__init__] Initializing for user_id={user_id}, integration={integration}"
+        )
+
         if not self.conn:
+            logger.error(
+                f"[GmailService.__init__] Failed to connect to RDS for user_id={user_id}"
+            )
             raise ConnectionError("❌ Failed to connect to RDS (too many connections?)")
-        # print(f"user_id : {str(user_id)}")
-        with get_cursor(self.conn) as cursor:
-            cursor.execute(
-                    """
-                SELECT client_id, client_secret, access_token, refresh_token, expiry
-                FROM integrations
-                WHERE primary_user_id_fk = %s AND platform = 'google'
-                """,
-                    (str(user_id),),
+
+        try:
+            with get_cursor(self.conn) as cursor:
+                # Try to load from integrations table first
+                logger.debug(
+                    f"[GmailService.__init__] Querying users table for user_id={user_id}"
                 )
-            row = cursor.fetchone()
-            if not row:
                 cursor.execute(
                     """
-                    SELECT client_id, client_secret, token, refresh_token, expiry
-                    FROM users
-                    WHERE user_id = %s
-                    """,
+                        SELECT client_id, client_secret, token, refresh_token, expiry
+                        FROM users
+                        WHERE user_id = %s
+                        """,
                     (str(user_id),),
                 )
                 row = cursor.fetchone()
+                if row:
+                    logger.debug(
+                        f"[GmailService.__init__] Found credentials in users table for user_id={user_id}"
+                    )
 
-            if not row:
-                raise ValueError(f"No Gmail credentials found for user {user_id}")
-        client_id, client_secret, access_token, refresh_token, expiry = row
-        expiryed = datetime.fromisoformat(expiry) if isinstance(expiry, str) else expiry
-        # Normalize to timezone-naive UTC — google-auth Credentials.expired uses utcnow() (naive)
-        if expiryed is not None and expiryed.tzinfo is not None:
-            expiryed = expiryed.replace(tzinfo=None)
-        # Build credentials object
-        self.creds = Credentials(
-            token=access_token,
-            refresh_token=refresh_token,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=client_id,
-            client_secret=client_secret,
-            expiry=expiryed,
-        )
+                if row:
+                    logger.debug(
+                        f"[GmailService.__init__] Found credentials in integrations table for user_id={user_id}"
+                    )
+                else:
+                    # Fallback to users table
+                    logger.debug(
+                        f"[GmailService.__init__] No users found, querying integrations table for user_id={user_id}"
+                    )
+                    cursor.execute(
+                        """
+                    SELECT client_id, client_secret, access_token, refresh_token, expiry
+                    FROM integrations
+                    WHERE primary_user_id_fk = %s AND platform = 'google'
+                    """,
+                        (str(user_id),),
+                    )
+                    row = cursor.fetchone()
+
+                if not row:
+                    logger.error(
+                        f"[GmailService.__init__] No Gmail credentials found for user_id={user_id}"
+                    )
+                    raise ValueError(f"No Gmail credentials found for user {user_id}")
+
+        except Exception as e:
+            logger.error(
+                f"[GmailService.__init__] Error loading credentials: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+        try:
+            client_id, client_secret, access_token, refresh_token, expiry = row
+            logger.debug(
+                f"[GmailService.__init__] Loaded credentials - client_id={client_id[:20]}..., refresh_token={'present' if refresh_token else 'MISSING'}, expiry={expiry}"
+            )
+
+            expiryed = (
+                datetime.fromisoformat(expiry) if isinstance(expiry, str) else expiry
+            )
+            # Normalize to timezone-naive UTC — google-auth Credentials.expired uses utcnow() (naive)
+            if expiryed is not None and expiryed.tzinfo is not None:
+                expiryed = expiryed.replace(tzinfo=None)
+
+            logger.debug(
+                f"[GmailService.__init__] Parsed expiry={expiryed}, expired={datetime.utcnow() >= expiryed if expiryed else 'N/A'}"
+            )
+
+            # Build credentials object
+            self.creds = Credentials(
+                token=access_token,
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=client_id,
+                client_secret=client_secret,
+                expiry=expiryed,
+            )
+
+            logger.debug(
+                f"[GmailService.__init__] Built Credentials object - creds.expired={self.creds.expired}, has_refresh_token={bool(self.creds.refresh_token)}"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"[GmailService.__init__] Error parsing credentials: {str(e)}",
+                exc_info=True,
+            )
+            raise
+
         if self.creds.expired and self.creds.refresh_token:
             try:
+                logger.info(
+                    f"[GmailService.__init__] Token expired, attempting refresh for user_id={user_id}"
+                )
                 # This call uses the refresh_token to get a new access token
-                self.creds.refresh(
-                    Request()
-                )  # You need to import google.auth.transport.requests.Request
-                # print(f"✅ Token refreshed successfully for user {user_id}")
+                self.creds.refresh(Request())
+                logger.info(
+                    f"[GmailService.__init__] ✅ Token refreshed successfully for user_id={user_id}"
+                )
 
                 # 4. CRITICAL STEP: Save the NEW tokens and expiry back to the database
-                with get_cursor(self.conn) as cursor:
-                    if not integration:
-                        cursor.execute(
-                            """
-                            UPDATE users
-                            SET token = %s, refresh_token = %s, expiry = %s
-                            WHERE user_id = %s
-                            """,
-                            (self.creds.token, self.creds.refresh_token, self.creds.expiry, str(user_id)),
-                        )
-                    else:
-                        cursor.execute("""
-                            UPDATE integrations SET
-                            access_token = %s, refresh_token = %s, expiry = %s
-                            WHERE primary_user_id_fk = %s AND platform = 'google'""",
-                            (self.creds.token, self.creds.refresh_token, self.creds.expiry, str(user_id)))
-                self.conn.commit()
+                try:
+                    with get_cursor(self.conn) as cursor:
+                        if not integration:
+                            logger.debug(
+                                f"[GmailService.__init__] Saving refreshed token to users table for user_id={user_id}"
+                            )
+                            cursor.execute(
+                                """
+                                UPDATE users
+                                SET token = %s, refresh_token = %s, expiry = %s
+                                WHERE user_id = %s
+                                """,
+                                (
+                                    self.creds.token,
+                                    self.creds.refresh_token,
+                                    self.creds.expiry,
+                                    str(user_id),
+                                ),
+                            )
+                        else:
+                            logger.debug(
+                                f"[GmailService.__init__] Saving refreshed token to integrations table for user_id={user_id}"
+                            )
+                            cursor.execute(
+                                """
+                                UPDATE integrations SET
+                                access_token = %s, refresh_token = %s, expiry = %s
+                                WHERE primary_user_id_fk = %s AND platform = 'google'""",
+                                (
+                                    self.creds.token,
+                                    self.creds.refresh_token,
+                                    self.creds.expiry,
+                                    str(user_id),
+                                ),
+                            )
+                    self.conn.commit()
+                    logger.debug(
+                        f"[GmailService.__init__] Refreshed token saved to database for user_id={user_id}"
+                    )
+                except Exception as save_error:
+                    logger.error(
+                        f"[GmailService.__init__] Failed to save refreshed token: {str(save_error)}",
+                        exc_info=True,
+                    )
+                    raise
 
             except Exception as e:
                 # Token refresh failed (e.g., refresh token revoked)
-                # print(f"❌ Token refresh failed for user {user_id}: {e}")
+                logger.error(
+                    f"[GmailService.__init__] ❌ Token refresh failed for user_id={user_id}: {str(e)}",
+                    exc_info=True,
+                )
                 raise ValueError(
                     f"Token refresh failed. User must re-authenticate: {e}"
                 )
+        elif self.creds.expired:
+            logger.warning(
+                f"[GmailService.__init__] Token is expired but no refresh_token available for user_id={user_id}. Will attempt API calls with stale token."
+            )
+        else:
+            logger.debug(
+                f"[GmailService.__init__] Token is still valid for user_id={user_id}"
+            )
         if connection is None:
             self.conn.close()
 
@@ -2554,7 +2656,10 @@ class GmailService:
         import re
 
         try:
-            # print("emails for send_email", receipent_emails, type(receipent_emails))
+            logger.info(
+                f"[send_email] Starting email send for user_id={self.user_id}, subject='{subject}', recipients={receipent_emails}, attachments={len(attachments or [])}"
+            )
+
             # Normalize recipients
             if isinstance(receipent_emails, (list, tuple)):
                 receipent_emails = ", ".join(receipent_emails)
@@ -2653,9 +2758,15 @@ class GmailService:
             message_id = sent.get("id")
             thread_id = sent.get("threadId")
             return_str = f"✅ Email titled '{subject}' sent successfully to {receipent_emails}. Gmail message ID: {message_id}"
+            logger.info(
+                f"[send_email] ✅ Email sent successfully for user_id={self.user_id}, message_id={message_id}, recipients={receipent_emails}"
+            )
 
             # Workflow mode short return
             if getattr(self, "workflow", None) or getattr(self, "current_wf_id", None):
+                logger.debug(
+                    f"[send_email] Returning workflow-mode response for message_id={message_id}"
+                )
                 return {
                     "success": True,
                     "response": sent,
@@ -2684,7 +2795,10 @@ class GmailService:
 
             return MESSAGES[message_id]
         except Exception as e:
-            # print(f"❌ Error sending email: {e}")
+            logger.error(
+                f"[send_email] ❌ Error sending email for user_id={self.user_id}, subject='{subject}': {str(e)}",
+                exc_info=True,
+            )
             return {
                 "success": False,
                 "response": None,
@@ -2717,6 +2831,10 @@ class GmailService:
         import re
 
         try:
+            logger.info(
+                f"[send_Meeting_invite_mail] Starting meeting invite email for user_id={self.user_id}, subject='{subject}', recipients={receipent_emails}, bcc={len(bcc_list or [])}"
+            )
+
             # Convert to_email to comma-separated string if it's a list
             if isinstance(receipent_emails, list):
                 to_email_str = ", ".join(receipent_emails)
@@ -2740,12 +2858,19 @@ class GmailService:
             raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
             msg = {"raw": raw}
 
+            logger.debug(
+                f"[send_Meeting_invite_mail] Sending via Gmail API for user_id={self.user_id}"
+            )
             sent = self.service.users().messages().send(userId="me", body=msg).execute()
 
             # ✅ Friendly summary for UI / logs
+            message_id = sent.get("id")
             return_str = (
                 f"✅ Email titled '{subject}' sent successfully to {to_email_str}."
-                f" Gmail message ID: {sent.get('id')}"
+                f" Gmail message ID: {message_id}"
+            )
+            logger.info(
+                f"[send_Meeting_invite_mail] ✅ Meeting invite sent successfully for user_id={self.user_id}, message_id={message_id}"
             )
 
             return {
@@ -2756,6 +2881,10 @@ class GmailService:
             }
 
         except Exception as e:
+            logger.error(
+                f"[send_Meeting_invite_mail] ❌ Failed to send meeting invite for user_id={self.user_id}, subject='{subject}': {str(e)}",
+                exc_info=True,
+            )
             return {
                 "success": False,
                 "response": None,
@@ -2792,97 +2921,122 @@ class GmailService:
         from email.mime.multipart import MIMEMultipart
         import base64
 
-        role_name = role.get("name", "User")
+        try:
+            logger.info(
+                f"[send_invite_mail] Starting invite email send for user_id={self.user_id}, recipients={receipent_emails}, role={role.get('name')}"
+            )
 
-        # build optional extra info
-        extra_html = ""
-        extra_text = ""
-        inviter = self.user_email
+            role_name = role.get("name", "User")
 
-        if business_info:
-            if "BusinessName" in business_info:
-                extra_html += f"<h3 style='font-size:16px; margin-top:16px;'>{business_info['BusinessName']}</h3>"
-                extra_text += f"\nBusiness: {business_info['BusinessName']}"
-            if "LineOfBusiness" in business_info:
-                extra_html += (
-                    f"<p style='color:#374151;'>{business_info['LineOfBusiness']}</p>"
+            # build optional extra info
+            extra_html = ""
+            extra_text = ""
+            inviter = self.user_email
+
+            if business_info:
+                logger.debug(
+                    f"[send_invite_mail] Including business info: {business_info.keys()}"
                 )
-                extra_text += f"\nLine of Business: {business_info['LineOfBusiness']}"
-            if "businessLocation" in business_info:
-                extra_html += (
-                    f"<p><b>Location:</b> {business_info['businessLocation']}</p>"
+                if "BusinessName" in business_info:
+                    extra_html += f"<h3 style='font-size:16px; margin-top:16px;'>{business_info['BusinessName']}</h3>"
+                    extra_text += f"\nBusiness: {business_info['BusinessName']}"
+                if "LineOfBusiness" in business_info:
+                    extra_html += f"<p style='color:#374151;'>{business_info['LineOfBusiness']}</p>"
+                    extra_text += (
+                        f"\nLine of Business: {business_info['LineOfBusiness']}"
+                    )
+                if "businessLocation" in business_info:
+                    extra_html += (
+                        f"<p><b>Location:</b> {business_info['businessLocation']}</p>"
+                    )
+                    extra_text += f"\nLocation: {business_info['businessLocation']}"
+                if "BusinessImage" in business_info:
+                    logger.debug(f"[send_invite_mail] Attaching business image")
+                    link_base = attach_CLDFRNT_url(business_info["BusinessImage"])
+                    extra_html += f"<p><img src='{link_base}' alt='Business Logo' style='max-height:80px; margin-top:8px;'></p>"
+
+            # fallback invite link
+            if not invite_link:
+                invite_link = f"{basefrntpath}/invite/{role.get('id')}"
+                logger.debug(
+                    f"[send_invite_mail] Generated fallback invite link: {invite_link}"
                 )
-                extra_text += f"\nLocation: {business_info['businessLocation']}"
-            if "BusinessImage" in business_info:
-                link_base = attach_CLDFRNT_url(business_info["BusinessImage"])
-                extra_html += f"<p><img src='{link_base}' alt='Business Logo' style='max-height:80px; margin-top:8px;'></p>"
 
-        # fallback invite link
-        if not invite_link:
-            invite_link = f"{basefrntpath}/invite/{role.get('id')}"
+            # HTML body
+            body_html = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; background-color:#f9fafb; padding:20px;">
+                <div style="max-width:600px; margin:auto; background:white; padding:24px; border-radius:12px; box-shadow:0 4px 10px rgba(0,0,0,0.05);">
+                <h2 style="font-size:20px; color:#111827;">You're Invited!</h2>
+                <p style="font-size:16px; color:#374151;">Hello,</p>
+                <p style="font-size:16px; color:#374151;">
+                    You have been invited by <b>{inviter}</b> to join our platform with the role <b>{role_name}</b>.
+                </p>
+                <p style="margin:20px 0;">
+                    <a href="{invite_link}"
+                    style="display:inline-block; background:#2563eb; color:white; padding:12px 20px; border-radius:8px; text-decoration:none; font-weight:600;">
+                    Accept Invitation
+                    </a>
+                </p>
+                <p style="font-size:14px; color:#6b7280;">(This link will expire in 1 hour)</p>
+                {extra_html}
+                <hr style="margin:24px 0; border:none; border-top:1px solid #e5e7eb;">
+                <p style="font-size:12px; color:#9ca3af; text-align:center;">
+                    Made with ❤️ by <a href="{basefrntpath}" style="color:#2563eb; text-decoration:none;">Bytoid.io</a>
+                </p>
+                </div>
+            </body>
+            </html>
+            """
 
-        # HTML body
-        body_html = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; background-color:#f9fafb; padding:20px;">
-            <div style="max-width:600px; margin:auto; background:white; padding:24px; border-radius:12px; box-shadow:0 4px 10px rgba(0,0,0,0.05);">
-            <h2 style="font-size:20px; color:#111827;">You're Invited!</h2>
-            <p style="font-size:16px; color:#374151;">Hello,</p>
-            <p style="font-size:16px; color:#374151;">
-                You have been invited by <b>{inviter}</b> to join our platform with the role <b>{role_name}</b>.
-            </p>
-            <p style="margin:20px 0;">
-                <a href="{invite_link}" 
-                style="display:inline-block; background:#2563eb; color:white; padding:12px 20px; border-radius:8px; text-decoration:none; font-weight:600;">
-                Accept Invitation
-                </a>
-            </p>
-            <p style="font-size:14px; color:#6b7280;">(This link will expire in 1 hour)</p>
-            {extra_html}
-            <hr style="margin:24px 0; border:none; border-top:1px solid #e5e7eb;">
-            <p style="font-size:12px; color:#9ca3af; text-align:center;">
-                Made with ❤️ by <a href="{basefrntpath}" style="color:#2563eb; text-decoration:none;">Bytoid.io</a>
-            </p>
-            </div>
-        </body>
-        </html>
-        """
+            # Plain text fallback
+            body_text = f"""
+            Hello,
 
-        # Plain text fallback
-        body_text = f"""
-        Hello,
+            You have been invited by {inviter} to join our platform with the role: {role_name}.
 
-        You have been invited by {inviter} to join our platform with the role: {role_name}.
+            Accept Invitation (valid for 1 hour):
+            {invite_link}
+            {extra_text}
 
-        Accept Invitation (valid for 1 hour):
-        {invite_link}
-        {extra_text}
+            --
+            Made with ❤️ by Bytoid.io
+            """
 
-        --
-        Made with ❤️ by Bytoid.io
-        """
+            # multipart/alternative ensures the client picks the best format
+            message = MIMEMultipart("alternative")
+            if isinstance(receipent_emails, list):
+                to_email_str = ", ".join(receipent_emails)
+            else:
+                to_email_str = receipent_emails
 
-        # multipart/alternative ensures the client picks the best format
-        message = MIMEMultipart("alternative")
-        if isinstance(receipent_emails, list):
-            to_email_str = ", ".join(receipent_emails)
-        else:
-            to_email_str = receipent_emails
+            message["to"] = to_email_str
+            message["subject"] = f"Invitation to join as {role_name}"
 
-        message["to"] = to_email_str
-        message["subject"] = f"Invitation to join as {role_name}"
+            # Attach plain and HTML versions
+            part1 = MIMEText(body_text, "plain")
+            part2 = MIMEText(body_html, "html")
+            message.attach(part1)
+            message.attach(part2)
 
-        # Attach plain and HTML versions
-        part1 = MIMEText(body_text, "plain")
-        part2 = MIMEText(body_html, "html")
-        message.attach(part1)
-        message.attach(part2)
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            msg = {"raw": raw}
 
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        msg = {"raw": raw}
+            logger.debug(
+                f"[send_invite_mail] Sending message via Gmail API to {to_email_str}"
+            )
+            sent = self.service.users().messages().send(userId="me", body=msg).execute()
+            logger.info(
+                f"[send_invite_mail] ✅ Invite email sent successfully for user_id={self.user_id}, message_id={sent.get('id')}"
+            )
+            return sent
 
-        sent = self.service.users().messages().send(userId="me", body=msg).execute()
-        return sent
+        except Exception as e:
+            logger.error(
+                f"[send_invite_mail] ❌ Failed to send invite email: {str(e)}",
+                exc_info=True,
+            )
+            raise
 
     def send_reply(
         self,
@@ -2908,148 +3062,162 @@ class GmailService:
         import json
         import re
 
-        if attachments is None:
-            attachments = []
-
-        # ================
-        # 1) Normalize body_text (CRITICAL FIX)
-        # ================
-        if isinstance(body_text, dict):
-            # Try common fields used in your system
-            body_text = (
-                body_text.get("message")
-                or body_text.get("text")
-                or body_text.get("body")
-                or json.dumps(body_text, ensure_ascii=False)
+        try:
+            logger.info(
+                f"[send_reply] Starting reply for user_id={self.user_id}, thread_id={thread_id}, subject='{subject}', recipients={receipent_emails}, attachments={len(attachments or [])}"
             )
 
-        if body_text is None:
-            body_text = ""
+            if attachments is None:
+                attachments = []
 
-        if not isinstance(body_text, str):
-            body_text = str(body_text)
+            # ================
+            # 1) Normalize body_text (CRITICAL FIX)
+            # ================
+            if isinstance(body_text, dict):
+                # Try common fields used in your system
+                body_text = (
+                    body_text.get("message")
+                    or body_text.get("text")
+                    or body_text.get("body")
+                    or json.dumps(body_text, ensure_ascii=False)
+                )
 
-        body_text = body_text.strip()
+            if body_text is None:
+                body_text = ""
 
-        # ================
-        # 2) Build email message
-        # ================
-        message = MIMEMultipart("mixed")
+            if not isinstance(body_text, str):
+                body_text = str(body_text)
 
-        # Recipients
-        if isinstance(receipent_emails, list):
-            to_email_str = ", ".join(receipent_emails)
-        else:
-            to_email_str = receipent_emails
+            body_text = body_text.strip()
 
-        message["To"] = to_email_str
+            # ================
+            # 2) Build email message
+            # ================
+            message = MIMEMultipart("mixed")
 
-        # Subject (ensure Re:)
-        message["Subject"] = (
-            subject if subject.lower().startswith("re:") else f"Re: {subject}"
-        )
-
-        # Required reply headers
-        message["In-Reply-To"] = in_reply_to
-        message["References"] = in_reply_to
-
-        # CC
-        if cc:
-            if isinstance(cc, list):
-                message["Cc"] = ", ".join(cc)
+            # Recipients
+            if isinstance(receipent_emails, list):
+                to_email_str = ", ".join(receipent_emails)
             else:
-                message["Cc"] = cc
+                to_email_str = receipent_emails
 
-        # BCC
-        if bcc:
-            if isinstance(bcc, list):
-                message["Bcc"] = ", ".join(bcc)
+            message["To"] = to_email_str
+
+            # Subject (ensure Re:)
+            message["Subject"] = (
+                subject if subject.lower().startswith("re:") else f"Re: {subject}"
+            )
+
+            # Required reply headers
+            message["In-Reply-To"] = in_reply_to
+            message["References"] = in_reply_to
+
+            # CC
+            if cc:
+                if isinstance(cc, list):
+                    message["Cc"] = ", ".join(cc)
+                else:
+                    message["Cc"] = cc
+
+            # BCC
+            if bcc:
+                if isinstance(bcc, list):
+                    message["Bcc"] = ", ".join(bcc)
+                else:
+                    message["Bcc"] = bcc
+
+            # ================
+            # 3) Detect HTML
+            # ================
+            is_html = body_text.lower().startswith(
+                ("<html", "<div", "<p", "<!doctype", "<body")
+            )
+
+            # multipart/alternative for body
+            msg_alternative = MIMEMultipart("alternative")
+
+            if is_html:
+                # Plain text version (strip tags)
+                plain_text = re.sub("<[^<]+?>", "", body_text)
+                plain_text = re.sub(r"\s+", " ", plain_text).strip()
+
+                msg_alternative.attach(MIMEText(plain_text, "plain"))
+                msg_alternative.attach(MIMEText(body_text, "html"))
             else:
-                message["Bcc"] = bcc
+                msg_alternative.attach(MIMEText(body_text, "plain"))
 
-        # ================
-        # 3) Detect HTML
-        # ================
-        is_html = body_text.lower().startswith(
-            ("<html", "<div", "<p", "<!doctype", "<body")
-        )
+            message.attach(msg_alternative)
 
-        # multipart/alternative for body
-        msg_alternative = MIMEMultipart("alternative")
+            # ================
+            # 4) Attachments
+            # ================
+            if attachments:
+                from utils.s3_utils import read_binary_from_s3
 
-        if is_html:
-            # Plain text version (strip tags)
-            plain_text = re.sub("<[^<]+?>", "", body_text)
-            plain_text = re.sub(r"\s+", " ", plain_text).strip()
+                for att in attachments:
+                    try:
+                        s3_key = att.get("s3_key")
+                        filename = att.get("original_filename") or att.get("filename")
+                        mime_type = att.get("mime_type", "application/octet-stream")
 
-            msg_alternative.attach(MIMEText(plain_text, "plain"))
-            msg_alternative.attach(MIMEText(body_text, "html"))
-        else:
-            msg_alternative.attach(MIMEText(body_text, "plain"))
+                        if not s3_key or not filename:
+                            continue
 
-        message.attach(msg_alternative)
+                        file_data = read_binary_from_s3(s3_key)
+                        if not file_data:
+                            continue
 
-        # ================
-        # 4) Attachments
-        # ================
-        if attachments:
-            from utils.s3_utils import read_binary_from_s3
+                        # Parse MIME
+                        maintype, subtype = (
+                            mime_type.split("/", 1)
+                            if "/" in mime_type
+                            else (mime_type, "octet-stream")
+                        )
 
-            for att in attachments:
-                try:
-                    s3_key = att.get("s3_key")
-                    filename = att.get("original_filename") or att.get("filename")
-                    mime_type = att.get("mime_type", "application/octet-stream")
+                        part = MIMEBase(maintype, subtype)
+                        part.set_payload(file_data)
+                        encoders.encode_base64(part)
 
-                    if not s3_key or not filename:
-                        # print(f"⚠️ Skipping invalid attachment: {att}")
+                        part.add_header(
+                            "Content-Disposition",
+                            "attachment",
+                            filename=filename,
+                        )
+
+                        message.attach(part)
+
+                    except Exception as e:
+                        logger.warning(
+                            f"[send_reply] Warning: Failed to attach file: {str(e)}"
+                        )
                         continue
 
-                    file_data = read_binary_from_s3(s3_key)
-                    if not file_data:
-                        # print(f"⚠️ Failed to load attachment from S3: {s3_key}")
-                        continue
+            # ================
+            # 5) Encode & send
+            # ================
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-                    # Parse MIME
-                    maintype, subtype = (
-                        mime_type.split("/", 1)
-                        if "/" in mime_type
-                        else (mime_type, "octet-stream")
-                    )
+            message_body = {"raw": raw, "threadId": thread_id}
 
-                    part = MIMEBase(maintype, subtype)
-                    part.set_payload(file_data)
-                    encoders.encode_base64(part)
-
-                    part.add_header(
-                        "Content-Disposition",
-                        "attachment",
-                        filename=filename,
-                    )
-
-                    message.attach(part)
-
-                except Exception as e:
-                    # print(f"❌ Error attaching file: {e}")
-                    continue
-
-        # ================
-        # 5) Encode & send
-        # ================
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-        message_body = {"raw": raw, "threadId": thread_id}
-
-        try:
+            logger.debug(
+                f"[send_reply] Sending reply via Gmail API for user_id={self.user_id}, thread_id={thread_id}"
+            )
             sent = (
                 self.service.users()
                 .messages()
                 .send(userId="me", body=message_body)
                 .execute()
             )
+            logger.info(
+                f"[send_reply] ✅ Reply sent successfully for user_id={self.user_id}, thread_id={thread_id}, message_id={sent.get('id')}"
+            )
             return sent
 
         except Exception as e:
+            logger.error(
+                f"[send_reply] ❌ Failed to send reply for user_id={self.user_id}, thread_id={thread_id}: {str(e)}",
+                exc_info=True,
+            )
             raise ValueError(f"Gmail reply failed: {e}") from e
 
     def send_forward(

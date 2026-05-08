@@ -249,6 +249,18 @@ def audit_before_request():
         g.acting_on_behalf_of_user_id = active_workspace_id
         g.acting_on_behalf_of_email = get_email_by_id(active_workspace_id)
 
+    # Fallback: detect delegation from request body (for routes that don't call build_audit_actor)
+    if not getattr(g, "acting_on_behalf_of_user_id", None) and request.is_json:
+        try:
+            body = request.get_json(silent=True) or {}
+            body_uid = (body.get("user_id") or "").strip()
+            if body_uid and g.session_user_id and body_uid != g.session_user_id:
+                from db.db_checkers import get_email_by_id
+                g.acting_on_behalf_of_user_id = body_uid
+                g.acting_on_behalf_of_email = get_email_by_id(body_uid)
+        except Exception:
+            pass
+
     import sys
     print(
         f"[AUDIT MIDDLEWARE] {request.method} {request.path}"
@@ -325,6 +337,7 @@ def audit_after_request(response):
             actor_user_id=actor_user_id,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=getattr(g, "acting_on_behalf_of_user_id", None),
+            acting_on_behalf_of_email=getattr(g, "acting_on_behalf_of_email", None),
             metadata={
                 "method": method,
                 "status_code": response.status_code,

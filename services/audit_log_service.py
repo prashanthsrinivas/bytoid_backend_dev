@@ -272,9 +272,9 @@ def log_audit_event(
 ):
     """Write one structured JSON audit entry. Never raises."""
     try:
-        # audit_owner_id = the workspace this entry belongs to.
-        # Delegation: acting_on_behalf_of_user_id (Kavya's workspace) → entry lives on Kavya's audit page.
-        # Self-access: actor_user_id (Test's workspace) → entry lives on Test's audit page.
+        # audit_owner_id = the workspace this entry belongs to (routing key for audit UI).
+        # Delegation: acting_on_behalf_of_user_id = workspace owner (e.g. Test) → entry lives on Test's audit page.
+        # Self-access: acting_on_behalf_of_user_id is None → audit_owner_id = actor_user_id → entry lives on actor's audit page.
         audit_owner_id = acting_on_behalf_of_user_id or actor_user_id
 
         entry = {

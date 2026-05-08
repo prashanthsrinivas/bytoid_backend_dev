@@ -49,23 +49,21 @@ dev_val = os.getenv("BASE_FRNT_URL", "")
 @google_bp.route("/login")
 def login():
     origin = request.headers.get("Origin")
-    # referrer = request.referrer
 
-    print("Origin:", origin)
-    # print("Referrer:", referrer)
+    logger.info(f"[Google Login] Origin={origin}")
+
+    # Clear old session
     session.pop("user_id", None)
-    session.pop("state", None)  # Optional, but clean
-    ga = GoogleAuth()
-    # Get the mobile app's redirect URI from query params
+    session.pop("state", None)
+
     mobile_redirect_uri = request.args.get("redirect_uri")
     platform = request.args.get("platform")
 
-    # Store the mobile redirect URI in session for later use
+    # Store mobile redirect URI
     if mobile_redirect_uri and platform == "mobile":
         session["mobile_redirect_uri"] = mobile_redirect_uri
-        # print(f"Stored mobile redirect URI: {mobile_redirect_uri}")
 
-    ga = GoogleAuth()
+    # Resolve frontend origin
     if origin in ALLOWED_ORIGINS:
         val = origin
     else:
@@ -73,22 +71,30 @@ def login():
 
     WEB_REDIRECT_URI = f"{val}/auth/google/callback"
 
+    logger.info(f"[Google Login] Redirect URI={WEB_REDIRECT_URI}")
+
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
         scopes=g_basescopes,
         redirect_uri=WEB_REDIRECT_URI,
-        # redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
-    # google_bp.logger.info(f"{flow}")
 
+    # IMPORTANT:
+    # access_type=offline -> refresh token
+    # prompt=consent -> force refresh token every login
     auth_url, state = flow.authorization_url(
-        access_type="offline", prompt="consent", include_granted_scopes=False
+        access_type="offline",
+        prompt="consent",
+        include_granted_scopes="true",
     )
+
     session["state"] = state
-    # print(auth_url)
-    ##print("login",session['state'])
+
+    logger.info("[Google Login] Auth URL generated successfully")
+
     if platform == "mobile":
         return redirect(auth_url)
+
     return jsonify(auth_url=auth_url)
 
 
@@ -97,14 +103,25 @@ from db.db_checkers import make_api_key
 
 @google_bp.route("/oauth2callback")
 def oauth2callback(url, state):
+
     if not state:
         return "Missing state in URL", 400
 
+    # OPTIONAL SECURITY CHECK
+    session_state = session.get("state")
+
+    if session_state and session_state != state:
+        logger.error(
+            f"OAuth state mismatch. " f"session_state={session_state}, state={state}"
+        )
+        return "Invalid OAuth state", 400
+
     unique_id = str(uuid.uuid4())
+
     origin = request.headers.get("Origin")
-    # referrer = request.referrer
 
     print("Origin:", origin)
+
     if origin in ALLOWED_ORIGINS:
         val = origin
     else:
@@ -113,75 +130,129 @@ def oauth2callback(url, state):
     WEB_REDIRECT_URI = f"{val}/auth/google/callback"
 
     EXPO_REDIRECT_URI = "https://auth.expo.io/@anonymous/user-app-ee3ebe74"
-    # WEB_REDIRECT_URI = f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback"
 
     use_expo = os.getenv("USE_EXPO_REDIRECT", "false").lower() == "true"
+
     redirect_uri = WEB_REDIRECT_URI
 
     flow = Flow.from_client_secrets_file(
         "client_secrets.json",
         scopes=g_basescopes,
         redirect_uri=redirect_uri,
-        # redirect_uri=f"{os.getenv('BASE_FRNT_URL')}/auth/google/callback",
     )
 
     try:
-        # flow.fetch_token(code=code)
+
+        # IMPORTANT
         flow.fetch_token(authorization_response=url)
+
         credentials = flow.credentials
 
-        # delete this line later
+        logger.info(
+            f"Refresh token received from Google: "
+            f"{'YES' if credentials.refresh_token else 'NO'}"
+        )
+
+        logger.info(f"Access token expiry: {credentials.expiry}")
+
+        # REMOVE THIS IN PRODUCTION
         with open("credentials.json", "w") as f:
             f.write(credentials.to_json())
 
-        # Correct way to access the token
+        # Fetch Google user info
         userinfo_response = requests.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {credentials.token}"},
+            timeout=20,
         )
 
         if userinfo_response.status_code == 200:
+
             userinfo = userinfo_response.json()
-            logger.info("INFO :", userinfo)
+
+            logger.info("INFO : %s", userinfo)
+
             email = userinfo.get("email")
             given_name = userinfo.get("given_name")
             family_name = userinfo.get("family_name")
             user_id = userinfo.get("sub")
             phonenumber = userinfo.get("phoneNumber", "")
+
             import time
 
             MAX_RETRIES = 3
 
             for attempt in range(MAX_RETRIES):
+
                 conn = None
+
                 try:
+
                     conn = connect_to_rds()
+
                     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-                    conn.begin()  # ✅ explicitly start txn
+                    conn.begin()
 
-                    # 🔒 LOCK the row
+                    # LOCK USER ROW
                     cursor.execute(
-                        "SELECT user_id,user_type FROM users WHERE email = %s FOR UPDATE",
+                        """
+                        SELECT user_id, user_type, refresh_token
+                        FROM users
+                        WHERE email = %s
+                        FOR UPDATE
+                        """,
                         (email,),
                     )
+
                     user_exists = cursor.fetchone()
 
                     session["user_id"] = user_id
+                    session.pop("active_workspace_id", None)
 
+                    # =====================================================
+                    # NEW USER
+                    # =====================================================
                     if not user_exists:
+
                         logger.info("creating a new user")
 
                         cursor.execute(
-                            """INSERT INTO users (
-                                user_id, user_type, launch_id_fk, first_name, last_name, email, phone,
-                                client_id, client_secret, token, refresh_token, expiry,
-                                password_hash, profile_pic, location, social,
-                                created_in, updated_in, logged_in_at, logged_out_at,
-                                sociallinks, subscribe_id, roles_creation, permissions, special_access
+                            """
+                            INSERT INTO users (
+                                user_id,
+                                user_type,
+                                launch_id_fk,
+                                first_name,
+                                last_name,
+                                email,
+                                phone,
+                                client_id,
+                                client_secret,
+                                token,
+                                refresh_token,
+                                expiry,
+                                password_hash,
+                                profile_pic,
+                                location,
+                                social,
+                                created_in,
+                                updated_in,
+                                logged_in_at,
+                                logged_out_at,
+                                sociallinks,
+                                subscribe_id,
+                                roles_creation,
+                                permissions,
+                                special_access
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                    NOW(), NOW(), NOW(), %s, %s, %s, %s, %s, %s)
+                            VALUES (
+                                %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s,
+                                NOW(), NOW(), NOW(), %s,
+                                %s, %s, %s, %s, %s
+                            )
                             """,
                             (
                                 user_id,
@@ -209,10 +280,8 @@ def oauth2callback(url, state):
                             ),
                         )
 
-                        # ⚡ COMMIT EARLY (IMPORTANT)
                         conn.commit()
 
-                        # ---------- continue SAME LOGIC ----------
                         conn.begin()
 
                         internal_subscription_id = f"starter_{user_id}"
@@ -227,7 +296,7 @@ def oauth2callback(url, state):
                                 WHEN 'FREE' THEN 2
                             END
                             LIMIT 1
-                        """)
+                            """)
 
                         starter_plan = cursor.fetchone()
 
@@ -245,7 +314,8 @@ def oauth2callback(url, state):
                                 current_period_start,
                                 current_period_end,
                                 created_at
-                            ) VALUES (
+                            )
+                            VALUES (
                                 %s,
                                 %s,
                                 NULL,
@@ -255,8 +325,11 @@ def oauth2callback(url, state):
                                 NULL,
                                 NOW()
                             )
-                        """,
-                            (user_id, internal_subscription_id),
+                            """,
+                            (
+                                user_id,
+                                internal_subscription_id,
+                            ),
                         )
 
                         cursor.execute(
@@ -271,7 +344,8 @@ def oauth2callback(url, state):
                                 expires_at,
                                 is_expired,
                                 created_at
-                            ) VALUES (
+                            )
+                            VALUES (
                                 UUID(),
                                 %s,
                                 'SUBSCRIPTION',
@@ -282,7 +356,7 @@ def oauth2callback(url, state):
                                 0,
                                 NOW()
                             )
-                        """,
+                            """,
                             (
                                 user_id,
                                 internal_subscription_id,
@@ -292,18 +366,52 @@ def oauth2callback(url, state):
 
                         conn.commit()
 
-                        # keep your logic
                         make_api_key(user_id)
 
+                    # =====================================================
+                    # EXISTING USER
+                    # =====================================================
                     else:
+
                         logger.info("users update data")
-                        prev_id = user_exists.get("user_id", "NODATA")
+
+                        prev_id = user_exists.get(
+                            "user_id",
+                            "NODATA",
+                        )
+
+                        existing_refresh_token = user_exists.get("refresh_token")
+
+                        logger.info(
+                            f"Existing refresh token present: "
+                            f"{'YES' if existing_refresh_token else 'NO'}"
+                        )
+
+                        logger.info(
+                            f"New refresh token received: "
+                            f"{'YES' if credentials.refresh_token else 'NO'}"
+                        )
+
+                        # IMPORTANT:
+                        # NEVER overwrite valid refresh token with NULL
+                        final_refresh_token = (
+                            credentials.refresh_token
+                            if credentials.refresh_token
+                            else existing_refresh_token
+                        )
+
+                        if not credentials.refresh_token:
+                            logger.warning(
+                                "Google did not return refresh token. "
+                                "Keeping existing refresh token."
+                            )
 
                         if user_id != prev_id:
+
                             cursor.execute(
                                 """
-                                UPDATE users 
-                                SET 
+                                UPDATE users
+                                SET
                                     user_id = %s,
                                     first_name = %s,
                                     last_name = %s,
@@ -312,12 +420,12 @@ def oauth2callback(url, state):
                                     token = %s,
                                     refresh_token = %s,
                                     expiry = %s,
-                                    social=%s,
+                                    social = %s,
                                     updated_in = NOW(),
                                     logged_in_at = NOW(),
                                     logged_out_at = NOW()
                                 WHERE email = %s
-                            """,
+                                """,
                                 (
                                     user_id,
                                     given_name,
@@ -325,17 +433,19 @@ def oauth2callback(url, state):
                                     credentials.client_id,
                                     credentials.client_secret,
                                     credentials.token,
-                                    credentials.refresh_token,
+                                    final_refresh_token,
                                     credentials.expiry,
                                     "google",
                                     email,
                                 ),
                             )
+
                         else:
+
                             cursor.execute(
                                 """
-                                UPDATE users 
-                                SET 
+                                UPDATE users
+                                SET
                                     first_name = %s,
                                     last_name = %s,
                                     client_id = %s,
@@ -343,37 +453,41 @@ def oauth2callback(url, state):
                                     token = %s,
                                     refresh_token = %s,
                                     expiry = %s,
-                                    social=%s,
+                                    social = %s,
                                     updated_in = NOW(),
                                     logged_in_at = NOW(),
                                     logged_out_at = NOW()
                                 WHERE email = %s
-                            """,
+                                """,
                                 (
                                     given_name,
                                     family_name,
                                     credentials.client_id,
                                     credentials.client_secret,
                                     credentials.token,
-                                    credentials.refresh_token,
+                                    final_refresh_token,
                                     credentials.expiry,
                                     "google",
                                     email,
                                 ),
                             )
 
-                            # ⚡ commit before external logic
                             conn.commit()
 
-                            ensure_starter_credits_for_user(user_id, conn)
+                            ensure_starter_credits_for_user(
+                                user_id,
+                                conn,
+                            )
 
                     conn.commit()
+
                     cursor.close()
                     conn.close()
 
-                    break  # ✅ success → exit retry loop
+                    break
 
                 except pymysql.err.OperationalError as e:
+
                     if conn:
                         conn.rollback()
                         conn.close()
@@ -381,43 +495,69 @@ def oauth2callback(url, state):
                     if e.args[0] == 1205 and attempt < MAX_RETRIES - 1:
                         time.sleep(0.5 * (attempt + 1))
                         continue
-                    else:
-                        raise
+
+                    raise
 
                 except Exception as e:
+
                     if conn:
                         conn.rollback()
                         conn.close()
+
+                    logger.error(
+                        f"Database error: {str(e)}",
+                        exc_info=True,
+                    )
+
                     raise
-            # CHANGED: If mobile flow initiated /login and stored mobile_redirect_uri, redirect to Expo after DB commit
-            mobile_redirect_uri = session.pop("mobile_redirect_uri", None)  # ADDED
-            if mobile_redirect_uri:  # ADDED
-                # Optional strictness: force it to be the expected Expo redirect URI
-                # if mobile_redirect_uri != EXPO_REDIRECT_URI:  # ADDED
-                # return "Invalid mobile redirect URI", 400  # ADDED
 
-                # IMPORTANT: keep it minimal; you can swap unique_id for your own exchange code
-                return redirect(f"{mobile_redirect_uri}?code={unique_id}")  # ADDED
+            # MOBILE REDIRECT
+            mobile_redirect_uri = session.pop(
+                "mobile_redirect_uri",
+                None,
+            )
 
-            # generate_session()
+            if mobile_redirect_uri:
+
+                return redirect(f"{mobile_redirect_uri}?code={unique_id}")
+
         # invited user special case
         if user_exists:
-            prev_type = user_exists.get("user_type", "NO TYPE")
-            logger.info("prev UserType -> %s", prev_type)
+
+            prev_type = user_exists.get(
+                "user_type",
+                "NO TYPE",
+            )
+
+            logger.info(
+                "prev UserType -> %s",
+                prev_type,
+            )
+
             if prev_type == "user":
+
                 logger.info("Invited User Logged in")
+
                 return user_id, True
 
         # onboarding check
         newuser = check_onboarding_user(user_id)
+
         logger.info("new user %s", newuser)
+
         if newuser:
             return user_id, True
 
         return user_id, False
 
     except Exception as e:
-        logger.error("OAuth error: %s", str(e))
+
+        logger.error(
+            "OAuth error: %s",
+            str(e),
+            exc_info=True,
+        )
+
         return None, 500
 
 

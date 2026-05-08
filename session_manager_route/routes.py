@@ -42,6 +42,7 @@ def logout():
         actor_user_id = session_data.get("user_id")
 
     delete_status = asyncio.run(delete_all_session_cookies(key_str))
+    session.pop("active_workspace_id", None)
 
     actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
     log_audit_event(
