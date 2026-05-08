@@ -830,7 +830,7 @@ def update_note():
 
         connection.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(note_owner)
         log_audit_event(
             action=NOTE_UPDATED,
             endpoint="/update_note",
@@ -930,7 +930,7 @@ def delete_note():
 
         connection.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(note_owner)
         log_audit_event(
             action=NOTE_DELETED,
             endpoint="/delete_note",
@@ -1204,7 +1204,7 @@ def share_note_by_email():
 
         connection.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(note_owner)
         log_audit_event(
             action=NOTE_SHARED,
             endpoint="/share_note_by_email",
