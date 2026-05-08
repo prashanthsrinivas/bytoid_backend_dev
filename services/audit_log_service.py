@@ -87,6 +87,8 @@ TRACKER_ENTRY_ADDED = "TRACKER_ENTRY_ADDED"
 TRACKER_COLUMN_ADDED = "TRACKER_COLUMN_ADDED"
 TRACKER_COLUMN_DELETED = "TRACKER_COLUMN_DELETED"
 TRACKER_EVIDENCE_UPLOADED = "TRACKER_EVIDENCE_UPLOADED"
+TRACKER_FRAMEWORK_ADDED = "TRACKER_FRAMEWORK_ADDED"
+TRACKER_FRAMEWORK_UPDATED = "TRACKER_FRAMEWORK_UPDATED"
 
 # NOTES (new)
 NOTE_CREATED = "NOTE_CREATED"
@@ -315,12 +317,6 @@ def build_audit_actor(body_user_id):
     # Check if there's an active workspace delegation
     active_workspace_id = session.get("active_workspace_id")
 
-    import sys
-    print(
-        f"[AUDIT DEBUG] session_uid={session_uid!r} | active_workspace_id={active_workspace_id!r} | body_user_id={body_user_id!r}",
-        file=sys.stderr, flush=True,
-    )
-
     # Determine workspace owner from the strongest available signal.
     # Primary: session["active_workspace_id"] (set by /admin/access-workspace).
     # Fallback: body_user_id differs from session user (frontend sends workspace owner's ID).
@@ -349,10 +345,5 @@ def build_audit_actor(body_user_id):
         actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
         acting_on_behalf_of_user_id = None
         acting_on_behalf_of_email = None
-
-    print(
-        f"[AUDIT DEBUG] → actor_user_id={actor_user_id!r} | acting_on_behalf_of={acting_on_behalf_of_user_id!r} | audit_owner_id={acting_on_behalf_of_user_id or actor_user_id!r}",
-        file=sys.stderr, flush=True,
-    )
 
     return actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email

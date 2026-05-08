@@ -2024,9 +2024,9 @@ def get_audit_logs():
 
             # workspace_user_id: primary ownership filter — returns all entries that belong
             # to this user's audit page (their own actions + actions taken inside their workspace).
-            # audit_owner_id is stamped at write time; fall back to actor_user_id for old entries.
+            # back-fill above already handles old entries (no key → populated from acting_on_behalf_of/actor_user_id).
             if workspace_filter:
-                owner = e.get("audit_owner_id") or e.get("actor_user_id")
+                owner = e.get("audit_owner_id")
                 if owner != workspace_filter:
                     return False
             elif actor_filter:

@@ -261,15 +261,6 @@ def audit_before_request():
         except Exception:
             pass
 
-    import sys
-    print(
-        f"[AUDIT MIDDLEWARE] {request.method} {request.path}"
-        f" | session_user_id={g.session_user_id!r}"
-        f" | active_workspace_id={active_workspace_id!r}"
-        f" | g.acting_on_behalf={getattr(g, 'acting_on_behalf_of_user_id', None)!r}",
-        file=sys.stderr, flush=True,
-    )
-
 
 @app.after_request
 def after_request(response):
