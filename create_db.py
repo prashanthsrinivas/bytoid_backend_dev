@@ -169,6 +169,36 @@ def create_tables():
 
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS trust_centers (
+                id VARCHAR(36) PRIMARY KEY,
+                owner_user_id VARCHAR(36) NOT NULL,
+                whitepaper_s3_key VARCHAR(512),
+                nda_content TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS trust_center_documents (
+                id VARCHAR(36) PRIMARY KEY,
+                trust_center_id VARCHAR(36) NOT NULL,
+                label VARCHAR(255) NOT NULL,
+                s3_key VARCHAR(512) NOT NULL,
+                file_type VARCHAR(20) NOT NULL,
+                uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS trust_center_access (
+                id VARCHAR(36) PRIMARY KEY,
+                trust_center_id VARCHAR(36) NOT NULL,
+                granted_to_email VARCHAR(255) NOT NULL,
+                nda_accepted TINYINT(1) DEFAULT 0,
+                nda_accepted_at DATETIME,
+                granted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
         ]
 
         for query in table_queries:
