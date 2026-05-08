@@ -581,7 +581,7 @@ async def run_runbook_execution_engine(
         runbook["reference_sources"] if "reference_sources" in runbook else None
     )
     refernce_main_source = (
-        runbook["reference_main_source"] if "reference_main_source" in runbook else None
+        runbook.get("refernce_main_source") or runbook.get("reference_main_source")
     )
     logger.debug("Data sources: %s", data_sources)
     logger.debug("Reference sources: %s", refernce_main_source)

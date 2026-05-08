@@ -223,6 +223,8 @@ async def collect_runbook_inputs(runbook):
         result = await get_playbook_instruction(
             user_id=runbook["user_id"], filename=str(runbook["playbook_id"])
         )
+        if not result:
+            return ""
         return json.dumps(result.get("chat", []))
 
     elif runbook.get("api_endpoint"):
@@ -263,7 +265,7 @@ async def collect_runbook_inputs(runbook):
         logs_str = "\n".join(formatted_logs)
 
         return logs_str
-    raise ValueError("Runbook requires questionnaire/api/log input")
+    return ""
 
 
 async def get_playbook_instruction(user_id, filename):
@@ -406,9 +408,12 @@ async def retreval_from_sources(
     # -------------------------
     policy_ids = (filesources or {}).get("policy_ids", [])
     if policy_ids:
+        import os as _os
         from utils.s3_utils import load_yaml_from_s3
+        _framework_owner = _os.getenv("FRAMEWORK_OWNER", "service@bytoid.ca")
         for policy_id in policy_ids:
-            s3_key = f"{userid}/policies/{policy_id}.yaml"
+            # Policies are stored under the service account path, not the individual user path
+            s3_key = f"{_framework_owner}/policies/{policy_id}.yaml"
             try:
                 policy_data = load_yaml_from_s3(s3_key)
                 if policy_data:
