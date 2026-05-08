@@ -321,22 +321,30 @@ def build_audit_actor(body_user_id):
         file=sys.stderr, flush=True,
     )
 
+    # Determine workspace owner from the strongest available signal.
+    # Primary: session["active_workspace_id"] (set by /admin/access-workspace).
+    # Fallback: body_user_id differs from session user (frontend sends workspace owner's ID).
+    workspace_owner = None
     if active_workspace_id and session_uid and session_uid != active_workspace_id:
-        # Delegated cross-admin access (via /admin/access-workspace)
+        workspace_owner = active_workspace_id
+    elif session_uid and body_user_id and session_uid != body_user_id:
+        workspace_owner = body_user_id
+
+    if workspace_owner:
+        # Delegated: session user is operating inside another user's workspace.
         actor_user_id = session_uid
         actor_email = get_email_by_id(session_uid)
-        acting_on_behalf_of_user_id = active_workspace_id
-        acting_on_behalf_of_email = get_email_by_id(active_workspace_id)
+        acting_on_behalf_of_user_id = workspace_owner
+        acting_on_behalf_of_email = get_email_by_id(workspace_owner)
 
         # Stamp g so middleware fallback can see delegation context
         try:
-            g.acting_on_behalf_of_user_id = acting_on_behalf_of_user_id
+            g.acting_on_behalf_of_user_id = workspace_owner
             g.acting_on_behalf_of_email = acting_on_behalf_of_email
         except RuntimeError:
             pass
     else:
-        # Self-access (normal case or no active delegation).
-        # Prefer authenticated session identity over client-supplied body_user_id.
+        # Self-access: session user is the workspace owner.
         actor_user_id = session_uid or body_user_id
         actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
         acting_on_behalf_of_user_id = None
