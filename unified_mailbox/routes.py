@@ -535,18 +535,6 @@ def create_note():
         note_content = (data.get("note_content") or "").strip()
         note_type = (data.get("note_type") or "").strip()
 
-        import sys
-        print(
-            f"[NOTE ROUTE] create_note | body_user_id={user_id!r}"
-            f" | session[user_id]={session.get('user_id')!r}"
-            f" | session[active_workspace_id]={session.get('active_workspace_id')!r}",
-            file=sys.stderr, flush=True,
-        )
-
-        # print(
-        #     f"[DEBUG] Extracted fields - user_id: '{user_id}', conversation_id: '{conversation_id}', sender_id: '{sender_id}', note_content: '{note_content}', note_type: '{note_type}'"
-        # )
-
         # Check for required fields (empty strings are invalid)
         if not user_id or not conversation_id or not note_content or not note_type:
             missing_fields = []
@@ -763,14 +751,6 @@ def update_note():
     user_id = data.get("user_id")
     note_content = data.get("note_content")
 
-    import sys
-    print(
-        f"[NOTE ROUTE] update_note | body_user_id={user_id!r}"
-        f" | session[user_id]={session.get('user_id')!r}"
-        f" | session[active_workspace_id]={session.get('active_workspace_id')!r}",
-        file=sys.stderr, flush=True,
-    )
-
     if not all([note_id, user_id, note_content]):
         return jsonify({"error": "Missing required fields"}), 400
 
@@ -783,7 +763,7 @@ def update_note():
 
         # Check if user has permission to edit the note
         cursor.execute(
-            """SELECT user_id, note_content FROM conversation_notes 
+            """SELECT user_id, note_content FROM conversation_notes
                WHERE note_id = %s AND is_active = TRUE""",
             (note_id,),
         )
@@ -795,10 +775,16 @@ def update_note():
         note_owner = note[0]
         old_content = note[1]
 
+        # Delegated secondary-access admins have full access to the workspace they entered.
+        is_delegated_admin = (
+            session.get("active_workspace_id") == note_owner
+            or getattr(g, "acting_on_behalf_of_user_id", None) == note_owner
+        )
+
         # Check user permissions
-        if note_owner != user_id:
+        if note_owner != user_id and not is_delegated_admin:
             cursor.execute(
-                """SELECT permission_type FROM note_permissions 
+                """SELECT permission_type FROM note_permissions
                    WHERE note_id = %s AND user_id = %s AND is_active = TRUE""",
                 (note_id, user_id),
             )
@@ -813,14 +799,15 @@ def update_note():
         )
 
         # Log the change in note_history
+        editor_id = session.get("user_id") or user_id  # actual authenticated editor
         cursor.execute(
-            """INSERT INTO note_history 
+            """INSERT INTO note_history
                (history_id, note_id, user_id, action, old_content, new_content, created_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (
                 str(uuid.uuid4()),
                 note_id,
-                user_id,
+                editor_id,
                 "updated",
                 old_content,
                 note_content,
@@ -883,7 +870,7 @@ def delete_note():
 
         # Check if user has permission to delete the note
         cursor.execute(
-            """SELECT user_id, note_content FROM conversation_notes 
+            """SELECT user_id, note_content FROM conversation_notes
                WHERE note_id = %s AND is_active = TRUE""",
             (note_id,),
         )
@@ -895,10 +882,16 @@ def delete_note():
         note_owner = note[0]
         old_content = note[1]
 
+        # Delegated secondary-access admins have full access to the workspace they entered.
+        is_delegated_admin = (
+            session.get("active_workspace_id") == note_owner
+            or getattr(g, "acting_on_behalf_of_user_id", None) == note_owner
+        )
+
         # Check user permissions
-        if note_owner != user_id:
+        if note_owner != user_id and not is_delegated_admin:
             cursor.execute(
-                """SELECT permission_type FROM note_permissions 
+                """SELECT permission_type FROM note_permissions
                    WHERE note_id = %s AND user_id = %s AND is_active = TRUE""",
                 (note_id, user_id),
             )
@@ -913,14 +906,15 @@ def delete_note():
         )
 
         # Log the deletion in note_history
+        editor_id = session.get("user_id") or user_id  # actual authenticated editor
         cursor.execute(
-            """INSERT INTO note_history 
+            """INSERT INTO note_history
                (history_id, note_id, user_id, action, old_content, new_content, created_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (
                 str(uuid.uuid4()),
                 note_id,
-                user_id,
+                editor_id,
                 "deleted",
                 old_content,
                 None,
@@ -1149,10 +1143,16 @@ def share_note_by_email():
 
         note_owner = note[0]
 
+        # Delegated secondary-access admins have full access to the workspace they entered.
+        is_delegated_admin = (
+            session.get("active_workspace_id") == note_owner
+            or getattr(g, "acting_on_behalf_of_user_id", None) == note_owner
+        )
+
         # Only note owner or users with admin permission can share
-        if note_owner != user_id:
+        if note_owner != user_id and not is_delegated_admin:
             cursor.execute(
-                """SELECT permission_type FROM note_permissions 
+                """SELECT permission_type FROM note_permissions
                    WHERE note_id = %s AND user_id = %s AND is_active = TRUE""",
                 (note_id, user_id),
             )

@@ -314,6 +314,15 @@ def build_audit_actor(body_user_id):
     except RuntimeError:
         session_uid = None
 
+    # Fast path: trust delegation context already computed by audit_before_request().
+    # Avoids re-reading session which can miss when body_user_id == session_uid.
+    pre_computed_behalf = getattr(g, "acting_on_behalf_of_user_id", None)
+    if pre_computed_behalf:
+        actor_user_id = session_uid or body_user_id
+        actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+        acting_on_behalf_of_email = getattr(g, "acting_on_behalf_of_email", None)
+        return actor_user_id, actor_email, pre_computed_behalf, acting_on_behalf_of_email
+
     # Check if there's an active workspace delegation
     active_workspace_id = session.get("active_workspace_id")
 
