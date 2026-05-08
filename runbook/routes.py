@@ -134,7 +134,12 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             "is_template": data.get("is_template"),
             "created_at": datetime.utcnow().isoformat(),
             "runbook_evidence_config": None,
+            "tracker_configuration": json.dumps(data.get("tracker_configuration") or {}),
         }
+
+        # Normalize is_template to a proper Python bool — FormData always sends
+        # it as the string "true" / "false", so we can't rely on truthiness.
+        is_template = str(runbook_data.get("is_template") or "").lower() in ("true", "1", "yes", "on")
 
         # ☁️ LOG FETCH
         log_source = None
@@ -248,7 +253,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
         # ⚙️ EXECUTION FLOW
         input_type = runbook_data.get("input_type")
 
-        if input_type == "logs" and not runbook_data["is_template"]:
+        if input_type == "logs" and not is_template:
             progress = 30
             await emit(
                 msg_builder.job_progress(
@@ -261,7 +266,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             )
             schedule_runbook_log(runbook_data)
 
-        elif input_type == "api" and not runbook_data["is_template"]:
+        elif input_type == "api" and not is_template:
             progress = 30
             await emit(
                 msg_builder.job_progress(
@@ -322,7 +327,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
                 )
             )
 
-            if runbook_data["is_template"]:
+            if is_template:
                 assign_runbook_playbook(
                     runbook_id=runbook_data["runbook_id"],
                     playbook=runbook_data["playbook_id"],

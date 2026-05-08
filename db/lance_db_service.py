@@ -3060,7 +3060,7 @@ class LanceDBServer:
             "reference_main_source": data.get("reference_main_source"),
             "created_at": data.get("created_at") or datetime.utcnow().isoformat(),
             "runbook_evidence_config": data.get("runbook_evidence_config", ""),
-            "tracker_configuration": data.get("tracker_configuration",{})
+            "tracker_configuration": json.dumps(data.get("tracker_configuration") or {})
 
         }
 
