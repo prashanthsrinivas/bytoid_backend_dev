@@ -1,5 +1,5 @@
 from db.db_checkers import get_notes_data
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, g
 import asyncio
 from microsoft_route.routes import microsoft_list_drafts
 from gmail_route.routes import list_drafts
@@ -9,6 +9,10 @@ from datetime import datetime
 import json
 import traceback
 import uuid
+from services.audit_log_service import (
+    log_audit_event, build_audit_actor,
+    NOTE_CREATED, NOTE_UPDATED, NOTE_DELETED, NOTE_SHARED,
+)
 
 
 def get_user_login_method(user_id):
@@ -592,13 +596,27 @@ def create_note():
 
         # Verify the note was created
         cursor.execute(
-            """SELECT note_id, note_content, note_type, is_active 
-               FROM conversation_notes 
+            """SELECT note_id, note_content, note_type, is_active
+               FROM conversation_notes
                WHERE note_id = %s""",
             (note_id,),
         )
         verification = cursor.fetchone()
         # print(f"[DEBUG] Verification result: {verification}")
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=NOTE_CREATED,
+            endpoint="/create_note",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"note_id": note_id, "note_type": note_type, "conversation_id": conversation_id},
+        )
+        g.audit_logged = True
 
         return (
             jsonify(
@@ -795,6 +813,21 @@ def update_note():
         )
 
         connection.commit()
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=NOTE_UPDATED,
+            endpoint="/update_note",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"note_id": note_id},
+        )
+        g.audit_logged = True
+
         return jsonify({"message": "Note updated successfully"})
 
     except Exception as e:
@@ -872,6 +905,21 @@ def delete_note():
         )
 
         connection.commit()
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=NOTE_DELETED,
+            endpoint="/delete_note",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"note_id": note_id},
+        )
+        g.audit_logged = True
+
         return jsonify({"message": "Note deleted successfully"})
 
     except Exception as e:
@@ -1131,6 +1179,21 @@ def share_note_by_email():
             )
 
         connection.commit()
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        log_audit_event(
+            action=NOTE_SHARED,
+            endpoint="/share_note_by_email",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"note_id": note_id, "shared_with_email": share_with_email, "permission_type": permission_type},
+        )
+        g.audit_logged = True
+
         return jsonify(
             {
                 "message": "Note shared successfully",

@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 from services.audit_log_service import (
     log_audit_event, build_audit_actor,
     SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SPECIAL_ACCESS_REQUESTED,
+    WORKSPACE_ACCESS_ENTERED,
     ROLE_CREATED, ROLE_UPDATED, ROLE_DELETED,
     USER_INVITED, INVITE_CANCELLED, INVITE_RESENT, USER_INVITE_ACCEPTED,
     USER_ROLE_CHANGED, USER_ACCESS_REVOKED, USER_ACCESS_ACTIVATED, USER_DELETED,
@@ -1218,6 +1219,79 @@ def revoke_special_access():
             conn.close()
 
 
+@inv_users_bp.route("/admin/access-workspace", methods=["POST"])
+def access_workspace():
+    """
+    Called by the frontend when a secondary-access admin explicitly enters another admin's workspace.
+    Fires a WORKSPACE_ACCESS_ENTERED audit event with actor=Kavya, workspace_owner=Test.
+    The session user (Kavya) must have a special_access grant from workspace_user_id (Test).
+    """
+    data = request.get_json()
+    workspace_user_id = data.get("workspace_user_id")
+
+    if not workspace_user_id:
+        return jsonify({"error": "workspace_user_id required"}), 400
+
+    # Read session identity directly. build_audit_actor cannot be used here because
+    # session["active_workspace_id"] is not yet set, so it would fall to the self-access
+    # branch and return actor_uid = workspace_user_id, triggering the 403 guard below.
+    actor_uid = (
+        session.get("user_id")
+        or getattr(g, "session_user_id", None)
+        or getattr(g, "user_id", None)
+    )
+
+    if not actor_uid:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    if actor_uid == workspace_user_id:
+        return jsonify({"error": "No delegation context — session user matches workspace owner"}), 403
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT 1 FROM special_access WHERE grantor_admin_id=%s AND target_admin_id=%s",
+                (workspace_user_id, actor_uid),
+            )
+            if not cursor.fetchone():
+                return jsonify({"error": "No special access grant found"}), 403
+
+        session["active_workspace_id"] = workspace_user_id
+
+        from db.db_checkers import get_email_by_id as _get_email
+        actor_email = _get_email(actor_uid)
+        obo_email = _get_email(workspace_user_id)
+
+        log_audit_event(
+            action=WORKSPACE_ACCESS_ENTERED,
+            endpoint="/admin/access-workspace",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=workspace_user_id,
+            acting_on_behalf_of_email=obo_email,
+        )
+        g.audit_logged = True
+
+        return jsonify({"message": "Workspace access recorded"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@inv_users_bp.route("/admin/exit-workspace", methods=["POST"])
+def exit_workspace():
+    """Clear the active workspace delegation session."""
+    session.pop("active_workspace_id", None)
+    return jsonify({"status": "exited"}), 200
+
+
 @inv_users_bp.route("/admin/validate_invite/token=<token>", methods=["GET"])
 def validate_invite(token):
     if not token:
@@ -1890,12 +1964,13 @@ def get_audit_logs():
         except (ValueError, TypeError):
             page_size = 50
 
-        action_filter    = request.args.get("action")
-        category_filter  = request.args.get("category")
-        status_filter    = request.args.get("status")
-        actor_filter     = request.args.get("actor_user_id")
-        from_ts          = request.args.get("from_ts")
-        to_ts            = request.args.get("to_ts")
+        action_filter      = request.args.get("action")
+        category_filter    = request.args.get("category")
+        status_filter      = request.args.get("status")
+        actor_filter       = request.args.get("actor_user_id")
+        workspace_filter   = request.args.get("workspace_user_id")  # primary ownership filter
+        from_ts            = request.args.get("from_ts")
+        to_ts              = request.args.get("to_ts")
 
         # 4. READ + PARSE logs/audit.log
         log_path = os.path.join(os.path.dirname(__file__), "..", "logs", "audit.log")
@@ -1915,18 +1990,36 @@ def get_audit_logs():
                         entry.setdefault("acting_on_behalf_of_user_id", None)
                         entry.setdefault("acting_on_behalf_of_email", None)
                         entry.setdefault("metadata", {})
+                        # Back-fill audit_owner_id for entries written before this field existed.
+                        if "audit_owner_id" not in entry:
+                            entry["audit_owner_id"] = (
+                                entry.get("acting_on_behalf_of_user_id")
+                                or entry.get("actor_user_id")
+                            )
                         entries.append(entry)
                     except (json.JSONDecodeError, ValueError):
                         continue  # skip malformed lines silently
 
         # 5. APPLY FILTERS
         def matches(e):
-            if action_filter   and e.get("action")        != action_filter:   return False
-            if category_filter and e.get("category")       != category_filter: return False
-            if status_filter   and e.get("status")         != status_filter:   return False
-            if actor_filter    and e.get("actor_user_id")  != actor_filter:    return False
-            if from_ts         and e.get("timestamp", "")  <  from_ts:         return False
-            if to_ts           and e.get("timestamp", "")  >  to_ts:           return False
+            if action_filter   and e.get("action")       != action_filter:    return False
+            if category_filter and e.get("category")     != category_filter:  return False
+            if status_filter   and e.get("status")       != status_filter:    return False
+            if from_ts         and e.get("timestamp","") <  from_ts:          return False
+            if to_ts           and e.get("timestamp","") >  to_ts:            return False
+
+            # workspace_user_id: primary ownership filter — returns all entries that belong
+            # to this user's audit page (their own actions + actions taken inside their workspace).
+            # audit_owner_id is stamped at write time; fall back to actor_user_id for old entries.
+            if workspace_filter:
+                owner = e.get("audit_owner_id") or e.get("actor_user_id")
+                if owner != workspace_filter:
+                    return False
+            elif actor_filter:
+                # Legacy: filter directly by actor (only shows self-actions, misses delegation).
+                if e.get("actor_user_id") != actor_filter:
+                    return False
+
             return True
 
         filtered = [e for e in entries if matches(e)]

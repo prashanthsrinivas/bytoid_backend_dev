@@ -79,7 +79,7 @@ class GmailService:
                     """
                 SELECT client_id, client_secret, access_token, refresh_token, expiry
                 FROM integrations
-                WHERE primary_user_id_fk = %s
+                WHERE primary_user_id_fk = %s AND platform = 'google'
                 """,
                     (str(user_id,)),
                 )
@@ -125,17 +125,17 @@ class GmailService:
                         cursor.execute(
                             """
                             UPDATE users
-                            SET token = %s, expiry = %s 
+                            SET token = %s, refresh_token = %s, expiry = %s
                             WHERE user_id = %s
                             """,
-                            (self.creds.token, self.creds.expiry, str(user_id)),
+                            (self.creds.token, self.creds.refresh_token, self.creds.expiry, str(user_id)),
                         )
                     else:
-                        cursor.execute(""" 
+                        cursor.execute("""
                             UPDATE integrations SET
-                            access_token = %s, expiry = %s
-                            WHERE primary_user_id_fk = %s""",
-                            (self.creds.token, self.creds.expiry, str(user_id)))
+                            access_token = %s, refresh_token = %s, expiry = %s
+                            WHERE primary_user_id_fk = %s AND platform = 'google'""",
+                            (self.creds.token, self.creds.refresh_token, self.creds.expiry, str(user_id)))
                 self.conn.commit()
 
             except Exception as e:

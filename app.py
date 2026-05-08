@@ -237,7 +237,15 @@ def audit_before_request():
     """Stamp audit context on the request."""
     g.audit_logged = False  # Duplicate-guard flag (set True by direct calls)
     g.workspace_access_logged = False  # Prevents duplicate WORKSPACE_ACCESS_ENTERED per request
-    g.session_user_id = session.get("user_id")  # Partial identity; may be None
+    # Prefer g.user_id set by session_middleware (Redis-backed); fall back to Flask signed-cookie session.
+    g.session_user_id = getattr(g, "user_id", None) or session.get("user_id")
+
+    # If there's an active workspace delegation in the session, pre-stamp the delegation context
+    active_workspace_id = session.get("active_workspace_id")
+    if active_workspace_id and g.session_user_id and g.session_user_id != active_workspace_id:
+        from db.db_checkers import get_email_by_id
+        g.acting_on_behalf_of_user_id = active_workspace_id
+        g.acting_on_behalf_of_email = get_email_by_id(active_workspace_id)
 
 
 @app.after_request

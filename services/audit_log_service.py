@@ -272,10 +272,16 @@ def log_audit_event(
 ):
     """Write one structured JSON audit entry. Never raises."""
     try:
+        # audit_owner_id = the workspace this entry belongs to.
+        # Delegation: acting_on_behalf_of_user_id (Kavya's workspace) → entry lives on Kavya's audit page.
+        # Self-access: actor_user_id (Test's workspace) → entry lives on Test's audit page.
+        audit_owner_id = acting_on_behalf_of_user_id or actor_user_id
+
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "action": action,
             "category": ACTION_CATEGORY.get(action, "api_activity"),
+            "audit_owner_id": audit_owner_id,
             "actor_user_id": actor_user_id,
             "actor_email": actor_email,
             "target_user_id": target_user_id,
@@ -297,45 +303,48 @@ def build_audit_actor(body_user_id):
     """
     Returns (actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email).
 
-    When the session's authenticated user differs from body_user_id, the session user is
-    the true actor (Kavya) and body_user_id is the workspace owner (Prashanth).
-    When they match (normal operation), acting_on_behalf_of fields are None.
-
-    Auto-fires WORKSPACE_ACCESS_ENTERED event once per request when delegation is detected.
+    Primary signal: session["active_workspace_id"] (set by /admin/access-workspace).
+    If active, the session user is acting on behalf of the workspace owner.
+    If not active, this is self-access.
     """
     try:
         session_uid = getattr(g, "session_user_id", None) or session.get("user_id")
     except RuntimeError:
         session_uid = None
 
-    if session_uid and session_uid != body_user_id:
-        # Delegated cross-admin access
+    # Check if there's an active workspace delegation
+    active_workspace_id = session.get("active_workspace_id")
+
+    import sys
+    print(
+        f"[AUDIT DEBUG] session_uid={session_uid!r} | active_workspace_id={active_workspace_id!r} | body_user_id={body_user_id!r}",
+        file=sys.stderr, flush=True,
+    )
+
+    if active_workspace_id and session_uid and session_uid != active_workspace_id:
+        # Delegated cross-admin access (via /admin/access-workspace)
         actor_user_id = session_uid
         actor_email = get_email_by_id(session_uid)
-        acting_on_behalf_of_user_id = body_user_id
-        acting_on_behalf_of_email = get_email_by_id(body_user_id) if body_user_id else None
+        acting_on_behalf_of_user_id = active_workspace_id
+        acting_on_behalf_of_email = get_email_by_id(active_workspace_id)
 
-        # Auto-fire workspace access event once per request
-        if not getattr(g, "workspace_access_logged", False):
-            try:
-                log_audit_event(
-                    action=WORKSPACE_ACCESS_ENTERED,
-                    endpoint=request.path,
-                    ip=request.remote_addr,
-                    status="success",
-                    actor_user_id=actor_user_id,
-                    actor_email=actor_email,
-                    acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
-                    acting_on_behalf_of_email=acting_on_behalf_of_email,
-                )
-                g.workspace_access_logged = True
-            except Exception:
-                pass
+        # Stamp g so middleware fallback can see delegation context
+        try:
+            g.acting_on_behalf_of_user_id = acting_on_behalf_of_user_id
+            g.acting_on_behalf_of_email = acting_on_behalf_of_email
+        except RuntimeError:
+            pass
     else:
-        # Self-access (normal case)
-        actor_user_id = body_user_id
-        actor_email = get_email_by_id(body_user_id) if body_user_id else None
+        # Self-access (normal case or no active delegation).
+        # Prefer authenticated session identity over client-supplied body_user_id.
+        actor_user_id = session_uid or body_user_id
+        actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
         acting_on_behalf_of_user_id = None
         acting_on_behalf_of_email = None
+
+    print(
+        f"[AUDIT DEBUG] → actor_user_id={actor_user_id!r} | acting_on_behalf_of={acting_on_behalf_of_user_id!r} | audit_owner_id={acting_on_behalf_of_user_id or actor_user_id!r}",
+        file=sys.stderr, flush=True,
+    )
 
     return actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email
