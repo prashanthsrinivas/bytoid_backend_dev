@@ -4,6 +4,7 @@ import traceback
 import json
 import uuid
 
+from utils.app_configs import IS_DEV
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request, g
 from services.audit_log_service import (
@@ -31,10 +32,17 @@ from tab_tracker.helper import (
     apply_entry_updates,
     _rebuild_micro_blocks_from_tracker,
 )
-from utils.s3_utils import upload_any_file, read_json_from_s3, delete_file_from_s3
+from utils.s3_utils import (
+    upload_any_file,
+    read_json_from_s3,
+    delete_file_from_s3,
+    load_yaml_from_s3,
+)
+from utils.base_logger import get_logger
 
 tracker_bp = Blueprint("tracker", __name__)
 dbserver = LanceDBServer()
+logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
 
 def extract_block_schema(block, tracker_type):
@@ -777,6 +785,7 @@ def view_tracker_content_api():
 
         schema = tracker_data.get("schema", {})
         source_blocks = tracker_data.get("source_blocks", [])
+        frameworks = tracker_data.get("frameworks", [])
 
         # Format response based on tracker type
         if tracker_type == "table":
@@ -804,6 +813,7 @@ def view_tracker_content_api():
                             "source_blocks": source_blocks,
                             "source_block_count": len(source_blocks),
                         },
+                        "frameworks": frameworks,
                     }
                 ),
                 200,
@@ -2443,7 +2453,7 @@ async def add_tracker_framework():
 
         # Fetch framework from policyhub to verify it exists and get its name
         fw_s3_key = f"service@bytoid.ca/frameworks/{framework_id}.yaml"
-        fw_data = read_json_from_s3(fw_s3_key)
+        fw_data = load_yaml_from_s3(fw_s3_key)
         if not fw_data:
             return (
                 jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
@@ -2471,9 +2481,12 @@ async def add_tracker_framework():
         if not tracker_meta:
             return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
 
+        logger.info("tracker meta data %s", tracker_meta["file_path"])
+
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
+        # logger.info("tracker data %s", tracker_data)
 
         existing_frameworks = tracker_data.get("frameworks", [])
         if any(fw["id"] == framework_id for fw in existing_frameworks):
@@ -2576,7 +2589,7 @@ async def update_tracker_framework():
 
         # Fetch framework from policyhub to get current name
         fw_s3_key = f"service@bytoid.ca/frameworks/{framework_id}.yaml"
-        fw_data = read_json_from_s3(fw_s3_key)
+        fw_data = load_yaml_from_s3(fw_s3_key)
         if not fw_data:
             return (
                 jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
