@@ -1648,6 +1648,213 @@ class WorkflowRunnerV2:
         except Exception:
             return None
 
+    def _find_step_by_ref(self, step_ref: str) -> Optional[Dict[str, Any]]:
+        """
+        Finds a step by reference number or ID.
+        Tries direct ID match first, then by 1-based position in step list.
+        """
+        # Try direct ID match
+        if str(step_ref) in self.steps:
+            return self.steps[str(step_ref)]
+        # Try by 1-based position in the step list
+        try:
+            idx = int(step_ref) - 1
+            step_list = self.workflow_json.get("workflow", {}).get("steps", [])
+            if 0 <= idx < len(step_list):
+                return step_list[idx]
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def _build_dependency_blocked_response(
+        self, target_step: dict, blocking_step: dict, required_fields: list, step_ref: str = None
+    ) -> dict:
+        """
+        Builds a user-facing response when a dependency step blocks execution.
+        The user needs to provide required_fields for blocking_step before target_step can run.
+        """
+        target_title = target_step.get("title", "this step") if target_step else "this step"
+        blocking_title = blocking_step.get("title", f"Step {step_ref}")
+
+        fields_str = "\n".join(f"- {f}" for f in required_fields)
+
+        message = (
+            f"To execute **{target_title}**, I need to first complete **{blocking_title}**, "
+            f"which requires the following from you:\n{fields_str}\n\n"
+            f"Please provide these details and run **{blocking_title}** first."
+        )
+
+        self.logger.debug(
+            "_build_dependency_blocked_response: target=%s, blocker=%s, fields=%s",
+            target_step.get("id"), blocking_step.get("id"), required_fields
+        )
+
+        return {
+            "workflow_intent": False,
+            "execution_status": "dependency_blocked",
+            "step_id": blocking_step.get("id"),
+            "message": message,
+            "response_message": message,
+            "log_status": "dependency_blocked",
+            "clarification_needed": True,
+            "dependency_info": {
+                "target_step_id": target_step.get("id") if target_step else None,
+                "blocking_step_id": blocking_step.get("id"),
+                "blocking_step_title": blocking_title,
+                "required_fields": required_fields,
+            },
+        }
+
+    async def _resolve_placeholders(
+        self, args: dict, current_step_id: str = None
+    ):
+        """
+        Resolves {{step_N.field_name}} template references in args.
+        Walks dependency chain in ascending order (lowest step first).
+        Returns tuple: (resolved_args, blocking_response_or_None)
+
+        - If all resolved or already auto-executed → returns (resolved_args, None)
+        - If a dependency step needs user input → returns (args, blocking_response)
+        """
+        self.logger.debug("Entering _resolve_placeholders with args: %s", sorted(args.keys()))
+        try:
+            placeholder_pattern = re.compile(r'\{\{step_(\w+)\.(\w+)\}\}')
+            resolved = dict(args)
+
+            # Step 1: Collect all unresolved dependencies
+            unresolved_deps = {}  # step_ref → [field_names]
+            for key, value in args.items():
+                if not isinstance(value, str):
+                    continue
+                for match in placeholder_pattern.finditer(value):
+                    step_ref, field_name = match.group(1), match.group(2)
+
+                    # Check if already resolved
+                    already_resolved = False
+
+                    # Try previous_data
+                    execution_data = self.previous_data or {}
+                    steps_data = execution_data.get("steps", execution_data)
+                    step_entry = steps_data.get(str(step_ref), {})
+                    details = step_entry.get("details", {})
+                    if field_name in details:
+                        already_resolved = True
+
+                    # Try pre_user_data
+                    if not already_resolved:
+                        pud = self.workflow_json.get("pre_user_data", {})
+                        if field_name in pud and pud[field_name] not in (None, "", [], {}):
+                            already_resolved = True
+
+                    # If not already resolved, add to unresolved deps
+                    if not already_resolved:
+                        unresolved_deps.setdefault(str(step_ref), []).append(field_name)
+
+            if not unresolved_deps:
+                self.logger.debug("_resolve_placeholders: all dependencies already resolved")
+                return resolved, None
+
+            # Step 2: Sort step_refs in ascending order (handle both numeric and string IDs)
+            def sort_key(ref):
+                try:
+                    return (0, int(ref))
+                except ValueError:
+                    return (1, ref)
+
+            sorted_refs = sorted(unresolved_deps.keys(), key=sort_key)
+            self.logger.debug("_resolve_placeholders: unresolved deps in order: %s", sorted_refs)
+
+            # Step 3: Walk dependencies from earliest to latest
+            for step_ref in sorted_refs:
+                dep_step = self._find_step_by_ref(step_ref)
+                if not dep_step:
+                    self.logger.warning("_resolve_placeholders: step ref %s not found", step_ref)
+                    continue
+
+                needs = dep_step.get("requirements_needed") or []
+
+                if needs:
+                    # BLOCKED — this step needs user input
+                    self.logger.warning(
+                        "_resolve_placeholders: blocked by step %s which needs %s",
+                        step_ref, needs
+                    )
+                    target_step = self.get_step_data(current_step_id) if current_step_id else None
+                    blocking_response = self._build_dependency_blocked_response(
+                        target_step=target_step,
+                        blocking_step=dep_step,
+                        required_fields=needs,
+                        step_ref=step_ref,
+                    )
+                    return resolved, blocking_response
+
+                # Auto-executable — run it
+                try:
+                    self.logger.info(
+                        "_resolve_placeholders: auto-executing step %s (id=%s)",
+                        step_ref, dep_step.get("id")
+                    )
+                    dep_result = await self._execute_step(step_id=dep_step["id"], compl=True)
+
+                    # Check execution result for our fields
+                    if dep_result:
+                        details = dep_result.get("execution_details", {})
+                        for field_name in unresolved_deps[step_ref]:
+                            if field_name in details:
+                                resolved[f"step_{step_ref}_{field_name}"] = details[field_name]
+
+                except Exception as e:
+                    self.logger.error(
+                        "_resolve_placeholders: error auto-executing step %s: %s",
+                        step_ref, e, exc_info=True
+                    )
+
+            # Step 4: Final substitution pass
+            for key, value in resolved.items():
+                if not isinstance(value, str):
+                    continue
+                resolved_value = value
+                for match in placeholder_pattern.finditer(value):
+                    step_ref = match.group(1)
+                    field_name = match.group(2)
+                    placeholder_str = match.group(0)
+
+                    resolved_val = None
+
+                    # Check previous_data
+                    execution_data = self.previous_data or {}
+                    steps_data = execution_data.get("steps", execution_data)
+                    step_entry = steps_data.get(str(step_ref), {})
+                    details = step_entry.get("details", {})
+                    if field_name in details:
+                        resolved_val = details[field_name]
+                        self.logger.debug("_resolve_placeholders: resolved %s from previous_data", placeholder_str)
+
+                    # Check pre_user_data
+                    if resolved_val is None:
+                        pud = self.workflow_json.get("pre_user_data", {})
+                        if field_name in pud and pud[field_name] not in (None, "", [], {}):
+                            resolved_val = pud[field_name]
+                            self.logger.debug("_resolve_placeholders: resolved %s from pre_user_data", placeholder_str)
+
+                    # Perform substitution
+                    if resolved_val is not None:
+                        resolved_value = resolved_value.replace(placeholder_str, str(resolved_val))
+                    else:
+                        self.logger.warning(
+                            "_resolve_placeholders: could not resolve placeholder %s in arg '%s'",
+                            placeholder_str, key
+                        )
+
+                resolved[key] = resolved_value
+
+            self.logger.debug("_resolve_placeholders completed successfully")
+            return resolved, None
+
+        except Exception as e:
+            self.logger.error("_resolve_placeholders error: %s", e, exc_info=True)
+            raise
+
     async def _execute_step(
         self, step_id, ai_result=None, compl=False
     ) -> Dict[str, Any]:
@@ -1673,6 +1880,17 @@ class WorkflowRunnerV2:
                 # Merge AI args
                 if function_args:
                     nfunction_args.update(function_args)
+
+                # Resolve any {{step_N.field_name}} references and check for dependency blocks
+                nfunction_args, blocking_response = await self._resolve_placeholders(
+                    nfunction_args, current_step_id=step_id
+                )
+                if blocking_response:
+                    self.logger.warning(
+                        "_execute_step: execution blocked by dependency - %s",
+                        blocking_response.get("message", "")[:100]
+                    )
+                    return blocking_response
 
                 # Execute function
                 try:

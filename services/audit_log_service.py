@@ -346,4 +346,9 @@ def build_audit_actor(body_user_id):
         acting_on_behalf_of_user_id = None
         acting_on_behalf_of_email = None
 
-    return actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email
+    return (
+        actor_user_id,
+        actor_email,
+        acting_on_behalf_of_user_id,
+        acting_on_behalf_of_email,
+    )

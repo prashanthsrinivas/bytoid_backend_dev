@@ -7,10 +7,17 @@ import uuid
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request, g
 from services.audit_log_service import (
-    log_audit_event, build_audit_actor,
-    TRACKER_CREATED, TRACKER_DELETED, TRACKER_MODIFIED,
-    TRACKER_ENTRY_ADDED, TRACKER_COLUMN_ADDED, TRACKER_COLUMN_DELETED,
-    TRACKER_EVIDENCE_UPLOADED
+    log_audit_event,
+    build_audit_actor,
+    TRACKER_CREATED,
+    TRACKER_DELETED,
+    TRACKER_MODIFIED,
+    TRACKER_ENTRY_ADDED,
+    TRACKER_COLUMN_ADDED,
+    TRACKER_COLUMN_DELETED,
+    TRACKER_EVIDENCE_UPLOADED,
+    TRACKER_FRAMEWORK_ADDED,
+    TRACKER_FRAMEWORK_UPDATED,
 )
 from db.db_checkers import get_email_by_id
 from tab_tracker.helper import (
@@ -279,7 +286,12 @@ async def create_tracker_api():
             response_data["result_id"] = result_id
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_CREATED,
             endpoint="/tracker/create",
@@ -385,7 +397,12 @@ async def delete_tracker():
                 )
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_DELETED,
             endpoint="/tracker/delete",
@@ -1069,7 +1086,12 @@ async def append_tracker_api():
             }
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_MODIFIED,
             endpoint="/tracker/append",
@@ -1083,7 +1105,9 @@ async def append_tracker_api():
                 "tracker_id": tracker_id,
                 "result_id": result_id,
                 "tracker_type": tracker_type,
-                "append_count": append_metadata.get("rows_appended") or append_metadata.get("cells_appended") or append_metadata.get("records_appended"),
+                "append_count": append_metadata.get("rows_appended")
+                or append_metadata.get("cells_appended")
+                or append_metadata.get("records_appended"),
             },
         )
         g.audit_logged = True
@@ -1411,7 +1435,12 @@ async def sync_block_to_tracker_api():
         }
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_MODIFIED,
             endpoint="/tracker/sync-from-block",
@@ -1509,7 +1538,12 @@ async def modify_tracker_details():
                 await dbserver.update_runbook_result(user_id, result_id, result_content)
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_MODIFIED,
             endpoint="/tracker/modify",
@@ -1692,7 +1726,12 @@ async def add_tracker_entry():
         save_tracker_file(user_id, tracker_id, tracker_data)
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_ENTRY_ADDED,
             endpoint="/tracker/add-entry",
@@ -1856,7 +1895,12 @@ async def add_tracker_column():
         save_tracker_file(user_id, tracker_id, tracker_data)
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_COLUMN_ADDED,
             endpoint="/tracker/add-column",
@@ -2212,7 +2256,12 @@ async def delete_tracker_column():
         }
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_COLUMN_DELETED,
             endpoint="/tracker/delete-column",
@@ -2317,7 +2366,12 @@ def upload_evidence_api():
             )
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_EVIDENCE_UPLOADED,
             endpoint="/tracker/upload-evidence",
@@ -2360,4 +2414,225 @@ def upload_evidence_api():
 
     except Exception as e:
         logging.error(f"Evidence upload error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@tracker_bp.route("/tracker/add-framework", methods=["POST"])
+async def add_tracker_framework():
+    """
+    Add a new policyhub framework link to an existing tracker.
+
+    Body: { user_id, tracker_id, framework_id }
+    — framework_id is a UUID from policyhub; name is fetched from policyhub S3.
+    """
+    try:
+        data = request.json
+        user_id = str(data.get("user_id"))
+        tracker_id = data.get("tracker_id")
+        framework_id = data.get("framework_id")
+
+        if not all([user_id, tracker_id, framework_id]):
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, tracker_id, framework_id"
+                    }
+                ),
+                400,
+            )
+
+        # Fetch framework from policyhub to verify it exists and get its name
+        fw_s3_key = f"service@bytoid.ca/frameworks/{framework_id}.yaml"
+        fw_data = read_json_from_s3(fw_s3_key)
+        if not fw_data:
+            return (
+                jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
+                404,
+            )
+
+        framework_name = fw_data.get("name")
+        if not framework_name:
+            return (
+                jsonify(
+                    {"error": f"Framework missing name in policyhub: {framework_id}"}
+                ),
+                500,
+            )
+
+        config_path, config_data = check_config_exist(user_id)
+        tracker_meta = next(
+            (
+                t
+                for t in (config_data or {}).get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
+            None,
+        )
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+
+        tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        existing_frameworks = tracker_data.get("frameworks", [])
+        if any(fw["id"] == framework_id for fw in existing_frameworks):
+            return jsonify({"error": f"Framework already linked to this tracker"}), 409
+
+        new_framework = {"id": framework_id, "name": framework_name}
+        tracker_data.setdefault("frameworks", []).append(new_framework)
+
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        # Audit logging
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_FRAMEWORK_ADDED,
+            endpoint="/tracker/add-framework",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "framework_id": framework_id,
+                "framework_name": framework_name,
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify(
+                {
+                    "message": "Framework linked successfully",
+                    "tracker_id": tracker_id,
+                    "framework": new_framework,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logging.error(f"Add tracker framework error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@tracker_bp.route("/tracker/update-framework", methods=["POST"])
+async def update_tracker_framework():
+    """
+    Re-sync an existing framework link with policyhub (update name if changed).
+
+    Body: { user_id, tracker_id, framework_id }
+    — framework_id identifies the framework already in the tracker; name is re-fetched from policyhub.
+    """
+    try:
+        data = request.json
+        user_id = str(data.get("user_id"))
+        tracker_id = data.get("tracker_id")
+        framework_id = data.get("framework_id")
+
+        if not all([user_id, tracker_id, framework_id]):
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, tracker_id, framework_id"
+                    }
+                ),
+                400,
+            )
+
+        config_path, config_data = check_config_exist(user_id)
+        tracker_meta = next(
+            (
+                t
+                for t in (config_data or {}).get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
+            None,
+        )
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+
+        tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        frameworks = tracker_data.get("frameworks", [])
+        framework = next((fw for fw in frameworks if fw["id"] == framework_id), None)
+        if not framework:
+            return (
+                jsonify(
+                    {"error": f"Framework not linked to this tracker: {framework_id}"}
+                ),
+                404,
+            )
+
+        # Fetch framework from policyhub to get current name
+        fw_s3_key = f"service@bytoid.ca/frameworks/{framework_id}.yaml"
+        fw_data = read_json_from_s3(fw_s3_key)
+        if not fw_data:
+            return (
+                jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
+                404,
+            )
+
+        framework_name = fw_data.get("name")
+        if not framework_name:
+            return (
+                jsonify(
+                    {"error": f"Framework missing name in policyhub: {framework_id}"}
+                ),
+                500,
+            )
+
+        old_name = framework["name"]
+        framework["name"] = framework_name
+
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        # Audit logging
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
+        log_audit_event(
+            action=TRACKER_FRAMEWORK_UPDATED,
+            endpoint="/tracker/update-framework",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "framework_id": framework_id,
+                "old_name": old_name,
+                "new_name": framework_name,
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify(
+                {
+                    "message": "Framework synced successfully",
+                    "tracker_id": tracker_id,
+                    "framework": framework,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logging.error(f"Update tracker framework error: {traceback.format_exc()}")
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
