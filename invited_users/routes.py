@@ -1229,6 +1229,14 @@ def access_workspace():
     data = request.get_json()
     workspace_user_id = data.get("workspace_user_id")
 
+    import sys
+    print(
+        f"[ACCESS-WORKSPACE] incoming workspace_user_id={data.get('workspace_user_id')!r}"
+        f" | session_user_id={session.get('user_id')!r}"
+        f" | active_workspace_id BEFORE={session.get('active_workspace_id')!r}",
+        file=sys.stderr, flush=True,
+    )
+
     if not workspace_user_id:
         return jsonify({"error": "workspace_user_id required"}), 400
 
@@ -1259,6 +1267,12 @@ def access_workspace():
                 return jsonify({"error": "No special access grant found"}), 403
 
         session["active_workspace_id"] = workspace_user_id
+
+        print(
+            f"[ACCESS-WORKSPACE] STORED active_workspace_id={session.get('active_workspace_id')!r}"
+            f" | actor_uid={actor_uid!r}",
+            file=sys.stderr, flush=True,
+        )
 
         from db.db_checkers import get_email_by_id as _get_email
         actor_email = _get_email(actor_uid)

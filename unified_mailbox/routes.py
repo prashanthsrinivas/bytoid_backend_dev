@@ -535,6 +535,14 @@ def create_note():
         note_content = (data.get("note_content") or "").strip()
         note_type = (data.get("note_type") or "").strip()
 
+        import sys
+        print(
+            f"[NOTE ROUTE] create_note | body_user_id={user_id!r}"
+            f" | session[user_id]={session.get('user_id')!r}"
+            f" | session[active_workspace_id]={session.get('active_workspace_id')!r}",
+            file=sys.stderr, flush=True,
+        )
+
         # print(
         #     f"[DEBUG] Extracted fields - user_id: '{user_id}', conversation_id: '{conversation_id}', sender_id: '{sender_id}', note_content: '{note_content}', note_type: '{note_type}'"
         # )
@@ -755,6 +763,14 @@ def update_note():
     user_id = data.get("user_id")
     note_content = data.get("note_content")
 
+    import sys
+    print(
+        f"[NOTE ROUTE] update_note | body_user_id={user_id!r}"
+        f" | session[user_id]={session.get('user_id')!r}"
+        f" | session[active_workspace_id]={session.get('active_workspace_id')!r}",
+        file=sys.stderr, flush=True,
+    )
+
     if not all([note_id, user_id, note_content]):
         return jsonify({"error": "Missing required fields"}), 400
 
@@ -846,6 +862,14 @@ def delete_note():
     data = request.get_json()
     note_id = data.get("note_id")
     user_id = data.get("user_id")
+
+    import sys
+    print(
+        f"[NOTE ROUTE] delete_note | body_user_id={user_id!r}"
+        f" | session[user_id]={session.get('user_id')!r}"
+        f" | session[active_workspace_id]={session.get('active_workspace_id')!r}",
+        file=sys.stderr, flush=True,
+    )
 
     if not all([note_id, user_id]):
         return jsonify({"error": "Missing required fields"}), 400

@@ -81,7 +81,7 @@ class GmailService:
                 FROM integrations
                 WHERE primary_user_id_fk = %s AND platform = 'google'
                 """,
-                    (str(user_id,)),
+                    (str(user_id),),
                 )
             row = cursor.fetchone()
             if not row:
