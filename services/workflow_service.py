@@ -3613,18 +3613,60 @@ class WorkflowRunnerV2:
                     )
 
         # ===========================
-        # STEP 3: SPLIT ADMISSIBLE / INADMISSIBLE / DISCARDED
+        # STEP 3: EVALUATE CONTENT vs EXPECTATIONS, THEN SPLIT
         # ===========================
+        artifact_expectations = {
+            e.get("artifact"): e.get("expectations", "") for e in user_evidence
+        }
+
         admissible_evidence = {}
         inadmissible_evidence = {}
         discarded_evidence = {}
 
         for artifact, data in evidence_map.items():
+            expectations_str = artifact_expectations.get(artifact, "")
+            content_passes = True
+            rejection_reason = ""
+
+            if expectations_str and data["snippets"]:
+                snippets_text = "\n".join(data["snippets"][:5])
+                eval_prompt = (
+                    f"ARTIFACT TYPE: {artifact}\n"
+                    f"EXPECTATIONS: {expectations_str}\n\n"
+                    f"EVIDENCE CONTENT:\n{snippets_text[:3000]}\n\n"
+                    "Does the evidence content actually satisfy these expectations? "
+                    "Be strict — if the content is generic, unrelated, or missing key elements, it fails.\n"
+                    'Return ONLY JSON: {"passes": true, "reason": ""} or {"passes": false, "reason": "<specific reason>"}'
+                )
+                try:
+                    resp = await get_fireworks_response2(
+                        user_message=eval_prompt,
+                        role="user",
+                        temp=0.0,
+                        user_id=self.userid,
+                        credits=self.credits,
+                    )
+                    eval_data = safe_json_load(resp)
+                    if isinstance(eval_data, dict):
+                        content_passes = eval_data.get("passes", True)
+                        rejection_reason = eval_data.get("reason", "")
+                except Exception as e:
+                    self.logger.error(
+                        "Expectations eval failed for %s: %s", artifact, e, exc_info=IS_DEV
+                    )
+
+            if not content_passes:
+                inadmissible_evidence[artifact] = {**data, "reason": rejection_reason}
+                continue
+
             if runbook_evidence_config:
                 if artifact in allowed_artifacts:
                     admissible_evidence[artifact] = data
                 elif artifact in disallowed_artifacts:
-                    inadmissible_evidence[artifact] = data
+                    inadmissible_evidence[artifact] = {
+                        **data,
+                        "reason": "Artifact type not allowed by runbook configuration.",
+                    }
                 else:
                     discarded_evidence[artifact] = data
             else:
@@ -3894,7 +3936,11 @@ class WorkflowRunnerV2:
                 for k, v in admissible_evidence.items()
             ],
             "inadmissible": [
-                {"artifact": k, "files": list(v["files"])}
+                {
+                    "artifact": k,
+                    "files": list(v["files"]),
+                    "summary": v.get("reason", ""),
+                }
                 for k, v in inadmissible_evidence.items()
             ],
             "discarded": [
