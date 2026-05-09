@@ -1,6 +1,8 @@
 import asyncio
+import logging
 import os
 import re
+import traceback
 import yaml
 from dotenv import load_dotenv
 from fireworks.client import Fireworks
@@ -10,7 +12,6 @@ import requests
 from typing import List, Optional, Union
 from botocore.config import Config
 from utils.img_tokens import image_credit_cost
-
 
 load_dotenv()
 
@@ -703,6 +704,121 @@ async def get_think_fire_response2_og2(
     return aggregated_text
 
 
+async def analyze_tracker_framework_policies(
+    rows: list,
+    policies: list,
+    framework_id: str,
+    framework_name: str,
+    user_id: str,
+    credits,
+) -> dict:
+    """
+    Analyze tracker rows against framework policies to determine which policies each row implements.
+
+    Args:
+        rows: list of {row_id, col_values: {col_name: value}}
+        policies: list of {policy_id, title, text} (text should be HTML-stripped)
+        framework_id: UUID of the framework
+        framework_name: Display name of the framework
+        user_id: User ID for credit tracking
+        credits: Credits instance
+
+    Returns:
+        {
+            "assignments": [
+                {"row_id": "trk_r_xxx", "matching_policy_ids": ["policy-uuid", ...]},
+                ...
+            ]
+        }
+    """
+    import json
+    import asyncio
+
+    total_input_chars = json.dumps(rows).count("") + json.dumps(policies).count("")
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return {"assignments": []}
+
+    rows_json = json.dumps(
+        [{"row_id": r["row_id"], "data": r.get("col_values", {})} for r in rows],
+        indent=2,
+    )
+    policies_json = json.dumps(
+        [
+            {
+                "policy_id": p["policy_id"],
+                "title": p.get("title", ""),
+                "excerpt": p.get("text", "")[:500],
+            }
+            for p in policies
+        ],
+        indent=2,
+    )
+
+    prompt = f"""You are a compliance analyst. Given tracker rows and a set of policies from the framework "{framework_name}",
+determine which policies each row implements, follows, or is directly related to.
+
+TRACKER ROWS:
+{rows_json}
+
+POLICIES FROM FRAMEWORK "{framework_name}":
+{policies_json}
+
+TASK: For each row, identify which policy_ids the row aligns with based on semantic relevance.
+A row can match zero, one, or multiple policies.
+
+Return ONLY valid JSON in this exact format:
+{{
+  "assignments": [
+    {{"row_id": "trk_r_xxx", "matching_policy_ids": ["policy-uuid-1", "policy-uuid-2"]}},
+    {{"row_id": "trk_r_yyy", "matching_policy_ids": []}}
+  ]
+}}
+
+Do NOT include explanations, markdown, or extra text. JSON only."""
+
+    payload = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "temperature": 0,
+        "max_tokens": 8000,
+    }
+
+    try:
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=THINK_MODEL,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        body = json.loads(response["body"].read())
+        response_text = extract_bedrock_text(body)
+        parsed = extract_json_safe(response_text)
+
+        if parsed and "assignments" in parsed:
+            result = parsed
+        else:
+            result = {"assignments": []}
+
+        total_output_chars = len(response_text)
+        total_chars_used = total_input_chars + total_output_chars
+
+        await credits.update_ai_credits_redis(
+            credit_type="think",
+            total_chars=total_chars_used,
+            user_id=user_id,
+            reference_id="analyze_tracker_framework_policies",
+        )
+
+        return result
+
+    except Exception as e:
+        logging.error(
+            f"Error in analyze_tracker_framework_policies: {traceback.format_exc()}"
+        )
+        return {"assignments": []}
+
+
 async def get_extract_response(
     prompt_template: str,
     data: str,
@@ -725,7 +841,10 @@ async def get_extract_response(
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
         return ""
 
-    chunks = [data[i : i + max_data_chars] for i in range(0, max(len(data), 1), max_data_chars)]
+    chunks = [
+        data[i : i + max_data_chars]
+        for i in range(0, max(len(data), 1), max_data_chars)
+    ]
     total_chunks = len(chunks)
 
     aggregated_parts = []
@@ -1125,7 +1244,7 @@ Generate part {i+1}/{num_chunks}.
         total_chars=total_chars_used,
         user_id=user_id,
         reference_id="get_think_bedrok_response",
-    )    
+    )
 
     return aggregated_text
 
@@ -1210,11 +1329,14 @@ async def get_think_bedrock_vision_image(
         response_text = extract_bedrock_text(response_body)
     except Exception as e:
         import logging as _log
+
         _log.getLogger(__name__).error("get_think_bedrock_vision_image failed: %s", e)
         return {}
 
     # -- Clean and parse JSON --------------------------------------------
-    cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", response_text.strip(), flags=_re.MULTILINE)
+    cleaned = _re.sub(
+        r"^```(?:json)?\s*|\s*```$", "", response_text.strip(), flags=_re.MULTILINE
+    )
     try:
         result = json.loads(cleaned)
     except Exception:

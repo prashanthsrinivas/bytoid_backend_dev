@@ -26,7 +26,7 @@ DEV_ORIGINS = {
     "dev.bytoid.ai",
     "http://localhost:8080",
 }
-
+FRAMEWORK_OWNER = "service@bytoid.ca"
 ALLOWED_ORIGINS = PROD_ORIGINS | STAGING_ORIGINS | (DEV_ORIGINS if IS_DEV else set())
 if IS_DEV:
     ACCESSIBLE_IDS = ["109161866299858012556", "113605503284012967393"]
