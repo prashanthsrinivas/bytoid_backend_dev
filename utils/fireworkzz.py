@@ -873,8 +873,8 @@ FRAMEWORK REQUIREMENTS (with index):
 TASK: For each row, return the index of the best matching framework requirement.
 Return -1 if there is no reasonable match.
 
-Return ONLY valid JSON (no markdown, no explanation):
-[{{"row_id": "trk_r_xxx", "fw_row_index": 3}}, {{"row_id": "trk_r_yyy", "fw_row_index": -1}}]"""
+Return ONLY valid JSON object (no markdown, no explanation):
+{{"assignments": [{{"row_id": "trk_r_xxx", "fw_row_index": 3}}, {{"row_id": "trk_r_yyy", "fw_row_index": -1}}]}}"""
 
     payload = {
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
