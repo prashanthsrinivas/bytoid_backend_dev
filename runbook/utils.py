@@ -582,6 +582,64 @@ def merge_runbook_chunks_deterministic(
     return merged
 
 
+def get_policies_for_frameworks(framework_names=None, framework_ids=None):
+    """Return list of policy_ids for policies that belong to any of the given
+    framework names or framework ids. Scans the shared framework policies
+    stored under the FRAMEWORK_OWNER S3 path.
+
+    Args:
+        framework_names (list[str] | None): list of framework display names
+        framework_ids (list[str] | None): list of framework UUIDs or ids
+
+    Returns:
+        list[str]: unique policy_id values
+    """
+    from utils.s3_utils import list_all_files, load_yaml_from_s3
+    import os as _os
+
+    framework_names = framework_names or []
+    framework_ids = framework_ids or []
+
+    _framework_owner = _os.getenv("FRAMEWORK_OWNER", "service@bytoid.ca")
+    prefix = f"{_framework_owner}/policies/"
+
+    objs = list_all_files(prefix)
+    policy_ids = set()
+
+    for obj in objs or []:
+        key = obj.get("Key") if isinstance(obj, dict) else obj
+        if not key or not key.startswith(prefix):
+            continue
+        try:
+            data = load_yaml_from_s3(key)
+            if not data:
+                continue
+
+            pid = data.get("policy_id") or _os.path.splitext(_os.path.basename(key))[0]
+
+            # match by framework display names
+            p_frameworks = data.get("frameworks") or []
+            if any(fn in p_frameworks for fn in framework_names if fn):
+                policy_ids.add(pid)
+                continue
+
+            # match by framework ids stored on the policy (flexible fields)
+            pf_ids = data.get("framework_ids") or data.get("framework_id")
+            if pf_ids:
+                if isinstance(pf_ids, list) and any(fid in pf_ids for fid in framework_ids if fid):
+                    policy_ids.add(pid)
+                    continue
+                if isinstance(pf_ids, str) and pf_ids in framework_ids:
+                    policy_ids.add(pid)
+                    continue
+
+        except Exception:
+            # ignore policies we can't read
+            continue
+
+    return list(policy_ids)
+
+
 def normalize_json_field(field):
     """
     Normalize JSON field using regex cleanup + safe parsing

@@ -108,8 +108,48 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             for i, f in enumerate(json_files)
             if f
         ] or None
-        data_sources_full = json.dumps(data.get("data_sources", {}))
-        reference_sources_full = json.dumps(data.get("reference_sources", {}))
+
+        # Normalize data_sources
+        raw_data_sources = data.get("data_sources", {})
+        data_sources_full = json.dumps(raw_data_sources)
+
+        # Normalize and expand reference_sources: if a governance framework was
+        # selected, auto-attach all policies/procedures from that framework so
+        # they remain connected to the runbook (behaves like other selected docs).
+        raw_reference = data.get("reference_sources", {})
+        # parse if string
+        if isinstance(raw_reference, str):
+            try:
+                ref_obj = json.loads(raw_reference)
+            except Exception:
+                try:
+                    from runbook.utils import _safe_json_parse_full as _parse_helper
+
+                    ref_obj = _parse_helper(raw_reference) or {}
+                except Exception:
+                    ref_obj = {}
+        elif isinstance(raw_reference, dict):
+            ref_obj = raw_reference
+        else:
+            ref_obj = {}
+
+        try:
+            from runbook.utils import get_policies_for_frameworks
+
+            frameworks = ref_obj.get("frameworks") or ref_obj.get("framework_names") or []
+            framework_ids = ref_obj.get("framework_ids") or []
+            if frameworks or framework_ids:
+                policy_ids = get_policies_for_frameworks(
+                    framework_names=frameworks, framework_ids=framework_ids
+                )
+                existing = ref_obj.get("policy_ids") or []
+                combined = list({*(existing or []), *policy_ids})
+                ref_obj["policy_ids"] = combined
+        except Exception:
+            # non-fatal — if helper fails, proceed without auto-attaching
+            pass
+
+        reference_sources_full = json.dumps(ref_obj)
 
         # 📦 BASE DATA
         runbook_data = {
@@ -661,6 +701,39 @@ async def modify_runbook():
     session_id = data.get("session_id") or None
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    # Ensure reference_sources keep policies from selected frameworks (merge if needed)
+    raw_reference = data.get("reference_sources", {})
+    if isinstance(raw_reference, str):
+        try:
+            ref_obj = json.loads(raw_reference)
+        except Exception:
+            try:
+                from runbook.utils import _safe_json_parse_full as _parse_helper
+
+                ref_obj = _parse_helper(raw_reference) or {}
+            except Exception:
+                ref_obj = {}
+    elif isinstance(raw_reference, dict):
+        ref_obj = raw_reference
+    else:
+        ref_obj = {}
+
+    try:
+        from runbook.utils import get_policies_for_frameworks
+
+        frameworks = ref_obj.get("frameworks") or ref_obj.get("framework_names") or []
+        framework_ids = ref_obj.get("framework_ids") or []
+        if frameworks or framework_ids:
+            policy_ids = get_policies_for_frameworks(
+                framework_names=frameworks, framework_ids=framework_ids
+            )
+            existing = ref_obj.get("policy_ids") or []
+            combined = list({*(existing or []), *policy_ids})
+            ref_obj["policy_ids"] = combined
+    except Exception:
+        pass
+
+    data["reference_sources"] = json.dumps(ref_obj)
 
     # 🔥 SUBMIT BACKGROUND JOB
     job_id = await JobManager.submit_job(
