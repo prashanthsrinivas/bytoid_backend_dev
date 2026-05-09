@@ -2559,35 +2559,35 @@ async def add_tracker_framework():
 
             for assignment in assignments:
                 row_id = assignment.get("row_id")
-                fw_idx = assignment.get("fw_row_index", -1)
+                fw_indices = assignment.get("fw_row_indices", [])
+                if isinstance(fw_indices, int):
+                    fw_indices = [fw_indices] if fw_indices >= 0 else []
                 row = next(
                     (r for r in rows_for_analysis if r.get("row_id") == row_id), None
                 )
 
-                if row and fw_idx >= 0 and fw_idx < len(fw_rows):
-                    matched = fw_rows[fw_idx]
-                    new_entry = {
-                        "framework_id": framework_id,
-                        "requirement": matched.get(req_col, ""),
-                        "section": matched.get(sec_col, ""),
-                    }
+                if row:
                     existing = row["values"].get(frameworks_col_id, [])
                     if not isinstance(existing, list):
                         existing = []
                     merged = [
                         e for e in existing if e.get("framework_id") != framework_id
                     ]
-                    merged.append(new_entry)
-                    row["values"][frameworks_col_id] = merged
-                    rows_assigned += 1
-                elif row:
-                    existing = row["values"].get(frameworks_col_id, [])
-                    if not isinstance(existing, list):
-                        existing = []
-                    row["values"][frameworks_col_id] = [
-                        e for e in existing if e.get("framework_id") != framework_id
+                    new_entries = [
+                        {
+                            "framework_id": framework_id,
+                            "requirement": fw_rows[idx].get(req_col, ""),
+                            "section": fw_rows[idx].get(sec_col, ""),
+                        }
+                        for idx in fw_indices
+                        if 0 <= idx < len(fw_rows)
                     ]
-                    rows_empty += 1
+                    if new_entries:
+                        merged.extend(new_entries)
+                        rows_assigned += 1
+                    else:
+                        rows_empty += 1
+                    row["values"][frameworks_col_id] = merged
 
         # Add framework to tracker list
         tracker_data.setdefault("frameworks", []).append(
@@ -2760,7 +2760,9 @@ async def update_tracker_framework():
             # Replace entries for this framework (full re-analysis)
             for assignment in assignments:
                 row_id = assignment.get("row_id")
-                fw_idx = assignment.get("fw_row_index", -1)
+                fw_indices = assignment.get("fw_row_indices", [])
+                if isinstance(fw_indices, int):
+                    fw_indices = [fw_indices] if fw_indices >= 0 else []
                 row = next(
                     (r for r in rows_for_analysis if r.get("row_id") == row_id), None
                 )
@@ -2774,14 +2776,17 @@ async def update_tracker_framework():
                         e for e in existing if e.get("framework_id") != framework_id
                     ]
 
-                    if fw_idx >= 0 and fw_idx < len(fw_rows):
-                        matched = fw_rows[fw_idx]
-                        new_entry = {
+                    new_entries = [
+                        {
                             "framework_id": framework_id,
-                            "requirement": matched.get(req_col, ""),
-                            "section": matched.get(sec_col, ""),
+                            "requirement": fw_rows[idx].get(req_col, ""),
+                            "section": fw_rows[idx].get(sec_col, ""),
                         }
-                        merged.append(new_entry)
+                        for idx in fw_indices
+                        if 0 <= idx < len(fw_rows)
+                    ]
+                    if new_entries:
+                        merged.extend(new_entries)
                         rows_assigned += 1
                     else:
                         rows_empty += 1
@@ -2852,12 +2857,23 @@ async def remove_tracker_framework():
         framework_id = data.get("framework_id")
 
         if not all([user_id, tracker_id, framework_id]):
-            return jsonify({"error": "Missing required fields: user_id, tracker_id, framework_id"}), 400
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, tracker_id, framework_id"
+                    }
+                ),
+                400,
+            )
 
         # Check tracker exists
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
-            (t for t in (config_data or {}).get("trackers", []) if t["tracker_id"] == tracker_id),
+            (
+                t
+                for t in (config_data or {}).get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
             None,
         )
         if not tracker_meta:
@@ -2871,16 +2887,25 @@ async def remove_tracker_framework():
         frameworks = tracker_data.get("frameworks", [])
         framework = next((fw for fw in frameworks if fw["id"] == framework_id), None)
         if not framework:
-            return jsonify({"error": f"Framework not linked to this tracker: {framework_id}"}), 404
+            return (
+                jsonify(
+                    {"error": f"Framework not linked to this tracker: {framework_id}"}
+                ),
+                404,
+            )
 
         framework_name = framework.get("name")
 
         # Remove from tracker-level frameworks list
-        tracker_data["frameworks"] = [fw for fw in frameworks if fw["id"] != framework_id]
+        tracker_data["frameworks"] = [
+            fw for fw in frameworks if fw["id"] != framework_id
+        ]
 
         # Get frameworks column if it exists
         schema_cols = tracker_data.get("schema", {}).get("columns", [])
-        frameworks_col = next((col for col in schema_cols if col.get("name") == "frameworks"), None)
+        frameworks_col = next(
+            (col for col in schema_cols if col.get("name") == "frameworks"), None
+        )
         rows_affected = 0
 
         if frameworks_col:
@@ -2890,7 +2915,9 @@ async def remove_tracker_framework():
             for row in tracker_data.get("rows", []):
                 existing = row["values"].get(frameworks_col_id, [])
                 if isinstance(existing, list):
-                    filtered = [e for e in existing if e.get("framework_id") != framework_id]
+                    filtered = [
+                        e for e in existing if e.get("framework_id") != framework_id
+                    ]
                     if len(filtered) < len(existing):
                         rows_affected += 1
                     row["values"][frameworks_col_id] = filtered
@@ -2912,7 +2939,12 @@ async def remove_tracker_framework():
         save_tracker_file(user_id, tracker_id, tracker_data)
 
         # Audit logging
-        (actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email) = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=TRACKER_FRAMEWORK_REMOVED,
             endpoint="/tracker/remove-framework",
@@ -2932,15 +2964,18 @@ async def remove_tracker_framework():
         )
         g.audit_logged = True
 
-        return jsonify(
-            {
-                "message": "Framework removed successfully",
-                "tracker_id": tracker_id,
-                "framework_id": framework_id,
-                "rows_affected": rows_affected,
-                "column_removed": column_removed,
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "message": "Framework removed successfully",
+                    "tracker_id": tracker_id,
+                    "framework_id": framework_id,
+                    "rows_affected": rows_affected,
+                    "column_removed": column_removed,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         logging.error(f"Remove tracker framework error: {traceback.format_exc()}")

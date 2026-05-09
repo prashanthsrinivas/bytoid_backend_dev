@@ -829,6 +829,7 @@ async def analyze_tracker_framework_rows(
 ) -> dict:
     """
     Match tracker rows to framework requirement rows directly (no policy intermediary).
+    Each tracker row can match multiple framework requirements.
 
     Args:
         rows: list of {row_id, col_values: {col_name: value}}
@@ -841,8 +842,8 @@ async def analyze_tracker_framework_rows(
     Returns:
         {
             "assignments": [
-                {"row_id": "trk_r_xxx", "fw_row_index": 5},
-                {"row_id": "trk_r_yyy", "fw_row_index": -1}
+                {"row_id": "trk_r_xxx", "fw_row_indices": [5, 12]},
+                {"row_id": "trk_r_yyy", "fw_row_indices": []}
             ]
         }
     """
@@ -870,11 +871,11 @@ TRACKER ROWS:
 FRAMEWORK REQUIREMENTS (with index):
 {fw_rows_json[:8000]}
 
-TASK: For each row, return the index of the best matching framework requirement.
-Return -1 if there is no reasonable match.
+TASK: For each row, return the indices of ALL framework requirements it relates to.
+Return an empty list [] if there is no reasonable match.
 
 Return ONLY valid JSON object (no markdown, no explanation):
-{{"assignments": [{{"row_id": "trk_r_xxx", "fw_row_index": 3}}, {{"row_id": "trk_r_yyy", "fw_row_index": -1}}]}}"""
+{{"assignments": [{{"row_id": "trk_r_xxx", "fw_row_indices": [3, 7]}}, {{"row_id": "trk_r_yyy", "fw_row_indices": []}}]}}"""
 
     payload = {
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
