@@ -819,6 +819,103 @@ Do NOT include explanations, markdown, or extra text. JSON only."""
         return {"assignments": []}
 
 
+async def analyze_tracker_framework_rows(
+    rows: list,
+    fw_rows: list,
+    framework_id: str,
+    framework_name: str,
+    user_id: str,
+    credits,
+) -> dict:
+    """
+    Match tracker rows to framework requirement rows directly (no policy intermediary).
+
+    Args:
+        rows: list of {row_id, col_values: {col_name: value}}
+        fw_rows: list of framework rows {REQUIREMENT/TASK, SECTION/CATEGORY, ...}
+        framework_id: UUID of the framework
+        framework_name: Display name of the framework
+        user_id: User ID for credit tracking
+        credits: Credits instance
+
+    Returns:
+        {
+            "assignments": [
+                {"row_id": "trk_r_xxx", "fw_row_index": 5},
+                {"row_id": "trk_r_yyy", "fw_row_index": -1}
+            ]
+        }
+    """
+    import json
+    import asyncio
+
+    total_input_chars = len(json.dumps(rows)) + len(json.dumps(fw_rows))
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return {"assignments": []}
+
+    fw_rows_json = json.dumps(
+        [{"index": i, **row} for i, row in enumerate(fw_rows)],
+        indent=2,
+    )
+    rows_json = json.dumps(
+        [{"row_id": r["row_id"], "data": r.get("col_values", {})} for r in rows],
+        indent=2,
+    )
+
+    prompt = f"""You are a compliance analyst. Given tracker rows and framework requirements from "{framework_name}", match each tracker row to the single best matching requirement by its index.
+
+TRACKER ROWS:
+{rows_json[:4000]}
+
+FRAMEWORK REQUIREMENTS (with index):
+{fw_rows_json[:8000]}
+
+TASK: For each row, return the index of the best matching framework requirement.
+Return -1 if there is no reasonable match.
+
+Return ONLY valid JSON (no markdown, no explanation):
+[{{"row_id": "trk_r_xxx", "fw_row_index": 3}}, {{"row_id": "trk_r_yyy", "fw_row_index": -1}}]"""
+
+    payload = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "temperature": 0,
+        "max_tokens": 8000,
+    }
+
+    try:
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=THINK_MODEL,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        body = json.loads(response["body"].read())
+        response_text = extract_bedrock_text(body)
+        parsed = extract_json_safe(response_text)
+
+        assignments = []
+        if isinstance(parsed, list):
+            assignments = parsed
+        elif isinstance(parsed, dict) and "assignments" in parsed:
+            assignments = parsed["assignments"]
+
+        total_output_chars = len(response_text)
+        await credits.update_ai_credits_redis(
+            credit_type="think",
+            total_chars=total_input_chars + total_output_chars,
+            user_id=user_id,
+            reference_id="analyze_tracker_framework_rows",
+        )
+
+        return {"assignments": assignments}
+
+    except Exception as e:
+        logging.error(f"Error in analyze_tracker_framework_rows: {traceback.format_exc()}")
+        return {"assignments": []}
+
+
 async def get_extract_response(
     prompt_template: str,
     data: str,

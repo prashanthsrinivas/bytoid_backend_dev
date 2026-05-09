@@ -41,7 +41,10 @@ from utils.s3_utils import (
     load_yaml_from_s3,
     list_all_files,
 )
-from utils.fireworkzz import analyze_tracker_framework_policies
+from utils.fireworkzz import (
+    analyze_tracker_framework_policies,
+    analyze_tracker_framework_rows,
+)
 from credits_route.route import Credits
 from utils.base_logger import get_logger
 
@@ -2516,32 +2519,18 @@ async def add_tracker_framework():
         for row in tracker_data.get("rows", []):
             row["values"].setdefault(frameworks_col_id, [])
 
-        # List policies for this framework
-        prefix = f"{user_id}/policies/"
-        s3_objects = list_all_files(folder=prefix)
-        framework_policies = []
-        for obj in s3_objects:
-            key = obj.get("Key", "")
-            if not key.endswith(".yaml") or "/jobs/" in key:
-                continue
-            policy_data = load_yaml_from_s3(key)
-            if policy_data and framework_name in policy_data.get("frameworks", []):
-                content_text = policy_data.get("content", "")
-                content_stripped = re.sub(r"<[^>]+>", "", content_text)
-                framework_policies.append(
-                    {
-                        "policy_id": policy_data.get("policy_id"),
-                        "title": policy_data.get("title", ""),
-                        "text": content_stripped[:2000],
-                    }
-                )
+        # Get framework requirements directly from framework data
+        fw_rows = fw_data.get("rows", [])
+        fw_cols = fw_data.get("columns", [])
+        req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
+        sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
 
         # Run AI analysis
         rows_for_analysis = tracker_data.get("rows", [])
         rows_assigned = 0
         rows_empty = 0
 
-        if rows_for_analysis and framework_policies:
+        if rows_for_analysis and fw_rows:
             credits = Credits(user_id)
             rows_analysis_input = [
                 {
@@ -2557,55 +2546,47 @@ async def add_tracker_framework():
                 for row in rows_for_analysis
             ]
 
-            ai_result = await analyze_tracker_framework_policies(
+            ai_result = await analyze_tracker_framework_rows(
                 rows=rows_analysis_input,
-                policies=framework_policies,
+                fw_rows=fw_rows,
                 framework_id=framework_id,
                 framework_name=framework_name,
                 user_id=user_id,
                 credits=credits,
             )
 
-            policy_map = {p["policy_id"]: p for p in framework_policies}
             assignments = ai_result.get("assignments", [])
 
             for assignment in assignments:
                 row_id = assignment.get("row_id")
-                matching_policy_ids = assignment.get("matching_policy_ids", [])
+                fw_idx = assignment.get("fw_row_index", -1)
                 row = next(
                     (r for r in rows_for_analysis if r.get("row_id") == row_id), None
                 )
 
-                if row and matching_policy_ids:
-                    new_entries = [
-                        {
-                            "framework_id": framework_id,
-                            "policy_id": policy_id,
-                            "policy_title": policy_map.get(policy_id, {}).get(
-                                "title", ""
-                            ),
-                        }
-                        for policy_id in matching_policy_ids
-                        if policy_id in policy_map
-                    ]
-                    if new_entries:
-                        existing = row["values"].get(frameworks_col_id, [])
-                        if not isinstance(existing, list):
-                            existing = []
-                        merged = [
-                            e for e in existing if e.get("framework_id") != framework_id
-                        ]
-                        merged.extend(new_entries)
-                        row["values"][frameworks_col_id] = merged
-                        rows_assigned += 1
-                elif row:
+                if row and fw_idx >= 0 and fw_idx < len(fw_rows):
+                    matched = fw_rows[fw_idx]
+                    new_entry = {
+                        "framework_id": framework_id,
+                        "requirement": matched.get(req_col, ""),
+                        "section": matched.get(sec_col, ""),
+                    }
                     existing = row["values"].get(frameworks_col_id, [])
                     if not isinstance(existing, list):
                         existing = []
                     merged = [
                         e for e in existing if e.get("framework_id") != framework_id
                     ]
+                    merged.append(new_entry)
                     row["values"][frameworks_col_id] = merged
+                    rows_assigned += 1
+                elif row:
+                    existing = row["values"].get(frameworks_col_id, [])
+                    if not isinstance(existing, list):
+                        existing = []
+                    row["values"][frameworks_col_id] = [
+                        e for e in existing if e.get("framework_id") != framework_id
+                    ]
                     rows_empty += 1
 
         # Add framework to tracker list
@@ -2738,32 +2719,18 @@ async def update_tracker_framework():
 
         frameworks_col_id = frameworks_col["id"]
 
-        # List policies for this framework
-        prefix = f"{user_id}/policies/"
-        s3_objects = list_all_files(folder=prefix)
-        framework_policies = []
-        for obj in s3_objects:
-            key = obj.get("Key", "")
-            if not key.endswith(".yaml") or "/jobs/" in key:
-                continue
-            policy_data = load_yaml_from_s3(key)
-            if policy_data and framework_name in policy_data.get("frameworks", []):
-                content_text = policy_data.get("content", "")
-                content_stripped = re.sub(r"<[^>]+>", "", content_text)
-                framework_policies.append(
-                    {
-                        "policy_id": policy_data.get("policy_id"),
-                        "title": policy_data.get("title", ""),
-                        "text": content_stripped[:2000],
-                    }
-                )
+        # Get framework requirements directly from framework data
+        fw_rows = fw_data.get("rows", [])
+        fw_cols = fw_data.get("columns", [])
+        req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
+        sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
 
         # Re-analyze all rows for this framework
         rows_for_analysis = tracker_data.get("rows", [])
         rows_assigned = 0
         rows_empty = 0
 
-        if rows_for_analysis and framework_policies:
+        if rows_for_analysis and fw_rows:
             credits = Credits(user_id)
             rows_analysis_input = [
                 {
@@ -2779,22 +2746,21 @@ async def update_tracker_framework():
                 for row in rows_for_analysis
             ]
 
-            ai_result = await analyze_tracker_framework_policies(
+            ai_result = await analyze_tracker_framework_rows(
                 rows=rows_analysis_input,
-                policies=framework_policies,
+                fw_rows=fw_rows,
                 framework_id=framework_id,
                 framework_name=framework_name,
                 user_id=user_id,
                 credits=credits,
             )
 
-            policy_map = {p["policy_id"]: p for p in framework_policies}
             assignments = ai_result.get("assignments", [])
 
             # Replace entries for this framework (full re-analysis)
             for assignment in assignments:
                 row_id = assignment.get("row_id")
-                matching_policy_ids = assignment.get("matching_policy_ids", [])
+                fw_idx = assignment.get("fw_row_index", -1)
                 row = next(
                     (r for r in rows_for_analysis if r.get("row_id") == row_id), None
                 )
@@ -2808,23 +2774,15 @@ async def update_tracker_framework():
                         e for e in existing if e.get("framework_id") != framework_id
                     ]
 
-                    if matching_policy_ids:
-                        new_entries = [
-                            {
-                                "framework_id": framework_id,
-                                "policy_id": policy_id,
-                                "policy_title": policy_map.get(policy_id, {}).get(
-                                    "title", ""
-                                ),
-                            }
-                            for policy_id in matching_policy_ids
-                            if policy_id in policy_map
-                        ]
-                        if new_entries:
-                            merged.extend(new_entries)
-                            rows_assigned += 1
-                        else:
-                            rows_empty += 1
+                    if fw_idx >= 0 and fw_idx < len(fw_rows):
+                        matched = fw_rows[fw_idx]
+                        new_entry = {
+                            "framework_id": framework_id,
+                            "requirement": matched.get(req_col, ""),
+                            "section": matched.get(sec_col, ""),
+                        }
+                        merged.append(new_entry)
+                        rows_assigned += 1
                     else:
                         rows_empty += 1
 
