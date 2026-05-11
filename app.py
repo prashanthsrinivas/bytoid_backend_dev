@@ -58,6 +58,24 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv("/home/ec2-user/bytoid_python/.env")
 app = Flask(__name__)
+
+# Handle numpy/pyarrow types returned by LanceDB that aren't JSON-serializable by default
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        try:
+            import numpy as np
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+        except ImportError:
+            pass
+        return super().default(obj)
+
+app.json_encoder = _NumpyEncoder
+
 # print("🚀 Starting watcher during app init")
 # start_api_watcher()
 Compress(app)

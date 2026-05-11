@@ -773,7 +773,7 @@ async def get_runbook_results(runbook_id):
         ]
 
         filtered_results.sort(
-            key=lambda r: r.get("ended_at") or "", reverse=True
+            key=lambda r: r.get("ended_at") or 0, reverse=True
         )
 
         return (
@@ -804,7 +804,7 @@ async def redult_list(user_id):
         ]
 
         filtered_results.sort(
-            key=lambda r: r.get("ended_at") or "", reverse=True
+            key=lambda r: r.get("ended_at") or 0, reverse=True
         )
 
         return (
