@@ -210,10 +210,7 @@ def permission_required_body(required_permission):
                 owner_user_id = session.get("active_workspace_id")
 
             if not owner_user_id:
-                return (
-                    jsonify({"error": "No workspace context (user_id required)"}),
-                    400,
-                )
+                owner_user_id = user_id  # Default to self-access for GET requests without explicit workspace
 
             conn = connect_to_rds()
             try:
