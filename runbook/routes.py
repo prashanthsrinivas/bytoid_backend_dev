@@ -61,6 +61,16 @@ ws_sender = ws_service
 msg_builder = msg_builder_main
 
 
+def _run_async(coro):
+    """Run an async coroutine from a gunicorn sync worker context."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 async def execute_runbook_create(data, job_id=None, session_id=None):
     user_id = data.get("user_id")
     progress = 0
@@ -437,7 +447,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
 
 @runbook_bp.route("/runbook/create", methods=["POST"])
 @permission_required_body("compliance.runbook.create")
-async def create_runbook():
+def create_runbook():
     try:
         # ✅ form fields only
         data = request.form.to_dict()
@@ -475,11 +485,11 @@ async def create_runbook():
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        job_id = await JobManager.submit_job(
+        job_id = _run_async(JobManager.submit_job(
             execute_runbook_create,
             data,
             session_id=session_id,
-        )
+        ))
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
@@ -503,11 +513,11 @@ async def create_runbook():
 
 @runbook_bp.route("/runbook/status/<job_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
-async def get_job_status(job_id):
+def get_job_status(job_id):
     try:
         redis_service = get_redis()
 
-        job = await redis_service.get(f"job:{job_id}")
+        job = _run_async(redis_service.get(f"job:{job_id}"))
 
         if not job:
             return jsonify({"error": "Job not found"}), 404
@@ -681,7 +691,7 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
 
 @runbook_bp.route("/runbook/modify", methods=["POST"])
 @permission_required_body("compliance.runbook.edit")
-async def modify_runbook():
+def modify_runbook():
     data = request.form.to_dict()
 
     user_id = data.get("user_id")
@@ -753,9 +763,9 @@ async def modify_runbook():
     data["reference_sources"] = json.dumps(ref_obj)
 
     # 🔥 SUBMIT BACKGROUND JOB
-    job_id = await JobManager.submit_job(
+    job_id = _run_async(JobManager.submit_job(
         execute_modify_runbook, data, session_id=session_id
-    )
+    ))
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
@@ -856,36 +866,36 @@ def redult_list(user_id):
 
 @runbook_bp.route("/runbooks/list/<user_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
-async def list_runbooks(user_id):
+def list_runbooks(user_id):
 
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
     # dbserver = LanceDBServer()
-    runbooks = await dbserver.get_all_runbooks(user_id)
+    runbooks = _run_async(dbserver.get_all_runbooks(user_id))
 
     return jsonify({"success": True, "runbooks": runbooks})
 
 
 @runbook_bp.route("/runbook/<runbook_id>/<user_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
-async def get_runbook(runbook_id, user_id):
+def get_runbook(runbook_id, user_id):
     if not user_id:
         user_id = session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
     # dbserver = LanceDBServer()
-    runbook = await dbserver.get_runbook_by_id(user_id, runbook_id)
+    runbook = _run_async(dbserver.get_runbook_by_id(user_id, runbook_id))
 
     return jsonify({"success": True, "runbook": runbook})
 
 
 @runbook_bp.route("/allrunbook/<user_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
-async def get_all_runbook(user_id):
+def get_all_runbook(user_id):
     try:
         # dbserver = LanceDBServer()
-        result = await dbserver.get_user_runbook(user_id)
+        result = _run_async(dbserver.get_user_runbook(user_id))
         return jsonify({"result": result, "all": len(result)}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -893,14 +903,14 @@ async def get_all_runbook(user_id):
 
 @runbook_bp.route("/runbook/delete/<runbook_id>", methods=["DELETE"])
 @permission_required_body("compliance.runbook.delete")
-async def delete_runbook(runbook_id):
+def delete_runbook(runbook_id):
     try:
         user_id = session.get("user_id")
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
         # dbserver = LanceDBServer()
-        await dbserver.delete_runbook(user_id, runbook_id)
-        await dbserver.delete_runbook_result(user_id, runbook_id)
+        _run_async(dbserver.delete_runbook(user_id, runbook_id))
+        _run_async(dbserver.delete_runbook_result(user_id, runbook_id))
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
@@ -923,7 +933,7 @@ async def delete_runbook(runbook_id):
 
 @runbook_bp.route("/runbook/delete_all", methods=["POST"])
 @permission_required_body("compliance.runbook.delete")
-async def delete_all():
+def delete_all():
     try:
         data = request.get_json()
         user_id = data.get("user_id")
@@ -931,7 +941,7 @@ async def delete_all():
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
         # dbserver = LanceDBServer()
-        await dbserver.delete_all_runbook(user_id, runbook_id)
+        _run_async(dbserver.delete_all_runbook(user_id, runbook_id))
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
@@ -954,7 +964,7 @@ async def delete_all():
 
 @runbook_bp.route("/runbook/delete_result", methods=["DELETE"])
 @permission_required_body("compliance.runbook.edit")
-async def delte_result():
+def delte_result():
     try:
         data = request.get_json()
         user_id = data.get("user_id")
@@ -963,7 +973,7 @@ async def delte_result():
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        await dbserver.delete_runbook_result_by_id(user_id, runbook_id, result_id)
+        _run_async(dbserver.delete_runbook_result_by_id(user_id, runbook_id, result_id))
 
         return jsonify({"success": True}), 200
     except Exception as e:
@@ -972,7 +982,7 @@ async def delte_result():
 
 @runbook_bp.route("/runbook/update/<runbook_id>", methods=["POST"])
 @permission_required_body("compliance.runbook.edit")
-async def update_runbook_api(runbook_id):
+def update_runbook_api(runbook_id):
     try:
         data = request.json or {}
 
@@ -995,7 +1005,7 @@ async def update_runbook_api(runbook_id):
 
         updates = normalize_payload(updates)
 
-        updated = await dbserver.update_runbook(user_id, runbook_id, updates)
+        updated = _run_async(dbserver.update_runbook(user_id, runbook_id, updates))
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
@@ -1020,13 +1030,13 @@ async def update_runbook_api(runbook_id):
 
 @runbook_bp.route("/runbook/results_delete/<runbook_id>", methods=["DELETE"])
 @permission_required_body("compliance.runbook.edit")
-async def delete_runbook_results(runbook_id):
+def delete_runbook_results(runbook_id):
     try:
         user_id = session.get("user_id")
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
         # dbserver = LanceDBServer()
-        await dbserver.delete_runbook_result(user_id, runbook_id)
+        _run_async(dbserver.delete_runbook_result(user_id, runbook_id))
 
         return jsonify({"success": True}), 200
     except Exception as e:
@@ -1035,7 +1045,7 @@ async def delete_runbook_results(runbook_id):
 
 @runbook_bp.route("/create_playbook_runbook", methods=["POST"])
 @permission_required_body("compliance.runbook.create")
-async def create_playbook_runbook():
+def create_playbook_runbook():
     # from utils.celery_base import create_playbook_runbook_task
 
     data = request.get_json()
@@ -1048,9 +1058,9 @@ async def create_playbook_runbook():
     try:
 
         # create_playbook_runbook_task.delay(user_id, playbook_id)
-        result = await trigger_runbook_from_playbook(
+        result = _run_async(trigger_runbook_from_playbook(
             playbook_id=playbook_id, user_id=user_id, runbook_id=runbook_id
-        )
+        ))
 
         return jsonify({"status": result}), 200
     except Exception as e:
@@ -1059,13 +1069,13 @@ async def create_playbook_runbook():
 
 @runbook_bp.route("/runbook/check_playbook/<playbook_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
-async def check_playbook_runbook(playbook_id):
+def check_playbook_runbook(playbook_id):
     user_id = session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        result = await dbserver.get_runbook_by_playbookid(user_id, playbook_id)
+        result = _run_async(dbserver.get_runbook_by_playbookid(user_id, playbook_id))
         logger.debug("Runbook by playbook result: %s", result)
         if not result:
             return jsonify({"status": False, "message": "No runbook is present"}), 400
@@ -1110,10 +1120,10 @@ def extract_filenames(source):
 
 @runbook_bp.route("/result/<result_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
-async def result_by_id(result_id):
+def result_by_id(result_id):
     try:
         user_id = session.get("user_id")
-        res = await dbserver.runbook_get_result(user_id, result_id)
+        res = _run_async(dbserver.runbook_get_result(user_id, result_id))
         return jsonify({"result": res}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1121,7 +1131,7 @@ async def result_by_id(result_id):
 
 @runbook_bp.route("/result/<result_id>/evidence_analysis", methods=["PUT"])
 @permission_required_body("compliance.runbook.edit")
-async def patch_evidence_analysis(result_id):
+def patch_evidence_analysis(result_id):
     try:
         data = request.get_json() or {}
         user_id = session.get("user_id") or data.get("user_id")
@@ -1133,7 +1143,7 @@ async def patch_evidence_analysis(result_id):
         if index is None or not isinstance(updates, dict):
             return jsonify({"error": "index and updates are required"}), 400
 
-        res = await dbserver.runbook_get_result(user_id, result_id)
+        res = _run_async(dbserver.runbook_get_result(user_id, result_id))
         if not res or res.get("status") == "not_found":
             return jsonify({"error": "Result not found"}), 404
 
