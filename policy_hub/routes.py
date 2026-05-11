@@ -13,12 +13,19 @@ import pandas as pd
 from flask import Blueprint, request, jsonify, g
 
 from credits_route.route import Credits
+from utils.permission_required import permission_required_body
 from db.db_checkers import get_email_by_id
 from db.lance_db_service import LanceDBServer, VectorData, QueryData
-from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
+from utils.app_configs import FRAMEWORK_OWNER
 from utils.base_logger import get_logger
 from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
-from utils.s3_utils import s3bucket, load_yaml_from_s3, read_json_from_s3, delete_file_from_s3, list_all_files
+from utils.s3_utils import (
+    s3bucket,
+    load_yaml_from_s3,
+    read_json_from_s3,
+    delete_file_from_s3,
+    list_all_files,
+)
 
 S3_BUCKET = os.getenv("S3_BUCKET")
 logger = get_logger(__name__)
@@ -28,6 +35,7 @@ _jobs_lock = threading.Lock()
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
+
 
 def _s3_key(user_id: str, policy_id: str) -> str:
     return f"{user_id}/policies/{policy_id}.yaml"
@@ -59,6 +67,7 @@ def _save_job(job_id: str, state: dict):
 
 
 # ── Prompt helpers ────────────────────────────────────────────────────────────
+
 
 def _extract_title(content: str, fallback: str) -> str:
     # Try HTML <h1> first
@@ -109,8 +118,14 @@ def _enumeration_prompt(prompt: str, fw_list: str, type_filter: str) -> str:
     )
 
 
-def _doc_generation_prompt(title: str, doc_type: str, description: str,
-                            fw_list: str, user_context: str, controls: str = "") -> str:
+def _doc_generation_prompt(
+    title: str,
+    doc_type: str,
+    description: str,
+    fw_list: str,
+    user_context: str,
+    controls: str = "",
+) -> str:
     stmt_heading = "Policy Statement" if doc_type == "policy" else "Procedure Steps"
     enforce_heading = "Enforcement" if doc_type == "policy" else "Compliance Monitoring"
 
@@ -119,7 +134,8 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
             "━━━ AUTHORIZED CONTROLS — SOLE PERMITTED SOURCE FOR ALL CITATIONS ━━━\n"
             "The rows below were retrieved verbatim from the uploaded framework files.\n"
             "They are the ONLY control references you are allowed to use anywhere in this document.\n\n"
-            + controls + "\n\n"
+            + controls
+            + "\n\n"
             "━━━ END OF AUTHORIZED CONTROLS ━━━\n\n"
         )
         control_quality_rule = (
@@ -151,59 +167,59 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
         f"experience authoring enterprise-grade {doc_type} documents for Fortune 500 companies and regulated "
         f"startups. Your output must score 99/100 on a professional compliance audit — meaning it is "
         f"indistinguishable from a document produced by a Big 4 consulting firm.\n\n"
-        f"Create a complete, audit-ready {doc_type} document titled \"{title}\" "
+        f'Create a complete, audit-ready {doc_type} document titled "{title}" '
         f"for an organization that must comply with: {fw_list}.\n\n"
         f"Document purpose: {description}\n"
         f"Organization context: {user_context}\n\n"
-        + controls_block +
-        "QUALITY STANDARDS (every standard must be met — failure on any = unacceptable quality):\n"
+        + controls_block
+        + "QUALITY STANDARDS (every standard must be met — failure on any = unacceptable quality):\n"
         "1. Every section contains substantive, specific content — zero generic filler or placeholder text\n"
-        + control_quality_rule +
-        "3. Policy/procedure statements are written in clear imperative language "
-        "(\"The organization SHALL...\", \"All employees MUST...\")\n"
+        + control_quality_rule
+        + "3. Policy/procedure statements are written in clear imperative language "
+        '("The organization SHALL...", "All employees MUST...")\n'
         "4. Roles are named precisely (e.g., CISO, IT Security Team, System Owners, Data Custodians) "
         "with distinct, non-overlapping responsibilities\n"
         "5. The enforcement/compliance section specifies concrete consequences and audit mechanisms\n"
         "6. The document reads as if it has already passed an external compliance audit\n"
         "7. Minimum depth: each major section must contain at least 3–5 specific, actionable sub-points\n\n"
-        + output_gate +
-        "Output the document as a self-contained HTML fragment (no <html>, <head>, or <body> tags). "
+        + output_gate
+        + "Output the document as a self-contained HTML fragment (no <html>, <head>, or <body> tags). "
         "Use only inline CSS styles. Follow this exact structure and styling:\n\n"
         "<div style=\"font-family: 'Segoe UI', Arial, sans-serif; max-width: 860px; "
-        "margin: 0 auto; color: #1a202c; line-height: 1.7; padding: 32px;\">\n\n"
-        f"  <h1 style=\"font-size: 26px; font-weight: 700; color: #1a365d; "
-        "border-bottom: 3px solid #2b6cb0; padding-bottom: 12px; margin-bottom: 8px;\">"
+        'margin: 0 auto; color: #1a202c; line-height: 1.7; padding: 32px;">\n\n'
+        f'  <h1 style="font-size: 26px; font-weight: 700; color: #1a365d; '
+        'border-bottom: 3px solid #2b6cb0; padding-bottom: 12px; margin-bottom: 8px;">'
         f"{title}</h1>\n\n"
-        "  <p style=\"font-size: 13px; color: #718096; margin-bottom: 32px;\">"
+        '  <p style="font-size: 13px; color: #718096; margin-bottom: 32px;">'
         f"Type: {doc_type.title()} &nbsp;|&nbsp; Frameworks: {fw_list}</p>\n\n"
         "  <!-- Section heading -->\n"
-        "  <h2 style=\"font-size: 18px; font-weight: 600; color: #2c5282; "
+        '  <h2 style="font-size: 18px; font-weight: 600; color: #2c5282; '
         "margin-top: 32px; margin-bottom: 10px; border-left: 4px solid #2b6cb0; "
-        "padding-left: 12px;\">Section Title</h2>\n"
-        "  <p style=\"margin: 0 0 16px 0;\">Section content...</p>\n\n"
+        'padding-left: 12px;">Section Title</h2>\n'
+        '  <p style="margin: 0 0 16px 0;">Section content...</p>\n\n'
         "  <!-- For lists use: -->\n"
-        "  <ul style=\"margin: 0 0 16px 20px; padding: 0;\">\n"
-        "    <li style=\"margin-bottom: 6px;\">Item</li>\n"
+        '  <ul style="margin: 0 0 16px 20px; padding: 0;">\n'
+        '    <li style="margin-bottom: 6px;">Item</li>\n'
         "  </ul>\n\n"
         "  <!-- For sub-sections within a section use h3: -->\n"
-        "  <h3 style=\"font-size: 15px; font-weight: 600; color: #2d3748; margin-top: 20px; "
-        "margin-bottom: 8px;\">Sub-section</h3>\n\n"
+        '  <h3 style="font-size: 15px; font-weight: 600; color: #2d3748; margin-top: 20px; '
+        'margin-bottom: 8px;">Sub-section</h3>\n\n'
         "  <!-- Document Control table -->\n"
-        "  <table style=\"border-collapse: collapse; width: 100%; margin-top: 8px;\">\n"
+        '  <table style="border-collapse: collapse; width: 100%; margin-top: 8px;">\n'
         "    <thead>\n"
         "      <tr>\n"
-        "        <th style=\"background: #2b6cb0; color: #fff; text-align: left; "
-        "padding: 10px 14px; font-size: 13px;\">Field</th>\n"
-        "        <th style=\"background: #2b6cb0; color: #fff; text-align: left; "
-        "padding: 10px 14px; font-size: 13px;\">Information</th>\n"
+        '        <th style="background: #2b6cb0; color: #fff; text-align: left; '
+        'padding: 10px 14px; font-size: 13px;">Field</th>\n'
+        '        <th style="background: #2b6cb0; color: #fff; text-align: left; '
+        'padding: 10px 14px; font-size: 13px;">Information</th>\n'
         "      </tr>\n"
         "    </thead>\n"
         "    <tbody>\n"
-        "      <tr style=\"background: #f7fafc;\">\n"
-        "        <td style=\"padding: 9px 14px; border-bottom: 1px solid #e2e8f0; "
-        "font-weight: 600; font-size: 13px;\">Version</td>\n"
-        "        <td style=\"padding: 9px 14px; border-bottom: 1px solid #e2e8f0; "
-        "font-size: 13px;\">1.0</td>\n"
+        '      <tr style="background: #f7fafc;">\n'
+        '        <td style="padding: 9px 14px; border-bottom: 1px solid #e2e8f0; '
+        'font-weight: 600; font-size: 13px;">Version</td>\n'
+        '        <td style="padding: 9px 14px; border-bottom: 1px solid #e2e8f0; '
+        'font-size: 13px;">1.0</td>\n'
         "      </tr>\n"
         "    </tbody>\n"
         "  </table>\n\n"
@@ -219,7 +235,10 @@ def _doc_generation_prompt(title: str, doc_type: str, description: str,
 
 # ── Background generation worker ──────────────────────────────────────────────
 
-async def _fetch_framework_controls(framework_ids: list, title: str, description: str) -> str:
+
+async def _fetch_framework_controls(
+    framework_ids: list, title: str, description: str
+) -> str:
     """Query LanceDB for controls relevant to this document from each selected framework."""
     if not framework_ids:
         return ""
@@ -247,9 +266,16 @@ async def _fetch_framework_controls(framework_ids: list, title: str, description
     return "\n".join(f"- {s}" for s in snippets[:30])
 
 
-def _generation_worker(user_id: str, job_id: str, docs: list,
-                       frameworks: list, framework_ids: list,
-                       prompt: str, fw_list: str, doc_type_filter):
+def _generation_worker(
+    user_id: str,
+    job_id: str,
+    docs: list,
+    frameworks: list,
+    framework_ids: list,
+    prompt: str,
+    fw_list: str,
+    doc_type_filter,
+):
     """
     Runs in a background thread. Generates every document in `docs`,
     saves each as a separate YAML file, and updates the job state in S3
@@ -273,7 +299,9 @@ def _generation_worker(user_id: str, job_id: str, docs: list,
                         _fetch_framework_controls(framework_ids, title, description)
                     )
                 except Exception as e:
-                    logger.warning("Framework controls fetch failed for '%s': %s", title, e)
+                    logger.warning(
+                        "Framework controls fetch failed for '%s': %s", title, e
+                    )
 
             try:
                 content = loop.run_until_complete(
@@ -289,7 +317,9 @@ def _generation_worker(user_id: str, job_id: str, docs: list,
                 )
 
                 if content == "INSUFFICIENT":
-                    logger.warning("Insufficient credits — stopping generation at index %d", i)
+                    logger.warning(
+                        "Insufficient credits — stopping generation at index %d", i
+                    )
                     job = _read_job(job_id) or {}
                     job["status"] = "error"
                     job["error"] = "Insufficient credits"
@@ -323,7 +353,9 @@ def _generation_worker(user_id: str, job_id: str, docs: list,
                 job["status"] = "done"
             _save_job(job_id, job)
 
-        logger.info("Policy generation complete for user %s: %d documents", user_id, total)
+        logger.info(
+            "Policy generation complete for user %s: %d documents", user_id, total
+        )
 
     except Exception as e:
         logger.error("Generation worker crashed for job %s: %s", job_id, e)
@@ -340,14 +372,20 @@ def _generation_worker(user_id: str, job_id: str, docs: list,
 
 # ── 1. GENERATE ───────────────────────────────────────────────────────────────
 
+
 @policy_hub_bp.route("/generate", methods=["POST"])
+@permission_required_body("compliance.report.create")
 async def generate_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
     prompt = body.get("prompt")
-    doc_type = body.get("type")          # kept for metadata only — generation always covers both types
+    doc_type = body.get(
+        "type"
+    )  # kept for metadata only — generation always covers both types
     frameworks = body.get("frameworks", [])
-    framework_ids = body.get("framework_ids", [])  # UUIDs of uploaded frameworks to draw controls from
+    framework_ids = body.get(
+        "framework_ids", []
+    )  # UUIDs of uploaded frameworks to draw controls from
 
     if not user_id or not prompt:
         return jsonify({"error": "user_id and prompt are required"}), 400
@@ -362,7 +400,9 @@ async def generate_policy():
         except Exception:
             pass
 
-    all_frameworks = frameworks + uploaded_fw_names  # static/custom + S3-resolved uploaded
+    all_frameworks = (
+        frameworks + uploaded_fw_names
+    )  # static/custom + S3-resolved uploaded
     fw_list = ", ".join(all_frameworks) if all_frameworks else "general compliance"
     # Always enumerate both policies AND procedures regardless of the tab the frontend is on
     type_filter = "Include both policies and procedures."
@@ -403,22 +443,38 @@ async def generate_policy():
     # Phase 2: generate all documents in background — runs to completion regardless of client
     thread = threading.Thread(
         target=_generation_worker,
-        args=(user_id, job_id, docs, all_frameworks, framework_ids, prompt, fw_list, doc_type),
+        args=(
+            user_id,
+            job_id,
+            docs,
+            all_frameworks,
+            framework_ids,
+            prompt,
+            fw_list,
+            doc_type,
+        ),
         daemon=True,
     )
     thread.start()
 
-    return jsonify({
-        "job_id": job_id,
-        "status": "PROCESSING",
-        "total": len(docs),
-        "documents": docs,
-    }), 202
+    return (
+        jsonify(
+            {
+                "job_id": job_id,
+                "status": "PROCESSING",
+                "total": len(docs),
+                "documents": docs,
+            }
+        ),
+        202,
+    )
 
 
 # ── 1b. GENERATE STATUS (polling) ─────────────────────────────────────────────
 
+
 @policy_hub_bp.route("/status", methods=["GET"])
+@permission_required_body("compliance.report.read")
 def generate_status():
     job_id = request.args.get("job_id")
 
@@ -429,27 +485,33 @@ def generate_status():
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    return jsonify({
-        "job_id": job_id,
-        "status": job.get("status", "processing").upper(),
-        "total": job.get("total", 0),
-        "completed": job.get("completed", 0),
-        "items": job.get("items", []),
-        "documents": job.get("documents", []),
-        "error": job.get("error"),
-    }), 200
+    return (
+        jsonify(
+            {
+                "job_id": job_id,
+                "status": job.get("status", "processing").upper(),
+                "total": job.get("total", 0),
+                "completed": job.get("completed", 0),
+                "items": job.get("items", []),
+                "documents": job.get("documents", []),
+                "error": job.get("error"),
+            }
+        ),
+        200,
+    )
 
 
 # ── Section helpers ───────────────────────────────────────────────────────────
 
+
 def _split_sections(html: str) -> list[tuple[str, int, int]]:
     """Split document into (section_html, start, end) chunks at <h2> boundaries."""
-    h2_iter = list(re.finditer(r'<h2[\s>]', html, re.IGNORECASE))
+    h2_iter = list(re.finditer(r"<h2[\s>]", html, re.IGNORECASE))
     if not h2_iter:
         return [(html, 0, len(html))]
     sections = []
     if h2_iter[0].start() > 0:
-        sections.append((html[:h2_iter[0].start()], 0, h2_iter[0].start()))
+        sections.append((html[: h2_iter[0].start()], 0, h2_iter[0].start()))
     for i, m in enumerate(h2_iter):
         start = m.start()
         end = h2_iter[i + 1].start() if i + 1 < len(h2_iter) else len(html)
@@ -461,17 +523,26 @@ def _find_section(html: str, needle: str) -> tuple[str, int, int] | None:
     """Return (section_html, start, end) for the <h2> section containing needle."""
     if not needle:
         return None
-    needle_plain = re.sub(r'<[^>]+>', '', needle).strip()[:80]
+    needle_plain = re.sub(r"<[^>]+>", "", needle).strip()[:80]
     for section_html, start, end in _split_sections(html):
-        if needle_plain and needle_plain in re.sub(r'<[^>]+>', '', section_html):
+        if needle_plain and needle_plain in re.sub(r"<[^>]+>", "", section_html):
             return section_html, start, end
     return None
 
 
 # ── 1c. EDIT ──────────────────────────────────────────────────────────────────
 
-def _edit_worker(user_id, job_id, policy_id, document_title, document_content,
-                 instruction, selected_text, section_title):
+
+def _edit_worker(
+    user_id,
+    job_id,
+    policy_id,
+    document_title,
+    document_content,
+    instruction,
+    selected_text,
+    section_title,
+):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -482,26 +553,33 @@ def _edit_worker(user_id, job_id, policy_id, document_title, document_content,
         if section_result:
             section_html, sec_start, sec_end = section_result
             before = document_content[:sec_start]
-            after  = document_content[sec_end:]
+            after = document_content[sec_end:]
             focus = (
-                f"The user selected: \"{selected_text[:120]}\"\n"
-                if selected_text else
-                f"Target section: \"{section_title}\"\n"
+                f'The user selected: "{selected_text[:120]}"\n'
+                if selected_text
+                else f'Target section: "{section_title}"\n'
             )
             ai_prompt = (
                 "You are an expert GRC policy writer editing a compliance document section.\n\n"
                 f"Document title: {document_title}\n"
-                f"Instruction: {instruction}\n" + focus +
-                "\nRewrite this section per the instruction:\n\n" + section_html +
-                "\n\nReturn EXACTLY:\n"
+                f"Instruction: {instruction}\n"
+                + focus
+                + "\nRewrite this section per the instruction:\n\n"
+                + section_html
+                + "\n\nReturn EXACTLY:\n"
                 "[EXPLANATION]\n1–2 sentence summary.\n[/EXPLANATION]\n"
                 "[SECTION]\nRewritten section HTML only — no surrounding document, no code fences.\n[/SECTION]\n\n"
                 "Rules:\n- Preserve all inline styles and heading tags\n"
                 "- Keep framework citations intact unless instructed to change\n- Do not truncate"
             )
             response = loop.run_until_complete(
-                get_fireworks_response2(user_id=user_id, user_message=ai_prompt,
-                                       role="user", credits=credits, temp=0.1)
+                get_fireworks_response2(
+                    user_id=user_id,
+                    user_message=ai_prompt,
+                    role="user",
+                    credits=credits,
+                    temp=0.1,
+                )
             )
             if response == "INSUFFICIENT":
                 _save_job(job_id, {"status": "error", "error": "Insufficient credits"})
@@ -524,8 +602,13 @@ def _edit_worker(user_id, job_id, policy_id, document_title, document_content,
                 f"Current document HTML:\n{document_content}"
             )
             response = loop.run_until_complete(
-                get_fireworks_response2(user_id=user_id, user_message=ai_prompt,
-                                       role="user", credits=credits, temp=0.1)
+                get_fireworks_response2(
+                    user_id=user_id,
+                    user_message=ai_prompt,
+                    role="user",
+                    credits=credits,
+                    temp=0.1,
+                )
             )
             if response == "INSUFFICIENT":
                 _save_job(job_id, {"status": "error", "error": "Insufficient credits"})
@@ -533,24 +616,30 @@ def _edit_worker(user_id, job_id, policy_id, document_title, document_content,
             explanation = _extract_tag(response, "EXPLANATION")
             updated_content = _extract_tag(response, "HTML")
             if not updated_content:
-                _save_job(job_id, {"status": "error", "error": "AI did not return valid HTML"})
+                _save_job(
+                    job_id, {"status": "error", "error": "AI did not return valid HTML"}
+                )
                 return
 
         key = _s3_key(user_id, policy_id)
         existing = load_yaml_from_s3(key)
         if existing:
-            existing["content"]    = updated_content
+            existing["content"] = updated_content
             existing["updated_at"] = datetime.now(timezone.utc).isoformat()
             try:
                 _write_yaml_to_s3(key, existing)
             except Exception as e:
                 logger.error("Failed to persist edit for policy %s: %s", policy_id, e)
 
-        _save_job(job_id, {
-            "status": "done",
-            "updated_content": updated_content,
-            "explanation": explanation or "The document has been updated per your instruction.",
-        })
+        _save_job(
+            job_id,
+            {
+                "status": "done",
+                "updated_content": updated_content,
+                "explanation": explanation
+                or "The document has been updated per your instruction.",
+            },
+        )
 
     except Exception as e:
         logger.error("Edit worker crashed for job %s: %s", job_id, e)
@@ -563,26 +652,42 @@ def _edit_worker(user_id, job_id, policy_id, document_title, document_content,
 
 
 @policy_hub_bp.route("/edit", methods=["POST"])
+@permission_required_body("compliance.report.edit")
 def edit_policy():
     body = request.get_json(silent=True) or {}
-    user_id          = body.get("user_id")
-    policy_id        = body.get("policy_id")
-    document_title   = body.get("document_title", "")
+    user_id = body.get("user_id")
+    policy_id = body.get("policy_id")
+    document_title = body.get("document_title", "")
     document_content = body.get("document_content", "")
-    instruction      = body.get("instruction", "")
-    selected_text    = body.get("selected_text", "").strip()
-    section_title    = body.get("section_title", "").strip()
+    instruction = body.get("instruction", "")
+    selected_text = body.get("selected_text", "").strip()
+    section_title = body.get("section_title", "").strip()
 
     if not user_id or not policy_id or not document_content or not instruction:
-        return jsonify({"error": "user_id, policy_id, document_content, and instruction are required"}), 400
+        return (
+            jsonify(
+                {
+                    "error": "user_id, policy_id, document_content, and instruction are required"
+                }
+            ),
+            400,
+        )
 
     job_id = str(uuid.uuid4())
     _save_job(job_id, {"status": "processing"})
 
     thread = threading.Thread(
         target=_edit_worker,
-        args=(user_id, job_id, policy_id, document_title, document_content,
-              instruction, selected_text, section_title),
+        args=(
+            user_id,
+            job_id,
+            policy_id,
+            document_title,
+            document_content,
+            instruction,
+            selected_text,
+            section_title,
+        ),
         daemon=True,
     )
     thread.start()
@@ -591,6 +696,7 @@ def edit_policy():
 
 
 @policy_hub_bp.route("/edit-status", methods=["GET"])
+@permission_required_body("compliance.report.read")
 def edit_status():
     job_id = request.args.get("job_id")
     if not job_id:
@@ -600,17 +706,24 @@ def edit_status():
     if not job:
         return jsonify({"error": "Job not found"}), 404
 
-    return jsonify({
-        "status": job.get("status", "processing").upper(),
-        "updated_content": job.get("updated_content"),
-        "explanation": job.get("explanation"),
-        "error": job.get("error"),
-    }), 200
+    return (
+        jsonify(
+            {
+                "status": job.get("status", "processing").upper(),
+                "updated_content": job.get("updated_content"),
+                "explanation": job.get("explanation"),
+                "error": job.get("error"),
+            }
+        ),
+        200,
+    )
 
 
 # ── 2. LIST ───────────────────────────────────────────────────────────────────
 
+
 @policy_hub_bp.route("/list", methods=["GET"])
+@permission_required_body("compliance.report.read")
 def list_policies():
     user_id = request.args.get("user_id")
     if not user_id:
@@ -635,7 +748,9 @@ def list_policies():
 
 # ── 3. UPDATE ─────────────────────────────────────────────────────────────────
 
+
 @policy_hub_bp.route("/update", methods=["POST"])
+@permission_required_body("compliance.report.edit")
 def update_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
@@ -668,7 +783,9 @@ def update_policy():
 
 # ── 4. DELETE ─────────────────────────────────────────────────────────────────
 
+
 @policy_hub_bp.route("/delete", methods=["DELETE"])
+@permission_required_body("compliance.report.delete")
 def delete_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
@@ -687,7 +804,7 @@ def delete_policy():
 
 # ── 5. FRAMEWORKS (service@bytoid.ca only) ────────────────────────────────────
 
-FRAMEWORK_OWNER = "service@bytoid.ca"
+
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv", ".xlsb", ".xlsm", ".ods", ".tsv"}
 FRAMEWORK_LANCE_USER = "frameworks"  # LanceDB table: index_frameworks
 
@@ -747,7 +864,9 @@ async def _async_index_framework(framework_id: str, rows: list[dict]):
     """Embed every row and upsert into LanceDB index_frameworks table."""
     texts = []
     for row in rows:
-        parts = [f"{k}: {v}" for k, v in row.items() if v is not None and str(v).strip()]
+        parts = [
+            f"{k}: {v}" for k, v in row.items() if v is not None and str(v).strip()
+        ]
         if parts:
             texts.append(" | ".join(parts))
     if not texts:
@@ -768,7 +887,9 @@ async def _async_index_framework(framework_id: str, rows: list[dict]):
     ]
     lance = LanceDBServer()
     await lance.insert_batch(vectors)
-    logger.info("Indexed %d rows for framework %s in LanceDB", len(vectors), framework_id)
+    logger.info(
+        "Indexed %d rows for framework %s in LanceDB", len(vectors), framework_id
+    )
 
 
 def _lance_index_worker(framework_id: str, rows: list[dict]):
@@ -784,6 +905,7 @@ def _lance_index_worker(framework_id: str, rows: list[dict]):
 
 
 @policy_hub_bp.route("/frameworks/available", methods=["GET"])
+@permission_required_body("compliance.report.read")
 def list_available_frameworks():
     """Return all framework names + IDs for the Select Frameworks dropdown.
 
@@ -808,17 +930,20 @@ def list_available_frameworks():
             continue
         data = load_yaml_from_s3(key)
         if data:
-            frameworks.append({
-                "id": data.get("id"),
-                "name": data.get("name"),
-                "row_count": data.get("row_count", 0),
-            })
+            frameworks.append(
+                {
+                    "id": data.get("id"),
+                    "name": data.get("name"),
+                    "row_count": data.get("row_count", 0),
+                }
+            )
 
     frameworks.sort(key=lambda x: (x.get("name") or "").lower())
     return jsonify({"frameworks": frameworks}), 200
 
 
 @policy_hub_bp.route("/frameworks/access", methods=["GET"])
+@permission_required_body("compliance.report.read")
 def check_framework_access():
     """Return whether the authenticated session has framework access.
 
@@ -831,6 +956,7 @@ def check_framework_access():
 
 
 @policy_hub_bp.route("/frameworks", methods=["GET"])
+@permission_required_body("compliance.report.read")
 def list_frameworks():
     denied = _require_framework_owner()
     if denied:
@@ -847,7 +973,32 @@ def list_frameworks():
         data = load_yaml_from_s3(key)
         if data:
             # Rows live in LanceDB — strip them from the listing response
-            meta = {k: v for k, v in data.items() if k != "rows"}
+            meta = {k: v for k, v in data.items()}
+            frameworks.append(meta)
+
+    frameworks.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return jsonify({"frameworks": frameworks}), 200
+
+
+@policy_hub_bp.route("/frameworks/list", methods=["GET"])
+@permission_required_body("compliance.report.read")
+def list_frameworks_rows():
+    # denied = _require_framework_owner()
+    # if denied:
+    #     return denied
+
+    prefix = f"{FRAMEWORK_OWNER}/frameworks/"
+    objects = list_all_files(folder=prefix)
+
+    frameworks = []
+    for obj in objects:
+        key = obj.get("Key", "")
+        if not key.endswith(".yaml"):
+            continue
+        data = load_yaml_from_s3(key)
+        if data:
+            # Rows live in LanceDB — strip them from the listing response
+            meta = {k: v for k, v in data.items()}
             frameworks.append(meta)
 
     frameworks.sort(key=lambda x: x.get("created_at", ""), reverse=True)
@@ -855,6 +1006,7 @@ def list_frameworks():
 
 
 @policy_hub_bp.route("/frameworks/upload", methods=["POST"])
+@permission_required_body("compliance.framework.create")
 def upload_framework_preview():
     """Parse an uploaded file and return a preview — nothing is saved yet."""
     denied = _require_framework_owner()
@@ -867,23 +1019,43 @@ def upload_framework_preview():
 
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
-        return jsonify({"error": f"Unsupported file type '{ext}'. Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}"}), 400
+        return (
+            jsonify(
+                {
+                    "error": f"Unsupported file type '{ext}'. Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+                }
+            ),
+            400,
+        )
 
     try:
         rows = _parse_framework_file(file.read(), file.filename)
     except Exception as e:
         logger.error("Framework parse error: %s", e)
-        return jsonify({"error": "Could not parse file. Please check the format and try again."}), 422
+        return (
+            jsonify(
+                {
+                    "error": "Could not parse file. Please check the format and try again."
+                }
+            ),
+            422,
+        )
 
-    return jsonify({
-        "rows": rows,
-        "columns": list(rows[0].keys()) if rows else [],
-        "row_count": len(rows),
-        "source_filename": file.filename,
-    }), 200
+    return (
+        jsonify(
+            {
+                "rows": rows,
+                "columns": list(rows[0].keys()) if rows else [],
+                "row_count": len(rows),
+                "source_filename": file.filename,
+            }
+        ),
+        200,
+    )
 
 
 @policy_hub_bp.route("/frameworks/save", methods=["POST"])
+@permission_required_body("compliance.framework.create")
 def save_framework():
     """Confirm and persist a framework (new or update)."""
     denied = _require_framework_owner()
@@ -933,6 +1105,7 @@ def save_framework():
 
 
 @policy_hub_bp.route("/frameworks/search", methods=["GET"])
+@permission_required_body("compliance.report.read")
 async def search_frameworks():
     """Semantic search over framework rows stored in LanceDB."""
     denied = _require_framework_owner()
@@ -957,21 +1130,27 @@ async def search_frameworks():
     else:
         results = await lance.query_vector(query)
 
-    return jsonify({
-        "results": [
+    return (
+        jsonify(
             {
-                "text": r["text"],
-                "framework_id": r.get("foldername"),
-                "score": r.get("_distance"),
+                "results": [
+                    {
+                        "text": r["text"],
+                        "framework_id": r.get("foldername"),
+                        "score": r.get("_distance"),
+                    }
+                    for r in results
+                ],
+                "query": q,
+                "total": len(results),
             }
-            for r in results
-        ],
-        "query": q,
-        "total": len(results),
-    }), 200
+        ),
+        200,
+    )
 
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["GET"])
+@permission_required_body("compliance.report.read")
 def get_framework(framework_id: str):
     denied = _require_framework_owner()
     if denied:
@@ -984,6 +1163,7 @@ def get_framework(framework_id: str):
 
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["DELETE"])
+@permission_required_body("compliance.framework.delete")
 async def delete_framework(framework_id: str):
     denied = _require_framework_owner()
     if denied:

@@ -10,6 +10,7 @@ from cust_helpers import pathconfig
 from db.db_checkers import get_notes_data
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request
+from utils.permission_required import permission_required_body
 from db.rds_db import connect_to_rds
 import uuid
 
@@ -43,6 +44,7 @@ logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 # run_language_tests()
 
 
+@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
 def radarapp(userid):
     conn = connect_to_rds()
@@ -987,6 +989,7 @@ def group_radars(rows: list[dict]):
     )
 
 
+@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/reviews/<userid>", methods=["GET"])
 async def list_radar_reviews(userid):
     dbserver = LanceDBServer()
@@ -994,6 +997,7 @@ async def list_radar_reviews(userid):
     return jsonify(group_radars(rows))
 
 
+@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/docs", methods=["POST"])
 async def get_radar_doc_byid():
     data = request.get_json(force=True)
@@ -1005,6 +1009,7 @@ async def get_radar_doc_byid():
     return jsonify(data)
 
 
+@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/review", methods=["POST"])
 async def radar_review():
 
@@ -1035,6 +1040,7 @@ async def radar_review():
     return jsonify(state)
 
 
+@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/analyze", methods=["POST"])
 async def radar_analyze():
 
@@ -1061,6 +1067,7 @@ async def radar_analyze():
     return jsonify(state)
 
 
+@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/decide", methods=["POST"])
 async def radar_decide():
 
@@ -1087,6 +1094,7 @@ async def radar_decide():
     return jsonify(state)
 
 
+@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/status", methods=["GET"])
 async def radar_status():
 
@@ -1105,6 +1113,7 @@ async def radar_status():
     return jsonify(job)
 
 
+@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/current", methods=["GET"])
 async def radar_current():
 
@@ -1122,6 +1131,7 @@ async def radar_current():
     return jsonify(job)
 
 
+@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/changeblock", methods=["POST"])
 async def radar_change_block_preview():
     data = request.get_json(force=True)
@@ -1233,6 +1243,7 @@ async def radar_change_block_preview():
         )
 
 
+@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/changeblock/confirm", methods=["POST"])
 async def radar_change_block_confirm():
     data = request.get_json(force=True)
@@ -1327,6 +1338,7 @@ async def radar_change_block_confirm():
         )
 
 
+@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/knowledge/analyze", methods=["POST"])
 async def radar_knowledge_analyze():
     import os
@@ -1525,6 +1537,7 @@ async def radar_knowledge_analyze():
     )
 
 
+@permission_required_body("kb.doc.delete")
 @radar_bp.route("/radar/delete", methods=["POST"])
 async def delete_radar_files():
     data = request.get_json(force=True)

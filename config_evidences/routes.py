@@ -5,6 +5,7 @@ import base64
 import traceback
 import logging
 from flask import Blueprint, jsonify, request, g
+from utils.permission_required import permission_required_body
 from db.lance_db_service import LanceDBServer
 from db.db_checkers import get_email_by_id
 from services.audit_log_service import (
@@ -35,6 +36,7 @@ dbserver = LanceDBServer()
 # Evidence CRUD Routes
 # ============================================================
 @config_evidences_bp.route("/runbook/evidence/config", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 def get_evidence_config():
     try:
         user_id = request.args.get("user_id")
@@ -65,6 +67,7 @@ def get_evidence_config():
 # Evidence Configure + Check Routes
 # ============================================================
 @config_evidences_bp.route("/runbook_evidence_config", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 async def get_runbook_evidence_config():
     try:
         user_id = request.args.get("user_id")
@@ -92,6 +95,7 @@ async def get_runbook_evidence_config():
 
 
 @config_evidences_bp.route("/runbook/evidence/config", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
 def update_evidence_config():
 
     try:
@@ -156,6 +160,7 @@ def update_evidence_config():
 
 
 @config_evidences_bp.route("/runbook/evidence/config", methods=["DELETE"])
+@permission_required_body("compliance.runbook.edit")
 def delete_evidence_config():
     try:
         data = request.get_json() or {}
@@ -215,6 +220,7 @@ def delete_evidence_config():
 
 
 @config_evidences_bp.route("/runbook/evidence/add", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
 def add_evidence_entry():
     try:
         data = request.get_json()
@@ -280,6 +286,7 @@ def add_evidence_entry():
 # Evidence Configure + Check Routes
 # ============================================================
 @config_evidences_bp.route("/runbook_evidence_configure", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
 async def runbook_evidence_configure():
     try:
         data = request.get_json()
@@ -311,6 +318,7 @@ async def runbook_evidence_configure():
 
 
 @config_evidences_bp.route("/evidence_check", methods=["POST"])
+@permission_required_body("compliance.runbook.read")
 async def evidence_check():
     try:
         user_id = request.form.get("user_id")

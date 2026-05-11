@@ -18,6 +18,7 @@ from db.db_checkers import (
 from db.lance_db_service import LanceDBServer
 from flask import request, jsonify, Response, stream_with_context, Blueprint
 from utils.base_logger import get_logger
+from utils.permission_required import permission_required_body
 from utils.fireworkzz import evaluate_transcript
 from utils.normal import load_yaml_file
 from utils.s3_utils import (
@@ -56,6 +57,7 @@ def _safe_remove(path):
         logger.warning("Failed to remove temp file %s: %s", path, e)
 
 
+@permission_required_body("kb.recording.upload")
 @audio_agent_bps.route("/process_audio", methods=["POST"])
 def process_audio_stream():
     """
@@ -321,6 +323,7 @@ def process_audio_stream():
     )
 
 
+@permission_required_body("kb.voice.manage")
 @audio_agent_bps.route("/update-transcript", methods=["POST"])
 async def update_transcript():
     data = request.json or {}
@@ -433,6 +436,7 @@ async def update_transcript():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.voice.manage")
 @audio_agent_bps.route("/update-audio-contacts", methods=["POST"])
 async def update_audio_contacts():
     data = request.json or {}
@@ -534,6 +538,7 @@ async def update_audio_contacts():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.recording.view")
 @audio_agent_bps.route("/get-audio-config", methods=["GET"])
 def get_audio_config():
     api_key = request.args.get("api_key")
@@ -568,6 +573,7 @@ def get_audio_config():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.recording.view")
 @audio_agent_bps.route("/get-audio-transcript", methods=["GET"])
 def get_audio_transcript():
     api_key = request.args.get("api_key")
@@ -655,6 +661,7 @@ def get_audio_transcript():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.recording.delete")
 @audio_agent_bps.route("/delete-audio", methods=["DELETE"])
 async def delete_audio():
     data = request.json

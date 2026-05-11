@@ -1,5 +1,6 @@
 from db.db_checkers import get_notes_data
 from flask import Blueprint, request, jsonify, session, g
+from utils.permission_required import permission_required_body
 import asyncio
 from microsoft_route.routes import microsoft_list_drafts
 from gmail_route.routes import list_drafts
@@ -50,6 +51,7 @@ def get_user_login_method(user_id):
 unified_bp = Blueprint("unified", __name__)
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/unified_drafts")
 def unified_drafts():
     emails = asyncio.run(get_all_drafts())
@@ -88,6 +90,7 @@ def get_latest_msg(content_dict, user_id):
     return messages
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_active_customers", methods=["POST"])
 def get_active_customers():
 
@@ -145,6 +148,7 @@ def get_active_customers():
             connection.close()
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_dormant_customers", methods=["POST"])
 def get_dormant_customers():
 
@@ -201,6 +205,7 @@ def get_dormant_customers():
             connection.close()
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_active_leads", methods=["POST"])
 def get_active_leads():
 
@@ -258,6 +263,7 @@ def get_active_leads():
             connection.close()
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_dormant_leads", methods=["POST"])
 def get_dormant_leads():
 
@@ -314,6 +320,7 @@ def get_dormant_leads():
             connection.close()
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_snoozed_customers", methods=["POST"])
 def get_snoozed_customers():
 
@@ -367,6 +374,7 @@ def get_snoozed_customers():
             cursor.close()
 
 
+@permission_required_body("taskbox.email.change_status")
 @unified_bp.route("/snooze_customer", methods=["POST"])
 def snooze_customer():
 
@@ -422,6 +430,7 @@ def snooze_customer():
             connection.close()
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_no_of_customers", methods=["POST"])
 def get_no_of_customers():
 
@@ -517,6 +526,7 @@ def get_no_of_customers():
 # Notes Related Routes
 
 
+@permission_required_body("notes.create")
 @unified_bp.route("/create_note", methods=["POST"])
 def create_note():
     """Create a new note for a conversation"""
@@ -637,6 +647,7 @@ def create_note():
             connection.close()
 
 
+@permission_required_body("notes.filter")
 @unified_bp.route("/get_conversation_notes", methods=["POST"])
 def get_conversation_notes():
     """Get all notes for a conversation"""
@@ -743,6 +754,7 @@ def get_conversation_notes():
             connection.close()
 
 
+@permission_required_body("notes.edit")
 @unified_bp.route("/update_note", methods=["POST"])
 def update_note():
     """Update an existing note"""
@@ -843,6 +855,7 @@ def update_note():
             connection.close()
 
 
+@permission_required_body("notes.delete")
 @unified_bp.route("/delete_note", methods=["POST"])
 def delete_note():
     """Soft delete a note"""
@@ -950,6 +963,7 @@ def delete_note():
             connection.close()
 
 
+@permission_required_body("notes.edit")
 @unified_bp.route("/search_users_for_sharing", methods=["POST"])
 def search_users_for_sharing():
     """Search for users by name or email"""
@@ -1094,6 +1108,7 @@ def check_user_sharing_permissions(cursor, user_id, target_email):
     return False, "Invalid user type"
 
 
+@permission_required_body("notes.edit")
 @unified_bp.route("/share_note_by_email", methods=["POST"])
 def share_note_by_email():
     """Share a note with another user based on hierarchical permissions"""
@@ -1235,6 +1250,7 @@ def share_note_by_email():
             connection.close()
 
 
+@permission_required_body("notes.filter")
 @unified_bp.route("/get_note_permissions", methods=["POST"])
 def get_note_permissions():
     """Get all users who have permissions for a note"""
@@ -1310,6 +1326,7 @@ def get_note_permissions():
             connection.close()
 
 
+@permission_required_body("taskbox.agent.assign")
 @unified_bp.route("/change_assignee", methods=["POST"])
 def change_assignee():
 
@@ -1410,6 +1427,7 @@ def add_user_by_email(cursor, result_emails, email):
     return result_emails
 
 
+@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_assignee_list", methods=["POST"])
 def get_assignee_list():
     """Get list of assignees (team members) for current user"""
@@ -1533,6 +1551,7 @@ def get_assignee_list():
             connection.close()
 
 
+@permission_required_body("notes.filter")
 @unified_bp.route("/get_user_notes", methods=["POST"])
 def get_user_notes():
     """Get all notes for a user including those shared with them, grouped by conversation"""
@@ -1549,6 +1568,7 @@ def get_user_notes():
     return jsonify(val)
 
 
+@permission_required_body("admin.manage_users")
 @unified_bp.route("/check_notes_tables", methods=["GET"])
 def check_notes_tables():
     """Check the structure of existing notes tables"""

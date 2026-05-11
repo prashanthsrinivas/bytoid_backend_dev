@@ -17,6 +17,7 @@ from invited_users.uszr_helper import (
 from utils.base_logger import get_logger
 from dotenv import load_dotenv
 from services.outlook_service import OutlookService
+from utils.permission_resolver import resolve_permissions
 import os
 
 inv_users_bp = Blueprint("invited_users", __name__)
@@ -48,7 +49,8 @@ def add_role_admin():
     data = request.get_json()
     userid = data.get("userid")
     name = data.get("name")
-    permissions = data.get("permissions", [])
+    raw_permissions = data.get("permissions", [])
+    permissions = resolve_permissions(raw_permissions)
 
     if not userid or not name or not permissions:
         return (
@@ -255,6 +257,8 @@ def update_role():
     role_id = data.get("role_id")
     name = data.get("name")
     permissions = data.get("permissions")
+    if permissions is not None:
+        permissions = resolve_permissions(permissions)
 
     conn = None
     try:
@@ -1565,6 +1569,27 @@ def edit_shared_user_role():
 
 @inv_users_bp.route("/notifications/<user_id>", methods=["GET"])
 def get_notifications(user_id):
+    # SECURITY PATCH: Require session auth + self-only or admin access
+    current_user_id = session.get("user_id")
+    if not current_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # Allow self-access or admin access
+    if current_user_id != user_id:
+        conn = None
+        try:
+            conn = connect_to_rds()
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+                current_user = cursor.fetchone()
+                if not current_user or current_user["user_type"] != "admin":
+                    return jsonify({"error": "Forbidden"}), 403
+        except Exception:
+            return jsonify({"error": "Forbidden"}), 403
+        finally:
+            if conn:
+                conn.close()
+
     conn = None
     try:
         conn = connect_to_rds()

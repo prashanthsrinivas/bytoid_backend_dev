@@ -253,6 +253,7 @@ import time, uuid
 def before_request():
     g.start_time = time.time()
     g.request_id = str(uuid.uuid4())[:8]
+    g.user_id = session.get("user_id")  # Fallback: session middleware is commented out
 
 
 @app.before_request

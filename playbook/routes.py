@@ -36,6 +36,7 @@ import pytz, pymysql
 from utils.FileHandler import FileProcessor
 from utils.app_configs import ACCESSIBLE_IDS, IS_DEV
 from utils.base_logger import get_logger
+from utils.permission_required import permission_required_body
 
 playbook_bp = Blueprint("playbook", __name__)
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
@@ -50,6 +51,7 @@ executor = ThreadPoolExecutor(max_workers=4)
 
 
 @playbook_bp.route("/create_instruction", methods=["POST"])
+@permission_required_body("workflow.process.create")
 async def create_new_instruction():
 
     data = request.json
@@ -321,6 +323,7 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
 
 
 @playbook_bp.route("/playbook/jbs/<job_id>", methods=["GET"])
+@permission_required_body("workflow.process.view")
 async def job_status(job_id):
     redisservice = get_redis()
 
@@ -333,6 +336,7 @@ async def job_status(job_id):
 
 
 @playbook_bp.route("/update_instruction", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def updateInstruction():
     data = request.json
 
@@ -362,6 +366,7 @@ async def updateInstruction():
 
 
 @playbook_bp.route("/get_all_instructions", methods=["GET"])
+@permission_required_body("workflow.process.view")
 def get_all_instructions():
     user_id = request.args.get("user_id")
     is_admin = False
@@ -404,6 +409,7 @@ def get_all_instructions():
 
 
 @playbook_bp.route("/get_single_instruction", methods=["GET"])
+@permission_required_body("workflow.process.view")
 def get_single_instruction():
     user_id = request.args.get("user_id")
     filename = request.args.get("filename")
@@ -426,6 +432,7 @@ def get_single_instruction():
 
 
 @playbook_bp.route("/delete_instruction", methods=["DELETE"])
+@permission_required_body("workflow.process.delete")
 def delete_instruction():
     user_id = request.args.get("user_id")
     filename = request.args.get("filename")
@@ -467,6 +474,7 @@ def delete_instruction():
 
 
 @playbook_bp.route("/add_a_step", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def add_a_step():
     body = request.json
     step_data = body.get("stepdata")
@@ -574,6 +582,7 @@ def add_a_step():
 
 
 @playbook_bp.route("/edit_a_step", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def edit_a_step():
     body = request.json
     step_data = body.get("stepdata")
@@ -614,6 +623,7 @@ def edit_a_step():
 
 
 @playbook_bp.route("/update_step_arguments", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def update_step_arguments():
     try:
         body = request.json or {}
@@ -775,6 +785,7 @@ def update_step_arguments():
 
 
 @playbook_bp.route("/delete_step_argument", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def delete_step_argument():
     body = request.json
 
@@ -855,6 +866,7 @@ def delete_step_argument():
 
 
 @playbook_bp.route("/delete_a_step", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def delete_a_step():
     body = request.json
 
@@ -1264,6 +1276,7 @@ async def modlmiddle(body):
 
 
 @playbook_bp.route("/modify_instruction", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def mod_instuct():
     data = request.json
 
@@ -1273,6 +1286,7 @@ async def mod_instuct():
 
 
 @playbook_bp.route("/run_workflow", methods=["POST"])
+@permission_required_body("workflow.process.execute")
 async def runWorkflow():
     data = request.json
     userid = data.get("user_id")
@@ -1345,6 +1359,7 @@ async def runWorkflow():
 
 
 @playbook_bp.route("/run_workflow_step", methods=["POST"])
+@permission_required_body("workflow.process.execute")
 def run_workflow_step():
     data = request.json
     userid = data.get("user_id")
@@ -1394,6 +1409,7 @@ def run_workflow_step():
 
 
 @playbook_bp.route("/test-playground-step", methods=["GET", "POST"])
+@permission_required_body("workflow.process.execute")
 def testworkflowbyinput_stream():
     data = request.json if request.method == "POST" else request.args
 
@@ -1438,6 +1454,7 @@ def testworkflowbyinput_stream():
 
 
 @playbook_bp.route("/clear-playground-data", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def clear_playground_data():
     """
     Clears transient data (chat, online, testing) from a user's workflow file.
@@ -1502,6 +1519,7 @@ def clear_playground_data():
 
 
 @playbook_bp.route("/clear-testing-data", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def clear_testing_data():
     """
     Clears only the 'testing' section from a user's workflow JSON file.
@@ -1568,6 +1586,7 @@ def clear_testing_data():
 
 
 @playbook_bp.route("/generate-workflow-input", methods=["POST"])
+@permission_required_body("workflow.process.execute")
 async def generate_workflow_input():
     db = connect_to_rds()
     credits = Credits(db)
@@ -1737,6 +1756,7 @@ async def generate_workflow_input():
 
 
 @playbook_bp.route("/test-mid", methods=["POST"])
+@permission_required_body("workflow.process.execute")
 async def testmidcheck():
     from services.automate_service import AutoMateService
 
@@ -1762,6 +1782,7 @@ async def testmidcheck():
 
 
 @playbook_bp.route("/test-email-checks", methods=["GET"])
+@permission_required_body("workflow.process.view")
 def test_email_checks():
     """
     Test route to trigger bulk email sending using Celery.
@@ -1848,6 +1869,7 @@ def resolve_schedule_from_activation(scheduled):
 
 
 @playbook_bp.route("/schedule-workflow-checker", methods=["POST"])
+@permission_required_body("workflow.process.schedule")
 async def schedule_workflow_checker():
     try:
         body = request.json or {}
@@ -1989,6 +2011,7 @@ async def schedule_workflow_checker():
 
 
 @playbook_bp.route("/schedule-workflow", methods=["POST"])
+@permission_required_body("workflow.process.schedule")
 async def schedule_workflow():
     body = request.json or {}
 
@@ -2120,11 +2143,13 @@ async def schedule_workflow():
 
 
 @playbook_bp.route("/get-allfunctions")
+@permission_required_body("workflow.process.view")
 def get_all_fns():
     return jsonify(read_function_jsons2())
 
 
 @playbook_bp.route("/update-questions", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def updatequestionsworkflow():
     data = request.json
     # print("dadss", data)
@@ -2179,6 +2204,7 @@ def updatequestionsworkflow():
 
 
 @playbook_bp.route("/update-questions-bulk", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def updatequestionsbulkworkflow():
     data = request.json or {}
     userid = data.get("user_id")
@@ -2244,6 +2270,7 @@ def updatequestionsbulkworkflow():
 
 
 @playbook_bp.route("/update-form-field", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def updateformfieldworkflow():
     data = request.json
 
@@ -2300,6 +2327,7 @@ def updateformfieldworkflow():
 
 
 @playbook_bp.route("/update-form-fields-bulk", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def updateformfieldsbulkworkflow():
     data = request.json or {}
 
@@ -2369,6 +2397,7 @@ def updateformfieldsbulkworkflow():
 
 
 @playbook_bp.route("/autocheck-workflow", methods=["POST"])
+@permission_required_body("workflow.process.execute")
 async def autocheckworkflow():
     data = request.json
     userid = data.get("user_id")
@@ -2417,6 +2446,7 @@ async def autocheckworkflow():
 
 
 @playbook_bp.route("/autocheck-status-update", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def autocheckstatusupdate():
     data = request.json
     userid = data.get("user_id")
@@ -2467,6 +2497,7 @@ def autocheckstatusupdate():
 
 
 @playbook_bp.route("/workflow/conversation", methods=["POST"])
+@permission_required_body("workflow.process.execute")
 async def workflow_conversation():
 
     data = request.json
@@ -2506,6 +2537,7 @@ async def workflow_conversation():
 
 
 @playbook_bp.route("/wf-form", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def check_formcreation():
     data = request.json
 
@@ -2540,6 +2572,7 @@ async def send_ques_byfile_bk(
 
 
 @playbook_bp.route("/generate_ques_by_file", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def generate_ques_by_file():
     from radar.radar_helpers import extract_files_content
 
@@ -2626,6 +2659,7 @@ async def answer_ques_file_bk(
 
 
 @playbook_bp.route("/make_ans_by_files", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def generate_ans_files():
     local_files = []
     try:
@@ -2739,6 +2773,7 @@ async def generate_ans_files():
 
 
 @playbook_bp.route("/evidence_ques_ans_attach_playbook", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def evidence_ques_ans_attach_playbook():
     try:
         data = request.form
@@ -2790,6 +2825,7 @@ def evidence_ques_ans_attach_playbook():
 
 
 @playbook_bp.route("/make_s3upload", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def generatesigned_url_for_upload():
     try:
 
@@ -2850,6 +2886,7 @@ def generatesigned_url_for_upload():
 
 
 @playbook_bp.route("/pb_temp_clone", methods=["POST"])
+@permission_required_body("workflow.process.create")
 def pb_temp_clone_min():
     try:
 
@@ -2990,6 +3027,7 @@ def pb_temp_clone_min():
 
 
 @playbook_bp.route("/pb_delete_clone", methods=["POST"])
+@permission_required_body("workflow.process.delete")
 def pb_delete_clone():
     try:
         data = request.json or {}
@@ -3042,6 +3080,7 @@ def pb_delete_clone():
 
 
 @playbook_bp.route("/list_chat_config", methods=["POST"])
+@permission_required_body("workflow.process.view")
 def list_chat_config():
     try:
         data = request.json or {}
@@ -3102,6 +3141,7 @@ def list_chat_config():
 
 
 @playbook_bp.route("/share_playbook_template", methods=["POST"])
+@permission_required_body("workflow.process.share")
 def share_pb_template():
     try:
         data = request.json or {}
@@ -3269,6 +3309,7 @@ def share_pb_template():
 
 
 @playbook_bp.route("/get_all_global_instructions", methods=["GET"])
+@permission_required_body("workflow.template.view")
 def get_all_global_instructions():
     user_id = request.args.get("user_id")
 
@@ -3292,6 +3333,7 @@ def get_all_global_instructions():
 
 
 @playbook_bp.route("/get_single_global_instruction", methods=["GET"])
+@permission_required_body("workflow.template.view")
 def get_single_global_instructions():
     user_id = request.args.get("user_id")
     filename = request.args.get("wf_filename")
@@ -3314,6 +3356,7 @@ def get_single_global_instructions():
 
 
 @playbook_bp.route("/make_global_playbook", methods=["POST"])
+@permission_required_body("workflow.template.create")
 def make_global_playbook():
     try:
         data = request.json or {}
@@ -3428,6 +3471,7 @@ def make_global_playbook():
 
 
 @playbook_bp.route("/delete_global_playbook", methods=["DELETE"])
+@permission_required_body("workflow.template.delete")
 def delete_global_playbook():
     try:
         data = request.json or {}
@@ -3460,6 +3504,7 @@ def delete_global_playbook():
 
 
 @playbook_bp.route("/install_global_playbook", methods=["POST"])
+@permission_required_body("workflow.process.create")
 def install_global_playbook():
     try:
         data = request.json or {}
@@ -3547,6 +3592,7 @@ def install_global_playbook():
 
 
 @playbook_bp.route("/undo_share_playbook_template", methods=["POST"])
+@permission_required_body("workflow.process.share")
 def undo_share_pb_template():
     try:
         data = request.json or {}
@@ -3654,6 +3700,7 @@ def undo_share_pb_template():
 
 
 @playbook_bp.route("/edit_assigned_question", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def edit_assigned_question():
     try:
         data = request.json or {}
@@ -3707,6 +3754,7 @@ async def edit_assigned_question():
 
 
 @playbook_bp.route("/delete_assigned_question", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def delete_assigned_question():
     try:
         data = request.json or {}
@@ -3757,6 +3805,7 @@ async def delete_assigned_question():
 
 
 @playbook_bp.route("/check_runbook_exists_playbook", methods=["POST"])
+@permission_required_body("workflow.process.view")
 def check_runbook_exists_playbook():
     try:
         data = request.json or {}
@@ -3801,6 +3850,7 @@ def check_runbook_exists_playbook():
 
 
 @playbook_bp.route("/clear_runbook_exists_playbook", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 async def clear_runbook_exists_playbook():
     from db.lance_db_service import LanceDBServer
 
@@ -3868,6 +3918,7 @@ async def clear_runbook_exists_playbook():
 
 
 @playbook_bp.route("/morph_question", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def morph_questions():
     try:
         data = request.json or {}
@@ -3954,6 +4005,7 @@ def morph_questions():
 
 
 @playbook_bp.route("/assign_evidence_to_question", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def assign_evidence_to_question():
     try:
         data = request.json or {}
@@ -4056,6 +4108,7 @@ def _build_evidence_template(full_name: str, playbook_title: str) -> str:
 
 
 @playbook_bp.route("/evidence_confirmation", methods=["GET"])
+@permission_required_body("workflow.process.view")
 def get_evidence_confirmation():
     try:
         user_id = request.args.get("user_id")
@@ -4116,6 +4169,7 @@ def get_evidence_confirmation():
 
 
 @playbook_bp.route("/evidence_confirmation", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def post_evidence_confirmation():
     try:
         data = request.json or {}
@@ -4199,6 +4253,7 @@ def _build_questionnaire_template(full_name: str, playbook_title: str) -> str:
 
 
 @playbook_bp.route("/questionarie_confirmation", methods=["GET"])
+@permission_required_body("workflow.process.view")
 def get_questionarie_confirmation():
     try:
         user_id = request.args.get("user_id")
@@ -4262,6 +4317,7 @@ def get_questionarie_confirmation():
 
 
 @playbook_bp.route("/questionarie_confirmation", methods=["POST"])
+@permission_required_body("workflow.process.edit")
 def post_questionarie_confirmation():
     try:
         data = request.json or {}

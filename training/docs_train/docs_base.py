@@ -17,6 +17,7 @@ from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify
 from google_route.routes import get_token
 from integrations.google_integration import get_integration_access_token
+from utils.permission_required import permission_required_body
 from playbook.background_worker import JobManager
 from utils.base_logger import get_logger
 from utils.normal import ensure_dir
@@ -173,6 +174,7 @@ async def execute_process_drive(data, job_id=None, session_id=None):
         db.close()
 
 
+@permission_required_body("kb.doc.upload")
 @docs_agent_bps.route("/process-drive", methods=["POST"])
 async def download_files_stream():
     data = request.json
@@ -289,6 +291,7 @@ async def execute_process_local(data, job_id=None, session_id=None):
         raise
 
 
+@permission_required_body("kb.doc.upload")
 @docs_agent_bps.route("/process-local", methods=["POST"])
 async def process_local():
     files = request.files.getlist("files")
@@ -417,6 +420,7 @@ def run_processing_in_background(
 # ─────────────────────────────────────────────
 
 
+@permission_required_body("kb.doc.view")
 @docs_agent_bps.route("/get-usersDocs", methods=["Get"])
 def getUsersDocs():
     userid = request.args.get("userid")
@@ -436,6 +440,7 @@ def getUsersDocs():
 # ─────────────────────────────────────────────
 
 
+@permission_required_body("kb.doc.delete")
 @docs_agent_bps.route("/delete_file", methods=["DELETE"])
 async def delete_file():
     userid = request.json.get("userid")

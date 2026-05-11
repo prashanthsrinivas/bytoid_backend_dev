@@ -1030,6 +1030,11 @@ def totp_verify():
 # update the user_type based on user_id
 @users_bp.route("/update_user_type", methods=["POST"])
 def update_user_type():
+    # SECURITY PATCH: Require session auth + admin-only access
+    current_user_id = session.get("user_id")
+    if not current_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
     data = request.get_json()
     user_id = data.get("user_id")
     user_type = data.get("user_type")
@@ -1042,6 +1047,13 @@ def update_user_type():
                 jsonify({"error": "Missing required fields : user_id,user_type"}),
                 400,
             )
+
+        # SECURITY PATCH: Verify current user is admin
+        cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+        current_user = cursor.fetchone()
+        if not current_user or current_user["user_type"] != "admin":
+            return jsonify({"error": "Admin access required"}), 403
+
         logger.info("Updating the user_type")
         query = "UPDATE users SET user_type = %s,updated_in = Now() where user_id = %s "
         cursor.execute(
@@ -1049,14 +1061,14 @@ def update_user_type():
             (user_type, user_id),
         )
         conn.commit()
-        actor_user_id = data.get("user_id")
+        actor_user_id = current_user_id
         actor_email = get_email_by_id(actor_user_id)
         log_audit_event(
             action=USER_TYPE_CHANGED, endpoint="/update_user_type",
             ip=request.remote_addr, status="success",
             actor_user_id=actor_user_id,
             actor_email=actor_email,
-            metadata={"new_user_type": user_type},
+            metadata={"new_user_type": user_type, "target_user_id": user_id},
         )
         g.audit_logged = True
         conn.close()
@@ -1773,6 +1785,24 @@ def get_all_domain(user_id):
 
 @users_bp.route("/get-encryption-key/<user_id>", methods=["GET"])
 def get_encryption_key(user_id):
+    # SECURITY PATCH: Require session auth + self-only access (or admin)
+    current_user_id = session.get("user_id")
+    if not current_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # Allow self-access or admin access
+    if current_user_id != user_id:
+        try:
+            conn = connect_to_rds()
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
+            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+            current_user = cursor.fetchone()
+            conn.close()
+            if not current_user or current_user["user_type"] != "admin":
+                return jsonify({"error": "Forbidden"}), 403
+        except Exception:
+            return jsonify({"error": "Forbidden"}), 403
+
     try:
         kms_service = SecureKMSService()
         plain_key, encrypted_key = kms_service.get_user_key(user_id)
@@ -1784,22 +1814,40 @@ def get_encryption_key(user_id):
 
 @users_bp.route("/rotate-encryption-key", methods=["POST"])
 def rotate_encryption_key():
+    # SECURITY PATCH: Require session auth + self-only or admin access
+    current_user_id = session.get("user_id")
+    if not current_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
     try:
         data = request.get_json()
         user_id = data.get("user_id")
+
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
-        cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (user_id))
+        cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+        current_user = cursor.fetchone()
+
+        # Allow self-access or admin access
+        if current_user_id != user_id:
+            if not current_user or current_user["user_type"] != "admin":
+                conn.close()
+                return jsonify({"error": "Forbidden"}), 403
+
+        cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (user_id,))
         result = cursor.fetchone()
-        is_admin = result["user_type"] == "admin"
+        is_admin = result and result["user_type"] == "admin"
         kms_service = SecureKMSService()
         rotate = kms_service.rotate_user_key(user_id, is_admin)
 
-        actor_email = get_email_by_id(user_id)
+        actor_email = get_email_by_id(current_user_id)
         log_audit_event(
             action=ENCRYPTION_KEY_ROTATED, endpoint="/rotate-encryption-key",
             ip=request.remote_addr, status="success",
-            actor_user_id=user_id,
+            actor_user_id=current_user_id,
             actor_email=actor_email,
         )
         g.audit_logged = True
@@ -1807,3 +1855,15 @@ def rotate_encryption_key():
         return jsonify({"encryption_key": rotate["encrypted_key"]}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# TEMP DEV ROUTE — remove after Phase 1 validation
+@users_bp.route("/debug/set-session", methods=["POST"])
+def debug_set_session():
+    if os.getenv("DEV") != "true":
+        return jsonify({"error": "not available"}), 404
+    data = request.get_json()
+    session["user_id"] = data.get("user_id")
+    if data.get("workspace_id"):
+        session["active_workspace_id"] = data.get("workspace_id")
+    return jsonify({"ok": True}), 200

@@ -23,6 +23,7 @@ from utils.s3_utils import (
     upload_any_file,
     read_json_from_s3,
 )
+from utils.permission_required import permission_required_body
 from db.rds_db import connect_to_rds
 from umail_helper.helper import get_users_client_id, extract_reply_content
 from collections import defaultdict
@@ -1407,6 +1408,7 @@ def add_customer_contact(user_id, cursor, participant, participant_name):
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/drafts", methods=["GET"])
 def list_drafts():
     try:
@@ -1418,6 +1420,7 @@ def list_drafts():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/threads", methods=["GET"])
 def list_threads():
     try:
@@ -1430,6 +1433,7 @@ def list_threads():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/spam", methods=["GET"])
 def list_spam():
     try:
@@ -1441,6 +1445,7 @@ def list_spam():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/trash", methods=["GET"])
 def list_trash():
     try:
@@ -1452,6 +1457,7 @@ def list_trash():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.draft")
 @gmail_bp.route("/gmail/drafts/<draft_id>", methods=["PUT"])
 def update_draft(draft_id):
     try:
@@ -1470,6 +1476,7 @@ def update_draft(draft_id):
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.draft")
 @gmail_bp.route("/gmail/create_draft", methods=["POST"])
 def create_draft():
     data = request.json
@@ -1489,6 +1496,7 @@ def create_draft():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.send")
 @gmail_bp.route("/gmail/respond", methods=["POST"])
 def respond_to_email():
     try:
@@ -1510,6 +1518,7 @@ def respond_to_email():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.send")
 @gmail_bp.route("/gmail/forward", methods=["POST"])
 def forward_email():
     """
@@ -1611,6 +1620,7 @@ def forward_email():
         )
 
 
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/inbox_info/<userid>", methods=["GET"])
 def get_inbox_info(userid):
     try:
@@ -1657,6 +1667,7 @@ from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 
 
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/datewise/<userid>", methods=["GET"])
 def get_datewise_info(userid):
     try:
@@ -1686,9 +1697,25 @@ def get_datewise_info(userid):
 from threading import Thread
 
 
+@permission_required_body("admin.manage_users")
 @gmail_bp.route("/deletedb/<user_id>", methods=["GET"])
 def delete_user_ticket_data(user_id):
+    # SECURITY PATCH: Require session auth + admin-only access
+    from flask import session
+    current_user_id = session.get("user_id")
+    if not current_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
     try:
+        connection = connect_to_rds()
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+            current_user = cursor.fetchone()
+            if not current_user or current_user["user_type"] != "admin":
+                connection.close()
+                return jsonify({"error": "Admin access required"}), 403
+
+        # Re-open connection for actual deletion logic
         connection = connect_to_rds()
         with connection.cursor() as cursor:
             # 1. Get ticket IDs assigned to the user
@@ -1807,6 +1834,7 @@ def delete_user_ticket_data(user_id):
             connection.close()
 
 
+@permission_required_body("admin.manage_users")
 @gmail_bp.route("/delete_user_cache/<primary_user_id>", methods=["GET"])
 def delete_user_cache(primary_user_id):
 
@@ -2019,12 +2047,30 @@ def delete_all_user_data(user_id):
             connection.close()
 
 
+@permission_required_body("admin.manage_users")
 @gmail_bp.route("/delete_user/<user_id>", methods=["DELETE"])
 def delete_user(user_id):
+    # SECURITY PATCH: Require session auth + admin-only access
+    from flask import session
+    current_user_id = session.get("user_id")
+    if not current_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        connection = connect_to_rds()
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+            current_user = cursor.fetchone()
+            connection.close()
+            if not current_user or current_user["user_type"] != "admin":
+                return jsonify({"error": "Admin access required"}), 403
+    except Exception:
+        return jsonify({"error": "Unauthorized"}), 401
+
     result = delete_all_user_data(user_id)
 
     # Audit logging
-    actor_user_id = getattr(g, "session_user_id", None)
+    actor_user_id = current_user_id
     actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
     status = "success" if result.get("status") == "success" else "failure"
     log_audit_event(
@@ -2042,6 +2088,7 @@ def delete_user(user_id):
     return jsonify(result)
 
 
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/start_watch/<userid>", methods=["GET"])
 def start_gmail_watch(userid):
     serv = GmailService(user_id=userid)
@@ -2049,6 +2096,7 @@ def start_gmail_watch(userid):
     return jsonify(res)
 
 
+@permission_required_body("admin.manage_users")
 @gmail_bp.route("/start_gmail_watches", methods=["GET"])
 def start_gmail_watches():
     conn = connect_to_rds()
@@ -2072,6 +2120,7 @@ def start_gmail_watches():
 
 
 #     return jsonify(results)
+@permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/history_check/<userid>/<hisid>", methods=["GET"])
 def histcheckmail(userid, hisid):
     serv = GmailService(user_id=userid)
@@ -2082,6 +2131,7 @@ def histcheckmail(userid, hisid):
 # ============ SECURE ATTACHMENT DOWNLOAD ENDPOINT ============
 
 
+@permission_required_body("taskbox.email.attachments.download")
 @gmail_bp.route("/gmail/attachment/download", methods=["POST"])
 def download_attachment():
     """
@@ -2177,6 +2227,7 @@ def download_attachment():
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
+@permission_required_body("taskbox.email.attachments.download")
 @gmail_bp.route("/gmail/download_attachment", methods=["POST"])
 def download_attachment_on_demand():
     """

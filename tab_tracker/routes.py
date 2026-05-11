@@ -8,6 +8,7 @@ import re
 from utils.app_configs import IS_DEV, FRAMEWORK_OWNER
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request, g
+from utils.permission_required import permission_required_body
 from services.audit_log_service import (
     log_audit_event,
     build_audit_actor,
@@ -87,6 +88,7 @@ def extract_block_schema(block, tracker_type):
 
 
 @tracker_bp.route("/tracker/create", methods=["POST"])
+@permission_required_body("trackers.table.create")
 async def create_tracker_api():
     try:
         data = request.json
@@ -337,6 +339,7 @@ async def create_tracker_api():
 
 
 @tracker_bp.route("/tracker/delete", methods=["DELETE"])
+@permission_required_body("trackers.table.delete")
 async def delete_tracker():
     """
     Delete a tracker: removes it from the config, deletes its S3 file,
@@ -453,6 +456,7 @@ async def delete_tracker():
 
 
 @tracker_bp.route("/tracker/list", methods=["GET"])
+@permission_required_body("trackers.table.view")
 def list_trackers_api():
     try:
         user_id = str(request.args.get("user_id"))
@@ -489,6 +493,7 @@ def list_trackers_api():
 
 
 @tracker_bp.route("/tracker/details", methods=["GET"])
+@permission_required_body("trackers.table.view")
 async def get_tracker_details_api():
     try:
         user_id = str(request.args.get("user_id"))
@@ -620,6 +625,7 @@ async def get_tracker_details_api():
 
 
 @tracker_bp.route("/tracker/check-duplicate", methods=["GET"])
+@permission_required_body("trackers.table.view")
 def check_duplicate_result_api():
     try:
         user_id = str(request.args.get("user_id"))
@@ -749,6 +755,7 @@ def check_duplicate_result_api():
 
 
 @tracker_bp.route("/tracker/view", methods=["GET"])
+@permission_required_body("trackers.table.view")
 def view_tracker_content_api():
     try:
         user_id = str(request.args.get("user_id"))
@@ -903,6 +910,7 @@ def view_tracker_content_api():
 
 
 @tracker_bp.route("/tracker/append", methods=["POST"])
+@permission_required_body("trackers.row.add")
 async def append_tracker_api():
     try:
         data = request.json
@@ -1144,6 +1152,7 @@ STRUCTURED_BLOCK_TYPES = {"table", "matrix", "scorecard"}
 
 
 @tracker_bp.route("/tracker/sync-from-block", methods=["POST"])
+@permission_required_body("trackers.table.edit")
 async def sync_block_to_tracker_api():
     """
     Frontend sends an edited block from the report. This endpoint:
@@ -1485,6 +1494,7 @@ async def sync_block_to_tracker_api():
 
 
 @tracker_bp.route("/tracker/modify", methods=["POST"])
+@permission_required_body("trackers.table.edit")
 async def modify_tracker_details():
     """
     Direction 2: Edit specific entries in a tracker, then sync the updated values
@@ -1597,6 +1607,7 @@ async def modify_tracker_details():
 
 
 @tracker_bp.route("/tracker/add-entry", methods=["POST"])
+@permission_required_body("trackers.row.add")
 async def add_tracker_entry():
     """
     Add a new entry (row/cell/record) to an existing tracker.
@@ -1785,6 +1796,7 @@ async def add_tracker_entry():
 
 
 @tracker_bp.route("/tracker/add-column", methods=["POST"])
+@permission_required_body("trackers.column.add")
 async def add_tracker_column():
     """
     Add a new column/axis/metric to an existing tracker schema.
@@ -1954,6 +1966,7 @@ async def add_tracker_column():
 
 
 @tracker_bp.route("/tracker/delete-column", methods=["DELETE"])
+@permission_required_body("trackers.column.delete")
 async def delete_tracker_column():
     """
     Delete a column/axis/metric from an existing tracker schema and
@@ -2306,6 +2319,7 @@ async def delete_tracker_column():
 
 
 @tracker_bp.route("/tracker/upload-evidence", methods=["POST"])
+@permission_required_body("trackers.table.edit")
 def upload_evidence_api():
     """
     Upload an evidence file and link it to a tracker row's evidence column.
@@ -2436,6 +2450,7 @@ def upload_evidence_api():
 
 
 @tracker_bp.route("/tracker/add-framework", methods=["POST"])
+@permission_required_body("trackers.framework.add")
 async def add_tracker_framework():
     """
     Add a policyhub framework link and auto-populate framework assignments.
@@ -2642,6 +2657,7 @@ async def add_tracker_framework():
 
 
 @tracker_bp.route("/tracker/update-framework", methods=["POST"])
+@permission_required_body("trackers.framework.edit")
 async def update_tracker_framework():
     """
     Re-analyze and sync framework assignments (re-sync with policyhub).
@@ -2845,6 +2861,7 @@ async def update_tracker_framework():
 
 
 @tracker_bp.route("/tracker/remove-framework", methods=["DELETE"])
+@permission_required_body("trackers.framework.delete")
 async def remove_tracker_framework():
     """
     Remove a framework link from a tracker and clean up all assignments.

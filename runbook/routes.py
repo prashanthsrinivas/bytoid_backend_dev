@@ -36,14 +36,19 @@ from services.redis_service import get_redis
 from utils.s3_utils import upload_any_file
 from services.audit_log_service import (
     log_audit_event,
-    RUNBOOK_CREATED, RUNBOOK_UPDATED, RUNBOOK_DELETED,
-    RUNBOOK_BULK_DELETED, RUNBOOK_SCHEDULED,
-    RUNBOOK_EVIDENCE_UPDATED, RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
+    RUNBOOK_CREATED,
+    RUNBOOK_UPDATED,
+    RUNBOOK_DELETED,
+    RUNBOOK_BULK_DELETED,
+    RUNBOOK_SCHEDULED,
+    RUNBOOK_EVIDENCE_UPDATED,
+    RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
     build_audit_actor,
 )
 from db.db_checkers import get_email_by_id
 import time, uuid, os, json
 from datetime import datetime
+from utils.permission_required import permission_required_body
 
 from websockets_custom.ws_instance import ws_service, msg_builder_main
 
@@ -177,12 +182,19 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             "is_template": data.get("is_template"),
             "created_at": datetime.utcnow().isoformat(),
             "runbook_evidence_config": None,
-            "tracker_configuration": json.dumps(data.get("tracker_configuration") or {}),
+            "tracker_configuration": json.dumps(
+                data.get("tracker_configuration") or {}
+            ),
         }
 
         # Normalize is_template to a proper Python bool — FormData always sends
         # it as the string "true" / "false", so we can't rely on truthiness.
-        is_template = str(runbook_data.get("is_template") or "").lower() in ("true", "1", "yes", "on")
+        is_template = str(runbook_data.get("is_template") or "").lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
 
         # ☁️ LOG FETCH
         log_source = None
@@ -424,6 +436,7 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
 
 
 @runbook_bp.route("/runbook/create", methods=["POST"])
+@permission_required_body("compliance.runbook.create")
 async def create_runbook():
     try:
         # ✅ form fields only
@@ -470,8 +483,10 @@ async def create_runbook():
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
-            action=RUNBOOK_CREATED, endpoint="/runbook/create",
-            ip=request.remote_addr, status="success",
+            action=RUNBOOK_CREATED,
+            endpoint="/runbook/create",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
@@ -487,6 +502,7 @@ async def create_runbook():
 
 
 @runbook_bp.route("/runbook/status/<job_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 async def get_job_status(job_id):
     try:
         redis_service = get_redis()
@@ -664,6 +680,7 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
 
 
 @runbook_bp.route("/runbook/modify", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
 async def modify_runbook():
     data = request.form.to_dict()
 
@@ -742,8 +759,10 @@ async def modify_runbook():
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
-        action=RUNBOOK_UPDATED, endpoint="/runbook/modify",
-        ip=request.remote_addr, status="success",
+        action=RUNBOOK_UPDATED,
+        endpoint="/runbook/modify",
+        ip=request.remote_addr,
+        status="success",
         actor_user_id=actor_uid,
         actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid,
@@ -756,9 +775,14 @@ async def modify_runbook():
 
 
 @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
+<<<<<<< HEAD
 def get_runbook_results(runbook_id):
     import asyncio
 
+=======
+@permission_required_body("compliance.runbook.read")
+async def get_runbook_results(runbook_id):
+>>>>>>> 39d51a0 (Resolve local changes after pull)
     try:
         user_id = session.get("user_id") or request.args.get("user_id")
 
@@ -795,9 +819,14 @@ def get_runbook_results(runbook_id):
 
 
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
+<<<<<<< HEAD
 def redult_list(user_id):
     import asyncio
 
+=======
+@permission_required_body("compliance.runbook.read")
+async def redult_list(user_id):
+>>>>>>> 39d51a0 (Resolve local changes after pull)
     try:
         loop = asyncio.new_event_loop()
         try:
@@ -834,6 +863,7 @@ def redult_list(user_id):
 
 
 @runbook_bp.route("/runbooks/list/<user_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 async def list_runbooks(user_id):
 
     if not user_id:
@@ -846,6 +876,7 @@ async def list_runbooks(user_id):
 
 
 @runbook_bp.route("/runbook/<runbook_id>/<user_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 async def get_runbook(runbook_id, user_id):
     if not user_id:
         user_id = session.get("user_id")
@@ -858,6 +889,7 @@ async def get_runbook(runbook_id, user_id):
 
 
 @runbook_bp.route("/allrunbook/<user_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 async def get_all_runbook(user_id):
     try:
         # dbserver = LanceDBServer()
@@ -868,6 +900,7 @@ async def get_all_runbook(user_id):
 
 
 @runbook_bp.route("/runbook/delete/<runbook_id>", methods=["DELETE"])
+@permission_required_body("compliance.runbook.delete")
 async def delete_runbook(runbook_id):
     try:
         user_id = session.get("user_id")
@@ -879,8 +912,10 @@ async def delete_runbook(runbook_id):
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
-            action=RUNBOOK_DELETED, endpoint="/runbook/delete",
-            ip=request.remote_addr, status="success",
+            action=RUNBOOK_DELETED,
+            endpoint="/runbook/delete",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
@@ -895,6 +930,7 @@ async def delete_runbook(runbook_id):
 
 
 @runbook_bp.route("/runbook/delete_all", methods=["POST"])
+@permission_required_body("compliance.runbook.delete")
 async def delete_all():
     try:
         data = request.get_json()
@@ -907,8 +943,10 @@ async def delete_all():
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
-            action=RUNBOOK_BULK_DELETED, endpoint="/runbook/delete_all",
-            ip=request.remote_addr, status="success",
+            action=RUNBOOK_BULK_DELETED,
+            endpoint="/runbook/delete_all",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
@@ -923,6 +961,7 @@ async def delete_all():
 
 
 @runbook_bp.route("/runbook/delete_result", methods=["DELETE"])
+@permission_required_body("compliance.runbook.edit")
 async def delte_result():
     try:
         data = request.get_json()
@@ -940,6 +979,7 @@ async def delte_result():
 
 
 @runbook_bp.route("/runbook/update/<runbook_id>", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
 async def update_runbook_api(runbook_id):
     try:
         data = request.json or {}
@@ -967,8 +1007,10 @@ async def update_runbook_api(runbook_id):
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
-            action=RUNBOOK_UPDATED, endpoint="/runbook/update",
-            ip=request.remote_addr, status="success",
+            action=RUNBOOK_UPDATED,
+            endpoint="/runbook/update",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
@@ -985,6 +1027,7 @@ async def update_runbook_api(runbook_id):
 
 
 @runbook_bp.route("/runbook/results_delete/<runbook_id>", methods=["DELETE"])
+@permission_required_body("compliance.runbook.edit")
 async def delete_runbook_results(runbook_id):
     try:
         user_id = session.get("user_id")
@@ -999,6 +1042,7 @@ async def delete_runbook_results(runbook_id):
 
 
 @runbook_bp.route("/create_playbook_runbook", methods=["POST"])
+@permission_required_body("compliance.runbook.create")
 async def create_playbook_runbook():
     # from utils.celery_base import create_playbook_runbook_task
 
@@ -1022,6 +1066,7 @@ async def create_playbook_runbook():
 
 
 @runbook_bp.route("/runbook/check_playbook/<playbook_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 async def check_playbook_runbook(playbook_id):
     user_id = session.get("user_id")
     if not user_id:
@@ -1072,6 +1117,7 @@ def extract_filenames(source):
 
 
 @runbook_bp.route("/result/<result_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
 async def result_by_id(result_id):
     try:
         user_id = session.get("user_id")
@@ -1082,6 +1128,7 @@ async def result_by_id(result_id):
 
 
 @runbook_bp.route("/result/<result_id>/evidence_analysis", methods=["PUT"])
+@permission_required_body("compliance.runbook.edit")
 async def patch_evidence_analysis(result_id):
     try:
         data = request.get_json() or {}
@@ -1130,7 +1177,12 @@ async def patch_evidence_analysis(result_id):
         await dbserver.update_runbook_result(user_id, result_id, result_doc)
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=RUNBOOK_EVIDENCE_UPDATED,
             endpoint="/result/<result_id>/evidence_analysis",
@@ -1244,6 +1296,7 @@ def _toggle_file_in_overview(ev_overview, file_url, target_status):
 
 
 @runbook_bp.route("/result/<result_id>/evidence_admissibility", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
 async def toggle_evidence_admissibility(result_id):
     try:
         data = request.get_json() or {}
@@ -1346,7 +1399,12 @@ async def toggle_evidence_admissibility(result_id):
         create_playbook_runbook_task.delay(user_id, playbook_id, runbook_id)
 
         # Audit logging
-        actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(user_id)
         log_audit_event(
             action=RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
             endpoint="/result/<result_id>/evidence_admissibility",
@@ -1384,6 +1442,7 @@ async def toggle_evidence_admissibility(result_id):
 
 
 @runbook_bp.route("/schedule_runbook", methods=["POST"])
+@permission_required_body("compliance.runbook.execute")
 async def schedule_runbook():
     import json
     from datetime import datetime
@@ -1427,13 +1486,19 @@ async def schedule_runbook():
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
-        action=RUNBOOK_SCHEDULED, endpoint="/schedule_runbook",
-        ip=request.remote_addr, status="success",
+        action=RUNBOOK_SCHEDULED,
+        endpoint="/schedule_runbook",
+        ip=request.remote_addr,
+        status="success",
         actor_user_id=actor_uid,
         actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid,
         acting_on_behalf_of_email=behalf_email,
-        metadata={"runbook_id": runbook_id, "schedule_type": schedule_type, "timezone": timezone},
+        metadata={
+            "runbook_id": runbook_id,
+            "schedule_type": schedule_type,
+            "timezone": timezone,
+        },
     )
     g.audit_logged = True
 
@@ -1565,6 +1630,7 @@ async def execute_structure_extract(data, job_id=None, session_id=None, main=Fal
 
 
 @runbook_bp.route("/runbook/structure_extract", methods=["POST"])
+@permission_required_body("compliance.runbook.create")
 async def structure_extract():
 
     if request.is_json:
@@ -1601,6 +1667,7 @@ async def structure_extract():
 
 
 @runbook_bp.route("/runbook/structure_extract_modify", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
 async def structure_extract_modify():
     try:
         if request.is_json:
@@ -1628,6 +1695,7 @@ async def structure_extract_modify():
 
 
 @runbook_bp.route("/check_pb_output", methods=["POST"])
+@permission_required_body("compliance.runbook.read")
 async def check_pb_output():
     try:
         data = request.get_json()

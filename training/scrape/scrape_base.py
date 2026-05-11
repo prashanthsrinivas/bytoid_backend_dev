@@ -3,6 +3,7 @@ from datetime import datetime
 from datetime import timezone
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, request, Response, jsonify
+from utils.permission_required import permission_required_body
 from services.web_scrape_service import WebScrapingLanceClient
 from services.youtube_scrape_service import YouTubeScrapingClient
 from agent_route.ag_helperzz import (
@@ -48,6 +49,7 @@ logger = get_logger(__name__)
 scrape_agent_bps = Blueprint("agents_scrape", __name__)
 
 
+@permission_required_body("kb.web.add")
 @scrape_agent_bps.route("/scrape-youtube", methods=["POST"])
 async def scrape_youtube_route():
     """
@@ -284,6 +286,7 @@ def fetch_website_summaries(user_id):
 
 # Add route to get YouTube summaries
 # Add route to get YouTube summaries
+@permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/get-youtube-summaries", methods=["GET"])
 def get_youtube_summaries():
     api_key = request.args.get("api_key")
@@ -297,6 +300,7 @@ def get_youtube_summaries():
     return jsonify(fetch_youtube_summaries(user_id)), 200
 
 
+@permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/get-website-summaries", methods=["GET"])
 def get_website_summaries():
     api_key = request.args.get("api_key")
@@ -333,6 +337,7 @@ async def get_active_scrape_status(user_id):
     return None
 
 
+@permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/get-web-summaries", methods=["GET"])
 async def get_web_summaries():
     try:
@@ -360,6 +365,7 @@ async def get_web_summaries():
 
 
 # Add route to delete YouTube summary
+@permission_required_body("kb.web.delete")
 @scrape_agent_bps.route("/delete-youtube-summary", methods=["DELETE", "POST"])
 async def delete_youtube_summary():
     """Delete a YouTube video summary and related clarifications"""
@@ -423,6 +429,7 @@ async def delete_youtube_summary():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.web.add")
 @scrape_agent_bps.route("/scrape", methods=["POST"])
 async def scrape_website_route():
     """This function handles the web request, scrapes data, and saves it."""
@@ -548,6 +555,7 @@ async def scrape_website_route():
         )
 
 
+@permission_required_body("kb.web.add")
 @scrape_agent_bps.route("/scrape-and-summarize", methods=["POST"])
 def scrape_and_summarize_route():
     """
@@ -627,6 +635,7 @@ def scrape_and_summarize_route():
         )
 
 
+@permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/get-website-details", methods=["POST"])
 def get_website_details():
     """Fetches full website details with page hierarchy for a specific saved website."""
@@ -737,6 +746,7 @@ def get_website_details():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.web.delete")
 @scrape_agent_bps.route("/delete-website-summary", methods=["DELETE", "POST"])
 def delete_website_summary():
     """Deletes a website summary and its related clarifications."""
@@ -810,6 +820,7 @@ def delete_website_summary():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.web.add")
 @scrape_agent_bps.route("/scrape-website-fast", methods=["POST"])
 async def scrape_website_fast_stream():
     try:
@@ -862,6 +873,7 @@ async def scrape_website_fast_stream():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.add")
 @scrape_agent_bps.route("/save-website-summary", methods=["POST"])
 def save_website_summary():
     """
@@ -989,6 +1001,7 @@ def save_website_summary():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.edit")
 @scrape_agent_bps.route("/edit-website-summary", methods=["POST"])
 def edit_website_summary():
     """
@@ -1085,6 +1098,7 @@ def edit_website_summary():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.edit")
 @scrape_agent_bps.route("/edit-internal_link-summary", methods=["POST"])
 def edit_internal_link_summary():
     """ """
@@ -1129,6 +1143,7 @@ def edit_internal_link_summary():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.delete")
 @scrape_agent_bps.route("/delete-internal_link-summary", methods=["POST"])
 def delete_internal_link_summary():
     """ """
@@ -1169,6 +1184,7 @@ def delete_internal_link_summary():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/get-website-summary", methods=["POST"])
 def get_website_summary():
 
@@ -1285,6 +1301,7 @@ def get_website_summary():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/list-scraped-websites", methods=["POST"])
 def list_scraped_websites():
     """
@@ -1415,6 +1432,7 @@ def list_scraped_websites():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.add")
 @scrape_agent_bps.route("/scrape-website-page", methods=["POST"])
 def scrape_website_page_endpoint():
     """
@@ -1496,6 +1514,7 @@ def scrape_website_page_endpoint():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.add")
 @scrape_agent_bps.route("/scrape-and-summarize-fast", methods=["POST"])
 def scrape_and_summarize_fast_endpoint():
     """
@@ -1562,6 +1581,7 @@ def scrape_and_summarize_fast_endpoint():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@permission_required_body("kb.web.edit")
 @scrape_agent_bps.route("/update-contacts-scraped", methods=["POST"])
 def update_contacts_scraped():
     try:
@@ -1617,6 +1637,7 @@ def update_contacts_scraped():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/check-scrape-check", methods=["POST"])
 async def check_scrape_base():
     data = request.json
@@ -1651,6 +1672,7 @@ async def check_scrape_base():
     return jsonify(scrape_results)
 
 
+@permission_required_body("kb.web.edit")
 @scrape_agent_bps.route("/update-scraped-status", methods=["POST"])
 def update_scraped_status():
     try:

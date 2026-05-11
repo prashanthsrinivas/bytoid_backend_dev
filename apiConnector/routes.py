@@ -23,6 +23,7 @@ from apiConnector.helpers import (
     save_endpoint_schedule,
 )
 from utils.app_configs import ACCESSIBLE_IDS
+from utils.permission_required import permission_required_body
 
 apiconnector_bp = Blueprint("apiconnector", __name__, url_prefix="/apiconnector/apps")
 
@@ -33,6 +34,7 @@ GLOBAL_APP_CREATOR_EMAIL = "beta@bytoid.ai"
 # 🔹 1️⃣ TEST ENDPOINT
 # ==========================================================
 @apiconnector_bp.route("/test", methods=["POST"])
+@permission_required_body("apps.endpoint.test")
 def test_online_external_link():
     try:
         data = request.get_json(force=True)
@@ -93,6 +95,7 @@ def test_online_external_link():
 
 
 @apiconnector_bp.route("", methods=["POST"])
+@permission_required_body("apps.create")
 def create_external_app():
     conn = None
     cur = None
@@ -278,6 +281,7 @@ def create_external_app():
 
 
 @apiconnector_bp.route("/<int:app_id>", methods=["PUT"])
+@permission_required_body("apps.edit")
 def update_external_app(app_id):
     conn = None
     cur = None
@@ -507,6 +511,7 @@ def update_external_app(app_id):
 
 
 @apiconnector_bp.route("/<int:app_id>", methods=["DELETE"])
+@permission_required_body("apps.delete")
 def delete_external_app(app_id):
     conn = connect_to_rds()
     cur = conn.cursor()
@@ -555,6 +560,7 @@ def delete_external_app(app_id):
 
 
 @apiconnector_bp.route("/<int:app_id>/hard-delete", methods=["DELETE"])
+@permission_required_body("apps.delete")
 def hard_delete_external_app(app_id):
     conn = connect_to_rds()
     cur = conn.cursor()
@@ -584,6 +590,7 @@ def hard_delete_external_app(app_id):
 
 
 @apiconnector_bp.route("/<user_id>", methods=["GET"])
+@permission_required_body("apps.endpoint.view")
 def list_external_apps(user_id):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -681,6 +688,7 @@ def list_external_apps(user_id):
 
 
 @apiconnector_bp.route("/<int:app_id>/auth", methods=["PUT"])
+@permission_required_body("apps.edit")
 def upsert_user_app_auth(app_id):
     conn = None
     cur = None
@@ -750,6 +758,7 @@ def upsert_user_app_auth(app_id):
 
 
 @apiconnector_bp.route("/<int:app_id>/endpoints", methods=["POST"])
+@permission_required_body("apps.endpoint.add")
 def create_endpoint(app_id):
     data = request.get_json(force=True)
 
@@ -905,6 +914,7 @@ def create_endpoint(app_id):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>", methods=["PUT"])
+@permission_required_body("apps.endpoint.edit")
 def update_endpoint(endpoint_id):
     data = request.get_json(force=True)
 
@@ -1043,6 +1053,7 @@ def update_endpoint(endpoint_id):
 
 
 @apiconnector_bp.route("/<int:app_id>/endpoints", methods=["GET"])
+@permission_required_body("apps.endpoint.view")
 def list_endpoints(app_id):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -1078,6 +1089,7 @@ def list_endpoints(app_id):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/test", methods=["POST"])
+@permission_required_body("apps.endpoint.test")
 def test_endpoint(endpoint_id, userid=None):
     conn = None
     cur = None
@@ -1227,6 +1239,7 @@ def test_endpoint(endpoint_id, userid=None):
 
 
 @apiconnector_bp.route("/<int:app_id>/test", methods=["POST"])
+@permission_required_body("apps.endpoint.test")
 def test_external_app(app_id):
     conn = None
     cur = None
@@ -1325,6 +1338,7 @@ def test_external_app(app_id):
 
 
 @apiconnector_bp.route("/<int:app_id>/execute", methods=["POST"])
+@permission_required_body("apps.endpoint.execute")
 def execute_app(app_id):
     payload = request.get_json(force=True) or {}
     userid = payload.get("user_id")
@@ -1340,6 +1354,7 @@ def execute_app(app_id):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/execute", methods=["POST"])
+@permission_required_body("apps.endpoint.execute")
 async def execute_endpoint(endpoint_id, userid=None):
 
     payload = request.get_json() or {}
@@ -1358,6 +1373,7 @@ async def execute_endpoint(endpoint_id, userid=None):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>", methods=["DELETE"])
+@permission_required_body("apps.endpoint.delete")
 def delete_endpoint(endpoint_id):
     conn = None
     cur = None
@@ -1408,6 +1424,7 @@ def delete_endpoint(endpoint_id):
 
 
 @apiconnector_bp.route("/<int:app_id>/schedule", methods=["POST"])
+@permission_required_body("apps.endpoint.schedule")
 async def schedule_app(app_id):
     body = request.json or {}
     userid = body.get("user_id")
@@ -1488,6 +1505,7 @@ async def schedule_app(app_id):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/schedule", methods=["POST"])
+@permission_required_body("apps.endpoint.schedule")
 async def schedule_endpoint(endpoint_id):
     body = request.json or {}
     # print("body received for schedule ", body)
@@ -1591,6 +1609,7 @@ async def schedule_endpoint(endpoint_id):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/schedules/stop", methods=["POST"])
+@permission_required_body("apps.endpoint.schedule")
 async def stop_schedule(endpoint_id):
     """
     Stop a schedule for a given endpoint.
@@ -1666,6 +1685,7 @@ async def stop_schedule(endpoint_id):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/runs", methods=["GET"])
+@permission_required_body("apps.endpoint.view")
 def list_endpoint_runs(endpoint_id):
     userid = request.args.get("user_id")
 
@@ -1695,6 +1715,7 @@ def list_endpoint_runs(endpoint_id):
 
 
 @apiconnector_bp.route("/endpoints/<int:endpoint_id>/runs/<filename>", methods=["GET"])
+@permission_required_body("apps.endpoint.view")
 def get_endpoint_run(endpoint_id, filename):
     userid = request.args.get("user_id")
 
@@ -1727,6 +1748,7 @@ def get_endpoint_run(endpoint_id, filename):
 
 
 @apiconnector_bp.route("/admin/pushapp", methods=["POST"])
+@permission_required_body("apps.endpoint.push")
 def push_global_app():
 
     body = request.json or {}
@@ -1853,6 +1875,7 @@ def push_global_app():
 
 
 @apiconnector_bp.route("/admin/pushapp_endpoint", methods=["POST"])
+@permission_required_body("apps.endpoint.push")
 def push_global_app_endpoint():
 
     body = request.json or {}
@@ -2003,6 +2026,7 @@ def push_global_app_endpoint():
 
 
 @apiconnector_bp.route("/global/apps/<user_id>", methods=["GET"])
+@permission_required_body("apps.view")
 def list_global_apps(user_id):
 
     connection = connect_to_rds()
@@ -2072,6 +2096,7 @@ def list_global_apps(user_id):
 @apiconnector_bp.route(
     "/global/app_endpoints/<string:user_id>/<int:app_id>", methods=["GET"]
 )
+@permission_required_body("apps.view")
 def list_global_app_endpoints(user_id, app_id):
     connection = None
     cursor = None
@@ -2172,6 +2197,7 @@ def list_global_app_endpoints(user_id, app_id):
 
 
 @apiconnector_bp.route("/global/apps/change", methods=["POST"])
+@permission_required_body("apps.endpoint.push")
 def change_global_app():
     body = request.json or {}
     user_id = body.get("user_id")
@@ -2262,6 +2288,7 @@ def change_global_app():
 
 
 @apiconnector_bp.route("/global/app_endpoint/change", methods=["POST"])
+@permission_required_body("apps.endpoint.push")
 def change_global_app_endpoint():
 
     body = request.json or {}
@@ -2358,6 +2385,7 @@ def change_global_app_endpoint():
     "/global_endpoints/<int:app_id>/<int:endpoint_id>/test",
     methods=["POST"],
 )
+@permission_required_body("apps.endpoint.test")
 def global_test_endpoint(app_id, endpoint_id):
 
     conn = connect_to_rds()
@@ -2501,6 +2529,7 @@ def global_test_endpoint(app_id, endpoint_id):
 
 
 @apiconnector_bp.route("/user/global-app/instantiate", methods=["POST"])
+@permission_required_body("apps.install")
 def instantiate_global_app_for_user():
 
     conn = connect_to_rds()
@@ -2737,6 +2766,7 @@ def instantiate_global_app_for_user():
 
 
 @apiconnector_bp.route("/user/global-endpoint/instantiate", methods=["POST"])
+@permission_required_body("apps.install")
 def instantiate_global_endpoint():
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)

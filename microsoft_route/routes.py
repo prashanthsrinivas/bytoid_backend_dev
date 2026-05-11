@@ -44,6 +44,7 @@ import requests
 import pymysql
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from utils.permission_required import permission_required_body
 
 # from glide import GlideClusterClient
 from services.redis_service import get_redis
@@ -945,6 +946,7 @@ async def microsoft_callback():
         return redirect(f"{frontend_url}/login?error=callback_failed")
 
 
+@permission_required_body("admin.manage_users")
 @microsoft_bp.route("/microsoft/session-debug", methods=["GET"])
 def session_debug():
     """Debug endpoint to check session status"""
@@ -1191,6 +1193,7 @@ async def fetch_outlook_emails_batch(
         return {"status": "error", "error": str(e), "new_messages": 0}
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/get_emails_infinite", methods=["POST"])
 def microsoft_get_emails_infinite():
     """Infinite scroll email fetching - loads emails in chunks as user scrolls"""
@@ -1395,6 +1398,7 @@ def microsoft_get_emails_infinite():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/get_email_detail", methods=["POST"])
 def microsoft_get_email_detail():
     """Get full email content when user clicks on an email"""
@@ -1544,6 +1548,7 @@ def microsoft_get_email_detail():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/get_email")
 def microsoft_get_email():
     """Fetch Outlook emails with proper pagination and date filtering"""
@@ -1790,6 +1795,7 @@ def microsoft_get_email():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/get_emails_batch", methods=["POST"])
 def microsoft_get_emails_batch():
     """Fetch Outlook emails in batches with pagination support"""
@@ -1871,6 +1877,7 @@ def microsoft_get_emails_batch():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/get_emails_count", methods=["POST"])
 async def microsoft_get_emails_count():
     """Get total count of emails for the last N months"""
@@ -1910,6 +1917,7 @@ async def microsoft_get_emails_count():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/fetch_all_emails", methods=["POST"])
 def microsoft_fetch_all_emails():
     """Enhanced endpoint to fetch all emails with better pagination and filtering"""
@@ -2204,6 +2212,7 @@ def microsoft_fetch_all_emails():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/trigger_email_fetch", methods=["POST"])
 async def trigger_email_fetch():
     """Manually trigger email fetching for a user"""
@@ -2646,6 +2655,7 @@ def send_outlook_email(to_email, subject, body_text, from_user_email, conversati
         return {"id": fallback_id}
 
 
+@permission_required_body("taskbox.email.send")
 @microsoft_bp.route("/microsoft/send_mail", methods=["POST"])
 def send_mail_microsoft():
 
@@ -3009,6 +3019,7 @@ def download_onedrive_file(session, file_id, local_path):
     return True
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/process-outlook", methods=["POST"])
 def process_outlook():
     try:
@@ -3139,6 +3150,7 @@ def microsoft_logout():
 # ------------------- others -------------------------------- #
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/sent_items", methods=["GET"])
 def microsoft_sent_items():
     try:
@@ -3210,6 +3222,7 @@ def microsoft_sent_items():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/drafts", methods=["GET"])
 def microsoft_list_drafts():
     try:
@@ -3248,6 +3261,7 @@ def microsoft_list_drafts():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/spam", methods=["GET"])
 def microsoft_list_spam():
     try:
@@ -3288,6 +3302,7 @@ def microsoft_list_spam():
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/microsoft/trash", methods=["GET"])
 def microsoft_list_trash():
     try:
@@ -3401,6 +3416,7 @@ def get_outlook_token(inuser=None, value=None, in_connection=None):
             connection.close()
 
 
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/check-microsoft-user", methods=["POST"])
 def check_microsoft_user():
     """Check if Microsoft user exists - similar to Gmail's check-user"""
@@ -3434,6 +3450,7 @@ def check_microsoft_user():
 
 
 # Add routes that match Gmail's pattern
+@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/get_microsoft_client_id", methods=["POST"])
 def get_microsoft_client_id():
     """Get Microsoft client ID - similar to Gmail's get_google_client_id"""

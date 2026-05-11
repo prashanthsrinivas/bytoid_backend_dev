@@ -5,6 +5,7 @@ from flask import request, jsonify, Blueprint
 from datetime import datetime, timezone
 from services.redis_service import get_redis
 from utils.base_logger import get_logger
+from utils.permission_required import permission_required_body
 from cust_helpers import pathconfig
 from utils.normal import ensure_dir
 import json
@@ -40,6 +41,7 @@ umail_bp = Blueprint("umail", __name__)
 logger = get_logger(__name__)
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/get_all_messages2/<user_id>", methods=["GET"])
 def getall_route2(user_id):
     # enqueue Celery task
@@ -51,6 +53,7 @@ def getall_route2(user_id):
     return jsonify(result), 202
 
 
+@permission_required_body("admin.manage_users")
 @umail_bp.route("/check_redis", methods=["GET"])
 async def check_redis():
     print("check redis initalized")
@@ -60,12 +63,14 @@ async def check_redis():
     return jsonify({"redis state": res})
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/check_umail/<userid>", methods=["GET"])
 async def check_uamil(userid):
     mailbox_setting = check_mailbox(userid)
     return jsonify({"is_mail": mailbox_setting})
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/get_all_messages/<user_id>", methods=["GET"])
 def getall_route(user_id):
     # Try to acquire lock first
@@ -380,6 +385,7 @@ def parse_cursor_to_datetime(cursor):
         return datetime.fromisoformat(cursor.replace("Z", "+00:00"))
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/conversations_og/<user_id>/<next_cursor>", methods=["GET"])
 def get_latest_conversations_og(user_id, next_cursor):
     """
@@ -480,6 +486,7 @@ def get_latest_conversations_og(user_id, next_cursor):
         )
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/conversations_test/<user_id>/<next_cursor>", methods=["GET"])
 def conversations_test(user_id, next_cursor):
     client = UmailLanceClient(user_id)
@@ -540,6 +547,7 @@ def get_cache_sync(user_id):
 # -----------------------
 # API
 # -----------------------
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/conversations/<user_id>/<next_cursor>", methods=["GET"])
 def get_latest_conversations(user_id, next_cursor):
 
@@ -717,6 +725,7 @@ def get_sorted_lance_emails(connection, user_id, client_id):
     return sorted_conversations
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/selected_conversation/<conversation_id>/<user_id>", methods=["GET"])
 async def get_selected_conv(conversation_id, user_id):
     """
@@ -932,6 +941,7 @@ def _format_selected_conversation(conversation_id, client_id, messages_data, sou
     )
 
 
+@permission_required_body("taskbox.email.send")
 @umail_bp.route("/start-conversation", methods=["POST"])
 def start_conversation():
 
@@ -1025,6 +1035,7 @@ import pymysql
 from datetime import datetime
 
 
+@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-reply", methods=["POST"])
 async def send_messages():
     # print("🚀 [DEBUG] Starting send_messages() function")
@@ -1880,6 +1891,7 @@ async def send_messages():
         # print("🔗 [DEBUG] Database connection closed")
 
 
+@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-reply_test", methods=["POST"])
 async def send_messages_test():
     # print("🚀 [DEBUG] Starting send_messages() function")
@@ -2725,6 +2737,7 @@ async def send_messages_test():
         # print("🔗 [DEBUG] Database connection closed")
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/async_message/<userid>", methods=["GET"])
 def get_inbox_info(userid):
     mailbox_setting = check_mailbox(userid)
@@ -2742,6 +2755,7 @@ def get_inbox_info(userid):
 # ============================================================================
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/check_should_sync/<user_id>", methods=["GET"])
 def check_should_sync(user_id):
     """
@@ -2780,6 +2794,7 @@ def check_should_sync(user_id):
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/trigger_on_login/<user_id>", methods=["GET"])
 def trigger_sync_on_login(user_id):
     """
@@ -2864,6 +2879,7 @@ def trigger_sync_on_login(user_id):
         return jsonify({"error": str(e), "context": "login"}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/trigger_manual/<user_id>", methods=["GET"])
 def trigger_sync_manual(user_id):
     """
@@ -2944,6 +2960,7 @@ def trigger_sync_manual(user_id):
         return jsonify({"error": str(e), "context": "manual"}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/status/<user_id>", methods=["GET"])
 def get_sync_status(user_id):
     """
@@ -2981,6 +2998,7 @@ def get_sync_status(user_id):
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/reset_timer/<user_id>", methods=["POST"])
 def reset_sync_timer(user_id):
     """
@@ -3034,6 +3052,7 @@ async def _get_timedelta_until_next():
 # ============================================================================
 
 
+@permission_required_body("taskbox.email.attachments.view")
 @umail_bp.route("/attachment-test", methods=["GET"])
 def attachment_test():
     """
@@ -3055,6 +3074,7 @@ def attachment_test():
     )
 
 
+@permission_required_body("taskbox.email.attachments.view")
 @umail_bp.route("/attach-file", methods=["POST", "OPTIONS"])
 def upload_attachment():
     # Handle CORS preflight
@@ -3156,6 +3176,7 @@ def upload_attachment():
         )
 
 
+@permission_required_body("taskbox.email.attachments.view")
 @umail_bp.route("/attach-files", methods=["POST", "OPTIONS"])
 def upload_multiple_attachments():
     # Handle CORS preflight
@@ -3262,6 +3283,7 @@ def upload_multiple_attachments():
         )
 
 
+@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-reply-with-attachments", methods=["POST", "OPTIONS"])
 async def send_reply_with_attachments():
     """
@@ -3367,6 +3389,7 @@ async def send_reply_with_attachments():
         )
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/check-lastmsg/<user_id>/<thread_id>", methods=["GET"])
 def checkgmail_last_msg(user_id, thread_id):
     import asyncio
@@ -3376,6 +3399,7 @@ def checkgmail_last_msg(user_id, thread_id):
     return data, 200
 
 
+@permission_required_body("taskbox.email.view")
 @umail_bp.route("/set_mailbox_setting", methods=["POST"])
 def set_mailbox_setting():
 
@@ -3465,6 +3489,7 @@ def set_mailbox_setting():
         connection.close()
 
 
+@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-mail", methods=["POST"])
 async def send_mail_api():
     try:

@@ -1667,13 +1667,19 @@ class WorkflowRunnerV2:
         return None
 
     def _build_dependency_blocked_response(
-        self, target_step: dict, blocking_step: dict, required_fields: list, step_ref: str = None
+        self,
+        target_step: dict,
+        blocking_step: dict,
+        required_fields: list,
+        step_ref: str = None,
     ) -> dict:
         """
         Builds a user-facing response when a dependency step blocks execution.
         The user needs to provide required_fields for blocking_step before target_step can run.
         """
-        target_title = target_step.get("title", "this step") if target_step else "this step"
+        target_title = (
+            target_step.get("title", "this step") if target_step else "this step"
+        )
         blocking_title = blocking_step.get("title", f"Step {step_ref}")
 
         fields_str = "\n".join(f"- {f}" for f in required_fields)
@@ -1686,7 +1692,9 @@ class WorkflowRunnerV2:
 
         self.logger.debug(
             "_build_dependency_blocked_response: target=%s, blocker=%s, fields=%s",
-            target_step.get("id"), blocking_step.get("id"), required_fields
+            target_step.get("id"),
+            blocking_step.get("id"),
+            required_fields,
         )
 
         return {
@@ -1705,9 +1713,7 @@ class WorkflowRunnerV2:
             },
         }
 
-    async def _resolve_placeholders(
-        self, args: dict, current_step_id: str = None
-    ):
+    async def _resolve_placeholders(self, args: dict, current_step_id: str = None):
         """
         Resolves {{step_N.field_name}} template references in args.
         Walks dependency chain in ascending order (lowest step first).
@@ -1716,9 +1722,11 @@ class WorkflowRunnerV2:
         - If all resolved or already auto-executed → returns (resolved_args, None)
         - If a dependency step needs user input → returns (args, blocking_response)
         """
-        self.logger.debug("Entering _resolve_placeholders with args: %s", sorted(args.keys()))
+        self.logger.debug(
+            "Entering _resolve_placeholders with args: %s", sorted(args.keys())
+        )
         try:
-            placeholder_pattern = re.compile(r'\{\{step_(\w+)\.(\w+)\}\}')
+            placeholder_pattern = re.compile(r"\{\{step_(\w+)\.(\w+)\}\}")
             resolved = dict(args)
 
             # Step 1: Collect all unresolved dependencies
@@ -1743,7 +1751,12 @@ class WorkflowRunnerV2:
                     # Try pre_user_data
                     if not already_resolved:
                         pud = self.workflow_json.get("pre_user_data", {})
-                        if field_name in pud and pud[field_name] not in (None, "", [], {}):
+                        if field_name in pud and pud[field_name] not in (
+                            None,
+                            "",
+                            [],
+                            {},
+                        ):
                             already_resolved = True
 
                     # If not already resolved, add to unresolved deps
@@ -1751,7 +1764,9 @@ class WorkflowRunnerV2:
                         unresolved_deps.setdefault(str(step_ref), []).append(field_name)
 
             if not unresolved_deps:
-                self.logger.debug("_resolve_placeholders: all dependencies already resolved")
+                self.logger.debug(
+                    "_resolve_placeholders: all dependencies already resolved"
+                )
                 return resolved, None
 
             # Step 2: Sort step_refs in ascending order (handle both numeric and string IDs)
@@ -1762,13 +1777,17 @@ class WorkflowRunnerV2:
                     return (1, ref)
 
             sorted_refs = sorted(unresolved_deps.keys(), key=sort_key)
-            self.logger.debug("_resolve_placeholders: unresolved deps in order: %s", sorted_refs)
+            self.logger.debug(
+                "_resolve_placeholders: unresolved deps in order: %s", sorted_refs
+            )
 
             # Step 3: Walk dependencies from earliest to latest
             for step_ref in sorted_refs:
                 dep_step = self._find_step_by_ref(step_ref)
                 if not dep_step:
-                    self.logger.warning("_resolve_placeholders: step ref %s not found", step_ref)
+                    self.logger.warning(
+                        "_resolve_placeholders: step ref %s not found", step_ref
+                    )
                     continue
 
                 needs = dep_step.get("requirements_needed") or []
@@ -1777,9 +1796,12 @@ class WorkflowRunnerV2:
                     # BLOCKED — this step needs user input
                     self.logger.warning(
                         "_resolve_placeholders: blocked by step %s which needs %s",
-                        step_ref, needs
+                        step_ref,
+                        needs,
                     )
-                    target_step = self.get_step_data(current_step_id) if current_step_id else None
+                    target_step = (
+                        self.get_step_data(current_step_id) if current_step_id else None
+                    )
                     blocking_response = self._build_dependency_blocked_response(
                         target_step=target_step,
                         blocking_step=dep_step,
@@ -1792,21 +1814,28 @@ class WorkflowRunnerV2:
                 try:
                     self.logger.info(
                         "_resolve_placeholders: auto-executing step %s (id=%s)",
-                        step_ref, dep_step.get("id")
+                        step_ref,
+                        dep_step.get("id"),
                     )
-                    dep_result = await self._execute_step(step_id=dep_step["id"], compl=True)
+                    dep_result = await self._execute_step(
+                        step_id=dep_step["id"], compl=True
+                    )
 
                     # Check execution result for our fields
                     if dep_result:
                         details = dep_result.get("execution_details", {})
                         for field_name in unresolved_deps[step_ref]:
                             if field_name in details:
-                                resolved[f"step_{step_ref}_{field_name}"] = details[field_name]
+                                resolved[f"step_{step_ref}_{field_name}"] = details[
+                                    field_name
+                                ]
 
                 except Exception as e:
                     self.logger.error(
                         "_resolve_placeholders: error auto-executing step %s: %s",
-                        step_ref, e, exc_info=True
+                        step_ref,
+                        e,
+                        exc_info=True,
                     )
 
             # Step 4: Final substitution pass
@@ -1828,22 +1857,36 @@ class WorkflowRunnerV2:
                     details = step_entry.get("details", {})
                     if field_name in details:
                         resolved_val = details[field_name]
-                        self.logger.debug("_resolve_placeholders: resolved %s from previous_data", placeholder_str)
+                        self.logger.debug(
+                            "_resolve_placeholders: resolved %s from previous_data",
+                            placeholder_str,
+                        )
 
                     # Check pre_user_data
                     if resolved_val is None:
                         pud = self.workflow_json.get("pre_user_data", {})
-                        if field_name in pud and pud[field_name] not in (None, "", [], {}):
+                        if field_name in pud and pud[field_name] not in (
+                            None,
+                            "",
+                            [],
+                            {},
+                        ):
                             resolved_val = pud[field_name]
-                            self.logger.debug("_resolve_placeholders: resolved %s from pre_user_data", placeholder_str)
+                            self.logger.debug(
+                                "_resolve_placeholders: resolved %s from pre_user_data",
+                                placeholder_str,
+                            )
 
                     # Perform substitution
                     if resolved_val is not None:
-                        resolved_value = resolved_value.replace(placeholder_str, str(resolved_val))
+                        resolved_value = resolved_value.replace(
+                            placeholder_str, str(resolved_val)
+                        )
                     else:
                         self.logger.warning(
                             "_resolve_placeholders: could not resolve placeholder %s in arg '%s'",
-                            placeholder_str, key
+                            placeholder_str,
+                            key,
                         )
 
                 resolved[key] = resolved_value
@@ -1888,7 +1931,7 @@ class WorkflowRunnerV2:
                 if blocking_response:
                     self.logger.warning(
                         "_execute_step: execution blocked by dependency - %s",
-                        blocking_response.get("message", "")[:100]
+                        blocking_response.get("message", "")[:100],
                     )
                     return blocking_response
 
@@ -3652,7 +3695,10 @@ class WorkflowRunnerV2:
                         rejection_reason = eval_data.get("reason", "")
                 except Exception as e:
                     self.logger.error(
-                        "Expectations eval failed for %s: %s", artifact, e, exc_info=IS_DEV
+                        "Expectations eval failed for %s: %s",
+                        artifact,
+                        e,
+                        exc_info=IS_DEV,
                     )
 
             if not content_passes:
@@ -3881,6 +3927,27 @@ class WorkflowRunnerV2:
                             ai_information = gen_data.get("information") or (
                                 f"This question is raised because the '{artifact}' evidence did not satisfy: {point}."
                             )
+                            # new_ev_questions.append(
+                            #     {
+                            #         "id": new_qid,
+                            #         "section": ev_cfg.get("type", "Evidence"),
+                            #         "subsection": artifact,
+                            #         "question": ai_question,
+                            #         "information": ai_information,
+                            #         "options": {
+                            #             "A": "Provide a verbal / text answer",
+                            #             "B": "Upload new evidence",
+                            #             "C": "Discard — not applicable",
+                            #         },
+                            #         "discard_options": ["C"],
+                            #         "upload_options": ["B"],
+                            #         "text_options": ["A"],
+                            #         "user_answer": None,
+                            #         "comment": None,
+                            #         "evidence_artifact": artifact,
+                            #         "missing_expectation": point,
+                            #     }
+                            # )
                             new_ev_questions.append(
                                 {
                                     "id": new_qid,
@@ -3891,9 +3958,9 @@ class WorkflowRunnerV2:
                                     "options": {
                                         "A": "Provide a verbal / text answer",
                                         "B": "Upload new evidence",
-                                        "C": "Discard — not applicable",
+                                        # "C": "Discard — not applicable",
                                     },
-                                    "discard_options": ["C"],
+                                    # "discard_options": ["C"],
                                     "upload_options": ["B"],
                                     "text_options": ["A"],
                                     "user_answer": None,

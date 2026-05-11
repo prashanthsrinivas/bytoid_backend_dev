@@ -376,7 +376,6 @@ def _build_whitepaper_html(policies: list) -> str:
                 sections.append(f"""
             <section class="section">
                 <h3>{title}</h3>
-                {f'<span class="type-badge">{ptype}</span>' if ptype else ""}
                 <p>{summary}</p>
             </section>
             """)
@@ -392,7 +391,6 @@ def _build_whitepaper_html(policies: list) -> str:
                 sections.append(f"""
             <section class="section">
                 <h3>{title}</h3>
-                {f'<span class="type-badge">{ptype}</span>' if ptype else ""}
                 <p>{summary}</p>
             </section>
             """)

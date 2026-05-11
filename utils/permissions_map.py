@@ -15,6 +15,9 @@ PERMISSIONS = {
    "compliance.runbook.create": "Create Runbooks",
    "compliance.runbook.edit": "Edit Runbooks",
    "compliance.runbook.delete": "Delete Runbooks",
+   "compliance.runbook.execute": "Execute Runbook",
+   "compliance.framework.create": "Upload Frameworks",
+   "compliance.framework.delete": "Delete Frameworks",
    "compliance.report.create": "Create Runbook Reports",
    "compliance.report.edit": "Edit Runbook Reports",
    "compliance.report.delete": "Delete Runbook Reports",
@@ -27,12 +30,16 @@ PERMISSIONS = {
    "compliance.report.logs": "View Report Logs",
          
    # ================= TRACKERS =================
-   "trackers.framework.add": "Add Framework",
-   "trackers.column.add": "Add Columns",
-   "trackers.row.add": "Add Rows",
+   "trackers.table.view": "View Trackers",
    "trackers.table.create": "Create Table",
    "trackers.table.edit": "Edit Table",
    "trackers.table.delete": "Delete Table",
+   "trackers.row.add": "Add Rows",
+   "trackers.column.add": "Add Columns",
+   "trackers.column.delete": "Delete Columns",
+   "trackers.framework.add": "Add Framework",
+   "trackers.framework.edit": "Edit Framework",
+   "trackers.framework.delete": "Delete Framework",
    "trackers.logs.view": "View Tracker Logs",
 
    # ================= WORKFLOW BUILDER =================
@@ -43,7 +50,9 @@ PERMISSIONS = {
    "workflow.process.delete": "Delete Process",
    "workflow.process.share": "Share Process",
    "workflow.process.execute": "Execute Process",
+   "workflow.process.schedule": "Schedule Process",
    "workflow.template.create": "Make Global Templates",
+   "workflow.template.delete": "Delete Global Templates",
    "workflow.logs.view": "View Process Logs",
 
    # ================= KNOWLEDGE BASE (PROFILE) =================
@@ -84,6 +93,8 @@ PERMISSIONS = {
 
    # ================= TASKBOX (EMAIL) =================
    "taskbox.email.view": "View Email Content",
+   "taskbox.email.send": "Send Email",
+   "taskbox.email.draft": "Manage Drafts",
    "taskbox.email.sender": "View Sender Details",
    "taskbox.email.subject": "View Subject",
    "taskbox.email.status": "View Status",
@@ -119,6 +130,9 @@ PERMISSIONS = {
    "calendar.view.confirmed": "View Confirmed Events",
 
    # ================= MY APPS =================
+   "apps.create": "Create App",
+   "apps.edit": "Edit App",
+   "apps.delete": "Delete App",
    "apps.view": "View Global Apps",
    "apps.install": "Install App",
    "apps.endpoint.view": "View Endpoints",
