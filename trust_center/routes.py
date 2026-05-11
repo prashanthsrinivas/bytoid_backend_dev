@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -7,14 +8,18 @@ import uuid
 import yaml
 from datetime import datetime, timezone
 
+import boto3
 import pymysql
 import pymysql.cursors
+from botocore.config import Config as BotocoreConfig
 
 from flask import Blueprint, g, jsonify, request
 
+from websockets_custom.ws_instance import ws_service, msg_builder_main
 from db.rds_db import connect_to_rds
 from utils.base_logger import get_logger
 from utils.s3_utils import (
+    attach_CLDFRNT_url,
     delete_file_from_s3,
     generate_presigned_url,
     list_all_files,
@@ -28,6 +33,16 @@ logger = get_logger(__name__)
 trust_center_bp = Blueprint("trust_center", __name__, url_prefix="/trust-center")
 
 _jobs_lock = threading.Lock()
+
+_bedrock = boto3.client(
+    "bedrock-runtime",
+    region_name="us-east-2",
+    config=BotocoreConfig(
+        read_timeout=300, connect_timeout=60, retries={"max_attempts": 2}
+    ),
+)
+_THINK_MODEL = "qwen.qwen3-vl-235b-a22b"
+_CHUNK_WORDS = 1000
 
 DEFAULT_NDA_TEMPLATE = """NON-DISCLOSURE AGREEMENT
 
@@ -57,6 +72,7 @@ By clicking "Accept & View", you agree to be bound by the terms of this Non-Disc
 
 # ── S3 key helpers ────────────────────────────────────────────────────────────
 
+
 def _wp_key(user_id: str) -> str:
     return f"{user_id}/trust-center/whitepaper.yaml"
 
@@ -70,6 +86,7 @@ def _job_s3_key(job_id: str) -> str:
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
+
 
 def _write_yaml_to_s3(key: str, data: dict):
     s3 = s3bucket()
@@ -97,7 +114,28 @@ def _save_job(job_id: str, state: dict):
         _write_json_to_s3(_job_s3_key(job_id), state)
 
 
+def _ws_emit(user_id: str, job_id: str, session_id: str | None, stage: str, message: str, progress: int):
+    if not session_id:
+        return
+    try:
+        msg = msg_builder_main.job_progress(job_id, session_id, stage, message, progress)
+        asyncio.run(ws_service.emit(
+            user_id=user_id,
+            message=msg["message"],
+            scope=msg["scope"],
+            session_id=msg["session_id"],
+            job_id=msg["job_id"],
+            msg_type=msg["type"],
+            stage=msg["stage"],
+            progress=msg["progress"],
+            feature="trust_center",
+        ))
+    except Exception:
+        pass
+
+
 # ── Auth helper ───────────────────────────────────────────────────────────────
+
 
 def _get_user_id() -> str | None:
     return (
@@ -110,6 +148,7 @@ def _get_user_id() -> str | None:
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
+
 
 def _get_trust_center(owner_user_id: str) -> dict | None:
     conn = connect_to_rds()
@@ -161,8 +200,111 @@ def _get_documents(trust_center_id: str) -> list:
 
 # ── White paper generation ────────────────────────────────────────────────────
 
+
 def _strip_html(html: str) -> str:
     return re.sub(r"<[^>]+>", "", html or "").strip()
+
+
+def _summarize_policy(title: str, ptype: str, content: str) -> str:
+    try:
+        plain_text = _strip_html(content)
+        if not plain_text:
+            return ""
+
+        words = plain_text.split()
+        chunks = [
+            " ".join(words[i : i + _CHUNK_WORDS])
+            for i in range(0, len(words), _CHUNK_WORDS)
+        ]
+
+        if not chunks:
+            return ""
+
+        num_chunks = len(chunks)
+        conversation_history = []
+
+        for i, chunk in enumerate(chunks):
+            if i < num_chunks - 1:
+                chunk_prompt = f"""Here is part {i + 1}/{num_chunks} of a {ptype} titled '{title}'. Read and understand it fully. Briefly acknowledge the key points covered.
+
+{chunk}"""
+                conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": chunk_prompt}],
+                    }
+                )
+            else:
+                if ptype and ptype.lower() == "policy":
+                    final_prompt = f"""Here is the final part ({i + 1}/{num_chunks}) of the document.
+
+Now, using everything you have read, write a 2–3 paragraph executive overview that explains:
+- What this policy governs and what security objective it addresses
+- Which compliance frameworks or standards it aligns with (if mentioned)
+- The key commitment or protection it provides to the organization and its stakeholders
+
+Write in plain, confident business prose. No bullet points, no headings, no markdown.
+
+Text:
+{chunk}"""
+                else:
+                    final_prompt = f"""Here is the final part ({i + 1}/{num_chunks}) of the document.
+
+Now, using everything you have read, write a 2–3 paragraph executive overview that explains:
+- What process or activity this procedure governs
+- Who is responsible and what it requires of the organization
+- How it reduces risk or ensures compliance for the business
+
+Write in plain, confident business prose. No bullet points, no headings, no markdown.
+
+Text:
+{chunk}"""
+                conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": final_prompt}],
+                    }
+                )
+
+            payload = {
+                "messages": conversation_history,
+                "temperature": 0.1,
+                "top_p": 0.95,
+                "max_tokens": 4096,
+            }
+
+            response = _bedrock.invoke_model(
+                modelId=_THINK_MODEL,
+                body=json.dumps(payload),
+                contentType="application/json",
+                accept="application/json",
+            )
+
+            body = json.loads(response["body"].read())
+            response_text = (
+                body.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+            )
+
+            if response_text:
+                conversation_history.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": response_text}],
+                    }
+                )
+
+        if conversation_history and len(conversation_history) > 0:
+            last_response = conversation_history[-1].get("content", [{}])
+            if isinstance(last_response, list) and len(last_response) > 0:
+                return last_response[0].get("text", "").strip()
+
+        return ""
+    except Exception as exc:
+        logger.warning("Policy summarization failed: %s", exc)
+        return _strip_html(content)[:800]
 
 
 def _build_whitepaper_html(policies: list) -> str:
@@ -180,10 +322,7 @@ def _build_whitepaper_html(policies: list) -> str:
         for p in policies:
             title = p.get("title", "Untitled Policy")
             ptype = p.get("type", "")
-            content = p.get("content", "")
-            summary = _strip_html(content)[:600]
-            if len(_strip_html(content)) > 600:
-                summary += "..."
+            summary = p.get("ai_summary") or _strip_html(p.get("content", ""))[:800]
             sections.append(f"""
             <section class="section">
                 <h2>{title}</h2>
@@ -216,12 +355,13 @@ def _build_whitepaper_html(policies: list) -> str:
 </html>"""
 
 
-def _generate_whitepaper(user_id: str, job_id: str):
+def _generate_whitepaper(user_id: str, job_id: str, session_id: str | None = None):
     try:
         _save_job(job_id, {"status": "running", "job_id": job_id})
+        _ws_emit(user_id, job_id, session_id, "loading", "Loading your compliance policies...", 5)
 
         keys = list_all_files(folder=f"{user_id}/policies/")
-        yaml_keys = [k for k in (keys or []) if k.endswith(".yaml")]
+        yaml_keys = [k["Key"] for k in (keys or []) if k["Key"].endswith(".yaml")]
 
         policies = []
         for key in yaml_keys:
@@ -232,8 +372,27 @@ def _generate_whitepaper(user_id: str, job_id: str):
             except Exception:
                 continue
 
+        num_policies = len(policies)
+        for i, policy in enumerate(policies):
+            title = policy.get("title", "Untitled")
+            ptype = policy.get("type", "policy")
+            progress = 10 + int((i / num_policies) * 75) if num_policies > 0 else 10
+            _ws_emit(
+                user_id, job_id, session_id, "summarizing",
+                f"Summarizing {ptype} '{title}'... ({i + 1}/{num_policies})",
+                progress,
+            )
+            policy["ai_summary"] = _summarize_policy(
+                title,
+                ptype,
+                policy.get("content", ""),
+            )
+
+        _ws_emit(user_id, job_id, session_id, "building", "Building your whitepaper...", 88)
         html = _build_whitepaper_html(policies)
         wp_key = _wp_key(user_id)
+
+        _ws_emit(user_id, job_id, session_id, "saving", "Saving to cloud...", 95)
         _write_yaml_to_s3(
             wp_key,
             {
@@ -245,7 +404,10 @@ def _generate_whitepaper(user_id: str, job_id: str):
         )
 
         tc_id = _upsert_trust_center(user_id, wp_key)
-        _save_job(job_id, {"status": "done", "job_id": job_id, "trust_center_id": tc_id})
+        _save_job(
+            job_id, {"status": "done", "job_id": job_id, "trust_center_id": tc_id}
+        )
+        _ws_emit(user_id, job_id, session_id, "done", "Your Trust Center whitepaper is ready!", 100)
     except Exception as exc:
         logger.exception("Whitepaper generation failed: %s", exc)
         _save_job(job_id, {"status": "error", "job_id": job_id, "error": str(exc)})
@@ -271,25 +433,33 @@ def get_trust_center():
         documents = _get_documents(tc["id"])
         doc_list = []
         for doc in documents:
-            doc_list.append({
-                "id": doc["id"],
-                "label": doc["label"],
-                "file_type": doc["file_type"],
-                "uploaded_at": str(doc["uploaded_at"]),
-                "download_url": generate_presigned_url(doc["s3_key"]),
-            })
+            doc_list.append(
+                {
+                    "id": doc["id"],
+                    "label": doc["label"],
+                    "file_type": doc["file_type"],
+                    "uploaded_at": str(doc["uploaded_at"]),
+                    "download_url": generate_presigned_url(doc["s3_key"]),
+                    "view_url": attach_CLDFRNT_url(doc["s3_key"]),
+                }
+            )
 
-        return jsonify({
-            "trust_center_id": tc["id"],
-            "whitepaper": wp_data,
-            "documents": doc_list,
-            "nda_content": tc.get("nda_content") or DEFAULT_NDA_TEMPLATE,
-            "generating": False,
-        })
+        return jsonify(
+            {
+                "trust_center_id": tc["id"],
+                "whitepaper": wp_data,
+                "documents": doc_list,
+                "nda_content": tc.get("nda_content") or DEFAULT_NDA_TEMPLATE,
+                "generating": False,
+            }
+        )
 
     # Need to generate whitepaper
     job_id = uuid.uuid4().hex[:12]
-    thread = threading.Thread(target=_generate_whitepaper, args=(user_id, job_id), daemon=True)
+    session_id = request.args.get("session_id") or (request.get_json(silent=True) or {}).get("session_id")
+    thread = threading.Thread(
+        target=_generate_whitepaper, args=(user_id, job_id, session_id), daemon=True
+    )
     thread.start()
 
     return jsonify({"generating": True, "job_id": job_id})
@@ -324,13 +494,15 @@ def get_status():
                 }
                 for d in documents
             ]
-            return jsonify({
-                "status": "done",
-                "trust_center_id": tc["id"],
-                "whitepaper": wp_data,
-                "documents": doc_list,
-                "nda_content": tc.get("nda_content") or DEFAULT_NDA_TEMPLATE,
-            })
+            return jsonify(
+                {
+                    "status": "done",
+                    "trust_center_id": tc["id"],
+                    "whitepaper": wp_data,
+                    "documents": doc_list,
+                    "nda_content": tc.get("nda_content") or DEFAULT_NDA_TEMPLATE,
+                }
+            )
 
     return jsonify(state)
 
@@ -368,7 +540,11 @@ def regenerate_whitepaper():
         return jsonify({"error": "Unauthorized"}), 401
 
     job_id = uuid.uuid4().hex[:12]
-    thread = threading.Thread(target=_generate_whitepaper, args=(user_id, job_id), daemon=True)
+    data = request.get_json(silent=True) or {}
+    session_id = data.get("session_id")
+    thread = threading.Thread(
+        target=_generate_whitepaper, args=(user_id, job_id, session_id), daemon=True
+    )
     thread.start()
 
     return jsonify({"job_id": job_id, "generating": True})
@@ -388,6 +564,7 @@ def get_whitepaper_pdf():
         html = "<p>No content</p>"
 
     from flask import Response
+
     return Response(html, mimetype="text/html")
 
 
@@ -411,7 +588,11 @@ def upload_document():
 
     file_type = "pdf" if mime == "application/pdf" else "image"
     original_name = file.filename or "upload"
-    ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ("pdf" if file_type == "pdf" else "png")
+    ext = (
+        original_name.rsplit(".", 1)[-1].lower()
+        if "." in original_name
+        else ("pdf" if file_type == "pdf" else "png")
+    )
 
     doc_id = uuid.uuid4().hex[:10]
     s3_key = _doc_key(user_id, doc_id, ext)
@@ -450,12 +631,14 @@ def upload_document():
         delete_file_from_s3(s3_key)
         return jsonify({"error": "Failed to save document record"}), 500
 
-    return jsonify({
-        "id": doc_id,
-        "label": label,
-        "file_type": file_type,
-        "download_url": generate_presigned_url(s3_key),
-    })
+    return jsonify(
+        {
+            "id": doc_id,
+            "label": label,
+            "file_type": file_type,
+            "download_url": generate_presigned_url(s3_key),
+        }
+    )
 
 
 @trust_center_bp.route("/documents/<doc_id>", methods=["DELETE"])
@@ -562,6 +745,7 @@ def share_trust_center():
     for email in granted:
         try:
             from services.gmail_service import GmailService
+
             gmail = GmailService(user_id)
             subject = "You've been invited to view a Trust Center"
             body = f"""<p>You have been granted access to a Trust &amp; Compliance Center.</p>
@@ -602,7 +786,9 @@ def get_shared_trust_center(owner_user_id: str):
     nda_content = tc.get("nda_content") or DEFAULT_NDA_TEMPLATE
 
     if not access_row.get("nda_accepted"):
-        return jsonify({"access": True, "nda_required": True, "nda_content": nda_content})
+        return jsonify(
+            {"access": True, "nda_required": True, "nda_content": nda_content}
+        )
 
     # NDA accepted — return full data
     try:
@@ -622,13 +808,15 @@ def get_shared_trust_center(owner_user_id: str):
         for d in documents
     ]
 
-    return jsonify({
-        "access": True,
-        "nda_required": False,
-        "nda_accepted": True,
-        "whitepaper": wp_data,
-        "documents": doc_list,
-    })
+    return jsonify(
+        {
+            "access": True,
+            "nda_required": False,
+            "nda_accepted": True,
+            "whitepaper": wp_data,
+            "documents": doc_list,
+        }
+    )
 
 
 @trust_center_bp.route("/shared/<owner_user_id>/accept-nda", methods=["POST"])
