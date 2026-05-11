@@ -6,10 +6,16 @@ from db.rds_db import connect_to_rds
 
 
 def _get_user_id_from_context():
-    """Extract user_id from g.user_id or session fallback."""
+    """Extract user_id from g.user_id, session, or request body/args (session middleware fallback)."""
     user_id = getattr(g, "user_id", None)
     if not user_id:
         user_id = session.get("user_id")
+    if not user_id and request.is_json:
+        user_id = (request.get_json(silent=True) or {}).get("user_id")
+    if not user_id:
+        user_id = request.args.get("user_id")
+    if not user_id:
+        user_id = request.form.get("user_id")
     return user_id
 
 
