@@ -757,23 +757,34 @@ async def modify_runbook():
 
 @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
 async def get_runbook_results(runbook_id):
+    try:
+        user_id = session.get("user_id") or request.args.get("user_id")
 
-    user_id = session.get("user_id") or request.args.get("user_id")
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
 
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+        results = await dbserver.get_runbook_results(user_id, runbook_id)
+        runbook_details = await dbserver.get_runbook_by_id(user_id, runbook_id)
 
-    results = await dbserver.get_runbook_results(user_id, runbook_id)
-    runbook_details = await dbserver.get_runbook_by_id(user_id, runbook_id)
-    filtered_results = [r for r in results if r.get("status") == "completed"]
-    # filtered_results = [r for r in results if r.get("status") == "completed"]
+        valid_statuses = {"completed", "success", "done", "draft"}
+        filtered_results = [
+            r for r in (results or [])
+            if r.get("status") in valid_statuses
+        ]
 
-    return (
-        jsonify(
-            {"success": True, "results": filtered_results, "runbook": runbook_details}
-        ),
-        200,
-    )
+        filtered_results.sort(
+            key=lambda r: r.get("ended_at") or "", reverse=True
+        )
+
+        return (
+            jsonify(
+                {"success": True, "results": filtered_results, "runbook": runbook_details}
+            ),
+            200,
+        )
+    except Exception as e:
+        logger.error("get_runbook_results error: %s", e, exc_info=True)
+        return jsonify({"error": "Failed to fetch runbook results", "details": str(e)}), 500
 
 
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
@@ -782,18 +793,19 @@ async def redult_list(user_id):
         result = await dbserver.get_runbook_results_by_user_id(user_id)
         runbooks = await dbserver.get_all_runbooks(user_id)
         runbook_ids = {rb.get("runbook_id") for rb in runbooks if rb.get("runbook_id")}
+
+        valid_statuses = {"completed", "success", "done", "draft"}
         filtered_results = [
             r
-            for r in result
-            if r.get("status") == "completed"
+            for r in (result or [])
+            if r.get("status") in valid_statuses
             and (r.get("risk_score") or 0) != 0
             and r.get("runbook_id") in runbook_ids
         ]
-        # filtered_results = [
-        #     r
-        #     for r in result
-        #     if r.get("status") == "completed" and r.get("runbook_id") in runbook_ids
-        # ]
+
+        filtered_results.sort(
+            key=lambda r: r.get("ended_at") or "", reverse=True
+        )
 
         return (
             jsonify(
@@ -803,6 +815,7 @@ async def redult_list(user_id):
         )
 
     except Exception as e:
+        logger.error("redult_list error: %s", e, exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
