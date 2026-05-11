@@ -756,15 +756,21 @@ async def modify_runbook():
 
 
 @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
-async def get_runbook_results(runbook_id):
+def get_runbook_results(runbook_id):
+    import asyncio
+
     try:
         user_id = session.get("user_id") or request.args.get("user_id")
 
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        results = await dbserver.get_runbook_results(user_id, runbook_id)
-        runbook_details = await dbserver.get_runbook_by_id(user_id, runbook_id)
+        loop = asyncio.new_event_loop()
+        try:
+            results = loop.run_until_complete(dbserver.get_runbook_results(user_id, runbook_id))
+            runbook_details = loop.run_until_complete(dbserver.get_runbook_by_id(user_id, runbook_id))
+        finally:
+            loop.close()
 
         valid_statuses = {"completed", "success", "done", "draft"}
         filtered_results = [
@@ -785,17 +791,22 @@ async def get_runbook_results(runbook_id):
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("get_runbook_results error: %s\n%s", e, tb)
-        print("❌ get_runbook_results error:", str(e))
-        print(tb)
-        return jsonify({"error": "Failed to fetch runbook results", "details": str(e), "trace": tb}), 500
+        return jsonify({"error": "Failed to fetch runbook results", "details": str(e)}), 500
 
 
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
-async def redult_list(user_id):
+def redult_list(user_id):
+    import asyncio
+
     try:
-        result = await dbserver.get_runbook_results_by_user_id(user_id)
-        runbooks = await dbserver.get_all_runbooks(user_id)
-        runbook_ids = {rb.get("runbook_id") for rb in runbooks if rb.get("runbook_id")}
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(dbserver.get_runbook_results_by_user_id(user_id))
+            runbooks = loop.run_until_complete(dbserver.get_all_runbooks(user_id))
+        finally:
+            loop.close()
+
+        runbook_ids = {rb.get("runbook_id") for rb in (runbooks or []) if rb.get("runbook_id")}
 
         valid_statuses = {"completed", "success", "done", "draft"}
         filtered_results = [
