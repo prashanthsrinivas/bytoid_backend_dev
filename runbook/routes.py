@@ -775,14 +775,10 @@ async def modify_runbook():
 
 
 @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
-<<<<<<< HEAD
+@permission_required_body("compliance.runbook.read")
 def get_runbook_results(runbook_id):
     import asyncio
 
-=======
-@permission_required_body("compliance.runbook.read")
-async def get_runbook_results(runbook_id):
->>>>>>> 39d51a0 (Resolve local changes after pull)
     try:
         user_id = session.get("user_id") or request.args.get("user_id")
 
@@ -819,14 +815,10 @@ async def get_runbook_results(runbook_id):
 
 
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
-<<<<<<< HEAD
+@permission_required_body("compliance.runbook.read")
 def redult_list(user_id):
     import asyncio
 
-=======
-@permission_required_body("compliance.runbook.read")
-async def redult_list(user_id):
->>>>>>> 39d51a0 (Resolve local changes after pull)
     try:
         loop = asyncio.new_event_loop()
         try:
