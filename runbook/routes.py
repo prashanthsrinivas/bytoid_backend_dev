@@ -1176,7 +1176,7 @@ def patch_evidence_analysis(result_id):
         else:
             result_doc["evidence_analysis"] = items
 
-        await dbserver.update_runbook_result(user_id, result_id, result_doc)
+        _run_async(dbserver.update_runbook_result(user_id, result_id, result_doc))
 
         # Audit logging
         (
@@ -1299,7 +1299,7 @@ def _toggle_file_in_overview(ev_overview, file_url, target_status):
 
 @runbook_bp.route("/result/<result_id>/evidence_admissibility", methods=["POST"])
 @permission_required_body("compliance.runbook.edit")
-async def toggle_evidence_admissibility(result_id):
+def toggle_evidence_admissibility(result_id):
     try:
         data = request.get_json() or {}
         user_id = session.get("user_id") or data.get("user_id")
@@ -1321,7 +1321,7 @@ async def toggle_evidence_admissibility(result_id):
             )
 
         # 🔹 1. Fetch result
-        res = await dbserver.runbook_get_result(user_id, result_id)
+        res = _run_async(dbserver.runbook_get_result(user_id, result_id))
         if not res or res.get("status") == "not_found":
             return jsonify({"error": "Result not found"}), 404
 
@@ -1336,7 +1336,7 @@ async def toggle_evidence_admissibility(result_id):
             )
 
         # 🔹 2. Load playbook
-        playbook_json = await get_playbook_instruction(user_id, playbook_id)
+        playbook_json = _run_async(get_playbook_instruction(user_id, playbook_id))
         if not playbook_json:
             return jsonify({"error": "Playbook data not found"}), 404
 
@@ -1359,7 +1359,7 @@ async def toggle_evidence_admissibility(result_id):
         save_playbook_to_s3(playbook_json, user_id, "evidence updated", filename)
 
         # 🔹 4. Update DB
-        runbook_rows = await dbserver.get_runbook_by_id(user_id, runbook_id)
+        runbook_rows = _run_async(dbserver.get_runbook_by_id(user_id, runbook_id))
 
         if runbook_rows:
             runbook_row = (
@@ -1393,9 +1393,9 @@ async def toggle_evidence_admissibility(result_id):
                         {"artifact": artifact_name, "decision": still_admissible}
                     )
 
-            await dbserver.update_runbook(
+            _run_async(dbserver.update_runbook(
                 user_id, runbook_id, {"runbook_evidence_config": ev_config}
-            )
+            ))
 
         # 🔹 5. Trigger async regeneration
         create_playbook_runbook_task.delay(user_id, playbook_id, runbook_id)
@@ -1445,7 +1445,7 @@ async def toggle_evidence_admissibility(result_id):
 
 @runbook_bp.route("/schedule_runbook", methods=["POST"])
 @permission_required_body("compliance.runbook.execute")
-async def schedule_runbook():
+def schedule_runbook():
     import json
     from datetime import datetime
 
@@ -1473,13 +1473,13 @@ async def schedule_runbook():
     # ========================================
     # STEP 1: SAVE SCHEDULE
     # ========================================
-    result = await save_runbook_schedule(
+    result = _run_async(save_runbook_schedule(
         user_id=user_id,
         runbook_id=runbook_id,
         schedule_type=schedule_type,
         timezone=timezone,
         data=data,
-    )
+    ))
 
     # ========================================
     # STEP 2: ACTIVATE SCHEDULE (CELERY)
@@ -1633,7 +1633,7 @@ async def execute_structure_extract(data, job_id=None, session_id=None, main=Fal
 
 @runbook_bp.route("/runbook/structure_extract", methods=["POST"])
 @permission_required_body("compliance.runbook.create")
-async def structure_extract():
+def structure_extract():
 
     if request.is_json:
         data = request.get_json()
@@ -1661,16 +1661,16 @@ async def structure_extract():
         return jsonify({"error": "Unauthorized"}), 401
 
     # 🚀 Submit as background job
-    job_id = await JobManager.submit_job(
+    job_id = _run_async(JobManager.submit_job(
         execute_structure_extract, data, session_id=session_id, main=True
-    )
+    ))
 
     return jsonify({"success": True, "job_id": job_id, "status": "queued"})
 
 
 @runbook_bp.route("/runbook/structure_extract_modify", methods=["POST"])
 @permission_required_body("compliance.runbook.edit")
-async def structure_extract_modify():
+def structure_extract_modify():
     try:
         if request.is_json:
             data = request.get_json()
@@ -1683,9 +1683,9 @@ async def structure_extract_modify():
 
         updates = {"structure_theme": json.dumps(default_structure)}
 
-        updated_row = await dbserver.update_runbook(
+        updated_row = _run_async(dbserver.update_runbook(
             user_id=user_id, runbook_id=runbook_id, updates=updates
-        )
+        ))
 
         return (
             jsonify({"success": True, "data": updated_row}),
@@ -1698,7 +1698,7 @@ async def structure_extract_modify():
 
 @runbook_bp.route("/check_pb_output", methods=["POST"])
 @permission_required_body("compliance.runbook.read")
-async def check_pb_output():
+def check_pb_output():
     try:
         data = request.get_json()
 
@@ -1709,7 +1709,7 @@ async def check_pb_output():
         # -----------------------------
         # Fetch Runbook
         # -----------------------------
-        runbook = await dbserver.get_runbook_by_id(user_id=user_id, runbook_id=rb_id)
+        runbook = _run_async(dbserver.get_runbook_by_id(user_id=user_id, runbook_id=rb_id))
 
         if isinstance(runbook, list):
             runbook = runbook[0] if runbook else None
@@ -1720,12 +1720,12 @@ async def check_pb_output():
         # -----------------------------
         # Fetch Instruction
         # -----------------------------
-        runtime_input = await get_playbook_instruction(user_id, pb_id)
+        runtime_input = _run_async(get_playbook_instruction(user_id, pb_id))
 
         # -----------------------------
         # Extract Questions
         # -----------------------------
-        questions = await extract_qna_from_instruction(runtime_input)
+        questions = _run_async(extract_qna_from_instruction(runtime_input))
 
         # -----------------------------
         # Analyze
@@ -1737,15 +1737,15 @@ async def check_pb_output():
         document_data = []
 
         if runbook.get("reference_sources"):
-            analyzed_results = await analyze_questions_with_references(
+            analyzed_results = _run_async(analyze_questions_with_references(
                 questions,
                 runbook.get("reference_sources"),
                 runbook.get("reference_main_source"),
                 user_id,
                 runbook,
-            )
+            ))
 
-            merged = await merge_document_data(analyzed_results, runtime_input)
+            merged = _run_async(merge_document_data(analyzed_results, runtime_input))
 
             runbook["runtime_input"] = json.dumps(merged)
             document_data.append(merged.get("chat"))
