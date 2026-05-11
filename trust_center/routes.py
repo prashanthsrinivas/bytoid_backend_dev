@@ -114,22 +114,33 @@ def _save_job(job_id: str, state: dict):
         _write_json_to_s3(_job_s3_key(job_id), state)
 
 
-def _ws_emit(user_id: str, job_id: str, session_id: str | None, stage: str, message: str, progress: int):
+def _ws_emit(
+    user_id: str,
+    job_id: str,
+    session_id: str | None,
+    stage: str,
+    message: str,
+    progress: int,
+):
     if not session_id:
         return
     try:
-        msg = msg_builder_main.job_progress(job_id, session_id, stage, message, progress)
-        asyncio.run(ws_service.emit(
-            user_id=user_id,
-            message=msg["message"],
-            scope=msg["scope"],
-            session_id=msg["session_id"],
-            job_id=msg["job_id"],
-            msg_type=msg["type"],
-            stage=msg["stage"],
-            progress=msg["progress"],
-            feature="trust_center",
-        ))
+        msg = msg_builder_main.job_progress(
+            job_id, session_id, stage, message, progress
+        )
+        asyncio.run(
+            ws_service.emit(
+                user_id=user_id,
+                message=msg["message"],
+                scope=msg["scope"],
+                session_id=msg["session_id"],
+                job_id=msg["job_id"],
+                msg_type=msg["type"],
+                stage=msg["stage"],
+                progress=msg["progress"],
+                feature="trust_center",
+            )
+        )
     except Exception:
         pass
 
@@ -205,11 +216,23 @@ def _strip_html(html: str) -> str:
     return re.sub(r"<[^>]+>", "", html or "").strip()
 
 
-def _summarize_policy(title: str, ptype: str, content: str) -> str:
+def _parse_ai_result(text: str) -> dict:
+    text = re.sub(r"```json", "", text.strip())
+    text = re.sub(r"```", "", text)
+    match = re.search(r"\{.*\}", text.strip(), re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _summarize_policy(title: str, ptype: str, content: str) -> dict:
     try:
         plain_text = _strip_html(content)
         if not plain_text:
-            return ""
+            return {"summary": "", "category": "Other"}
 
         words = plain_text.split()
         chunks = [
@@ -218,7 +241,7 @@ def _summarize_policy(title: str, ptype: str, content: str) -> str:
         ]
 
         if not chunks:
-            return ""
+            return {"summary": "", "category": "Other"}
 
         num_chunks = len(chunks)
         conversation_history = []
@@ -235,27 +258,27 @@ def _summarize_policy(title: str, ptype: str, content: str) -> str:
                     }
                 )
             else:
-                if ptype and ptype.lower() == "policy":
-                    final_prompt = f"""Here is the final part ({i + 1}/{num_chunks}) of the document.
+                final_prompt = f"""You are a compliance expert writing for a business audience — executives, strategists, and enterprise customers.
 
-Now, using everything you have read, write a 2–3 paragraph executive overview that explains:
-- What this policy governs and what security objective it addresses
-- Which compliance frameworks or standards it aligns with (if mentioned)
-- The key commitment or protection it provides to the organization and its stakeholders
+This is the final part ({i + 1}/{num_chunks}) of a {ptype} titled '{title}'.
 
-Write in plain, confident business prose. No bullet points, no headings, no markdown.
+Based on everything you have read, return a JSON object with exactly two keys:
 
-Text:
-{chunk}"""
-                else:
-                    final_prompt = f"""Here is the final part ({i + 1}/{num_chunks}) of the document.
+1. "category": Assign this document to exactly ONE of these categories based on its primary focus:
+   - "Governance & Compliance"
+   - "Access & Identity Security"
+   - "Data Protection & Privacy"
+   - "Operational Resilience"
+   - "Threat & Incident Management"
+   - "People & Third-Party Security"
 
-Now, using everything you have read, write a 2–3 paragraph executive overview that explains:
-- What process or activity this procedure governs
-- Who is responsible and what it requires of the organization
-- How it reduces risk or ensures compliance for the business
+2. "summary": Write a 2–3 paragraph executive overview in plain, confident business prose.
+   - No bullet points, no headings, no markdown inside the summary value.
+   - Write from the angle that makes THIS document distinctive — its specific purpose, scope, or protection.
+   - Vary your vocabulary and sentence openings. Do not use templated openers like "This policy establishes..." or "This procedure ensures..." across multiple documents.
+   - Speak to what a senior executive or enterprise customer would find most relevant.
 
-Write in plain, confident business prose. No bullet points, no headings, no markdown.
+Return ONLY valid JSON. No extra text, no markdown fences.
 
 Text:
 {chunk}"""
@@ -299,16 +322,34 @@ Text:
         if conversation_history and len(conversation_history) > 0:
             last_response = conversation_history[-1].get("content", [{}])
             if isinstance(last_response, list) and len(last_response) > 0:
-                return last_response[0].get("text", "").strip()
+                response_text = last_response[0].get("text", "").strip()
+                result = _parse_ai_result(response_text)
+                return {
+                    "summary": result.get("summary", "").strip(),
+                    "category": result.get("category", "Other").strip(),
+                }
 
-        return ""
+        return {"summary": "", "category": "Other"}
     except Exception as exc:
         logger.warning("Policy summarization failed: %s", exc)
-        return _strip_html(content)[:800]
+        return {
+            "summary": _strip_html(content)[:800],
+            "category": "Other",
+        }
 
 
 def _build_whitepaper_html(policies: list) -> str:
+    from collections import defaultdict
+
     now_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    _CATEGORY_ORDER = [
+        "Governance & Compliance",
+        "Access & Identity Security",
+        "Data Protection & Privacy",
+        "Operational Resilience",
+        "Threat & Incident Management",
+        "People & Third-Party Security",
+    ]
 
     if not policies:
         policies_html = """
@@ -318,18 +359,44 @@ def _build_whitepaper_html(policies: list) -> str:
         </section>
         """
     else:
-        sections = []
+        categories = defaultdict(list)
         for p in policies:
-            title = p.get("title", "Untitled Policy")
-            ptype = p.get("type", "")
-            summary = p.get("ai_summary") or _strip_html(p.get("content", ""))[:800]
-            sections.append(f"""
+            cat = p.get("ai_category", "Other")
+            categories[cat].append(p)
+
+        sections = []
+        for cat in _CATEGORY_ORDER:
+            if cat not in categories:
+                continue
+            sections.append(f'<h2 class="category-heading">{cat}</h2>')
+            for p in categories[cat]:
+                title = p.get("title", "Untitled Policy")
+                ptype = p.get("type", "")
+                summary = p.get("ai_summary") or _strip_html(p.get("content", ""))[:800]
+                sections.append(f"""
             <section class="section">
-                <h2>{title}</h2>
-                {f'<span class="badge">{ptype}</span>' if ptype else ""}
+                <h3>{title}</h3>
+                {f'<span class="type-badge">{ptype}</span>' if ptype else ""}
                 <p>{summary}</p>
             </section>
             """)
+
+        for cat in sorted(categories.keys()):
+            if cat in _CATEGORY_ORDER:
+                continue
+            sections.append(f'<h2 class="category-heading">{cat}</h2>')
+            for p in categories[cat]:
+                title = p.get("title", "Untitled Policy")
+                ptype = p.get("type", "")
+                summary = p.get("ai_summary") or _strip_html(p.get("content", ""))[:800]
+                sections.append(f"""
+            <section class="section">
+                <h3>{title}</h3>
+                {f'<span class="type-badge">{ptype}</span>' if ptype else ""}
+                <p>{summary}</p>
+            </section>
+            """)
+
         policies_html = "\n".join(sections)
 
     return f"""<!DOCTYPE html>
@@ -340,10 +407,13 @@ def _build_whitepaper_html(policies: list) -> str:
   body {{ font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 40px; color: #1a1a2e; }}
   h1 {{ font-size: 2rem; border-bottom: 2px solid #6366f1; padding-bottom: 12px; }}
   h2 {{ font-size: 1.2rem; color: #4338ca; margin-top: 28px; }}
+  h3 {{ font-size: 1rem; color: #1a1a2e; margin-top: 16px; margin-bottom: 8px; }}
+  .category-heading {{ font-size: 1.3rem; color: #1a1a2e; border-bottom: 2px solid #6366f1; padding-bottom: 6px; margin-top: 40px; margin-bottom: 16px; }}
   .meta {{ color: #6b7280; font-size: 0.9rem; margin-bottom: 32px; }}
   .section {{ margin-bottom: 24px; padding: 16px 20px; border-left: 3px solid #e0e7ff; background: #fafafa; border-radius: 4px; }}
   .badge {{ display: inline-block; background: #e0e7ff; color: #4338ca; font-size: 0.75rem;
             padding: 2px 8px; border-radius: 999px; margin-bottom: 8px; }}
+  .type-badge {{ display: inline-block; background: #f3f4f6; color: #6b7280; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }}
   .placeholder {{ color: #9ca3af; font-style: italic; }}
 </style>
 </head>
@@ -358,7 +428,14 @@ def _build_whitepaper_html(policies: list) -> str:
 def _generate_whitepaper(user_id: str, job_id: str, session_id: str | None = None):
     try:
         _save_job(job_id, {"status": "running", "job_id": job_id})
-        _ws_emit(user_id, job_id, session_id, "loading", "Loading your compliance policies...", 5)
+        _ws_emit(
+            user_id,
+            job_id,
+            session_id,
+            "loading",
+            "Loading your compliance policies...",
+            5,
+        )
 
         keys = list_all_files(folder=f"{user_id}/policies/")
         yaml_keys = [k["Key"] for k in (keys or []) if k["Key"].endswith(".yaml")]
@@ -378,17 +455,24 @@ def _generate_whitepaper(user_id: str, job_id: str, session_id: str | None = Non
             ptype = policy.get("type", "policy")
             progress = 10 + int((i / num_policies) * 75) if num_policies > 0 else 10
             _ws_emit(
-                user_id, job_id, session_id, "summarizing",
+                user_id,
+                job_id,
+                session_id,
+                "summarizing",
                 f"Summarizing {ptype} '{title}'... ({i + 1}/{num_policies})",
                 progress,
             )
-            policy["ai_summary"] = _summarize_policy(
+            result = _summarize_policy(
                 title,
                 ptype,
                 policy.get("content", ""),
             )
+            policy["ai_summary"] = result.get("summary", "")
+            policy["ai_category"] = result.get("category", "Other")
 
-        _ws_emit(user_id, job_id, session_id, "building", "Building your whitepaper...", 88)
+        _ws_emit(
+            user_id, job_id, session_id, "building", "Building your whitepaper...", 88
+        )
         html = _build_whitepaper_html(policies)
         wp_key = _wp_key(user_id)
 
@@ -407,7 +491,14 @@ def _generate_whitepaper(user_id: str, job_id: str, session_id: str | None = Non
         _save_job(
             job_id, {"status": "done", "job_id": job_id, "trust_center_id": tc_id}
         )
-        _ws_emit(user_id, job_id, session_id, "done", "Your Trust Center whitepaper is ready!", 100)
+        _ws_emit(
+            user_id,
+            job_id,
+            session_id,
+            "done",
+            "Your Trust Center whitepaper is ready!",
+            100,
+        )
     except Exception as exc:
         logger.exception("Whitepaper generation failed: %s", exc)
         _save_job(job_id, {"status": "error", "job_id": job_id, "error": str(exc)})
@@ -456,7 +547,9 @@ def get_trust_center():
 
     # Need to generate whitepaper
     job_id = uuid.uuid4().hex[:12]
-    session_id = request.args.get("session_id") or (request.get_json(silent=True) or {}).get("session_id")
+    session_id = request.args.get("session_id") or (
+        request.get_json(silent=True) or {}
+    ).get("session_id")
     thread = threading.Thread(
         target=_generate_whitepaper, args=(user_id, job_id, session_id), daemon=True
     )
@@ -491,6 +584,7 @@ def get_status():
                     "file_type": d["file_type"],
                     "uploaded_at": str(d["uploaded_at"]),
                     "download_url": generate_presigned_url(d["s3_key"]),
+                    "view_url": attach_CLDFRNT_url(d["s3_key"]),
                 }
                 for d in documents
             ]
@@ -637,6 +731,7 @@ def upload_document():
             "label": label,
             "file_type": file_type,
             "download_url": generate_presigned_url(s3_key),
+            "view_url": attach_CLDFRNT_url(s3_key),
         }
     )
 
@@ -804,6 +899,7 @@ def get_shared_trust_center(owner_user_id: str):
             "file_type": d["file_type"],
             "uploaded_at": str(d["uploaded_at"]),
             "download_url": generate_presigned_url(d["s3_key"]),
+            "view_url": attach_CLDFRNT_url(d["s3_key"]),
         }
         for d in documents
     ]
