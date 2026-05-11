@@ -146,6 +146,7 @@ def subscribe():
         # -----------------------------
         # 1️⃣ Fetch new plan amount
         # -----------------------------
+
         cur.execute(
             "SELECT amount_cents,monthly_token_limit FROM plans WHERE stripe_price_id = %s",
             (price_id,),
@@ -288,6 +289,11 @@ def subscribe():
 
         return jsonify({"url": session.url, "checkout_session_id": session.id})
 
+    except stripe.error.StripeError as e:
+        return jsonify({"error": str(e.user_message or e)}), 400
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
     finally:
         cur.close()
         conn.close()
