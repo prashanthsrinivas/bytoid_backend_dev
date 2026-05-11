@@ -674,18 +674,37 @@ class StripeWebhookHandler:
         # CREDIT ALLOCATION (SUBSCRIPTION)
         # -------------------------
         if subscription_id:
-            # # Safely extract price_id
-            # line_item = invoice.get("lines", {}).get("data", [{}])[0]
-            # price_id = line_item.get("price", {}).get("id")
+            # Resolve user_id fallback: check payments table (populated by checkout_completed)
+            if not user_id:
+                conn_tmp = connect_to_rds()
+                cur_tmp = conn_tmp.cursor()
+                cur_tmp.execute(
+                    "SELECT user_id FROM payments WHERE stripe_subscription_id=%s AND user_id IS NOT NULL LIMIT 1",
+                    (subscription_id,),
+                )
+                row_tmp = cur_tmp.fetchone()
+                if row_tmp:
+                    user_id = row_tmp[0]
+                cur_tmp.close()
+                conn_tmp.close()
 
-            # if not price_id:
-            #     #print(
-            #         f"⚠️ Invoice {invoice.get('id')} has no price. Skipping credit allocation."
-            #     )
-            #     return
+            if not user_id:
+                logger.error("invoice_paid: cannot resolve user_id for subscription %s", subscription_id)
+                return
 
-            tokens = self._get_subscription_tokens(subscription_id=subscription_id)
-            #print("base tokens", tokens)
+            # Get price_id directly from invoice lines (avoids race condition with subscriptions table)
+            line_item = invoice.get("lines", {}).get("data", [{}])[0]
+            price_id = line_item.get("price", {}).get("id")
+
+            tokens = 0
+            if price_id:
+                tokens = StripeWebhookHandler.get_token_by_planidorpriceid(price_id=price_id)
+
+            # Fallback: try subscriptions table (may be populated by now)
+            if not tokens:
+                tokens = self._get_subscription_tokens(subscription_id=subscription_id)
+
+            logger.info("invoice_paid: user=%s sub=%s tokens=%s", user_id, subscription_id, tokens)
 
             if tokens > 0:
                 conn = connect_to_rds()
@@ -696,10 +715,12 @@ class StripeWebhookHandler:
                     credits=tokens,
                     source_type="SUBSCRIPTION",
                     expires_at=datetime.utcnow() + timedelta(days=45),
-                    source_ref=subscription_id,
+                    source_ref=invoice.get("id"),  # use invoice id for idempotency
                 )
 
                 conn.close()
+            else:
+                logger.warning("invoice_paid: no tokens found for sub=%s price=%s", subscription_id, price_id)
 
     def invoice_failed(self):
         invoice = self.obj
