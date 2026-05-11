@@ -57,16 +57,17 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 # from session_middleware import register_session_check
 
 load_dotenv("/home/ec2-user/bytoid_python/.env")
-app = Flask(__name__)
 
 # Handle numpy/pyarrow types returned by LanceDB that aren't JSON-serializable by default
-class _NumpyEncoder(json.JSONEncoder):
+from flask.json.provider import DefaultJSONProvider
+
+class _NumpyJSONProvider(DefaultJSONProvider):
     def default(self, obj):
         try:
             import numpy as np
-            if isinstance(obj, (np.integer,)):
+            if isinstance(obj, np.integer):
                 return int(obj)
-            if isinstance(obj, (np.floating,)):
+            if isinstance(obj, np.floating):
                 return float(obj)
             if isinstance(obj, np.ndarray):
                 return obj.tolist()
@@ -74,7 +75,9 @@ class _NumpyEncoder(json.JSONEncoder):
             pass
         return super().default(obj)
 
-app.json_encoder = _NumpyEncoder
+app = Flask(__name__)
+app.json_provider_class = _NumpyJSONProvider
+app.json = _NumpyJSONProvider(app)
 
 # print("🚀 Starting watcher during app init")
 # start_api_watcher()

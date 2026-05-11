@@ -783,8 +783,11 @@ async def get_runbook_results(runbook_id):
             200,
         )
     except Exception as e:
-        logger.error("get_runbook_results error: %s", e, exc_info=True)
-        return jsonify({"error": "Failed to fetch runbook results", "details": str(e)}), 500
+        tb = traceback.format_exc()
+        logger.error("get_runbook_results error: %s\n%s", e, tb)
+        print("❌ get_runbook_results error:", str(e))
+        print(tb)
+        return jsonify({"error": "Failed to fetch runbook results", "details": str(e), "trace": tb}), 500
 
 
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
