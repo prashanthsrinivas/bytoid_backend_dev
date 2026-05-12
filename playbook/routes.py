@@ -50,14 +50,24 @@ from utils.s3_utils import s3bucket, S3_BUCKET
 executor = ThreadPoolExecutor(max_workers=4)
 
 
+def _run_async(coro):
+    """Run an async coroutine from a gunicorn sync worker context."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 @playbook_bp.route("/create_instruction", methods=["POST"])
 @permission_required_body("workflow.process.create")
-async def create_new_instruction():
+def create_new_instruction():
 
     data = request.json
     user_id = data.get("user_id")
 
-    job_id = await JobManager.submit_job(create_instruction_worker, data)
+    job_id = _run_async(JobManager.submit_job(create_instruction_worker, data))
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
     log_audit_event(
@@ -324,10 +334,10 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
 
 @playbook_bp.route("/playbook/jbs/<job_id>", methods=["GET"])
 @permission_required_body("workflow.process.view")
-async def job_status(job_id):
+def job_status(job_id):
     redisservice = get_redis()
 
-    job = await redisservice.get(f"job:{job_id}")
+    job = _run_async(redisservice.get(f"job:{job_id}"))
 
     if not job:
         return jsonify({"status": "not_found"}), 404
@@ -337,10 +347,10 @@ async def job_status(job_id):
 
 @playbook_bp.route("/update_instruction", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def updateInstruction():
+def updateInstruction():
     data = request.json
 
-    job_id = await JobManager.submit_job(updateInstruction_worker, data)
+    job_id = _run_async(JobManager.submit_job(updateInstruction_worker, data))
 
     # Audit logging
     user_id = data.get("user_id")
@@ -1277,17 +1287,17 @@ async def modlmiddle(body):
 
 @playbook_bp.route("/modify_instruction", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def mod_instuct():
+def mod_instuct():
     data = request.json
 
-    job_id = await JobManager.submit_job(modlmiddle, data)
+    job_id = _run_async(JobManager.submit_job(modlmiddle, data))
 
     return jsonify({"status": "accepted", "job_id": job_id})
 
 
 @playbook_bp.route("/run_workflow", methods=["POST"])
 @permission_required_body("workflow.process.execute")
-async def runWorkflow():
+def runWorkflow():
     data = request.json
     userid = data.get("user_id")
     filename = data.get("filename")
@@ -1349,7 +1359,7 @@ async def runWorkflow():
             db=db,
             credits=credits,
         ) as runner:
-            await runner.execute()
+            _run_async(runner.execute())
             return jsonify(
                 {"status": "success", "execution_log": runner.get_execution_log()}
             )
@@ -1587,7 +1597,7 @@ def clear_testing_data():
 
 @playbook_bp.route("/generate-workflow-input", methods=["POST"])
 @permission_required_body("workflow.process.execute")
-async def generate_workflow_input():
+def generate_workflow_input():
     db = connect_to_rds()
     credits = Credits(db)
 
@@ -1608,9 +1618,9 @@ async def generate_workflow_input():
         # 2️⃣ CREDIT CHECK
         # -----------------------------
         total_input_chars = len(inp_description)
-        if not await credits.has_ai_credits(
+        if not _run_async(credits.has_ai_credits(
             total_chars=total_input_chars, user_id=userid
-        ):
+        )):
             return jsonify({"error": "Insufficient credits"}), 402
 
         # -----------------------------
@@ -1644,13 +1654,13 @@ async def generate_workflow_input():
         # -----------------------------
         # 4️⃣ CALL LLM WITH CREDITS
         # -----------------------------
-        llm_output = await get_fireworks_response2(
+        llm_output = _run_async(get_fireworks_response2(
             user_message=formatted_prompt,
             role="system",
             temp=0.3,
             user_id=userid,
             credits=credits,  # ✅ Pass credits for deduction
-        )
+        ))
 
         if llm_output == "INSUFFICIENT":
             return jsonify({"error": "Insufficient credits"}), 402
@@ -1757,7 +1767,7 @@ async def generate_workflow_input():
 
 @playbook_bp.route("/test-mid", methods=["POST"])
 @permission_required_body("workflow.process.execute")
-async def testmidcheck():
+def testmidcheck():
     from services.automate_service import AutoMateService
 
     body = request.get_json(force=True)
@@ -1774,7 +1784,7 @@ async def testmidcheck():
     credits = Credits()
     try:
         ai = AutoMateService(userid=user_id, credits=credits)
-        val = await ai.generate_questions_from_file(file_data=filedata)
+        val = _run_async(ai.generate_questions_from_file(file_data=filedata))
         return jsonify({"data": val})
     except Exception as e:
         # print("❌ Error in /test-email_checks:", e)
@@ -1870,7 +1880,7 @@ def resolve_schedule_from_activation(scheduled):
 
 @playbook_bp.route("/schedule-workflow-checker", methods=["POST"])
 @permission_required_body("workflow.process.schedule")
-async def schedule_workflow_checker():
+def schedule_workflow_checker():
     try:
         body = request.json or {}
         userid = body.get("user_id")
@@ -1968,16 +1978,16 @@ async def schedule_workflow_checker():
         db = connect_to_rds()
         credits = Credits(db=db)
         total_chars = len(full_prompt)
-        if not await credits.has_ai_credits(total_chars=total_chars, user_id=userid):
+        if not _run_async(credits.has_ai_credits(total_chars=total_chars, user_id=userid)):
             return jsonify({"error": "Insufficient credits"}), 402
 
-        llm_output = await get_evaluator_fireworks(
+        llm_output = _run_async(get_evaluator_fireworks(
             user_message=full_prompt,
             role="system",
             temp=0.3,
             user_id=userid,
             credits=credits,  # Pass Credits for consumption
-        )
+        ))
 
         llm_output = re.sub(r"^```(?:json)?|```$", "", llm_output).strip()
 
@@ -2012,7 +2022,7 @@ async def schedule_workflow_checker():
 
 @playbook_bp.route("/schedule-workflow", methods=["POST"])
 @permission_required_body("workflow.process.schedule")
-async def schedule_workflow():
+def schedule_workflow():
     body = request.json or {}
 
     userid = body["user_id"]
@@ -2051,9 +2061,9 @@ async def schedule_workflow():
     # --------------------------------------------------
     if schedule_type == "daily":
         hour, minute = map(int, data["startTime"].split(":"))
-        result = await SchedulerService.schedule_daily(
+        result = _run_async(SchedulerService.schedule_daily(
             hour, minute, userid, filename, timezone, contacts
-        )
+        ))
         activation_schedule["celery_task_id"] = result["entry_name"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2062,9 +2072,9 @@ async def schedule_workflow():
     # --------------------------------------------------
     elif schedule_type == "weekly":
         hour, minute = map(int, data["startTime"].split(":"))
-        result = await SchedulerService.schedule_weekly(
+        result = _run_async(SchedulerService.schedule_weekly(
             data["weekday"], hour, minute, userid, filename, timezone, contacts
-        )
+        ))
         activation_schedule["celery_task_id"] = result["entry_name"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2073,9 +2083,9 @@ async def schedule_workflow():
     # --------------------------------------------------
     elif schedule_type == "one_time":
         dt = datetime.fromisoformat(data["datetime"])
-        result = await SchedulerService.schedule_one_time(
+        result = _run_async(SchedulerService.schedule_one_time(
             dt, userid, filename, timezone, contacts
-        )
+        ))
         activation_schedule["celery_task_id"] = result["task_id"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2083,14 +2093,14 @@ async def schedule_workflow():
     # CUSTOM (NEW)
     # --------------------------------------------------
     elif schedule_type == "custom":
-        result = await SchedulerService.schedule_custom(
+        result = _run_async(SchedulerService.schedule_custom(
             start_date=data["startDate"],
             start_time=data["startTime"],
             userid=userid,
             filename=filename,
             timezone=data["timezone"],
             contacts=contacts,
-        )
+        ))
         activation_schedule["celery_task_id"] = result["task_id"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2398,7 +2408,7 @@ def updateformfieldsbulkworkflow():
 
 @playbook_bp.route("/autocheck-workflow", methods=["POST"])
 @permission_required_body("workflow.process.execute")
-async def autocheckworkflow():
+def autocheckworkflow():
     data = request.json
     userid = data.get("user_id")
     filename = data.get("filename")
@@ -2436,7 +2446,7 @@ async def autocheckworkflow():
             db=db,
             credits=credits,
         ) as runner:
-            result = await runner.autocheckerworkflow()
+            result = _run_async(runner.autocheckerworkflow())
             return jsonify({"message": result})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -2498,14 +2508,14 @@ def autocheckstatusupdate():
 
 @playbook_bp.route("/workflow/conversation", methods=["POST"])
 @permission_required_body("workflow.process.execute")
-async def workflow_conversation():
+def workflow_conversation():
 
     data = request.json
 
     user_id = data.get("user_id")
     filename = data.get("filename")
     user_message = data.get("user_message", "")
-    testing = data.get("testing") or True
+    testing = data.get("testing", True)
 
     if not user_id or not filename:
         return jsonify({"error": "invalid request"}), 400
@@ -2528,7 +2538,7 @@ async def workflow_conversation():
             credits=credits,
         ) as runner:
 
-            result = await runner.make_workflow_conversation(user_message=user_message)
+            result = _run_async(runner.make_workflow_conversation(user_message=user_message))
             return jsonify(result)
 
     except Exception as e:
@@ -2538,7 +2548,7 @@ async def workflow_conversation():
 
 @playbook_bp.route("/wf-form", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def check_formcreation():
+def check_formcreation():
     data = request.json
 
     user_id = data.get("user_id")
@@ -2549,7 +2559,7 @@ async def check_formcreation():
     credits = Credits()
     val = AutoMateService(userid=user_id, credits=credits)
 
-    kak = await val.generate_form_schema(user_input)
+    kak = _run_async(val.generate_form_schema(user_input))
 
     return jsonify({"message": kak})
 
@@ -2573,7 +2583,7 @@ async def send_ques_byfile_bk(
 
 @playbook_bp.route("/generate_ques_by_file", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def generate_ques_by_file():
+def generate_ques_by_file():
     from radar.radar_helpers import extract_files_content
 
     user_id = request.form.get("user_id")
@@ -2605,9 +2615,9 @@ async def generate_ques_by_file():
             return jsonify({"error": "Could not extract content from file"}), 400
 
         # 🔥 SUBMIT BACKGROUND JOB (THIS WAS MISSING)
-        job_id = await JobManager.submit_job(
+        job_id = _run_async(JobManager.submit_job(
             send_ques_byfile_bk, user_id, extracted_files, wf_id
-        )
+        ))
 
         return jsonify(
             {
@@ -2660,7 +2670,7 @@ async def answer_ques_file_bk(
 
 @playbook_bp.route("/make_ans_by_files", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def generate_ans_files():
+def generate_ans_files():
     local_files = []
     try:
         import mimetypes
@@ -2742,7 +2752,7 @@ async def generate_ans_files():
                 400,
             )
 
-        job_id = await JobManager.submit_job(
+        job_id = _run_async(JobManager.submit_job(
             answer_ques_file_bk,
             user_id,
             extracted_payload,
@@ -2751,7 +2761,7 @@ async def generate_ans_files():
             file_keys,
             inp_links,
             inp_link_keys=inp_link_keys,
-        )
+        ))
 
         return jsonify(
             {
@@ -3701,7 +3711,7 @@ def undo_share_pb_template():
 
 @playbook_bp.route("/edit_assigned_question", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def edit_assigned_question():
+def edit_assigned_question():
     try:
         data = request.json or {}
 
@@ -3755,7 +3765,7 @@ async def edit_assigned_question():
 
 @playbook_bp.route("/delete_assigned_question", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def delete_assigned_question():
+def delete_assigned_question():
     try:
         data = request.json or {}
 
@@ -3851,7 +3861,7 @@ def check_runbook_exists_playbook():
 
 @playbook_bp.route("/clear_runbook_exists_playbook", methods=["POST"])
 @permission_required_body("workflow.process.edit")
-async def clear_runbook_exists_playbook():
+def clear_runbook_exists_playbook():
     from db.lance_db_service import LanceDBServer
 
     try:
@@ -3896,7 +3906,7 @@ async def clear_runbook_exists_playbook():
         # ✅ clear runbook
         workflow_json["runbook_id"] = None
         dbserver = LanceDBServer()
-        runbook_details = await dbserver.get_runbook_by_id(userid, runbook_id)
+        runbook_details = _run_async(dbserver.get_runbook_by_id(userid, runbook_id))
         if "playbook_id" in runbook_details:
             runbook_details["playbook_id"] = None
             dbserver.update_runbook(runbook_details)
