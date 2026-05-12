@@ -15,6 +15,7 @@ from invited_users.uszr_helper import (
     generate_hashed_url,
 )
 from utils.base_logger import get_logger
+from utils.auth_resolver import get_user_from_request
 from dotenv import load_dotenv
 from services.outlook_service import OutlookService
 from utils.permission_resolver import resolve_permissions
@@ -1569,13 +1570,7 @@ def edit_shared_user_role():
 
 @inv_users_bp.route("/notifications/<user_id>", methods=["GET"])
 def get_notifications(user_id):
-    # Resolve current user — session middleware may be disabled, fall back to args/body
-    current_user_id = (
-        getattr(g, "user_id", None)
-        or session.get("user_id")
-        or request.args.get("user_id")
-        or (request.get_json(silent=True) or {}).get("user_id")
-    )
+    current_user_id = get_user_from_request()
     if not current_user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
