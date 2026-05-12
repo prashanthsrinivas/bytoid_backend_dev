@@ -619,5 +619,14 @@
     "primaryUse": "AI assurance",
     "expectations": "Scoped; accountable owner",
     "id": "69"
+  },
+  {
+    "id": "70",
+    "type": "Attestation",
+    "number": 5,
+    "artifact": "SOC 2 Type 2",
+    "nature": "Documentation",
+    "primaryUse": "Assessment",
+    "expectations": "Date of report is within the last 6 months"
   }
 ]

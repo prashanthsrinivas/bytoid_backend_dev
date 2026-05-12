@@ -113,6 +113,232 @@ def add_role_admin():
             conn.close()
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# DIRECT ROLE ASSIGNMENT (without invite flow)
+# ─────────────────────────────────────────────────────────────────────────
+
+def _same_org(admin, target):
+    """
+    Validate that admin and target user belong to the same organization.
+    Tries both org-scoping strategies (company_name and launch_id_fk).
+    Returns True only if both users are in the same org by at least one strategy.
+    """
+    # Strategy 1: company_name (SAML / Azure AD)
+    a_co = (admin.get("company_name") or "").strip()
+    t_co = (target.get("company_name") or "").strip()
+    if a_co and t_co:
+        return a_co.lower() == t_co.lower()
+
+    # Strategy 2: launch_id_fk (direct-registration)
+    a_lk = (admin.get("launch_id_fk") or "").strip()
+    t_lk = (target.get("launch_id_fk") or "").strip()
+    if a_lk and t_lk:
+        return a_lk == t_lk
+
+    # Neither org field populated on both sides → cannot verify → REJECT
+    return False
+
+
+@inv_users_bp.route("/admin/assign-role", methods=["POST"])
+def assign_role_direct():
+    """
+    Assign a role directly to an existing user (by email) without invite flow.
+    Admin must be logged in (session check).
+    Target user must exist and have user_type='user'.
+    Both must be in the same organization.
+    Permissions take effect immediately on target's next request.
+    """
+    data = request.get_json()
+    userid = data.get("userid")
+    target_email = data.get("target_email")
+    name = data.get("name")
+    raw_permissions = data.get("permissions", [])
+
+    # Validate request body
+    if not userid or not target_email or not name or not raw_permissions:
+        return (
+            jsonify({
+                "error": "Missing required fields: userid, target_email, name, permissions"
+            }),
+            400,
+        )
+
+    # Step 1: Session check
+    session_user_id = session.get("user_id")
+    if not session_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # Step 2: Verify caller matches session
+    if userid != session_user_id:
+        return jsonify({"error": "Forbidden: userid does not match session"}), 403
+
+    # Resolve permissions early (validates against permission metadata)
+    try:
+        resolved_permissions = resolve_permissions(raw_permissions)
+    except Exception as e:
+        return jsonify({"error": f"Invalid permissions: {str(e)}"}), 400
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+
+            # Step 3: Fetch admin user
+            cursor.execute(
+                "SELECT user_id, user_type, company_name, launch_id_fk, email, permissions "
+                "FROM users WHERE user_id=%s",
+                (userid,),
+            )
+            admin = cursor.fetchone()
+            if not admin:
+                return jsonify({"error": "Admin user not found"}), 404
+            if admin["user_type"] != "admin":
+                return jsonify({"error": "Only admins can assign roles"}), 403
+
+            admin_email = admin["email"]
+
+            # Step 4: Fetch target user by email
+            cursor.execute(
+                "SELECT user_id, user_type, company_name, launch_id_fk, email, permissions "
+                "FROM users WHERE email=%s",
+                (target_email,),
+            )
+            target = cursor.fetchone()
+            if not target:
+                return (
+                    jsonify({
+                        "error": "User not found. User must log in at least once before role assignment."
+                    }),
+                    404,
+                )
+
+            # Step 5: Verify target is a normal user, not admin
+            if target["user_type"] == "admin":
+                return jsonify({
+                    "error": "Cannot assign RBAC roles to admins"
+                }), 403
+            if target["user_type"] == "superadmin":
+                return jsonify({
+                    "error": "Cannot assign RBAC roles to superadmins"
+                }), 403
+            if target["user_type"] != "user":
+                return jsonify({
+                    "error": f"Invalid target user type: {target['user_type']}"
+                }), 400
+
+            # Step 6: Org validation (both scoping strategies)
+            if not _same_org(admin, target):
+                return jsonify({
+                    "error": "Cross-org assignment not permitted"
+                }), 403
+
+            # Step 7: Create role object
+            role_id = str(uuid.uuid4())
+            role = {
+                "id": role_id,
+                "name": name,
+                "permissions": resolved_permissions,
+            }
+
+            # Step 8: Append role to admin's roles_creation
+            cursor.execute(
+                "SELECT roles_creation FROM users WHERE user_id=%s",
+                (userid,),
+            )
+            admin_row = cursor.fetchone()
+            roles_creation = (
+                json.loads(admin_row["roles_creation"])
+                if admin_row and admin_row["roles_creation"]
+                else []
+            )
+            roles_creation.append(role)
+            cursor.execute(
+                "UPDATE users SET roles_creation=%s WHERE user_id=%s",
+                (json.dumps(roles_creation), userid),
+            )
+
+            # Step 9: Write to target's users.permissions with status: "active"
+            target_permissions = {
+                "role": role,
+                "status": "active",
+                "email": target_email,
+                "invited_by": admin_email,
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                (json.dumps(target_permissions), target["user_id"]),
+            )
+
+            # Step 10: Update admin's permissions["shared"] ledger for management UI
+            admin_permissions = (
+                json.loads(admin["permissions"])
+                if admin["permissions"]
+                else {"invites": [], "shared": []}
+            )
+            if "shared" not in admin_permissions:
+                admin_permissions["shared"] = []
+
+            # Check if already exists in shared; if so, warn
+            overwritten = False
+            for entry in admin_permissions["shared"]:
+                if entry.get("email") == target_email:
+                    overwritten = True
+                    entry["role"] = role
+                    entry["status"] = "active"
+                    break
+
+            if not overwritten:
+                admin_permissions["shared"].append({
+                    "email": target_email,
+                    "role": role,
+                    "status": "active",
+                    "accepted_at": datetime.utcnow().isoformat(),
+                })
+
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                (json.dumps(admin_permissions), userid),
+            )
+
+            conn.commit()
+
+            # Audit log
+            actor_uid, actor_email_log, behalf_uid, behalf_email = build_audit_actor(userid)
+            log_audit_event(
+                action=ROLE_CREATED,
+                endpoint="/admin/assign-role",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_uid,
+                actor_email=actor_email_log,
+                acting_on_behalf_of_user_id=behalf_uid,
+                acting_on_behalf_of_email=behalf_email,
+                target_email=target_email,
+                metadata={
+                    "role_name": name,
+                    "permissions_count": len(resolved_permissions),
+                    "overwritten": overwritten,
+                    "assignment_type": "direct",
+                },
+            )
+            g.audit_logged = True
+
+            return jsonify({
+                "message": "Role assigned successfully",
+                "role_id": role_id,
+                "target_email": target_email,
+                "overwritten": overwritten,
+            }), 200
+
+    except Exception as e:
+        logger.error(f"Error in assign_role_direct: {str(e)}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @inv_users_bp.route("/admin/roles-get/<userid>", methods=["GET"])
 def get_roles(userid):
     """Get all roles and invited users for a user"""
