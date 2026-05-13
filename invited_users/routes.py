@@ -558,13 +558,22 @@ def send_invite_user():
             )
             business_info = cursor.fetchone() or {}
 
+            # check outlook connection while cursor is open
+            outlook_connected = has_outlook_connected(userid, cursor)
+
             # generate invite link
             base_invitation_link = generate_hashed_url(
                 base_url=f"{os.getenv('BASE_FRNT_URL')}/invite",
                 invited_to=email,
                 invited_by=user_email,
             )
-            
+
+        # Commit invite to DB before attempting email
+        conn.commit()
+
+        # Attempt email — failure is non-fatal (invite is saved, user can resend)
+        email_error = None
+        try:
             if user_source == "google":
                 gmail_service = GmailService(user_id=userid)
                 gmail_service.send_invite_mail(
@@ -574,25 +583,20 @@ def send_invite_user():
                     business_info=business_info,
                 )
             else:
-            # ✅ For BOTH microsoft + saml
-                if has_outlook_connected(userid, cursor):
+                if outlook_connected:
                     outlook_service = OutlookService(user_id=userid)
                     outlook_service.send_invitation_email(
                         invitee=email,
                         inviter=user_email,
                         role=role,
                         invite_link=base_invitation_link,
-                       business_info=business_info
+                        business_info=business_info,
                     )
                 else:
-                   conn.rollback()
-                   return jsonify({
-                       "error": "Outlook not connected. Please connect Outlook first."
-                   }), 400
- 
-
-        # if everything succeeds -> commit
-        conn.commit()
+                    email_error = "Email not sent: mail provider not connected. The invite was saved — use Resend to deliver it once connected."
+        except Exception as email_exc:
+            logger.error(f"[invite_user] Email send failed for {email}: {email_exc}")
+            email_error = f"Invite saved but email delivery failed: {email_exc}"
 
         actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(userid)
         log_audit_event(
@@ -603,15 +607,17 @@ def send_invite_user():
             acting_on_behalf_of_user_id=behalf_uid,
             acting_on_behalf_of_email=behalf_email,
             target_email=email,
-            metadata={"role_id": role_id, "role_name": role.get("name")},
+            metadata={"role_id": role_id, "role_name": role.get("name"), "email_error": email_error},
         )
         g.audit_logged = True
 
+        if email_error:
+            return jsonify({"message": "Invitation saved.", "warning": email_error}), 200
         return jsonify({"message": "Invitation sent successfully"}), 200
 
     except Exception as e:
         if conn:
-            conn.rollback()  # undo DB changes
+            conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         if conn:
