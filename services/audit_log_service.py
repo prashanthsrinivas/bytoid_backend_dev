@@ -1,17 +1,17 @@
 """
 Audit logging service — backend only, never expose via any route.
 
-Writes structured JSON entries (one per line) to logs/audit.log.
-Future S3: implement _upload_to_s3() and uncomment the call in log_audit_event().
+Writes structured JSON audit entries to S3 at {user_id}/audit/{date}.json.
 """
 
 import json
-import logging
-import os
+# import logging
+# import os
 from datetime import datetime, timezone
-from logging.handlers import RotatingFileHandler
+# from logging.handlers import RotatingFileHandler
 from flask import g, session, request
 from db.db_checkers import get_email_by_id
+from utils.s3_utils import save_app_runbase_S3
 
 # Action constants
 # AUTH
@@ -235,29 +235,36 @@ ACTION_CATEGORY = {
     "SPECIAL_ACCESS_MODIFIED": "admin_access",
 }
 
-_AUDIT_LOG_FILE = "logs/audit.log"
-os.makedirs(os.path.dirname(_AUDIT_LOG_FILE), exist_ok=True)
-
-_audit_logger = logging.getLogger("audit")
-_audit_logger.setLevel(logging.INFO)
-_audit_logger.propagate = False
-
-if not _audit_logger.handlers:
-    _handler = RotatingFileHandler(
-        _AUDIT_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5
-    )
-    _handler.setFormatter(logging.Formatter("%(message)s"))
-    _audit_logger.addHandler(_handler)
+# _AUDIT_LOG_FILE = "logs/audit.log"
+# os.makedirs(os.path.dirname(_AUDIT_LOG_FILE), exist_ok=True)
+#
+# _audit_logger = logging.getLogger("audit")
+# _audit_logger.setLevel(logging.INFO)
+# _audit_logger.propagate = False
+#
+# if not _audit_logger.handlers:
+#     _handler = RotatingFileHandler(
+#         _AUDIT_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5
+#     )
+#     _handler.setFormatter(logging.Formatter("%(message)s"))
+#     _audit_logger.addHandler(_handler)
 
 
 def _upload_to_s3(entry: dict) -> None:
-    """
-    TODO: upload entry to S3.
-    Suggested key: audit-logs/{YYYY}/{MM}/{DD}/{timestamp_ms}-{action}.json
-    Use utils.s3_utils functions already in this repo.
-    Wrap in its own try/except when implemented.
-    """
-    pass
+    try:
+        audit_owner_id = entry.get("audit_owner_id")
+        actor_user_id = entry.get("actor_user_id")
+        # entry["timestamp"] is UTC ISO 8601 — first 10 chars = YYYY-MM-DD
+        date = entry.get("timestamp", "")[:10]
+
+        if audit_owner_id and date:
+            save_app_runbase_S3(entry, f"{audit_owner_id}/audit/{date}.json")
+
+        # Only write actor's copy when actor differs from owner (admin delegation case)
+        if actor_user_id and actor_user_id != audit_owner_id and date:
+            save_app_runbase_S3(entry, f"{actor_user_id}/audit/{date}.json")
+    except Exception:
+        pass
 
 
 def log_audit_event(
@@ -296,8 +303,8 @@ def log_audit_event(
             "status": status,
             "metadata": metadata or {},
         }
-        _audit_logger.info(json.dumps(entry, default=str))
-        # _upload_to_s3(entry)   # uncomment when S3 is ready
+        # _audit_logger.info(json.dumps(entry, default=str))
+        _upload_to_s3(entry)
     except Exception:
         pass
 
@@ -322,7 +329,12 @@ def build_audit_actor(body_user_id):
         actor_user_id = session_uid or body_user_id
         actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
         acting_on_behalf_of_email = getattr(g, "acting_on_behalf_of_email", None)
-        return actor_user_id, actor_email, pre_computed_behalf, acting_on_behalf_of_email
+        return (
+            actor_user_id,
+            actor_email,
+            pre_computed_behalf,
+            acting_on_behalf_of_email,
+        )
 
     # Check if there's an active workspace delegation
     active_workspace_id = session.get("active_workspace_id")
