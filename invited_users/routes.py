@@ -116,6 +116,7 @@ def add_role_admin():
 @inv_users_bp.route("/admin/roles-get/<userid>", methods=["GET"])
 def get_roles(userid):
     """Get all roles and invited users for a user"""
+    conn = None
     try:
         special_access_status = {}
         conn = connect_to_rds()
