@@ -1769,13 +1769,11 @@ def get_all_domain(user_id):
 
         all_domains = []
 
-        for domain in domains:
-            if isinstance(domain, dict):
-                if domain.get("primary"):
-                    all_domains.append(domain["primary"])
-
-                if domain.get("secondary"):
-                    all_domains.extend(domain["secondary"])
+        if isinstance(domains, dict):
+            if domains.get("primary"):
+                all_domains.append(domains["primary"])
+            if domains.get("secondary"):
+                all_domains.extend(domains["secondary"])
 
         return jsonify({"domains": all_domains}), 200
 
