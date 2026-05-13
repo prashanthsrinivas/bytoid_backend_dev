@@ -1610,11 +1610,11 @@ def add_domain():
     user_id = data.get("user_id")
     email = data.get("email")
     new_domain = data.get("new_domain")
+    conn = None
     try:
         if not is_valid_domain(new_domain):
             return jsonify({"error": "Invalid or non-existing domain"}), 400
         conn = connect_to_rds()
-        cursor = conn.cursor()
         domains = fetch_user_domains(user_id, conn)
         if not domains:
             # Initialize if no domain exists
@@ -1629,17 +1629,17 @@ def add_domain():
         ].lower() and new_domain.lower() not in [d.lower() for d in secondary_domains]:
             secondary_domains.append(new_domain.lower())
 
-        cursor.execute(
-            """
-            UPDATE users
-            SET domain = %s
-            WHERE user_id = %s
-        """,
-            (json.dumps(domains), user_id),
-        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE users
+                SET domain = %s
+                WHERE user_id = %s
+            """,
+                (json.dumps(domains), user_id),
+            )
 
         conn.commit()
-        conn.close()
 
         actor_email = get_email_by_id(user_id)
         log_audit_event(
