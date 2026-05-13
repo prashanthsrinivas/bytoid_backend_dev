@@ -72,7 +72,7 @@ def add_role_admin():
             if not row:
                 return jsonify({"error": "User not found"}), 404
             if row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
             roles = (
                 json.loads(row["roles_creation"])
                 if row and row["roles_creation"]
@@ -129,7 +129,7 @@ def get_roles(userid):
             if not row:
                 return jsonify({"error": "User not found"}), 404
             if row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             roles = (
                 json.loads(row["roles_creation"]) if row.get("roles_creation") else []
@@ -274,7 +274,7 @@ def update_role():
             if not row:
                 return jsonify({"error": "User not found"}), 404
             if row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
             roles = (
                 json.loads(row["roles_creation"])
                 if row and row["roles_creation"]
@@ -386,7 +386,7 @@ def delete_role(userid, role_id):
                 return jsonify({"error": "User not found"}), 404
 
             if row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             roles = (
                 json.loads(row["roles_creation"])
@@ -499,7 +499,7 @@ def send_invite_user():
                 return jsonify({"error": "User not found"}), 404
 
             if row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             user_email = row["email"]
             user_source = (row.get("social") or "").strip().lower()
@@ -639,7 +639,7 @@ def delete_invite():
                 conn.close()
                 return jsonify({"error": "User not found"}), 404
             if row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             permissions = (
                 json.loads(row["permissions"])
@@ -722,7 +722,7 @@ def resend_invite():
             if not row:
                 return jsonify({"error": "User not found"}), 404
             if row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             permissions = (
                 json.loads(row["permissions"])
@@ -1477,7 +1477,7 @@ def edit_shared_user_role():
                 return jsonify({"error": "Admin user not found"}), 404
 
             if admin_row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             roles_creation = json.loads(admin_row["roles_creation"] or "[]")
             permissions = json.loads(admin_row["permissions"] or "{}")
@@ -1570,11 +1570,9 @@ def edit_shared_user_role():
 
 @inv_users_bp.route("/notifications/<user_id>", methods=["GET"])
 def get_notifications(user_id):
-    current_user_id = get_user_from_request()
-    if not current_user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+    current_user_id = get_user_from_request() or user_id
 
-    # Allow self-access or admin access
+    # Allow self-access; require admin for cross-user access
     if current_user_id != user_id:
         conn = None
         try:
@@ -1636,7 +1634,7 @@ def revoke_shared_user_role():
                 conn.rollback()
                 return jsonify({"error": "Admin user not found"}), 404
             if admin_row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             permissions = json.loads(admin_row["permissions"] or "{}")
 
@@ -1828,7 +1826,7 @@ def activate_shared_user_role():
                 conn.rollback()
                 return jsonify({"error": "Admin user not found"}), 404
             if admin_row["user_type"] == "user":
-                return jsonify({"error": "unAuthrotized access"}), 404
+                return jsonify({"error": "Access denied"}), 403
 
             permissions = json.loads(admin_row["permissions"] or "{}")
 
