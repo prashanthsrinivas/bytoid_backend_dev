@@ -866,7 +866,7 @@ async def analyze_tracker_framework_rows(
     prompt = f"""You are a compliance analyst. Given tracker rows and framework requirements from "{framework_name}", match each tracker row to the single best matching requirement by its index.
 
 TRACKER ROWS:
-{rows_json[:4000]}
+{rows_json[:80000]}
 
 FRAMEWORK REQUIREMENTS (with index):
 {fw_rows_json[:8000]}
@@ -880,7 +880,7 @@ Return ONLY valid JSON object (no markdown, no explanation):
     payload = {
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         "temperature": 0,
-        "max_tokens": 8000,
+        "max_tokens": 16000,
     }
 
     try:
