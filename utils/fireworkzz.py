@@ -869,14 +869,13 @@ TRACKER ROWS:
 {rows_json[:80000]}
 
 FRAMEWORK REQUIREMENTS (with index):
-{fw_rows_json[:40000]}
+{fw_rows_json[:150000]}
 
-TASK: For each tracker row, identify the indices of ALL framework requirements it directly and specifically relates to.
+TASK: For each tracker row, identify the indices of ALL framework requirements it relates to.
 Rules:
-- Base every decision on ALL column values present in the tracker row — not just one or two fields.
-- Every assigned requirement must be clearly and specifically supported by the full context of the row's data.
-- Do NOT make loose, approximate, or keyword-only matches. If the full row context does not confirm the match, skip it.
-- Return an empty list [] if no requirement is clearly confirmed by the row's complete data.
+- Consider all column values in the tracker row when finding matches.
+- A match is valid when the tracker row clearly relates to the requirement based on its content, topic, or intent — including semantic and conceptual matches, not just exact wording.
+- Return an empty list [] if no requirement reasonably matches.
 
 Return ONLY valid JSON object (no markdown, no explanation):
 {{"assignments": [{{"row_id": "trk_r_xxx", "fw_row_indices": [3, 7]}}, {{"row_id": "trk_r_yyy", "fw_row_indices": []}}]}}"""
@@ -959,29 +958,39 @@ async def quality_review_framework_assignments(
     if not pairs:
         return assignments
 
-    review_payload = json.dumps(
-        [
-            {
-                "row_id": p["row_id"],
-                "fw_index": p["fw_index"],
-                "row_data": row_map.get(p["row_id"], {}),
-                "requirement": fw_indexed[p["fw_index"]],
-            }
-            for p in pairs
-        ],
-        indent=2,
-    )
+    # Build the review payload item-by-item so we can track which pairs fit
+    # within the prompt limit. Pairs beyond the limit are passed through
+    # rather than silently dropped (they were never reviewed).
+    REVIEW_CHAR_LIMIT = 80000
+    payload_items = []
+    reviewed_pair_set = set()  # (row_id, fw_index) pairs actually sent for review
+    running_chars = 0
+    for p in pairs:
+        item = {
+            "row_id": p["row_id"],
+            "fw_index": p["fw_index"],
+            "row_data": row_map.get(p["row_id"], {}),
+            "requirement": fw_indexed[p["fw_index"]],
+        }
+        item_str = json.dumps(item)
+        if running_chars + len(item_str) > REVIEW_CHAR_LIMIT:
+            break
+        payload_items.append(item)
+        reviewed_pair_set.add((p["row_id"], int(p["fw_index"])))
+        running_chars += len(item_str)
+
+    review_payload = json.dumps(payload_items, indent=2)
 
     total_input_chars = len(review_payload)
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
         return assignments
 
-    prompt = f"""You are a strict compliance quality reviewer. The following proposed mappings between tracker rows and "{framework_name}" requirements need validation.
+    prompt = f"""You are a compliance quality reviewer. The following proposed mappings between tracker rows and "{framework_name}" requirements need validation.
 
 PROPOSED MAPPINGS:
-{review_payload[:80000]}
+{review_payload}
 
-For each mapping, review whether ALL the values in "row_data" genuinely confirm a direct relationship to the "requirement". A mapping is VALID only when the full context of the row data clearly and specifically supports that requirement — not just a superficial keyword overlap.
+For each mapping, confirm whether the tracker row data relates to the requirement based on content, topic, or intent. A mapping is VALID if there is a clear and reasonable connection — it does not need to be word-for-word identical.
 
 Return ONLY a valid JSON object listing which mappings pass review (no markdown, no explanation):
 {{"valid_pairs": [{{"row_id": "trk_r_xxx", "fw_index": 3}}, {{"row_id": "trk_r_yyy", "fw_index": 7}}]}}
@@ -1023,13 +1032,16 @@ If no mappings are valid, return: {{"valid_pairs": []}}"""
             reference_id="quality_review_framework_assignments",
         )
 
-        # Rebuild assignments retaining only validated indices
+        # Rebuild assignments:
+        # - Pairs sent for review: keep only if validated
+        # - Pairs NOT sent (beyond limit): pass through unchanged
         reviewed = []
         for a in assignments:
             row_id = a.get("row_id")
             kept = [
                 idx for idx in (a.get("fw_row_indices") or [])
-                if (row_id, int(idx)) in valid_pairs
+                if (row_id, int(idx)) not in reviewed_pair_set
+                or (row_id, int(idx)) in valid_pairs
             ]
             reviewed.append({"row_id": row_id, "fw_row_indices": kept})
 
