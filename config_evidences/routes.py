@@ -5,12 +5,15 @@ import base64
 import traceback
 import logging
 from flask import Blueprint, jsonify, request, g
+from utils.normal import parse_composite_user_id
 from utils.permission_required import permission_required_body
 from db.lance_db_service import LanceDBServer
 from db.db_checkers import get_email_by_id
 from services.audit_log_service import (
     log_audit_event,
-    EVIDENCE_CONFIG_ADDED, EVIDENCE_CONFIG_UPDATED, EVIDENCE_CONFIG_DELETED,
+    EVIDENCE_CONFIG_ADDED,
+    EVIDENCE_CONFIG_UPDATED,
+    EVIDENCE_CONFIG_DELETED,
 )
 from playbook.background_worker import JobManager
 from services.redis_service import RedisService
@@ -130,8 +133,10 @@ def update_evidence_config():
 
         actor_email = get_email_by_id(user_id)
         log_audit_event(
-            action=EVIDENCE_CONFIG_UPDATED, endpoint="/runbook/evidence/config",
-            ip=request.remote_addr, status="success",
+            action=EVIDENCE_CONFIG_UPDATED,
+            endpoint="/runbook/evidence/config",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=user_id,
             actor_email=actor_email,
             metadata={"entry_id": entry_id},
@@ -190,8 +195,10 @@ def delete_evidence_config():
 
         actor_email = get_email_by_id(user_id)
         log_audit_event(
-            action=EVIDENCE_CONFIG_DELETED, endpoint="/runbook/evidence/config",
-            ip=request.remote_addr, status="success",
+            action=EVIDENCE_CONFIG_DELETED,
+            endpoint="/runbook/evidence/config",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=user_id,
             actor_email=actor_email,
             metadata={"entry_id": entry_id, "artifact": deleted_entry.get("artifact")},
@@ -262,11 +269,16 @@ def add_evidence_entry():
 
         actor_email = get_email_by_id(user_id)
         log_audit_event(
-            action=EVIDENCE_CONFIG_ADDED, endpoint="/runbook/evidence/add",
-            ip=request.remote_addr, status="success",
+            action=EVIDENCE_CONFIG_ADDED,
+            endpoint="/runbook/evidence/add",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=user_id,
             actor_email=actor_email,
-            metadata={"evidence_type": entry_data.get("type"), "artifact": entry_data.get("artifact")},
+            metadata={
+                "evidence_type": entry_data.get("type"),
+                "artifact": entry_data.get("artifact"),
+            },
         )
         g.audit_logged = True
 
@@ -322,6 +334,7 @@ async def runbook_evidence_configure():
 async def evidence_check():
     try:
         user_id = request.form.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         runbook_id = request.form.get("runbook_id")
         file = request.files.get("file")
 

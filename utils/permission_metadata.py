@@ -70,18 +70,6 @@ PERMISSION_METADATA = {
         "type": "execute",
         "dependencies": ["compliance.runbook.read"]
     },
-    "compliance.framework.create": {
-        "label": "Upload Frameworks",
-        "module": "Compliance Engine",
-        "type": "create",
-        "dependencies": ["workspace.compliance_engine"]
-    },
-    "compliance.framework.delete": {
-        "label": "Delete Frameworks",
-        "module": "Compliance Engine",
-        "type": "delete",
-        "dependencies": ["compliance.framework.create"]
-    },
     "compliance.runbook.read": {
         "label": " View Runbooks",
         "module": "Compliance",
@@ -94,30 +82,7 @@ PERMISSION_METADATA = {
         "type": "read",
         "dependencies": ["compliance.runbook.create"]
     },
-    "compliance.report.create": {
-        "label": "Create Runbook Reports",
-        "module": "Compliance",
-        "type": "create",
-        "dependencies": ["compliance.runbook.create"]
-    },
-    "compliance.report.edit": {
-        "label": "Edit Runbook Reports",
-        "module": "Compliance",
-        "type": "update",
-        "dependencies": ["compliance.report.create"]
-    },
-    "compliance.report.delete": {
-        "label": "Delete Runbook Reports",
-        "module": "Compliance",
-        "type": "delete",
-        "dependencies": ["compliance.report.create"]
-    },
-    "compliance.report.read": {
-        "label": "View standalone Reports",
-        "module": "Compliance",
-        "type": "read",
-        "dependencies": []
-    },
+   
     "compliance.report.logs": {
         "label": "View Report Logs",
         "module": "Compliance",
@@ -703,6 +668,50 @@ PERMISSION_METADATA = {
         "dependencies": ["apps.endpoint.add"]
     },
 
+    # ================= POLICY HUB =================
+
+    "policyhub.view": {
+        "label": "View Policy Hub",
+        "module": "Policy Hub",
+        "type": "read",
+        "dependencies": []
+    },
+
+    "policyhub.create": {
+        "label": "Create Policies",
+        "module": "Policy Hub",
+        "type": "create",
+        "dependencies": ["policyhub.view"]
+    },
+
+    "policyhub.edit": {
+        "label": "Edit Policies",
+        "module": "Policy Hub",
+        "type": "update",
+        "dependencies": ["policyhub.create"]
+    },
+
+    "policyhub.delete": {
+        "label": "Delete Policies",
+        "module": "Policy Hub",
+        "type": "delete",
+        "dependencies": ["policyhub.create"]
+    },
+
+    "policyhub.framework.create": {
+        "label": "Upload Frameworks",
+        "module": "Policy Hub",
+        "type": "create",
+        "dependencies": ["policyhub.view"]
+    },
+
+    "policyhub.framework.delete": {
+        "label": "Delete Frameworks",
+        "module": "Policy Hub",
+        "type": "delete",
+        "dependencies": ["policyhub.framework.create"]
+    },
+
     # ================= TEAM =================
     "team.search": {
         "label": "Search Agents",
@@ -768,10 +777,51 @@ PERMISSION_METADATA = {
     },
 
     # ============= Trust Center ==============
+    "trustcenter.view": {
+        "label": "View Trust Center",
+        "module": "Trust Center",
+        "type": "view",
+        "dependencies": []
+    },
+
+    "trustcenter.share": {
+        "label": "Share Trust Center",
+        "module": "Trust Center",
+        "type": "share",
+        "dependencies": ["trustcenter.view"]
+    },
+
+    "trustcenter.whitepaper.regenerate": {
+        "label": "Regenerate Whitepaper",
+        "module": "Trust Center",
+        "type": "execute",
+        "dependencies": ["trustcenter.view"]
+    },
+
+    "trustcenter.document.download": {
+        "label": "Download PDF",
+        "module": "Trust Center",
+        "type": "view",
+        "dependencies": ["trustcenter.view"]
+    },
+
+    "trustcenter.whitepaper.edit": {
+        "label": "Edit Whitepaper",
+        "module": "Trust Center",
+        "type": "edit",
+        "dependencies": ["trustcenter.view"]
+    },
+
     "trustcenter.document.upload": {
-    "label": "Upload Documents",
-    "module": "Trust Center",
-    "type": "create",
-    "dependencies": ["trustcenter.view"]
-    }
+        "label": "Upload Documents",
+        "module": "Trust Center",
+        "type": "create",
+        "dependencies": ["trustcenter.view"]
+    },
+    "trustcenter.document.delete": {
+        "label": "Delete Documents",
+        "module": "Trust Center",
+        "type": "delete",
+        "dependencies": ["trustcenter.document.upload"]
+    },
 }

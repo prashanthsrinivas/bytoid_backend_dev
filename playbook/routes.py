@@ -4,9 +4,9 @@ from credits_route.route import Credits
 from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
-    get_subagent_by_userid,
+    get_subagent_by_user_id,
     get_email_by_id,
-    get_userid,
+    get_user_id,
     get_userinfo,
 )
 from db.rds_db import connect_to_rds
@@ -14,8 +14,12 @@ from flask import Blueprint, request, jsonify, Response, stream_with_context, g
 import json, uuid
 from services.audit_log_service import (
     log_audit_event,
-    PLAYBOOK_CREATED, PLAYBOOK_DELETED, PLAYBOOK_CLONED, PLAYBOOK_MADE_GLOBAL,
-    PLAYBOOK_UPDATED, PLAYBOOK_SCHEDULED,
+    PLAYBOOK_CREATED,
+    PLAYBOOK_DELETED,
+    PLAYBOOK_CLONED,
+    PLAYBOOK_MADE_GLOBAL,
+    PLAYBOOK_UPDATED,
+    PLAYBOOK_SCHEDULED,
     build_audit_actor,
 )
 from cust_helpers import pathconfig
@@ -27,6 +31,7 @@ from .helperzz import *
 from utils.pb_config_utils import *
 from utils.normal import (
     load_yaml_file,
+    parse_composite_user_id,
     read_function_jsons,
     read_function_jsons2,
     remove_not_found_entities,
@@ -53,6 +58,7 @@ executor = ThreadPoolExecutor(max_workers=4)
 def _run_async(coro):
     """Run an async coroutine from a gunicorn sync worker context."""
     import asyncio
+
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
@@ -65,14 +71,18 @@ def _run_async(coro):
 def create_new_instruction():
 
     data = request.json
-    user_id = data.get("user_id")
+    baseuser = data.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    data["user_id"] = user_id
 
     job_id = _run_async(JobManager.submit_job(create_instruction_worker, data))
 
-    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
     log_audit_event(
-        action=PLAYBOOK_CREATED, endpoint="/create_instruction",
-        ip=request.remote_addr, status="success",
+        action=PLAYBOOK_CREATED,
+        endpoint="/create_instruction",
+        ip=request.remote_addr,
+        status="success",
         actor_user_id=actor_uid,
         actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid,
@@ -87,7 +97,7 @@ def create_new_instruction():
 async def create_instruction_worker(data, job_id=None, session_id=None):
 
     db = connect_to_rds()
-    userid = data["user_id"]
+    user_id = data["user_id"]
     credits = Credits(db)
 
     try:
@@ -98,15 +108,15 @@ async def create_instruction_worker(data, job_id=None, session_id=None):
 
         if not await credits.has_ai_credits(
             total_chars=total_input_chars,
-            user_id=userid,
+            user_id=user_id,
         ):
             db.rollback()
             return {"error": "INSUFFICIENT"}
 
-        playbook_id, config_path, subagent_id = returnconfigandpath(userid)
+        playbook_id, config_path, subagent_id = returnconfigandpath(user_id)
 
         if not playbook_id:
-            config_s3_path = create_empty_playbook_config(userid)
+            config_s3_path = create_empty_playbook_config(user_id)
             playb_id = str(uuid.uuid4())
 
             playbook_id, config_path = create_subagent_to_playbook(
@@ -124,7 +134,7 @@ async def create_instruction_worker(data, job_id=None, session_id=None):
 
         update_playbook_config(
             configpath=config_path,
-            user_id=userid,
+            user_id=user_id,
             name=full_output["filename"],
             filepath=npath,
             title=full_output["workflow"]["name"],
@@ -134,7 +144,7 @@ async def create_instruction_worker(data, job_id=None, session_id=None):
 
         db.commit()
 
-        await credits.cm.sync_credits_to_redis(userid)
+        await credits.cm.sync_credits_to_redis(user_id)
 
         return full_output
 
@@ -150,10 +160,10 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
     import json
     import asyncio
 
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
 
-    if not userid or not filename:
+    if not user_id or not filename:
         return {"error": "user_id and filename required"}, 400
 
     # Ensure JSON extension
@@ -161,8 +171,8 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
         filename = f"{filename}.json"
 
     # Get config + path
-    playbook_id, config_path, subagent_id = returnconfigandpath(userid)
-    s3_key = f"{userid}/workflow/{base_name(filename)}/{filename}"
+    playbook_id, config_path, subagent_id = returnconfigandpath(user_id)
+    s3_key = f"{user_id}/workflow/{base_name(filename)}/{filename}"
 
     # 🔹 Load existing workflow
     try:
@@ -238,19 +248,19 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
             ensure_dir(f"{pathconfig.basepath}/test/")
             filepath = os.path.join(f"{pathconfig.basepath}/test/", filename)
             delete_file_from_s3(
-                filepath=f"{userid}/workflow/{base_name(filename)}/{filename}"
+                filepath=f"{user_id}/workflow/{base_name(filename)}/{filename}"
             )
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(existing_data, f, indent=2)
             res = upload_any_file(
-                file_path=filepath, user_id=userid, file_name=filename, type="workflow"
+                file_path=filepath, user_id=user_id, file_name=filename, type="workflow"
             )
             os.remove(filepath)
 
             # Update DB config
             update_playbook_config(
                 configpath=config_path,
-                user_id=userid,
+                user_id=user_id,
                 name=filename,
                 filepath=filename,
                 title=data.get("title"),
@@ -279,7 +289,7 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
         total_input_chars = 5000
 
         if not await credits.has_ai_credits(
-            total_chars=total_input_chars, user_id=userid
+            total_chars=total_input_chars, user_id=user_id
         ):
             raise Exception("INSUFFICIENT_CREDITS")
 
@@ -295,7 +305,7 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
 
         update_playbook_config(
             configpath=config_path,
-            user_id=userid,
+            user_id=user_id,
             name=full_output["filename"],
             filepath=npath,
             title=full_output["workflow"]["name"],
@@ -325,7 +335,7 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
             "error": str(e),
         }
 
-    await credits.cm.sync_credits_to_redis(user_id=userid)
+    await credits.cm.sync_credits_to_redis(user_id=user_id)
     db.commit()
     db.close()
 
@@ -349,13 +359,20 @@ def job_status(job_id):
 @permission_required_body("workflow.process.edit")
 def updateInstruction():
     data = request.json
+    baseuser = data.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    data["user_id"] = user_id
 
     job_id = _run_async(JobManager.submit_job(updateInstruction_worker, data))
 
     # Audit logging
-    user_id = data.get("user_id")
     playbook_name = data.get("name")
-    actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+    (
+        actor_user_id,
+        actor_email,
+        acting_on_behalf_of_user_id,
+        acting_on_behalf_of_email,
+    ) = build_audit_actor(baseuser)
     log_audit_event(
         action=PLAYBOOK_UPDATED,
         endpoint="/update_instruction",
@@ -383,8 +400,9 @@ def get_all_instructions():
 
     if not user_id:
         return jsonify({"error": "credentials required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
-    subagent_id = get_subagent_by_userid(user_id)
+    subagent_id = get_subagent_by_user_id(user_id)
     if not subagent_id:
         return jsonify({"error": "invalid credentials"}), 401
 
@@ -428,6 +446,7 @@ def get_single_instruction():
         return jsonify({"error": "user_id and filename are required"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     s3_key = f"{user_id}/workflow/{base_name(filename)}/{filename}"
     # print("s3 key", s3_key)
 
@@ -444,16 +463,17 @@ def get_single_instruction():
 @playbook_bp.route("/delete_instruction", methods=["DELETE"])
 @permission_required_body("workflow.process.delete")
 def delete_instruction():
-    user_id = request.args.get("user_id")
+    baseuser = request.args.get("user_id")
     filename = request.args.get("filename")
 
     if not user_id or not filename:
         return jsonify({"error": "user_id and filename are required"}), 400
     if not user_id:
-        return jsonify({"error": "userid is required"}), 400
+        return jsonify({"error": "user_id is required"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
-    subagent_id = get_subagent_by_userid(user_id)
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    subagent_id = get_subagent_by_user_id(user_id)
     if not subagent_id:
         return jsonify({"error": "no agent found"}), 400
     config_path = None
@@ -466,10 +486,12 @@ def delete_instruction():
         if not success:
             return jsonify({"error": "Failed to delete instruction"}), 500
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
-            action=PLAYBOOK_DELETED, endpoint="/delete_instruction",
-            ip=request.remote_addr, status="success",
+            action=PLAYBOOK_DELETED,
+            endpoint="/delete_instruction",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
@@ -498,6 +520,7 @@ def add_a_step():
         return jsonify({"status": "error", "message": "Missing step or user_id"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     playbook = read_json_from_s3(f"{user_id}/workflow/{base_name(filename)}/{filename}")
     workflow = playbook.setdefault("workflow", {})
     steps = workflow.setdefault("steps", [])
@@ -608,6 +631,7 @@ def edit_a_step():
         filename = f"{filename}.json"
     # print(body)
     step_data = format_step_data(step_data)
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     playbook = read_json_from_s3(f"{user_id}/workflow/{base_name(filename)}/{filename}")
     steps = playbook.get("workflow", {}).get("steps", [])
@@ -656,7 +680,7 @@ def update_step_arguments():
 
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
-
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         # -----------------------------------------------------------
         # 1) Load playbook
         # -----------------------------------------------------------
@@ -817,6 +841,7 @@ def delete_step_argument():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
     # Load playbook
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     playbook = read_json_from_s3(f"{user_id}/workflow/{base_name(filename)}/{filename}")
     steps = playbook.get("workflow", {}).get("steps", [])
 
@@ -898,7 +923,7 @@ def delete_a_step():
 
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
-
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     try:
         playbook = read_json_from_s3(
             f"{user_id}/workflow/{base_name(filename)}/{filename}"
@@ -1035,6 +1060,7 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
             update_instruction = body.get("modify_instructions")
             additional_data = body.get("additional_data") or ""
             user_id = body.get("user_id")
+            logged_in_user_id, user_id = parse_composite_user_id(user_id)
             filename = body.get("filename")
         else:
             update_instruction = ud_inst
@@ -1275,6 +1301,8 @@ async def modlmiddle(body):
     update_instruction = body.get("modify_instructions")
     additional_data = body.get("additional_data") or ""
     user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     filename = body.get("filename")
     res = await modify_instruction(
         ud_inst=update_instruction,
@@ -1299,17 +1327,18 @@ def mod_instuct():
 @permission_required_body("workflow.process.execute")
 def runWorkflow():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
     testing = data.get("testing")
 
-    if not userid or not filename:
+    if not user_id or not filename:
         return jsonify({"status": "error", "message": "Invalid input"}), 400
 
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -1352,7 +1381,7 @@ def runWorkflow():
 
     try:
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=testing,
@@ -1372,17 +1401,18 @@ def runWorkflow():
 @permission_required_body("workflow.process.execute")
 def run_workflow_step():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
     step_id = data.get("step_id")
 
-    if not userid or not filename or not step_id:
+    if not user_id or not filename or not step_id:
         return jsonify({"status": "error", "message": "Invalid input"}), 400
 
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -1393,7 +1423,7 @@ def run_workflow_step():
 
     try:
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             db=db,
@@ -1423,18 +1453,19 @@ def run_workflow_step():
 def testworkflowbyinput_stream():
     data = request.json if request.method == "POST" else request.args
 
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
     userinput = data.get("userinput")
     testing = data.get("is_testing") or True
 
-    if not userid or not filename or not userinput:
+    if not user_id or not filename or not userinput:
         return jsonify({"status": "error", "message": "Invalid input"}), 400
 
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -1446,7 +1477,7 @@ def testworkflowbyinput_stream():
 
         try:
             with WorkflowRunnerV2(
-                userid=userid,
+                userid=user_id,
                 filename=filename,
                 workflowJson=workflow_json,
                 testing=testing,
@@ -1471,20 +1502,21 @@ def clear_playground_data():
     Keeps workflow logic and metadata intact.
     """
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
         # 🔹 Load workflow JSON from S3
         workflow_json = read_json_from_s3(
-            f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+            f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         )
 
         # 🔹 Remove transient sections
@@ -1506,8 +1538,10 @@ def clear_playground_data():
         # with open(tmp_path, "w") as f:
         #     json.dump(workflow_json, f, indent=4)
 
-        # upload_any_file(tmp_path, userid, filename)
-        save_playbook_to_s3(workflow_json, userid, "Step edited successfully", filename)
+        # upload_any_file(tmp_path, user_id, filename)
+        save_playbook_to_s3(
+            workflow_json, user_id, "Step edited successfully", filename
+        )
 
         return (
             jsonify(
@@ -1536,19 +1570,20 @@ def clear_testing_data():
     Keeps chat, online, and workflow structure intact.
     """
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     try:
         # 🔹 Load workflow JSON from S3
         workflow_json = read_json_from_s3(
-            f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+            f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         )
 
         # 🔹 Remove only testing section
@@ -1571,8 +1606,10 @@ def clear_testing_data():
         # with open(tmp_path, "w") as f:
         #     json.dump(workflow_json, f, indent=4)
 
-        # upload_any_file(tmp_path, userid, filename)
-        save_playbook_to_s3(workflow_json, userid, "Step edited successfully", filename)
+        # upload_any_file(tmp_path, user_id, filename)
+        save_playbook_to_s3(
+            workflow_json, user_id, "Step edited successfully", filename
+        )
 
         return (
             jsonify(
@@ -1606,27 +1643,28 @@ def generate_workflow_input():
         # 1️⃣ INPUT HANDLING
         # -----------------------------
         data = request.get_json(force=True)
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         inp_description = data.get("description", "").strip()
 
-        if not userid:
+        if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
         if not inp_description:
             return jsonify({"error": "Missing 'description' field"}), 400
 
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         # -----------------------------
         # 2️⃣ CREDIT CHECK
         # -----------------------------
         total_input_chars = len(inp_description)
-        if not _run_async(credits.has_ai_credits(
-            total_chars=total_input_chars, user_id=userid
-        )):
+        if not _run_async(
+            credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id)
+        ):
             return jsonify({"error": "Insufficient credits"}), 402
 
         # -----------------------------
         # 3️⃣ USER ACCOUNT TYPE & SERVICES
         # -----------------------------
-        main_user_account_type = fetch_user_Social(user_id=userid, connection=db)
+        main_user_account_type = fetch_user_Social(user_id=user_id, connection=db)
         # print("main user logged in:", main_user_account_type)
 
         available_modes = [
@@ -1654,13 +1692,15 @@ def generate_workflow_input():
         # -----------------------------
         # 4️⃣ CALL LLM WITH CREDITS
         # -----------------------------
-        llm_output = _run_async(get_fireworks_response2(
-            user_message=formatted_prompt,
-            role="system",
-            temp=0.3,
-            user_id=userid,
-            credits=credits,  # ✅ Pass credits for deduction
-        ))
+        llm_output = _run_async(
+            get_fireworks_response2(
+                user_message=formatted_prompt,
+                role="system",
+                temp=0.3,
+                user_id=user_id,
+                credits=credits,  # ✅ Pass credits for deduction
+            )
+        )
 
         if llm_output == "INSUFFICIENT":
             return jsonify({"error": "Insufficient credits"}), 402
@@ -1709,7 +1749,7 @@ def generate_workflow_input():
                            OR LOWER(uc.email_id) LIKE %s)
                 """
                 like = f"%{key.lower()}%"
-                cursor.execute(query, (userid, like, like, like))
+                cursor.execute(query, (user_id, like, like, like))
                 rows = [r[0] for r in cursor.fetchall()]
                 if rows:
                     resolved_report["found"][key] = rows
@@ -1730,7 +1770,7 @@ def generate_workflow_input():
                     WHERE c.user_id_fk = %s
                       AND LOWER(uc.email_id) = %s
                 """
-                cursor.execute(query, (userid, key))
+                cursor.execute(query, (user_id, key))
                 row = cursor.fetchone()
                 if row:
                     resolved_report["found"][email] = [row[0]]
@@ -1783,7 +1823,7 @@ def testmidcheck():
     filedata = body.get("ques_file")
     credits = Credits()
     try:
-        ai = AutoMateService(userid=user_id, credits=credits)
+        ai = AutoMateService(user_id=user_id, credits=credits)
         val = _run_async(ai.generate_questions_from_file(file_data=filedata))
         return jsonify({"data": val})
     except Exception as e:
@@ -1883,22 +1923,23 @@ def resolve_schedule_from_activation(scheduled):
 def schedule_workflow_checker():
     try:
         body = request.json or {}
-        userid = body.get("user_id")
+        user_id = body.get("user_id")
         filename = body.get("filename")
         deployment = body.get("deployment", {})
         contacts = deployment.get("selectedContacts", [])
         scheduled = deployment.get("scheduledActivation", {})
 
-        if not userid or not filename:
+        if not user_id or not filename:
             return jsonify({"error": "Missing user_id or filename"}), 400
 
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         # -----------------------------
         # Load workflow
         # -----------------------------
-        wf_loc = f"{userid}/workflow/{base_name(filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -1978,16 +2019,20 @@ def schedule_workflow_checker():
         db = connect_to_rds()
         credits = Credits(db=db)
         total_chars = len(full_prompt)
-        if not _run_async(credits.has_ai_credits(total_chars=total_chars, user_id=userid)):
+        if not _run_async(
+            credits.has_ai_credits(total_chars=total_chars, user_id=user_id)
+        ):
             return jsonify({"error": "Insufficient credits"}), 402
 
-        llm_output = _run_async(get_evaluator_fireworks(
-            user_message=full_prompt,
-            role="system",
-            temp=0.3,
-            user_id=userid,
-            credits=credits,  # Pass Credits for consumption
-        ))
+        llm_output = _run_async(
+            get_evaluator_fireworks(
+                user_message=full_prompt,
+                role="system",
+                temp=0.3,
+                user_id=user_id,
+                credits=credits,  # Pass Credits for consumption
+            )
+        )
 
         llm_output = re.sub(r"^```(?:json)?|```$", "", llm_output).strip()
 
@@ -2025,7 +2070,7 @@ def schedule_workflow_checker():
 def schedule_workflow():
     body = request.json or {}
 
-    userid = body["user_id"]
+    user_id = body["user_id"]
     filename = body["filename"]
 
     deployment = body.get("deployment", {})
@@ -2037,7 +2082,7 @@ def schedule_workflow():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -2061,9 +2106,11 @@ def schedule_workflow():
     # --------------------------------------------------
     if schedule_type == "daily":
         hour, minute = map(int, data["startTime"].split(":"))
-        result = _run_async(SchedulerService.schedule_daily(
-            hour, minute, userid, filename, timezone, contacts
-        ))
+        result = _run_async(
+            SchedulerService.schedule_daily(
+                hour, minute, user_id, filename, timezone, contacts
+            )
+        )
         activation_schedule["celery_task_id"] = result["entry_name"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2072,9 +2119,11 @@ def schedule_workflow():
     # --------------------------------------------------
     elif schedule_type == "weekly":
         hour, minute = map(int, data["startTime"].split(":"))
-        result = _run_async(SchedulerService.schedule_weekly(
-            data["weekday"], hour, minute, userid, filename, timezone, contacts
-        ))
+        result = _run_async(
+            SchedulerService.schedule_weekly(
+                data["weekday"], hour, minute, user_id, filename, timezone, contacts
+            )
+        )
         activation_schedule["celery_task_id"] = result["entry_name"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2083,9 +2132,11 @@ def schedule_workflow():
     # --------------------------------------------------
     elif schedule_type == "one_time":
         dt = datetime.fromisoformat(data["datetime"])
-        result = _run_async(SchedulerService.schedule_one_time(
-            dt, userid, filename, timezone, contacts
-        ))
+        result = _run_async(
+            SchedulerService.schedule_one_time(
+                dt, user_id, filename, timezone, contacts
+            )
+        )
         activation_schedule["celery_task_id"] = result["task_id"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2093,14 +2144,16 @@ def schedule_workflow():
     # CUSTOM (NEW)
     # --------------------------------------------------
     elif schedule_type == "custom":
-        result = _run_async(SchedulerService.schedule_custom(
-            start_date=data["startDate"],
-            start_time=data["startTime"],
-            userid=userid,
-            filename=filename,
-            timezone=data["timezone"],
-            contacts=contacts,
-        ))
+        result = _run_async(
+            SchedulerService.schedule_custom(
+                start_date=data["startDate"],
+                start_time=data["startTime"],
+                user_id=user_id,
+                filename=filename,
+                timezone=data["timezone"],
+                contacts=contacts,
+            )
+        )
         activation_schedule["celery_task_id"] = result["task_id"]
         activation_schedule["execution_unique_key"] = result["uniquekey"]
 
@@ -2111,7 +2164,7 @@ def schedule_workflow():
     # Persist schedule + runtime
     # --------------------------------------------------
     update_playbook_schedule_and_runtime(
-        userid=userid,
+        user_id=user_id,
         filename=filename,
         schedule=activation_schedule,
         runtime={
@@ -2125,7 +2178,12 @@ def schedule_workflow():
     )
 
     # Audit logging
-    actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(userid)
+    (
+        actor_user_id,
+        actor_email,
+        acting_on_behalf_of_user_id,
+        acting_on_behalf_of_email,
+    ) = build_audit_actor(user_id)
     log_audit_event(
         action=PLAYBOOK_SCHEDULED,
         endpoint="/schedule-workflow",
@@ -2163,15 +2221,15 @@ def get_all_fns():
 def updatequestionsworkflow():
     data = request.json
     # print("dadss", data)
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     answer = data.get("answer")
     comment = data.get("comment")
     filename = data.get("filename")
     chat_id = data.get("chat_id")
     question_id = data.get("question_id")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
     if not question_id:
@@ -2181,11 +2239,11 @@ def updatequestionsworkflow():
     if answer is None:
         return jsonify({"message": "Answer cannot be null", "status": "error"}), 400
 
-    # token = current_user_id.set(userid)
+    # token = current_user_id.set(user_id)
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -2196,7 +2254,7 @@ def updatequestionsworkflow():
         )
 
     with WorkflowRunnerV2(
-        userid=userid,
+        userid=user_id,
         filename=filename,
         workflowJson=workflow_json,
         testing=True,
@@ -2217,13 +2275,13 @@ def updatequestionsworkflow():
 @permission_required_body("workflow.process.edit")
 def updatequestionsbulkworkflow():
     data = request.json or {}
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
     chat_id = data.get("chat_id")
     answers = data.get("answers")  # 🔥 BULK answers
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
 
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
@@ -2254,7 +2312,7 @@ def updatequestionsbulkworkflow():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -2264,7 +2322,7 @@ def updatequestionsbulkworkflow():
         )
 
     with WorkflowRunnerV2(
-        userid=userid,
+        userid=user_id,
         filename=filename,
         workflowJson=workflow_json,
         testing=True,
@@ -2284,14 +2342,14 @@ def updatequestionsbulkworkflow():
 def updateformfieldworkflow():
     data = request.json
 
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     answer = data.get("answer")
     filename = data.get("filename")
     chat_id = data.get("chat_id")
     field_id = data.get("field_id")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
 
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
@@ -2308,7 +2366,7 @@ def updateformfieldworkflow():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -2318,7 +2376,7 @@ def updateformfieldworkflow():
         )
 
     with WorkflowRunnerV2(
-        userid=userid,
+        userid=user_id,
         filename=filename,
         workflowJson=workflow_json,
         testing=True,
@@ -2341,13 +2399,13 @@ def updateformfieldworkflow():
 def updateformfieldsbulkworkflow():
     data = request.json or {}
 
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
     chat_id = data.get("chat_id")
     answers = data.get("answers")  # 🔥 BULK fields
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
 
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
@@ -2379,7 +2437,7 @@ def updateformfieldsbulkworkflow():
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -2389,7 +2447,7 @@ def updateformfieldsbulkworkflow():
         )
 
     with WorkflowRunnerV2(
-        userid=userid,
+        userid=user_id,
         filename=filename,
         workflowJson=workflow_json,
         testing=True,
@@ -2410,19 +2468,19 @@ def updateformfieldsbulkworkflow():
 @permission_required_body("workflow.process.execute")
 def autocheckworkflow():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
-    # token = current_user_id.set(userid)
+    # token = current_user_id.set(user_id)
 
     # ✅ Pre-validate workflow existence
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
     if not workflow_json:
         return (
@@ -2439,7 +2497,7 @@ def autocheckworkflow():
 
     try:
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=True,
@@ -2459,21 +2517,21 @@ def autocheckworkflow():
 @permission_required_body("workflow.process.edit")
 def autocheckstatusupdate():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     filename = data.get("filename")
     count = data.get("count")
     status = data.get("status")
 
-    if not userid:
-        return jsonify({"message": "Not a valid userid", "status": "error"}), 400
+    if not user_id:
+        return jsonify({"message": "Not a valid user_id", "status": "error"}), 400
     if not filename:
         return jsonify({"message": "Not a valid filename", "status": "error"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
-    # token = current_user_id.set(userid)
+    # token = current_user_id.set(user_id)
     # try:
     # ✅ Pre-validate workflow existence
-    wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
     if not workflow_json:
         return (
@@ -2488,7 +2546,7 @@ def autocheckstatusupdate():
 
     try:
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=True,
@@ -2538,7 +2596,9 @@ def workflow_conversation():
             credits=credits,
         ) as runner:
 
-            result = _run_async(runner.make_workflow_conversation(user_message=user_message))
+            result = _run_async(
+                runner.make_workflow_conversation(user_message=user_message)
+            )
             return jsonify(result)
 
     except Exception as e:
@@ -2557,7 +2617,7 @@ def check_formcreation():
     from services.automate_service import AutoMateService
 
     credits = Credits()
-    val = AutoMateService(userid=user_id, credits=credits)
+    val = AutoMateService(user_id=user_id, credits=credits)
 
     kak = _run_async(val.generate_form_schema(user_input))
 
@@ -2575,7 +2635,7 @@ async def send_ques_byfile_bk(
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
-    ai = AutoMateService(userid=user_id, credits=credits, workflow=workflow_json)
+    ai = AutoMateService(user_id=user_id, credits=credits, workflow=workflow_json)
 
     result = await ai.generate_questions_from_file(extracted_files)
     return result
@@ -2591,7 +2651,7 @@ def generate_ques_by_file():
     wf_id = request.form.get("wf_filename")
 
     if not user_id:
-        return jsonify({"error": "No userid provided"}), 400
+        return jsonify({"error": "No user_id provided"}), 400
 
     if not uploaded_file:
         return jsonify({"error": "No file provided"}), 400
@@ -2615,9 +2675,9 @@ def generate_ques_by_file():
             return jsonify({"error": "Could not extract content from file"}), 400
 
         # 🔥 SUBMIT BACKGROUND JOB (THIS WAS MISSING)
-        job_id = _run_async(JobManager.submit_job(
-            send_ques_byfile_bk, user_id, extracted_files, wf_id
-        ))
+        job_id = _run_async(
+            JobManager.submit_job(send_ques_byfile_bk, user_id, extracted_files, wf_id)
+        )
 
         return jsonify(
             {
@@ -2752,16 +2812,18 @@ def generate_ans_files():
                 400,
             )
 
-        job_id = _run_async(JobManager.submit_job(
-            answer_ques_file_bk,
-            user_id,
-            extracted_payload,
-            wf_name,
-            step_id,
-            file_keys,
-            inp_links,
-            inp_link_keys=inp_link_keys,
-        ))
+        job_id = _run_async(
+            JobManager.submit_job(
+                answer_ques_file_bk,
+                user_id,
+                extracted_payload,
+                wf_name,
+                step_id,
+                file_keys,
+                inp_links,
+                inp_link_keys=inp_link_keys,
+            )
+        )
 
         return jsonify(
             {
@@ -2787,14 +2849,14 @@ def generate_ans_files():
 def evidence_ques_ans_attach_playbook():
     try:
         data = request.form
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         filename = data.get("filename")
         question_id = data.get("question_id")
         user_answer = data.get("user_answer")
         comment = data.get("comment")
         evidence_url = data.get("evidence_url")
 
-        if not userid or not filename or not question_id:
+        if not user_id or not filename or not question_id:
             return (
                 jsonify(
                     {
@@ -2808,14 +2870,14 @@ def evidence_ques_ans_attach_playbook():
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
 
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
 
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=True,
@@ -3020,8 +3082,10 @@ def pb_temp_clone_min():
         # ---------------------------------
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
-            action=PLAYBOOK_CLONED, endpoint="/pb_temp_clone",
-            ip=request.remote_addr, status="success",
+            action=PLAYBOOK_CLONED,
+            endpoint="/pb_temp_clone",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
@@ -3236,22 +3300,22 @@ def share_pb_template():
         shared_records = []
 
         for email in emails_set:
-            role_userid = get_userid(email)
-            if not role_userid:
+            role_user_id = get_user_id(email)
+            if not role_user_id:
                 continue
 
-            path = f"{role_userid}/workflow/{new_base}/{new_filename}"
+            path = f"{role_user_id}/workflow/{new_base}/{new_filename}"
 
             upload_any_file(
                 file_path=temp_file_path,
-                user_id=role_userid,
+                user_id=role_user_id,
                 s3_key_C=path,
             )
 
-            playbook_id, config_path, subagent_id = returnconfigandpath(role_userid)
+            playbook_id, config_path, subagent_id = returnconfigandpath(role_user_id)
 
             if not playbook_id:
-                config_s3_path = create_empty_playbook_config(role_userid)
+                config_s3_path = create_empty_playbook_config(role_user_id)
                 playb_id = str(uuid.uuid4())
 
                 playbook_id, config_path = create_subagent_to_playbook(
@@ -3260,7 +3324,7 @@ def share_pb_template():
 
             update_playbook_config(
                 configpath=config_path,
-                user_id=role_userid,
+                user_id=role_user_id,
                 name=new_filename,
                 filepath=path,
                 referece=filename,
@@ -3270,7 +3334,7 @@ def share_pb_template():
             )
 
             shared_records.append(
-                {"email": email, "user_id": role_userid, "path": path}
+                {"email": email, "user_id": role_user_id, "path": path}
             )
 
         # Save undo data in Redis (TTL 1 day)
@@ -3290,13 +3354,18 @@ def share_pb_template():
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
-            action=PLAYBOOK_MADE_GLOBAL, endpoint="/share_playbook_template",
-            ip=request.remote_addr, status="success",
+            action=PLAYBOOK_MADE_GLOBAL,
+            endpoint="/share_playbook_template",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
             acting_on_behalf_of_email=behalf_email,
-            metadata={"template_name": data.get("wf_filename"), "is_global": is_for_all},
+            metadata={
+                "template_name": data.get("wf_filename"),
+                "is_global": is_for_all,
+            },
         )
         g.audit_logged = True
 
@@ -3324,7 +3393,7 @@ def get_all_global_instructions():
     user_id = request.args.get("user_id")
 
     if not user_id:
-        return jsonify({"error": "userid is required"}), 400
+        return jsonify({"error": "user_id is required"}), 400
 
     config_path = "workflow/global/template_config.json"
 
@@ -3454,13 +3523,18 @@ def make_global_playbook():
 
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
         log_audit_event(
-            action=PLAYBOOK_MADE_GLOBAL, endpoint="/make_global_playbook",
-            ip=request.remote_addr, status="success",
+            action=PLAYBOOK_MADE_GLOBAL,
+            endpoint="/make_global_playbook",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_uid,
             actor_email=actor_email,
             acting_on_behalf_of_user_id=behalf_uid,
             acting_on_behalf_of_email=behalf_email,
-            metadata={"original_filename": filename, "global_template_name": new_filename},
+            metadata={
+                "original_filename": filename,
+                "global_template_name": new_filename,
+            },
         )
         g.audit_logged = True
 
@@ -3566,7 +3640,7 @@ def install_global_playbook():
             s3_key_C=new_path,
         )
 
-        playbook_id, config_path, subagent_id = returnconfigandpath(userid=user_id)
+        playbook_id, config_path, subagent_id = returnconfigandpath(user_id=user_id)
 
         if not playbook_id:
             config_s3_path = create_empty_playbook_config(user_id)
@@ -3661,11 +3735,11 @@ def undo_share_pb_template():
 
         for email in emails_set:
             try:
-                role_userid = get_userid(email)
-                if not role_userid:
+                role_user_id = get_user_id(email)
+                if not role_user_id:
                     continue
 
-                subagent_id = get_subagent_by_userid(role_userid)
+                subagent_id = get_subagent_by_user_id(role_user_id)
                 if not subagent_id:
                     failed_users.append(email)
                     continue
@@ -3677,7 +3751,7 @@ def undo_share_pb_template():
                     continue
 
                 success = deleteConfigdata(
-                    configpath=config_path, user_id=role_userid, name=filename
+                    configpath=config_path, user_id=role_user_id, name=filename
                 )
 
                 if success:
@@ -3715,7 +3789,7 @@ def edit_assigned_question():
     try:
         data = request.json or {}
 
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         filename = data.get("filename")
         question_id = data.get("question_id")
         new_question_text = data.get("new_question_text")
@@ -3723,7 +3797,7 @@ def edit_assigned_question():
         # ----------------------------
         # VALIDATION
         # ----------------------------
-        if not userid or not filename or not question_id or not new_question_text:
+        if not user_id or not filename or not question_id or not new_question_text:
             return (
                 jsonify(
                     {
@@ -3737,7 +3811,7 @@ def edit_assigned_question():
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
 
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
 
         if not workflow_json:
@@ -3747,7 +3821,7 @@ def edit_assigned_question():
         # EXECUTION
         # ----------------------------
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=True,
@@ -3769,14 +3843,14 @@ def delete_assigned_question():
     try:
         data = request.json or {}
 
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         filename = data.get("filename")
         question_id = data.get("question_id")
 
         # ----------------------------
         # VALIDATION
         # ----------------------------
-        if not userid or not filename or not question_id:
+        if not user_id or not filename or not question_id:
             return (
                 jsonify(
                     {
@@ -3790,7 +3864,7 @@ def delete_assigned_question():
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
 
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
 
         if not workflow_json:
@@ -3800,7 +3874,7 @@ def delete_assigned_question():
         # EXECUTION
         # ----------------------------
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=True,
@@ -3820,10 +3894,10 @@ def check_runbook_exists_playbook():
     try:
         data = request.json or {}
 
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         filename = data.get("filename")
 
-        if not userid or not filename:
+        if not user_id or not filename:
             return (
                 jsonify(
                     {"status": "error", "message": "user_id and filename are required"}
@@ -3835,7 +3909,7 @@ def check_runbook_exists_playbook():
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
 
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
 
         workflow_json = read_json_from_s3(wf_loc)
 
@@ -3867,10 +3941,10 @@ def clear_runbook_exists_playbook():
     try:
         data = request.json or {}
 
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         filename = data.get("filename")
 
-        if not userid or not filename:
+        if not user_id or not filename:
             return (
                 jsonify(
                     {"status": "error", "message": "user_id and filename are required"}
@@ -3882,7 +3956,7 @@ def clear_runbook_exists_playbook():
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
 
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
 
         workflow_json = read_json_from_s3(wf_loc)
 
@@ -3906,14 +3980,14 @@ def clear_runbook_exists_playbook():
         # ✅ clear runbook
         workflow_json["runbook_id"] = None
         dbserver = LanceDBServer()
-        runbook_details = _run_async(dbserver.get_runbook_by_id(userid, runbook_id))
+        runbook_details = _run_async(dbserver.get_runbook_by_id(user_id, runbook_id))
         if "playbook_id" in runbook_details:
             runbook_details["playbook_id"] = None
             dbserver.update_runbook(runbook_details)
 
         save_playbook_to_s3(
             workflow_json,
-            userid,
+            user_id,
             "workflow updated successfully",
             workflow_json.get("filename", filename),  # safer
         )
@@ -3933,7 +4007,7 @@ def morph_questions():
     try:
         data = request.json or {}
 
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         filename = data.get("filename")
         question_id = data.get("question_id")
         morph_type = data.get("morph_type")
@@ -3943,7 +4017,7 @@ def morph_questions():
         # ----------------------------
         # VALIDATION
         # ----------------------------
-        if not userid or not filename or not question_id or not new_question_text:
+        if not user_id or not filename or not question_id or not new_question_text:
             return (
                 jsonify(
                     {
@@ -3984,7 +4058,7 @@ def morph_questions():
         # ----------------------------
         # LOAD WORKFLOW
         # ----------------------------
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
 
         if not workflow_json:
@@ -3994,7 +4068,7 @@ def morph_questions():
         # EXECUTION
         # ----------------------------
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=True,
@@ -4020,12 +4094,12 @@ def assign_evidence_to_question():
     try:
         data = request.json or {}
 
-        userid = data.get("user_id")
+        user_id = data.get("user_id")
         filename = data.get("filename")
         question_id = data.get("question_id")
         evidences_required = data.get("evidences_required")
 
-        if not userid or not filename or not question_id:
+        if not user_id or not filename or not question_id:
             return (
                 jsonify(
                     {
@@ -4050,14 +4124,14 @@ def assign_evidence_to_question():
         if not filename.lower().endswith(".json"):
             filename = f"{filename}.json"
 
-        wf_loc = f"{userid}/workflow/{base_name(filename=filename)}/{filename}"
+        wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
 
         with WorkflowRunnerV2(
-            userid=userid,
+            userid=user_id,
             filename=filename,
             workflowJson=workflow_json,
             testing=True,

@@ -73,6 +73,7 @@ def _run_async(coro):
 
 async def execute_runbook_create(data, job_id=None, session_id=None):
     user_id = data.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     progress = 0
 
     # ✅ single flag

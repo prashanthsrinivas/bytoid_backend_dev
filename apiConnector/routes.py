@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 import pymysql
 from db.rds_db import connect_to_rds
 from flask import request, jsonify, Blueprint
+from utils.normal import parse_composite_user_id
 from services.apiconnectors import APIConnector
 from services.scheduler_service import APIConnectorScheduler
 from utils.s3_utils import get_filedata_endp, getallendpointdetails
@@ -42,6 +43,7 @@ def test_online_external_link():
         user_id = data.get("user_id")
         if not user_id:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         base_url = data.get("base_url")
         if not base_url:
@@ -104,9 +106,10 @@ def create_external_app():
         data = request.get_json(force=True)
 
         # ✅ Validate user
-        user_id = extract_user_id(data)
+        user_id = extract_user_id(data, request)
         if not user_id:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         app_name = data["app_name"]
         provider = data.get("provider", "custom")
@@ -291,6 +294,7 @@ def update_external_app(app_id):
         user_id = extract_user_id(data)
         if not user_id:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         conn = connect_to_rds()
         cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -593,6 +597,7 @@ def hard_delete_external_app(app_id):
 @permission_required_body("apps.endpoint.view")
 def list_external_apps(user_id):
     conn = connect_to_rds()
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     cur = conn.cursor(pymysql.cursors.DictCursor)
     try:
         onboarding_role = None
@@ -697,6 +702,7 @@ def upsert_user_app_auth(app_id):
         user_id = extract_user_id(data)
         if not user_id:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         auth = data.get("auth") or {"type": "none"}
         auth_type = auth.get("type", "none")
@@ -765,6 +771,7 @@ def create_endpoint(app_id):
     user_id = extract_user_id(data)
     if not user_id:
         return jsonify({"success": False, "error": "user_id required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -921,6 +928,7 @@ def update_endpoint(endpoint_id):
     user_id = extract_user_id(data)
     if not user_id:
         return jsonify({"success": False, "error": "user_id required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -1068,6 +1076,7 @@ def list_endpoints(app_id):
 
         if not user_id:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         cur.execute(
             """
@@ -1100,6 +1109,7 @@ def test_endpoint(endpoint_id, userid=None):
 
         if not userid:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, userid = parse_composite_user_id(userid)
 
         conn = connect_to_rds()
         cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -1276,6 +1286,7 @@ def test_external_app(app_id):
         userid = test_config.get("user_id")
         if not userid:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, userid = parse_composite_user_id(userid)
         method = test_config.get("method", "GET")
         headers = test_config.get("headers", {})
         query_params = test_config.get("query_params", {})
@@ -1345,6 +1356,7 @@ def execute_app(app_id):
 
     if not userid:
         return jsonify({"success": False, "error": "user_id required"}), 400
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     try:
         result = _execute_app_internal(app_id, userid)
@@ -1362,6 +1374,7 @@ async def execute_endpoint(endpoint_id, userid=None):
     userid = payload.get("user_id")
     context = payload.get("context", None)
     runtime_params = payload.get("runtime_params", None)
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         result = await _execute_endpoint_internal(
             endpoint_id, userid, context, runtime_params
@@ -1386,6 +1399,7 @@ def delete_endpoint(endpoint_id):
 
         if not user_id:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         conn = connect_to_rds()
         cur = conn.cursor()
 
@@ -1432,6 +1446,7 @@ async def schedule_app(app_id):
 
     if not userid:
         return jsonify({"error": "user_id missing"}), 400
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     schedule_type, data = resolve_schedule_from_activation(activation)
     timezone = data.get("timezone", "UTC")
@@ -1473,7 +1488,7 @@ async def schedule_app(app_id):
     # ---------- CUSTOM RANGE ----------
     elif schedule_type == "custom":
         dates = expand_custom_dates(
-           start_date= data["startDate"],
+            start_date=data["startDate"],
             end_date=data["endDate"],
             start_time=data["startTime"],
         )
@@ -1514,6 +1529,7 @@ async def schedule_endpoint(endpoint_id):
 
     if not userid:
         return jsonify({"error": "user_id missing"}), 400
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     schedule_type, data = resolve_schedule_from_activation(activation)
     timezone = data.get("timezone", "UTC")
@@ -1569,9 +1585,9 @@ async def schedule_endpoint(endpoint_id):
 
     elif schedule_type == "custom":
         dates = expand_custom_dates(
-           start_date= data["startDate"],
-           end_date= data["endDate"],
-           start_time= data["startTime"],
+            start_date=data["startDate"],
+            end_date=data["endDate"],
+            start_time=data["startTime"],
             # data["intervalMinutes"],
         )
         result = await APIConnectorScheduler.schedule_endpoint_custom_dates(
@@ -1691,6 +1707,7 @@ def list_endpoint_runs(endpoint_id):
 
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     try:
         cur.execute(
@@ -1721,6 +1738,7 @@ def get_endpoint_run(endpoint_id, filename):
 
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     try:
         cur.execute(
@@ -1761,7 +1779,7 @@ def push_global_app():
 
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
-
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     if user_id not in ACCESSIBLE_IDS:
         return jsonify({"error": "Unauthorized"}), 403
 
@@ -1886,6 +1904,7 @@ def push_global_app_endpoint():
 
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if user_id not in ACCESSIBLE_IDS:
         return jsonify({"error": "Unauthorized"}), 403
@@ -2033,6 +2052,7 @@ def list_global_apps(user_id):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         is_admin = user_id in ACCESSIBLE_IDS
 
         if is_admin:
@@ -2100,6 +2120,7 @@ def list_global_apps(user_id):
 def list_global_app_endpoints(user_id, app_id):
     connection = None
     cursor = None
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
         connection = connect_to_rds()
@@ -2205,6 +2226,7 @@ def change_global_app():
 
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if user_id not in ACCESSIBLE_IDS:
         return jsonify({"error": "Unauthorized"}), 403
@@ -2297,6 +2319,7 @@ def change_global_app_endpoint():
 
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if user_id not in ACCESSIBLE_IDS:
         return jsonify({"error": "Unauthorized"}), 403
@@ -2393,7 +2416,6 @@ def global_test_endpoint(app_id, endpoint_id):
 
     try:
         data = request.get_json(force=True) or {}
-        print("data:", data)
 
         # ----------------------------------
         # ✅ Validate user_id
@@ -2401,6 +2423,7 @@ def global_test_endpoint(app_id, endpoint_id):
         user_id = data.get("user_id")
         if not user_id:
             return jsonify({"success": False, "error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         # ----------------------------------
         # ✅ Check endpoint exists
@@ -2544,6 +2567,7 @@ def instantiate_global_app_for_user():
 
         if not user_id or not global_app_id:
             return jsonify({"error": "user_id and global_app_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         # ==========================================================
         # 1️⃣ Fetch Global App
@@ -2781,6 +2805,7 @@ def instantiate_global_endpoint():
 
         if not user_id or not external_app_id or not global_endpoint_id:
             return jsonify({"error": "Missing required identifiers"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         # ==========================================================
         # 1️⃣ Validate External App Belongs To User

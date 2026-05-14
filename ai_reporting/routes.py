@@ -5,7 +5,7 @@ from db.rds_db import connect_to_rds
 from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_MODIFIED
 from db.db_checkers import get_email_by_id
 import json
-from utils.normal import load_yaml_file
+from utils.normal import load_yaml_file, parse_composite_user_id
 from cust_helpers import pathconfig
 from utils.fireworkzz import get_fireworks_response, get_fireworks_response2
 import re
@@ -34,7 +34,6 @@ from .reporting_helpers.redis_functions import *
 from services.redis_service import get_redis
 from request_context import current_user_id
 
-
 ai_reporting_bp = Blueprint("ai_reporting", __name__)
 
 
@@ -62,34 +61,28 @@ def get_schema(cursor, database_name="bytoid_support_agent"):
     try:
 
         # 1. Get basic table/column info
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             SELECT table_name, column_name, data_type, column_key, extra, is_nullable, column_default
             FROM information_schema.columns
             WHERE table_schema = '{database_name}'
             ORDER BY table_name, ordinal_position
-        """
-        )
+        """)
         columns = cursor.fetchall()
 
         # 2. Get foreign key relationships
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             SELECT table_name, column_name, referenced_table_name, referenced_column_name
             FROM information_schema.key_column_usage
             WHERE table_schema = '{database_name}' AND referenced_table_name IS NOT NULL
-        """
-        )
+        """)
         fks = cursor.fetchall()
 
         # 3. Get indexes
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             SELECT table_name, index_name, column_name, non_unique
             FROM information_schema.statistics
             WHERE table_schema = '{database_name}'
-        """
-        )
+        """)
         indexes = cursor.fetchall()
 
         # 4. Organize schema per table
@@ -1639,6 +1632,7 @@ async def generate_report():
     data = request.get_json()
     query = data.get("query", "").strip()
     user_id = data.get("user_id", "").strip()
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     selected_entity_id = data.get("selected_entity_id")
 
     if not query:
@@ -2257,6 +2251,7 @@ async def post_clarifications():
     user_satisfied = data.get("user_satisfied")
     user_id = data.get("user_id")
     system_query = data.get("system_query", "")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     # print(f"clarifications : {clarifications}")
     # print(f"original_query : {original_query}")
@@ -2284,6 +2279,7 @@ async def finalize_report():
     data = request.get_json()
     report_id = data.get("report_id", "").strip()
     user_id = data.get("user_id", "").strip()
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     # client = await GlideClusterClient.create(redis_config_glide)
     client = get_redis()
@@ -2310,6 +2306,7 @@ async def list_all_draft_reports(client, user_id):
     """
     key = f"user:{user_id}:draft_reports"
     all_reports = await client.hgetall(key)
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if not all_reports:
         # print(f"No draft reports found for user {user_id}")
@@ -2328,6 +2325,7 @@ async def change_name():
     name = data.get("name", "").strip()
     report_id = data.get("report_id", "").strip()
     user_id = data.get("user_id", "").strip()
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     # client = await GlideClusterClient.create(redis_config_glide)
     client = get_redis()

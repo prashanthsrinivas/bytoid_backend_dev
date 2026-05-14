@@ -5,8 +5,9 @@ import os
 import pymysql
 import re
 from db.rds_db import connect_to_rds
-from runbook.helper import  trigger_runbooks_for_api_response
+from runbook.helper import trigger_runbooks_for_api_response
 from services.apiconnectors import APIConnector
+
 # from utils.celery_base import trigger_runbooks_api_task
 from utils.s3_utils import save_app_runbase_S3
 from agent_route.lance_agent import LanceClient
@@ -285,7 +286,7 @@ async def _execute_endpoint_internal(
         result=result,
         trigger="manual",
     )
-    # 2, 3  
+    # 2, 3
     # 12 , 10
     print("Inside execute_endpoint_internal triggering runbook")
     # await trigger_runbooks_for_api_response(
@@ -294,13 +295,7 @@ async def _execute_endpoint_internal(
     #     endpoint_id=endpoint_id,
     #     record=result
     # )
-    trigger(
-    userid,
-    row["app_id"],
-    endpoint_id,
-    result
-)
-
+    trigger(userid, row["app_id"], endpoint_id, result)
 
     cur.close()
     conn.close()
@@ -499,12 +494,10 @@ def completed_endpoint_schedule(endpoint_id):
         existing = json.loads(row[0])
 
     if existing and row["frequency"] == "one_time":
-        cur.execute(
-            """
+        cur.execute("""
             UPDATE external_app_endpoints
             SET schedules = NULL;
-            """
-        )
+            """)
 
         conn.commit()
 
@@ -587,7 +580,7 @@ def is_schedule_app_active(endpoint_id):
     return schedule.get("status") == "active"
 
 
-def extract_user_id(payload=None):
+def extract_user_id(payload=None, request=None):
     payload = payload or {}
     return (
         payload.get("user_id")
@@ -709,11 +702,8 @@ def build_full_url(base_url, path, path_params=None):
 
     return f"{base_url}{path}"
 
+
 def trigger(userid, app_id, endpoint_id, result):
     from utils.celery_base import trigger_runbooks_api_task
-    trigger_runbooks_api_task.delay(
-    userid,
-    app_id,
-    endpoint_id,
-    result
-)
+
+    trigger_runbooks_api_task.delay(userid, app_id, endpoint_id, result)

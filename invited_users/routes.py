@@ -377,6 +377,194 @@ def assign_role_direct():
             conn.close()
 
 
+@inv_users_bp.route("/admin/bulk-assign-role", methods=["POST"])
+def bulk_assign_role():
+    """
+    Assign an existing role (by role_id from admin's roles_creation) to multiple users at once.
+    Returns per-user success/failure. Partial success is supported.
+    """
+    data = request.get_json()
+    baseuser = data.get("userid")
+    role_id = data.get("role_id")
+    target_emails = data.get("target_emails")
+
+    if not baseuser or not role_id or not target_emails:
+        return jsonify({"error": "Missing required fields: userid, role_id, target_emails"}), 400
+    if not isinstance(target_emails, list) or len(target_emails) == 0:
+        return jsonify({"error": "target_emails must be a non-empty list"}), 400
+
+    # Session check
+    session_user_id = session.get("user_id")
+    if not session_user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    logged_in_user_id, userid = parse_composite_user_id(baseuser)
+    if userid != session_user_id:
+        return jsonify({"error": "Forbidden: userid does not match session"}), 403
+
+    conn = None
+    success = []
+    failed = []
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Fetch admin
+            cursor.execute(
+                "SELECT user_id, user_type, company_name, launch_id_fk, email, "
+                "permissions, roles_creation FROM users WHERE user_id=%s",
+                (userid,),
+            )
+            admin = cursor.fetchone()
+            if not admin:
+                return jsonify({"error": "Admin user not found"}), 404
+            if admin["user_type"] != "admin":
+                return jsonify({"error": "Only admins can assign roles"}), 403
+
+            admin_email = admin["email"]
+
+            # Find role in admin's roles_creation
+            roles_creation = (
+                json.loads(admin["roles_creation"]) if admin["roles_creation"] else []
+            )
+            role = next((r for r in roles_creation if r["id"] == role_id), None)
+            if not role:
+                return jsonify({"error": "Role not found in your roles catalog"}), 404
+
+            # Load admin's permissions ledger
+            admin_permissions = (
+                json.loads(admin["permissions"]) if admin["permissions"]
+                else {"invites": [], "shared": []}
+            )
+            if "shared" not in admin_permissions:
+                admin_permissions["shared"] = []
+            if "invites" not in admin_permissions:
+                admin_permissions["invites"] = []
+
+            # Build invite-based org membership set for Google/Microsoft fallback
+            org_email_set = set()
+            for entry in admin_permissions.get("shared", []):
+                if entry.get("email"):
+                    org_email_set.add(entry["email"].lower())
+            for entry in admin_permissions.get("invites", []):
+                if entry.get("email"):
+                    org_email_set.add(entry["email"].lower())
+
+            now_iso = datetime.utcnow().isoformat()
+
+            for target_email in target_emails:
+                # Fetch target user
+                cursor.execute(
+                    "SELECT user_id, user_type, company_name, launch_id_fk, email, permissions "
+                    "FROM users WHERE email=%s",
+                    (target_email,),
+                )
+                target = cursor.fetchone()
+                if not target:
+                    failed.append({"email": target_email, "reason": "User not found"})
+                    continue
+
+                # Validate user_type
+                if target["user_type"] in ("admin", "superadmin"):
+                    failed.append({
+                        "email": target_email,
+                        "reason": f"Cannot assign RBAC roles to {target['user_type']}s",
+                    })
+                    continue
+                if target["user_type"] != "user":
+                    failed.append({
+                        "email": target_email,
+                        "reason": f"Invalid target user type: {target['user_type']}",
+                    })
+                    continue
+
+                # Org membership validation (two-part fallback)
+                in_org = _same_org(admin, target) or (
+                    target_email.lower() in org_email_set
+                )
+                if not in_org:
+                    failed.append({
+                        "email": target_email,
+                        "reason": "User is not in your organization",
+                    })
+                    continue
+
+                # Write role to target's permissions
+                target_permissions = {
+                    "role": role,
+                    "status": "active",
+                    "email": target_email,
+                    "invited_by": admin_email,
+                    "created_at": now_iso,
+                }
+                cursor.execute(
+                    "UPDATE users SET permissions=%s WHERE user_id=%s",
+                    (json.dumps(target_permissions), target["user_id"]),
+                )
+
+                # Upsert in admin's shared ledger
+                upserted = False
+                for section in ["shared", "invites"]:
+                    for entry in admin_permissions[section]:
+                        if entry.get("email", "").lower() == target_email.lower():
+                            entry["role"] = role
+                            entry["status"] = "active"
+                            upserted = True
+                            break
+                    if upserted:
+                        break
+
+                if not upserted:
+                    admin_permissions["shared"].append({
+                        "email": target_email,
+                        "role": role,
+                        "status": "active",
+                        "accepted_at": now_iso,
+                    })
+
+                success.append({"email": target_email, "role_id": role["id"]})
+
+            # Write admin's updated permissions ledger once
+            cursor.execute(
+                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                (json.dumps(admin_permissions), userid),
+            )
+
+            conn.commit()
+
+        # Audit log (one event for the batch)
+        actor_uid, actor_email_log, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=USER_ROLE_CHANGED,
+            endpoint="/admin/bulk-assign-role",
+            ip=request.remote_addr,
+            status="success" if success else "failed",
+            actor_user_id=actor_uid,
+            actor_email=actor_email_log,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={
+                "role_id": role_id,
+                "role_name": role.get("name"),
+                "success_count": len(success),
+                "failed_count": len(failed),
+                "target_emails": [e["email"] for e in success],
+            },
+        )
+        g.audit_logged = True
+
+        http_status = 200 if success else 400
+        return jsonify({"success": success, "failed": failed}), http_status
+
+    except Exception as e:
+        logger.error(f"Error in bulk_assign_role: {str(e)}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @inv_users_bp.route("/admin/roles-get/<userid>", methods=["GET"])
 def get_roles(userid):
     """Get all roles and invited users for a user"""
@@ -478,66 +666,96 @@ def get_roles(userid):
         if conn:
             conn.close()
 
-
 @inv_users_bp.route("/admin/organization-users/<userid>", methods=["GET"])
 def get_organization_users(userid):
     logged_in_user_id, userid = parse_composite_user_id(userid)
-
     conn = None
-
     try:
         conn = connect_to_rds()
-
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-
-            # verify requester
+            # Fetch admin row
             cursor.execute(
-                """
-                SELECT user_type, company_name
-                FROM users
-                WHERE user_id=%s
-                """,
+                "SELECT user_id, user_type, company_name, launch_id_fk, permissions "
+                "FROM users WHERE user_id=%s",
                 (userid,),
             )
-
             admin = cursor.fetchone()
-
             if not admin:
                 return jsonify({"error": "User not found"}), 404
-
-            if admin["user_type"] == "user":
+            if admin["user_type"] != "admin":
                 return jsonify({"error": "Access denied"}), 403
 
-            company_name = admin.get("company_name")
+            company_name = (admin.get("company_name") or "").strip()
 
-            # fetch organization users
-            cursor.execute(
-                """
-                SELECT
-                    user_id,
-                    email,
-                    user_type,
-                    social,
-                    permissions,
-                    created_at
-                FROM users
-                WHERE company_name=%s
-                ORDER BY created_at DESC
-                """,
-                (company_name,),
+            if company_name:
+                # SAML path: query by company_name
+                cursor.execute(
+                    """
+                    SELECT user_id, email, user_type, social, permissions, created_in
+                    FROM users
+                    WHERE company_name=%s AND user_type='user' AND user_id != %s
+                    ORDER BY created_in DESC
+                    """,
+                    (company_name, userid),
+                )
+                rows = cursor.fetchall()
+            else:
+                # Google/Microsoft path: derive user list from admin's permissions ledger
+                admin_permissions = (
+                    json.loads(admin["permissions"]) if admin["permissions"]
+                    else {"invites": [], "shared": []}
+                )
+                email_set = set()
+                for entry in admin_permissions.get("shared", []):
+                    if entry.get("email"):
+                        email_set.add(entry["email"].lower())
+                for entry in admin_permissions.get("invites", []):
+                    if entry.get("email"):
+                        email_set.add(entry["email"].lower())
+
+                if not email_set:
+                    return jsonify({"users": []}), 200
+
+                cursor.execute(
+                    "SELECT user_id, email, user_type, social, permissions, created_in "
+                    "FROM users WHERE email IN %s AND user_type='user'",
+                    (tuple(email_set),),
+                )
+                rows = cursor.fetchall()
+
+        result = []
+        for row in rows:
+            user_perms = {}
+            if row.get("permissions"):
+                try:
+                    user_perms = json.loads(row["permissions"])
+                except (json.JSONDecodeError, TypeError):
+                    user_perms = {}
+
+            current_role = (
+                user_perms.get("role") if user_perms.get("status") == "active" else None
             )
+            created_at = row.get("created_in")
+            if created_at and hasattr(created_at, "isoformat"):
+                created_at = created_at.isoformat()
 
-            users = cursor.fetchall()
+            result.append({
+                "user_id": row["user_id"],
+                "email": row["email"],
+                "user_type": row["user_type"],
+                "social": row.get("social"),
+                "current_role": current_role,
+                "created_at": created_at,
+            })
 
-            return jsonify({"users": users}), 200
+        return jsonify({"users": result}), 200
 
     except Exception as e:
+        logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500
-
     finally:
         if conn:
             conn.close()
-
 
 @inv_users_bp.route("/admin/permissions", methods=["GET"])
 def get_permissions():
@@ -812,12 +1030,10 @@ def send_invite_user():
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch user details
             cursor.execute(
-                "SELECT user_type FROM users WHERE email=%s",
+                "SELECT user_id, user_type, social, company_name FROM users WHERE email=%s",
                 (email,),
             )
             base_check = cursor.fetchone()
-            if base_check:
-                return jsonify({"error": "user already exists"}), 409
             cursor.execute(
                 "SELECT email, roles_creation, permissions, social,user_type FROM users WHERE user_id=%s FOR UPDATE",
                 (userid,),
@@ -832,6 +1048,20 @@ def send_invite_user():
 
             user_email = row["email"]
             user_source = (row.get("social") or "").strip().lower()
+            is_sso_admin = (user_source == "saml")
+
+            # SSO-specific validation: can't assign RBAC to admin users
+            if is_sso_admin:
+                if base_check:
+                    existing_type = base_check.get("user_type")
+                    if existing_type == "admin":
+                        conn.rollback()
+                        return jsonify({"error": "Cannot assign RBAC to an admin user"}), 400
+            else:
+                # non-SSO: existing guard
+                if base_check:
+                    conn.rollback()
+                    return jsonify({"error": "user already exists"}), 409
 
             # load roles
             roles = json.loads(row["roles_creation"]) if row["roles_creation"] else []
@@ -866,6 +1096,42 @@ def send_invite_user():
                 "status": "pending",
                 "created_at": datetime.utcnow().isoformat(),
             }
+            if is_sso_admin:
+                new_permission["invite_type"] = "sso"
+
+            # For SSO admin + existing SSO user: directly apply RBAC, skip invite ledger
+            if is_sso_admin and base_check and base_check.get("user_type") == "user":
+                direct_payload = {**new_permission, "status": "active",
+                                  "applied_at": datetime.utcnow().isoformat()}
+                cursor.execute("UPDATE users SET permissions=%s WHERE user_id=%s",
+                               (json.dumps(direct_payload), base_check["user_id"]))
+                permissions.setdefault("shared", [])
+                permissions["shared"].append({**new_permission, "status": "active",
+                                             "accepted_at": datetime.utcnow().isoformat()})
+                cursor.execute("UPDATE users SET permissions=%s WHERE user_id=%s",
+                               (json.dumps(permissions), userid))
+                conn.commit()
+                actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(
+                    baseuserid
+                )
+                log_audit_event(
+                    action=USER_INVITED,
+                    endpoint="/admin/invite_user",
+                    ip=request.remote_addr,
+                    status="success",
+                    actor_user_id=actor_uid,
+                    actor_email=actor_email_v,
+                    acting_on_behalf_of_user_id=behalf_uid,
+                    acting_on_behalf_of_email=behalf_email,
+                    target_email=email,
+                    metadata={
+                        "role_id": role_id,
+                        "role_name": role.get("name"),
+                        "invite_type": "sso_direct",
+                    },
+                )
+                g.audit_logged = True
+                return jsonify({"message": "Role assigned directly to existing SSO user."}), 200
 
             # Append inside "invites"
             permissions["invites"].append(new_permission)
@@ -889,42 +1155,45 @@ def send_invite_user():
             # check outlook connection while cursor is open
             outlook_connected = has_outlook_connected(userid, cursor)
 
-            # generate invite link
-            base_invitation_link = generate_hashed_url(
-                base_url=f"{os.getenv('BASE_FRNT_URL')}/invite",
-                invited_to=email,
-                invited_by=user_email,
-            )
+            # generate invite link (only for non-SSO)
+            base_invitation_link = None
+            if not is_sso_admin:
+                base_invitation_link = generate_hashed_url(
+                    base_url=f"{os.getenv('BASE_FRNT_URL')}/invite",
+                    invited_to=email,
+                    invited_by=user_email,
+                )
 
         # Commit invite to DB before attempting email
         conn.commit()
 
         # Attempt email — failure is non-fatal (invite is saved, user can resend)
         email_error = None
-        try:
-            if user_source == "google":
-                gmail_service = GmailService(user_id=userid)
-                gmail_service.send_invite_mail(
-                    receipent_emails=email,
-                    role=role,
-                    invite_link=base_invitation_link,
-                    business_info=business_info,
-                )
-            else:
-                if outlook_connected:
-                    outlook_service = OutlookService(user_id=userid)
-                    outlook_service.send_invitation_email(
-                        invitee=email,
-                        inviter=user_email,
+        if not is_sso_admin:
+            try:
+                if user_source == "google":
+                    gmail_service = GmailService(user_id=userid)
+                    gmail_service.send_invite_mail(
+                        receipent_emails=email,
                         role=role,
                         invite_link=base_invitation_link,
                         business_info=business_info,
                     )
                 else:
-                    email_error = "Email not sent: mail provider not connected. The invite was saved — use Resend to deliver it once connected."
-        except Exception as email_exc:
-            logger.error(f"[invite_user] Email send failed for {email}: {email_exc}")
-            email_error = f"Invite saved but email delivery failed: {email_exc}"
+                    if outlook_connected:
+                        outlook_service = OutlookService(user_id=userid)
+                        outlook_service.send_invitation_email(
+                            invitee=email,
+                            inviter=user_email,
+                            role=role,
+                            invite_link=base_invitation_link,
+                            business_info=business_info,
+                        )
+                    else:
+                        email_error = "Email not sent: mail provider not connected. The invite was saved — use Resend to deliver it once connected."
+            except Exception as email_exc:
+                logger.error(f"[invite_user] Email send failed for {email}: {email_exc}")
+                email_error = f"Invite saved but email delivery failed: {email_exc}"
 
         actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(
             baseuserid
@@ -943,9 +1212,13 @@ def send_invite_user():
                 "role_id": role_id,
                 "role_name": role.get("name"),
                 "email_error": email_error,
+                "invite_type": "sso" if is_sso_admin else "standard",
             },
         )
         g.audit_logged = True
+
+        if is_sso_admin:
+            return jsonify({"message": "SSO invite queued. Role applied on next login."}), 200
 
         if email_error:
             return (
@@ -1791,6 +2064,10 @@ def validate_invite(token):
             )
             if not permission_entry:
                 return jsonify({"error": "No invitation found for this email"}), 404
+
+            # Block SSO invites from the email-link path
+            if permission_entry.get("invite_type") == "sso":
+                return jsonify({"error": "SSO users must authenticate via your organization's identity provider."}), 400
 
             # 3️⃣ Expiry check
             if int(time()) > expiry:

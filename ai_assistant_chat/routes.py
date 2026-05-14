@@ -13,7 +13,7 @@ from cust_helpers import pathconfig
 import os
 import json
 from umail_helper.mails_process import generate_subject
-from utils.normal import ensure_dir
+from utils.normal import ensure_dir, parse_composite_user_id
 
 import dns.resolver
 import smtplib
@@ -25,7 +25,6 @@ import traceback
 import logging
 from functools import partial
 from utils.celery_base import enqueue_user_task
-
 
 ai_assistant_chat_bp = Blueprint("ai_assistant_chat", __name__)
 
@@ -194,6 +193,7 @@ def verify_contact():
         # Connect to DB
         conn = connect_to_rds()
         cursor = conn.cursor()
+        logged_in_user_id, userid = parse_composite_user_id(userid)
 
         # Check if email already exists
         cursor.execute(
@@ -626,12 +626,13 @@ async def process_website_msg():
     cursor = conn.cursor()
 
     data = request.json
-   #print(f"data: {data}")
+    # print(f"data: {data}")
 
     user_id = data.get("user_id")
     client_id = data.get("client_id")
     query = data.get("query")
     bot_response = data.get("response")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     status = ""
     email = ""
@@ -695,11 +696,12 @@ async def process_website_msg():
 def get_website_msg():
 
     data = request.json
-   #print(f"📥 [DEBUG] Request data: {data}")
+    # print(f"📥 [DEBUG] Request data: {data}")
 
     user_id = data.get("user_id")
     client_id = data.get("client_id")
     conversation_id = ""
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conversation_id = check_for_conv_file(user_id, client_id)
     if conversation_id:
@@ -751,7 +753,7 @@ def close_ticket(user_id, client_id):
 def close_ticket_for_assistant():
 
     data = request.json
-   #print(f"📥 [DEBUG] Request data: {data}")
+    # print(f"📥 [DEBUG] Request data: {data}")
 
     user_id = data.get("user_id")
     client_id = data.get("client_id")
@@ -765,11 +767,12 @@ def update_summary():
     try:
 
         data = request.json
-       #print(f"📥 [DEBUG] Request data: {data}")
+        # print(f"📥 [DEBUG] Request data: {data}")
 
         user_id = data.get("user_id")
         client_id = data.get("client_id")
         conversation_summary = data.get("conversation_summary")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         conversation_id = check_for_conv_file(user_id, client_id)
         s3_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
@@ -798,5 +801,5 @@ def update_summary():
         return jsonify({"message": "conversation_summary update successful"}), 200
 
     except Exception as e:
-       #print(f"Error in update summary: {e}")
+        # print(f"Error in update summary: {e}")
         return jsonify({"error": "Something went wrong", "details": e}), 500

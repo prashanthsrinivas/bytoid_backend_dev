@@ -26,7 +26,7 @@ from utils.fireworkzz import (
     evaluator_llama,
     get_fireworks_response,
 )
-from utils.normal import load_yaml_file
+from utils.normal import load_yaml_file, parse_composite_user_id
 import uuid
 import traceback
 from db.rds_db import connect_to_rds, safe_execute
@@ -103,6 +103,7 @@ def save_training_settings():
         if not user_id:
             # print("no userid")
             return jsonify({"error": "User not logged in"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         # if voice_type not in ["Man", "Woman"]:
         #     # print("no voice")
         #     return jsonify({"error": "Invalid voice type"}), 400
@@ -290,6 +291,7 @@ def get_training_settings():
         user_id = str(session.get("user_id") or request.args.get("user_id"))
         if not user_id:
             return jsonify({"error": "User not logged in"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         if not check_userid_valid(user_id):
             return jsonify({"error": "Invalid Access"}), 404
 
@@ -1133,7 +1135,6 @@ async def process_query_worker(data, job_id=None):
 @agent_bps.route("/process-query-key", methods=["POST"])
 async def checkquerywithApiKey():
     data = request.json
-    print(data)
 
     job_id = await JobManager.submit_job(process_query_worker, data)
 
@@ -1174,6 +1175,7 @@ def makeuserDocClarifications(userid=None, industry=None):
     data = request.json
     db = connect_to_rds()
     fetched_userid = data.get("userid") or userid
+    logged_in_user_id, fetched_userid = parse_composite_user_id(fetched_userid)
     # print("fetched_userid", fetched_userid)
     try:
 
@@ -1266,6 +1268,7 @@ async def updateClarifications(userid=None, industry=None):
     fetched_userid = data.get("userid") or userid
     if not fetched_userid:
         return jsonify({"error": "User ID is required"}), 400
+    logged_in_user_id, fetched_userid = parse_composite_user_id(fetched_userid)
     if not check_userid_valid(fetched_userid):
         return jsonify({"error": "Invalid access"}), 404
 
@@ -1482,6 +1485,7 @@ async def get_ai_suggestion():
         userid = data.get("userid")
         if not userid:
             return jsonify({"error": "User ID is required"}), 400
+        logged_in_user_id, userid = parse_composite_user_id(userid)
         if not check_userid_valid(userid, db):
             return jsonify({"error": "Invalid access"}), 404
 

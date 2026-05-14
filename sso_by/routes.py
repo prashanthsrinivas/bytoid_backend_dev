@@ -2,16 +2,20 @@ from flask import Blueprint, jsonify, request, session, redirect, g
 from db.db_checkers import check_onboarding_user, fetch_apikey_from_launch, get_email_by_id
 from db.rds_db import connect_to_rds
 from services.credit_system import CreditManager
-from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SAML_USER_PROVISIONED, ORG_CREATED
+from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_GRANTED, SPECIAL_ACCESS_REVOKED, SAML_USER_PROVISIONED, ORG_CREATED, SSO_RBAC_APPLIED
 from utils.app_configs import ALLOWED_ORIGINS, ACCESSIBLE_IDS
 from db.db_checkers import ensure_starter_credits_for_user
+from utils.base_logger import get_logger
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 
 import os
 import json
 import requests
+from datetime import datetime
 
-# Admin CONTROL 
+logger = get_logger(__name__)
+
+# Admin CONTROL
 ALLOWED_ADMINS = ["service@bytoid.ca", "beta@bytoid.ai"]
 
 sso_bp = Blueprint("sso", __name__)
@@ -330,6 +334,102 @@ def saml_login():
        return f"SSO not configured for org '{org}'", 404
 
 
+def _apply_pending_sso_rbac(cursor, conn, user_id, email, org):
+    """Apply pending SSO RBAC invite on login. Idempotent."""
+    # Skip if user already has an active role
+    cursor.execute("SELECT permissions FROM users WHERE user_id=%s", (user_id,))
+    my_row = cursor.fetchone()
+    existing_perms = {}
+    if my_row and my_row.get("permissions"):
+        try:
+            existing_perms = json.loads(my_row["permissions"])
+        except Exception:
+            pass
+    if existing_perms.get("status") == "active" and existing_perms.get("role"):
+        return
+
+    # Find pending SSO invite across all org admins
+    cursor.execute(
+        "SELECT user_id, email, permissions FROM users "
+        "WHERE company_name=%s AND user_type='admin' AND social='saml'",
+        (org,)
+    )
+    admins = cursor.fetchall()
+
+    matched_admin = matched_entry = None
+    for admin in admins:
+        if not admin.get("permissions"):
+            continue
+        try:
+            admin_perms = json.loads(admin["permissions"])
+        except Exception:
+            continue
+        for entry in admin_perms.get("invites", []):
+            if (entry.get("invite_type") == "sso"
+                    and entry.get("email", "").lower() == email.lower()
+                    and entry.get("status") == "pending"):
+                matched_admin = admin
+                matched_entry = entry
+                break
+        if matched_admin:
+            break
+
+    if not matched_admin or not matched_entry:
+        return
+
+    # Write role to user's permissions
+    role_payload = {
+        "role": matched_entry["role"],
+        "status": "active",
+        "email": email,
+        "invited_by": matched_entry.get("invited_by"),
+        "created_at": matched_entry.get("created_at"),
+        "applied_at": datetime.utcnow().isoformat(),
+    }
+    cursor.execute("UPDATE users SET permissions=%s WHERE user_id=%s",
+                   (json.dumps(role_payload), user_id))
+
+    # Move entry from admin's invites → shared
+    try:
+        admin_perms = json.loads(matched_admin["permissions"])
+    except Exception:
+        admin_perms = {}
+    admin_perms.setdefault("invites", [])
+    admin_perms.setdefault("shared", [])
+    admin_perms["invites"] = [
+        e for e in admin_perms["invites"]
+        if not (e.get("invite_type") == "sso"
+                and e.get("email", "").lower() == email.lower())
+    ]
+    admin_perms["shared"].append({
+        "email": email,
+        "role": matched_entry["role"],
+        "invited_by": matched_entry.get("invited_by"),
+        "status": "active",
+        "invite_type": "sso",
+        "accepted_at": datetime.utcnow().isoformat(),
+    })
+    cursor.execute("UPDATE users SET permissions=%s WHERE user_id=%s",
+                   (json.dumps(admin_perms), matched_admin["user_id"]))
+    conn.commit()
+
+    # Log audit event
+    try:
+        log_audit_event(
+            action=SSO_RBAC_APPLIED,
+            endpoint="/auth/saml/acs",
+            ip=request.remote_addr if request else "unknown",
+            status="success",
+            actor_user_id=matched_admin["user_id"],
+            actor_email=matched_admin.get("email", "unknown"),
+            target_email=email,
+            metadata={
+                "role_id": matched_entry["role"].get("id"),
+                "role_name": matched_entry["role"].get("name"),
+            },
+        )
+    except Exception as log_exc:
+        logger.error(f"[_apply_pending_sso_rbac] Audit log failed: {log_exc}")
 
 
 # =========================
@@ -420,7 +520,6 @@ def saml_acs():
        existing_user = cursor.fetchone()
 
        # ================= AUTO ONBOARDING =================
-       # ================= AUTO ONBOARDING =================
        is_new_user = not bool(existing_user)
 
        if existing_user:
@@ -435,6 +534,35 @@ def saml_acs():
                     WHERE email = %s
                 """, (user_id, org, email))
                 conn.commit()
+
+                # activate invited RBAC role
+                cursor.execute("""
+                    SELECT permissions
+                    FROM users
+                    WHERE email = %s
+                """, (email,))
+
+                perm_row = cursor.fetchone()
+
+                if perm_row and perm_row["permissions"]:
+
+                    permissions_data = json.loads(
+                        perm_row["permissions"]
+                )
+
+                    permissions_data["status"] = "active"
+
+                    cursor.execute("""
+                        UPDATE users
+                        SET permissions = %s
+                        WHERE user_id = %s
+                    """, (
+                        json.dumps(permissions_data),
+                        user_id
+                    ))
+
+                    conn.commit()
+        
 
         # ✅ If already real user → DO NOT overwrite
             else:
@@ -481,6 +609,10 @@ def saml_acs():
             conn.commit()
 
        user_role = new_role
+
+       # Apply RBAC role if pending SSO invite exists (only for bytoid-user)
+       if user_role == "user":
+           _apply_pending_sso_rbac(cursor, conn, user_id, email, org)
 
        # ================= SESSION =================
        session["user_role"] = user_role

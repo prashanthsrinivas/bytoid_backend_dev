@@ -819,6 +819,165 @@ Do NOT include explanations, markdown, or extra text. JSON only."""
         return {"assignments": []}
 
 
+async def _analyze_single_row(
+    row: dict, fw_rows_json: str, framework_name: str
+) -> dict:
+    """Analyze one tracker row against the full framework requirements list."""
+    import json
+    import asyncio
+
+    row_json = json.dumps(
+        {"row_id": row["row_id"], "data": row.get("col_values", {})}, indent=2
+    )
+    row_id = row["row_id"]
+
+    prompt = f"""You are a senior compliance mapping analyst.
+
+Your task is to determine whether a SINGLE tracker row has a DIRECT and DEFENSIBLE relationship to any framework requirements.
+
+Your goal is PRECISION, not recall.
+
+A weak or questionable mapping is WORSE than no mapping.
+
+STRICT MATCHING STANDARD
+
+A framework requirement is a VALID match ONLY when ALL are true:
+
+1. The tracker row explicitly discusses the same subject matter as the requirement.
+2. The relationship is direct, specific, and auditor-defensible.
+3. The requirement would reasonably be cited during an audit review of this exact row.
+4. The row contains clear evidence supporting the mapping.
+5. The mapping does NOT require broad interpretation or semantic stretching.
+
+If ANY doubt exists, DO NOT MATCH.
+
+MANDATORY DOMAIN FILTERING
+
+DO NOT match business-training or HR-related rows to technical cybersecurity controls.
+
+The following topics are NOT sufficient by themselves to justify technical security mappings:
+
+- professionalism
+- punctuality
+- attendance
+- employee etiquette
+- communication habits
+- generic workplace behavior
+- business terminology
+- customer satisfaction
+- organizational culture
+- stakeholder awareness
+- generic task management
+
+DO NOT map these topics to:
+
+- encryption
+- MFA
+- malware protection
+- PAN protection
+- vulnerability management
+- network security
+- authentication
+- secure development
+- cryptographic controls
+- firewall requirements
+- infrastructure security
+- logging/monitoring
+- PCI DSS technical controls
+
+UNLESS the tracker row EXPLICITLY references those security topics.
+
+IMPORTANT COMPLIANCE RULE
+
+Awareness/training requirements should ONLY match when the row explicitly involves:
+
+- security awareness
+- information security education
+- cybersecurity behavior
+- security policy understanding
+- security training obligations
+- compliance training
+- secure handling of data/systems
+
+Generic employee mistakes are NOT automatically awareness-training matches.
+
+TRACKER ROW
+
+{row_json}
+
+FRAMEWORK REQUIREMENTS
+
+{fw_rows_json}
+
+OUTPUT RULES
+
+Return ONLY valid JSON.
+
+DO NOT include explanations outside JSON.
+DO NOT include markdown.
+
+Return format when matches exist:
+
+{{
+    "row_id": "{row_id}",
+    "matches": [
+        {{
+            "fw_index": 3,
+            "confidence": 0.94,
+            "evidence": "Row explicitly references annual security awareness training."
+        }}
+    ]
+}}
+
+If no HIGH-CONFIDENCE matches exist:
+
+{{
+    "row_id": "{row_id}",
+    "matches": []
+}}
+
+CONFIDENCE RULES
+
+- 0.90 - 1.00: Explicit, direct, auditor-defensible relationship.
+- 0.75 - 0.89: Reasonably related but still somewhat interpretive.
+- Below 0.75: DO NOT return the match."""
+
+    payload = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "temperature": 0,
+        "max_tokens": 4000,
+    }
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=THINK_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
+    )
+    body = json.loads(response["body"].read())
+    response_text = extract_bedrock_text(body)
+    parsed = extract_json_safe(response_text)
+
+    fw_row_indices = []
+    if isinstance(parsed, dict):
+        for match in parsed.get("matches", []):
+            idx = match.get("fw_index")
+            conf = match.get("confidence", 0)
+            if (
+                isinstance(idx, int)
+                and idx >= 0
+                and isinstance(conf, (int, float))
+                and conf >= 0.75
+            ):
+                fw_row_indices.append(idx)
+
+    return {
+        "row_id": row_id,
+        "fw_row_indices": fw_row_indices,
+        "_output_chars": len(response_text),
+    }
+
+
 async def analyze_tracker_framework_rows(
     rows: list,
     fw_rows: list,
@@ -826,6 +985,7 @@ async def analyze_tracker_framework_rows(
     framework_name: str,
     user_id: str,
     credits,
+    on_row_done=None,
 ) -> dict:
     """
     Match tracker rows to framework requirement rows directly (no policy intermediary).
@@ -850,74 +1010,134 @@ async def analyze_tracker_framework_rows(
     import json
     import asyncio
 
-    total_input_chars = len(json.dumps(rows)) + len(json.dumps(fw_rows))
-    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+    if not rows or not fw_rows:
         return {"assignments": []}
 
     fw_rows_json = json.dumps(
         [{"index": i, **row} for i, row in enumerate(fw_rows)],
         indent=2,
     )
-    rows_json = json.dumps(
-        [{"row_id": r["row_id"], "data": r.get("col_values", {})} for r in rows],
-        indent=2,
+    fw_rows_json_capped = fw_rows_json[:150000]
+
+    # Credit estimate: (framework requirements size + one row approx) × number of rows
+    per_row_input = len(fw_rows_json_capped) + 500
+    total_input_chars = per_row_input * len(rows)
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return {"assignments": []}
+
+    sem = asyncio.Semaphore(5)
+
+    async def _bounded(row):
+        async with sem:
+            try:
+                result = await _analyze_single_row(
+                    row, fw_rows_json_capped, framework_name
+                )
+            except Exception:
+                logging.error(
+                    f"Error analyzing row {row.get('row_id')}: {traceback.format_exc()}"
+                )
+                result = {
+                    "row_id": row["row_id"],
+                    "fw_row_indices": [],
+                    "_output_chars": 0,
+                }
+            if on_row_done:
+                await on_row_done()
+            return result
+
+    results = await asyncio.gather(*[_bounded(row) for row in rows])
+
+    assignments = []
+    total_output_chars = 0
+    for r in results:
+        assignments.append(
+            {"row_id": r["row_id"], "fw_row_indices": r["fw_row_indices"]}
+        )
+        total_output_chars += r.get("_output_chars", 0)
+
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_input_chars + total_output_chars,
+        user_id=user_id,
+        reference_id="analyze_tracker_framework_rows",
     )
+    return {"assignments": assignments}
 
-    prompt = f"""You are a compliance analyst. Match each tracker row to framework requirements from "{framework_name}".
 
-TRACKER ROWS:
-{rows_json[:80000]}
+async def _review_single_row_assignments(
+    row_id: str,
+    row_data: dict,
+    fw_indices: list,
+    fw_indexed: dict,
+    framework_name: str,
+) -> dict:
+    """Quality-review proposed assignments for one tracker row."""
+    import json
+    import asyncio
 
-FRAMEWORK REQUIREMENTS (with index):
-{fw_rows_json[:150000]}
+    proposed = [
+        {"fw_index": idx, "requirement": fw_indexed[idx]}
+        for idx in fw_indices
+        if idx in fw_indexed
+    ]
+    if not proposed:
+        return {"row_id": row_id, "valid_indices": [], "_output_chars": 0}
 
-TASK: For each tracker row, identify the indices of ALL framework requirements it relates to.
-Rules:
-- Consider all column values in the tracker row when finding matches.
-- A match is valid when the tracker row clearly relates to the requirement based on its content, topic, or intent — including semantic and conceptual matches, not just exact wording.
-- Return an empty list [] if no requirement reasonably matches.
+    row_json = json.dumps(row_data, indent=2)
+    proposed_json = json.dumps(proposed, indent=2)
 
-Return ONLY valid JSON object (no markdown, no explanation):
-{{"assignments": [{{"row_id": "trk_r_xxx", "fw_row_indices": [3, 7]}}, {{"row_id": "trk_r_yyy", "fw_row_indices": []}}]}}"""
+    prompt = f"""You are a strict compliance quality reviewer. For the tracker row below, decide which proposed "{framework_name}" requirements are genuinely valid matches.
+
+APPROVAL CRITERIA — approve ONLY if ALL hold:
+1. The row content clearly and directly addresses the subject matter of the requirement.
+2. The relationship is specific and meaningful, not thematically adjacent or coincidental.
+3. A compliance auditor would recognize this as a valid, defensible mapping.
+
+REJECTION CRITERIA — reject if ANY apply:
+- The connection is indirect, vague, or requires significant interpretation.
+- The row and requirement belong to different topic domains.
+- You would need to stretch to justify the link.
+
+When in doubt, REJECT.
+
+ROW DATA:
+{row_json}
+
+PROPOSED REQUIREMENTS:
+{proposed_json}
+
+Return ONLY valid JSON with the fw_index values that pass review (no markdown):
+{{"valid_indices": [3, 7]}}
+or if none pass: {{"valid_indices": []}}"""
 
     payload = {
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         "temperature": 0,
-        "max_tokens": 16000,
+        "max_tokens": 1000,
     }
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=THINK_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
+    )
+    body = json.loads(response["body"].read())
+    response_text = extract_bedrock_text(body)
+    parsed = extract_json_safe(response_text)
 
-    try:
-        response = await asyncio.to_thread(
-            bedrock_runtime.invoke_model,
-            modelId=THINK_MODEL,
-            body=json.dumps(payload),
-            contentType="application/json",
-            accept="application/json",
-        )
+    valid_indices = []
+    if isinstance(parsed, dict):
+        raw = parsed.get("valid_indices", [])
+        if isinstance(raw, list):
+            valid_indices = [i for i in raw if isinstance(i, int)]
 
-        body = json.loads(response["body"].read())
-        response_text = extract_bedrock_text(body)
-        parsed = extract_json_safe(response_text)
-
-        assignments = []
-        if isinstance(parsed, list):
-            assignments = parsed
-        elif isinstance(parsed, dict) and "assignments" in parsed:
-            assignments = parsed["assignments"]
-
-        total_output_chars = len(response_text)
-        await credits.update_ai_credits_redis(
-            credit_type="think",
-            total_chars=total_input_chars + total_output_chars,
-            user_id=user_id,
-            reference_id="analyze_tracker_framework_rows",
-        )
-
-        return {"assignments": assignments}
-
-    except Exception as e:
-        logging.error(f"Error in analyze_tracker_framework_rows: {traceback.format_exc()}")
-        return {"assignments": []}
+    return {
+        "row_id": row_id,
+        "valid_indices": valid_indices,
+        "_output_chars": len(response_text),
+    }
 
 
 async def quality_review_framework_assignments(
@@ -927,13 +1147,11 @@ async def quality_review_framework_assignments(
     framework_name: str,
     user_id: str,
     credits,
+    on_row_done=None,
 ) -> list:
     """
     Second-pass quality review: verify each proposed assignment is genuinely correct.
-
-    Takes the assignments from analyze_tracker_framework_rows and re-evaluates each
-    one, confirming it is supported by ALL column values in the tracker row. Drops any
-    assignments that do not survive scrutiny.
+    Each tracker row's proposed assignments are reviewed independently.
 
     Returns a filtered list of assignments (same schema as input).
     """
@@ -943,113 +1161,71 @@ async def quality_review_framework_assignments(
     if not assignments:
         return assignments
 
-    # Build a lookup for fast row access
     row_map = {r["row_id"]: r.get("col_values", {}) for r in rows}
     fw_indexed = {i: row for i, row in enumerate(fw_rows)}
 
-    # Flatten proposed assignments into (row_id, fw_index) pairs for review
-    pairs = []
-    for a in assignments:
-        row_id = a.get("row_id")
-        for idx in (a.get("fw_row_indices") or []):
-            if row_id and idx in fw_indexed:
-                pairs.append({"row_id": row_id, "fw_index": idx})
-
-    if not pairs:
+    rows_with_assignments = [a for a in assignments if a.get("fw_row_indices")]
+    if not rows_with_assignments:
         return assignments
 
-    # Build the review payload item-by-item so we can track which pairs fit
-    # within the prompt limit. Pairs beyond the limit are passed through
-    # rather than silently dropped (they were never reviewed).
-    REVIEW_CHAR_LIMIT = 80000
-    payload_items = []
-    reviewed_pair_set = set()  # (row_id, fw_index) pairs actually sent for review
-    running_chars = 0
-    for p in pairs:
-        item = {
-            "row_id": p["row_id"],
-            "fw_index": p["fw_index"],
-            "row_data": row_map.get(p["row_id"], {}),
-            "requirement": fw_indexed[p["fw_index"]],
-        }
-        item_str = json.dumps(item)
-        if running_chars + len(item_str) > REVIEW_CHAR_LIMIT:
-            break
-        payload_items.append(item)
-        reviewed_pair_set.add((p["row_id"], int(p["fw_index"])))
-        running_chars += len(item_str)
-
-    review_payload = json.dumps(payload_items, indent=2)
-
-    total_input_chars = len(review_payload)
+    total_input_chars = sum(
+        len(json.dumps(row_map.get(a["row_id"], {})))
+        + len(
+            json.dumps([fw_indexed[i] for i in a["fw_row_indices"] if i in fw_indexed])
+        )
+        for a in rows_with_assignments
+    )
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
         return assignments
 
-    prompt = f"""You are a compliance quality reviewer. The following proposed mappings between tracker rows and "{framework_name}" requirements need validation.
+    sem = asyncio.Semaphore(5)
 
-PROPOSED MAPPINGS:
-{review_payload}
+    async def _bounded_review(assignment):
+        row_id = assignment["row_id"]
+        fw_indices = assignment.get("fw_row_indices") or []
+        async with sem:
+            try:
+                result = await _review_single_row_assignments(
+                    row_id,
+                    row_map.get(row_id, {}),
+                    fw_indices,
+                    fw_indexed,
+                    framework_name,
+                )
+            except Exception:
+                logging.error(f"Error reviewing row {row_id}: {traceback.format_exc()}")
+                # Fail open: keep original indices on error
+                result = {
+                    "row_id": row_id,
+                    "valid_indices": fw_indices,
+                    "_output_chars": 0,
+                }
+            if on_row_done:
+                await on_row_done()
+            return result
 
-For each mapping, confirm whether the tracker row data relates to the requirement based on content, topic, or intent. A mapping is VALID if there is a clear and reasonable connection — it does not need to be word-for-word identical.
+    results = await asyncio.gather(*[_bounded_review(a) for a in rows_with_assignments])
 
-Return ONLY a valid JSON object listing which mappings pass review (no markdown, no explanation):
-{{"valid_pairs": [{{"row_id": "trk_r_xxx", "fw_index": 3}}, {{"row_id": "trk_r_yyy", "fw_index": 7}}]}}
+    review_map = {r["row_id"]: set(r["valid_indices"]) for r in results}
+    total_output_chars = sum(r.get("_output_chars", 0) for r in results)
 
-If no mappings are valid, return: {{"valid_pairs": []}}"""
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_input_chars + total_output_chars,
+        user_id=user_id,
+        reference_id="quality_review_framework_assignments",
+    )
 
-    payload = {
-        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        "temperature": 0,
-        "max_tokens": 8000,
-    }
-
-    try:
-        response = await asyncio.to_thread(
-            bedrock_runtime.invoke_model,
-            modelId=THINK_MODEL,
-            body=json.dumps(payload),
-            contentType="application/json",
-            accept="application/json",
-        )
-
-        body = json.loads(response["body"].read())
-        response_text = extract_bedrock_text(body)
-        parsed = extract_json_safe(response_text)
-
-        valid_pairs = set()
-        if isinstance(parsed, dict) and "valid_pairs" in parsed:
-            for vp in parsed["valid_pairs"]:
-                rid = vp.get("row_id")
-                fidx = vp.get("fw_index")
-                if rid is not None and fidx is not None:
-                    valid_pairs.add((rid, int(fidx)))
-
-        total_output_chars = len(response_text)
-        await credits.update_ai_credits_redis(
-            credit_type="think",
-            total_chars=total_input_chars + total_output_chars,
-            user_id=user_id,
-            reference_id="quality_review_framework_assignments",
-        )
-
-        # Rebuild assignments:
-        # - Pairs sent for review: keep only if validated
-        # - Pairs NOT sent (beyond limit): pass through unchanged
-        reviewed = []
-        for a in assignments:
-            row_id = a.get("row_id")
-            kept = [
-                idx for idx in (a.get("fw_row_indices") or [])
-                if (row_id, int(idx)) not in reviewed_pair_set
-                or (row_id, int(idx)) in valid_pairs
-            ]
-            reviewed.append({"row_id": row_id, "fw_row_indices": kept})
-
-        return reviewed
-
-    except Exception:
-        logging.error(f"Error in quality_review_framework_assignments: {traceback.format_exc()}")
-        return assignments
+    reviewed = []
+    for a in assignments:
+        row_id = a.get("row_id")
+        if row_id in review_map:
+            reviewed.append(
+                {"row_id": row_id, "fw_row_indices": list(review_map[row_id])}
+            )
+        else:
+            reviewed.append(a)
+    return reviewed
 
 
 async def get_extract_response(

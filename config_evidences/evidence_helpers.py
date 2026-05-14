@@ -3,6 +3,7 @@ import os
 import uuid
 import re
 import logging
+from utils.normal import parse_composite_user_id
 from utils.app_configs import ACCESSIBLE_IDS
 from utils.s3_utils import save_any_s3, read_json_from_s3, s3bucket, S3_BUCKET
 from radar.radar_helpers import process_file_payloads
@@ -213,6 +214,7 @@ async def run_evidence_check_job(data, job_id=None):
     """
     try:
         user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         runbook_id = data.get("runbook_id")
         file_data = data.get("file")
 

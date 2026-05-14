@@ -16,16 +16,10 @@ PERMISSIONS = {
    "compliance.runbook.edit": "Edit Runbooks",
    "compliance.runbook.delete": "Delete Runbooks",
    "compliance.runbook.execute": "Execute Runbook",
-   "compliance.framework.create": "Upload Frameworks",
-   "compliance.framework.delete": "Delete Frameworks",
-   "compliance.report.create": "Create Runbook Reports",
-   "compliance.report.edit": "Edit Runbook Reports",
-   "compliance.report.delete": "Delete Runbook Reports",
    "compliance.standalone.create": "Create Standalone Reports",
    "compliance.standalone.edit": "Edit Standalone Reports",
    "compliance.standalone.delete": "Delete Standalone Reports",
    "compliance.runbook.read": "View Runbooks",
-   "compliance.report.read": "View Standalone Reports",
    "compliance.runbook.logs": "View Runbook Logs",
    "compliance.report.logs": "View Report Logs",
          
@@ -157,4 +151,22 @@ PERMISSIONS = {
    # ================= ADMIN =================
    "admin.manage_users": "Manage Users",
    "admin.manage_admins": "Manage Admin Access",
+
+   # ======== Trust Center ===========
+   "trustcenter.view": "View Trust Center",
+   "trustcenter.share": "Share Trust Center",
+   "trustcenter.whitepaper.regenerate": "Regenerate Whitepaper",
+   "trustcenter.document.download": "Download PDF",
+   "trustcenter.whitepaper.edit": "Edit Whitepaper",
+   "trustcenter.document.upload": "Upload Documents",
+   "trustcenter.document.delete": "Delete Documents",
+
+   # ================= POLICY HUB =================
+   "policyhub.view": "View Policy Hub",
+   "policyhub.create": "Create Policies",
+   "policyhub.edit": "Edit Policies",
+   "policyhub.delete": "Delete Policies",
+   "policyhub.framework.create": "Upload Frameworks",
+   "policyhub.framework.delete": "Delete Frameworks",
+
 }

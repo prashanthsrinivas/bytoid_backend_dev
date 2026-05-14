@@ -209,6 +209,70 @@ def check_subagent_by_playbook(subagentid, connection=None):
             connection.close()
 
 
+def get_subagent_by_user_id(userid, connection=None):
+    """
+    Returns sub_agent_id for the given user_id.
+    """
+    own_connection = False
+
+    try:
+        if connection is None:
+            connection = connect_to_rds()
+            own_connection = True
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sub_agent_id_fk
+                FROM launch
+                WHERE user_id_fk = %s
+                LIMIT 1
+                """,
+                (userid,),
+            )
+
+            result = cursor.fetchone()
+
+            return result[0] if result else None
+
+    except Exception as e:
+        print(f"Error fetching subagent by user_id: {e}")
+        return None
+
+    finally:
+        if own_connection and connection:
+            connection.close()
+
+
+def get_user_id(email):
+    try:
+        if connection is None:
+            connection = connect_to_rds()
+            own_connection = True
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id
+                FROM users
+                WHERE email = %s
+                LIMIT 1
+                """,
+                (userid,),
+            )
+
+            result = cursor.fetchone()
+
+            return result[0] if result else None
+
+    except Exception as e:
+        print(f"Error fetching userid by email {e}")
+        return None
+    finally:
+        if own_connection and connection:
+            connection.close()
+
+
 def create_subagent_to_playbook(
     playbook_id, subagent_id, config_s3_path, connection=None
 ):
@@ -1114,9 +1178,7 @@ def get_notes_data(user_id):
                 WHERE m.conversation_id_fk IN ({})
                 AND m.message_type = 'inbound'
                 ORDER BY m.conversation_id_fk, m.created_at DESC
-            """.format(
-                ",".join(["%s"] * len(conversation_ids))
-            )
+            """.format(",".join(["%s"] * len(conversation_ids)))
 
             cursor.execute(conversations_query, list(conversation_ids))
             conversation_rows = cursor.fetchall()
@@ -1228,8 +1290,7 @@ def ensure_starter_credits_for_user(user_id: str, conn):
     )
 
     # 2️⃣ Fetch STARTER plan
-    cursor.execute(
-        """
+    cursor.execute("""
         SELECT plan_code, monthly_token_limit
         FROM plans
         WHERE plan_code IN ('STARTER','FREE')
@@ -1239,8 +1300,7 @@ def ensure_starter_credits_for_user(user_id: str, conn):
             WHEN 'FREE' THEN 2
         END
         LIMIT 1
-        """
-    )
+        """)
 
     starter_plan = cursor.fetchone()
 

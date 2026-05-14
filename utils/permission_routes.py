@@ -199,8 +199,9 @@ PERMISSION_ROUTES = {
         "/schedule_runbook"
     ],
 
-    # ================= COMPLIANCE ENGINE - POLICY HUB =================
-    "compliance.report.read": [
+    # ================= POLICY HUB =================
+
+    "policyhub.view": [
         "/policy-hub/status",
         "/policy-hub/edit-status",
         "/policy-hub/list",
@@ -212,25 +213,25 @@ PERMISSION_ROUTES = {
         "/policy-hub/frameworks/<framework_id>"
     ],
 
-    "compliance.report.create": [
+    "policyhub.create": [
         "/policy-hub/generate"
     ],
 
-    "compliance.report.edit": [
+    "policyhub.edit": [
         "/policy-hub/edit",
         "/policy-hub/update"
     ],
 
-    "compliance.report.delete": [
+    "policyhub.delete": [
         "/policy-hub/delete"
     ],
 
-    "compliance.framework.create": [
+    "policyhub.framework.create": [
         "/policy-hub/frameworks/upload",
         "/policy-hub/frameworks/save"
     ],
 
-    "compliance.framework.delete": [
+    "policyhub.framework.delete": [
         "/policy-hub/frameworks/<framework_id>"
     ],
 
@@ -521,5 +522,32 @@ PERMISSION_ROUTES = {
     "kb.voice.manage": [
         "/update-transcript",
         "/update-audio-contacts"
-    ]
+    ],
+
+    # ======= Trust Center ========
+    "trustcenter.view": [
+        "/trust-center",
+        "/trust-center/status"
+    ],
+
+    "trustcenter.share": [
+        "/trust-center/share"
+    ],
+
+    "trustcenter.whitepaper.regenerate": [
+        "/trust-center/whitepaper/regenerate"
+    ],
+
+    "trustcenter.document.download": [
+        "/trust-center/whitepaper/pdf",
+        "/trust-center/documents/<doc_id>/download"
+    ],
+
+    "trustcenter.whitepaper.edit": [
+            "/trust-center/whitepaper"
+    ],
+
+    "trustcenter.document.upload": [
+        "/trust-center/documents"
+    ],  
 }

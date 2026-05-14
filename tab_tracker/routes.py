@@ -49,6 +49,9 @@ from utils.fireworkzz import (
     quality_review_framework_assignments,
 )
 from credits_route.route import Credits
+from playbook.background_worker import JobManager
+from services.redis_service import get_redis
+from websockets_custom.ws_instance import ws_service, msg_builder_main
 from utils.base_logger import get_logger
 
 tracker_bp = Blueprint("tracker", __name__)
@@ -1047,107 +1050,100 @@ async def append_tracker_api():
             linked_frameworks = tracker_data.get("frameworks", [])
             if linked_frameworks:
                 schema_cols = tracker_data.get("schema", {}).get("columns", [])
-                frameworks_col = next(
-                    (col for col in schema_cols if col.get("name") == "frameworks"),
-                    None,
-                )
-                if frameworks_col:
-                    frameworks_col_id = frameworks_col["id"]
-                    new_rows = tracker_data.get("rows", [])[before["rows"] :]
+                new_rows = tracker_data.get("rows", [])[before["rows"] :]
 
-                    for row in new_rows:
-                        row["values"].setdefault(frameworks_col_id, [])
+                if new_rows:
+                    credits = Credits(user_id)
+                    for fw_entry in linked_frameworks:
+                        fw_id = fw_entry.get("id")
+                        fw_name = fw_entry.get("name")
 
-                    if new_rows:
-                        credits = Credits(user_id)
-                        for fw_entry in linked_frameworks:
-                            fw_id = fw_entry.get("id")
-                            fw_name = fw_entry.get("name")
-                            fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{fw_id}.yaml"
-                            fw_data = load_yaml_from_s3(fw_s3_key)
-                            if not fw_data:
-                                continue
+                        # Find per-framework column
+                        fw_col = next(
+                            (
+                                col
+                                for col in schema_cols
+                                if col.get("source_column") == "frameworks"
+                                and col.get("name") == fw_name
+                            ),
+                            None,
+                        )
+                        if not fw_col:
+                            continue
+                        fw_col_id = fw_col["id"]
 
-                            fw_rows_data = fw_data.get("rows", [])
-                            fw_cols = fw_data.get("columns", [])
-                            req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
-                            sec_col = (
-                                fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
-                            )
+                        for row in new_rows:
+                            row["values"].setdefault(fw_col_id, [])
 
-                            if not fw_rows_data:
-                                continue
+                        fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{fw_id}.yaml"
+                        fw_data = load_yaml_from_s3(fw_s3_key)
+                        if not fw_data:
+                            continue
 
-                            rows_analysis_input = [
-                                {
-                                    "row_id": row.get("row_id"),
-                                    "col_values": {
-                                        schema_cols[i]
-                                        .get("name"): row["values"]
-                                        .get(schema_cols[i].get("id"), "")
-                                        for i in range(len(schema_cols))
-                                        if schema_cols[i].get("name") != "frameworks"
-                                    },
-                                }
-                                for row in new_rows
-                            ]
+                        fw_rows_data = fw_data.get("rows", [])
+                        fw_cols = fw_data.get("columns", [])
+                        req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
+                        sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
 
-                            ai_result = await analyze_tracker_framework_rows(
+                        if not fw_rows_data:
+                            continue
+
+                        rows_analysis_input = [
+                            {
+                                "row_id": row.get("row_id"),
+                                "col_values": {
+                                    col.get("name"): row["values"].get(
+                                        col.get("id"), ""
+                                    )
+                                    for col in schema_cols
+                                    if col.get("source_column") != "frameworks"
+                                },
+                            }
+                            for row in new_rows
+                        ]
+
+                        ai_result = await analyze_tracker_framework_rows(
+                            rows=rows_analysis_input,
+                            fw_rows=fw_rows_data,
+                            framework_id=fw_id,
+                            framework_name=fw_name,
+                            user_id=user_id,
+                            credits=credits,
+                        )
+
+                        reviewed_assignments = (
+                            await quality_review_framework_assignments(
                                 rows=rows_analysis_input,
                                 fw_rows=fw_rows_data,
-                                framework_id=fw_id,
+                                assignments=ai_result.get("assignments", []),
                                 framework_name=fw_name,
                                 user_id=user_id,
                                 credits=credits,
                             )
+                        )
 
-                            reviewed_assignments = (
-                                await quality_review_framework_assignments(
-                                    rows=rows_analysis_input,
-                                    fw_rows=fw_rows_data,
-                                    assignments=ai_result.get("assignments", []),
-                                    framework_name=fw_name,
-                                    user_id=user_id,
-                                    credits=credits,
-                                )
+                        for assignment in reviewed_assignments:
+                            row_id = assignment.get("row_id")
+                            fw_indices = assignment.get("fw_row_indices", [])
+                            if isinstance(fw_indices, int):
+                                fw_indices = [fw_indices] if fw_indices >= 0 else []
+
+                            matched_row = next(
+                                (r for r in new_rows if r.get("row_id") == row_id),
+                                None,
                             )
-
-                            for assignment in reviewed_assignments:
-                                row_id = assignment.get("row_id")
-                                fw_indices = assignment.get("fw_row_indices", [])
-                                if isinstance(fw_indices, int):
-                                    fw_indices = [fw_indices] if fw_indices >= 0 else []
-
-                                matched_row = next(
-                                    (r for r in new_rows if r.get("row_id") == row_id),
-                                    None,
-                                )
-                                if matched_row:
-                                    existing = matched_row["values"].get(
-                                        frameworks_col_id, []
-                                    )
-                                    if not isinstance(existing, list):
-                                        existing = []
-                                    merged = [
-                                        e
-                                        for e in existing
-                                        if e.get("framework_id") != fw_id
-                                    ]
-                                    new_entries = [
-                                        {
-                                            "framework_id": fw_id,
-                                            "requirement": fw_rows_data[idx].get(
-                                                req_col, ""
-                                            ),
-                                            "section": fw_rows_data[idx].get(
-                                                sec_col, ""
-                                            ),
-                                        }
-                                        for idx in fw_indices
-                                        if 0 <= idx < len(fw_rows_data)
-                                    ]
-                                    merged.extend(new_entries)
-                                    matched_row["values"][frameworks_col_id] = merged
+                            if matched_row:
+                                new_entries = [
+                                    {
+                                        "requirement": fw_rows_data[idx].get(
+                                            req_col, ""
+                                        ),
+                                        "section": fw_rows_data[idx].get(sec_col, ""),
+                                    }
+                                    for idx in fw_indices
+                                    if 0 <= idx < len(fw_rows_data)
+                                ]
+                                matched_row["values"][fw_col_id] = new_entries
 
         # STEP 8: Save updated tracker back to S3
         save_tracker_file(user_id, tracker_id, tracker_data)
@@ -2566,49 +2562,79 @@ def upload_evidence_api():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
-@tracker_bp.route("/tracker/add-framework", methods=["POST"])
-@permission_required_body("trackers.framework.add")
-async def add_tracker_framework():
-    """
-    Add a policyhub framework link and auto-populate framework assignments.
-    Body: { user_id, tracker_id, framework_id }
-    """
+def _make_framework_col_id(schema_cols: list) -> str:
+    """Generate a unique col_N ID that doesn't collide with existing column IDs."""
+    existing_ids = {col["id"] for col in schema_cols}
+    n = len(schema_cols) + 1
+    while f"col_{n}" in existing_ids:
+        n += 1
+    return f"col_{n}"
+
+
+async def _add_framework_worker(data: dict, job_id: str = None) -> dict:
+    """Background worker: creates a per-framework column and AI-populates it row by row."""
+    baseuser = str(data.get("user_id", ""))
+    tracker_id = data.get("tracker_id")
+    framework_id = data.get("framework_id")
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    session_id = data.get("session_id")
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            try:
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=msg.get("message"),
+                    scope=msg.get("scope", "job"),
+                    session_id=msg.get("session_id"),
+                    job_id=msg.get("job_id"),
+                    msg_type=msg.get("type"),
+                    stage=msg.get("stage"),
+                    progress=msg.get("progress"),
+                    feature="tracker_framework",
+                )
+            except Exception:
+                pass
+
     try:
-        data = request.json
-        baseuser = str(data.get("user_id"))
-        tracker_id = data.get("tracker_id")
-        framework_id = data.get("framework_id")
-
-        if not all([baseuser, tracker_id, framework_id]):
-            return (
-                jsonify(
-                    {
-                        "error": "Missing required fields: user_id, tracker_id, framework_id"
-                    }
-                ),
-                400,
+        await emit(
+            msg_builder_main.job_progress(
+                job_id, session_id, "init", "Starting framework analysis…", 5
             )
+        )
 
-        # Fetch framework
+        # Load framework YAML
         fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
         fw_data = load_yaml_from_s3(fw_s3_key)
         if not fw_data:
-            return (
-                jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
-                404,
-            )
-
+            raise Exception(f"Framework not found in policyhub: {framework_id}")
         framework_name = fw_data.get("name")
         if not framework_name:
-            return (
-                jsonify(
-                    {"error": f"Framework missing name in policyhub: {framework_id}"}
-                ),
-                500,
-            )
-        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+            raise Exception(f"Framework missing name in policyhub: {framework_id}")
 
-        # Check tracker exists
+        await emit(
+            msg_builder_main.job_progress(
+                job_id,
+                session_id,
+                "loading",
+                f"Loading {framework_name} requirements",
+                10,
+            )
+        )
+
+        fw_rows = fw_data.get("rows", [])
+        fw_cols = fw_data.get("columns", [])
+        req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
+        sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
+
+        # Load tracker data
+        await emit(
+            msg_builder_main.job_progress(
+                job_id, session_id, "loading", "Preparing tracker data", 15
+            )
+        )
+
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
             (
@@ -2619,65 +2645,83 @@ async def add_tracker_framework():
             None,
         )
         if not tracker_meta:
-            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
-
+            raise Exception(f"Tracker not found: {tracker_id}")
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
         if not tracker_data:
-            return jsonify({"error": "Tracker file not found on storage"}), 404
+            raise Exception("Tracker file not found on storage")
 
-        # Check duplicate framework link
-        existing_frameworks = tracker_data.get("frameworks", [])
-        if any(fw["id"] == framework_id for fw in existing_frameworks):
-            return jsonify({"error": "Framework already linked to this tracker"}), 409
+        # Safety re-check for duplicate
+        if any(fw["id"] == framework_id for fw in tracker_data.get("frameworks", [])):
+            raise Exception("Framework already linked to this tracker")
 
-        # Ensure "frameworks" column exists
-        schema_cols = tracker_data.get("schema", {}).get("columns", [])
-        frameworks_col = next(
-            (col for col in schema_cols if col.get("name") == "frameworks"), None
+        # Create per-framework column
+        await emit(
+            msg_builder_main.job_progress(
+                job_id, session_id, "setup", f"Creating {framework_name} column", 20
+            )
         )
-        if not frameworks_col:
-            frameworks_col_id = f"col_{len(schema_cols) + 1}"
-            frameworks_col = {
-                "id": frameworks_col_id,
-                "name": "frameworks",
-                "source_column": "frameworks",
-                "type": "text",
-            }
-            schema_cols.append(frameworks_col)
-            tracker_data["schema"]["columns"] = schema_cols
-        else:
-            frameworks_col_id = frameworks_col["id"]
 
-        # Initialize frameworks column in all rows
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        new_col_id = _make_framework_col_id(schema_cols)
+        new_col = {
+            "id": new_col_id,
+            "name": framework_name,
+            "source_column": "frameworks",
+            "type": "text",
+        }
+        schema_cols.append(new_col)
+        tracker_data["schema"]["columns"] = schema_cols
+
+        # Initialize column to [] in all existing rows
         for row in tracker_data.get("rows", []):
-            row["values"].setdefault(frameworks_col_id, [])
+            row["values"].setdefault(new_col_id, [])
 
-        # Get framework requirements directly from framework data
-        fw_rows = fw_data.get("rows", [])
-        fw_cols = fw_data.get("columns", [])
-        req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
-        sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
-
-        # Run AI analysis
         rows_for_analysis = tracker_data.get("rows", [])
         rows_assigned = 0
         rows_empty = 0
 
         if rows_for_analysis and fw_rows:
             credits = Credits(user_id)
+            # Exclude ALL framework columns from AI input
             rows_analysis_input = [
                 {
                     "row_id": row.get("row_id"),
                     "col_values": {
-                        schema_cols[i]
-                        .get("name"): row["values"]
-                        .get(schema_cols[i].get("id"), "")
-                        for i in range(len(schema_cols))
-                        if schema_cols[i].get("name") != "frameworks"
+                        col.get("name"): row["values"].get(col.get("id"), "")
+                        for col in schema_cols
+                        if col.get("source_column") != "frameworks"
                     },
                 }
                 for row in rows_for_analysis
             ]
+
+            await emit(
+                msg_builder_main.job_progress(
+                    job_id,
+                    session_id,
+                    "analysis",
+                    f"Analyzing {len(rows_analysis_input)} rows against {framework_name}…",
+                    25,
+                )
+            )
+
+            # Per-row analysis with progress callback
+            total_rows = len(rows_analysis_input)
+            analyzed_count = 0
+
+            async def on_row_analyzed():
+                nonlocal analyzed_count
+                analyzed_count += 1
+                pct = 25 + int(analyzed_count / total_rows * 40)  # 25 → 65
+                await emit(
+                    msg_builder_main.job_progress(
+                        job_id,
+                        session_id,
+                        "analysis",
+                        f"Analyzing row {analyzed_count}/{total_rows}…",
+                        pct,
+                    )
+                )
 
             ai_result = await analyze_tracker_framework_rows(
                 rows=rows_analysis_input,
@@ -2686,7 +2730,34 @@ async def add_tracker_framework():
                 framework_name=framework_name,
                 user_id=user_id,
                 credits=credits,
+                on_row_done=on_row_analyzed,
             )
+
+            await emit(
+                msg_builder_main.job_progress(
+                    job_id, session_id, "review", "Running quality review…", 68
+                )
+            )
+
+            # Per-row review with progress callback
+            rows_to_review = len(
+                [a for a in ai_result.get("assignments", []) if a.get("fw_row_indices")]
+            )
+            reviewed_count = 0
+
+            async def on_row_reviewed():
+                nonlocal reviewed_count
+                reviewed_count += 1
+                pct = 68 + int(reviewed_count / max(rows_to_review, 1) * 17)  # 68 → 85
+                await emit(
+                    msg_builder_main.job_progress(
+                        job_id,
+                        session_id,
+                        "review",
+                        f"Reviewing row {reviewed_count}/{rows_to_review}…",
+                        pct,
+                    )
+                )
 
             assignments = await quality_review_framework_assignments(
                 rows=rows_analysis_input,
@@ -2695,6 +2766,13 @@ async def add_tracker_framework():
                 framework_name=framework_name,
                 user_id=user_id,
                 credits=credits,
+                on_row_done=on_row_reviewed,
+            )
+
+            await emit(
+                msg_builder_main.job_progress(
+                    job_id, session_id, "saving", "Saving framework assignments…", 88
+                )
             )
 
             for assignment in assignments:
@@ -2705,38 +2783,28 @@ async def add_tracker_framework():
                 row = next(
                     (r for r in rows_for_analysis if r.get("row_id") == row_id), None
                 )
-
                 if row:
-                    existing = row["values"].get(frameworks_col_id, [])
-                    if not isinstance(existing, list):
-                        existing = []
-                    merged = [
-                        e for e in existing if e.get("framework_id") != framework_id
-                    ]
                     new_entries = [
                         {
-                            "framework_id": framework_id,
                             "requirement": fw_rows[idx].get(req_col, ""),
                             "section": fw_rows[idx].get(sec_col, ""),
                         }
                         for idx in fw_indices
                         if 0 <= idx < len(fw_rows)
                     ]
+                    row["values"][new_col_id] = new_entries
                     if new_entries:
-                        merged.extend(new_entries)
                         rows_assigned += 1
                     else:
                         rows_empty += 1
-                    row["values"][frameworks_col_id] = merged
 
-        # Add framework to tracker list
+        # Append framework to tracker list and save
         tracker_data.setdefault("frameworks", []).append(
             {"id": framework_id, "name": framework_name}
         )
-
         save_tracker_file(user_id, tracker_id, tracker_data)
 
-        # Audit logging
+        # Audit log
         (
             actor_user_id,
             actor_email,
@@ -2746,7 +2814,7 @@ async def add_tracker_framework():
         log_audit_event(
             action=TRACKER_FRAMEWORK_ADDED,
             endpoint="/tracker/add-framework",
-            ip=request.remote_addr,
+            ip=data.get("_ip", "background"),
             status="success",
             actor_user_id=actor_user_id,
             actor_email=actor_email,
@@ -2758,39 +2826,41 @@ async def add_tracker_framework():
                 "framework_name": framework_name,
                 "rows_assigned": rows_assigned,
                 "rows_empty": rows_empty,
+                "job_id": job_id,
             },
         )
-        g.audit_logged = True
 
-        return (
-            jsonify(
-                {
-                    "message": "Framework linked and analyzed successfully",
-                    "tracker_id": tracker_id,
-                    "framework": {"id": framework_id, "name": framework_name},
-                    "frameworks_column_id": frameworks_col_id,
-                    "rows_assigned": rows_assigned,
-                    "rows_empty": rows_empty,
-                }
-            ),
-            200,
+        await emit(
+            msg_builder_main.job_success(
+                job_id, session_id, f"Framework linked: {rows_assigned} rows assigned"
+            )
         )
 
+        return {
+            "message": "Framework linked and analyzed successfully",
+            "tracker_id": tracker_id,
+            "framework": {"id": framework_id, "name": framework_name},
+            "frameworks_column_id": new_col_id,
+            "rows_assigned": rows_assigned,
+            "rows_empty": rows_empty,
+        }
+
     except Exception as e:
-        logging.error(f"Add tracker framework error: {traceback.format_exc()}")
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+        await emit(msg_builder_main.job_error(job_id, session_id, str(e)))
+        raise
 
 
-@tracker_bp.route("/tracker/update-framework", methods=["POST"])
-@permission_required_body("trackers.framework.edit")
-async def update_tracker_framework():
+@tracker_bp.route("/tracker/add-framework", methods=["POST"])
+@permission_required_body("trackers.framework.add")
+async def add_tracker_framework():
     """
-    Re-analyze and sync framework assignments (re-sync with policyhub).
+    Add a policyhub framework link and auto-populate framework assignments.
     Body: { user_id, tracker_id, framework_id }
+    Returns 202 with job_id immediately; AI analysis runs in background.
     """
     try:
         data = request.json
-        baseuser = str(data.get("user_id"))
+        baseuser = str(data.get("user_id", ""))
         tracker_id = data.get("tracker_id")
         framework_id = data.get("framework_id")
 
@@ -2803,9 +2873,27 @@ async def update_tracker_framework():
                 ),
                 400,
             )
+
+        # Quick validation: framework exists in S3
+        fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
+        fw_data = load_yaml_from_s3(fw_s3_key)
+        if not fw_data:
+            return (
+                jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
+                404,
+            )
+        framework_name = fw_data.get("name")
+        if not framework_name:
+            return (
+                jsonify(
+                    {"error": f"Framework missing name in policyhub: {framework_id}"}
+                ),
+                500,
+            )
+
         logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
-        # Check tracker exists
+        # Quick validation: tracker exists and file loads
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
             (
@@ -2817,57 +2905,151 @@ async def update_tracker_framework():
         )
         if not tracker_meta:
             return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
-
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 
-        # Check framework exists in tracker
-        frameworks = tracker_data.get("frameworks", [])
-        framework = next((fw for fw in frameworks if fw["id"] == framework_id), None)
-        if not framework:
-            return (
-                jsonify(
-                    {"error": f"Framework not linked to this tracker: {framework_id}"}
-                ),
-                404,
-            )
+        # Quick validation: not a duplicate
+        if any(fw["id"] == framework_id for fw in tracker_data.get("frameworks", [])):
+            return jsonify({"error": "Framework already linked to this tracker"}), 409
 
-        # Fetch framework from policyhub
+        data["_ip"] = request.remote_addr
+        job_id = await JobManager.submit_job(_add_framework_worker, data)
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_FRAMEWORK_ADDED,
+            endpoint="/tracker/add-framework",
+            ip=request.remote_addr,
+            status="accepted",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "framework_id": framework_id,
+                "framework_name": framework_name,
+                "job_id": job_id,
+            },
+        )
+        g.audit_logged = True
+
+        return jsonify({"status": "accepted", "job_id": job_id}), 202
+
+    except Exception as e:
+        logging.error(f"Add tracker framework error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+async def _update_framework_worker(data: dict, job_id: str = None) -> dict:
+    """Background worker: re-analyzes and replaces per-framework column data."""
+    baseuser = str(data.get("user_id", ""))
+    tracker_id = data.get("tracker_id")
+    framework_id = data.get("framework_id")
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    session_id = data.get("session_id")
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            try:
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=msg.get("message"),
+                    scope=msg.get("scope", "job"),
+                    session_id=msg.get("session_id"),
+                    job_id=msg.get("job_id"),
+                    msg_type=msg.get("type"),
+                    stage=msg.get("stage"),
+                    progress=msg.get("progress"),
+                    feature="tracker_framework",
+                )
+            except Exception:
+                pass
+
+    try:
+        await emit(
+            msg_builder_main.job_progress(
+                job_id, session_id, "init", "Starting framework re-analysis…", 5
+            )
+        )
+
+        # Load tracker data
+        config_path, config_data = check_config_exist(user_id)
+        tracker_meta = next(
+            (
+                t
+                for t in (config_data or {}).get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
+            None,
+        )
+        if not tracker_meta:
+            raise Exception(f"Tracker not found: {tracker_id}")
+        tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if not tracker_data:
+            raise Exception("Tracker file not found on storage")
+
+        # Verify framework is linked
+        framework_entry = next(
+            (
+                fw
+                for fw in tracker_data.get("frameworks", [])
+                if fw["id"] == framework_id
+            ),
+            None,
+        )
+        if not framework_entry:
+            raise Exception(f"Framework not linked to this tracker: {framework_id}")
+        old_framework_name = framework_entry["name"]
+
+        # Load framework YAML
+        await emit(
+            msg_builder_main.job_progress(
+                job_id,
+                session_id,
+                "loading",
+                f"Loading {old_framework_name} requirements",
+                10,
+            )
+        )
+
         fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
         fw_data = load_yaml_from_s3(fw_s3_key)
         if not fw_data:
-            return (
-                jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
-                404,
-            )
-
+            raise Exception(f"Framework not found in policyhub: {framework_id}")
         framework_name = fw_data.get("name")
         if not framework_name:
-            return (
-                jsonify(
-                    {"error": f"Framework missing name in policyhub: {framework_id}"}
-                ),
-                500,
-            )
+            raise Exception(f"Framework missing name in policyhub: {framework_id}")
 
-        # Get frameworks column
-        schema_cols = tracker_data.get("schema", {}).get("columns", [])
-        frameworks_col = next(
-            (col for col in schema_cols if col.get("name") == "frameworks"), None
-        )
-        if not frameworks_col:
-            return jsonify({"error": "Frameworks column not found in tracker"}), 400
-
-        frameworks_col_id = frameworks_col["id"]
-
-        # Get framework requirements directly from framework data
         fw_rows = fw_data.get("rows", [])
         fw_cols = fw_data.get("columns", [])
         req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
         sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
 
-        # Re-analyze all rows for this framework
+        # Find per-framework column by old name (in case it was renamed in policyhub)
+        await emit(
+            msg_builder_main.job_progress(
+                job_id, session_id, "setup", f"Locating {old_framework_name} column", 20
+            )
+        )
+
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        fw_col = next(
+            (
+                col
+                for col in schema_cols
+                if col.get("source_column") == "frameworks"
+                and col.get("name") == old_framework_name
+            ),
+            None,
+        )
+        if not fw_col:
+            raise Exception(f"Framework column not found for: {old_framework_name}")
+        fw_col_id = fw_col["id"]
+
+        # Build AI input — exclude all framework columns
         rows_for_analysis = tracker_data.get("rows", [])
         rows_assigned = 0
         rows_empty = 0
@@ -2878,15 +3060,41 @@ async def update_tracker_framework():
                 {
                     "row_id": row.get("row_id"),
                     "col_values": {
-                        schema_cols[i]
-                        .get("name"): row["values"]
-                        .get(schema_cols[i].get("id"), "")
-                        for i in range(len(schema_cols))
-                        if schema_cols[i].get("name") != "frameworks"
+                        col.get("name"): row["values"].get(col.get("id"), "")
+                        for col in schema_cols
+                        if col.get("source_column") != "frameworks"
                     },
                 }
                 for row in rows_for_analysis
             ]
+
+            await emit(
+                msg_builder_main.job_progress(
+                    job_id,
+                    session_id,
+                    "analysis",
+                    f"Re-analyzing {len(rows_analysis_input)} rows…",
+                    25,
+                )
+            )
+
+            # Per-row analysis with progress callback
+            total_rows = len(rows_analysis_input)
+            analyzed_count = 0
+
+            async def on_row_analyzed():
+                nonlocal analyzed_count
+                analyzed_count += 1
+                pct = 25 + int(analyzed_count / total_rows * 55)  # 25 → 80
+                await emit(
+                    msg_builder_main.job_progress(
+                        job_id,
+                        session_id,
+                        "analysis",
+                        f"Analyzing row {analyzed_count}/{total_rows}…",
+                        pct,
+                    )
+                )
 
             ai_result = await analyze_tracker_framework_rows(
                 rows=rows_analysis_input,
@@ -2895,12 +3103,16 @@ async def update_tracker_framework():
                 framework_name=framework_name,
                 user_id=user_id,
                 credits=credits,
+                on_row_done=on_row_analyzed,
             )
 
-            assignments = ai_result.get("assignments", [])
+            await emit(
+                msg_builder_main.job_progress(
+                    job_id, session_id, "saving", "Saving updated assignments…", 88
+                )
+            )
 
-            # Replace entries for this framework (full re-analysis)
-            for assignment in assignments:
+            for assignment in ai_result.get("assignments", []):
                 row_id = assignment.get("row_id")
                 fw_indices = assignment.get("fw_row_indices", [])
                 if isinstance(fw_indices, int):
@@ -2908,40 +3120,29 @@ async def update_tracker_framework():
                 row = next(
                     (r for r in rows_for_analysis if r.get("row_id") == row_id), None
                 )
-
                 if row:
-                    existing = row["values"].get(frameworks_col_id, [])
-                    if not isinstance(existing, list):
-                        existing = []
-                    # Remove entries for this framework
-                    merged = [
-                        e for e in existing if e.get("framework_id") != framework_id
-                    ]
-
                     new_entries = [
                         {
-                            "framework_id": framework_id,
                             "requirement": fw_rows[idx].get(req_col, ""),
                             "section": fw_rows[idx].get(sec_col, ""),
                         }
                         for idx in fw_indices
                         if 0 <= idx < len(fw_rows)
                     ]
+                    row["values"][fw_col_id] = new_entries
                     if new_entries:
-                        merged.extend(new_entries)
                         rows_assigned += 1
                     else:
                         rows_empty += 1
 
-                    row["values"][frameworks_col_id] = merged
-
-        # Update framework name
-        old_name = framework["name"]
-        framework["name"] = framework_name
+        # Update column name and framework entry name if policyhub renamed the framework
+        if fw_col["name"] != framework_name:
+            fw_col["name"] = framework_name
+        framework_entry["name"] = framework_name
 
         save_tracker_file(user_id, tracker_id, tracker_data)
 
-        # Audit logging
+        # Audit log
         (
             actor_user_id,
             actor_email,
@@ -2951,7 +3152,7 @@ async def update_tracker_framework():
         log_audit_event(
             action=TRACKER_FRAMEWORK_UPDATED,
             endpoint="/tracker/update-framework",
-            ip=request.remote_addr,
+            ip=data.get("_ip", "background"),
             status="success",
             actor_user_id=actor_user_id,
             actor_email=actor_email,
@@ -2960,26 +3161,125 @@ async def update_tracker_framework():
             metadata={
                 "tracker_id": tracker_id,
                 "framework_id": framework_id,
-                "old_name": old_name,
+                "old_name": old_framework_name,
                 "new_name": framework_name,
                 "rows_reassigned": rows_assigned,
                 "rows_empty": rows_empty,
+                "job_id": job_id,
+            },
+        )
+
+        await emit(
+            msg_builder_main.job_success(
+                job_id,
+                session_id,
+                f"Framework updated: {rows_assigned} rows reassigned",
+            )
+        )
+
+        return {
+            "message": "Framework reassigned successfully",
+            "tracker_id": tracker_id,
+            "framework": {"id": framework_id, "name": framework_name},
+            "rows_reassigned": rows_assigned,
+            "rows_empty": rows_empty,
+        }
+
+    except Exception as e:
+        await emit(msg_builder_main.job_error(job_id, session_id, str(e)))
+        raise
+
+
+@tracker_bp.route("/tracker/update-framework", methods=["POST"])
+@permission_required_body("trackers.framework.edit")
+async def update_tracker_framework():
+    """
+    Re-analyze and sync framework assignments (re-sync with policyhub).
+    Body: { user_id, tracker_id, framework_id }
+    Returns 202 with job_id immediately; AI analysis runs in background.
+    """
+    try:
+        data = request.json
+        baseuser = str(data.get("user_id", ""))
+        tracker_id = data.get("tracker_id")
+        framework_id = data.get("framework_id")
+
+        if not all([baseuser, tracker_id, framework_id]):
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, tracker_id, framework_id"
+                    }
+                ),
+                400,
+            )
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        # Quick validation: tracker exists
+        config_path, config_data = check_config_exist(user_id)
+        tracker_meta = next(
+            (
+                t
+                for t in (config_data or {}).get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
+            None,
+        )
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+        tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        # Quick validation: framework is linked
+        framework_entry = next(
+            (
+                fw
+                for fw in tracker_data.get("frameworks", [])
+                if fw["id"] == framework_id
+            ),
+            None,
+        )
+        if not framework_entry:
+            return (
+                jsonify(
+                    {"error": f"Framework not linked to this tracker: {framework_id}"}
+                ),
+                404,
+            )
+
+        # Quick validation: framework YAML exists
+        fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
+        fw_data = load_yaml_from_s3(fw_s3_key)
+        if not fw_data:
+            return (
+                jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
+                404,
+            )
+
+        data["_ip"] = request.remote_addr
+        job_id = await JobManager.submit_job(_update_framework_worker, data)
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_FRAMEWORK_UPDATED,
+            endpoint="/tracker/update-framework",
+            ip=request.remote_addr,
+            status="accepted",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "framework_id": framework_id,
+                "job_id": job_id,
             },
         )
         g.audit_logged = True
 
-        return (
-            jsonify(
-                {
-                    "message": "Framework reassigned successfully",
-                    "tracker_id": tracker_id,
-                    "framework": framework,
-                    "rows_reassigned": rows_assigned,
-                    "rows_empty": rows_empty,
-                }
-            ),
-            200,
-        )
+        return jsonify({"status": "accepted", "job_id": job_id}), 202
 
     except Exception as e:
         logging.error(f"Update tracker framework error: {traceback.format_exc()}")
@@ -3044,39 +3344,30 @@ def remove_tracker_framework():
             fw for fw in frameworks if fw["id"] != framework_id
         ]
 
-        # Get frameworks column if it exists
+        # Find and remove the per-framework column
         schema_cols = tracker_data.get("schema", {}).get("columns", [])
-        frameworks_col = next(
-            (col for col in schema_cols if col.get("name") == "frameworks"), None
+        fw_col = next(
+            (
+                col
+                for col in schema_cols
+                if col.get("source_column") == "frameworks"
+                and col.get("name") == framework_name
+            ),
+            None,
         )
         rows_affected = 0
-
-        if frameworks_col:
-            frameworks_col_id = frameworks_col["id"]
-
-            # Clean per-row assignments
-            for row in tracker_data.get("rows", []):
-                existing = row["values"].get(frameworks_col_id, [])
-                if isinstance(existing, list):
-                    filtered = [
-                        e for e in existing if e.get("framework_id") != framework_id
-                    ]
-                    if len(filtered) < len(existing):
-                        rows_affected += 1
-                    row["values"][frameworks_col_id] = filtered
-
-        # If no frameworks remain, remove the frameworks column entirely
         column_removed = False
-        if not tracker_data.get("frameworks", []) and frameworks_col:
-            frameworks_col_id = frameworks_col["id"]
-            # Remove column from schema
-            tracker_data["schema"]["columns"] = [
-                col for col in schema_cols if col.get("id") != frameworks_col_id
-            ]
-            # Remove column values from all rows
+
+        if fw_col:
+            fw_col_id = fw_col["id"]
             for row in tracker_data.get("rows", []):
-                if frameworks_col_id in row["values"]:
-                    del row["values"][frameworks_col_id]
+                if fw_col_id in row["values"]:
+                    if row["values"][fw_col_id]:
+                        rows_affected += 1
+                    del row["values"][fw_col_id]
+            tracker_data["schema"]["columns"] = [
+                col for col in schema_cols if col.get("id") != fw_col_id
+            ]
             column_removed = True
 
         save_tracker_file(user_id, tracker_id, tracker_data)
@@ -3123,3 +3414,17 @@ def remove_tracker_framework():
     except Exception as e:
         logging.error(f"Remove tracker framework error: {traceback.format_exc()}")
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@tracker_bp.route("/tracker/jbs/<job_id>", methods=["GET"])
+@permission_required_body("trackers.table.view")
+async def tracker_job_status(job_id):
+    """
+    Poll the status of a background tracker job.
+    Returns: { status: queued|processing|completed|failed, data: {...} }
+    """
+    redisservice = get_redis()
+    job = await redisservice.get(f"job:{job_id}")
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(job)
