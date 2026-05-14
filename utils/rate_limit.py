@@ -30,4 +30,5 @@ def init_limiter(app):
             }
     else:
         app.config["RATELIMIT_STORAGE_URI"] = "memory://"
+    app.config["RATELIMIT_IN_MEMORY_FALLBACK_ENABLED"] = True
     limiter.init_app(app)
