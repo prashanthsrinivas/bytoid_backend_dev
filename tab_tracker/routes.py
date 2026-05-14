@@ -1034,6 +1034,88 @@ async def append_tracker_api():
         # STEP 7: Append block into tracker (mutates in place) and capture metadata
         append_metadata = append_to_tracker(tracker_data, target_block, result_id)
 
+        # STEP 7.5: For table trackers with linked frameworks, initialize and analyze new rows
+        if tracker_type == "table":
+            linked_frameworks = tracker_data.get("frameworks", [])
+            if linked_frameworks:
+                schema_cols = tracker_data.get("schema", {}).get("columns", [])
+                frameworks_col = next(
+                    (col for col in schema_cols if col.get("name") == "frameworks"), None
+                )
+                if frameworks_col:
+                    frameworks_col_id = frameworks_col["id"]
+                    new_rows = tracker_data.get("rows", [])[before["rows"]:]
+
+                    for row in new_rows:
+                        row["values"].setdefault(frameworks_col_id, [])
+
+                    if new_rows:
+                        credits = Credits(user_id)
+                        for fw_entry in linked_frameworks:
+                            fw_id = fw_entry.get("id")
+                            fw_name = fw_entry.get("name")
+                            fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{fw_id}.yaml"
+                            fw_data = load_yaml_from_s3(fw_s3_key)
+                            if not fw_data:
+                                continue
+
+                            fw_rows_data = fw_data.get("rows", [])
+                            fw_cols = fw_data.get("columns", [])
+                            req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
+                            sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
+
+                            if not fw_rows_data:
+                                continue
+
+                            rows_analysis_input = [
+                                {
+                                    "row_id": row.get("row_id"),
+                                    "col_values": {
+                                        schema_cols[i].get("name"): row["values"].get(schema_cols[i].get("id"), "")
+                                        for i in range(len(schema_cols))
+                                        if schema_cols[i].get("name") != "frameworks"
+                                    },
+                                }
+                                for row in new_rows
+                            ]
+
+                            ai_result = await analyze_tracker_framework_rows(
+                                rows=rows_analysis_input,
+                                fw_rows=fw_rows_data,
+                                framework_id=fw_id,
+                                framework_name=fw_name,
+                                user_id=user_id,
+                                credits=credits,
+                            )
+
+                            for assignment in ai_result.get("assignments", []):
+                                row_id = assignment.get("row_id")
+                                fw_indices = assignment.get("fw_row_indices", [])
+                                if isinstance(fw_indices, int):
+                                    fw_indices = [fw_indices] if fw_indices >= 0 else []
+
+                                matched_row = next(
+                                    (r for r in new_rows if r.get("row_id") == row_id), None
+                                )
+                                if matched_row:
+                                    existing = matched_row["values"].get(frameworks_col_id, [])
+                                    if not isinstance(existing, list):
+                                        existing = []
+                                    merged = [
+                                        e for e in existing if e.get("framework_id") != fw_id
+                                    ]
+                                    new_entries = [
+                                        {
+                                            "framework_id": fw_id,
+                                            "requirement": fw_rows_data[idx].get(req_col, ""),
+                                            "section": fw_rows_data[idx].get(sec_col, ""),
+                                        }
+                                        for idx in fw_indices
+                                        if 0 <= idx < len(fw_rows_data)
+                                    ]
+                                    merged.extend(new_entries)
+                                    matched_row["values"][frameworks_col_id] = merged
+
         # STEP 8: Save updated tracker back to S3
         save_tracker_file(user_id, tracker_id, tracker_data)
 
