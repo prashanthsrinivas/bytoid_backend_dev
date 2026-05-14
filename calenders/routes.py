@@ -4,11 +4,12 @@ from flask import Blueprint, request
 from services.meet_service import GoogleMeetService
 from datetime import datetime
 import pytz
-
+from utils.base_logger import get_logger
 from services.microsoft_calender_service import MicrosoftGraphCalendarService
 from umail_helper.mails_process import get_integration_users
 from utils.normal import sanitize_value, strip_html
 
+logger = get_logger(__name__)
 calenders_bp = Blueprint("calender", __name__)
 
 
@@ -56,15 +57,16 @@ def get_all_user_events():
         # print(type(userid), userid)
 
         val = fetch_user_Social(user_id=userid)
-        print("Platform detected:", val)
+        logger.info("Platform detected:%s", val)
         connection = connect_to_rds()
         integrations = get_integration_users(userid, connection)
         # print("val receved", val)
+
         # Initialize service
         if val == "google":
             # print("into google service")
             service = GoogleMeetService(userid=userid, integrations=integrations)
-        elif val == "microsoft":
+        elif val == "microsoft" or val == "saml":
             # print("into microsoft")
             service = MicrosoftGraphCalendarService(userid=userid)
 

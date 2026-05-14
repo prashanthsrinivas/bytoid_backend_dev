@@ -24,8 +24,8 @@ PERMISSIONS = {
    "compliance.standalone.create": "Create Standalone Reports",
    "compliance.standalone.edit": "Edit Standalone Reports",
    "compliance.standalone.delete": "Delete Standalone Reports",
-   "compliance.runbook.read": "Read Only Runbooks",
-   "compliance.report.read": "Read Only Reports",
+   "compliance.runbook.read": "View Runbooks",
+   "compliance.report.read": "View Standalone Reports",
    "compliance.runbook.logs": "View Runbook Logs",
    "compliance.report.logs": "View Report Logs",
          

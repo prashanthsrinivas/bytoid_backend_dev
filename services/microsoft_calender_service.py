@@ -34,7 +34,6 @@ class MicrosoftGraphCalendarService:
     GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
     def __init__(self, userid: str, wf_check=False):
-        # print("MicrosoftGraphCalendarService initialized")
         self.userid = userid
         self.conn = connect_to_rds()
         self.in_workflow = wf_check
@@ -42,35 +41,65 @@ class MicrosoftGraphCalendarService:
 
         # Fetch Microsoft tokens from DB
         with get_cursor(self.conn) as cursor:
+
+            # ---------------------------------------------------
+            # Try users table first
+            # ---------------------------------------------------
             cursor.execute(
                 """
-                SELECT client_id, client_secret,
-                       token, refresh_token,
-                       expiry, email
-                FROM users WHERE user_id=%s
+                SELECT client_id,
+                       client_secret,
+                       token,
+                       refresh_token,
+                       expiry,
+                       email
+                FROM users
+                WHERE user_id=%s
                 """,
                 (str(userid),),
             )
-            row = cursor.fetchone()
-            if row and row[0] and row[2]:  # client_id and token must exist
-                self.token_source = "users"
-            if not row:
-                raise ValueError("user not found")
 
-            if not row[0]:
+            row = cursor.fetchone()
+
+            # ---------------------------------------------------
+            # If valid token exists in users table
+            # ---------------------------------------------------
+            if row and row[0] and row[2]:
+                self.token_source = "users"
+
+            else:
+                logger.info("checking on integrations table.")
+                # ---------------------------------------------------
+                # Fallback to integrations table
+                # ---------------------------------------------------
                 cursor.execute(
                     """
-                    SELECT client_id,client_secret,
-                               access_token,refresh_token,expiry,email
-                               FROM integrations WHERE primary_user_id_fk=%s and platform = 'microsoft'
-                               """,
+                    SELECT client_id,
+                           client_secret,
+                           access_token,
+                           refresh_token,
+                           expiry,
+                           email
+                    FROM integrations
+                    WHERE primary_user_id_fk=%s
+                    AND platform IN ('microsoft', 'saml')
+                    LIMIT 1
+                    """,
                     (str(userid),),
                 )
-                row = cursor.fetchone()
-            if not row:
-                raise ValueError("Microsoft OAuth not connected")
 
-            self.token_source = "integrations"
+                row = cursor.fetchone()
+
+                if not row or not row[2]:
+                    raise ValueError("Microsoft OAuth not connected")
+
+                self.token_source = "integrations"
+
+        # ---------------------------------------------------
+        # Final validation
+        # ---------------------------------------------------
+        if not row:
+            raise ValueError("User not found")
 
         (
             self.client_id,
@@ -82,7 +111,9 @@ class MicrosoftGraphCalendarService:
         ) = row
 
         self.expiry = self.safe_parse(expiry)
+
         self.user_timezone = "UTC"
+
         self.HTML_REGEX = re.compile(
             r"<(html|body|p|br|div|span|a|table|tr|td|ul|ol|li|strong|em)[\s>]",
             re.IGNORECASE,
@@ -97,10 +128,18 @@ class MicrosoftGraphCalendarService:
         }
 
         # Load user timezone
-        tz_resp = requests.get(
-            f"{self.GRAPH_BASE}/me/mailboxSettings", headers=self.headers
-        ).json()
-        self.user_timezone = tz_resp.get("timeZone", "UTC")
+        try:
+            tz_resp = requests.get(
+                f"{self.GRAPH_BASE}/me/mailboxSettings",
+                headers=self.headers,
+                timeout=20,
+            ).json()
+
+            self.user_timezone = tz_resp.get("timeZone", "UTC")
+
+        except Exception as e:
+            print("Timezone fetch failed:", e)
+            self.user_timezone = "UTC"
 
     # -------------------------------------------
     def safe_parse(self, value):

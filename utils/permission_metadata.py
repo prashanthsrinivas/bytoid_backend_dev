@@ -83,7 +83,7 @@ PERMISSION_METADATA = {
         "dependencies": ["compliance.framework.create"]
     },
     "compliance.runbook.read": {
-        "label": "Read Only Runbooks",
+        "label": " View Runbooks",
         "module": "Compliance",
         "type": "read",
         "dependencies": []
@@ -113,7 +113,7 @@ PERMISSION_METADATA = {
         "dependencies": ["compliance.report.create"]
     },
     "compliance.report.read": {
-        "label": "Read Only Reports",
+        "label": "View standalone Reports",
         "module": "Compliance",
         "type": "read",
         "dependencies": []
@@ -766,4 +766,12 @@ PERMISSION_METADATA = {
         "type": "admin",
         "dependencies": ["admin.manage_users"]
     },
+
+    # ============= Trust Center ==============
+    "trustcenter.document.upload": {
+    "label": "Upload Documents",
+    "module": "Trust Center",
+    "type": "create",
+    "dependencies": ["trustcenter.view"]
+    }
 }

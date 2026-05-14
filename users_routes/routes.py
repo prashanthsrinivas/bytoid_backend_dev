@@ -19,8 +19,17 @@ from dotenv import load_dotenv
 from invited_users.uszr_helper import generate_hashed_url
 from services.gmail_service import GmailService
 from services.totp_service import TOTPService
-from db.db_checkers import check_onboarding_user, delete_user_domain, fetch_user_domains, get_email_by_id
-from services.audit_log_service import log_audit_event, OAUTH_TOKEN_STORED, API_KEY_CREATED
+from db.db_checkers import (
+    check_onboarding_user,
+    delete_user_domain,
+    fetch_user_domains,
+    get_email_by_id,
+)
+from services.audit_log_service import (
+    log_audit_event,
+    OAUTH_TOKEN_STORED,
+    API_KEY_CREATED,
+)
 from cryptography.fernet import Fernet
 import base64
 import time
@@ -37,11 +46,17 @@ users_bp = Blueprint("users", __name__)
 logger = get_logger(__name__)
 from services.audit_log_service import (
     log_audit_event,
-    LOGIN_SUCCESS, LOGIN_FAILED,
-    TOTP_SETUP, TOTP_VERIFIED,
-    PASSWORD_CHANGED, PASSWORD_RESET,
-    USER_TYPE_CHANGED, ENCRYPTION_KEY_ROTATED,
-    DOMAIN_ADDED, DOMAIN_DELETED, USER_CREATED,
+    LOGIN_SUCCESS,
+    LOGIN_FAILED,
+    TOTP_SETUP,
+    TOTP_VERIFIED,
+    PASSWORD_CHANGED,
+    PASSWORD_RESET,
+    USER_TYPE_CHANGED,
+    ENCRYPTION_KEY_ROTATED,
+    DOMAIN_ADDED,
+    DOMAIN_DELETED,
+    USER_CREATED,
 )
 
 SECRET_KEY = os.getenv("SECRETKEY")
@@ -622,7 +637,7 @@ def get_user_permissions(userid):
         if not row:
             return jsonify({"error": "User not found"}), 404
 
-        if row["user_type"] != "":
+        if row["user_type"] in ("admin", "superadmin"):
             return jsonify({"permissions": "ALL"}), 200
 
         # Non-admin → parse JSON
@@ -790,8 +805,10 @@ def create_new_user():
         actor_user_id = data.get("user_id")
         actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
         log_audit_event(
-            action=USER_CREATED, endpoint="/create_new_user",
-            ip=request.remote_addr, status="success",
+            action=USER_CREATED,
+            endpoint="/create_new_user",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_user_id,
             actor_email=actor_email,
             target_user_id=user_id,
@@ -885,8 +902,10 @@ def user_login():
         if not user:
             logger.error("Incorrect email address")
             log_audit_event(
-                action=LOGIN_FAILED, endpoint="/user_login",
-                ip=request.remote_addr, status="failure",
+                action=LOGIN_FAILED,
+                endpoint="/user_login",
+                ip=request.remote_addr,
+                status="failure",
                 actor_email=email,
                 metadata={"reason": "unknown_email"},
             )
@@ -897,9 +916,12 @@ def user_login():
         if not check_password_hash(password_hash, password):
             logger.error("Incorrect password")
             log_audit_event(
-                action=LOGIN_FAILED, endpoint="/user_login",
-                ip=request.remote_addr, status="failure",
-                actor_user_id=user["user_id"], actor_email=user["email"],
+                action=LOGIN_FAILED,
+                endpoint="/user_login",
+                ip=request.remote_addr,
+                status="failure",
+                actor_user_id=user["user_id"],
+                actor_email=user["email"],
                 metadata={"reason": "wrong_password"},
             )
             g.audit_logged = True
@@ -928,9 +950,12 @@ def user_login():
         session["user_id"] = user["user_id"]
         session.pop("active_workspace_id", None)
         log_audit_event(
-            action=LOGIN_SUCCESS, endpoint="/user_login",
-            ip=request.remote_addr, status="success",
-            actor_user_id=user["user_id"], actor_email=user["email"],
+            action=LOGIN_SUCCESS,
+            endpoint="/user_login",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=user["user_id"],
+            actor_email=user["email"],
         )
         g.audit_logged = True
         return response, 200
@@ -959,8 +984,10 @@ def totp_setup():
             )
             conn.commit()
             log_audit_event(
-                action=TOTP_SETUP, endpoint="/totp_setup",
-                ip=request.remote_addr, status="success",
+                action=TOTP_SETUP,
+                endpoint="/totp_setup",
+                ip=request.remote_addr,
+                status="success",
                 actor_user_id=user_id,
                 actor_email=user["email"],
             )
@@ -1015,8 +1042,10 @@ def totp_verify():
             return jsonify({"error": "TOTP not verified"}), 400
         logger.info("TOTP verified successfully")
         log_audit_event(
-            action=TOTP_VERIFIED, endpoint="/totp_verify",
-            ip=request.remote_addr, status="success",
+            action=TOTP_VERIFIED,
+            endpoint="/totp_verify",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=user_id,
             actor_email=email,
         )
@@ -1049,7 +1078,9 @@ def update_user_type():
             )
 
         # SECURITY PATCH: Verify current user is admin
-        cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+        cursor.execute(
+            "SELECT user_type FROM users WHERE user_id = %s", (current_user_id,)
+        )
         current_user = cursor.fetchone()
         if not current_user or current_user["user_type"] != "admin":
             return jsonify({"error": "Admin access required"}), 403
@@ -1064,8 +1095,10 @@ def update_user_type():
         actor_user_id = current_user_id
         actor_email = get_email_by_id(actor_user_id)
         log_audit_event(
-            action=USER_TYPE_CHANGED, endpoint="/update_user_type",
-            ip=request.remote_addr, status="success",
+            action=USER_TYPE_CHANGED,
+            endpoint="/update_user_type",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=actor_user_id,
             actor_email=actor_email,
             metadata={"new_user_type": user_type, "target_user_id": user_id},
@@ -1119,8 +1152,10 @@ def update_password():
         conn.commit()
         actor_email = get_email_by_id(user_id)
         log_audit_event(
-            action=PASSWORD_CHANGED, endpoint="/update_password",
-            ip=request.remote_addr, status="success",
+            action=PASSWORD_CHANGED,
+            endpoint="/update_password",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=user_id,
             actor_email=actor_email,
         )
@@ -1276,8 +1311,10 @@ def reset_password():
 
         conn.commit()
         log_audit_event(
-            action=PASSWORD_RESET, endpoint="/reset_password",
-            ip=request.remote_addr, status="success",
+            action=PASSWORD_RESET,
+            endpoint="/reset_password",
+            ip=request.remote_addr,
+            status="success",
             actor_email=email,
             metadata={"method": "forgot_password_flow"},
         )
@@ -1643,8 +1680,10 @@ def add_domain():
 
         actor_email = get_email_by_id(user_id)
         log_audit_event(
-            action=DOMAIN_ADDED, endpoint="/add_domain",
-            ip=request.remote_addr, status="success",
+            action=DOMAIN_ADDED,
+            endpoint="/add_domain",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=user_id,
             actor_email=actor_email,
             metadata={"domain": new_domain},
@@ -1711,8 +1750,10 @@ def delete_domain():
 
         actor_email = get_email_by_id(user_id)
         log_audit_event(
-            action=DOMAIN_DELETED, endpoint="/delete_domain",
-            ip=request.remote_addr, status="success",
+            action=DOMAIN_DELETED,
+            endpoint="/delete_domain",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=user_id,
             actor_email=actor_email,
             metadata={"domain": domain_name},
@@ -1793,7 +1834,9 @@ def get_encryption_key(user_id):
         try:
             conn = connect_to_rds()
             cursor = conn.cursor(pymysql.cursors.DictCursor)
-            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+            cursor.execute(
+                "SELECT user_type FROM users WHERE user_id = %s", (current_user_id,)
+            )
             current_user = cursor.fetchone()
             conn.close()
             if not current_user or current_user["user_type"] != "admin":
@@ -1826,7 +1869,9 @@ def rotate_encryption_key():
 
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
-        cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+        cursor.execute(
+            "SELECT user_type FROM users WHERE user_id = %s", (current_user_id,)
+        )
         current_user = cursor.fetchone()
 
         # Allow self-access or admin access
@@ -1843,8 +1888,10 @@ def rotate_encryption_key():
 
         actor_email = get_email_by_id(current_user_id)
         log_audit_event(
-            action=ENCRYPTION_KEY_ROTATED, endpoint="/rotate-encryption-key",
-            ip=request.remote_addr, status="success",
+            action=ENCRYPTION_KEY_ROTATED,
+            endpoint="/rotate-encryption-key",
+            ip=request.remote_addr,
+            status="success",
             actor_user_id=current_user_id,
             actor_email=actor_email,
         )
