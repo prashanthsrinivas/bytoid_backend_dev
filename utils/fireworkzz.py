@@ -863,16 +863,20 @@ async def analyze_tracker_framework_rows(
         indent=2,
     )
 
-    prompt = f"""You are a compliance analyst. Given tracker rows and framework requirements from "{framework_name}", match each tracker row to the single best matching requirement by its index.
+    prompt = f"""You are a compliance analyst. Match each tracker row to framework requirements from "{framework_name}".
 
 TRACKER ROWS:
 {rows_json[:80000]}
 
 FRAMEWORK REQUIREMENTS (with index):
-{fw_rows_json[:8000]}
+{fw_rows_json[:40000]}
 
-TASK: For each row, return the indices of ALL framework requirements it relates to.
-Return an empty list [] if there is no reasonable match.
+TASK: For each tracker row, identify the indices of ALL framework requirements it directly and specifically relates to.
+Rules:
+- Base every decision on ALL column values present in the tracker row — not just one or two fields.
+- Every assigned requirement must be clearly and specifically supported by the full context of the row's data.
+- Do NOT make loose, approximate, or keyword-only matches. If the full row context does not confirm the match, skip it.
+- Return an empty list [] if no requirement is clearly confirmed by the row's complete data.
 
 Return ONLY valid JSON object (no markdown, no explanation):
 {{"assignments": [{{"row_id": "trk_r_xxx", "fw_row_indices": [3, 7]}}, {{"row_id": "trk_r_yyy", "fw_row_indices": []}}]}}"""
