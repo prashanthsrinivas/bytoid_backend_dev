@@ -181,7 +181,7 @@ def permission_required_body(required_permission):
             # Extract owner_user_id from request context
             owner_user_id = None
             if request.is_json:
-                owner_user_id = request.get_json(silent=True).get("user_id")
+                owner_user_id = (request.get_json(silent=True) or {}).get("user_id")
             if not owner_user_id:
                 owner_user_id = request.form.get("user_id")
             if not owner_user_id:

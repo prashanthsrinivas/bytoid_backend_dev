@@ -737,6 +737,18 @@ def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, bl
     tracker_data = read_json_from_s3(tracker_path)
 
     if tracker_data:
+        # Backfill missing schema/data keys so append functions don't KeyError
+        if "schema" not in tracker_data:
+            if tracker_type == "table":
+                tracker_data["schema"] = {"columns": []}
+            elif tracker_type == "matrix":
+                tracker_data["schema"] = {"rows": [], "columns": [], "cell_value_label": "Value"}
+            elif tracker_type == "scorecard":
+                tracker_data["schema"] = {"metrics": []}
+        tracker_data.setdefault("rows", [] if tracker_type == "table" else tracker_data.get("rows"))
+        tracker_data.setdefault("cells", [] if tracker_type == "matrix" else tracker_data.get("cells"))
+        tracker_data.setdefault("records", [] if tracker_type == "scorecard" else tracker_data.get("records"))
+        tracker_data.setdefault("source_blocks", [])
         return True, tracker_data
 
     # File doesn't exist - create it with schema
