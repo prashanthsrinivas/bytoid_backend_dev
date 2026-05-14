@@ -745,9 +745,12 @@ def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, bl
                 tracker_data["schema"] = {"rows": [], "columns": [], "cell_value_label": "Value"}
             elif tracker_type == "scorecard":
                 tracker_data["schema"] = {"metrics": []}
-        tracker_data.setdefault("rows", [] if tracker_type == "table" else tracker_data.get("rows"))
-        tracker_data.setdefault("cells", [] if tracker_type == "matrix" else tracker_data.get("cells"))
-        tracker_data.setdefault("records", [] if tracker_type == "scorecard" else tracker_data.get("records"))
+        if tracker_type == "table" and "rows" not in tracker_data:
+            tracker_data["rows"] = []
+        elif tracker_type == "matrix" and "cells" not in tracker_data:
+            tracker_data["cells"] = []
+        elif tracker_type == "scorecard" and "records" not in tracker_data:
+            tracker_data["records"] = []
         tracker_data.setdefault("source_blocks", [])
         return True, tracker_data
 
