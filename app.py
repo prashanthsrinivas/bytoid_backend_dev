@@ -55,8 +55,7 @@ import tempfile
 from utils.app_configs import ALLOWED_ORIGINS, IS_DEV
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from session_middleware import register_session_check
-from utils.rate_limit import init_limiter
+# from session_middleware import register_session_check
 
 load_dotenv("/home/ec2-user/bytoid_python/.env")
 
@@ -206,9 +205,6 @@ os.makedirs("data", exist_ok=True)
 for bp in blueprints:
     app.register_blueprint(bp)
 
-register_session_check(app)
-init_limiter(app)
-
 from collections import defaultdict
 
 
@@ -261,9 +257,7 @@ import time, uuid
 def before_request():
     g.start_time = time.time()
     g.request_id = str(uuid.uuid4())[:8]
-    # Only populate from Flask session if session middleware hasn't already set g.user_id
-    if not getattr(g, "user_id", None):
-        g.user_id = session.get("user_id")
+    g.user_id = session.get("user_id")  # Fallback: session middleware is commented out
 
 
 @app.before_request
