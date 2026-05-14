@@ -168,8 +168,12 @@ def permission_required_body(required_permission):
     """
 
     def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
+        def _check(*args, **kwargs):
+            """
+            Run permission checks synchronously.
+            Returns None if access is granted, or a Flask response tuple to reject.
+            Sets g.acting_on_behalf_of_* as a side-effect when delegation is active.
+            """
             user_id = _get_user_id_from_context()
             if not user_id:
                 return jsonify({"error": "Unauthorized"}), 401
@@ -236,7 +240,7 @@ def permission_required_body(required_permission):
                     if user["user_type"] == "admin":
                         # Self-access: allow
                         if owner_user_id == user_id:
-                            return f(*args, **kwargs)
+                            return None
 
                         # Fetch target owner
                         cursor.execute(
@@ -254,7 +258,7 @@ def permission_required_body(required_permission):
 
                         # Target is normal user: allow (admins manage their users)
                         if owner["user_type"] == "user":
-                            return f(*args, **kwargs)
+                            return None
 
                         # Target is admin: require special_access delegation
                         if owner["user_type"] == "admin":
@@ -274,11 +278,9 @@ def permission_required_body(required_permission):
 
                             g.acting_on_behalf_of_user_id = owner_user_id
                             g.acting_on_behalf_of_email = owner.get("email")
-                            return f(*args, **kwargs)
+                            return None
 
                     # NORMAL USER PATH
-                    # Verify the user owns/has access to the owner_user_id workspace
-                    # Normal users can only operate within their owner's workspace
                     cursor.execute(
                         """
                         SELECT permissions
@@ -301,11 +303,26 @@ def permission_required_body(required_permission):
                     if required_permission not in role.get("permissions", []):
                         return jsonify({"error": "Permission denied"}), 403
 
-                    return f(*args, **kwargs)
+                    return None
 
             finally:
                 conn.close()
 
-        return wrapper
+        if inspect.iscoroutinefunction(f):
+            @wraps(f)
+            async def async_wrapper(*args, **kwargs):
+                err = _check(*args, **kwargs)
+                if err is not None:
+                    return err
+                return await f(*args, **kwargs)
+            return async_wrapper
+
+        @wraps(f)
+        def sync_wrapper(*args, **kwargs):
+            err = _check(*args, **kwargs)
+            if err is not None:
+                return err
+            return f(*args, **kwargs)
+        return sync_wrapper
 
     return decorator
