@@ -8,11 +8,18 @@ from session_manager_route.session_redis import (
 )
 from utils.base_logger import get_logger
 from functools import wraps
+from flask_cors import CORS
 from db.rds_db import connect_to_rds
 import pymysql
 import json
 
 logger = get_logger(__name__)
+BASE_ORGINS = [
+    "http://172.31.12.212",
+    "https://www.bytoid.ai",
+    "https://bytoid.ai",
+    "https://app.bytoid.ai",
+]
 
 EXEMPT_PATHS = [
     "/generate_session",
@@ -29,31 +36,17 @@ EXEMPT_PATHS = [
     "/microsoft/login",
     "/microsoft/callback",
     "/microsoft/login/debug",
-    # Health / liveness
-    "/health",
-    "/ping",
-    "/user/alive",
-    # Auth flows that run before a session exists
-    "/user_login",
-    "/create_new_user",
-    "/forgot_password",
-    "/reset_password",
-    "/validateResetToken",
-    "/verify_email",
-    "/send_email_link",
-    "/email_exist",
-    # Inbound webhooks (no user session)
-    "/stripe_webhook",
-    "/twilio_webhook",
-    "/gmail/webhook",
-    # Public trust-center share links
-    "/trust-center/shared",
 ]
 
 
 def register_session_check(app):
+    CORS(app, supports_credentials=True, resources={r"/*": {"origins": BASE_ORGINS}})
+
     @app.before_request
     def session_check():
+        print("PATH:", request.path)
+        print("SESSION ID:", request.cookies.get("session_id"))
+        print("ACCESS TOKEN:", request.cookies.get("access_token"))
         if request.method == "OPTIONS" or any(request.path.startswith(p) for p in EXEMPT_PATHS):
             return None  # allow exempt requests
 
@@ -84,7 +77,7 @@ def register_session_check(app):
         client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else request.remote_addr
         client_ua = request.headers.get("User-Agent")
 
-        if session.get("user_agent") != client_ua:
+        if session("user_agent") != client_ua:
             logger.warning("User agent mismatch")
             asyncio.run(delete_all_session_cookies(key_str))
             return (

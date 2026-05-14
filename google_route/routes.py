@@ -26,8 +26,6 @@ from db.db_checkers import (
 )
 from services.redis_service import get_redis
 from utils.base_logger import get_logger
-from flask_limiter.util import get_remote_address
-from utils.rate_limit import limiter
 from session_manager_route.routes import session_login
 from integrations.integrations_helpers import get_all_integrations
 from umail_helper.helper import store_integrations_in_redis
@@ -49,7 +47,6 @@ dev_val = os.getenv("BASE_FRNT_URL", "")
 
 
 @google_bp.route("/login")
-@limiter.limit("20 per minute", key_func=get_remote_address)
 def login():
     origin = request.headers.get("Origin")
 
@@ -586,7 +583,6 @@ async def user_alive():
 
 
 @google_bp.route("/browser_url", methods=["POST"])
-@limiter.limit("20 per minute", key_func=get_remote_address)
 async def receive_browser_url():
     try:
         data = request.get_json()
