@@ -8,18 +8,11 @@ from session_manager_route.session_redis import (
 )
 from utils.base_logger import get_logger
 from functools import wraps
-from flask_cors import CORS
 from db.rds_db import connect_to_rds
 import pymysql
 import json
 
 logger = get_logger(__name__)
-BASE_ORGINS = [
-    "http://172.31.12.212",
-    "https://www.bytoid.ai",
-    "https://bytoid.ai",
-    "https://app.bytoid.ai",
-]
 
 EXEMPT_PATHS = [
     "/generate_session",
@@ -59,8 +52,6 @@ EXEMPT_PATHS = [
 
 
 def register_session_check(app):
-    CORS(app, supports_credentials=True, resources={r"/*": {"origins": BASE_ORGINS}})
-
     @app.before_request
     def session_check():
         if request.method == "OPTIONS" or any(request.path.startswith(p) for p in EXEMPT_PATHS):
