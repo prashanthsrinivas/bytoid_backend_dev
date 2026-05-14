@@ -45,8 +45,8 @@ def base_name(filename):
 class WorkflowRunnerV2:
     def __init__(
         self,
-        userid: str,
-        filename: str,
+        userid: str = None,
+        filename: str = None,
         workflowJson=None,
         contacts=None,
         testing=False,
@@ -55,8 +55,9 @@ class WorkflowRunnerV2:
         execution_unique_key=None,
         db=None,
         credits=None,
+        user_id: str = None,
     ):
-        self.userid = userid
+        self.userid = userid or user_id
         self.filename = filename
         self.credits = credits
         self.execution_id = execution_id
