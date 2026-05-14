@@ -13,6 +13,7 @@ import pandas as pd
 from flask import Blueprint, request, jsonify, g
 
 from credits_route.route import Credits
+from utils.normal import parse_composite_user_id
 from utils.permission_required import permission_required_body
 from db.db_checkers import get_email_by_id
 from db.lance_db_service import LanceDBServer, VectorData, QueryData
@@ -374,10 +375,11 @@ def _generation_worker(
 
 
 @policy_hub_bp.route("/generate", methods=["POST"])
-@permission_required_body("compliance.report.create")
+@permission_required_body("policyhub.create")
 async def generate_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     prompt = body.get("prompt")
     doc_type = body.get(
         "type"
@@ -474,7 +476,7 @@ async def generate_policy():
 
 
 @policy_hub_bp.route("/status", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def generate_status():
     job_id = request.args.get("job_id")
 
@@ -652,10 +654,11 @@ def _edit_worker(
 
 
 @policy_hub_bp.route("/edit", methods=["POST"])
-@permission_required_body("compliance.report.edit")
+@permission_required_body("policyhub.edit")
 def edit_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     policy_id = body.get("policy_id")
     document_title = body.get("document_title", "")
     document_content = body.get("document_content", "")
@@ -728,6 +731,7 @@ def list_policies():
     user_id = request.args.get("user_id")
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     prefix = f"{user_id}/policies/"
     s3_objects = list_all_files(folder=prefix)
@@ -754,6 +758,7 @@ def list_policies():
 def update_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     policy_id = body.get("policy_id")
 
     if not user_id or not policy_id:
@@ -785,10 +790,11 @@ def update_policy():
 
 
 @policy_hub_bp.route("/delete", methods=["DELETE"])
-@permission_required_body("compliance.report.delete")
+@permission_required_body("policyhub.delete")
 def delete_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     policy_id = body.get("policy_id")
 
     if not user_id or not policy_id:
@@ -824,6 +830,7 @@ def _require_framework_owner():
     )
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     user = getattr(g, "user", None) or {}
     email = user.get("email")
     if not email:
@@ -919,6 +926,7 @@ def list_available_frameworks():
     )
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     prefix = f"{FRAMEWORK_OWNER}/frameworks/"
     objects = list_all_files(folder=prefix)
@@ -1006,7 +1014,7 @@ def list_frameworks_rows():
 
 
 @policy_hub_bp.route("/frameworks/upload", methods=["POST"])
-@permission_required_body("compliance.framework.create")
+@permission_required_body("policyhub.framework.create")
 def upload_framework_preview():
     """Parse an uploaded file and return a preview — nothing is saved yet."""
     denied = _require_framework_owner()
@@ -1163,7 +1171,7 @@ def get_framework(framework_id: str):
 
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["DELETE"])
-@permission_required_body("compliance.framework.delete")
+@permission_required_body("policyhub.framework.delete")
 async def delete_framework(framework_id: str):
     denied = _require_framework_owner()
     if denied:

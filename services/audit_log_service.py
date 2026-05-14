@@ -5,12 +5,15 @@ Writes structured JSON audit entries to S3 at {user_id}/audit/{date}.json.
 """
 
 import json
+
 # import logging
 # import os
 from datetime import datetime, timezone
+
 # from logging.handlers import RotatingFileHandler
 from flask import g, session, request
 from db.db_checkers import get_email_by_id
+from utils.normal import parse_composite_user_id
 from utils.s3_utils import save_app_runbase_S3
 
 # Action constants
@@ -309,64 +312,138 @@ def log_audit_event(
         pass
 
 
+# def build_audit_actor(body_user_id):
+#     """
+#     Returns (actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email).
+
+#     Primary signal: session["active_workspace_id"] (set by /admin/access-workspace).
+#     If active, the session user is acting on behalf of the workspace owner.
+#     If not active, this is self-access.
+#     """
+#     logged_in_user_id, user_id = parse_composite_user_id(body_user_id)
+#     try:
+#         session_uid = getattr(g, "session_user_id", None) or session.get("user_id")
+#     except RuntimeError:
+#         session_uid = None
+
+#     # Fast path: trust delegation context already computed by audit_before_request().
+#     # Avoids re-reading session which can miss when body_user_id == session_uid.
+#     pre_computed_behalf = getattr(g, "acting_on_behalf_of_user_id", None)
+#     if pre_computed_behalf:
+#         actor_user_id = session_uid or body_user_id
+#         actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+#         acting_on_behalf_of_email = getattr(g, "acting_on_behalf_of_email", None)
+#         return (
+#             actor_user_id,
+#             actor_email,
+#             pre_computed_behalf,
+#             acting_on_behalf_of_email,
+#         )
+
+#     # Check if there's an active workspace delegation
+#     active_workspace_id = session.get("active_workspace_id")
+
+#     # Determine workspace owner from the strongest available signal.
+#     # Primary: session["active_workspace_id"] (set by /admin/access-workspace).
+#     # Fallback: body_user_id differs from session user (frontend sends workspace owner's ID).
+#     workspace_owner = None
+#     if active_workspace_id and session_uid and session_uid != active_workspace_id:
+#         workspace_owner = active_workspace_id
+#     elif session_uid and body_user_id and session_uid != body_user_id:
+#         workspace_owner = body_user_id
+
+#     if workspace_owner:
+#         # Delegated: session user is operating inside another user's workspace.
+#         actor_user_id = session_uid
+#         actor_email = get_email_by_id(session_uid)
+#         acting_on_behalf_of_user_id = workspace_owner
+#         acting_on_behalf_of_email = get_email_by_id(workspace_owner)
+
+#         # Stamp g so middleware fallback can see delegation context
+#         try:
+#             g.acting_on_behalf_of_user_id = workspace_owner
+#             g.acting_on_behalf_of_email = acting_on_behalf_of_email
+#         except RuntimeError:
+#             pass
+#     else:
+#         # Self-access: session user is the workspace owner.
+#         actor_user_id = session_uid or body_user_id
+#         actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+#         acting_on_behalf_of_user_id = None
+#         acting_on_behalf_of_email = None
+
+#     return (
+#         actor_user_id,
+#         actor_email,
+#         acting_on_behalf_of_user_id,
+#         acting_on_behalf_of_email,
+#     )
+
+
 def build_audit_actor(body_user_id):
     """
-    Returns (actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email).
+    Returns:
+    (
+        actor_user_id,
+        actor_email,
+        acting_on_behalf_of_user_id,
+        acting_on_behalf_of_email,
+    )
 
-    Primary signal: session["active_workspace_id"] (set by /admin/access-workspace).
-    If active, the session user is acting on behalf of the workspace owner.
-    If not active, this is self-access.
+    Supports:
+    - Normal user_id
+        user123
+
+    - Super-user delegation
+        admin123##SU##target456
     """
+
+    # -----------------------------------------
+    # Parse composite user ID
+    # -----------------------------------------
+    logged_in_user_id, user_id = parse_composite_user_id(body_user_id)
+
     try:
         session_uid = getattr(g, "session_user_id", None) or session.get("user_id")
     except RuntimeError:
         session_uid = None
 
-    # Fast path: trust delegation context already computed by audit_before_request().
-    # Avoids re-reading session which can miss when body_user_id == session_uid.
-    pre_computed_behalf = getattr(g, "acting_on_behalf_of_user_id", None)
-    if pre_computed_behalf:
-        actor_user_id = session_uid or body_user_id
-        actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
-        acting_on_behalf_of_email = getattr(g, "acting_on_behalf_of_email", None)
+    # Prefer parsed logged-in user ID
+    actor_user_id = logged_in_user_id or session_uid or user_id
+
+    actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
+
+    # -----------------------------------------
+    # Self-access
+    # -----------------------------------------
+    if not logged_in_user_id or logged_in_user_id == user_id:
         return (
             actor_user_id,
             actor_email,
-            pre_computed_behalf,
-            acting_on_behalf_of_email,
+            None,
+            None,
         )
 
-    # Check if there's an active workspace delegation
-    active_workspace_id = session.get("active_workspace_id")
+    # -----------------------------------------
+    # Acting on behalf
+    # -----------------------------------------
+    acting_on_behalf_of_user_id = ""
+    acting_on_behalf_of_email = ""
+    if logged_in_user_id != user_id:
+        acting_on_behalf_of_user_id = user_id
 
-    # Determine workspace owner from the strongest available signal.
-    # Primary: session["active_workspace_id"] (set by /admin/access-workspace).
-    # Fallback: body_user_id differs from session user (frontend sends workspace owner's ID).
-    workspace_owner = None
-    if active_workspace_id and session_uid and session_uid != active_workspace_id:
-        workspace_owner = active_workspace_id
-    elif session_uid and body_user_id and session_uid != body_user_id:
-        workspace_owner = body_user_id
+        acting_on_behalf_of_email = (
+            get_email_by_id(acting_on_behalf_of_user_id)
+            if acting_on_behalf_of_user_id
+            else None
+        )
 
-    if workspace_owner:
-        # Delegated: session user is operating inside another user's workspace.
-        actor_user_id = session_uid
-        actor_email = get_email_by_id(session_uid)
-        acting_on_behalf_of_user_id = workspace_owner
-        acting_on_behalf_of_email = get_email_by_id(workspace_owner)
-
-        # Stamp g so middleware fallback can see delegation context
+        # Stamp request context
         try:
-            g.acting_on_behalf_of_user_id = workspace_owner
+            g.acting_on_behalf_of_user_id = acting_on_behalf_of_user_id
             g.acting_on_behalf_of_email = acting_on_behalf_of_email
         except RuntimeError:
             pass
-    else:
-        # Self-access: session user is the workspace owner.
-        actor_user_id = session_uid or body_user_id
-        actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
-        acting_on_behalf_of_user_id = None
-        acting_on_behalf_of_email = None
 
     return (
         actor_user_id,

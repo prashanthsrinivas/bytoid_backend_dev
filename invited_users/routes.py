@@ -1,6 +1,7 @@
 from time import time
 from flask import Blueprint, request, jsonify, redirect, g, session
 import pymysql
+from utils.normal import parse_composite_user_id
 from services.gmail_service import GmailService
 import uuid
 from db.rds_db import connect_to_rds
@@ -67,10 +68,11 @@ def has_outlook_connected(user_id, cursor):
 def add_role_admin():
     """Create a new role for a user"""
     data = request.get_json()
-    userid = data.get("userid")
+    baseuser = data.get("userid")
     name = data.get("name")
     raw_permissions = data.get("permissions", [])
     permissions = resolve_permissions(raw_permissions)
+    logged_in_user_id, userid = parse_composite_user_id(baseuser)
 
     if not userid or not name or not permissions:
         return (
@@ -113,7 +115,7 @@ def add_role_admin():
             )
             conn.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(userid)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=ROLE_CREATED,
             endpoint="/admin/roles-add",
@@ -171,10 +173,11 @@ def assign_role_direct():
     Permissions take effect immediately on target's next request.
     """
     data = request.get_json()
-    userid = data.get("userid")
+    baseuser = data.get("userid")
     target_email = data.get("target_email")
     name = data.get("name")
     raw_permissions = data.get("permissions", [])
+    logged_in_user_id, userid = parse_composite_user_id(baseuser)
 
     # Validate request body
     if not userid or not target_email or not name or not raw_permissions:
@@ -333,7 +336,7 @@ def assign_role_direct():
 
             # Audit log
             actor_uid, actor_email_log, behalf_uid, behalf_email = build_audit_actor(
-                userid
+                baseuser
             )
             log_audit_event(
                 action=ROLE_CREATED,
@@ -378,6 +381,7 @@ def assign_role_direct():
 def get_roles(userid):
     """Get all roles and invited users for a user"""
     conn = None
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         special_access_status = {}
         conn = connect_to_rds()
@@ -475,6 +479,66 @@ def get_roles(userid):
             conn.close()
 
 
+@inv_users_bp.route("/admin/organization-users/<userid>", methods=["GET"])
+def get_organization_users(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
+
+    conn = None
+
+    try:
+        conn = connect_to_rds()
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+
+            # verify requester
+            cursor.execute(
+                """
+                SELECT user_type, company_name
+                FROM users
+                WHERE user_id=%s
+                """,
+                (userid,),
+            )
+
+            admin = cursor.fetchone()
+
+            if not admin:
+                return jsonify({"error": "User not found"}), 404
+
+            if admin["user_type"] == "user":
+                return jsonify({"error": "Access denied"}), 403
+
+            company_name = admin.get("company_name")
+
+            # fetch organization users
+            cursor.execute(
+                """
+                SELECT
+                    user_id,
+                    email,
+                    user_type,
+                    social,
+                    permissions,
+                    created_at
+                FROM users
+                WHERE company_name=%s
+                ORDER BY created_at DESC
+                """,
+                (company_name,),
+            )
+
+            users = cursor.fetchall()
+
+            return jsonify({"users": users}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if conn:
+            conn.close()
+
+
 @inv_users_bp.route("/admin/permissions", methods=["GET"])
 def get_permissions():
 
@@ -511,7 +575,8 @@ def get_permissions():
 def update_role():
     """Update role by role_id and propagate changes to invites/shared/invited_users"""
     data = request.get_json()
-    userid = data.get("userid")
+    base_user = data.get("userid")
+    logged_in_user_id, userid = parse_composite_user_id(base_user)
     role_id = data.get("role_id")
     name = data.get("name")
     permissions = data.get("permissions")
@@ -608,7 +673,7 @@ def update_role():
 
             conn.commit()
         userid = data.get("userid")
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(userid)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(base_user)
         log_audit_event(
             action=ROLE_UPDATED,
             endpoint="/admin/roles-update",
@@ -633,6 +698,8 @@ def update_role():
 def delete_role(userid, role_id):
     """Delete role by role_id (only if not associated with invites or shared users)"""
     conn = None
+    base_user = userid
+    logged_in_user_id, userid = parse_composite_user_id(base_user)
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -697,7 +764,7 @@ def delete_role(userid, role_id):
             )
             conn.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(userid)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(base_user)
         log_audit_event(
             action=ROLE_DELETED,
             endpoint="/admin/roles-delete",
@@ -726,7 +793,8 @@ def delete_role(userid, role_id):
 def send_invite_user():
     data = request.get_json()
     # print("invite data", data)
-    userid = data.get("userid")
+    baseuserid = data.get("userid")
+    logged_in_user_id, userid = parse_composite_user_id(baseuserid)
     email = data.get("email")
     role_id = data.get("role_id")
 
@@ -858,7 +926,9 @@ def send_invite_user():
             logger.error(f"[invite_user] Email send failed for {email}: {email_exc}")
             email_error = f"Invite saved but email delivery failed: {email_exc}"
 
-        actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(userid)
+        actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(
+            baseuserid
+        )
         log_audit_event(
             action=USER_INVITED,
             endpoint="/admin/invite_user",
@@ -1828,9 +1898,10 @@ def validate_invite(token):
 @inv_users_bp.route("/admin/edit_shared_user_role", methods=["POST"])
 def edit_shared_user_role():
     data = request.get_json()
-    user_id = data.get("user_id")
+    baseuser = data.get("user_id")
     email = data.get("email")
     role_id = data.get("role_id")
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     try:
         conn = connect_to_rds()
@@ -1915,7 +1986,7 @@ def edit_shared_user_role():
 
             conn.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=USER_ROLE_CHANGED,
             endpoint="/admin/edit_shared_user_role",
@@ -1944,6 +2015,7 @@ def edit_shared_user_role():
 @inv_users_bp.route("/notifications/<user_id>", methods=["GET"])
 def get_notifications(user_id):
     current_user_id = get_user_from_request() or user_id
+    logged_in_user_id, current_user_id = parse_composite_user_id(current_user_id)
 
     # Allow self-access; require admin for cross-user access
     if current_user_id != user_id:
@@ -1999,8 +2071,9 @@ def get_notifications(user_id):
 @inv_users_bp.route("/admin/revoke_shared_user_role", methods=["POST"])
 def revoke_shared_user_role():
     data = request.get_json()
-    user_id = data.get("user_id")  # admin
+    baseuser = data.get("user_id")  # admin
     email = data.get("email")  # invited user
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     try:
         conn = connect_to_rds()
@@ -2053,7 +2126,7 @@ def revoke_shared_user_role():
 
             conn.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=USER_ACCESS_REVOKED,
             endpoint="/admin/revoke_shared_user_role",
@@ -2082,8 +2155,9 @@ def revoke_shared_user_role():
 @inv_users_bp.route("/admin/delete_shared_user_role", methods=["POST"])
 def delete_shared_user_role():
     data = request.get_json()
-    user_id = data.get("user_id")  # admin
+    baseuser = data.get("user_id")  # admin
     email = data.get("email")  # invited user
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     try:
         conn = connect_to_rds()
@@ -2165,7 +2239,7 @@ def delete_shared_user_role():
                 500,
             )
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=USER_DELETED,
             endpoint="/admin/delete_shared_user_role",
@@ -2195,8 +2269,9 @@ def delete_shared_user_role():
 @inv_users_bp.route("/admin/activate_shared_user_role", methods=["POST"])
 def activate_shared_user_role():
     data = request.get_json()
-    user_id = data.get("user_id")  # admin
+    baseuser = data.get("user_id")  # admin
     email = data.get("email")  # invited user
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     try:
         conn = connect_to_rds()
@@ -2249,7 +2324,7 @@ def activate_shared_user_role():
 
             conn.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=USER_ACCESS_ACTIVATED,
             endpoint="/admin/activate_shared_user_role",

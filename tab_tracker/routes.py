@@ -5,6 +5,7 @@ import json
 import uuid
 import re
 
+from utils.normal import parse_composite_user_id
 from utils.app_configs import IS_DEV, FRAMEWORK_OWNER
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, jsonify, request, g
@@ -94,14 +95,14 @@ async def create_tracker_api():
     try:
         data = request.json
 
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         name = data.get("name")
         tracker_type = data.get("type")  # table | matrix | scorecard
         runbook_id = data.get("runbook_id")
         block_id = data.get("block_id")  # Required: which block to use as template
         result_id = data.get("result_id")  # Optional: if provided, populate with data
 
-        if not all([user_id, name, tracker_type, runbook_id, block_id]):
+        if not all([baseuser, name, tracker_type, runbook_id, block_id]):
             return (
                 jsonify(
                     {
@@ -110,6 +111,7 @@ async def create_tracker_api():
                 ),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         # 🔹 STEP 1: FETCH RUNBOOK AND GET BLOCK SCHEMA
         runbook = await dbserver.get_runbook_by_id(
@@ -310,7 +312,7 @@ async def create_tracker_api():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_CREATED,
             endpoint="/tracker/create",
@@ -350,14 +352,15 @@ async def delete_tracker():
     """
     try:
         data = request.get_json()
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
 
-        if not all([user_id, tracker_id]):
+        if not all([baseuser, tracker_id]):
             return (
                 jsonify({"error": "Missing required fields: user_id, tracker_id"}),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         config_path, config_data = check_config_exist(user_id)
         if not config_data:
@@ -422,7 +425,7 @@ async def delete_tracker():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_DELETED,
             endpoint="/tracker/delete",
@@ -464,7 +467,7 @@ def list_trackers_api():
 
         if not user_id:
             return jsonify({"error": "Missing required parameter: user_id"}), 400
-
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         # Fetch tracker config
         config_path, config_data = check_config_exist(user_id)
 
@@ -505,6 +508,7 @@ async def get_tracker_details_api():
                 jsonify({"error": "Missing required parameters: user_id, tracker_id"}),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         # Look up tracker metadata from config first
         config_path, config_data = check_config_exist(user_id)
@@ -642,6 +646,7 @@ def check_duplicate_result_api():
                 ),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         # Fetch tracker config
         config_path, config_data = check_config_exist(user_id)
@@ -769,6 +774,7 @@ def view_tracker_content_api():
                 jsonify({"error": "Missing required parameters: user_id, tracker_id"}),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         if limit < 1 or limit > 1000:
             limit = 100
@@ -916,13 +922,13 @@ async def append_tracker_api():
     try:
         data = request.json
 
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
         result_id = data.get("result_id")
         block_id = data.get("block_id")
         block_title = data.get("block_title", "")
 
-        if not all([user_id, tracker_id, result_id, block_id]):
+        if not all([baseuser, tracker_id, result_id, block_id]):
             return (
                 jsonify(
                     {
@@ -931,6 +937,7 @@ async def append_tracker_api():
                 ),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         # STEP 1: Fetch the runbook result from LanceDB
         result_row = await dbserver.runbook_get_result(
@@ -1041,11 +1048,12 @@ async def append_tracker_api():
             if linked_frameworks:
                 schema_cols = tracker_data.get("schema", {}).get("columns", [])
                 frameworks_col = next(
-                    (col for col in schema_cols if col.get("name") == "frameworks"), None
+                    (col for col in schema_cols if col.get("name") == "frameworks"),
+                    None,
                 )
                 if frameworks_col:
                     frameworks_col_id = frameworks_col["id"]
-                    new_rows = tracker_data.get("rows", [])[before["rows"]:]
+                    new_rows = tracker_data.get("rows", [])[before["rows"] :]
 
                     for row in new_rows:
                         row["values"].setdefault(frameworks_col_id, [])
@@ -1063,7 +1071,9 @@ async def append_tracker_api():
                             fw_rows_data = fw_data.get("rows", [])
                             fw_cols = fw_data.get("columns", [])
                             req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
-                            sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
+                            sec_col = (
+                                fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
+                            )
 
                             if not fw_rows_data:
                                 continue
@@ -1072,7 +1082,9 @@ async def append_tracker_api():
                                 {
                                     "row_id": row.get("row_id"),
                                     "col_values": {
-                                        schema_cols[i].get("name"): row["values"].get(schema_cols[i].get("id"), "")
+                                        schema_cols[i]
+                                        .get("name"): row["values"]
+                                        .get(schema_cols[i].get("id"), "")
                                         for i in range(len(schema_cols))
                                         if schema_cols[i].get("name") != "frameworks"
                                     },
@@ -1089,13 +1101,15 @@ async def append_tracker_api():
                                 credits=credits,
                             )
 
-                            reviewed_assignments = await quality_review_framework_assignments(
-                                rows=rows_analysis_input,
-                                fw_rows=fw_rows_data,
-                                assignments=ai_result.get("assignments", []),
-                                framework_name=fw_name,
-                                user_id=user_id,
-                                credits=credits,
+                            reviewed_assignments = (
+                                await quality_review_framework_assignments(
+                                    rows=rows_analysis_input,
+                                    fw_rows=fw_rows_data,
+                                    assignments=ai_result.get("assignments", []),
+                                    framework_name=fw_name,
+                                    user_id=user_id,
+                                    credits=credits,
+                                )
                             )
 
                             for assignment in reviewed_assignments:
@@ -1105,20 +1119,29 @@ async def append_tracker_api():
                                     fw_indices = [fw_indices] if fw_indices >= 0 else []
 
                                 matched_row = next(
-                                    (r for r in new_rows if r.get("row_id") == row_id), None
+                                    (r for r in new_rows if r.get("row_id") == row_id),
+                                    None,
                                 )
                                 if matched_row:
-                                    existing = matched_row["values"].get(frameworks_col_id, [])
+                                    existing = matched_row["values"].get(
+                                        frameworks_col_id, []
+                                    )
                                     if not isinstance(existing, list):
                                         existing = []
                                     merged = [
-                                        e for e in existing if e.get("framework_id") != fw_id
+                                        e
+                                        for e in existing
+                                        if e.get("framework_id") != fw_id
                                     ]
                                     new_entries = [
                                         {
                                             "framework_id": fw_id,
-                                            "requirement": fw_rows_data[idx].get(req_col, ""),
-                                            "section": fw_rows_data[idx].get(sec_col, ""),
+                                            "requirement": fw_rows_data[idx].get(
+                                                req_col, ""
+                                            ),
+                                            "section": fw_rows_data[idx].get(
+                                                sec_col, ""
+                                            ),
                                         }
                                         for idx in fw_indices
                                         if 0 <= idx < len(fw_rows_data)
@@ -1209,7 +1232,7 @@ async def append_tracker_api():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_MODIFIED,
             endpoint="/tracker/append",
@@ -1266,14 +1289,14 @@ async def sync_block_to_tracker_api():
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id") or data.get("userid"))
+        baseuser = str(data.get("user_id") or data.get("userid"))
         result_id = data.get("result_id") or data.get("review_id")
         block_id = data.get("block_id")
         micro_id = data.get("micro_id")
         changed_block = data.get("changed_block")
 
         # Validate required fields
-        if not all([user_id, result_id, block_id, changed_block]):
+        if not all([baseuser, result_id, block_id, changed_block]):
             return (
                 jsonify(
                     {
@@ -1282,7 +1305,7 @@ async def sync_block_to_tracker_api():
                 ),
                 400,
             )
-
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
         # Step 1: Fetch the result (similar to /radar/changeblock/confirm)
         record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
 
@@ -1559,7 +1582,7 @@ async def sync_block_to_tracker_api():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_MODIFIED,
             endpoint="/tracker/sync-from-block",
@@ -1604,13 +1627,13 @@ async def modify_tracker_details():
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
         result_id = data.get("result_id")
         block_id = data.get("block_id")
         entry_updates = data.get("entry_updates", [])
 
-        if not all([user_id, tracker_id, result_id, block_id]):
+        if not all([baseuser, tracker_id, result_id, block_id]):
             return (
                 jsonify(
                     {
@@ -1619,7 +1642,7 @@ async def modify_tracker_details():
                 ),
                 400,
             )
-
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
             (
@@ -1663,7 +1686,7 @@ async def modify_tracker_details():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_MODIFIED,
             endpoint="/tracker/modify",
@@ -1714,18 +1737,18 @@ async def add_tracker_entry():
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
         result_id = data.get("result_id")
 
-        if not all([user_id, tracker_id, result_id]):
+        if not all([baseuser, tracker_id, result_id]):
             return (
                 jsonify(
                     {"error": "Missing required fields: user_id, tracker_id, result_id"}
                 ),
                 400,
             )
-
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
             (
@@ -1852,7 +1875,7 @@ async def add_tracker_entry():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_ENTRY_ADDED,
             endpoint="/tracker/add-entry",
@@ -1908,15 +1931,15 @@ async def add_tracker_column():
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
 
-        if not all([user_id, tracker_id]):
+        if not all([baseuser, tracker_id]):
             return (
                 jsonify({"error": "Missing required fields: user_id, tracker_id"}),
                 400,
             )
-
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
             (
@@ -2022,7 +2045,7 @@ async def add_tracker_column():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_COLUMN_ADDED,
             endpoint="/tracker/add-column",
@@ -2079,14 +2102,15 @@ async def delete_tracker_column():
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
 
-        if not all([user_id, tracker_id]):
+        if not all([baseuser, tracker_id]):
             return (
                 jsonify({"error": "Missing required fields: user_id, tracker_id"}),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
@@ -2384,7 +2408,7 @@ async def delete_tracker_column():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_COLUMN_DELETED,
             endpoint="/tracker/delete-column",
@@ -2430,12 +2454,12 @@ def upload_evidence_api():
     try:
         from tab_tracker.helper import upload_evidence_file, update_tracker_evidence
 
-        user_id = str(request.form.get("user_id"))
+        baseuser = str(request.form.get("user_id"))
         tracker_id = request.form.get("tracker_id")
         row_id = request.form.get("row_id")
         column_id = request.form.get("column_id")
 
-        if not all([user_id, tracker_id, row_id, column_id]):
+        if not all([baseuser, tracker_id, row_id, column_id]):
             return (
                 jsonify(
                     {
@@ -2451,6 +2475,7 @@ def upload_evidence_api():
         file_obj = request.files["file"]
         if file_obj.filename == "":
             return jsonify({"error": "No file selected"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         # Step 1: Upload file to S3
         upload_result = upload_evidence_file(
@@ -2495,7 +2520,7 @@ def upload_evidence_api():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_EVIDENCE_UPLOADED,
             endpoint="/tracker/upload-evidence",
@@ -2550,11 +2575,11 @@ async def add_tracker_framework():
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
         framework_id = data.get("framework_id")
 
-        if not all([user_id, tracker_id, framework_id]):
+        if not all([baseuser, tracker_id, framework_id]):
             return (
                 jsonify(
                     {
@@ -2581,6 +2606,7 @@ async def add_tracker_framework():
                 ),
                 500,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         # Check tracker exists
         config_path, config_data = check_config_exist(user_id)
@@ -2716,7 +2742,7 @@ async def add_tracker_framework():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_FRAMEWORK_ADDED,
             endpoint="/tracker/add-framework",
@@ -2764,11 +2790,11 @@ async def update_tracker_framework():
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
         framework_id = data.get("framework_id")
 
-        if not all([user_id, tracker_id, framework_id]):
+        if not all([baseuser, tracker_id, framework_id]):
             return (
                 jsonify(
                     {
@@ -2777,6 +2803,7 @@ async def update_tracker_framework():
                 ),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         # Check tracker exists
         config_path, config_data = check_config_exist(user_id)
@@ -2920,7 +2947,7 @@ async def update_tracker_framework():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_FRAMEWORK_UPDATED,
             endpoint="/tracker/update-framework",
@@ -2961,18 +2988,18 @@ async def update_tracker_framework():
 
 @tracker_bp.route("/tracker/remove-framework", methods=["DELETE"])
 @permission_required_body("trackers.framework.delete")
-async def remove_tracker_framework():
+def remove_tracker_framework():
     """
     Remove a framework link from a tracker and clean up all assignments.
     Body: { user_id, tracker_id, framework_id }
     """
     try:
         data = request.json
-        user_id = str(data.get("user_id"))
+        baseuser = str(data.get("user_id"))
         tracker_id = data.get("tracker_id")
         framework_id = data.get("framework_id")
 
-        if not all([user_id, tracker_id, framework_id]):
+        if not all([baseuser, tracker_id, framework_id]):
             return (
                 jsonify(
                     {
@@ -2981,7 +3008,7 @@ async def remove_tracker_framework():
                 ),
                 400,
             )
-
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
         # Check tracker exists
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
@@ -3060,7 +3087,7 @@ async def remove_tracker_framework():
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(baseuser)
         log_audit_event(
             action=TRACKER_FRAMEWORK_REMOVED,
             endpoint="/tracker/remove-framework",

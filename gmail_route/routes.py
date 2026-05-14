@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import json
 from cust_helpers import pathconfig
 import os
-from utils.normal import can_reply_to_email, ensure_dir
+from utils.normal import can_reply_to_email, ensure_dir, parse_composite_user_id
 from utils.s3_utils import (
     delete_folder_from_s3,
     upload_any_file,
@@ -30,7 +30,6 @@ from collections import defaultdict
 import traceback
 import re
 import pymysql
-
 
 gmail_bp = Blueprint("gmail", __name__)
 
@@ -1412,7 +1411,8 @@ def add_customer_contact(user_id, cursor, participant, participant_name):
 @gmail_bp.route("/gmail/drafts", methods=["GET"])
 def list_drafts():
     try:
-        user_id = session.get("user_id")
+        user_id = session.get("user_id") or request.args.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         gmail_service = GmailService(user_id)
         drafts = gmail_service.get_drafts()
         return jsonify({"drafts": drafts})
@@ -1424,7 +1424,8 @@ def list_drafts():
 @gmail_bp.route("/gmail/threads", methods=["GET"])
 def list_threads():
     try:
-        user_id = session.get("user_id")
+        user_id = session.get("user_id") or request.args.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         # print("userID", user_id)
         gmail_service = GmailService(user_id)
         threads = gmail_service.get_inbox()
@@ -1437,7 +1438,8 @@ def list_threads():
 @gmail_bp.route("/gmail/spam", methods=["GET"])
 def list_spam():
     try:
-        user_id = session.get("user_id")
+        user_id = session.get("user_id") or request.args.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         gmail_service = GmailService(user_id)
         threads = gmail_service.get_spam()
         return jsonify({"threads": threads})
@@ -1449,7 +1451,8 @@ def list_spam():
 @gmail_bp.route("/gmail/trash", methods=["GET"])
 def list_trash():
     try:
-        user_id = session.get("user_id")
+        user_id = session.get("user_id") or request.args.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         gmail_service = GmailService(user_id)
         threads = gmail_service.get_trash()
         return jsonify({"threads": threads})
@@ -1461,8 +1464,11 @@ def list_trash():
 @gmail_bp.route("/gmail/drafts/<draft_id>", methods=["PUT"])
 def update_draft(draft_id):
     try:
-        user_id = session.get("user_id")
         data = request.json
+        user_id = (
+            session.get("user_id") or request.args.get("user_id") or data.get("user_id")
+        )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         to = data.get("to", "")
         subject = data.get("subject", "")
         body = data.get("body", "")
@@ -1488,7 +1494,10 @@ def create_draft():
         return jsonify({"error": "Missing to, subject, or body"}), 400
 
     try:
-        user_id = session.get("user_id")
+        user_id = (
+            session.get("user_id") or request.args.get("user_id") or data.get("user_id")
+        )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         gmail_service = GmailService(user_id)
         result = gmail_service.create_draft(to, subject, body)
         return jsonify({"message": "Draft created", "id": result.get("id")}), 200
@@ -1500,8 +1509,6 @@ def create_draft():
 @gmail_bp.route("/gmail/respond", methods=["POST"])
 def respond_to_email():
     try:
-        user_id = session.get("user_id")
-        gmail_service = GmailService(user_id)
         data = request.get_json()
         to = data.get("to")
         subject = data.get("subject")
@@ -1509,6 +1516,11 @@ def respond_to_email():
         if not all([to, subject, message_text]):
             return jsonify({"error": "Missing 'to', 'subject', or 'message'"}), 400
 
+        user_id = (
+            session.get("user_id") or request.args.get("user_id") or data.get("user_id")
+        )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+        gmail_service = GmailService(user_id)
         label_id = gmail_service.create_label("AI Messages")
         result = gmail_service.send_message(
             to, subject, message_text, label_ids=[label_id]
@@ -1542,13 +1554,16 @@ def forward_email():
     }
     """
     try:
-        user_id = session.get("user_id")
+        data = request.get_json()
+
+        user_id = (
+            session.get("user_id") or request.args.get("user_id") or data.get("user_id")
+        )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         if not user_id:
             return jsonify({"error": "User not authenticated"}), 401
 
         gmail_service = GmailService(user_id)
-        data = request.get_json()
-
         to = data.get("to")
         cc = data.get("cc")
         bcc = data.get("bcc")
@@ -1623,6 +1638,7 @@ def forward_email():
 @permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/inbox_info/<userid>", methods=["GET"])
 def get_inbox_info(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         max_emails = 1000
         base_days = int(request.args.get("days", 1))  # default 30 days
@@ -1670,6 +1686,7 @@ from dateutil.relativedelta import relativedelta
 @permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/datewise/<userid>", methods=["GET"])
 def get_datewise_info(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         Enddate_str = request.args.get(
             "end_date", datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1702,14 +1719,18 @@ from threading import Thread
 def delete_user_ticket_data(user_id):
     # SECURITY PATCH: Require session auth + admin-only access
     from flask import session
-    current_user_id = session.get("user_id")
+
+    current_user_id = session.get("user_id") or request.args.get("user_id")
+    logged_in_user_id, current_user_id = parse_composite_user_id(current_user_id)
     if not current_user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
         connection = connect_to_rds()
         with connection.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+            cursor.execute(
+                "SELECT user_type FROM users WHERE user_id = %s", (current_user_id,)
+            )
             current_user = cursor.fetchone()
             if not current_user or current_user["user_type"] != "admin":
                 connection.close()
@@ -1837,7 +1858,7 @@ def delete_user_ticket_data(user_id):
 @permission_required_body("admin.manage_users")
 @gmail_bp.route("/delete_user_cache/<primary_user_id>", methods=["GET"])
 def delete_user_cache(primary_user_id):
-
+    logged_in_user_id, primary_user_id = parse_composite_user_id(primary_user_id)
     if not primary_user_id:
         return False
 
@@ -2052,14 +2073,19 @@ def delete_all_user_data(user_id):
 def delete_user(user_id):
     # SECURITY PATCH: Require session auth + admin-only access
     from flask import session
-    current_user_id = session.get("user_id")
+
+    current_user_id = user_id or session.get("user_id") or request.args.get("user_id")
+    logged_in_user_id, current_user_id = parse_composite_user_id(current_user_id)
+
     if not current_user_id:
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
         connection = connect_to_rds()
         with connection.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT user_type FROM users WHERE user_id = %s", (current_user_id,))
+            cursor.execute(
+                "SELECT user_type FROM users WHERE user_id = %s", (current_user_id,)
+            )
             current_user = cursor.fetchone()
             connection.close()
             if not current_user or current_user["user_type"] != "admin":
@@ -2070,7 +2096,7 @@ def delete_user(user_id):
     result = delete_all_user_data(user_id)
 
     # Audit logging
-    actor_user_id = current_user_id
+    actor_user_id = logged_in_user_id
     actor_email = get_email_by_id(actor_user_id) if actor_user_id else None
     status = "success" if result.get("status") == "success" else "failure"
     log_audit_event(
@@ -2091,6 +2117,7 @@ def delete_user(user_id):
 @permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/start_watch/<userid>", methods=["GET"])
 def start_gmail_watch(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     serv = GmailService(user_id=userid)
     res = serv.create_watch_req()
     return jsonify(res)
@@ -2103,11 +2130,9 @@ def start_gmail_watches():
     try:
         with conn.cursor() as cursor:
             # join your social table if needed
-            cursor.execute(
-                """
+            cursor.execute("""
                select user_id,social from users
-            """
-            )
+            """)
             rows = cursor.fetchall()
     finally:
         conn.close()
@@ -2123,6 +2148,7 @@ def start_gmail_watches():
 @permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/history_check/<userid>/<hisid>", methods=["GET"])
 def histcheckmail(userid, hisid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     serv = GmailService(user_id=userid)
     res = serv.check_hisdata(hisid)
     return jsonify(res)
@@ -2139,7 +2165,8 @@ def download_attachment():
 
     """
     try:
-        user_id = session.get("user_id")
+        user_id = session.get("user_id") or request.args.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         if not user_id:
             # print("❌ No user_id in session")
             return jsonify({"error": "Unauthorized: No active session"}), 401
@@ -2281,6 +2308,7 @@ def download_attachment_on_demand():
         # print(f"   Filename: {filename}")
 
         # Initialize Gmail service
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         gmail_service = GmailService(user_id)
 
         # Retrieve attachment from Gmail API

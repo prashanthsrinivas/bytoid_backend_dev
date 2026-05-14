@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+from services.audit_log_service import build_audit_actor
 from utils.base_logger import get_logger
 from flask import Flask, request, g, session
 from flask_compress import Compress
@@ -61,10 +62,12 @@ load_dotenv("/home/ec2-user/bytoid_python/.env")
 # Handle numpy/pyarrow types returned by LanceDB that aren't JSON-serializable by default
 from flask.json.provider import DefaultJSONProvider
 
+
 class _NumpyJSONProvider(DefaultJSONProvider):
     def default(self, obj):
         try:
             import numpy as np
+
             if isinstance(obj, np.integer):
                 return int(obj)
             if isinstance(obj, np.floating):
@@ -74,6 +77,7 @@ class _NumpyJSONProvider(DefaultJSONProvider):
         except ImportError:
             pass
         return super().default(obj)
+
 
 app = Flask(__name__)
 app.json_provider_class = _NumpyJSONProvider
@@ -260,26 +264,46 @@ def before_request():
 def audit_before_request():
     """Stamp audit context on the request."""
     g.audit_logged = False  # Duplicate-guard flag (set True by direct calls)
-    g.workspace_access_logged = False  # Prevents duplicate WORKSPACE_ACCESS_ENTERED per request
+    g.workspace_access_logged = (
+        False  # Prevents duplicate WORKSPACE_ACCESS_ENTERED per request
+    )
     # Prefer g.user_id set by session_middleware (Redis-backed); fall back to Flask signed-cookie session.
     g.session_user_id = getattr(g, "user_id", None) or session.get("user_id")
 
     # If there's an active workspace delegation in the session, pre-stamp the delegation context
     active_workspace_id = session.get("active_workspace_id")
-    if active_workspace_id and g.session_user_id and g.session_user_id != active_workspace_id:
+    if (
+        active_workspace_id
+        and g.session_user_id
+        and g.session_user_id != active_workspace_id
+    ):
         from db.db_checkers import get_email_by_id
+
         g.acting_on_behalf_of_user_id = active_workspace_id
         g.acting_on_behalf_of_email = get_email_by_id(active_workspace_id)
 
-    # Fallback: detect delegation from request body (for routes that don't call build_audit_actor)
+    # Fallback: detect delegation from request body
+    # (for routes that don't explicitly call build_audit_actor)
     if not getattr(g, "acting_on_behalf_of_user_id", None) and request.is_json:
         try:
             body = request.get_json(silent=True) or {}
             body_uid = (body.get("user_id") or "").strip()
-            if body_uid and g.session_user_id and body_uid != g.session_user_id:
-                from db.db_checkers import get_email_by_id
-                g.acting_on_behalf_of_user_id = body_uid
-                g.acting_on_behalf_of_email = get_email_by_id(body_uid)
+
+            if body_uid:
+                (
+                    actor_user_id,
+                    actor_email,
+                    acting_on_behalf_of_user_id,
+                    acting_on_behalf_of_email,
+                ) = build_audit_actor(body_uid)
+
+                # Stamp parsed values into request context
+                g.session_user_id = actor_user_id
+
+                if acting_on_behalf_of_user_id:
+                    g.acting_on_behalf_of_user_id = acting_on_behalf_of_user_id
+                    g.acting_on_behalf_of_email = acting_on_behalf_of_email
+
         except Exception:
             pass
 
@@ -303,13 +327,19 @@ def after_request(response):
 # Paths that should NOT be audited (system and read-only endpoints)
 _AUDIT_EXEMPT_PATHS = {
     # System endpoints
-    "/health", "/ping", "/favicon.ico",
-    "/browser_url", "/user/alive",
-    "/ws/", "/socket.io/",
+    "/health",
+    "/ping",
+    "/favicon.ico",
+    "/browser_url",
+    "/user/alive",
+    "/ws/",
+    "/socket.io/",
     "/notifications",
     # Read-only POST endpoints (CQRS-style data queries)
-    "/users/get_group", "/users/get_all_groups",
-    "/get_onboarding", "/email_exist",
+    "/users/get_group",
+    "/users/get_all_groups",
+    "/get_onboarding",
+    "/email_exist",
 }
 
 # Mutating methods

@@ -11,7 +11,45 @@ from bs4 import BeautifulSoup
 
 # from astral import LocationInfo
 # from astral.sun import sun
+import urllib.parse
 
+
+_COMPOSITE_RE = re.compile(r"^(.+?)(?:##SU##|%23%23SU%23%23)(.+)$")
+
+
+def parse_composite_user_id(raw: str | None) -> tuple[str | None, str | None]:
+    """
+    Parse:
+        {loggedInUserId}##SU##{targetUserId}
+
+    Returns:
+        (logged_in_user_id, target_user_id)
+
+    Rules:
+    - If ##SU## exists:
+        logged_in_user_id = left side
+        target_user_id    = right side
+
+    - If normal user_id:
+        both values = same user_id
+    """
+
+    if not raw:
+        return None, None
+
+    # Decode URL-encoded values first
+    decoded = urllib.parse.unquote(raw)
+
+    match = _COMPOSITE_RE.match(decoded)
+
+    if match:
+        logged_in_user_id = match.group(1).strip()
+        target_user_id = match.group(2).strip()
+
+        return logged_in_user_id, target_user_id
+
+    # Normal user_id case
+    return decoded, decoded
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)

@@ -12,6 +12,8 @@ import boto3
 import pymysql
 import pymysql.cursors
 from botocore.config import Config as BotocoreConfig
+from utils.normal import parse_composite_user_id
+from utils.permission_required import permission_required
 
 from flask import Blueprint, g, jsonify, request
 
@@ -506,10 +508,12 @@ def _generate_whitepaper(user_id: str, job_id: str, session_id: str | None = Non
 
 
 @trust_center_bp.route("", methods=["GET"])
+@permission_required("trustcenter.view")
 def get_trust_center():
-    user_id = _get_user_id()
-    if not user_id:
+    baseuser = _get_user_id()
+    if not baseuser:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     tc = _get_trust_center(user_id)
 
@@ -557,6 +561,7 @@ def get_trust_center():
 
 
 @trust_center_bp.route("/status", methods=["GET"])
+@permission_required("trustcenter.view")
 def get_status():
     job_id = request.args.get("job_id")
     if not job_id:
@@ -600,11 +605,13 @@ def get_status():
 
 
 @trust_center_bp.route("/whitepaper", methods=["PATCH"])
+@permission_required("trustcenter.whitepaper.edit")
 def patch_whitepaper():
     data = request.get_json(silent=True) or {}
-    user_id = _get_user_id()
-    if not user_id:
+    baseuser = _get_user_id()
+    if not baseuser:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     content = data.get("content")
     if not content:
@@ -626,11 +633,12 @@ def patch_whitepaper():
 
 
 @trust_center_bp.route("/whitepaper/regenerate", methods=["POST"])
+@permission_required("trustcenter.whitepaper.regenerate")
 def regenerate_whitepaper():
     user_id = _get_user_id()
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     job_id = uuid.uuid4().hex[:12]
     data = request.get_json(silent=True) or {}
     session_id = data.get("session_id")
@@ -643,11 +651,12 @@ def regenerate_whitepaper():
 
 
 @trust_center_bp.route("/whitepaper/pdf", methods=["GET"])
+@permission_required("trustcenter.document.download")
 def get_whitepaper_pdf():
     user_id = _get_user_id()
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
-
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     wp_key = _wp_key(user_id)
     try:
         data = load_yaml_from_s3(wp_key) or {}
@@ -661,10 +670,12 @@ def get_whitepaper_pdf():
 
 
 @trust_center_bp.route("/documents", methods=["POST"])
+@permission_required("trustcenter.document.upload")
 def upload_document():
     user_id = _get_user_id()
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     file = request.files.get("file")
     label = request.form.get("label", "").strip()
@@ -735,10 +746,12 @@ def upload_document():
 
 
 @trust_center_bp.route("/documents/<doc_id>", methods=["DELETE"])
+@permission_required("trustcenter.document.delete")
 def delete_document(doc_id: str):
     user_id = _get_user_id()
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
     with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -768,6 +781,7 @@ def delete_document(doc_id: str):
 
 
 @trust_center_bp.route("/documents/<doc_id>/download", methods=["GET"])
+@permission_required("trustcenter.document.download")
 def download_document(doc_id: str):
     conn = connect_to_rds()
     with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -785,11 +799,13 @@ def download_document(doc_id: str):
 
 
 @trust_center_bp.route("/share", methods=["POST"])
+@permission_required("trustcenter.share")
 def share_trust_center():
     data = request.get_json(silent=True) or {}
     user_id = _get_user_id()
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     emails = data.get("emails", [])
     if not emails:
@@ -858,7 +874,7 @@ def get_shared_trust_center(owner_user_id: str):
     viewer_email = request.args.get("email", "").strip().lower()
     if not viewer_email:
         return jsonify({"access": False, "reason": "email required"}), 400
-
+    logged_in_user_id, owner_user_id = parse_composite_user_id(owner_user_id)
     tc = _get_trust_center(owner_user_id)
     if not tc:
         return jsonify({"access": False, "reason": "not_found"}), 404
@@ -920,6 +936,7 @@ def accept_nda(owner_user_id: str):
     if not email:
         return jsonify({"error": "email required"}), 400
 
+    logged_in_user_id, owner_user_id = parse_composite_user_id(owner_user_id)
     tc = _get_trust_center(owner_user_id)
     if not tc:
         return jsonify({"error": "Trust center not found"}), 404

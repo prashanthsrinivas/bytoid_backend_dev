@@ -5,6 +5,7 @@ import inspect
 import json
 import pymysql
 from db.rds_db import connect_to_rds
+from utils.normal import parse_composite_user_id
 
 
 def _get_user_id_from_context():
@@ -51,11 +52,12 @@ def permission_required(required_permission):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            user_id = _get_user_id_from_context()
-            if not user_id:
+            buser_id = _get_user_id_from_context()
+            if not buser_id:
                 return jsonify({"error": "Unauthorized"}), 401
 
             conn = connect_to_rds()
+            logged_in_user_id, user_id = parse_composite_user_id(buser_id)
             try:
                 with conn.cursor(pymysql.cursors.DictCursor) as cursor:
                     cursor.execute(
@@ -64,7 +66,7 @@ def permission_required(required_permission):
                         FROM users
                         WHERE user_id=%s
                     """,
-                        (user_id,),
+                        (logged_in_user_id,),
                     )
                     user = cursor.fetchone()
 
@@ -75,7 +77,7 @@ def permission_required(required_permission):
 
                     # ADMIN PATH
                     if user["user_type"] == "admin":
-                        owner_user_id = _get_owner_user_id_from_context(kwargs)
+                        owner_user_id = user_id
 
                         # Self-access: allow
                         if not owner_user_id or owner_user_id == user_id:
@@ -92,8 +94,8 @@ def permission_required(required_permission):
                         )
                         owner = cursor.fetchone()
 
-                        if not owner or owner["launch_id_fk"] != org_id:
-                            return jsonify({"error": "Cross-org access denied"}), 403
+                        # if not owner or owner["launch_id_fk"] != org_id:
+                        #     return jsonify({"error": "Cross-org access denied"}), 403
 
                         # Target is normal user: allow
                         if owner["user_type"] == "user":
@@ -154,119 +156,66 @@ def permission_required(required_permission):
 
 
 def permission_required_body(required_permission):
-    """
-    Decorator for request-body-parameterized routes: @permission_required_body("permission.name")
-    Reads owner_user_id from request.json.get("user_id") or request.args.get("user_id").
-    Checks current user's permission against the target owner's role.
-
-    Usage:
-        @bp.route("/tracker/create", methods=["POST"])
-        @permission_required_body("trackers.table.create")
-        def create_tracker():
-            data = request.get_json()
-            user_id = data.get("user_id")  # This is owner_user_id
-    """
 
     def decorator(f):
+
         def _check(*args, **kwargs):
-            """
-            Run permission checks synchronously.
-            Returns None if access is granted, or a Flask response tuple to reject.
-            Sets g.acting_on_behalf_of_* as a side-effect when delegation is active.
-            """
-            user_id = _get_user_id_from_context()
-            if not user_id:
+
+            buser_id = _get_user_id_from_context()
+            if not buser_id:
                 return jsonify({"error": "Unauthorized"}), 401
 
-            # Extract owner_user_id from request context
-            owner_user_id = None
-            if request.is_json:
-                owner_user_id = (request.get_json(silent=True) or {}).get("user_id")
-            if not owner_user_id:
-                owner_user_id = request.form.get("user_id")
-            if not owner_user_id:
-                owner_user_id = request.args.get("user_id")
-            if not owner_user_id:
-                owner_user_id = kwargs.get("user_id")
+            logged_in_user_id, base_user_id = parse_composite_user_id(buser_id)
 
-            # API-key-based identity resolution for KB/scrape/audio routes
-            if not owner_user_id:
-                api_key = None
-                if request.is_json:
-                    api_key = (request.get_json(silent=True) or {}).get("api_key")
-                if not api_key:
-                    api_key = request.form.get("api_key")
-                if not api_key:
-                    api_key = request.args.get("api_key")
-                if api_key:
-                    conn_api = connect_to_rds()
-                    try:
-                        with conn_api.cursor(pymysql.cursors.DictCursor) as cur:
-                            cur.execute(
-                                "SELECT user_id FROM users WHERE api_key=%s", (api_key,)
-                            )
-                            row = cur.fetchone()
-                            if row:
-                                owner_user_id = row["user_id"]
-                    finally:
-                        conn_api.close()
-
-            # Check delegation context as fallback
-            if not owner_user_id:
-                owner_user_id = session.get("active_workspace_id")
-
-            if not owner_user_id:
-                owner_user_id = user_id  # Default to self-access for GET requests without explicit workspace
+            owner_user_id = base_user_id
+            user_id = logged_in_user_id
 
             conn = connect_to_rds()
+
             try:
                 with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+
                     cursor.execute(
                         """
                         SELECT user_id, user_type, launch_id_fk
                         FROM users
                         WHERE user_id=%s
-                    """,
+                        """,
                         (user_id,),
                     )
+
                     user = cursor.fetchone()
 
                     if not user:
                         return jsonify({"error": "User not found"}), 404
 
-                    org_id = user["launch_id_fk"]
-
                     # ADMIN PATH
                     if user["user_type"] == "admin":
-                        # Self-access: allow
+
                         if owner_user_id == user_id:
                             return None
 
-                        # Fetch target owner
                         cursor.execute(
                             """
                             SELECT user_type, launch_id_fk, email
                             FROM users
                             WHERE user_id=%s
-                        """,
+                            """,
                             (owner_user_id,),
                         )
+
                         owner = cursor.fetchone()
 
-                        if not owner or owner["launch_id_fk"] != org_id:
-                            return jsonify({"error": "Cross-org access denied"}), 403
-
-                        # Target is normal user: allow (admins manage their users)
                         if owner["user_type"] == "user":
                             return None
 
-                        # Target is admin: require special_access delegation
                         if owner["user_type"] == "admin":
+
                             cursor.execute(
                                 """
                                 SELECT 1 FROM special_access
                                 WHERE grantor_admin_id=%s AND target_admin_id=%s
-                            """,
+                                """,
                                 (owner_user_id, user_id),
                             )
 
@@ -278,6 +227,7 @@ def permission_required_body(required_permission):
 
                             g.acting_on_behalf_of_user_id = owner_user_id
                             g.acting_on_behalf_of_email = owner.get("email")
+
                             return None
 
                     # NORMAL USER PATH
@@ -286,9 +236,10 @@ def permission_required_body(required_permission):
                         SELECT permissions
                         FROM users
                         WHERE user_id=%s
-                    """,
+                        """,
                         (user_id,),
                     )
+
                     user_row = cursor.fetchone()
 
                     if not user_row:
@@ -309,20 +260,29 @@ def permission_required_body(required_permission):
                 conn.close()
 
         if inspect.iscoroutinefunction(f):
+
             @wraps(f)
             async def async_wrapper(*args, **kwargs):
+
                 err = _check(*args, **kwargs)
+
                 if err is not None:
                     return err
+
                 return await f(*args, **kwargs)
+
             return async_wrapper
 
         @wraps(f)
         def sync_wrapper(*args, **kwargs):
+
             err = _check(*args, **kwargs)
+
             if err is not None:
                 return err
+
             return f(*args, **kwargs)
+
         return sync_wrapper
 
     return decorator

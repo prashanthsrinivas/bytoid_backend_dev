@@ -1,5 +1,6 @@
 from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, session, redirect
+from utils.normal import parse_composite_user_id
 from utils.base_logger import get_logger
 import pymysql
 import json
@@ -10,6 +11,7 @@ logger = get_logger(__name__)
 
 @agent_hub_bp.route("/get_all_user_permissionsbased/<userid>", methods=["GET"])
 def get_all_user_permissionsbased(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         conn = connect_to_rds()
         conn.begin()
@@ -47,6 +49,7 @@ def get_all_user_permissionsbased(userid):
 
 @agent_hub_bp.route("/get_all_user_agents/<userid>", methods=["GET"])
 def get_all_user_agents(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         conn = connect_to_rds()
         conn.begin()
@@ -209,6 +212,7 @@ def share_agent_hub_user():
     """
     data = request.get_json()
     user_id = data.get("user_id")  # main user
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     emails = data.get("email")  # invited users (list expected)
     launch_id = data.get("launch_id")
 
@@ -281,6 +285,7 @@ def unshare_agent_hub_user():
     """
     data = request.get_json()
     user_id = data.get("user_id")  # main user
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     emails = data.get("email")  # invited users (list expected)
     launch_id = data.get("launch_id")
 
@@ -443,6 +448,7 @@ def delete_user_with_agents():
 
 @agent_hub_bp.route("/get_all_mini_agents/<userid>", methods=["GET"])
 def get_all_mini_agents(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         conn = connect_to_rds()
         conn.begin()

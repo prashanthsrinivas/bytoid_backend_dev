@@ -1,24 +1,19 @@
-import os
-import json
 import time
-import uuid
 import threading
-import asyncio
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Dict, Any
 
+from utils.normal import parse_composite_user_id
+from utils.app_configs import IS_DEV
 from credits_route.route import Credits
 from db.rds_db import connect_to_rds
 from flask import request, jsonify, Blueprint
+import logging
 from utils.fireworkzz import (
     get_coder_fire_response,
     get_think_fire_response_image,
-    get_fireworks_response2,
     get_think_fire_response_og,
 )
 from utils.s3_utils import upload_any_file_and_get_url, upload_think_image_and_get_url
-from io import BytesIO
-import base64
-from io import BytesIO
 from .bytoid_pro_helpers import (
     load_jobs,
     save_jobs,
@@ -31,9 +26,9 @@ from .bytoid_pro_helpers import (
 )
 from .bytoid_pro_lance import Bytoid_pro_lance
 
-
 bytoid_dev_pro_bp = Blueprint("bytoid_dev_pro", __name__, url_prefix="/bytoid-pro-dev")
-
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 MODEL_QWEN3_VL = "accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
 
@@ -79,9 +74,10 @@ def bytoid_pro_upload():
       }
     """
 
-    user_id = request.form.get("user_id")
-    if not user_id:
+    base_user_id = request.form.get("user_id")
+    if not base_user_id:
         return jsonify({"ok": False, "error": "user_id is required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
 
     files = request.files.getlist("files")
     if not files:
@@ -124,7 +120,8 @@ async def fireworks_think_og():
 
     # Safely read from JSON or multipart
     json_body = request.get_json(silent=True) or {}
-    user_id = json_body.get("user_id") or request.form.get("user_id")
+    base_user_id = json_body.get("user_id") or request.form.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
     message = json_body.get("message") or request.form.get("message")
     image_links = json_body.get("file_links") or request.form.get("file_links")
 
@@ -200,7 +197,8 @@ def handle_audio_fallback():
     try:
         json_body = request.get_json(silent=True) or {}
         audio_file = request.files.get("audio")
-        user_id = json_body.get("user_id") or request.form.get("user_id")
+        base_user_id = json_body.get("user_id") or request.form.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
 
         if not audio_file or not user_id:
             return jsonify({"error": "Missing audio or user_id"}), 400
@@ -245,7 +243,8 @@ async def bytoidpro_think():
         # 1️⃣ Read request
         # -------------------------------
         json_body = request.get_json(silent=True) or {}
-        user_id = json_body.get("user_id") or request.form.get("user_id")
+        base_user_id = json_body.get("user_id") or request.form.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         message = json_body.get("message") or request.form.get("message")
         chat_id = json_body.get("chat_id") or str(uuid.uuid4())
         session_id = json_body.get("session_id") or request.form.get("session_id")
@@ -654,46 +653,51 @@ def check_job_status():
 
 @bytoid_dev_pro_bp.route("/bytoidpro/chat_history", methods=["POST"])
 def chat_history():
-    json_body = request.get_json()
-    user_id = json_body.get("user_id")
-    last_timestamp = json_body.get("last_timestamp", "")  # pagination pending
+    try:
+        json_body = request.get_json()
+        base_user_id = json_body.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
+        last_timestamp = json_body.get("last_timestamp", "")  # pagination pending
 
-    lance = Bytoid_pro_lance(user_id)
-    rows = lance.get_history(last_timestamp)
+        lance = Bytoid_pro_lance(user_id)
+        rows = lance.get_history(last_timestamp)
 
-    first_user_message = {}
-    last_activity = {}
+        first_user_message = {}
+        last_activity = {}
 
-    for r in rows:
-        chat_id = r["chat_id"]
+        for r in rows:
+            chat_id = r["chat_id"]
 
-        # capture FIRST user message only once
-        if r["role"] == "user" and chat_id not in first_user_message:
-            first_user_message[chat_id] = r["content"]
+            # capture FIRST user message only once
+            if r["role"] == "user" and chat_id not in first_user_message:
+                first_user_message[chat_id] = r["content"]
 
-        # track last activity timestamp (always overwritten)
-        last_activity[chat_id] = r["timestamp"]
+            # track last activity timestamp (always overwritten)
+            last_activity[chat_id] = r["timestamp"]
 
-    # 2️⃣ Build list of dictionaries
-    history = [
-        {
-            "chat_id": chat_id,
-            "preview": first_user_message[chat_id],
-            "timestamp": last_activity[chat_id],
-        }
-        for chat_id in first_user_message
-    ]
+        # 2️⃣ Build list of dictionaries
+        history = [
+            {
+                "chat_id": chat_id,
+                "preview": first_user_message[chat_id],
+                "timestamp": last_activity[chat_id],
+            }
+            for chat_id in first_user_message
+        ]
 
-    # 3️⃣ Order sidebar by most recent activity
-    history.sort(key=lambda x: x["timestamp"], reverse=True)
+        # 3️⃣ Order sidebar by most recent activity
+        history.sort(key=lambda x: x["timestamp"], reverse=True)
 
-    return history
+        return history
+    except Exception as e:
+        logger.info("error %s", e)
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/get_a_chat", methods=["POST"])
 def get_a_chat():
     json_body = request.get_json()
-    user_id = json_body.get("user_id")
+    base_user_id = json_body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
     chat_id = json_body.get("chat_id")
 
     try:
@@ -727,7 +731,8 @@ def get_a_chat():
 def delete_table():
 
     body = request.json or {}
-    user_id = body.get("user_id")
+    base_user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
 
     lance = Bytoid_pro_lance(user_id)
     reponse = lance.delete_table()
@@ -740,7 +745,8 @@ async def fireworks_coder():
     credits = Credits(db)
 
     body = request.json or {}
-    user_id = body.get("user_id")
+    base_user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
     message = body.get("message")
 
     if not user_id or not message:

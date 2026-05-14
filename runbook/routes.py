@@ -5,7 +5,8 @@ import os
 import traceback
 import json
 from urllib.parse import urlparse
-import time, uuid, traceback
+import uuid, traceback
+from utils.normal import parse_composite_user_id
 from utils.app_configs import IS_DEV
 from playbook.background_worker import JobManager
 from playbook.helperzz import assign_runbook_playbook, save_playbook_to_s3
@@ -24,7 +25,6 @@ from runbook.helper import (
     trigger_runbook_from_playbook,
 )
 from db.lance_db_service import LanceDBServer
-from credits_route.route import Credits
 
 from radar.radar_helpers import (
     extract_file_payload,
@@ -45,7 +45,6 @@ from services.audit_log_service import (
     RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
     build_audit_actor,
 )
-from db.db_checkers import get_email_by_id
 import time, uuid, os, json
 from datetime import datetime
 from utils.permission_required import permission_required_body
@@ -64,6 +63,7 @@ msg_builder = msg_builder_main
 def _run_async(coro):
     """Run an async coroutine from a gunicorn sync worker context."""
     import asyncio
+
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
@@ -151,7 +151,9 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
         try:
             from runbook.utils import get_policies_for_frameworks
 
-            frameworks = ref_obj.get("frameworks") or ref_obj.get("framework_names") or []
+            frameworks = (
+                ref_obj.get("frameworks") or ref_obj.get("framework_names") or []
+            )
             framework_ids = ref_obj.get("framework_ids") or []
             if frameworks or framework_ids:
                 policy_ids = get_policies_for_frameworks(
@@ -452,7 +454,8 @@ def create_runbook():
         # ✅ form fields only
         data = request.form.to_dict()
 
-        user_id = data.get("user_id")
+        base_user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         session_id = data.get("session_id") or None
 
         # ✅ files
@@ -485,13 +488,17 @@ def create_runbook():
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
-        job_id = _run_async(JobManager.submit_job(
-            execute_runbook_create,
-            data,
-            session_id=session_id,
-        ))
+        job_id = _run_async(
+            JobManager.submit_job(
+                execute_runbook_create,
+                data,
+                session_id=session_id,
+            )
+        )
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
+            base_user_id
+        )
         log_audit_event(
             action=RUNBOOK_CREATED,
             endpoint="/runbook/create",
@@ -538,7 +545,8 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
             if should_emit:
                 await send(ws_sender, msg, user_id)
 
-        user_id = data.get("user_id")
+        base_user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         runbook_id = data.get("runbook_id")
         result_id = data.get("result_id")
         analyze_input = data.get("analyze_input") or data.get("user_input")
@@ -694,7 +702,8 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
 def modify_runbook():
     data = request.form.to_dict()
 
-    user_id = data.get("user_id")
+    base_user_id = data.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
     session_id = data.get("session_id") or None
 
     # ✅ files
@@ -763,11 +772,11 @@ def modify_runbook():
     data["reference_sources"] = json.dumps(ref_obj)
 
     # 🔥 SUBMIT BACKGROUND JOB
-    job_id = _run_async(JobManager.submit_job(
-        execute_modify_runbook, data, session_id=session_id
-    ))
+    job_id = _run_async(
+        JobManager.submit_job(execute_modify_runbook, data, session_id=session_id)
+    )
 
-    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(base_user_id)
     log_audit_event(
         action=RUNBOOK_UPDATED,
         endpoint="/runbook/modify",
@@ -790,38 +799,47 @@ def get_runbook_results(runbook_id):
     import asyncio
 
     try:
-        user_id = session.get("user_id") or request.args.get("user_id")
+        base_user_id = session.get("user_id") or request.args.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
 
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
 
         loop = asyncio.new_event_loop()
         try:
-            results = loop.run_until_complete(dbserver.get_runbook_results(user_id, runbook_id))
-            runbook_details = loop.run_until_complete(dbserver.get_runbook_by_id(user_id, runbook_id))
+            results = loop.run_until_complete(
+                dbserver.get_runbook_results(user_id, runbook_id)
+            )
+            runbook_details = loop.run_until_complete(
+                dbserver.get_runbook_by_id(user_id, runbook_id)
+            )
         finally:
             loop.close()
 
         valid_statuses = {"completed", "success", "done", "draft"}
         filtered_results = [
-            r for r in (results or [])
-            if r.get("status") in valid_statuses
+            r for r in (results or []) if r.get("status") in valid_statuses
         ]
 
-        filtered_results.sort(
-            key=lambda r: r.get("ended_at") or 0, reverse=True
-        )
+        filtered_results.sort(key=lambda r: r.get("ended_at") or 0, reverse=True)
 
         return (
             jsonify(
-                {"success": True, "results": filtered_results, "runbook": runbook_details}
+                {
+                    "success": True,
+                    "results": filtered_results,
+                    "runbook": runbook_details,
+                }
             ),
             200,
         )
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("get_runbook_results error: %s\n%s", e, tb)
-        return jsonify({"error": "Failed to fetch runbook results", "details": str(e)}), 500
+        return (
+            jsonify({"error": "Failed to fetch runbook results", "details": str(e)}),
+            500,
+        )
 
 
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
@@ -829,15 +847,21 @@ def get_runbook_results(runbook_id):
 def redult_list(user_id):
     import asyncio
 
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     try:
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(dbserver.get_runbook_results_by_user_id(user_id))
+            result = loop.run_until_complete(
+                dbserver.get_runbook_results_by_user_id(user_id)
+            )
             runbooks = loop.run_until_complete(dbserver.get_all_runbooks(user_id))
         finally:
             loop.close()
 
-        runbook_ids = {rb.get("runbook_id") for rb in (runbooks or []) if rb.get("runbook_id")}
+        runbook_ids = {
+            rb.get("runbook_id") for rb in (runbooks or []) if rb.get("runbook_id")
+        }
 
         valid_statuses = {"completed", "success", "done", "draft"}
         filtered_results = [
@@ -848,9 +872,7 @@ def redult_list(user_id):
             and r.get("runbook_id") in runbook_ids
         ]
 
-        filtered_results.sort(
-            key=lambda r: r.get("ended_at") or 0, reverse=True
-        )
+        filtered_results.sort(key=lambda r: r.get("ended_at") or 0, reverse=True)
 
         return (
             jsonify(
@@ -870,6 +892,7 @@ def list_runbooks(user_id):
 
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     # dbserver = LanceDBServer()
     runbooks = _run_async(dbserver.get_all_runbooks(user_id))
@@ -884,6 +907,7 @@ def get_runbook(runbook_id, user_id):
         user_id = session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     # dbserver = LanceDBServer()
     runbook = _run_async(dbserver.get_runbook_by_id(user_id, runbook_id))
 
@@ -895,6 +919,7 @@ def get_runbook(runbook_id, user_id):
 def get_all_runbook(user_id):
     try:
         # dbserver = LanceDBServer()
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         result = _run_async(dbserver.get_user_runbook(user_id))
         return jsonify({"result": result, "all": len(result)}), 200
     except Exception as e:
@@ -905,14 +930,17 @@ def get_all_runbook(user_id):
 @permission_required_body("compliance.runbook.delete")
 def delete_runbook(runbook_id):
     try:
-        user_id = session.get("user_id")
-        if not user_id:
+        base_user_id = session.get("user_id") or request.args.get("user_id")
+        if not base_user_id:
             return jsonify({"error": "Unauthorized"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         # dbserver = LanceDBServer()
         _run_async(dbserver.delete_runbook(user_id, runbook_id))
         _run_async(dbserver.delete_runbook_result(user_id, runbook_id))
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
+            base_user_id
+        )
         log_audit_event(
             action=RUNBOOK_DELETED,
             endpoint="/runbook/delete",
@@ -936,14 +964,17 @@ def delete_runbook(runbook_id):
 def delete_all():
     try:
         data = request.get_json()
-        user_id = data.get("user_id")
+        base_user_id = data.get("user_id")
         runbook_id = data.get("runbook_id", [])
-        if not user_id:
+        if not base_user_id:
             return jsonify({"error": "Unauthorized"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         # dbserver = LanceDBServer()
         _run_async(dbserver.delete_all_runbook(user_id, runbook_id))
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
+            base_user_id
+        )
         log_audit_event(
             action=RUNBOOK_BULK_DELETED,
             endpoint="/runbook/delete_all",
@@ -972,6 +1003,7 @@ def delte_result():
         result_id = data.get("result_id")
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         _run_async(dbserver.delete_runbook_result_by_id(user_id, runbook_id, result_id))
 
@@ -986,9 +1018,10 @@ def update_runbook_api(runbook_id):
     try:
         data = request.json or {}
 
-        user_id = data.get("user_id")
-        if not user_id:
+        base_user_id = data.get("user_id")
+        if not base_user_id:
             return jsonify({"error": "Unauthorized"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
 
         # ✅ Remove protected fields
         updates = {k: v for k, v in data.items() if k not in ["runbook_id", "user_id"]}
@@ -1007,7 +1040,9 @@ def update_runbook_api(runbook_id):
 
         updated = _run_async(dbserver.update_runbook(user_id, runbook_id, updates))
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
+            base_user_id
+        )
         log_audit_event(
             action=RUNBOOK_UPDATED,
             endpoint="/runbook/update",
@@ -1035,6 +1070,7 @@ def delete_runbook_results(runbook_id):
         user_id = session.get("user_id")
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         # dbserver = LanceDBServer()
         _run_async(dbserver.delete_runbook_result(user_id, runbook_id))
 
@@ -1055,12 +1091,15 @@ def create_playbook_runbook():
 
     if not user_id or not playbook_id:
         return jsonify({"error": "Missing user_id or playbook_id"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     try:
 
         # create_playbook_runbook_task.delay(user_id, playbook_id)
-        result = _run_async(trigger_runbook_from_playbook(
-            playbook_id=playbook_id, user_id=user_id, runbook_id=runbook_id
-        ))
+        result = _run_async(
+            trigger_runbook_from_playbook(
+                playbook_id=playbook_id, user_id=user_id, runbook_id=runbook_id
+            )
+        )
 
         return jsonify({"status": result}), 200
     except Exception as e:
@@ -1073,6 +1112,7 @@ def check_playbook_runbook(playbook_id):
     user_id = session.get("user_id")
     if not user_id:
         return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
         result = _run_async(dbserver.get_runbook_by_playbookid(user_id, playbook_id))
@@ -1123,6 +1163,7 @@ def extract_filenames(source):
 def result_by_id(result_id):
     try:
         user_id = session.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         res = _run_async(dbserver.runbook_get_result(user_id, result_id))
         return jsonify({"result": res}), 200
     except Exception as e:
@@ -1134,9 +1175,10 @@ def result_by_id(result_id):
 def patch_evidence_analysis(result_id):
     try:
         data = request.get_json() or {}
-        user_id = session.get("user_id") or data.get("user_id")
-        if not user_id:
+        base_user_id = session.get("user_id") or data.get("user_id")
+        if not base_user_id:
             return jsonify({"error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
 
         index = data.get("index")
         updates = data.get("updates")
@@ -1184,7 +1226,7 @@ def patch_evidence_analysis(result_id):
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(base_user_id)
         log_audit_event(
             action=RUNBOOK_EVIDENCE_UPDATED,
             endpoint="/result/<result_id>/evidence_analysis",
@@ -1302,10 +1344,11 @@ def _toggle_file_in_overview(ev_overview, file_url, target_status):
 def toggle_evidence_admissibility(result_id):
     try:
         data = request.get_json() or {}
-        user_id = session.get("user_id") or data.get("user_id")
+        b_user_id = session.get("user_id") or data.get("user_id")
 
-        if not user_id:
+        if not b_user_id:
             return jsonify({"error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(b_user_id)
 
         file_url = data.get("file")
         target_status = data.get("target_status")
@@ -1393,9 +1436,11 @@ def toggle_evidence_admissibility(result_id):
                         {"artifact": artifact_name, "decision": still_admissible}
                     )
 
-            _run_async(dbserver.update_runbook(
-                user_id, runbook_id, {"runbook_evidence_config": ev_config}
-            ))
+            _run_async(
+                dbserver.update_runbook(
+                    user_id, runbook_id, {"runbook_evidence_config": ev_config}
+                )
+            )
 
         # 🔹 5. Trigger async regeneration
         create_playbook_runbook_task.delay(user_id, playbook_id, runbook_id)
@@ -1406,7 +1451,7 @@ def toggle_evidence_admissibility(result_id):
             actor_email,
             acting_on_behalf_of_user_id,
             acting_on_behalf_of_email,
-        ) = build_audit_actor(user_id)
+        ) = build_audit_actor(b_user_id)
         log_audit_event(
             action=RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
             endpoint="/result/<result_id>/evidence_admissibility",
@@ -1451,7 +1496,8 @@ def schedule_runbook():
 
     body = request.json or {}
 
-    user_id = body["user_id"]
+    base_user_id = body["user_id"]
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
     runbook_id = body["runbook_id"]
     scheduled = body.get("scheduledActivation", {})
 
@@ -1473,20 +1519,22 @@ def schedule_runbook():
     # ========================================
     # STEP 1: SAVE SCHEDULE
     # ========================================
-    result = _run_async(save_runbook_schedule(
-        user_id=user_id,
-        runbook_id=runbook_id,
-        schedule_type=schedule_type,
-        timezone=timezone,
-        data=data,
-    ))
+    result = _run_async(
+        save_runbook_schedule(
+            user_id=user_id,
+            runbook_id=runbook_id,
+            schedule_type=schedule_type,
+            timezone=timezone,
+            data=data,
+        )
+    )
 
     # ========================================
     # STEP 2: ACTIVATE SCHEDULE (CELERY)
     # ========================================
     # result = await activate_runbook_schedule(user_id, runbook_id)
 
-    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(base_user_id)
     log_audit_event(
         action=RUNBOOK_SCHEDULED,
         endpoint="/schedule_runbook",
@@ -1516,7 +1564,8 @@ def schedule_runbook():
 
 async def execute_structure_extract(data, job_id=None, session_id=None, main=False):
     try:
-        user_id = data.get("user_id")
+        base_user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         analyze_input = data.get("analyze_input")
         structure_file = data.get("structure_file")
         default_structure = data.get("default_structure")
@@ -1661,9 +1710,11 @@ def structure_extract():
         return jsonify({"error": "Unauthorized"}), 401
 
     # 🚀 Submit as background job
-    job_id = _run_async(JobManager.submit_job(
-        execute_structure_extract, data, session_id=session_id, main=True
-    ))
+    job_id = _run_async(
+        JobManager.submit_job(
+            execute_structure_extract, data, session_id=session_id, main=True
+        )
+    )
 
     return jsonify({"success": True, "job_id": job_id, "status": "queued"})
 
@@ -1677,15 +1728,18 @@ def structure_extract_modify():
         else:
             data = request.form.to_dict()
 
-        user_id = data.get("user_id")
+        b_user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(b_user_id)
         runbook_id = data.get("runbook_id")
         default_structure = data.get("default_structure")
 
         updates = {"structure_theme": json.dumps(default_structure)}
 
-        updated_row = _run_async(dbserver.update_runbook(
-            user_id=user_id, runbook_id=runbook_id, updates=updates
-        ))
+        updated_row = _run_async(
+            dbserver.update_runbook(
+                user_id=user_id, runbook_id=runbook_id, updates=updates
+            )
+        )
 
         return (
             jsonify({"success": True, "data": updated_row}),
@@ -1702,14 +1756,17 @@ def check_pb_output():
     try:
         data = request.get_json()
 
-        user_id = data.get("user_id")
+        base_user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         pb_id = data.get("playbook_id")
         rb_id = data.get("runbook_id")
 
         # -----------------------------
         # Fetch Runbook
         # -----------------------------
-        runbook = _run_async(dbserver.get_runbook_by_id(user_id=user_id, runbook_id=rb_id))
+        runbook = _run_async(
+            dbserver.get_runbook_by_id(user_id=user_id, runbook_id=rb_id)
+        )
 
         if isinstance(runbook, list):
             runbook = runbook[0] if runbook else None
@@ -1737,13 +1794,15 @@ def check_pb_output():
         document_data = []
 
         if runbook.get("reference_sources"):
-            analyzed_results = _run_async(analyze_questions_with_references(
-                questions,
-                runbook.get("reference_sources"),
-                runbook.get("reference_main_source"),
-                user_id,
-                runbook,
-            ))
+            analyzed_results = _run_async(
+                analyze_questions_with_references(
+                    questions,
+                    runbook.get("reference_sources"),
+                    runbook.get("reference_main_source"),
+                    user_id,
+                    runbook,
+                )
+            )
 
             merged = _run_async(merge_document_data(analyzed_results, runtime_input))
 

@@ -7,7 +7,7 @@ from services.redis_service import get_redis
 from utils.base_logger import get_logger
 from utils.permission_required import permission_required_body
 from cust_helpers import pathconfig
-from utils.normal import ensure_dir
+from utils.normal import ensure_dir, parse_composite_user_id
 import json
 from db.rds_db import connect_to_rds
 import os
@@ -41,9 +41,10 @@ umail_bp = Blueprint("umail", __name__)
 logger = get_logger(__name__)
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/get_all_messages2/<user_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def getall_route2(user_id):
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     # enqueue Celery task
     mailbox_setting = check_mailbox(user_id)
     if not mailbox_setting:
@@ -53,8 +54,8 @@ def getall_route2(user_id):
     return jsonify(result), 202
 
 
-@permission_required_body("admin.manage_users")
 @umail_bp.route("/check_redis", methods=["GET"])
+@permission_required_body("admin.manage_users")
 async def check_redis():
     print("check redis initalized")
     val = get_redis()
@@ -63,16 +64,25 @@ async def check_redis():
     return jsonify({"redis state": res})
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/check_umail/<userid>", methods=["GET"])
-async def check_uamil(userid):
-    mailbox_setting = check_mailbox(userid)
-    return jsonify({"is_mail": mailbox_setting})
-
-
 @permission_required_body("taskbox.email.view")
+async def check_uamil(userid):
+    try:
+        logged_in_user_id, user_id = parse_composite_user_id(userid)
+
+        mailbox_setting = check_mailbox(user_id)
+
+        return jsonify({"is_mail": mailbox_setting})
+
+    except Exception as e:
+        logger.info("error on check_umail %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @umail_bp.route("/get_all_messages/<user_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def getall_route(user_id):
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     # Try to acquire lock first
     mailbox_setting = check_mailbox(user_id)
     if not mailbox_setting:
@@ -385,8 +395,8 @@ def parse_cursor_to_datetime(cursor):
         return datetime.fromisoformat(cursor.replace("Z", "+00:00"))
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/conversations_og/<user_id>/<next_cursor>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def get_latest_conversations_og(user_id, next_cursor):
     """
     Get the latest conversation from each client's config file.
@@ -399,6 +409,7 @@ def get_latest_conversations_og(user_id, next_cursor):
     """
 
     # print(f"next_cursor from api: {next_cursor}")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     display_messages = []
     convo_messages = {}
     cached = None
@@ -486,9 +497,10 @@ def get_latest_conversations_og(user_id, next_cursor):
         )
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/conversations_test/<user_id>/<next_cursor>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def conversations_test(user_id, next_cursor):
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     client = UmailLanceClient(user_id)
     convo_messages = client.latest_messages_from_lance_test(user_id, next_cursor)
 
@@ -547,9 +559,15 @@ def get_cache_sync(user_id):
 # -----------------------
 # API
 # -----------------------
-@permission_required_body("taskbox.email.view")
+@umail_bp.route(
+    "/conversations/<user_id>", defaults={"next_cursor": None}, methods=["GET"]
+)
 @umail_bp.route("/conversations/<user_id>/<next_cursor>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def get_latest_conversations(user_id, next_cursor):
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    if next_cursor is None:
+        next_cursor = datetime.now(timezone.utc)
 
     mailbox_setting = check_mailbox(user_id)
     if not mailbox_setting:
@@ -725,8 +743,8 @@ def get_sorted_lance_emails(connection, user_id, client_id):
     return sorted_conversations
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/selected_conversation/<conversation_id>/<user_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 async def get_selected_conv(conversation_id, user_id):
     """
     Fetch selected conversation messages for a user.
@@ -736,6 +754,7 @@ async def get_selected_conv(conversation_id, user_id):
     3. Lance fallback
     """
     snooze_flag = False
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     try:
         # user_id = conversation_id.split("_", 1)[0]
 
@@ -941,12 +960,13 @@ def _format_selected_conversation(conversation_id, client_id, messages_data, sou
     )
 
 
-@permission_required_body("taskbox.email.send")
 @umail_bp.route("/start-conversation", methods=["POST"])
+@permission_required_body("taskbox.email.send")
 def start_conversation():
 
     data = request.get_json() or {}
     user_id = data.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     client_id = data.get("contact_id")
     # print(f"client_id : {client_id}")
 
@@ -1035,8 +1055,8 @@ import pymysql
 from datetime import datetime
 
 
-@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-reply", methods=["POST"])
+@permission_required_body("taskbox.email.send")
 async def send_messages():
     # print("🚀 [DEBUG] Starting send_messages() function")
 
@@ -1046,6 +1066,7 @@ async def send_messages():
         print(f"📥 [DEBUG] Request data: {data}")
 
         user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         channel = data.get("channel")
         text = data.get("text")
         ticket_conversation_id = data.get("ticket_conversation_id")
@@ -1607,6 +1628,7 @@ async def send_messages():
 
             elif channel == "teams":
                 from microsoft_route.routes import teams_send_message
+
                 try:
                     result = teams_send_message(
                         user_id=user_id,
@@ -1891,8 +1913,8 @@ async def send_messages():
         # print("🔗 [DEBUG] Database connection closed")
 
 
-@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-reply_test", methods=["POST"])
+@permission_required_body("taskbox.email.send")
 async def send_messages_test():
     # print("🚀 [DEBUG] Starting send_messages() function")
 
@@ -1902,6 +1924,7 @@ async def send_messages_test():
         # print(f"📥 [DEBUG] Request data: {data}")
 
         user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         channel = data.get("channel")
         text = data.get("text")
         ticket_conversation_id = data.get("ticket_conversation_id")
@@ -2737,9 +2760,10 @@ async def send_messages_test():
         # print("🔗 [DEBUG] Database connection closed")
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/async_message/<userid>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def get_inbox_info(userid):
+    logged_in_user_id, user_id = parse_composite_user_id(userid)
     mailbox_setting = check_mailbox(userid)
     if not mailbox_setting:
         return {"disp_messages": "Restricted"}
@@ -2755,8 +2779,8 @@ def get_inbox_info(userid):
 # ============================================================================
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/check_should_sync/<user_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def check_should_sync(user_id):
     """
     Check if a sync should happen for a user without triggering it.
@@ -2777,6 +2801,8 @@ def check_should_sync(user_id):
         "context": "login" or "manual"
     }
     """
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     try:
         context = request.args.get("context", "login").lower()
 
@@ -2794,8 +2820,8 @@ def check_should_sync(user_id):
         return jsonify({"error": str(e)}), 500
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/trigger_on_login/<user_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def trigger_sync_on_login(user_id):
     """
     Trigger a sync on user login if 30 minutes have passed since last sync.
@@ -2819,6 +2845,8 @@ def trigger_sync_on_login(user_id):
         "context": "login"
     }
     """
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     try:
         sync_check = asyncio.run(SyncManager.should_sync_on_login(user_id))
 
@@ -2879,8 +2907,8 @@ def trigger_sync_on_login(user_id):
         return jsonify({"error": str(e), "context": "login"}), 500
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/trigger_manual/<user_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def trigger_sync_manual(user_id):
     """
     Manually trigger a sync (from button click or page refresh).
@@ -2896,6 +2924,8 @@ def trigger_sync_manual(user_id):
         "context": "manual"
     }
     """
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     try:
         # Check if manual sync is allowed
         sync_check = asyncio.run(SyncManager.should_sync_on_manual_action(user_id))
@@ -2960,8 +2990,8 @@ def trigger_sync_manual(user_id):
         return jsonify({"error": str(e), "context": "manual"}), 500
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/status/<user_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def get_sync_status(user_id):
     """
     Get the current sync status for a user.
@@ -2977,6 +3007,8 @@ def get_sync_status(user_id):
         "can_manual_sync": bool
     }
     """
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     try:
         sync_info = asyncio.run(SyncManager.get_last_sync_time(user_id))
 
@@ -2998,8 +3030,8 @@ def get_sync_status(user_id):
         return jsonify({"error": str(e)}), 500
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/sync/reset_timer/<user_id>", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def reset_sync_timer(user_id):
     """
     Admin endpoint to reset the sync timer for a user (for testing/troubleshooting).
@@ -3010,6 +3042,8 @@ def reset_sync_timer(user_id):
         "message": description
     }
     """
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     try:
         # Optional: Add authentication check here for production
         success = asyncio.run(SyncManager.clear_sync_timer(user_id))
@@ -3052,8 +3086,8 @@ async def _get_timedelta_until_next():
 # ============================================================================
 
 
-@permission_required_body("taskbox.email.attachments.view")
 @umail_bp.route("/attachment-test", methods=["GET"])
+@permission_required_body("taskbox.email.attachments.view")
 def attachment_test():
     """
     Simple test endpoint to verify attachment endpoints are accessible
@@ -3074,8 +3108,8 @@ def attachment_test():
     )
 
 
-@permission_required_body("taskbox.email.attachments.view")
 @umail_bp.route("/attach-file", methods=["POST", "OPTIONS"])
+@permission_required_body("taskbox.email.attachments.view")
 def upload_attachment():
     # Handle CORS preflight
     if request.method == "OPTIONS":
@@ -3112,6 +3146,8 @@ def upload_attachment():
 
         # Get required fields - with fallbacks
         user_id = request.form.get("user_id") or "anonymous-user"
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
         conversation_id = request.form.get("conversation_id") or "temp-conversation"
         client_id = request.form.get("client_id", "default-client")
 
@@ -3176,8 +3212,8 @@ def upload_attachment():
         )
 
 
-@permission_required_body("taskbox.email.attachments.view")
 @umail_bp.route("/attach-files", methods=["POST", "OPTIONS"])
+@permission_required_body("taskbox.email.attachments.view")
 def upload_multiple_attachments():
     # Handle CORS preflight
     if request.method == "OPTIONS":
@@ -3211,6 +3247,7 @@ def upload_multiple_attachments():
 
         # Get required fields - with fallbacks
         user_id = request.form.get("user_id") or "anonymous-user"
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         conversation_id = request.form.get("conversation_id") or "temp-conversation"
         client_id = request.form.get("client_id", "default-client")
 
@@ -3283,8 +3320,8 @@ def upload_multiple_attachments():
         )
 
 
-@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-reply-with-attachments", methods=["POST", "OPTIONS"])
+@permission_required_body("taskbox.email.send")
 async def send_reply_with_attachments():
     """
     Send a reply with attachments (enhanced version of /send-reply)
@@ -3389,9 +3426,11 @@ async def send_reply_with_attachments():
         )
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/check-lastmsg/<user_id>/<thread_id>", methods=["GET"])
+@permission_required_body("taskbox.email.view")
 def checkgmail_last_msg(user_id, thread_id):
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     import asyncio
 
     val = GmailService(user_id=user_id)
@@ -3399,12 +3438,14 @@ def checkgmail_last_msg(user_id, thread_id):
     return data, 200
 
 
-@permission_required_body("taskbox.email.view")
 @umail_bp.route("/set_mailbox_setting", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def set_mailbox_setting():
 
     body = request.get_json() or {}
     primary_user_id = body.get("user_id")
+    logged_in_user_id, primary_user_id = parse_composite_user_id(primary_user_id)
+
     setting = body.get("setting")
     social = body.get("social")
 
@@ -3489,13 +3530,13 @@ def set_mailbox_setting():
         connection.close()
 
 
-@permission_required_body("taskbox.email.send")
 @umail_bp.route("/send-mail", methods=["POST"])
+@permission_required_body("taskbox.email.send")
 async def send_mail_api():
     try:
         data = request.json
-        print(data)
         user_id = data.get("user_id")
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         client_id = data.get("client_id")
         channel = data.get("channel")
         text = data.get("text")
