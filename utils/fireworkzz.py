@@ -819,133 +819,179 @@ Do NOT include explanations, markdown, or extra text. JSON only."""
         return {"assignments": []}
 
 
+# async def _analyze_single_row(
+#     row: dict, fw_rows_json: str, framework_name: str
+# ) -> dict:
+#     """Analyze one tracker row against the full framework requirements list."""
+#     import json
+#     import asyncio
+
+#     row_json = json.dumps(
+#         {"row_id": row["row_id"], "data": row.get("col_values", {})}, indent=2
+#     )
+#     row_id = row["row_id"]
+
+#     prompt = f"""You are a senior compliance mapping analyst.
+
+# Your task is to determine whether a SINGLE tracker row has a DIRECT and DEFENSIBLE relationship to any framework requirements.
+
+# Your goal is PRECISION, not recall.
+
+# A weak or questionable mapping is WORSE than no mapping.
+
+# STRICT MATCHING STANDARD
+
+# A framework requirement is a VALID match ONLY when ALL are true:
+
+# 1. The tracker row explicitly discusses the same subject matter as the requirement.
+# 2. The relationship is direct, specific, and auditor-defensible.
+# 3. The requirement would reasonably be cited during an audit review of this exact row.
+# 4. The row contains clear evidence supporting the mapping.
+# 5. The mapping does NOT require broad interpretation or semantic stretching.
+
+# If ANY doubt exists, DO NOT MATCH.
+
+# MANDATORY DOMAIN FILTERING
+
+# DO NOT match business-training or HR-related rows to technical cybersecurity controls.
+
+# The following topics are NOT sufficient by themselves to justify technical security mappings:
+
+# - professionalism
+# - punctuality
+# - attendance
+# - employee etiquette
+# - communication habits
+# - generic workplace behavior
+# - business terminology
+# - customer satisfaction
+# - organizational culture
+# - stakeholder awareness
+# - generic task management
+
+# DO NOT map these topics to:
+
+# - encryption
+# - MFA
+# - malware protection
+# - PAN protection
+# - vulnerability management
+# - network security
+# - authentication
+# - secure development
+# - cryptographic controls
+# - firewall requirements
+# - infrastructure security
+# - logging/monitoring
+# - PCI DSS technical controls
+
+# UNLESS the tracker row EXPLICITLY references those security topics.
+
+# IMPORTANT COMPLIANCE RULE
+
+# Awareness/training requirements should ONLY match when the row explicitly involves:
+
+# - security awareness
+# - information security education
+# - cybersecurity behavior
+# - security policy understanding
+# - security training obligations
+# - compliance training
+# - secure handling of data/systems
+
+# Generic employee mistakes are NOT automatically awareness-training matches.
+
+# TRACKER ROW
+
+# {row_json}
+
+# FRAMEWORK REQUIREMENTS
+
+# {fw_rows_json}
+
+# OUTPUT RULES
+
+# Return ONLY valid JSON.
+
+# DO NOT include explanations outside JSON.
+# DO NOT include markdown.
+
+# Return format when matches exist:
+
+# {{
+#     "row_id": "{row_id}",
+#     "matches": [
+#         {{
+#             "fw_index": 3,
+#             "confidence": 0.94,
+#             "evidence": "Row explicitly references annual security awareness training."
+#         }}
+#     ]
+# }}
+
+# If no HIGH-CONFIDENCE matches exist:
+
+# {{
+#     "row_id": "{row_id}",
+#     "matches": []
+# }}
+
+# CONFIDENCE RULES
+
+# - 0.90 - 1.00: Explicit, direct, auditor-defensible relationship.
+# - 0.75 - 0.89: Reasonably related but still somewhat interpretive.
+# - Below 0.75: DO NOT return the match."""
+
+#     payload = {
+#         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+#         "temperature": 0,
+#         "max_tokens": 4000,
+#     }
+#     response = await asyncio.to_thread(
+#         bedrock_runtime.invoke_model,
+#         modelId=THINK_MODEL,
+#         body=json.dumps(payload),
+#         contentType="application/json",
+#         accept="application/json",
+#     )
+#     body = json.loads(response["body"].read())
+#     response_text = extract_bedrock_text(body)
+#     parsed = extract_json_safe(response_text)
+
+#     fw_row_indices = []
+#     if isinstance(parsed, dict):
+#         for match in parsed.get("matches", []):
+#             idx = match.get("fw_index")
+#             conf = match.get("confidence", 0)
+#             if (
+#                 isinstance(idx, int)
+#                 and idx >= 0
+#                 and isinstance(conf, (int, float))
+#                 and conf >= 0.75
+#             ):
+#                 fw_row_indices.append(idx)
+
+#     return {
+#         "row_id": row_id,
+#         "fw_row_indices": fw_row_indices,
+#         "_output_chars": len(response_text),
+#     }
+
+
 async def _analyze_single_row(
     row: dict, fw_rows_json: str, framework_name: str
 ) -> dict:
     """Analyze one tracker row against the full framework requirements list."""
-    import json
-    import asyncio
 
     row_json = json.dumps(
         {"row_id": row["row_id"], "data": row.get("col_values", {})}, indent=2
     )
     row_id = row["row_id"]
-
-    prompt = f"""You are a senior compliance mapping analyst.
-
-Your task is to determine whether a SINGLE tracker row has a DIRECT and DEFENSIBLE relationship to any framework requirements.
-
-Your goal is PRECISION, not recall.
-
-A weak or questionable mapping is WORSE than no mapping.
-
-STRICT MATCHING STANDARD
-
-A framework requirement is a VALID match ONLY when ALL are true:
-
-1. The tracker row explicitly discusses the same subject matter as the requirement.
-2. The relationship is direct, specific, and auditor-defensible.
-3. The requirement would reasonably be cited during an audit review of this exact row.
-4. The row contains clear evidence supporting the mapping.
-5. The mapping does NOT require broad interpretation or semantic stretching.
-
-If ANY doubt exists, DO NOT MATCH.
-
-MANDATORY DOMAIN FILTERING
-
-DO NOT match business-training or HR-related rows to technical cybersecurity controls.
-
-The following topics are NOT sufficient by themselves to justify technical security mappings:
-
-- professionalism
-- punctuality
-- attendance
-- employee etiquette
-- communication habits
-- generic workplace behavior
-- business terminology
-- customer satisfaction
-- organizational culture
-- stakeholder awareness
-- generic task management
-
-DO NOT map these topics to:
-
-- encryption
-- MFA
-- malware protection
-- PAN protection
-- vulnerability management
-- network security
-- authentication
-- secure development
-- cryptographic controls
-- firewall requirements
-- infrastructure security
-- logging/monitoring
-- PCI DSS technical controls
-
-UNLESS the tracker row EXPLICITLY references those security topics.
-
-IMPORTANT COMPLIANCE RULE
-
-Awareness/training requirements should ONLY match when the row explicitly involves:
-
-- security awareness
-- information security education
-- cybersecurity behavior
-- security policy understanding
-- security training obligations
-- compliance training
-- secure handling of data/systems
-
-Generic employee mistakes are NOT automatically awareness-training matches.
-
-TRACKER ROW
-
-{row_json}
-
-FRAMEWORK REQUIREMENTS
-
-{fw_rows_json}
-
-OUTPUT RULES
-
-Return ONLY valid JSON.
-
-DO NOT include explanations outside JSON.
-DO NOT include markdown.
-
-Return format when matches exist:
-
-{{
-    "row_id": "{row_id}",
-    "matches": [
-        {{
-            "fw_index": 3,
-            "confidence": 0.94,
-            "evidence": "Row explicitly references annual security awareness training."
-        }}
-    ]
-}}
-
-If no HIGH-CONFIDENCE matches exist:
-
-{{
-    "row_id": "{row_id}",
-    "matches": []
-}}
-
-CONFIDENCE RULES
-
-- 0.90 - 1.00: Explicit, direct, auditor-defensible relationship.
-- 0.75 - 0.89: Reasonably related but still somewhat interpretive.
-- Below 0.75: DO NOT return the match."""
-
+    prompt = f"""You are a compliance analyst. For the SINGLE tracker row below, identify which requirements from "{framework_name}" it directly relates to. STRICT MATCHING RULES: - Only assign a requirement when there is a CLEAR, DIRECT, SPECIFIC relationship between the row content and the requirement's subject matter. - A match is valid ONLY if: the row directly addresses what the requirement covers, OR compliance with the requirement would specifically depend on what this row describes. - A match is NOT valid if: the connection is vague, indirect, or the row and requirement belong to different topic domains. - When in doubt, return []. TRACKER ROW: {row_json} FRAMEWORK REQUIREMENTS (with index): {fw_rows_json} Return ONLY valid JSON (no markdown, no explanation): {{"row_id": "{row_id}", "fw_row_indices": [3, 7]}} or if nothing matches: {{"row_id": "{row_id}", "fw_row_indices": []}}"""
     payload = {
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         "temperature": 0,
-        "max_tokens": 4000,
+        "max_tokens": 2000,
     }
     response = await asyncio.to_thread(
         bedrock_runtime.invoke_model,
@@ -957,25 +1003,16 @@ CONFIDENCE RULES
     body = json.loads(response["body"].read())
     response_text = extract_bedrock_text(body)
     parsed = extract_json_safe(response_text)
-
     fw_row_indices = []
     if isinstance(parsed, dict):
-        for match in parsed.get("matches", []):
-            idx = match.get("fw_index")
-            conf = match.get("confidence", 0)
-            if (
-                isinstance(idx, int)
-                and idx >= 0
-                and isinstance(conf, (int, float))
-                and conf >= 0.75
-            ):
-                fw_row_indices.append(idx)
-
-    return {
-        "row_id": row_id,
-        "fw_row_indices": fw_row_indices,
-        "_output_chars": len(response_text),
-    }
+        raw = parsed.get("fw_row_indices", [])
+        if isinstance(raw, list):
+            fw_row_indices = [i for i in raw if isinstance(i, int) and i >= 0]
+            return {
+                "row_id": row_id,
+                "fw_row_indices": fw_row_indices,
+                "_output_chars": len(response_text),
+            }
 
 
 async def analyze_tracker_framework_rows(
