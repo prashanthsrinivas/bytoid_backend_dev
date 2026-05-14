@@ -45,6 +45,7 @@ from utils.s3_utils import (
 from utils.fireworkzz import (
     analyze_tracker_framework_policies,
     analyze_tracker_framework_rows,
+    quality_review_framework_assignments,
 )
 from credits_route.route import Credits
 from utils.base_logger import get_logger
@@ -1088,7 +1089,16 @@ async def append_tracker_api():
                                 credits=credits,
                             )
 
-                            for assignment in ai_result.get("assignments", []):
+                            reviewed_assignments = await quality_review_framework_assignments(
+                                rows=rows_analysis_input,
+                                fw_rows=fw_rows_data,
+                                assignments=ai_result.get("assignments", []),
+                                framework_name=fw_name,
+                                user_id=user_id,
+                                credits=credits,
+                            )
+
+                            for assignment in reviewed_assignments:
                                 row_id = assignment.get("row_id")
                                 fw_indices = assignment.get("fw_row_indices", [])
                                 if isinstance(fw_indices, int):
@@ -2652,7 +2662,14 @@ async def add_tracker_framework():
                 credits=credits,
             )
 
-            assignments = ai_result.get("assignments", [])
+            assignments = await quality_review_framework_assignments(
+                rows=rows_analysis_input,
+                fw_rows=fw_rows,
+                assignments=ai_result.get("assignments", []),
+                framework_name=framework_name,
+                user_id=user_id,
+                credits=credits,
+            )
 
             for assignment in assignments:
                 row_id = assignment.get("row_id")

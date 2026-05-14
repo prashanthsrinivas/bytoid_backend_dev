@@ -921,6 +921,125 @@ Return ONLY valid JSON object (no markdown, no explanation):
         return {"assignments": []}
 
 
+async def quality_review_framework_assignments(
+    rows: list,
+    fw_rows: list,
+    assignments: list,
+    framework_name: str,
+    user_id: str,
+    credits,
+) -> list:
+    """
+    Second-pass quality review: verify each proposed assignment is genuinely correct.
+
+    Takes the assignments from analyze_tracker_framework_rows and re-evaluates each
+    one, confirming it is supported by ALL column values in the tracker row. Drops any
+    assignments that do not survive scrutiny.
+
+    Returns a filtered list of assignments (same schema as input).
+    """
+    import json
+    import asyncio
+
+    if not assignments:
+        return assignments
+
+    # Build a lookup for fast row access
+    row_map = {r["row_id"]: r.get("col_values", {}) for r in rows}
+    fw_indexed = {i: row for i, row in enumerate(fw_rows)}
+
+    # Flatten proposed assignments into (row_id, fw_index) pairs for review
+    pairs = []
+    for a in assignments:
+        row_id = a.get("row_id")
+        for idx in (a.get("fw_row_indices") or []):
+            if row_id and idx in fw_indexed:
+                pairs.append({"row_id": row_id, "fw_index": idx})
+
+    if not pairs:
+        return assignments
+
+    review_payload = json.dumps(
+        [
+            {
+                "row_id": p["row_id"],
+                "fw_index": p["fw_index"],
+                "row_data": row_map.get(p["row_id"], {}),
+                "requirement": fw_indexed[p["fw_index"]],
+            }
+            for p in pairs
+        ],
+        indent=2,
+    )
+
+    total_input_chars = len(review_payload)
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return assignments
+
+    prompt = f"""You are a strict compliance quality reviewer. The following proposed mappings between tracker rows and "{framework_name}" requirements need validation.
+
+PROPOSED MAPPINGS:
+{review_payload[:80000]}
+
+For each mapping, review whether ALL the values in "row_data" genuinely confirm a direct relationship to the "requirement". A mapping is VALID only when the full context of the row data clearly and specifically supports that requirement — not just a superficial keyword overlap.
+
+Return ONLY a valid JSON object listing which mappings pass review (no markdown, no explanation):
+{{"valid_pairs": [{{"row_id": "trk_r_xxx", "fw_index": 3}}, {{"row_id": "trk_r_yyy", "fw_index": 7}}]}}
+
+If no mappings are valid, return: {{"valid_pairs": []}}"""
+
+    payload = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "temperature": 0,
+        "max_tokens": 8000,
+    }
+
+    try:
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=THINK_MODEL,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        body = json.loads(response["body"].read())
+        response_text = extract_bedrock_text(body)
+        parsed = extract_json_safe(response_text)
+
+        valid_pairs = set()
+        if isinstance(parsed, dict) and "valid_pairs" in parsed:
+            for vp in parsed["valid_pairs"]:
+                rid = vp.get("row_id")
+                fidx = vp.get("fw_index")
+                if rid is not None and fidx is not None:
+                    valid_pairs.add((rid, int(fidx)))
+
+        total_output_chars = len(response_text)
+        await credits.update_ai_credits_redis(
+            credit_type="think",
+            total_chars=total_input_chars + total_output_chars,
+            user_id=user_id,
+            reference_id="quality_review_framework_assignments",
+        )
+
+        # Rebuild assignments retaining only validated indices
+        reviewed = []
+        for a in assignments:
+            row_id = a.get("row_id")
+            kept = [
+                idx for idx in (a.get("fw_row_indices") or [])
+                if (row_id, int(idx)) in valid_pairs
+            ]
+            reviewed.append({"row_id": row_id, "fw_row_indices": kept})
+
+        return reviewed
+
+    except Exception:
+        logging.error(f"Error in quality_review_framework_assignments: {traceback.format_exc()}")
+        return assignments
+
+
 async def get_extract_response(
     prompt_template: str,
     data: str,
