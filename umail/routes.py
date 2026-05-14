@@ -2,6 +2,7 @@ import asyncio
 import time
 from db.db_checkers import get_email_by_id, get_existing_umail_json
 from flask import request, jsonify, Blueprint
+from utils.rate_limit import limiter
 from datetime import datetime, timezone
 from services.redis_service import get_redis
 from utils.base_logger import get_logger
@@ -2822,6 +2823,7 @@ def check_should_sync(user_id):
 
 @umail_bp.route("/sync/trigger_on_login/<user_id>", methods=["GET"])
 @permission_required_body("taskbox.email.view")
+@limiter.limit("10 per minute")
 def trigger_sync_on_login(user_id):
     """
     Trigger a sync on user login if 30 minutes have passed since last sync.
@@ -2909,6 +2911,7 @@ def trigger_sync_on_login(user_id):
 
 @umail_bp.route("/sync/trigger_manual/<user_id>", methods=["GET"])
 @permission_required_body("taskbox.email.view")
+@limiter.limit("10 per minute")
 def trigger_sync_manual(user_id):
     """
     Manually trigger a sync (from button click or page refresh).

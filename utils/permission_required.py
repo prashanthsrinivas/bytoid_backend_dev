@@ -9,17 +9,12 @@ from utils.normal import parse_composite_user_id
 
 
 def _get_user_id_from_context():
-    """Extract user_id from g.user_id, session, or request body/args (session middleware fallback)."""
-    user_id = getattr(g, "user_id", None)
-    if not user_id:
-        user_id = session.get("user_id")
-    if not user_id and request.is_json:
-        user_id = (request.get_json(silent=True) or {}).get("user_id")
-    if not user_id:
-        user_id = request.args.get("user_id")
-    if not user_id:
-        user_id = request.form.get("user_id")
-    return user_id
+    """Extract user_id from g.user_id (set by session middleware) or Flask signed-cookie session."""
+    uid = getattr(g, "user_id", None)
+    if uid:
+        return uid
+    # Transitional fallback: OAuth callbacks set session["user_id"] before Redis session is fully established
+    return session.get("user_id")
 
 
 def _get_owner_user_id_from_context(kwargs=None):
@@ -94,8 +89,8 @@ def permission_required(required_permission):
                         )
                         owner = cursor.fetchone()
 
-                        # if not owner or owner["launch_id_fk"] != org_id:
-                        #     return jsonify({"error": "Cross-org access denied"}), 403
+                        if not owner or owner["launch_id_fk"] != org_id:
+                            return jsonify({"error": "Cross-org access denied"}), 403
 
                         # Target is normal user: allow
                         if owner["user_type"] == "user":
@@ -205,6 +200,9 @@ def permission_required_body(required_permission):
                         )
 
                         owner = cursor.fetchone()
+
+                        if not owner or owner["launch_id_fk"] != user["launch_id_fk"]:
+                            return jsonify({"error": "Cross-org access denied"}), 403
 
                         if owner["user_type"] == "user":
                             return None
