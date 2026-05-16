@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 from datetime import datetime
+from urllib.parse import urlparse
 
 import boto3
 import pymysql
@@ -202,12 +203,14 @@ def aws_saml_login():
     if not _get_aws_idp_config(user_id):
         return jsonify({"error": "AWS IdP not configured. Save your Identity Center details first."}), 400
 
-    origin = request.args.get("redirect", "")
-    if origin not in ALLOWED_ORIGINS:
-        origin = "https://app.bytoid.ai"
+    redirect_url = request.args.get("redirect", "")
+    parsed = urlparse(redirect_url)
+    host_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
+    if host_origin not in ALLOWED_ORIGINS:
+        redirect_url = "https://app.bytoid.ai/aws-integration"
 
     session["aws_saml_user_id"] = user_id
-    session["aws_saml_redirect"] = origin
+    session["aws_saml_redirect"] = redirect_url
 
     req = prepare_flask_request_aws(request)
     try:
@@ -324,10 +327,9 @@ def aws_saml_acs():
             metadata={"aws_account_id": account_id, "role_arn": role_arn},
         )
 
-        redirect_base = session.get("aws_saml_redirect", "https://app.bytoid.ai")
-        return redirect(
-            f"{redirect_base}/aws-integration?status=success&userid={user_id}"
-        )
+        redirect_url = session.get("aws_saml_redirect", "https://app.bytoid.ai/aws-integration")
+        sep = "&" if "?" in redirect_url else "?"
+        return redirect(f"{redirect_url}{sep}status=success&userid={user_id}")
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
