@@ -83,11 +83,35 @@ PERMISSION_METADATA = {
         "dependencies": ["compliance.runbook.create"]
     },
    
+    "compliance.report.create": {
+        "label": "Create Reports",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "compliance.report.read": {
+        "label": "View Reports",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "compliance.report.edit": {
+        "label": "Edit Reports",
+        "module": "Compliance",
+        "type": "update",
+        "dependencies": ["compliance.report.create"]
+    },
     "compliance.report.logs": {
         "label": "View Report Logs",
         "module": "Compliance",
         "type": "read",
         "dependencies": ["compliance.report.create"]
+    },
+    "compliance.framework.create": {
+        "label": "Upload Compliance Frameworks",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine"]
     },
     "compliance.standalone.create": {
         "label": "Create Standalone Reports",
@@ -540,6 +564,32 @@ PERMISSION_METADATA = {
         "module": "Taskbox",
         "type": "update",
         "dependencies": ["taskbox.agent.select"]
+    },
+
+    # ================= CONTACTS =================
+    "contacts.create": {
+        "label": "Create Contact",
+        "module": "Contacts",
+        "type": "create",
+        "dependencies": []
+    },
+    "contacts.edit": {
+        "label": "Edit Contact",
+        "module": "Contacts",
+        "type": "update",
+        "dependencies": ["contacts.create"]
+    },
+    "contacts.delete": {
+        "label": "Delete Contact",
+        "module": "Contacts",
+        "type": "delete",
+        "dependencies": ["contacts.create"]
+    },
+    "contacts.view": {
+        "label": "View Contacts",
+        "module": "Contacts",
+        "type": "read",
+        "dependencies": []
     },
 
     # ================= NOTES =================

@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 
 integrations_bp = Blueprint("integrations", __name__)
+from utils.permission_required import permission_required_body
 logger = get_logger(__name__)
 
 
@@ -36,6 +37,7 @@ dev_val = os.getenv("BASE_FRNT_URL")
 
 
 @integrations_bp.route("/check_integrations", methods=["POST"])
+@permission_required_body("apps.install")
 def check_integrations():
     connection = connect_to_rds()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
@@ -89,6 +91,7 @@ def check_integrations():
 
 
 @integrations_bp.route("/get_all_integrations_for_user", methods=["POST"])
+@permission_required_body("apps.install")
 def get_all_integrations_for_user():
     data = request.json
     user_id = data.get("user_id")
@@ -308,6 +311,7 @@ def delete_all_QA_files(userid):
 
 
 @integrations_bp.route("/delete/integration", methods=["POST"])
+@permission_required_body("apps.install")
 async def delete_integration():
     connection = connect_to_rds()
     cursor = connection.cursor(pymysql.cursors.DictCursor)

@@ -21,7 +21,11 @@ PERMISSIONS = {
    "compliance.standalone.delete": "Delete Standalone Reports",
    "compliance.runbook.read": "View Runbooks",
    "compliance.runbook.logs": "View Runbook Logs",
+   "compliance.report.create": "Create Reports",
+   "compliance.report.read": "View Reports",
+   "compliance.report.edit": "Edit Reports",
    "compliance.report.logs": "View Report Logs",
+   "compliance.framework.create": "Upload Compliance Frameworks",
          
    # ================= TRACKERS =================
    "trackers.table.view": "View Trackers",
@@ -111,6 +115,12 @@ PERMISSIONS = {
    # ================= TASKBOX (AGENTS) =================
    "taskbox.agent.select": "Select Agent",
    "taskbox.agent.assign": "Assign Agent",
+
+   # ================= CONTACTS =================
+   "contacts.create": "Create Contact",
+   "contacts.edit": "Edit Contact",
+   "contacts.delete": "Delete Contact",
+   "contacts.view": "View Contacts",
 
    # ================= NOTES =================
    "notes.create": "Create Note",

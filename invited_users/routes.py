@@ -20,6 +20,7 @@ from utils.auth_resolver import get_user_from_request
 from dotenv import load_dotenv
 from services.outlook_service import OutlookService
 from utils.permission_resolver import resolve_permissions
+from utils.permission_required import permission_required_body
 from utils.s3_utils import read_json_from_s3
 from datetime import timedelta, date as _date
 import os
@@ -65,6 +66,7 @@ def has_outlook_connected(user_id, cursor):
 
 
 @inv_users_bp.route("/admin/roles-add", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def add_role_admin():
     """Create a new role for a user"""
     data = request.get_json()
@@ -164,6 +166,7 @@ def _same_org(admin, target):
 
 
 @inv_users_bp.route("/admin/assign-role", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def assign_role_direct():
     """
     Assign a role directly to an existing user (by email) without invite flow.
@@ -378,6 +381,7 @@ def assign_role_direct():
 
 
 @inv_users_bp.route("/admin/bulk-assign-role", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def bulk_assign_role():
     """
     Assign an existing role (by role_id from admin's roles_creation) to multiple users at once.
@@ -566,6 +570,7 @@ def bulk_assign_role():
 
 
 @inv_users_bp.route("/admin/roles-get/<userid>", methods=["GET"])
+@permission_required_body("admin.manage_users")
 def get_roles(userid):
     """Get all roles and invited users for a user"""
     conn = None
@@ -667,6 +672,7 @@ def get_roles(userid):
             conn.close()
 
 @inv_users_bp.route("/admin/organization-users/<userid>", methods=["GET"])
+@permission_required_body("admin.manage_users")
 def get_organization_users(userid):
     logged_in_user_id, userid = parse_composite_user_id(userid)
     conn = None
@@ -790,6 +796,7 @@ def get_permissions():
 
 
 @inv_users_bp.route("/admin/roles-update", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def update_role():
     """Update role by role_id and propagate changes to invites/shared/invited_users"""
     data = request.get_json()
@@ -913,6 +920,7 @@ def update_role():
 
 
 @inv_users_bp.route("/admin/roles-delete/<userid>/<role_id>", methods=["DELETE"])
+@permission_required_body("admin.manage_users")
 def delete_role(userid, role_id):
     """Delete role by role_id (only if not associated with invites or shared users)"""
     conn = None
@@ -1008,6 +1016,7 @@ def delete_role(userid, role_id):
 
 
 @inv_users_bp.route("/admin/invite_user", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def send_invite_user():
     data = request.get_json()
     # print("invite data", data)
@@ -1237,6 +1246,7 @@ def send_invite_user():
 
 
 @inv_users_bp.route("/admin/delete-invite", methods=["DELETE"])
+@permission_required_body("admin.manage_users")
 def delete_invite():
     """Delete an invited user from permissions by email"""
     try:
@@ -1324,6 +1334,7 @@ def delete_invite():
 
 
 @inv_users_bp.route("/admin/resend-invite", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def resend_invite():
     """Resend invite link to an already invited user"""
     conn = None
@@ -1566,6 +1577,7 @@ def accept_from_link():
 
 
 @inv_users_bp.route("/admin/grant_special_access", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def grant_special_access():
     data = request.get_json()
 
@@ -1640,6 +1652,7 @@ def grant_special_access():
 
 # SHARED USER ROLES APIS
 @inv_users_bp.route("/admin/request_special_access", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def request_special_access():
     data = request.get_json()
 
@@ -1771,6 +1784,7 @@ def request_special_access():
 
 
 @inv_users_bp.route("/admin/accept_special_access", methods=["GET", "POST"])
+@permission_required_body("admin.manage_admins")
 def accept_special_access():
     data = request.get_json()
 
@@ -1848,6 +1862,7 @@ def accept_special_access():
 
 
 @inv_users_bp.route("/admin/revoke_special_access", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def revoke_special_access():
 
     data = request.get_json()
@@ -1923,6 +1938,7 @@ def revoke_special_access():
 
 
 @inv_users_bp.route("/admin/access-workspace", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def access_workspace():
     """
     Called by the frontend when a secondary-access admin explicitly enters another admin's workspace.
@@ -2014,6 +2030,7 @@ def access_workspace():
 
 
 @inv_users_bp.route("/admin/exit-workspace", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def exit_workspace():
     """Clear the active workspace delegation session."""
     session.pop("active_workspace_id", None)
@@ -2173,6 +2190,7 @@ def validate_invite(token):
 
 
 @inv_users_bp.route("/admin/edit_shared_user_role", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def edit_shared_user_role():
     data = request.get_json()
     baseuser = data.get("user_id")
@@ -2346,6 +2364,7 @@ def get_notifications(user_id):
 
 
 @inv_users_bp.route("/admin/revoke_shared_user_role", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def revoke_shared_user_role():
     data = request.get_json()
     baseuser = data.get("user_id")  # admin
@@ -2430,6 +2449,7 @@ def revoke_shared_user_role():
 
 
 @inv_users_bp.route("/admin/delete_shared_user_role", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def delete_shared_user_role():
     data = request.get_json()
     baseuser = data.get("user_id")  # admin
@@ -2544,6 +2564,7 @@ def delete_shared_user_role():
 
 
 @inv_users_bp.route("/admin/activate_shared_user_role", methods=["POST"])
+@permission_required_body("admin.manage_users")
 def activate_shared_user_role():
     data = request.get_json()
     baseuser = data.get("user_id")  # admin
@@ -2628,6 +2649,7 @@ def activate_shared_user_role():
 
 
 @inv_users_bp.route("/admin/all_special_access_users/<userid>", methods=["GET"])
+@permission_required_body("admin.manage_admins")
 def all_special_access_users(userid):
     conn = None
     try:
@@ -2664,6 +2686,7 @@ def all_special_access_users(userid):
 
 
 @inv_users_bp.route("/admin/all_special_access_sources/<userid>", methods=["GET"])
+@permission_required_body("admin.manage_admins")
 def all_special_access_sources(userid):
     """Get all admins whose data I can access (I am target, they are grantor)"""
     conn = None

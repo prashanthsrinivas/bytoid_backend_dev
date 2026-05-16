@@ -72,6 +72,8 @@ from request_context import current_user_id
 import os
 
 agent_bps = Blueprint("agents", __name__)
+
+from utils.permission_required import permission_required_body
 logger = get_logger(__name__)
 
 load_dotenv()
@@ -81,6 +83,7 @@ dev_val = DEV_ORIGINS
 
 
 @agent_bps.route("/save-training-settings", methods=["POST"])
+@permission_required_body("kb.profile.edit_name")
 def save_training_settings():
     """
     Create or update launch + subagent for a user.
@@ -279,6 +282,7 @@ def save_training_settings():
 
 
 @agent_bps.route("/get-training-settings", methods=["GET"])
+@permission_required_body("kb.profile.view")
 def get_training_settings():
     """
     It takes the user_id from the session or request,
@@ -1167,6 +1171,7 @@ def getFilenameData(fetched_userid):
 
 
 @agent_bps.route("/clarifications", methods=["POST"])
+@permission_required_body("kb.doc.view")
 def makeuserDocClarifications(userid=None, industry=None):
     """
     Retrieves clarifications for a user based on failed questions.
@@ -1263,6 +1268,7 @@ def makeuserDocClarifications(userid=None, industry=None):
 
 
 @agent_bps.route("/clarification_update", methods=["POST"])
+@permission_required_body("kb.doc.edit")
 async def updateClarifications(userid=None, industry=None):
     data = request.json
     fetched_userid = data.get("userid") or userid
@@ -1469,6 +1475,7 @@ async def updateClarifications(userid=None, industry=None):
 
 # --- Main endpoint (updated) ---
 @agent_bps.route("/get-ai-suggestion", methods=["POST"])
+@permission_required_body("taskbox.ai.suggest")
 async def get_ai_suggestion():
     try:
         data = request.json

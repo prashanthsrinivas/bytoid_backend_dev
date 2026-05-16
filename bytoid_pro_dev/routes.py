@@ -27,6 +27,7 @@ from .bytoid_pro_helpers import (
 from .bytoid_pro_lance import Bytoid_pro_lance
 
 bytoid_dev_pro_bp = Blueprint("bytoid_dev_pro", __name__, url_prefix="/bytoid-pro-dev")
+from utils.permission_required import permission_required_body
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
@@ -48,6 +49,7 @@ def _now() -> float:
 
 
 @bytoid_dev_pro_bp.route("/upload", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 def bytoid_pro_upload():
     """
     Universal upload (RAM-only → S3).
@@ -114,6 +116,7 @@ def bytoid_pro_upload():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think_og", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 async def fireworks_think_og():
     db = connect_to_rds()
     credits = Credits(db)
@@ -193,6 +196,7 @@ async def fireworks_think_og():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/handle_audio_fallback", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 def handle_audio_fallback():
     try:
         json_body = request.get_json(silent=True) or {}
@@ -213,6 +217,7 @@ def handle_audio_fallback():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 async def bytoidpro_think():
     import json, time, uuid, base64, asyncio, threading
     from websockets_custom.ws_instance import ws_service, msg_builder_main
@@ -620,6 +625,7 @@ async def bytoidpro_think():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think/status", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 def check_job_status():
     json_body = request.get_json()
     job_id = json_body.get("job_id")
@@ -652,6 +658,7 @@ def check_job_status():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/chat_history", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 def chat_history():
     try:
         json_body = request.get_json()
@@ -694,6 +701,7 @@ def chat_history():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/get_a_chat", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 def get_a_chat():
     json_body = request.get_json()
     base_user_id = json_body.get("user_id")
@@ -728,6 +736,7 @@ def get_a_chat():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/delete", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 def delete_table():
 
     body = request.json or {}
@@ -740,6 +749,7 @@ def delete_table():
 
 
 @bytoid_dev_pro_bp.route("/bytoid/coder", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 async def fireworks_coder():
     db = connect_to_rds()
     credits = Credits(db)
