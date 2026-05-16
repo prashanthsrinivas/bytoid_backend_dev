@@ -111,8 +111,12 @@ def aws_save_idp_config():
             return jsonify({"success": False, "error": "entity_id required"}), 400
         if not sso_url:
             return jsonify({"success": False, "error": "sso_url required"}), 400
+
+        existing = _get_aws_idp_config(user_id)
         if not x509_cert:
-            return jsonify({"success": False, "error": "x509_cert required"}), 400
+            if not existing:
+                return jsonify({"success": False, "error": "x509_cert required"}), 400
+            x509_cert = existing["x509_cert"]
 
         conn = connect_to_rds()
         with conn.cursor() as cur:
