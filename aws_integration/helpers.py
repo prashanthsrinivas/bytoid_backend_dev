@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import json
 import os
 import re
 from datetime import datetime
+from xml.etree import ElementTree as ET
 
 import pymysql
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
@@ -129,6 +131,49 @@ def _get_aws_idp_config(user_id):
                 (user_id,),
             )
             return cur.fetchone()
+    except Exception:
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+# ──────────────────────────────────────────────
+# IdP-initiated SSO: issuer → user lookup
+# ──────────────────────────────────────────────
+
+def _find_admin_by_saml_issuer(saml_response_b64):
+    """
+    For IdP-initiated SSO: decode the SAMLResponse, extract the <Issuer>,
+    and return the user_id of the admin whose aws_idp_configs.entity_id matches.
+    Returns None if the issuer can't be extracted or no admin matches.
+    """
+    try:
+        decoded = base64.b64decode(saml_response_b64)
+        root = ET.fromstring(decoded)
+        ns = {"saml": "urn:oasis:names:tc:SAML:2.0:assertion"}
+        issuer_el = root.find("saml:Issuer", ns)
+        if issuer_el is None:
+            # Try without namespace (some IdPs omit it at the root)
+            issuer_el = root.find("Issuer")
+        if issuer_el is None:
+            return None
+        issuer = issuer_el.text.strip() if issuer_el.text else None
+        if not issuer:
+            return None
+    except Exception:
+        return None
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT user_id FROM aws_idp_configs WHERE entity_id=%s LIMIT 1",
+                (issuer,),
+            )
+            row = cur.fetchone()
+        return row["user_id"] if row else None
     except Exception:
         return None
     finally:

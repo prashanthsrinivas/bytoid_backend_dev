@@ -17,6 +17,7 @@ from aws_integration.helpers import (
     _build_sigv4_auth_from_session,
     _execute_aws_app_internal,
     _execute_aws_endpoint_internal,
+    _find_admin_by_saml_issuer,
     _get_active_aws_session,
     _get_aws_idp_config,
     _init_saml_auth_aws,
@@ -215,7 +216,9 @@ def aws_saml_login():
     req = prepare_flask_request_aws(request)
     try:
         auth = _init_saml_auth_aws(req, user_id)
-        return redirect(auth.login(force_authn=True))
+        login_url = auth.login(force_authn=True)
+        session["aws_saml_request_id"] = auth.get_last_request_id()
+        return redirect(login_url)
     except Exception as e:
         return jsonify({"error": "AWS SAML not configured", "detail": str(e)}), 500
 
@@ -229,6 +232,15 @@ def aws_saml_acs():
     conn = None
     try:
         user_id = session.get("aws_saml_user_id")
+        request_id = session.pop("aws_saml_request_id", None)
+
+        # IdP-initiated SSO: no prior /saml/login, so session has no user_id.
+        # Extract the SAML Issuer and look up which admin owns that IdP config.
+        if not user_id:
+            raw_saml = request.form.get("SAMLResponse", "")
+            user_id = _find_admin_by_saml_issuer(raw_saml) if raw_saml else None
+            request_id = None  # IdP-initiated responses carry no InResponseTo
+
         ok, err = _admin_only_check(user_id)
         if not ok:
             return err
@@ -236,10 +248,10 @@ def aws_saml_acs():
         req = prepare_flask_request_aws(request)
         auth = _init_saml_auth_aws(req, user_id)
 
-        auth.process_response()
+        auth.process_response(request_id=request_id)
         errors = auth.get_errors()
         if errors:
-            return jsonify({"error": errors}), 400
+            return jsonify({"error": errors, "reason": auth.get_last_error_reason()}), 400
         if not auth.is_authenticated():
             return jsonify({"error": "Not authenticated"}), 401
 
