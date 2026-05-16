@@ -3065,6 +3065,173 @@ def create_company_table():
 
 
 
+def create_aws_idp_configs_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aws_idp_configs (
+                id          INT AUTO_INCREMENT PRIMARY KEY,
+                user_id     VARCHAR(36) NOT NULL,
+                entity_id   TEXT NOT NULL,
+                sso_url     TEXT NOT NULL,
+                x509_cert   TEXT NOT NULL,
+                aws_region  VARCHAR(64) DEFAULT 'us-east-1',
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user (user_id)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ aws_idp_configs table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create aws_idp_configs table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_aws_saml_sessions_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aws_saml_sessions (
+                id                    INT AUTO_INCREMENT PRIMARY KEY,
+                user_id               VARCHAR(36) NOT NULL,
+                aws_account_id        VARCHAR(12),
+                aws_role_arn          VARCHAR(512),
+                aws_access_key_id     VARCHAR(128),
+                aws_secret_access_key TEXT,
+                aws_session_token     TEXT,
+                aws_region            VARCHAR(64) DEFAULT 'us-east-1',
+                expires_at            DATETIME,
+                created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user (user_id),
+                INDEX idx_expires (expires_at)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ aws_saml_sessions table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create aws_saml_sessions table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_aws_external_apps_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aws_external_apps (
+                id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id               VARCHAR(64) NOT NULL,
+                app_name              VARCHAR(100) NOT NULL,
+                provider              VARCHAR(50) DEFAULT 'aws',
+                base_url              TEXT NOT NULL,
+                auth_type             ENUM('bearer','api_key','basic','oauth2','aws_sigv4','none') DEFAULT 'aws_sigv4',
+                auth_config           JSON,
+                headers               JSON,
+                method                ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                query_params          JSON,
+                path_params           JSON,
+                timeout_seconds       INT DEFAULT 10,
+                retry_count           INT DEFAULT 0,
+                retry_backoff_seconds INT DEFAULT 0,
+                status                ENUM('active','inactive') DEFAULT 'active',
+                last_test_status      ENUM('success','failed'),
+                last_error            JSON,
+                last_tested_at        DATETIME,
+                schedules             JSON,
+                created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user_app (user_id, app_name)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ aws_external_apps table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create aws_external_apps table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_aws_external_app_endpoints_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aws_external_app_endpoints (
+                id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_id           BIGINT NOT NULL,
+                user_id          VARCHAR(64) NOT NULL,
+                name             VARCHAR(100) NOT NULL,
+                path             VARCHAR(255) NOT NULL,
+                method           ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                headers          JSON,
+                query_params     JSON,
+                path_params      JSON,
+                body_template    JSON,
+                timeout_seconds  INT,
+                is_active        BOOLEAN DEFAULT TRUE,
+                last_tested_at   DATETIME,
+                last_test_status ENUM('success','failed'),
+                last_error       JSON,
+                schedules        JSON,
+                created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_app_endpoint_name (app_id, name),
+                UNIQUE KEY uq_app_path_method (app_id, path, method),
+                INDEX idx_app_id (app_id),
+                INDEX idx_user_id (user_id),
+                FOREIGN KEY (app_id) REFERENCES aws_external_apps(id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.commit()
+        print("✅ aws_external_app_endpoints table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create aws_external_app_endpoints table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # print("HHSS")
@@ -3131,4 +3298,8 @@ if __name__ == "__main__":
     # create_global_apps_table()
     # create_global_app_endpoints_table()
     # create_company_table()
+    create_aws_idp_configs_table()
+    create_aws_saml_sessions_table()
+    create_aws_external_apps_table()
+    create_aws_external_app_endpoints_table()
     print("ok")

@@ -1,0 +1,27 @@
+{
+  "strict": true,
+  "debug": true,
+
+  "sp": {
+    "entityId": "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/aws",
+    "assertionConsumerService": {
+      "url": "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/aws/saml/acs",
+      "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+    }
+  },
+
+  "idp": {
+    "entityId": "PLACEHOLDER_AWS_IDENTITY_CENTER_ENTITY_ID",
+    "singleSignOnService": {
+      "url": "PLACEHOLDER_AWS_IDENTITY_CENTER_SSO_URL",
+      "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+    },
+    "x509cert": "PLACEHOLDER_AWS_IDENTITY_CENTER_CERT"
+  },
+
+  "security": {
+    "wantAssertionsSigned": false,
+    "wantMessagesSigned": false,
+    "wantNameId": false
+  }
+}

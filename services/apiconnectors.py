@@ -1,5 +1,9 @@
+import json
 import time
 import requests
+import botocore.auth
+import botocore.awsrequest
+import botocore.credentials
 from requests.auth import HTTPBasicAuth
 
 
@@ -38,6 +42,11 @@ class APIConnector:
             k in auth for k in ("client_id", "client_secret", "token_url")
         ):
             raise ValueError("OAuth2 config invalid")
+
+        if auth_type == "aws_sigv4" and not all(
+            k in auth for k in ("access_key_id", "secret_access_key", "region", "service")
+        ):
+            raise ValueError("AWS SigV4 auth requires: access_key_id, secret_access_key, region, service")
 
     # -------------------------
     # OAuth2
@@ -108,6 +117,21 @@ class APIConnector:
         auth_obj = None
         if auth.get("type") == "basic":
             auth_obj = HTTPBasicAuth(auth["username"], auth["password"])
+
+        if auth.get("type") == "aws_sigv4":
+            creds = botocore.credentials.Credentials(
+                access_key=auth["access_key_id"],
+                secret_key=auth["secret_access_key"],
+                token=auth.get("session_token"),
+            )
+            aws_req = botocore.awsrequest.AWSRequest(
+                method=method,
+                url=url,
+                headers=headers,
+                data=json.dumps(body) if body else None,
+            )
+            botocore.auth.SigV4Auth(creds, auth["service"], auth["region"]).add_auth(aws_req)
+            headers = dict(aws_req.headers)
 
         last_error = None
 
