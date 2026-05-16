@@ -8,7 +8,7 @@ from db.rds_db import connect_to_rds
 from utils.normal import parse_composite_user_id
 
 
-def _get_user_id_from_context():
+def _get_user_id_from_context(url_kwargs=None):
     """Extract user_id from g.user_id, session, or request body/args (session middleware fallback)."""
     user_id = getattr(g, "user_id", None)
     if not user_id:
@@ -19,6 +19,8 @@ def _get_user_id_from_context():
         user_id = request.args.get("user_id")
     if not user_id:
         user_id = request.form.get("user_id")
+    if not user_id and url_kwargs:
+        user_id = url_kwargs.get("user_id")
     return user_id
 
 
@@ -52,7 +54,7 @@ def permission_required(required_permission):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            buser_id = _get_user_id_from_context()
+            buser_id = _get_user_id_from_context(url_kwargs=kwargs)
             if not buser_id:
                 return jsonify({"error": "Unauthorized"}), 401
 
@@ -161,7 +163,7 @@ def permission_required_body(required_permission):
 
         def _check(*args, **kwargs):
 
-            buser_id = _get_user_id_from_context()
+            buser_id = _get_user_id_from_context(url_kwargs=kwargs)
             if not buser_id:
                 return jsonify({"error": "Unauthorized"}), 401
 
