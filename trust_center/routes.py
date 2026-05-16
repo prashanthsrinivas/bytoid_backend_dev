@@ -14,6 +14,7 @@ import pymysql.cursors
 from botocore.config import Config as BotocoreConfig
 from utils.normal import parse_composite_user_id
 from utils.permission_required import permission_required
+from utils.rate_limit import limiter
 
 from flask import Blueprint, g, jsonify, request
 
@@ -634,6 +635,7 @@ def patch_whitepaper():
 
 @trust_center_bp.route("/whitepaper/regenerate", methods=["POST"])
 @permission_required("trustcenter.whitepaper.regenerate")
+@limiter.limit("5 per hour")
 def regenerate_whitepaper():
     user_id = _get_user_id()
     if not user_id:

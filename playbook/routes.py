@@ -1,6 +1,7 @@
 import re
 import uuid
 from credits_route.route import Credits
+from utils.rate_limit import limiter
 from db.db_checkers import (
     check_subagent_by_playbook,
     create_subagent_to_playbook,
@@ -68,6 +69,7 @@ def _run_async(coro):
 
 @playbook_bp.route("/create_instruction", methods=["POST"])
 @permission_required_body("workflow.process.create")
+@limiter.limit("20 per hour")
 def create_new_instruction():
 
     data = request.json
@@ -343,6 +345,7 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
 
 
 @playbook_bp.route("/playbook/jbs/<job_id>", methods=["GET"])
+@permission_required_body("workflow.process.view")
 def job_status(job_id):
     redisservice = get_redis()
 
@@ -1324,6 +1327,7 @@ def mod_instuct():
 
 @playbook_bp.route("/run_workflow", methods=["POST"])
 @permission_required_body("workflow.process.execute")
+@limiter.limit("30 per hour")
 def runWorkflow():
     data = request.json
     user_id = data.get("user_id")
@@ -1633,6 +1637,7 @@ def clear_testing_data():
 
 @playbook_bp.route("/generate-workflow-input", methods=["POST"])
 @permission_required_body("workflow.process.execute")
+@limiter.limit("20 per hour")
 def generate_workflow_input():
     db = connect_to_rds()
     credits = Credits(db)

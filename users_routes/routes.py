@@ -3,6 +3,8 @@ import traceback
 from urllib.parse import urlencode
 
 from flask import Blueprint, request, jsonify, session, g
+from flask_limiter.util import get_remote_address
+from utils.rate_limit import limiter
 import pymysql
 import os
 import uuid
@@ -728,6 +730,7 @@ def email_exist(email):
 
 # creating new user
 @users_bp.route("/create_new_user", methods=["POST"])
+@limiter.limit("5 per minute", key_func=get_remote_address)
 def create_new_user():
     data = request.get_json()
     if not data:
@@ -831,6 +834,7 @@ def create_new_user():
 
 # Email sending method
 @users_bp.route("/send_email_link", methods=["POST"])
+@limiter.limit("5 per minute", key_func=get_remote_address)
 def send_email_link():
     data = request.get_json()
     email = data.get("email")
@@ -863,6 +867,7 @@ def send_email_link():
 
 # verification of email
 @users_bp.route("/verify_email", methods=["POST"])
+@limiter.limit("10 per minute", key_func=get_remote_address)
 def verify_email():
     data = request.get_json()
     token = data.get("token")
@@ -882,6 +887,7 @@ def verify_email():
 
 # user sign in method
 @users_bp.route("/user_login", methods=["POST"])
+@limiter.limit("10 per minute; 50 per hour", key_func=get_remote_address)
 def user_login():
     data = request.get_json()
     email = data.get("email")
@@ -1017,6 +1023,7 @@ def totp_setup():
 
 # TOtP verify
 @users_bp.route("/totp_verify", methods=["POST"])
+@limiter.limit("5 per minute", key_func=get_remote_address)
 def totp_verify():
     data = request.get_json()
     user_id = data.get("user_id")
@@ -1200,6 +1207,7 @@ def update_name():
 
 # Logic for forgot password
 @users_bp.route("/forgot_password", methods=["POST"])
+@limiter.limit("5 per minute", key_func=get_remote_address)
 def forgot_password():
     data = request.get_json()
     email = data.get("email")
@@ -1267,6 +1275,7 @@ def validate_reset_token():
 
 # Updating the new password through forgot password
 @users_bp.route("/reset_password", methods=["POST"])
+@limiter.limit("5 per minute", key_func=get_remote_address)
 def reset_password():
     data = request.get_json()
     email = data.get("email")

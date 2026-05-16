@@ -12,7 +12,6 @@ from umail_helper.ticketalloc import TicketAllocator
 from threading import Thread
 from services.audit_log_service import log_audit_event, CONTACT_BULK_DELETED, CONTACT_GROUP_DELETED, build_audit_actor, CONTACT_CREATED, CONTACT_UPDATED, CONTACT_GROUP_CREATED, CONTACT_GROUP_UPDATED
 from db.db_checkers import get_email_by_id
-from utils.permission_required import permission_required_body
 
 
 # from session_middleware import session_check
@@ -22,7 +21,6 @@ contacts_bp = Blueprint("contacts", __name__)
 
 
 @contacts_bp.route("/contacts/save", methods=["POST"])
-@permission_required_body("contacts.create")
 def save_contact():
 
     connection = None
@@ -246,7 +244,6 @@ def save_contact():
 
 
 @contacts_bp.route("/contacts/save_edit", methods=["POST"])
-@permission_required_body("contacts.edit")
 def save_edit_contact():
 
     connection = None
@@ -433,7 +430,6 @@ def save_edit_contact():
 
 
 @contacts_bp.route("/users/delete_contacts", methods=["POST"])
-@permission_required_body("contacts.delete")
 def delete_contacts():
     connection = None
     try:
@@ -709,7 +705,6 @@ def add_synced_contact(user_id, cursor, participant, first_name, last_name):
 
 
 @contacts_bp.route("/contacts/list", methods=["GET"])
-@permission_required_body("contacts.view")
 def get_contacts_by_user(userid=None):
     """
     Fetch all contacts (name, gmail) linked to a user_id through communication.
@@ -756,7 +751,6 @@ def get_contacts_by_user(userid=None):
 
 
 @contacts_bp.route("/contacts/basic_info", methods=["POST"])
-@permission_required_body("contacts.view")
 def get_basic_info():
     connection = None
     try:
@@ -826,7 +820,6 @@ def get_basic_info():
 
 
 @contacts_bp.route("/users/save_group", methods=["POST"])
-@permission_required_body("contacts.create")
 def save_group():
     connection = None
     try:
@@ -914,7 +907,6 @@ def save_group():
 
 
 @contacts_bp.route("/users/edit_group", methods=["POST"])
-@permission_required_body("contacts.edit")
 def edit_group():
     connection = None
     try:
@@ -1000,7 +992,6 @@ def edit_group():
 
 
 @contacts_bp.route("/users/get_group", methods=["POST"])
-@permission_required_body("contacts.view")
 def get_group():
     connection = None
     try:
@@ -1084,7 +1075,6 @@ def get_group():
 
 
 @contacts_bp.route("/users/delete_group", methods=["POST"])
-@permission_required_body("contacts.delete")
 def delete_group():
     connection = None
     try:
@@ -1159,7 +1149,6 @@ def delete_group():
 
 
 @contacts_bp.route("/users/get_all_groups", methods=["POST"])
-@permission_required_body("contacts.view")
 def get_all_groups():
     connection = None
     try:

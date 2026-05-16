@@ -9,13 +9,11 @@ from services.microsoft_calender_service import MicrosoftGraphCalendarService
 from umail_helper.mails_process import get_integration_users
 from utils.normal import sanitize_value, strip_html
 
-from utils.permission_required import permission_required_body
 logger = get_logger(__name__)
 calenders_bp = Blueprint("calender", __name__)
 
 
 @calenders_bp.route("/check-user-events", methods=["POST"])
-@permission_required_body("calendar.view.confirmed")
 def get_all_user_events():
     try:
         body = request.json or {}
@@ -87,7 +85,6 @@ def get_all_user_events():
 
 
 @calenders_bp.route("/create-user-event", methods=["POST"])
-@permission_required_body("calendar.create")
 def create_user_event():
     try:
         body = request.json or {}
@@ -160,7 +157,6 @@ def create_user_event():
 
 
 @calenders_bp.route("/update-user-event", methods=["POST"])
-@permission_required_body("calendar.create")
 def update_user_event():
     try:
         body = request.json or {}
@@ -230,7 +226,6 @@ def update_user_event():
 
 
 @calenders_bp.route("/delete-user-event", methods=["POST"])
-@permission_required_body("calendar.create")
 def delete_user_event():
     try:
         body = request.json or {}

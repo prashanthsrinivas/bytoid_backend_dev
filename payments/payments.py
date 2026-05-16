@@ -15,8 +15,6 @@ from utils.stripe_config import (
 
 payments_bp = Blueprint("payments", __name__)
 
-from utils.permission_required import permission_required_body
-
 redis_service = get_redis()
 REDIS_PLANS_KEY = "plans_cache"
 
@@ -128,7 +126,6 @@ def log_payment_event(data):
 # SUBSCRIPTION CHECKOUT
 # -------------------------------------------------
 @payments_bp.route("/payments/subscribe", methods=["POST"])
-@permission_required_body("admin.manage_users")
 def subscribe():
     body = request.json or {}
 
@@ -306,7 +303,6 @@ def subscribe():
 # ONE-TIME PAYMENT / TOPUP
 # -------------------------------------------------
 @payments_bp.route("/payments/topup", methods=["POST"])
-@permission_required_body("admin.manage_users")
 def paymenttopup():
     body = request.json or {}
 
@@ -363,7 +359,6 @@ def paymenttopup():
 # CANCEL SUBSCRIPTION
 # -------------------------------------------------
 @payments_bp.route("/payments/subscription/cancel", methods=["POST"])
-@permission_required_body("admin.manage_users")
 def cancel_subscription():
     body = request.json or {}
     subscription_id = body.get("subscription_id")
@@ -427,7 +422,6 @@ def format_subscription(sub, plan):
 # GET USER SUBSCRIPTIONS
 # -------------------------------------------------
 @payments_bp.route("/payments/subscriptions/<user_id>", methods=["GET"])
-@permission_required_body("admin.manage_users")
 def get_user_subscriptions(user_id):
     if not user_id or user_id in ("failure", "None"):
         return jsonify({"error": "user_id is required"}), 400
@@ -610,7 +604,6 @@ def reconcile_missing_invoice(payment_row):
 # GET USER PAYMENTS
 # -------------------------------------------------
 @payments_bp.route("/payments/<user_id>", methods=["GET"])
-@permission_required_body("admin.manage_users")
 def get_user_payments(user_id):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
