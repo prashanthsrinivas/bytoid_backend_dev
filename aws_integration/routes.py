@@ -210,14 +210,14 @@ def aws_saml_login():
     if host_origin not in ALLOWED_ORIGINS:
         redirect_url = "https://app.bytoid.ai/aws-integration"
 
-    session["aws_saml_user_id"] = user_id
-    session["aws_saml_redirect"] = redirect_url
+    # Store state in RelayState (echoed back by IdP in ACS POST) instead of
+    # Flask session — session cookies are blocked on cross-site POST (SameSite=Lax).
+    relay_state = json.dumps({"user_id": user_id, "redirect": redirect_url})
 
     req = prepare_flask_request_aws(request)
     try:
         auth = _init_saml_auth_aws(req, user_id)
-        login_url = auth.login(force_authn=True)
-        session["aws_saml_request_id"] = auth.get_last_request_id()
+        login_url = auth.login(return_to=relay_state, force_authn=True)
         return redirect(login_url)
     except Exception as e:
         return jsonify({"error": "AWS SAML not configured", "detail": str(e)}), 500
@@ -231,15 +231,28 @@ def aws_saml_login():
 def aws_saml_acs():
     conn = None
     try:
-        user_id = session.get("aws_saml_user_id")
-        request_id = session.pop("aws_saml_request_id", None)
+        # Decode RelayState (set during /saml/login) — more reliable than Flask
+        # session because SameSite=Lax blocks session cookies on cross-site POST.
+        relay_state_raw = request.form.get("RelayState", "")
+        relay_data = {}
+        try:
+            relay_data = json.loads(relay_state_raw) if relay_state_raw else {}
+        except Exception:
+            pass
 
-        # IdP-initiated SSO: no prior /saml/login, so session has no user_id.
-        # Extract the SAML Issuer and look up which admin owns that IdP config.
+        user_id = relay_data.get("user_id") or session.get("aws_saml_user_id")
+        redirect_target = relay_data.get("redirect") or session.get("aws_saml_redirect") or "https://app.bytoid.ai/aws-integration"
+
+        # Re-validate redirect URL from RelayState for security
+        parsed_rd = urlparse(redirect_target)
+        host_rd = f"{parsed_rd.scheme}://{parsed_rd.netloc}" if parsed_rd.netloc else ""
+        if host_rd not in ALLOWED_ORIGINS:
+            redirect_target = "https://app.bytoid.ai/aws-integration"
+
+        # IdP-initiated SSO fallback: no prior /saml/login
         if not user_id:
             raw_saml = request.form.get("SAMLResponse", "")
             user_id = _find_admin_by_saml_issuer(raw_saml) if raw_saml else None
-            request_id = None  # IdP-initiated responses carry no InResponseTo
 
         ok, err = _admin_only_check(user_id)
         if not ok:
@@ -339,9 +352,8 @@ def aws_saml_acs():
             metadata={"aws_account_id": account_id, "role_arn": role_arn},
         )
 
-        redirect_url = session.get("aws_saml_redirect", "https://app.bytoid.ai/aws-integration")
-        sep = "&" if "?" in redirect_url else "?"
-        return redirect(f"{redirect_url}{sep}status=success&userid={user_id}")
+        sep = "&" if "?" in redirect_target else "?"
+        return redirect(f"{redirect_target}{sep}status=success&userid={user_id}")
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
