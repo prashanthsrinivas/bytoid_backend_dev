@@ -194,7 +194,7 @@ def aws_delete_idp_config():
 
 @aws_integration_bp.route("/saml/login", methods=["GET"])
 def aws_saml_login():
-    user_id = _extract_user_id()
+    user_id = request.args.get("user_id") or _extract_user_id()
 
     ok, err = _admin_only_check(user_id)
     if not ok:
