@@ -129,11 +129,13 @@ def _resolve_aws_auth(auth_config_raw, user_id, base_url=None):
     the stored SAML session.  Service and region are derived from base_url.
     Raises ValueError if no session is available.
     """
-    if auth_config_raw and auth_config_raw.get("access_key_id"):
+    # Only use stored credentials if they are static (no session_token).
+    # A session_token means temporary SAML credentials that may have expired;
+    # always fall through to the fresh session in that case.
+    if (auth_config_raw and auth_config_raw.get("access_key_id")
+            and not auth_config_raw.get("session_token")):
         result = dict(auth_config_raw)
         if base_url:
-            # Always derive service/region from the target URL so that
-            # stored credentials (e.g. "execute-api") don't override.
             result["service"] = _service_from_url(base_url)
             result["region"] = _region_from_url(base_url)
         return result

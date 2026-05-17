@@ -513,12 +513,6 @@ def aws_create_app():
         if not base_url:
             return jsonify({"success": False, "error": "base_url required"}), 400
 
-        # Resolve SigV4 credentials from session if not supplied
-        if auth_type == "aws_sigv4" and not auth_config.get("access_key_id"):
-            session_row = _get_active_aws_session(user_id)
-            if session_row:
-                auth_config = _build_sigv4_auth_from_session(session_row, base_url=base_url)
-
         conn = connect_to_rds()
         with conn.cursor() as cur:
             cur.execute(
