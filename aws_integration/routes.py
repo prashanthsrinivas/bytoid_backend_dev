@@ -517,22 +517,9 @@ def aws_create_app():
 
         # Resolve SigV4 credentials from session if not supplied
         if auth_type == "aws_sigv4" and not auth_config.get("access_key_id"):
-            auth_config = _resolve_aws_auth({}, user_id)
-
-        # Test connection before saving
-        config = {
-            "auth": auth_config,
-            "request": {
-                "url": base_url.rstrip("/"),
-                "method": "GET",
-                "headers": headers,
-                "query_params": query_params,
-                "body": None,
-            },
-            "timeout": timeout_seconds,
-            "retry": {"count": 1, "backoff": 1},
-        }
-        test_result = APIConnector(userid=user_id, config=config).execute()
+            session_row = _get_active_aws_session(user_id)
+            if session_row:
+                auth_config = _build_sigv4_auth_from_session(session_row)
 
         conn = connect_to_rds()
         with conn.cursor() as cur:
@@ -541,9 +528,8 @@ def aws_create_app():
                 INSERT INTO aws_external_apps
                     (user_id, app_name, base_url, auth_type, auth_config,
                      headers, query_params, path_params,
-                     timeout_seconds, retry_count, retry_backoff_seconds,
-                     last_test_status, last_tested_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                     timeout_seconds, retry_count, retry_backoff_seconds)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     user_id, app_name, base_url, auth_type,
@@ -551,7 +537,6 @@ def aws_create_app():
                     json.dumps(headers), json.dumps(query_params),
                     json.dumps(path_params),
                     timeout_seconds, retry_count, retry_backoff_seconds,
-                    "success" if test_result.get("success") else "failed",
                 ),
             )
             app_id = cur.lastrowid
@@ -561,7 +546,7 @@ def aws_create_app():
             "success": True,
             "app_id": app_id,
             "app_name": app_name,
-            "test_result": test_result,
+            "message": "App created. Use the Test button to verify connectivity.",
         })
 
     except ValueError as ve:
