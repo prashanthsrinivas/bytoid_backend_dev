@@ -867,7 +867,8 @@ def aws_list_endpoints(app_id):
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, name, path, method, timeout_seconds, is_active,
+                SELECT id, name, path, method, headers, query_params,
+                       path_params, body_template, timeout_seconds, is_active,
                        last_test_status, last_tested_at, created_at, updated_at
                 FROM aws_external_app_endpoints
                 WHERE app_id=%s AND is_active=1
@@ -881,6 +882,12 @@ def aws_list_endpoints(app_id):
             for dt_field in ("last_tested_at", "created_at", "updated_at"):
                 if ep.get(dt_field):
                     ep[dt_field] = str(ep[dt_field])
+            for json_field in ("headers", "query_params", "path_params", "body_template"):
+                if ep.get(json_field):
+                    try:
+                        ep[json_field] = json.loads(ep[json_field])
+                    except Exception:
+                        pass
 
         return jsonify({"success": True, "endpoints": endpoints})
 
