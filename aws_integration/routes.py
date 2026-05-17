@@ -261,7 +261,7 @@ def aws_saml_acs():
         req = prepare_flask_request_aws(request)
         auth = _init_saml_auth_aws(req, user_id)
 
-        auth.process_response(request_id=request_id)
+        auth.process_response(request_id=None)
         errors = auth.get_errors()
         if errors:
             return jsonify({"error": errors, "reason": auth.get_last_error_reason()}), 400
