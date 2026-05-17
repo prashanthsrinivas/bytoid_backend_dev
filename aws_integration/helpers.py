@@ -130,11 +130,12 @@ def _resolve_aws_auth(auth_config_raw, user_id, base_url=None):
     Raises ValueError if no session is available.
     """
     if auth_config_raw and auth_config_raw.get("access_key_id"):
-        # Patch service/region from URL if auth came from DB without them
         result = dict(auth_config_raw)
         if base_url:
-            result.setdefault("service", _service_from_url(base_url))
-            result.setdefault("region", _region_from_url(base_url))
+            # Always derive service/region from the target URL so that
+            # stored credentials (e.g. "execute-api") don't override.
+            result["service"] = _service_from_url(base_url)
+            result["region"] = _region_from_url(base_url)
         return result
 
     session_row = _get_active_aws_session(user_id)
