@@ -4,6 +4,7 @@ import json
 import os
 import re
 from datetime import datetime
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 import pymysql
@@ -80,36 +81,68 @@ def _get_active_aws_session(user_id):
             conn.close()
 
 
-def _build_sigv4_auth_from_session(session_row, service="execute-api"):
+def _service_from_url(url):
+    """Extract AWS service name from hostname, e.g. 'securityhub' from
+    'https://securityhub.ca-central-1.amazonaws.com'."""
+    try:
+        return urlparse(url).hostname.split(".")[0]
+    except Exception:
+        return "execute-api"
+
+
+def _region_from_url(url):
+    """Extract AWS region from hostname, e.g. 'ca-central-1' from
+    'https://securityhub.ca-central-1.amazonaws.com'."""
+    try:
+        parts = urlparse(url).hostname.split(".")
+        return parts[1] if len(parts) > 1 else "us-east-1"
+    except Exception:
+        return "us-east-1"
+
+
+def _build_sigv4_auth_from_session(session_row, base_url=None, service=None):
     """
     Converts an aws_saml_sessions row into an auth_config dict
     accepted by APIConnector when auth_type='aws_sigv4'.
+    Service and region are derived from base_url when provided.
     """
+    resolved_service = service or (
+        _service_from_url(base_url) if base_url else "execute-api"
+    )
+    resolved_region = (
+        _region_from_url(base_url) if base_url else session_row.get("aws_region", "us-east-1")
+    )
     return {
         "type": "aws_sigv4",
         "access_key_id": session_row["aws_access_key_id"],
         "secret_access_key": session_row["aws_secret_access_key"],
         "session_token": session_row.get("aws_session_token"),
-        "region": session_row.get("aws_region", "us-east-1"),
-        "service": service,
+        "region": resolved_region,
+        "service": resolved_service,
     }
 
 
-def _resolve_aws_auth(auth_config_raw, user_id, service="execute-api"):
+def _resolve_aws_auth(auth_config_raw, user_id, base_url=None):
     """
     Returns a resolved auth_config dict.
     If auth_config_raw is empty / missing credentials, falls back to
-    the stored SAML session.  Raises ValueError if no session is available.
+    the stored SAML session.  Service and region are derived from base_url.
+    Raises ValueError if no session is available.
     """
     if auth_config_raw and auth_config_raw.get("access_key_id"):
-        return auth_config_raw
+        # Patch service/region from URL if auth came from DB without them
+        result = dict(auth_config_raw)
+        if base_url:
+            result.setdefault("service", _service_from_url(base_url))
+            result.setdefault("region", _region_from_url(base_url))
+        return result
 
     session_row = _get_active_aws_session(user_id)
     if not session_row:
         raise ValueError(
             "AWS credentials not found. Authenticate first via /aws/saml/login."
         )
-    return _build_sigv4_auth_from_session(session_row, service=service)
+    return _build_sigv4_auth_from_session(session_row, base_url=base_url)
 
 
 # ──────────────────────────────────────────────
@@ -303,7 +336,7 @@ async def _execute_aws_endpoint_internal(endpoint_id, user_id, runtime_params=No
         db_path_params = json.loads(row["path_params"] or "{}")
         db_body = json.loads(row["body_template"] or "null")
         raw_auth = json.loads(row["auth_config"] or "{}")
-        auth_config = _resolve_aws_auth(raw_auth, user_id)
+        auth_config = _resolve_aws_auth(raw_auth, user_id, base_url=row.get("base_url"))
     except json.JSONDecodeError as e:
         cur.close()
         conn.close()
@@ -386,7 +419,7 @@ async def _execute_aws_app_internal(app_id, user_id):
         raise ValueError("AWS app not found")
 
     raw_auth = json.loads(app["auth_config"] or "{}")
-    auth_config = _resolve_aws_auth(raw_auth, user_id)
+    auth_config = _resolve_aws_auth(raw_auth, user_id, base_url=app.get("base_url"))
 
     config = {
         "auth": auth_config,

@@ -451,7 +451,7 @@ def aws_connector_test():
         # Resolve auth — fall back to stored SAML session for sigv4
         auth_type = auth.get("type", "aws_sigv4")
         if auth_type == "aws_sigv4" and not auth.get("access_key_id"):
-            auth = _resolve_aws_auth({}, user_id)
+            auth = _resolve_aws_auth({}, user_id, base_url=base_url)
 
         # Build URL
         full_url = base_url.rstrip("/") + path
@@ -517,7 +517,7 @@ def aws_create_app():
         if auth_type == "aws_sigv4" and not auth_config.get("access_key_id"):
             session_row = _get_active_aws_session(user_id)
             if session_row:
-                auth_config = _build_sigv4_auth_from_session(session_row)
+                auth_config = _build_sigv4_auth_from_session(session_row, base_url=base_url)
 
         conn = connect_to_rds()
         with conn.cursor() as cur:
@@ -723,7 +723,7 @@ def aws_test_app(app_id):
             return jsonify({"success": False, "error": "App not found"}), 404
 
         raw_auth = json.loads(app["auth_config"] or "{}")
-        auth_config = _resolve_aws_auth(raw_auth, user_id)
+        auth_config = _resolve_aws_auth(raw_auth, user_id, base_url=app.get("base_url"))
 
         config = {
             "auth": auth_config,
@@ -1000,7 +1000,7 @@ def aws_test_endpoint(endpoint_id):
             return jsonify({"success": False, "error": "Endpoint not found"}), 404
 
         raw_auth = json.loads(row["auth_config"] or "{}")
-        auth_config = _resolve_aws_auth(raw_auth, user_id)
+        auth_config = _resolve_aws_auth(raw_auth, user_id, base_url=row.get("base_url"))
 
         runtime_params = {
             "headers": data.get("headers", {}),
