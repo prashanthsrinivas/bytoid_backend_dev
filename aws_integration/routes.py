@@ -291,11 +291,9 @@ def aws_saml_acs():
         if not saml_assertion:
             return jsonify({"error": "SAMLResponse missing"}), 400
 
-        # Extract region from RoleSessionName attribute if present
-        aws_region = user_data.get(
-            "https://aws.amazon.com/SAML/Attributes/awsRequestedRegion",
-            ["us-east-1"],
-        )[0]
+        # Use the admin's configured region from IdP config; SAML doesn't carry region
+        idp_cfg = _get_aws_idp_config(user_id)
+        aws_region = (idp_cfg or {}).get("aws_region") or "us-east-1"
 
         # Call STS AssumeRoleWithSAML
         sts = boto3.client("sts", region_name="us-east-1")
