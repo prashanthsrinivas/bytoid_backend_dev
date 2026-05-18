@@ -2886,13 +2886,21 @@ class WorkflowRunnerV2:
         # UPDATE EXECUTION DATA
         # ------------------------------
         for step_data in execution_data.values():
-
-            fields = (
-                step_data.get("output", {}).get("form_schema", {}).get("fields", [])
-            )
+            if not isinstance(step_data, dict):
+                continue
+            output = step_data.get("output") or {}
+            if not isinstance(output, dict):
+                continue
+            form_schema = output.get("form_schema") or {}
+            if not isinstance(form_schema, dict):
+                continue
+            fields = form_schema.get("fields") or []
+            if not isinstance(fields, list):
+                continue
 
             for field in fields:
-
+                if not isinstance(field, dict):
+                    continue
                 if field.get("id") == field_id:
                     field["user_answer"] = answer
                     field_found = True
@@ -2910,8 +2918,15 @@ class WorkflowRunnerV2:
         for chat in chats:
 
             if str(chat.get("id")) == str(chid):
-
-                fields = chat.get("output", {}).get("form_schema", {}).get("fields", [])
+                chat_output = chat.get("output") or {}
+                if not isinstance(chat_output, dict):
+                    chat_output = {}
+                chat_form_schema = chat_output.get("form_schema") or {}
+                if not isinstance(chat_form_schema, dict):
+                    chat_form_schema = {}
+                fields = chat_form_schema.get("fields") or []
+                if not isinstance(fields, list):
+                    fields = []
 
                 for field in fields:
 
@@ -2948,17 +2963,23 @@ class WorkflowRunnerV2:
         execution_data = self.previous_data or {}
 
         for step_data in execution_data.values():
-
-            fields = (
-                step_data.get("output", {}).get("form_schema", {}).get("fields", [])
-            )
+            if not isinstance(step_data, dict):
+                continue
+            output = step_data.get("output") or {}
+            if not isinstance(output, dict):
+                continue
+            form_schema = output.get("form_schema") or {}
+            if not isinstance(form_schema, dict):
+                continue
+            fields = form_schema.get("fields") or []
+            if not isinstance(fields, list):
+                continue
 
             for field in fields:
-
+                if not isinstance(field, dict):
+                    continue
                 if field.get("required"):
-
                     answer = field.get("user_answer")
-
                     if answer in [None, ""]:
                         return False
 
@@ -3019,17 +3040,21 @@ class WorkflowRunnerV2:
         # UPDATE EXECUTION DATA
         # -------------------------------------------------
         if step_id and step_id in execution_data:
-            exec_output = execution_data[step_id].get("output") or {}
-            if isinstance(exec_output, dict):
-                fields = exec_output.get("form_schema", {}).get("fields", [])
-                if isinstance(fields, list):
-                    for field in fields:
-                        if not isinstance(field, dict):
-                            continue
-                        fid = field.get("id")
-                        if fid in answers:
-                            field["user_answer"] = answers[fid]
-                            updated_fields.append(fid)
+            exec_step = execution_data[step_id]
+            if isinstance(exec_step, dict):
+                exec_output = exec_step.get("output") or {}
+                if isinstance(exec_output, dict):
+                    exec_form_schema = exec_output.get("form_schema") or {}
+                    if isinstance(exec_form_schema, dict):
+                        fields = exec_form_schema.get("fields") or []
+                        if isinstance(fields, list):
+                            for field in fields:
+                                if not isinstance(field, dict):
+                                    continue
+                                fid = field.get("id")
+                                if fid in answers:
+                                    field["user_answer"] = answers[fid]
+                                    updated_fields.append(fid)
 
         # -------------------------------------------------
         # UPDATE CHAT HISTORY
@@ -3055,12 +3080,16 @@ class WorkflowRunnerV2:
         # SAVE ANSWERS TO pre_user_data PER STEP
         # -------------------------------------------------
 
-        pre_user_data = workflow.setdefault("pre_user_data", {})
+        existing_pre = workflow.get("pre_user_data")
+        pre_user_data = existing_pre if isinstance(existing_pre, dict) else {}
+        workflow["pre_user_data"] = pre_user_data
 
         step_key = str(step_id)
 
         # ensure step container exists
-        step_inputs = pre_user_data.setdefault(step_key, {})
+        existing_step = pre_user_data.get(step_key)
+        step_inputs = existing_step if isinstance(existing_step, dict) else {}
+        pre_user_data[step_key] = step_inputs
 
         for fid, val in answers.items():
             step_inputs[fid] = val
