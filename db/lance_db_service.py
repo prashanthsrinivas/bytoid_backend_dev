@@ -3184,8 +3184,11 @@ class LanceDBServer:
             if isinstance(value, (dict, list)):
                 return json.dumps(value)
 
+            # Keep None as None so pa.Table.from_pydict with schema can handle
+            # typed nulls (e.g. pa.timestamp) without triggering ArrowInvalid
+            # when the inferred type (string) mismatches the table column type.
             if value is None:
-                return ""
+                return None
 
             return value
 
@@ -3200,7 +3203,12 @@ class LanceDBServer:
             table_fields = {f.name for f in table.schema}
             filtered = {k: v for k, v in updated_row.items() if k in table_fields}
             column_data = {k: [v] for k, v in filtered.items()}
-            table.add(pa.Table.from_pydict(column_data))
+            # Use the existing table schema so typed columns (e.g. timestamp)
+            # get the correct Arrow type even when the value is None.
+            insert_schema = pa.schema(
+                [f for f in table.schema if f.name in column_data]
+            )
+            table.add(pa.Table.from_pydict(column_data, schema=insert_schema))
 
         # -------------------------------
         # Delete old record

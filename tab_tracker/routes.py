@@ -69,6 +69,8 @@ def extract_block_schema(block, tracker_type):
         return None
 
     micro_block = micro_blocks[0]
+    if not isinstance(micro_block, dict):
+        return None
 
     # ✅ TABLE: extract columns from table_schema
     if tracker_type == "table":
@@ -133,18 +135,21 @@ async def create_tracker_api():
         if not raw:
             return jsonify({"error": "Missing structure_theme"}), 400
 
-        # Step 1: First parse
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            return jsonify({"error": "Invalid JSON (level 1)"}), 500
+        # Step 1: Parse if string (handle single or double-encoded JSON)
+        if isinstance(raw, (dict, list)):
+            parsed = raw
+        else:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return jsonify({"error": "Invalid JSON in structure_theme"}), 400
 
-        # Step 2: If still string → parse again
+        # Step 2: If still string → parse again (double-encoded case)
         if isinstance(parsed, str):
             try:
                 parsed = json.loads(parsed)
             except Exception:
-                return jsonify({"error": "Invalid JSON (level 2)"}), 500
+                return jsonify({"error": "Invalid JSON in structure_theme (nested)"}), 400
 
         # Step 3: Handle dict OR list
         if isinstance(parsed, dict):
