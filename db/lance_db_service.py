@@ -2978,6 +2978,17 @@ class LanceDBServer:
 
         await asyncio.to_thread(_update)
 
+    async def radar_update_name(self, user_id: str, review_id: str, name: str):
+        table = await self._open_or_create_radar_table(user_id)
+
+        def _update():
+            table.update(
+                where=f'review_id == "{review_id}"',
+                values={"name": name},
+            )
+
+        await asyncio.to_thread(_update)
+
     # runbook schema
     async def _create_runbook_schema(self):
 

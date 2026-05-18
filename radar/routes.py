@@ -40,6 +40,56 @@ RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
 # print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
+
+_GENERIC_FILENAMES = {
+    "document", "questionnaire", "template", "file", "report",
+    "upload", "attachment", "untitled", "new", "assessment",
+}
+
+
+def _extract_report_name(data_sources, result: dict, max_len: int = 80) -> str | None:
+    """
+    Derive a human-readable report name when none was explicitly provided.
+    Priority:
+      1. Questionnaire / uploaded-file name (vendor or assessment name)
+      2. structure_rationale from the generated result
+      3. First block title
+    """
+    import os as _os
+
+    # 1. Questionnaire filename — vendor / assessment name embedded in the file name
+    sources = data_sources if isinstance(data_sources, dict) else {}
+    if not sources and isinstance(data_sources, str):
+        try:
+            sources = json.loads(data_sources)
+        except Exception:
+            sources = {}
+
+    for file_obj in (sources.get("filenames") or []):
+        raw = (
+            file_obj.get("filename") if isinstance(file_obj, dict) else str(file_obj)
+        ) or ""
+        base = _os.path.splitext(raw)[0]
+        clean = base.replace("_", " ").replace("-", " ").strip()
+        if clean and clean.lower() not in _GENERIC_FILENAMES:
+            return clean[:max_len]
+
+    # 2. structure_rationale — short executive-facing sentence from the result
+    rationale = (result.get("structure_rationale") or "").strip()
+    if rationale:
+        if len(rationale) <= max_len:
+            return rationale
+        return rationale[:max_len].rsplit(" ", 1)[0] + "…"
+
+    # 3. First block title
+    blocks = result.get("blocks") or []
+    if blocks and isinstance(blocks[0], dict):
+        title = (blocks[0].get("title") or "").strip()
+        if title:
+            return title[:max_len]
+
+    return None
+
 # # Run tests
 # run_language_tests()
 
@@ -850,6 +900,9 @@ async def run_radar_review_redis(
         )
 
         if refactor_result:
+            # Derive name from report content when not explicitly provided
+            if not name:
+                name = _extract_report_name(data_sources, refactor_result)
             await dbserver.radar_upsert_review(
                 user_id=user_id,
                 name=name,
@@ -971,6 +1024,7 @@ def group_radars(rows: list[dict]):
         grouped[radar_id]["reviews"].append(
             {
                 "review_id": row.get("review_id"),
+                "name": row.get("name"),
                 "user_input": row.get("user_input"),
                 "status": row.get("status"),
                 "started_at": row.get("started_at", 0),
@@ -995,6 +1049,22 @@ async def list_radar_reviews(userid):
     dbserver = LanceDBServer()
     rows = await dbserver.radar_get_review_index(userid)
     return jsonify(group_radars(rows))
+
+
+@permission_required_body("kb.doc.edit")
+@radar_bp.route("/radar/rename", methods=["POST"])
+async def rename_radar_review():
+    data = request.get_json(force=True)
+    userid = data.get("userid")
+    review_id = data.get("review_id")
+    name = (data.get("name") or "").strip()
+
+    if not userid or not review_id or not name:
+        return jsonify({"error": "userid, review_id, and name are required"}), 400
+
+    dbserver = LanceDBServer()
+    await dbserver.radar_update_name(user_id=userid, review_id=review_id, name=name)
+    return jsonify({"success": True, "review_id": review_id, "name": name})
 
 
 @permission_required_body("kb.doc.view")
