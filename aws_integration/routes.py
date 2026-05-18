@@ -541,7 +541,7 @@ def aws_create_app():
                     "success": True,
                     "already_exists": True,
                     "app": existing_app,
-                    "message": f"'{app_name}' already exists.",
+                    "message": f"'{app_name}' is already in your app list. You can manage it from there.",
                 })
 
             cur.execute(
