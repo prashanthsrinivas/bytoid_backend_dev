@@ -2733,6 +2733,8 @@ class WorkflowRunnerV2:
         self.saveworkflowtos3()
 
         result["chat_entry"] = chat_entry
+        # Normalize key so the frontend can always read response_message
+        result.setdefault("response_message", result.get("message", ""))
         return result
 
     async def update_steps_workflow(self, user_input: str):

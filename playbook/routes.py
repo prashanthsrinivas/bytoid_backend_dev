@@ -1455,7 +1455,8 @@ def testworkflowbyinput_stream():
     user_id = data.get("user_id")
     filename = data.get("filename")
     userinput = data.get("userinput")
-    testing = data.get("is_testing") or True
+    is_testing_val = data.get("is_testing")
+    testing = is_testing_val if is_testing_val is not None else True
 
     if not user_id or not filename or not userinput:
         return jsonify({"status": "error", "message": "Invalid input"}), 400
