@@ -1227,7 +1227,7 @@ class WorkflowRunnerV2:
     def saveworkflowtos3(self, finished=None):
         unallowed_keys = {"input_data", "workflow"}
 
-        original_json = read_json_from_s3(self.wf_loc)
+        original_json = read_json_from_s3(self.wf_loc) or {}
         # Update workflow metadata
         for key, value in self.workflow_json.items():
             if key not in unallowed_keys:
@@ -3019,35 +3019,37 @@ class WorkflowRunnerV2:
         # UPDATE EXECUTION DATA
         # -------------------------------------------------
         if step_id and step_id in execution_data:
-
-            fields = (
-                execution_data[step_id]
-                .get("output", {})
-                .get("form_schema", {})
-                .get("fields", [])
-            )
-
-            for field in fields:
-
-                fid = field.get("id")
-
-                if fid in answers:
-                    field["user_answer"] = answers[fid]
-
-                    updated_fields.append(fid)
+            exec_output = execution_data[step_id].get("output") or {}
+            if isinstance(exec_output, dict):
+                fields = exec_output.get("form_schema", {}).get("fields", [])
+                if isinstance(fields, list):
+                    for field in fields:
+                        if not isinstance(field, dict):
+                            continue
+                        fid = field.get("id")
+                        if fid in answers:
+                            field["user_answer"] = answers[fid]
+                            updated_fields.append(fid)
 
         # -------------------------------------------------
         # UPDATE CHAT HISTORY
         # -------------------------------------------------
-        fields = target_chat.get("output", {}).get("form_schema", {}).get("fields", [])
+        chat_output = target_chat.get("output") or {}
+        if not isinstance(chat_output, dict):
+            chat_output = {}
+        form_schema = chat_output.get("form_schema") or {}
+        if not isinstance(form_schema, dict):
+            form_schema = {}
+        fields = form_schema.get("fields", [])
+        if not isinstance(fields, list):
+            fields = []
 
         for field in fields:
-
+            if not isinstance(field, dict):
+                continue
             fid = field.get("id")
-
             if fid in answers:
                 field["user_answer"] = answers[fid]
-
                 updated_fields.append(fid)
         # -------------------------------------------------
         # SAVE ANSWERS TO pre_user_data PER STEP

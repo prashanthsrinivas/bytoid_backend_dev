@@ -2424,24 +2424,23 @@ def updateformfieldsbulkworkflow():
         )
 
     for item in answers:
-        if not item.get("field_id"):
+        fid = item.get("field_id") or item.get("id")
+        if not fid:
             return (
                 jsonify(
                     {
-                        "message": "Each answer must include field_id",
+                        "message": "Each answer must include field_id or id",
                         "status": "error",
                     }
                 ),
                 400,
             )
 
-        if item.get("answer") is None:
-            return jsonify({"message": "Answer cannot be null", "status": "error"}), 400
-
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+    _, base_user_id = parse_composite_user_id(user_id)
+    wf_loc = f"{base_user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
 
     if not workflow_json:
@@ -2450,19 +2449,22 @@ def updateformfieldsbulkworkflow():
             404,
         )
 
-    with WorkflowRunnerV2(
-        userid=user_id,
-        filename=filename,
-        workflowJson=workflow_json,
-        testing=True,
-    ) as service:
+    try:
+        with WorkflowRunnerV2(
+            userid=base_user_id,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as service:
 
-        result = asyncio.run(
-            service.update_form_bulk(
-                answers=answers,
-                chid=chat_id,
+            result = asyncio.run(
+                service.update_form_bulk(
+                    answers=answers,
+                    chid=chat_id,
+                )
             )
-        )
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
     status_code = 200 if result.get("status") == "success" else 400
     return jsonify(result), status_code
