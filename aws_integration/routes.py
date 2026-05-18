@@ -514,7 +514,33 @@ def aws_create_app():
             return jsonify({"success": False, "error": "base_url required"}), 400
 
         conn = connect_to_rds()
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            # Check for an existing app with the same name for this user
+            cur.execute(
+                "SELECT id FROM aws_external_apps WHERE user_id=%s AND app_name=%s LIMIT 1",
+                (user_id, app_name),
+            )
+            existing = cur.fetchone()
+
+            if existing:
+                existing_id = existing["id"]
+                # Check whether it has any endpoints
+                cur.execute(
+                    "SELECT COUNT(*) AS cnt FROM aws_external_app_endpoints WHERE app_id=%s",
+                    (existing_id,),
+                )
+                ep_count = cur.fetchone()["cnt"]
+
+                if ep_count > 0:
+                    return jsonify({
+                        "success": False,
+                        "error": f"An app named '{app_name}' already exists and has {ep_count} endpoint(s). "
+                                 "Rename the new app or manage the existing one from the app list.",
+                    }), 409
+
+                # No endpoints — replace the empty app
+                cur.execute("DELETE FROM aws_external_apps WHERE id=%s", (existing_id,))
+
             cur.execute(
                 """
                 INSERT INTO aws_external_apps
