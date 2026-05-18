@@ -748,12 +748,15 @@ class GoogleMeetService:
                 start_time_std = start_dt.isoformat()
                 end_time_std = end_dt.isoformat()
 
+            elif start_time or end_time:
+                # Only one of start/end provided — caller error, reject clearly
+                return {
+                    "updated": False,
+                    "return_str": "Both start_time and end_time must be provided to reschedule a meeting.",
+                }
             else:
                 start_time_std = end_time_std = None
 
-            # Convert human-friendly times
-            # start_time_std = convert_human_time(start_time)
-            # end_time_std = convert_human_time(end_time)
             timezone = timezone or self.organizer_tz
 
             # Normalize attendees
@@ -770,25 +773,26 @@ class GoogleMeetService:
                     elif isinstance(a, str):
                         normalized_attendees.append({"email": a})
 
-            # Apply updates only to provided fields
+            # Build a patch body with only the fields being changed
+            patch_body = {}
             if summary:
-                event["summary"] = summary
+                patch_body["summary"] = summary
             if start_time_std and end_time_std:
-                event["start"] = {"dateTime": start_time_std, "timeZone": timezone}
-                event["end"] = {"dateTime": end_time_std, "timeZone": timezone}
+                patch_body["start"] = {"dateTime": start_time_std, "timeZone": timezone}
+                patch_body["end"] = {"dateTime": end_time_std, "timeZone": timezone}
             if normalized_attendees:
-                event["attendees"] = normalized_attendees
+                patch_body["attendees"] = normalized_attendees
             if description:
-                event["description"] = description
-            # print("start and end", event["start"], event["end"])
+                patch_body["description"] = description
 
-            # Perform the update
+            # Use patch() so only supplied fields are changed; unconditionally
+            # pass conferenceDataVersion=1 to preserve any existing Meet link
             updated_event = (
                 self.calendar_service.events()
-                .update(
+                .patch(
                     calendarId="primary",
                     eventId=event_id,
-                    body=event,
+                    body=patch_body,
                     conferenceDataVersion=1,
                     sendUpdates="all",
                 )
@@ -809,15 +813,16 @@ class GoogleMeetService:
             )
             meet_link = updated_event.get("hangoutLink", "No Meet link available")
 
+            safe_summary = escape(updated_event.get("summary", ""))
             return_str = (
-                f"Meeting '{updated_event.get('summary')}' was successfully updated. "
+                f"Meeting '{safe_summary}' was successfully updated. "
                 f"It is scheduled on {start_str} {tz_abbrev} to {end_str} {tz_abbrev} "
                 f"with attendees: {attendees_list}. "
                 f"Meet link: {meet_link}"
             )
             return {
                 "updated": True,
-                "summary": updated_event.get("summary"),
+                "summary": str(safe_summary),
                 "return_str": return_str,
             }
 
@@ -846,6 +851,8 @@ class GoogleMeetService:
         Handles already-deleted or missing events gracefully.
         Returns a clean summary-based message.
         """
+        summary = "Unnamed Meeting"
+        start_str = "Unknown time"
         try:
             # Try to fetch event details first (for better message)
             event = (
@@ -873,16 +880,11 @@ class GoogleMeetService:
         except HttpError as e:
             # 410 = Gone (already deleted)
             if e.resp.status == 410 or "Resource has been deleted" in str(e):
-                # Try to extract summary if event lookup failed before
-                summary = locals().get("summary", "Unnamed Meeting")
-                return_str = f"Meeting '{summary}' has already been deleted earlier."
-                return {"deleted": True, "return_str": return_str}
+                return {"deleted": True, "return_str": f"Meeting '{summary}' has already been deleted earlier."}
 
             # 404 = Not found (invalid or missing)
             elif e.resp.status == 404:
-                summary = locals().get("summary", "Unnamed Meeting")
-                return_str = f"No meeting found for '{summary}'. It may have been removed already."
-                return {"deleted": False, "return_str": return_str}
+                return {"deleted": False, "return_str": f"No meeting found for '{summary}'. It may have been removed already."}
 
             # Other Google API errors
             return {
@@ -1546,6 +1548,20 @@ class GoogleMeetService:
                 "success": True,
                 "event_id": event_id,
                 "return_str": "Meeting was successfully cancelled and removed from the calendar.",
+            }
+
+        except HttpError as e:
+            if e.resp.status in (404, 410) or "Resource has been deleted" in str(e):
+                # Already deleted — treat as success (idempotent)
+                return {
+                    "success": True,
+                    "event_id": event_id,
+                    "return_str": "Meeting has already been cancelled or removed.",
+                }
+            return {
+                "success": False,
+                "error": str(e),
+                "return_str": f"Failed to cancel the meeting. ({str(e)})",
             }
 
         except Exception as e:
