@@ -3060,7 +3060,11 @@ class LanceDBServer:
             "reference_main_source": data.get("reference_main_source"),
             "created_at": data.get("created_at") or datetime.utcnow().isoformat(),
             "runbook_evidence_config": data.get("runbook_evidence_config", ""),
-            "tracker_configuration": json.dumps(data.get("tracker_configuration") or {})
+            "tracker_configuration": (
+                data.get("tracker_configuration")
+                if isinstance(data.get("tracker_configuration"), str)
+                else json.dumps(data.get("tracker_configuration") or {})
+            )
 
         }
 
@@ -3149,7 +3153,12 @@ class LanceDBServer:
         def merge_tracker_config(existing_str, new_dict):
             try:
                 existing_map = json.loads(existing_str or "{}")
-            except:
+                # Handle double-encoded case: '"{}"' → json.loads → '{}' (str, not dict)
+                if isinstance(existing_map, str):
+                    existing_map = json.loads(existing_map)
+                if not isinstance(existing_map, dict):
+                    existing_map = {}
+            except Exception:
                 existing_map = {}
 
             existing_map.update(new_dict)
