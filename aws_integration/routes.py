@@ -524,51 +524,51 @@ def aws_create_app():
 
             if existing:
                 existing_id = existing["id"]
-                # Update existing app in-place (preserves any endpoints)
                 cur.execute(
                     """
-                    UPDATE aws_external_apps
-                    SET base_url=%s, auth_type=%s, auth_config=%s,
-                        headers=%s, query_params=%s, path_params=%s,
-                        timeout_seconds=%s, retry_count=%s, retry_backoff_seconds=%s
-                    WHERE id=%s
+                    SELECT id, app_name, provider, base_url, auth_type, status,
+                           last_test_status, last_tested_at, created_at, updated_at
+                    FROM aws_external_apps WHERE id=%s
                     """,
-                    (
-                        base_url, auth_type, json.dumps(auth_config),
-                        json.dumps(headers), json.dumps(query_params),
-                        json.dumps(path_params),
-                        timeout_seconds, retry_count, retry_backoff_seconds,
-                        existing_id,
-                    ),
+                    (existing_id,),
                 )
-                app_id = existing_id
-                message = "App updated. Use the Test button to verify connectivity."
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO aws_external_apps
-                        (user_id, app_name, base_url, auth_type, auth_config,
-                         headers, query_params, path_params,
-                         timeout_seconds, retry_count, retry_backoff_seconds)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """,
-                    (
-                        user_id, app_name, base_url, auth_type,
-                        json.dumps(auth_config),
-                        json.dumps(headers), json.dumps(query_params),
-                        json.dumps(path_params),
-                        timeout_seconds, retry_count, retry_backoff_seconds,
-                    ),
-                )
-                app_id = cur.lastrowid
-                message = "App created. Use the Test button to verify connectivity."
+                existing_app = cur.fetchone()
+                for field in ("last_tested_at", "created_at", "updated_at"):
+                    if existing_app.get(field):
+                        existing_app[field] = str(existing_app[field])
+                conn.close()
+                return jsonify({
+                    "success": True,
+                    "already_exists": True,
+                    "app": existing_app,
+                    "message": f"'{app_name}' already exists.",
+                })
+
+            cur.execute(
+                """
+                INSERT INTO aws_external_apps
+                    (user_id, app_name, base_url, auth_type, auth_config,
+                     headers, query_params, path_params,
+                     timeout_seconds, retry_count, retry_backoff_seconds, status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')
+                """,
+                (
+                    user_id, app_name, base_url, auth_type,
+                    json.dumps(auth_config),
+                    json.dumps(headers), json.dumps(query_params),
+                    json.dumps(path_params),
+                    timeout_seconds, retry_count, retry_backoff_seconds,
+                ),
+            )
+            app_id = cur.lastrowid
         conn.commit()
 
         return jsonify({
             "success": True,
+            "already_exists": False,
             "app_id": app_id,
             "app_name": app_name,
-            "message": message,
+            "message": "App created. Use the Test button to verify connectivity.",
         })
 
     except ValueError as ve:
