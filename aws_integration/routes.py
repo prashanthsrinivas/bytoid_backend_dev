@@ -595,7 +595,7 @@ def aws_list_apps(user_id):
                 SELECT id, app_name, provider, base_url, auth_type, status,
                        last_test_status, last_tested_at, created_at, updated_at
                 FROM aws_external_apps
-                WHERE user_id=%s AND status='active'
+                WHERE user_id=%s
                 ORDER BY created_at DESC
                 """,
                 (user_id,),
