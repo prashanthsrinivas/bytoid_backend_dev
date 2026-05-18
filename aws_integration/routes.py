@@ -33,7 +33,7 @@ from services.audit_log_service import (
     log_audit_event,
 )
 from services.scheduler_service import APIConnectorScheduler
-from utils.app_configs import ALLOWED_ORIGINS
+from utils.app_configs import ACCESSIBLE_IDS, ALLOWED_ORIGINS
 from utils.s3_utils import get_filedata_endp, getallendpointdetails
 
 aws_integration_bp = Blueprint("aws_integration", __name__, url_prefix="/aws")
@@ -593,6 +593,7 @@ def aws_list_apps(user_id):
             cur.execute(
                 """
                 SELECT id, app_name, provider, base_url, auth_type, status,
+                       is_universal, source_global_aws_app_id,
                        last_test_status, last_tested_at, created_at, updated_at
                 FROM aws_external_apps
                 WHERE user_id=%s
@@ -1344,3 +1345,596 @@ def aws_schedule_endpoint(endpoint_id):
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────
+# Global AWS Apps (templates curated by service@bytoid.ca)
+# ─────────────────────────────────────────────────────────────
+
+def _parse_json_field(val):
+    if val is None or val == "":
+        return None
+    if isinstance(val, (dict, list)):
+        return val
+    try:
+        return json.loads(val)
+    except Exception:
+        return None
+
+
+@aws_integration_bp.route("/admin/pushapp", methods=["POST"])
+def aws_push_global_app():
+    """Promote a local aws_external_apps row to a global_aws_apps template.
+    Restricted to ACCESSIBLE_IDS (service@bytoid.ca, plus the dev tester in DEV)."""
+    body = request.json or {}
+    user_id = body.get("user_id") or _extract_user_id()
+    admin_app_id = body.get("app_id")
+
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id required"}), 400
+    if not admin_app_id:
+        return jsonify({"success": False, "error": "app_id required"}), 400
+
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+    if user_id not in ACCESSIBLE_IDS:
+        return jsonify({"success": False, "error": "Only service@bytoid.ca can push global AWS apps."}), 403
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM aws_external_apps WHERE id=%s AND user_id=%s",
+                (admin_app_id, user_id),
+            )
+            local = cur.fetchone()
+            if not local:
+                return jsonify({"success": False, "error": "Local AWS app not found"}), 404
+
+            app_name = (body.get("app_name") or local["app_name"]).strip()
+            base_url = (body.get("base_url") or local["base_url"]).strip()
+            status = body.get("status", "development")
+            notes = body.get("notes")
+            required_config_schema = body.get("required_config_schema")
+
+            cur.execute(
+                """
+                INSERT INTO global_aws_apps (
+                    app_name, provider, base_url, auth_type, auth_config,
+                    headers, method, query_params, path_params,
+                    timeout_seconds, is_universal, status, notes, required_config_schema
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    app_name,
+                    local.get("provider", "aws"),
+                    base_url,
+                    local.get("auth_type", "aws_sigv4"),
+                    json.dumps({}),  # never bake credentials
+                    json.dumps(_parse_json_field(local.get("headers")) or {}),
+                    local.get("method", "GET"),
+                    json.dumps(_parse_json_field(local.get("query_params")) or {}),
+                    json.dumps(_parse_json_field(local.get("path_params")) or {}),
+                    local.get("timeout_seconds") or 10,
+                    True,
+                    status,
+                    notes,
+                    json.dumps(required_config_schema) if required_config_schema is not None else None,
+                ),
+            )
+            new_global_app_id = cur.lastrowid
+
+            cur.execute(
+                """
+                UPDATE aws_external_apps
+                SET is_universal=1, source_global_aws_app_id=%s, updated_at=NOW()
+                WHERE id=%s AND user_id=%s
+                """,
+                (new_global_app_id, admin_app_id, user_id),
+            )
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "global_app_id": new_global_app_id,
+            "message": "AWS app pushed to global successfully.",
+        })
+
+    except pymysql.err.IntegrityError as ie:
+        if conn:
+            conn.rollback()
+        msg = str(ie)
+        if "uq_global_aws_app_name" in msg or "Duplicate entry" in msg:
+            return jsonify({
+                "success": False,
+                "error": f"A global AWS app named '{app_name}' already exists.",
+            }), 409
+        return jsonify({"success": False, "error": msg}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@aws_integration_bp.route("/admin/pushapp_endpoint", methods=["POST"])
+def aws_push_global_app_endpoint():
+    """Promote a local aws_external_app_endpoints row to global_aws_app_endpoints.
+    Parent local app must already have source_global_aws_app_id set."""
+    body = request.json or {}
+    user_id = body.get("user_id") or _extract_user_id()
+    admin_app_id = body.get("app_id")
+    admin_endpoint_id = body.get("endpoint_id")
+
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id required"}), 400
+    if not admin_app_id:
+        return jsonify({"success": False, "error": "app_id required"}), 400
+
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+    if user_id not in ACCESSIBLE_IDS:
+        return jsonify({"success": False, "error": "Only service@bytoid.ca can push global AWS endpoints."}), 403
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT source_global_aws_app_id
+                FROM aws_external_apps
+                WHERE id=%s AND user_id=%s
+                """,
+                (admin_app_id, user_id),
+            )
+            row = cur.fetchone()
+            if not row or not row["source_global_aws_app_id"]:
+                return jsonify({
+                    "success": False,
+                    "error": "App is not global. Push the app to global first.",
+                }), 400
+            global_app_id = row["source_global_aws_app_id"]
+
+            # Pull from a local endpoint if endpoint_id was supplied, else use body fields.
+            local_ep = None
+            if admin_endpoint_id:
+                cur.execute(
+                    "SELECT * FROM aws_external_app_endpoints WHERE id=%s AND app_id=%s AND user_id=%s",
+                    (admin_endpoint_id, admin_app_id, user_id),
+                )
+                local_ep = cur.fetchone()
+                if not local_ep:
+                    return jsonify({"success": False, "error": "Local endpoint not found"}), 404
+
+            def pick(field, default=None):
+                if body.get(field) is not None:
+                    return body[field]
+                if local_ep is not None:
+                    return local_ep.get(field, default)
+                return default
+
+            name = (pick("name") or "").strip() if pick("name") else None
+            path = pick("path")
+            if not name or not path:
+                return jsonify({"success": False, "error": "name and path required"}), 400
+
+            cur.execute(
+                """
+                INSERT INTO global_aws_app_endpoints (
+                    app_id, name, path, method,
+                    headers, query_params, path_params, body_template,
+                    timeout_seconds, is_active, status, notes, required_config_schema
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    global_app_id,
+                    name,
+                    path,
+                    pick("method", "GET"),
+                    json.dumps(_parse_json_field(pick("headers")) or {}),
+                    json.dumps(_parse_json_field(pick("query_params")) or {}),
+                    json.dumps(_parse_json_field(pick("path_params")) or {}),
+                    json.dumps(_parse_json_field(pick("body_template")) or {}),
+                    pick("timeout_seconds"),
+                    bool(pick("is_active", True)),
+                    body.get("status", "development"),
+                    body.get("notes"),
+                    json.dumps(body["required_config_schema"]) if body.get("required_config_schema") is not None else None,
+                ),
+            )
+            new_global_endpoint_id = cur.lastrowid
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "global_endpoint_id": new_global_endpoint_id,
+            "global_app_id": global_app_id,
+        })
+
+    except pymysql.err.IntegrityError as ie:
+        if conn:
+            conn.rollback()
+        msg = str(ie)
+        if "Duplicate entry" in msg:
+            return jsonify({
+                "success": False,
+                "error": "An endpoint with the same name or (path, method) already exists in the global app.",
+            }), 409
+        return jsonify({"success": False, "error": msg}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@aws_integration_bp.route("/global/apps/<user_id>", methods=["GET"])
+def aws_list_global_apps(user_id):
+    """List global AWS apps with installed-state for the given user.
+    Non-admins see only status='ready' rows. service@ sees all statuses."""
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+
+    is_service_admin = user_id in ACCESSIBLE_IDS
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            if is_service_admin:
+                cur.execute(
+                    """
+                    SELECT g.*,
+                           ea.id        AS external_app_id,
+                           ea.created_at AS installed_on
+                    FROM global_aws_apps g
+                    LEFT JOIN aws_external_apps ea
+                      ON ea.source_global_aws_app_id = g.id
+                     AND ea.user_id = %s
+                    ORDER BY g.created_at DESC
+                    """,
+                    (user_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT g.*,
+                           ea.id        AS external_app_id,
+                           ea.created_at AS installed_on
+                    FROM global_aws_apps g
+                    LEFT JOIN aws_external_apps ea
+                      ON ea.source_global_aws_app_id = g.id
+                     AND ea.user_id = %s
+                    WHERE g.status = 'ready'
+                    ORDER BY g.created_at DESC
+                    """,
+                    (user_id,),
+                )
+            rows = cur.fetchall()
+
+        apps = []
+        for r in rows:
+            app = dict(r)
+            app["installed"] = bool(r.get("external_app_id"))
+            app["installed_local_app_id"] = r.get("external_app_id")
+            app["installed_on"] = r.get("installed_on")
+            app.pop("external_app_id", None)
+            apps.append(app)
+
+        return jsonify({"success": True, "apps": apps, "is_admin": is_service_admin})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@aws_integration_bp.route("/global/app_endpoints/<string:user_id>/<int:app_id>", methods=["GET"])
+def aws_list_global_app_endpoints(user_id, app_id):
+    """List endpoints for a single global AWS app.
+    Non-admins see only status='ready' endpoints."""
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+
+    is_service_admin = user_id in ACCESSIBLE_IDS
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT id FROM global_aws_apps WHERE id=%s", (app_id,))
+            if not cur.fetchone():
+                return jsonify({"success": False, "error": "Global app not found"}), 404
+
+            if is_service_admin:
+                cur.execute(
+                    "SELECT * FROM global_aws_app_endpoints WHERE app_id=%s ORDER BY created_at DESC",
+                    (app_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT * FROM global_aws_app_endpoints
+                    WHERE app_id=%s AND status='ready' AND is_active=1
+                    ORDER BY created_at DESC
+                    """,
+                    (app_id,),
+                )
+            endpoints = cur.fetchall()
+
+            # Annotate installed-state by checking the user's local endpoints.
+            # Reuse the same connection — opening a second one earlier leaked
+            # on exceptions thrown after acquisition.
+            cur.execute(
+                """
+                SELECT e.path, e.method, e.id
+                FROM aws_external_app_endpoints e
+                JOIN aws_external_apps a ON a.id = e.app_id
+                WHERE a.user_id=%s AND a.source_global_aws_app_id=%s
+                """,
+                (user_id, app_id),
+            )
+            installed_map = {(r["path"], r["method"]): r["id"] for r in cur.fetchall()}
+
+        for ep in endpoints:
+            local_id = installed_map.get((ep.get("path"), ep.get("method")))
+            ep["installed"] = local_id is not None
+            ep["installed_local_endpoint_id"] = local_id
+
+        return jsonify({"success": True, "endpoints": endpoints, "is_admin": is_service_admin})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@aws_integration_bp.route("/user/global-app/instantiate", methods=["POST"])
+def aws_instantiate_global_app():
+    """Clone a global_aws_apps row into aws_external_apps for the calling user.
+    auth_config is always stored as {} — SigV4 is resolved from the live SAML
+    session at execute-time."""
+    body = request.json or {}
+    user_id = body.get("user_id") or _extract_user_id()
+    global_app_id = body.get("app_id")
+
+    if not user_id or not global_app_id:
+        return jsonify({"success": False, "error": "user_id and app_id required"}), 400
+
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM global_aws_apps WHERE id=%s", (global_app_id,))
+            g = cur.fetchone()
+            if not g:
+                return jsonify({"success": False, "error": "Global app not found"}), 404
+
+            # Idempotency: if user already installed this global app, return existing.
+            cur.execute(
+                "SELECT id FROM aws_external_apps WHERE user_id=%s AND source_global_aws_app_id=%s LIMIT 1",
+                (user_id, global_app_id),
+            )
+            existing = cur.fetchone()
+            if existing:
+                return jsonify({
+                    "success": True,
+                    "already_installed": True,
+                    "app_id": existing["id"],
+                    "message": "Already installed.",
+                })
+
+            # Compute a unique app_name for this user (suffix on collision).
+            base_name = g["app_name"]
+            app_name = base_name
+            suffix = 2
+            while True:
+                cur.execute(
+                    "SELECT id FROM aws_external_apps WHERE user_id=%s AND app_name=%s",
+                    (user_id, app_name),
+                )
+                if not cur.fetchone():
+                    break
+                app_name = f"{base_name} ({suffix})"
+                suffix += 1
+
+            cur.execute(
+                """
+                INSERT INTO aws_external_apps (
+                    user_id, app_name, provider, base_url, auth_type, auth_config,
+                    headers, method, query_params, path_params,
+                    timeout_seconds, retry_count, retry_backoff_seconds,
+                    is_universal, source_global_aws_app_id, status
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    user_id,
+                    app_name,
+                    g.get("provider", "aws"),
+                    g["base_url"],
+                    g.get("auth_type", "aws_sigv4"),
+                    json.dumps({}),  # auth resolved from SAML session at execute-time
+                    json.dumps(_parse_json_field(g.get("headers")) or {}),
+                    g.get("method", "GET"),
+                    json.dumps(_parse_json_field(g.get("query_params")) or {}),
+                    json.dumps(_parse_json_field(g.get("path_params")) or {}),
+                    g.get("timeout_seconds") or 10,
+                    0,
+                    0,
+                    1,
+                    global_app_id,
+                    "active",
+                ),
+            )
+            new_app_id = cur.lastrowid
+
+            # Auto-install all ready endpoints that don't require user config.
+            cur.execute(
+                """
+                SELECT * FROM global_aws_app_endpoints
+                WHERE app_id=%s AND is_active=1 AND status='ready'
+                """,
+                (global_app_id,),
+            )
+            endpoints = cur.fetchall()
+            installed_count = 0
+
+            for ep in endpoints:
+                schema = _parse_json_field(ep.get("required_config_schema"))
+                if schema:
+                    # Skip endpoints that demand user config — user installs explicitly.
+                    requires = False
+                    for k, v in schema.items():
+                        if isinstance(v, dict) and v.get("required"):
+                            requires = True
+                            break
+                    if requires:
+                        continue
+
+                cur.execute(
+                    """
+                    INSERT INTO aws_external_app_endpoints (
+                        app_id, user_id, name, path, method,
+                        headers, query_params, path_params, body_template,
+                        timeout_seconds, is_active
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        new_app_id,
+                        user_id,
+                        ep["name"],
+                        ep["path"],
+                        ep.get("method", "GET"),
+                        json.dumps(_parse_json_field(ep.get("headers")) or {}),
+                        json.dumps(_parse_json_field(ep.get("query_params")) or {}),
+                        json.dumps(_parse_json_field(ep.get("path_params")) or {}),
+                        json.dumps(_parse_json_field(ep.get("body_template")) or {}),
+                        ep.get("timeout_seconds"),
+                        1,
+                    ),
+                )
+                installed_count += 1
+
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "app_id": new_app_id,
+            "app_name": app_name,
+            "auto_installed_endpoints": installed_count,
+            "message": "Global AWS app installed.",
+        })
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@aws_integration_bp.route("/user/global-endpoint/instantiate", methods=["POST"])
+def aws_instantiate_global_endpoint():
+    """Clone a single global_aws_app_endpoints row into the user's local app.
+    The user must have already instantiated the parent global app."""
+    body = request.json or {}
+    user_id = body.get("user_id") or _extract_user_id()
+    global_endpoint_id = body.get("global_endpoint_id") or body.get("endpoint_id")
+
+    if not user_id or not global_endpoint_id:
+        return jsonify({"success": False, "error": "user_id and global_endpoint_id required"}), 400
+
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM global_aws_app_endpoints WHERE id=%s AND is_active=1",
+                (global_endpoint_id,),
+            )
+            ge = cur.fetchone()
+            if not ge:
+                return jsonify({"success": False, "error": "Global endpoint not found"}), 404
+
+            cur.execute(
+                """
+                SELECT id FROM aws_external_apps
+                WHERE user_id=%s AND source_global_aws_app_id=%s
+                LIMIT 1
+                """,
+                (user_id, ge["app_id"]),
+            )
+            parent = cur.fetchone()
+            if not parent:
+                return jsonify({
+                    "success": False,
+                    "error": "Parent global app is not installed for this user. Install the app first.",
+                }), 400
+            local_app_id = parent["id"]
+
+            # Idempotency: avoid duplicate (app_id, path, method) and (app_id, name).
+            cur.execute(
+                """
+                SELECT id FROM aws_external_app_endpoints
+                WHERE app_id=%s AND ((path=%s AND method=%s) OR name=%s)
+                LIMIT 1
+                """,
+                (local_app_id, ge["path"], ge.get("method", "GET"), ge["name"]),
+            )
+            existing = cur.fetchone()
+            if existing:
+                return jsonify({
+                    "success": True,
+                    "already_installed": True,
+                    "endpoint_id": existing["id"],
+                })
+
+            cur.execute(
+                """
+                INSERT INTO aws_external_app_endpoints (
+                    app_id, user_id, name, path, method,
+                    headers, query_params, path_params, body_template,
+                    timeout_seconds, is_active
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    local_app_id,
+                    user_id,
+                    ge["name"],
+                    ge["path"],
+                    ge.get("method", "GET"),
+                    json.dumps(_parse_json_field(ge.get("headers")) or {}),
+                    json.dumps(_parse_json_field(ge.get("query_params")) or {}),
+                    json.dumps(_parse_json_field(ge.get("path_params")) or {}),
+                    json.dumps(_parse_json_field(ge.get("body_template")) or {}),
+                    ge.get("timeout_seconds"),
+                    1,
+                ),
+            )
+            new_endpoint_id = cur.lastrowid
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "endpoint_id": new_endpoint_id,
+            "local_app_id": local_app_id,
+        })
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()

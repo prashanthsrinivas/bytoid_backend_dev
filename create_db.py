@@ -3137,6 +3137,148 @@ def create_aws_saml_sessions_table():
         connection.close()
 
 
+def create_global_aws_apps_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DROP TABLE IF EXISTS global_aws_app_endpoints;")
+        cursor.execute("DROP TABLE IF EXISTS global_aws_apps;")
+        cursor.execute(
+            """
+            CREATE TABLE global_aws_apps (
+                id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_name               VARCHAR(100) NOT NULL,
+                provider               VARCHAR(50) NOT NULL DEFAULT 'aws',
+                base_url               TEXT NOT NULL,
+                auth_type              ENUM('aws_sigv4','none') DEFAULT 'aws_sigv4',
+                auth_config            JSON DEFAULT NULL,
+                headers                JSON DEFAULT NULL,
+                method                 ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                query_params           JSON DEFAULT NULL,
+                path_params            JSON DEFAULT NULL,
+                timeout_seconds        INT DEFAULT 10,
+                is_universal           BOOLEAN NOT NULL DEFAULT TRUE,
+                status                 ENUM('ready','development','removed') DEFAULT 'development',
+                notes                  TEXT DEFAULT NULL,
+                required_config_schema JSON DEFAULT NULL,
+                created_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at             DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_global_aws_app_name (app_name),
+                INDEX idx_global_aws_apps_status (status)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ global_aws_apps table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create global_aws_apps table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_global_aws_app_endpoints_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE global_aws_app_endpoints (
+                id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_id                 BIGINT NOT NULL,
+                name                   VARCHAR(100) NOT NULL,
+                path                   VARCHAR(255) NOT NULL,
+                method                 ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                headers                JSON DEFAULT NULL,
+                query_params           JSON DEFAULT NULL,
+                path_params            JSON DEFAULT NULL,
+                body_template          JSON DEFAULT NULL,
+                timeout_seconds        INT DEFAULT NULL,
+                is_active              BOOLEAN DEFAULT TRUE,
+                status                 ENUM('ready','development','removed') DEFAULT 'development',
+                notes                  TEXT DEFAULT NULL,
+                required_config_schema JSON DEFAULT NULL,
+                created_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at             DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_global_aws_endpoint_name (app_id, name),
+                UNIQUE KEY uq_global_aws_path_method (app_id, path, method),
+                INDEX idx_global_aws_endpoint_app (app_id),
+                INDEX idx_global_aws_endpoint_status (status),
+                CONSTRAINT fk_global_aws_endpoint_app
+                    FOREIGN KEY (app_id)
+                    REFERENCES global_aws_apps(id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.commit()
+        print("✅ global_aws_app_endpoints table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create global_aws_app_endpoints table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def alter_aws_external_apps_add_global_link():
+    """Adds is_universal + source_global_aws_app_id columns to an existing
+    aws_external_apps table. Safe to run repeatedly — checks for the columns first."""
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME   = 'aws_external_apps'
+              AND COLUMN_NAME IN ('is_universal', 'source_global_aws_app_id')
+            """
+        )
+        existing = {row[0] for row in cursor.fetchall()}
+
+        if "is_universal" not in existing:
+            cursor.execute(
+                "ALTER TABLE aws_external_apps "
+                "ADD COLUMN is_universal BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        if "source_global_aws_app_id" not in existing:
+            cursor.execute(
+                "ALTER TABLE aws_external_apps "
+                "ADD COLUMN source_global_aws_app_id BIGINT DEFAULT NULL"
+            )
+            cursor.execute(
+                "ALTER TABLE aws_external_apps "
+                "ADD INDEX idx_aws_external_source (source_global_aws_app_id)"
+            )
+
+        connection.commit()
+        print("✅ aws_external_apps altered (is_universal + source_global_aws_app_id)")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to alter aws_external_apps:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def create_aws_external_apps_table():
     connection = connect_to_rds()
     if connection is None:
@@ -3148,28 +3290,31 @@ def create_aws_external_apps_table():
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS aws_external_apps (
-                id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
-                user_id               VARCHAR(64) NOT NULL,
-                app_name              VARCHAR(100) NOT NULL,
-                provider              VARCHAR(50) DEFAULT 'aws',
-                base_url              TEXT NOT NULL,
-                auth_type             ENUM('bearer','api_key','basic','oauth2','aws_sigv4','none') DEFAULT 'aws_sigv4',
-                auth_config           JSON,
-                headers               JSON,
-                method                ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
-                query_params          JSON,
-                path_params           JSON,
-                timeout_seconds       INT DEFAULT 10,
-                retry_count           INT DEFAULT 0,
-                retry_backoff_seconds INT DEFAULT 0,
-                status                ENUM('active','inactive') DEFAULT 'active',
-                last_test_status      ENUM('success','failed'),
-                last_error            JSON,
-                last_tested_at        DATETIME,
-                schedules             JSON,
-                created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY uq_user_app (user_id, app_name)
+                id                       BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id                  VARCHAR(64) NOT NULL,
+                app_name                 VARCHAR(100) NOT NULL,
+                provider                 VARCHAR(50) DEFAULT 'aws',
+                base_url                 TEXT NOT NULL,
+                auth_type                ENUM('bearer','api_key','basic','oauth2','aws_sigv4','none') DEFAULT 'aws_sigv4',
+                auth_config              JSON,
+                headers                  JSON,
+                method                   ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                query_params             JSON,
+                path_params              JSON,
+                timeout_seconds          INT DEFAULT 10,
+                retry_count              INT DEFAULT 0,
+                retry_backoff_seconds    INT DEFAULT 0,
+                is_universal             BOOLEAN NOT NULL DEFAULT FALSE,
+                source_global_aws_app_id BIGINT DEFAULT NULL,
+                status                   ENUM('active','inactive') DEFAULT 'active',
+                last_test_status         ENUM('success','failed'),
+                last_error               JSON,
+                last_tested_at           DATETIME,
+                schedules                JSON,
+                created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user_app (user_id, app_name),
+                INDEX idx_aws_external_source (source_global_aws_app_id)
             )
             """
         )
@@ -3302,4 +3447,7 @@ if __name__ == "__main__":
     create_aws_saml_sessions_table()
     create_aws_external_apps_table()
     create_aws_external_app_endpoints_table()
+    alter_aws_external_apps_add_global_link()
+    create_global_aws_apps_table()
+    create_global_aws_app_endpoints_table()
     print("ok")
