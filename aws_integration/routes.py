@@ -1434,11 +1434,56 @@ def aws_push_global_app():
                 """,
                 (new_global_app_id, admin_app_id, user_id),
             )
+
+            # Auto-copy all local endpoints into global_aws_app_endpoints
+            cur.execute(
+                "SELECT * FROM aws_external_app_endpoints WHERE app_id=%s AND user_id=%s",
+                (admin_app_id, user_id),
+            )
+            local_endpoints = cur.fetchall()
+            endpoints_pushed = 0
+            for ep in local_endpoints:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO global_aws_app_endpoints (
+                            app_id, name, path, method,
+                            headers, query_params, path_params, body_template,
+                            timeout_seconds, is_active, status, notes
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
+                        (
+                            new_global_app_id,
+                            ep["name"],
+                            ep["path"],
+                            ep.get("method", "GET"),
+                            json.dumps(_parse_json_field(ep.get("headers")) or {}),
+                            json.dumps(_parse_json_field(ep.get("query_params")) or {}),
+                            json.dumps(_parse_json_field(ep.get("path_params")) or {}),
+                            json.dumps(_parse_json_field(ep.get("body_template")) or {}),
+                            ep.get("timeout_seconds"),
+                            bool(ep.get("is_active", True)),
+                            status,  # inherit the app's status (development by default)
+                            None,
+                        ),
+                    )
+                    endpoints_pushed += 1
+                except pymysql.err.IntegrityError:
+                    # Skip endpoints that violate (path, method) or name uniqueness
+                    # against an already-existing global row — shouldn't happen on a
+                    # fresh push but guard for re-push edge cases.
+                    continue
+
         conn.commit()
         return jsonify({
             "success": True,
             "global_app_id": new_global_app_id,
-            "message": "AWS app pushed to global successfully.",
+            "endpoints_pushed": endpoints_pushed,
+            "message": (
+                f"AWS app pushed to global with {endpoints_pushed} endpoint(s)."
+                if endpoints_pushed
+                else "AWS app pushed to global successfully."
+            ),
         })
 
     except pymysql.err.IntegrityError as ie:
@@ -1451,6 +1496,95 @@ def aws_push_global_app():
                 "error": f"A global AWS app named '{app_name}' already exists.",
             }), 409
         return jsonify({"success": False, "error": msg}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@aws_integration_bp.route("/admin/unpushapp", methods=["POST"])
+def aws_unpush_global_app():
+    """Downgrade a global AWS app back to local-only by deleting the
+    global_aws_apps row (cascade-deletes global_aws_app_endpoints) and
+    clearing is_universal/source_global_aws_app_id on the caller's local app.
+
+    Other admins' installed copies remain as standalone local apps —
+    their `source_global_aws_app_id` becomes a dangling reference (no FK).
+    Restricted to ACCESSIBLE_IDS."""
+    body = request.json or {}
+    user_id = body.get("user_id") or _extract_user_id()
+    admin_app_id = body.get("app_id")
+
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id required"}), 400
+    if not admin_app_id:
+        return jsonify({"success": False, "error": "app_id required"}), 400
+
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+    if user_id not in ACCESSIBLE_IDS:
+        return jsonify({"success": False, "error": "Only service@bytoid.ca can downgrade global AWS apps."}), 403
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT source_global_aws_app_id FROM aws_external_apps WHERE id=%s AND user_id=%s",
+                (admin_app_id, user_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "Local AWS app not found"}), 404
+            global_app_id = row.get("source_global_aws_app_id")
+            if not global_app_id:
+                return jsonify({"success": False, "error": "This app is not linked to a Global template."}), 400
+
+            # Count installs by other admins for the warning message
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM aws_external_apps WHERE source_global_aws_app_id=%s AND user_id<>%s",
+                (global_app_id, user_id),
+            )
+            other_installs = cur.fetchone()["cnt"]
+
+            # Clear linkage on the caller's local app
+            cur.execute(
+                """
+                UPDATE aws_external_apps
+                SET is_universal=0, source_global_aws_app_id=NULL, updated_at=NOW()
+                WHERE id=%s AND user_id=%s
+                """,
+                (admin_app_id, user_id),
+            )
+            # Also clear linkage on every other admin's installed copy — those
+            # become regular standalone local apps.
+            cur.execute(
+                """
+                UPDATE aws_external_apps
+                SET is_universal=0, source_global_aws_app_id=NULL, updated_at=NOW()
+                WHERE source_global_aws_app_id=%s
+                """,
+                (global_app_id,),
+            )
+            # Delete the global template (cascade removes its endpoints)
+            cur.execute("DELETE FROM global_aws_apps WHERE id=%s", (global_app_id,))
+
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "global_app_id": global_app_id,
+            "other_installs_detached": other_installs,
+            "message": (
+                f"Downgraded to local. {other_installs} other admin installation(s) detached."
+                if other_installs
+                else "Downgraded to local."
+            ),
+        })
+
     except Exception as e:
         if conn:
             conn.rollback()
