@@ -4,6 +4,7 @@ import logging
 from db.rds_db import connect_to_rds
 from services.audit_log_service import log_audit_event, SPECIAL_ACCESS_MODIFIED
 from db.db_checkers import get_email_by_id
+from utils.permission_required import permission_required_body
 import json
 from utils.normal import load_yaml_file, parse_composite_user_id
 from cust_helpers import pathconfig

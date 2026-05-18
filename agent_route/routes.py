@@ -33,6 +33,7 @@ from db.rds_db import connect_to_rds, safe_execute
 import re
 from datetime import datetime
 import yaml
+from utils.permission_required import permission_required_body
 
 
 from utils.s3_utils import (
@@ -81,6 +82,7 @@ dev_val = DEV_ORIGINS
 
 
 @agent_bps.route("/save-training-settings", methods=["POST"])
+@permission_required_body("intake.bytoid_support")
 def save_training_settings():
     """
     Create or update launch + subagent for a user.
@@ -279,6 +281,7 @@ def save_training_settings():
 
 
 @agent_bps.route("/get-training-settings", methods=["GET"])
+@permission_required_body("intake.bytoid_support")
 def get_training_settings():
     """
     It takes the user_id from the session or request,
@@ -361,6 +364,7 @@ def get_training_settings():
 
 
 @agent_bps.route("/process-query-key-og", methods=["POST"])
+@permission_required_body("intake.bytoid_reference")
 def checkquerywithApiKeyog():
     try:
         # print("Query made by:", session.get("user", {}))
@@ -1133,6 +1137,7 @@ async def process_query_worker(data, job_id=None):
 
 
 @agent_bps.route("/process-query-key", methods=["POST"])
+@permission_required_body("intake.bytoid_reference")
 async def checkquerywithApiKey():
     data = request.json
 
@@ -1167,6 +1172,7 @@ def getFilenameData(fetched_userid):
 
 
 @agent_bps.route("/clarifications", methods=["POST"])
+@permission_required_body("intake.bytoid_support")
 def makeuserDocClarifications(userid=None, industry=None):
     """
     Retrieves clarifications for a user based on failed questions.
@@ -1263,6 +1269,7 @@ def makeuserDocClarifications(userid=None, industry=None):
 
 
 @agent_bps.route("/clarification_update", methods=["POST"])
+@permission_required_body("intake.bytoid_support")
 async def updateClarifications(userid=None, industry=None):
     data = request.json
     fetched_userid = data.get("userid") or userid
@@ -1469,6 +1476,7 @@ async def updateClarifications(userid=None, industry=None):
 
 # --- Main endpoint (updated) ---
 @agent_bps.route("/get-ai-suggestion", methods=["POST"])
+@permission_required_body("intake.bytoid_reference")
 async def get_ai_suggestion():
     try:
         data = request.json
@@ -1527,6 +1535,7 @@ async def get_ai_suggestion():
 
 
 @agent_bps.route("/create-ticket", methods=["POST"])
+@permission_required_body("intake.bytoid_support")
 def create_sub_ticket():
     try:
         data = request.json
@@ -1543,6 +1552,7 @@ def create_sub_ticket():
 
 
 @agent_bps.route("/get-clarifications", methods=["GET"])
+@permission_required_body("intake.bytoid_support")
 def fetch_scraping_clarifications():
     try:
         api_key = request.args.get("api_key")
@@ -1583,6 +1593,7 @@ def fetch_scraping_clarifications():
 
 
 @agent_bps.route("/update-clarification", methods=["POST"])
+@permission_required_body("intake.bytoid_support")
 def update_single_scraping_clarification():
     try:
         data = request.get_json()
@@ -1632,6 +1643,7 @@ def update_single_scraping_clarification():
 
 
 @agent_bps.route("/check-dbfunc", methods=["POST"])
+@permission_required_body("intake.bytoid_support")
 def check_lancedb():
     """
     Checks if the LanceDB service is running and returns its status.

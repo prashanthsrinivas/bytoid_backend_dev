@@ -11,6 +11,7 @@ import json
 from datetime import datetime
 from microsoft_route.routes import get_microsoft_redirect_uri
 from utils.base_logger import get_logger
+from utils.permission_required import permission_required_body
 from werkzeug.utils import secure_filename
 from utils.s3_utils import attach_CLDFRNT_url, generate_presigned_url, upload_any_file
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -506,6 +507,7 @@ def onboarding_update():
 
 
 @users_bp.route("/generate-website-api-key", methods=["POST"])
+@permission_required_body("kb.api.regenerate")
 def generate_api_key():
     data = request.get_json()
     # print(session.get("user", "No user in session"))

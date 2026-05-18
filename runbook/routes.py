@@ -3,9 +3,10 @@ from datetime import datetime
 import logging
 import os
 import traceback
-import json
+import json, pymysql
 from urllib.parse import urlparse
 import uuid, traceback
+from db.rds_db import connect_to_rds
 from utils.normal import parse_composite_user_id
 from utils.app_configs import IS_DEV
 from playbook.background_worker import JobManager
@@ -59,6 +60,15 @@ dbserver = LanceDBServer()
 ws_sender = ws_service
 msg_builder = msg_builder_main
 
+from shared_configuration import (
+    core_assign_report,
+    core_revoke_report,
+    get_admin_shared_config,
+    get_round_robin_user,
+    check_role_has_permission,
+    get_user_shared_reports,
+)
+
 
 def _run_async(coro):
     """Run an async coroutine from a gunicorn sync worker context."""
@@ -69,6 +79,248 @@ def _run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+@runbook_bp.route("/runbook/assign", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
+def assign_runbook():
+    data = request.get_json()
+    admin_id = data.get("user_id")
+    runbook_id = data.get("runbook_id")
+    result_id = data.get("result_id")
+    runbook_name = data.get("runbook_name")
+    assignment_type = data.get("assignment_type")
+    user_id = data.get("target_user_id")
+    role_id = data.get("role_id")
+
+    if not admin_id or not runbook_id or not result_id or not assignment_type:
+        return (
+            jsonify(
+                {"error": "user_id, runbook_id, result_id, assignment_type required"}
+            ),
+            400,
+        )
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+
+        if assignment_type == "manual":
+            if not user_id:
+                return (
+                    jsonify({"error": "target_user_id required for manual assignment"}),
+                    400,
+                )
+
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute("SELECT email FROM users WHERE user_id=%s", (user_id,))
+                user_row = cursor.fetchone()
+                if not user_row:
+                    return jsonify({"error": "User not found"}), 404
+            user_email = user_row["email"]
+
+        elif assignment_type == "role":
+            if not role_id:
+                return jsonify({"error": "role_id required for role assignment"}), 400
+
+            if not check_role_has_permission(
+                conn, admin_id, role_id, "compliance.runbook.read"
+            ):
+                return (
+                    jsonify({"error": "Role does not have runbook access permission"}),
+                    403,
+                )
+
+            user_obj, error_msg = get_round_robin_user(
+                admin_id, role_id, "runbook", conn, "compliance.runbook.read"
+            )
+            if not user_obj:
+                return jsonify({"error": error_msg or "No eligible users found"}), 400
+            user_id = user_obj["user_id"]
+            user_email = user_obj["email"]
+
+        else:
+            return jsonify({"error": "assignment_type must be 'manual' or 'role'"}), 400
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT email FROM users WHERE user_id=%s", (admin_id,))
+            admin_row = cursor.fetchone()
+            if not admin_row:
+                return jsonify({"error": "Admin not found"}), 404
+        admin_email = admin_row["email"]
+
+        result_record = _run_async(dbserver.runbook_get_result(admin_id, result_id))
+        if not result_record or result_record.get("status") == "not_found":
+            return jsonify({"error": "Runbook result not found"}), 404
+
+        rec_runbook_id = result_record.get("runbook_id")
+        if rec_runbook_id and rec_runbook_id != runbook_id:
+            return (
+                jsonify({"error": "result_id does not belong to the given runbook_id"}),
+                400,
+            )
+
+        sharing_access, error = core_assign_report(
+            admin_id,
+            admin_email,
+            user_id,
+            user_email,
+            result_id,
+            "runbook",
+            runbook_name,
+            conn,
+            dbserver,
+            parent_id=runbook_id,
+        )
+
+        if error:
+            return jsonify({"error": error}), (
+                403 if "permission" in error.lower() else 400
+            )
+
+        return jsonify({"success": True, "sharing_access": sharing_access}), 200
+
+    except Exception as e:
+        logger.error(f"Error in assign_runbook: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@runbook_bp.route("/runbook/revoke", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
+def revoke_runbook():
+    data = request.get_json()
+    admin_id = data.get("user_id")
+    user_id = data.get("target_user_id")
+    runbook_id = data.get("runbook_id")
+    result_id = data.get("result_id")
+
+    if not admin_id or not user_id or not runbook_id or not result_id:
+        return (
+            jsonify(
+                {"error": "user_id, target_user_id, runbook_id, result_id required"}
+            ),
+            400,
+        )
+
+    try:
+        sharing_access, error = core_revoke_report(
+            admin_id, user_id, result_id, "runbook", dbserver
+        )
+
+        if error:
+            return jsonify({"error": error}), 400
+
+        return jsonify({"success": True, "sharing_access": sharing_access}), 200
+
+    except Exception as e:
+        logger.error(f"Error in revoke_runbook: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/runbook/shared/<user_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
+def get_user_shared_runbooks(user_id):
+    try:
+        shared_reports = get_user_shared_reports(user_id)
+        shared_runbooks = {
+            rid: data
+            for rid, data in shared_reports.items()
+            if data.get("type") == "runbook"
+        }
+        return jsonify(shared_runbooks), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_user_shared_runbooks: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/runbook/shared/view/<user_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
+def get_shared_runbook_view(user_id):
+    """
+    For a shared user: given their user_id, runbook_id, and result_id,
+    return the runbook definition and specific result from the owner's LanceDB space.
+    """
+    import asyncio
+
+    runbook_id = request.args.get("runbook_id")
+    result_id = request.args.get("result_id")
+
+    if not runbook_id or not result_id:
+        return jsonify({"error": "runbook_id and result_id are required"}), 400
+
+    try:
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
+        shared_reports = get_user_shared_reports(user_id)
+        entry = shared_reports.get(result_id)
+        if not entry or entry.get("type") != "runbook":
+            return jsonify({"error": "No shared access found for this result_id"}), 404
+
+        if entry.get("runbook_id") and entry.get("runbook_id") != runbook_id:
+            return (
+                jsonify({"error": "result_id does not belong to the given runbook_id"}),
+                400,
+            )
+
+        main_user_id = entry.get("mainuser_id")
+        if not main_user_id:
+            return jsonify({"error": "Invalid shared report entry"}), 500
+
+        admin_config = get_admin_shared_config(main_user_id)
+        report_meta = admin_config.get("reports", {}).get(result_id, {})
+        sharing_access = report_meta.get("sharing_access", [])
+        user_access = next((e for e in sharing_access if e["id"] == user_id), None)
+        if not user_access or not user_access.get("access"):
+            return jsonify({"error": "Access revoked or not granted"}), 403
+
+        loop = asyncio.new_event_loop()
+        try:
+            runbook = loop.run_until_complete(
+                dbserver.get_runbook_by_id(main_user_id, runbook_id)
+            )
+            result = loop.run_until_complete(
+                dbserver.runbook_get_result(main_user_id, result_id)
+            )
+        finally:
+            loop.close()
+
+        if isinstance(runbook, list):
+            runbook = runbook[0] if runbook else None
+
+        if result and result.get("status") == "not_found":
+            result = None
+
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "runbook": runbook,
+                    "result": result,
+                    "shared_by": main_user_id,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error(f"Error in get_shared_runbook_view: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/runbook/sharedconfig/<user_id>", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
+def get_runbook_sharedconfig(user_id):
+    try:
+        config = get_admin_shared_config(user_id)
+        return jsonify(config), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_runbook_sharedconfig: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 async def execute_runbook_create(data, job_id=None, session_id=None):
@@ -794,6 +1046,197 @@ def modify_runbook():
     return jsonify({"success": True, "job_id": job_id, "status": "queued"})
 
 
+# @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
+# @permission_required_body("compliance.runbook.read")
+# def get_runbook_results(runbook_id):
+#     import asyncio
+
+#     try:
+#         base_user_id = session.get("user_id") or request.args.get("user_id")
+#         logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
+
+#         if not user_id:
+#             return jsonify({"error": "Unauthorized"}), 401
+
+#         loop = asyncio.new_event_loop()
+#         try:
+#             results = loop.run_until_complete(
+#                 dbserver.get_runbook_results(user_id, runbook_id)
+#             )
+#             runbook_details = loop.run_until_complete(
+#                 dbserver.get_runbook_by_id(user_id, runbook_id)
+#             )
+#         finally:
+#             loop.close()
+
+#         if not results and not runbook_details:
+#             shared_reports = get_user_shared_reports(user_id)
+#             for rid, sdata in shared_reports.items():
+#                 if sdata.get("type") == "runbook" and sdata.get("runbook_id") == runbook_id:
+#                     main_user_id = sdata.get("mainuser_id")
+#                     loop2 = asyncio.new_event_loop()
+#                     try:
+#                         results = loop2.run_until_complete(
+#                             dbserver.get_runbook_results(main_user_id, runbook_id)
+#                         )
+#                         runbook_details = loop2.run_until_complete(
+#                             dbserver.get_runbook_by_id(main_user_id, runbook_id)
+#                         )
+#                     finally:
+#                         loop2.close()
+#                     break
+
+#         valid_statuses = {"completed", "success", "done", "draft"}
+#         filtered_results = [
+#             r for r in (results or []) if r.get("status") in valid_statuses
+#         ]
+
+#         filtered_results.sort(key=lambda r: r.get("ended_at") or 0, reverse=True)
+
+#         return (
+#             jsonify(
+#                 {
+#                     "success": True,
+#                     "results": filtered_results,
+#                     "runbook": runbook_details,
+#                 }
+#             ),
+#             200,
+#         )
+#     except Exception as e:
+#         tb = traceback.format_exc()
+#         logger.error("get_runbook_results error: %s\n%s", e, tb)
+#         return (
+#             jsonify({"error": "Failed to fetch runbook results", "details": str(e)}),
+#             500,
+#         )
+
+
+# @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
+# @permission_required_body("compliance.runbook.read")
+# def redult_list(user_id):
+#     import asyncio
+
+#     logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
+#     try:
+#         loop = asyncio.new_event_loop()
+#         try:
+#             result = loop.run_until_complete(
+#                 dbserver.get_runbook_results_by_user_id(user_id)
+#             )
+#             runbooks = loop.run_until_complete(dbserver.get_all_runbooks(user_id))
+#         finally:
+#             loop.close()
+
+#         shared_reports = get_user_shared_reports(user_id)
+#         shared_runbook_entries = {
+#             rid: d for rid, d in shared_reports.items() if d.get("type") == "runbook"
+#         }
+
+#         for result_id_key, sdata in shared_runbook_entries.items():
+#             main_user_id = sdata.get("mainuser_id")
+#             try:
+#                 loop2 = asyncio.new_event_loop()
+#                 try:
+#                     shared_result = loop2.run_until_complete(
+#                         dbserver.runbook_get_result(main_user_id, result_id_key)
+#                     )
+#                 finally:
+#                     loop2.close()
+#                 if shared_result and shared_result.get("status") != "not_found":
+#                     shared_result["shared"] = True
+#                     shared_result["shared_by"] = main_user_id
+#                     result = (result or []) + [shared_result]
+#             except Exception as e:
+#                 logger.warning(f"Could not fetch shared result {result_id_key}: {e}")
+
+#         for sdata in shared_runbook_entries.values():
+#             main_user_id = sdata.get("mainuser_id")
+#             rb_id = sdata.get("runbook_id")
+#             if not rb_id:
+#                 continue
+#             try:
+#                 loop3 = asyncio.new_event_loop()
+#                 try:
+#                     shared_rb = loop3.run_until_complete(
+#                         dbserver.get_runbook_by_id(main_user_id, rb_id)
+#                     )
+#                 finally:
+#                     loop3.close()
+#                 if shared_rb:
+#                     if isinstance(shared_rb, list):
+#                         shared_rb = shared_rb[0] if shared_rb else None
+#                     if shared_rb:
+#                         shared_rb["shared"] = True
+#                         shared_rb["shared_by"] = main_user_id
+#                         runbooks = (runbooks or []) + [shared_rb]
+#             except Exception as e:
+#                 logger.warning(f"Could not fetch shared runbook {rb_id}: {e}")
+
+#         runbook_ids = {
+#             rb.get("runbook_id") for rb in (runbooks or []) if rb.get("runbook_id")
+#         }
+
+#         valid_statuses = {"completed", "success", "done", "draft"}
+#         filtered_results = [
+#             r
+#             for r in (result or [])
+#             if r.get("status") in valid_statuses
+#             and (r.get("risk_score") or 0) != 0
+#             and r.get("runbook_id") in runbook_ids
+#         ]
+
+#         filtered_results.sort(key=lambda r: r.get("ended_at") or 0, reverse=True)
+
+#         return (
+#             jsonify(
+#                 {"success": True, "results": filtered_results, "runbook": runbooks}
+#             ),
+#             200,
+#         )
+
+#     except Exception as e:
+#         logger.error("redult_list error: %s", e, exc_info=True)
+#         return jsonify({"error": str(e)}), 500
+
+
+def normalize_json(value):
+    """
+    Recursively convert JSON-encoded strings into proper Python objects.
+    Handles:
+    - dict
+    - list
+    - nested/double-encoded JSON
+    - dynamic keys
+    """
+
+    # Handle dict
+    if isinstance(value, dict):
+        return {k: normalize_json(v) for k, v in value.items()}
+
+    # Handle list
+    if isinstance(value, list):
+        return [normalize_json(v) for v in value]
+
+    # Handle stringified JSON
+    if isinstance(value, str):
+        value = value.strip()
+
+        # Only try parsing likely JSON
+        if value.startswith(("{", "[", '"')):
+            try:
+                parsed = json.loads(value)
+
+                # Recursively normalize again
+                return normalize_json(parsed)
+
+            except Exception:
+                return value
+
+    return value
+
+
 @runbook_bp.route("/runbook/results/<runbook_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
 def get_runbook_results(runbook_id):
@@ -807,83 +1250,238 @@ def get_runbook_results(runbook_id):
             return jsonify({"error": "Unauthorized"}), 401
 
         loop = asyncio.new_event_loop()
+
         try:
             results = loop.run_until_complete(
                 dbserver.get_runbook_results(user_id, runbook_id)
             )
+
             runbook_details = loop.run_until_complete(
                 dbserver.get_runbook_by_id(user_id, runbook_id)
             )
+
         finally:
             loop.close()
 
-        valid_statuses = {"completed", "success", "done", "draft"}
+        # Normalize runbook object
+        if isinstance(runbook_details, list):
+            runbook_details = runbook_details[0] if runbook_details else None
+
+        # Shared access handling
+        if not results and not runbook_details:
+            shared_reports = get_user_shared_reports(user_id)
+
+            allowed_result_ids = []
+
+            for rid, sdata in shared_reports.items():
+                if (
+                    sdata.get("type") == "runbook"
+                    and sdata.get("runbook_id") == runbook_id
+                ):
+                    allowed_result_ids.append(rid)
+
+            if allowed_result_ids:
+                main_user_id = shared_reports[allowed_result_ids[0]].get("mainuser_id")
+
+                loop2 = asyncio.new_event_loop()
+
+                try:
+                    shared_results = []
+
+                    for rid in allowed_result_ids:
+                        r = loop2.run_until_complete(
+                            dbserver.runbook_get_result(main_user_id, rid)
+                        )
+
+                        if r and r.get("status") != "not_found":
+                            r["shared"] = True
+                            r["shared_by"] = main_user_id
+                            shared_results.append(r)
+
+                    results = shared_results
+
+                    runbook_details = loop2.run_until_complete(
+                        dbserver.get_runbook_by_id(main_user_id, runbook_id)
+                    )
+
+                finally:
+                    loop2.close()
+
+                # Normalize runbook object
+                if isinstance(runbook_details, list):
+                    runbook_details = runbook_details[0] if runbook_details else None
+
+        valid_statuses = {
+            "completed",
+            "success",
+            "done",
+            "draft",
+        }
+
         filtered_results = [
             r for r in (results or []) if r.get("status") in valid_statuses
         ]
 
         filtered_results.sort(key=lambda r: r.get("ended_at") or 0, reverse=True)
 
+        response_data = {
+            "success": True,
+            "results": filtered_results,
+            "runbook": runbook_details,
+        }
+
+        # FULL recursive normalization
+        response_data = normalize_json(response_data)
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        tb = traceback.format_exc()
+
+        logger.error("get_runbook_results error: %s\n%s", e, tb)
+
         return (
             jsonify(
                 {
-                    "success": True,
-                    "results": filtered_results,
-                    "runbook": runbook_details,
+                    "error": "Failed to fetch runbook results",
+                    "details": str(e),
                 }
             ),
-            200,
-        )
-    except Exception as e:
-        tb = traceback.format_exc()
-        logger.error("get_runbook_results error: %s\n%s", e, tb)
-        return (
-            jsonify({"error": "Failed to fetch runbook results", "details": str(e)}),
             500,
         )
 
 
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
-def redult_list(user_id):
+def result_list(user_id):
     import asyncio
 
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
         loop = asyncio.new_event_loop()
+
         try:
             result = loop.run_until_complete(
                 dbserver.get_runbook_results_by_user_id(user_id)
             )
+
             runbooks = loop.run_until_complete(dbserver.get_all_runbooks(user_id))
+
         finally:
             loop.close()
+
+        shared_reports = get_user_shared_reports(user_id)
+
+        shared_runbook_entries = {
+            rid: d for rid, d in shared_reports.items() if d.get("type") == "runbook"
+        }
+
+        # ONLY fetch explicitly shared result IDs
+        for result_id_key, sdata in shared_runbook_entries.items():
+            main_user_id = sdata.get("mainuser_id")
+
+            try:
+                loop2 = asyncio.new_event_loop()
+
+                try:
+                    shared_result = loop2.run_until_complete(
+                        dbserver.runbook_get_result(main_user_id, result_id_key)
+                    )
+
+                finally:
+                    loop2.close()
+
+                if shared_result and shared_result.get("status") != "not_found":
+                    shared_result["shared"] = True
+                    shared_result["shared_by"] = main_user_id
+
+                    result = (result or []) + [shared_result]
+
+            except Exception as e:
+                logger.warning(f"Could not fetch shared result {result_id_key}: {e}")
+
+        # Fetch shared runbooks
+        added_runbook_ids = set()
+
+        for sdata in shared_runbook_entries.values():
+            main_user_id = sdata.get("mainuser_id")
+            rb_id = sdata.get("runbook_id")
+
+            if not rb_id or rb_id in added_runbook_ids:
+                continue
+
+            try:
+                loop3 = asyncio.new_event_loop()
+
+                try:
+                    shared_rb = loop3.run_until_complete(
+                        dbserver.get_runbook_by_id(main_user_id, rb_id)
+                    )
+
+                finally:
+                    loop3.close()
+
+                if shared_rb:
+                    if isinstance(shared_rb, list):
+                        shared_rb = shared_rb[0] if shared_rb else None
+
+                    if shared_rb:
+                        shared_rb["shared"] = True
+                        shared_rb["shared_by"] = main_user_id
+
+                        runbooks = (runbooks or []) + [shared_rb]
+                        added_runbook_ids.add(rb_id)
+
+            except Exception as e:
+                logger.warning(f"Could not fetch shared runbook {rb_id}: {e}")
 
         runbook_ids = {
             rb.get("runbook_id") for rb in (runbooks or []) if rb.get("runbook_id")
         }
 
+        # ONLY keep:
+        # 1. valid status
+        # 2. non-zero risk score
+        # 3. existing runbook
+        # 4. explicitly shared OR owned
+        shared_result_ids = set(shared_runbook_entries.keys())
+
         valid_statuses = {"completed", "success", "done", "draft"}
+
         filtered_results = [
             r
             for r in (result or [])
-            if r.get("status") in valid_statuses
-            and (r.get("risk_score") or 0) != 0
-            and r.get("runbook_id") in runbook_ids
+            if (
+                r.get("status") in valid_statuses
+                and (r.get("risk_score") or 0) != 0
+                and r.get("runbook_id") in runbook_ids
+                and (
+                    r.get("result_id") in shared_result_ids
+                    or r.get("user_id") == user_id
+                )
+            )
         ]
 
-        filtered_results.sort(key=lambda r: r.get("ended_at") or 0, reverse=True)
+        filtered_results.sort(
+            key=lambda r: r.get("ended_at") or 0,
+            reverse=True,
+        )
 
         return (
             jsonify(
-                {"success": True, "results": filtered_results, "runbook": runbooks}
+                {
+                    "success": True,
+                    "results": filtered_results,
+                    "runbook": runbooks,
+                }
             ),
             200,
         )
 
     except Exception as e:
         logger.error("redult_list error: %s", e, exc_info=True)
+
         return jsonify({"error": str(e)}), 500
 
 
@@ -898,21 +1496,142 @@ def list_runbooks(user_id):
     # dbserver = LanceDBServer()
     runbooks = _run_async(dbserver.get_all_runbooks(user_id))
 
+    shared_reports = get_user_shared_reports(user_id)
+    shared_runbook_ids = [
+        rid for rid, data in shared_reports.items() if data.get("type") == "runbook"
+    ]
+    logger.info("data shared %s", shared_runbook_ids)
+
+    for shared_id in shared_runbook_ids:
+        shared_data = shared_reports[shared_id]
+        main_user_id = shared_data.get("mainuser_id")
+
+        try:
+            actual_runbook_id = shared_data.get("runbook_id", shared_id)
+            shared_record = _run_async(
+                dbserver.get_runbook_by_id(main_user_id, actual_runbook_id)
+            )
+            if shared_record:
+                if isinstance(shared_record, list) and shared_record:
+                    shared_record = shared_record[0]
+                shared_record["shared"] = True
+                shared_record["shared_by"] = main_user_id
+                runbooks.append(shared_record)
+        except Exception as e:
+            logger.warning(f"Could not fetch shared runbook {shared_id}: {e}")
+
     return jsonify({"success": True, "runbooks": runbooks})
 
 
 @runbook_bp.route("/runbook/<runbook_id>/<user_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
 def get_runbook(runbook_id, user_id):
-    if not user_id:
-        user_id = session.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
-    # dbserver = LanceDBServer()
-    runbook = _run_async(dbserver.get_runbook_by_id(user_id, runbook_id))
+    try:
 
-    return jsonify({"success": True, "runbook": runbook})
+        # -----------------------------
+        # Resolve User
+        # -----------------------------
+        base_user_id = user_id or session.get("user_id")
+
+        if not base_user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
+
+        if not user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        # -----------------------------
+        # Fetch Runbook
+        # -----------------------------
+        runbook = _run_async(dbserver.get_runbook_by_id(user_id, runbook_id))
+
+        # Normalize list response
+        if isinstance(runbook, list):
+            runbook = runbook[0] if runbook else None
+
+        # -----------------------------
+        # Shared Access Fallback
+        # -----------------------------
+        if not runbook:
+
+            shared_reports = get_user_shared_reports(user_id)
+
+            shared_entry = None
+
+            for _, sdata in shared_reports.items():
+
+                if (
+                    sdata.get("type") == "runbook"
+                    and sdata.get("runbook_id") == runbook_id
+                ):
+                    shared_entry = sdata
+                    break
+
+            if shared_entry:
+
+                main_user_id = shared_entry.get("mainuser_id")
+
+                runbook = _run_async(
+                    dbserver.get_runbook_by_id(main_user_id, runbook_id)
+                )
+
+                # Normalize list response
+                if isinstance(runbook, list):
+                    runbook = runbook[0] if runbook else None
+
+                if runbook:
+                    runbook["shared"] = True
+                    runbook["shared_by"] = main_user_id
+
+        # -----------------------------
+        # Not Found
+        # -----------------------------
+        if not runbook:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "Runbook not found",
+                    }
+                ),
+                404,
+            )
+
+        # -----------------------------
+        # FULL Recursive JSON Normalize
+        # -----------------------------
+        runbook = normalize_json(runbook)
+
+        # -----------------------------
+        # Response
+        # -----------------------------
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "runbook": runbook,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+
+        tb = traceback.format_exc()
+
+        logger.error("get_runbook error: %s\n%s", e, tb)
+
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Failed to fetch runbook",
+                    "details": str(e),
+                }
+            ),
+            500,
+        )
 
 
 @runbook_bp.route("/allrunbook/<user_id>", methods=["GET"])

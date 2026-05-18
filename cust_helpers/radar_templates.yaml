@@ -2098,12 +2098,18 @@ radar_change_block_prompt: |
   - ✅ Return ONLY the changed block (or micro-block)
   - ✅ Preserve original structure and keys
   - ✅ This output is for **user preview only**
+  - The target_block_json is the ONLY editable object
+  - Any field not present in target_block_json must NOT be invented
+  - Do not infer unrelated report content
 
   ---
   ## INPUT VARIABLES
 
-  original_json:
-  {{original_json}}
+  document_metadata:
+  {{document_metadata}}
+
+  target_block_json:
+  {{target_block_json}}
 
   target_block:
     block_id: {{block_change}}

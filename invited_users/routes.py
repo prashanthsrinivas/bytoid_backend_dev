@@ -17,12 +17,13 @@ from invited_users.uszr_helper import (
 )
 from utils.base_logger import get_logger
 from utils.auth_resolver import get_user_from_request
+from utils.permission_required import permission_required_body
 from dotenv import load_dotenv
 from services.outlook_service import OutlookService
 from utils.permission_resolver import resolve_permissions
 from utils.s3_utils import read_json_from_s3
 from datetime import timedelta, date as _date
-import os
+import os 
 
 inv_users_bp = Blueprint("invited_users", __name__)
 
@@ -775,6 +776,9 @@ def get_permissions():
         "admin": "Admin",
         "workspace": "Workspace",
         "intake": "Intake Workflow",
+        "policyhub": "Policyhub",
+        "trustcenter": "Trustcenter",
+        "calender": "Calender",
     }
 
     for key, label in PERMISSIONS.items():
@@ -1852,7 +1856,7 @@ def revoke_special_access():
 
     data = request.get_json()
     grantor_id = data.get("user_id")  # logged-in data owner (grantor_admin_id)
-    target_id = data.get("target_id")  # accessor being revoked (target_admin_id)
+    target_id = data.get("target_id") or data.get("target_admin_id")  # accessor being revoked (target_admin_id)
 
     conn = None
     try:
@@ -1875,13 +1879,14 @@ def revoke_special_access():
                 return jsonify({"error": "Only admins allowed"}), 403
             if grantor["company_name"] != target["company_name"]:
                 return jsonify({"error": "Different organization"}), 403
-            # Delete access: (grantor = data owner, target = accessor being revoked)
+            # Delete access: bidirectional match handles both column orderings
             cursor.execute(
                 """
                 DELETE FROM special_access
-                WHERE grantor_admin_id=%s AND target_admin_id=%s
+                WHERE (grantor_admin_id=%s AND target_admin_id=%s)
+                   OR (grantor_admin_id=%s AND target_admin_id=%s)
             """,
-                (grantor_id, target_id),
+                (grantor_id, target_id, target_id, grantor_id),
             )
             if cursor.rowcount == 0:
                 return (

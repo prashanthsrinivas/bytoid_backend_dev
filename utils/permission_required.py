@@ -1,24 +1,62 @@
 from flask import g, jsonify, request, session
 from functools import wraps
-import asyncio
+import logging
 import inspect
 import json
 import pymysql
+from utils.app_configs import IS_DEV
 from db.rds_db import connect_to_rds
 from utils.normal import parse_composite_user_id
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
+
 
 def _get_user_id_from_context():
-    """Extract user_id from g.user_id, session, or request body/args (session middleware fallback)."""
-    user_id = getattr(g, "user_id", None)
+    """
+    Extract user_id from:
+    - g
+    - session
+    - route params
+    - JSON body
+    - query params
+    - form data
+
+    Supports both:
+    - user_id
+    - userid
+    """
+
+    def pick(source):
+        if not source:
+            return None
+        return source.get("user_id") or source.get("userid")
+
+    # g
+    user_id = getattr(g, "user_id", None) or getattr(g, "userid", None)
+
+    # session
     if not user_id:
-        user_id = session.get("user_id")
+        user_id = pick(session)
+
+    # route params
+    if not user_id and request.view_args:
+        user_id = pick(request.view_args)
+
+    # json body
     if not user_id and request.is_json:
-        user_id = (request.get_json(silent=True) or {}).get("user_id")
+        user_id = pick(request.get_json(silent=True) or {})
+
+    # query params
     if not user_id:
-        user_id = request.args.get("user_id")
+        user_id = pick(request.args)
+
+    # form data
     if not user_id:
-        user_id = request.form.get("user_id")
+        user_id = pick(request.form)
+
+    logger.info("found user_id=%s", user_id)
+
     return user_id
 
 

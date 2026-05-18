@@ -490,6 +490,143 @@ async def get_think_fire_response_og(
     return response_text
 
 
+async def get_think_fire_response2_chunked(
+    user_message: str,
+    user_id,
+    credits,
+    total_input_chars=None,
+    chunk_size: int = 120000,
+    overlap: int = 4000,
+):
+    """
+    Chunk-safe THINK model wrapper.
+
+    Use when prompts may exceed optimal context size
+    (large RADAR reports, runbooks, long workflows, etc.)
+
+    Features:
+    - Async
+    - Credit-aware
+    - Chunked prompt processing
+    - Context overlap support
+    - Automatic merge
+    - Safer for huge documents
+    """
+
+    if not total_input_chars:
+        total_input_chars = len(user_message)
+
+    # --------------------------------------------------
+    # Credit check
+    # --------------------------------------------------
+    has_credits = await credits.has_ai_credits(
+        total_chars=total_input_chars,
+        user_id=user_id,
+    )
+
+    if not has_credits:
+        print("No sufficient credits for THINK_FIRE model")
+        return "INSUFFICIENT"
+
+    # --------------------------------------------------
+    # Small prompt → normal flow
+    # --------------------------------------------------
+    if total_input_chars <= chunk_size:
+        return await get_think_fire_response2_og(
+            user_message=user_message,
+            user_id=user_id,
+            credits=credits,
+            total_input_chars=total_input_chars,
+        )
+
+    # --------------------------------------------------
+    # Chunk prompt
+    # --------------------------------------------------
+    chunks = []
+
+    start = 0
+    total_len = len(user_message)
+
+    while start < total_len:
+
+        end = min(start + chunk_size, total_len)
+
+        chunk = user_message[start:end]
+
+        chunks.append(chunk)
+
+        if end >= total_len:
+            break
+
+        start = end - overlap
+
+    print(f"THINK chunk count => {len(chunks)}")
+
+    # --------------------------------------------------
+    # Process chunks sequentially
+    # --------------------------------------------------
+    chunk_outputs = []
+
+    for idx, chunk in enumerate(chunks):
+
+        print(f"Processing THINK chunk {idx + 1}/{len(chunks)}")
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (f"[Chunk {idx + 1}/{len(chunks)}]\n\n" f"{chunk}"),
+                        }
+                    ],
+                }
+            ],
+            "temperature": 0.1,
+            "top_p": 0.95,
+            "max_tokens": 32000,
+        }
+
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=THINK_MODEL,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        raw_body = response["body"].read()
+
+        response_body = json.loads(raw_body)
+
+        response_text = extract_bedrock_text(response_body)
+
+        if response_text:
+            chunk_outputs.append(response_text)
+
+    # --------------------------------------------------
+    # Merge chunk responses
+    # --------------------------------------------------
+    merged_response = "\n\n".join(chunk_outputs)
+
+    # --------------------------------------------------
+    # Credit update
+    # --------------------------------------------------
+    total_output_chars = len(merged_response)
+
+    total_chars = total_input_chars + total_output_chars
+
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_chars,
+        user_id=user_id,
+        reference_id="get_think_fire_response2_chunked",
+    )
+
+    return merged_response
+
+
 async def get_think_fire_response2_og(
     user_message: str, user_id, credits, total_input_chars=None
 ):

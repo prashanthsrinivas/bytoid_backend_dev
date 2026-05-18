@@ -12,6 +12,7 @@ from utils.s3_utils import read_json_from_s3
 from presidio_anonymizer import AnonymizerEngine
 from datetime import datetime
 from utils.base_logger import get_logger
+from utils.permission_required import permission_required_body
 import re
 from difflib import SequenceMatcher
 from ai_reporting.parse_llm import parse_llm_response
@@ -609,6 +610,7 @@ def generate_entity_groups(pii_mapping):
 
 
 @search_bp.route("/search-emails", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 async def search_emails(text_input=None, user_id=None):
     try:
 

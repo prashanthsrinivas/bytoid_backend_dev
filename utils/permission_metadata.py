@@ -569,23 +569,39 @@ PERMISSION_METADATA = {
     },
 
     # ================= CALENDAR =================
-    "calendar.create": {
+    "calender.create": {
         "label": "Create Event",
         "module": "Calendar",
         "type": "create",
         "dependencies": []
     },
-    "calendar.view.cancelled": {
+
+    "calender.view.cancelled": {
         "label": "View Cancelled Events",
         "module": "Calendar",
         "type": "read",
         "dependencies": []
     },
-    "calendar.view.confirmed": {
+
+    "calender.view.confirmed": {
         "label": "View Confirmed Events",
         "module": "Calendar",
         "type": "read",
         "dependencies": []
+    
+    },
+    "calender.edit": {
+        "label": "Edit Calendar Events",
+        "module": "Calendar",
+        "type": "update",
+        "dependencies": ["calender.view.confirmed"]
+    },
+
+    "calender.delete": {
+        "label": "Delete Calendar Events",
+        "module": "Calendar",
+        "type": "delete",
+        "dependencies": ["calender.view.confirmed"]
     },
 
     # ================= MY APPS =================
@@ -731,12 +747,6 @@ PERMISSION_METADATA = {
         "type": "create",
         "dependencies": ["team.search"]
     },
-    "team.view": {
-        "label": "View Member Details",
-        "module": "Team",
-        "type": "read",
-        "dependencies": ["team.search"]
-    },
     "team.workflow.view": {
         "label": "View Workflows",
         "module": "Team",
@@ -761,6 +771,55 @@ PERMISSION_METADATA = {
         "type": "update",
         "dependencies": ["team.access.add"]
     },
+    "team.member.view": {
+        "label": "View Member Details",
+        "module": "Team",
+        "type": "read",
+        "dependencies": ["team.search"]
+    },
+
+    "team.member.edit": {
+        "label": "Edit Member",
+        "module": "Team",
+        "type": "update",
+        "dependencies": ["team.member.view"]
+    },
+
+    "team.member.delete": {
+        "label": "Delete Member",
+        "module": "Team",
+        "type": "delete",
+        "dependencies": ["team.member.view"]
+    },
+
+    "team.group.view": {
+        "label": "View Groups",
+        "module": "Team",
+        "type": "read",
+        "dependencies": ["team.search"]
+    },
+
+    "team.group.create": {
+        "label": "Create Groups",
+        "module": "Team",
+        "type": "create",
+        "dependencies": ["team.group.view"]
+    },
+
+    "team.group.edit": {
+        "label": "Edit Groups",
+        "module": "Team",
+        "type": "update",
+        "dependencies": ["team.group.create"]
+    },
+
+    "team.group.delete": {
+        "label": "Delete Groups",
+        "module": "Team",
+        "type": "delete",
+        "dependencies": ["team.group.create"]
+    },
+    
 
     # ================= ADMIN =================
     "admin.manage_users": {

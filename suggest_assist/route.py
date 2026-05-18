@@ -137,8 +137,8 @@ async def receive_gmail_notification():
     return "OK", 200
 
 
-@permission_required_body("taskbox.autopilot.enable")
 @assist_suggest_bp.route("/ai_autopilot", methods=["POST"])
+@permission_required_body("taskbox.autopilot.enable")
 async def triggerassist():
     data = request.json
     userid = data.get("user_id")
@@ -152,8 +152,8 @@ async def triggerassist():
         return await service.activate_autopilot(from_email, selected_agent)
 
 
-@permission_required_body("taskbox.autopilot.cancel")
 @assist_suggest_bp.route("/ai_autopilot-revoke", methods=["POST"])
+@permission_required_body("taskbox.autopilot.cancel")
 def revoke_autopilot():
     data = request.json
     userid = data.get("user_id")
@@ -167,8 +167,8 @@ def revoke_autopilot():
         return service.revoke_autopilot(target_email, pilot_override)
 
 
-@permission_required_body("taskbox.ai.switch")
 @assist_suggest_bp.route("/ai_autopilot-mode", methods=["POST"])
+@permission_required_body("taskbox.ai.switch")
 def changepilotmode():
     data = request.json
     userid = data.get("user_id")
@@ -181,15 +181,15 @@ def changepilotmode():
         return service.change_autopilot_mode(new_mode)
 
 
-@permission_required_body("taskbox.autopilot.enable")
 @assist_suggest_bp.route("/ai_autopilot-reset/<userid>", methods=["GET"])
+@permission_required_body("taskbox.autopilot.enable")
 def reset_autopilot(userid):
     with UmailAutoService(userid) as service:
         return service.reset_autopilot()
 
 
-@permission_required_body("taskbox.ai.autopilot")
 @assist_suggest_bp.route("/ai_autopilot/<userid>", methods=["GET"])
+@permission_required_body("taskbox.ai.autopilot")
 def get_autopilot(userid):
     with UmailAutoService(userid) as service:
         autopilot_data, err, code = service.fetch_autopilot()
@@ -198,8 +198,8 @@ def get_autopilot(userid):
         return jsonify({"user_id": userid, "autopilot": autopilot_data}), 200
 
 
-@permission_required_body("taskbox.agent.assign")
 @assist_suggest_bp.route("/ai_autopilot-update-agent", methods=["POST"])
+@permission_required_body("taskbox.agent.assign")
 def update_selected_agent():
     data = request.json
     userid = data.get("user_id")
@@ -217,8 +217,8 @@ def update_selected_agent():
 # -------------------- Auto-reply / AI Suggestion Routes --------------------
 
 
-@permission_required_body("taskbox.autopilot.enable")
 @assist_suggest_bp.route("/auto-reply-email", methods=["POST"])
+@permission_required_body("taskbox.autopilot.enable")
 async def make_reply_email():
     data = request.json
     userid = data.get("user_id")
@@ -244,8 +244,8 @@ async def make_reply_email():
     #     return jsonify({"error": "Unable to process auto-reply"}), 500
 
 
-@permission_required_body("taskbox.ai.suggest")
 @assist_suggest_bp.route("/ai_suggest", methods=["POST"])
+@permission_required_body("taskbox.ai.suggest")
 async def triggersuggest():
     data = request.json
     userid = data.get("user_id")
@@ -308,8 +308,8 @@ async def triggersuggest():
         return jsonify({"error": "Cannot generate AI suggestion"}), 400
 
 
-@permission_required_body("taskbox.ai.suggest")
 @assist_suggest_bp.route("/test_functions", methods=["POST"])
+@permission_required_body("taskbox.ai.suggest")
 async def messcheckgmail():
     data = request.json
     userid = data.get("user_id")

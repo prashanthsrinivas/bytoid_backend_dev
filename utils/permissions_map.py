@@ -122,6 +122,8 @@ PERMISSIONS = {
    "calendar.create": "Create Event",
    "calendar.view.cancelled": "View Cancelled Events",
    "calendar.view.confirmed": "View Confirmed Events",
+   "calendar.edit": "Edit Calendar Events",
+   "calendar.delete": "Delete Calendar Events",
 
    # ================= MY APPS =================
    "apps.create": "Create App",
@@ -142,11 +144,17 @@ PERMISSIONS = {
    "team.search": "Search Agents",
    "team.filter": "Filter by Status",
    "team.add_vendor": "Add Vendor",
-   "team.view": "View Member Details",
    "team.workflow.view": "View Workflows",
    "team.status.view": "View Status",
    "team.access.add": "Add Access",
    "team.access.share": "Share Access",
+   "team.member.view": "View Member Details",
+   "team.member.edit": "Edit Member",
+   "team.member.delete": "Delete Member",
+   "team.group.view": "View Groups",
+   "team.group.create": "Create Groups",
+   "team.group.edit": "Edit Groups",
+   "team.group.delete": "Delete Groups",
 
    # ================= ADMIN =================
    "admin.manage_users": "Manage Users",

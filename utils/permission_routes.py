@@ -199,6 +199,23 @@ PERMISSION_ROUTES = {
         "/schedule_runbook"
     ],
 
+    # ================= CALENDAR =================
+
+    "calender.view.confirmed": [
+        "/check-user-events"
+    ],
+
+    "calender.create": [
+        "/create-user-event"
+    ],
+
+    "calender.edit": [
+        "/update-user-event"
+    ],
+
+    "calender.delete": [
+        "/delete-user-event"
+    ],
     # ================= POLICY HUB =================
 
     "policyhub.view": [
@@ -350,8 +367,8 @@ PERMISSION_ROUTES = {
         "/get_dormant_leads",
         "/get_snoozed_customers",
         "/get_no_of_customers",
-        "/get_assignee_list"
-    ],
+        "/get_assignee_list",
+        "/search-emails"],
 
     "taskbox.email.send": [
         "/gmail/respond",
@@ -441,7 +458,6 @@ PERMISSION_ROUTES = {
         "/microsoft/session-debug",
         "/check_notes_tables"
     ],
-
     # ================= KNOWLEDGE BASE (RADAR / DOCS) =================
     "kb.doc.view": [
         "/radar/apps/list/<userid>",
@@ -524,6 +540,46 @@ PERMISSION_ROUTES = {
         "/update-audio-contacts"
     ],
 
+    # ================= TEAM =================
+
+    "team.search": [
+        "/contacts/list"
+    ],
+
+    "team.add_vendor": [
+        "/contacts/save"
+    ],
+
+    "team.member.view": [
+        "/contacts/basic_info"
+    ],
+
+    "team.member.edit": [
+        "/contacts/save_edit"
+    ],
+
+    "team.member.delete": [
+        "/users/delete_contacts"
+    ],
+
+    "team.group.view": [
+        "/users/get_group",
+        "/users/get_all_groups"
+    ],
+
+    "team.group.create": [
+        "/users/save_group"
+    ],
+
+    "team.group.edit": [
+        "/users/edit_group"
+    ],
+
+    "team.group.delete": [
+        "/users/delete_group"
+    ],
+
+
     # ======= Trust Center ========
     "trustcenter.view": [
         "/trust-center",
@@ -550,4 +606,29 @@ PERMISSION_ROUTES = {
     "trustcenter.document.upload": [
         "/trust-center/documents"
     ],  
+    "trustcenter.document.delete": ["/trust-center/documents/<doc_id>"],
+
+    "kb.api.regenerate": ["/generate-website-api-key"],
+
+    "admin.manage_admins": [
+        "/admin/roles-add", "/admin/assign-role", "/admin/bulk-assign-role",
+        "/admin/roles-get/<userid>", "/admin/organization-users/<userid>",
+        "/admin/roles-update", "/admin/roles-delete/<userid>/<role_id>",
+        "/admin/invite_user", "/admin/delete-invite", "/admin/resend-invite",
+        "/admin/edit_shared_user_role", "/admin/revoke_shared_user_role",
+        "/admin/delete_shared_user_role", "/admin/activate_shared_user_role",
+        "/admin/all_special_access_users/<userid>",
+        "/admin/all_special_access_sources/<userid>", "/admin/audit-logs"
+    ],
+
+    "intake.bytoid_reference": [
+        "/process-query-key-og", "/process-query-key", "/get-ai-suggestion"
+    ],
+
+    "compliance.standalone.create": [
+        "/generate_report", "/post_clarifications", "/finalize_report", "/list_all_draft_reports"
+    ],
+
+    "compliance.standalone.edit": ["/change_name"],
+
 }

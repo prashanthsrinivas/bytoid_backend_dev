@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import time
+import traceback
 import pymysql
 from agent_route.doc_clarity import QueryData
 from apiConnector.helpers import _execute_endpoint_internal
@@ -26,12 +27,13 @@ from services.redis_service import get_redis
 from umail.routes import get_sorted_lance_emails
 from utils.fireworkzz import (
     get_firework_embedding,
+    get_think_fire_response2_chunked,
     get_think_fire_response2_og,
     get_think_fire_response2_og2,
 )
 import os
 from utils.img_tokens import image_credit_cost
-from utils.normal import load_yaml_file
+from utils.normal import load_yaml_file, parse_composite_user_id
 from utils.base_logger import get_logger
 from utils.app_configs import IS_DEV
 
@@ -40,62 +42,166 @@ RADAR_TEMPLATE = load_yaml_file(path=pathconfig.radar_prompts)
 # print("RADAR_TEMPLATE type:", type(RADAR_TEMPLATE))
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
-
-_GENERIC_FILENAMES = {
-    "document", "questionnaire", "template", "file", "report",
-    "upload", "attachment", "untitled", "new", "assessment",
-}
-
-
-def _extract_report_name(data_sources, result: dict, max_len: int = 80) -> str | None:
-    """
-    Derive a human-readable report name when none was explicitly provided.
-    Priority:
-      1. Questionnaire / uploaded-file name (vendor or assessment name)
-      2. structure_rationale from the generated result
-      3. First block title
-    """
-    import os as _os
-
-    # 1. Questionnaire filename — vendor / assessment name embedded in the file name
-    sources = data_sources if isinstance(data_sources, dict) else {}
-    if not sources and isinstance(data_sources, str):
-        try:
-            sources = json.loads(data_sources)
-        except Exception:
-            sources = {}
-
-    for file_obj in (sources.get("filenames") or []):
-        raw = (
-            file_obj.get("filename") if isinstance(file_obj, dict) else str(file_obj)
-        ) or ""
-        base = _os.path.splitext(raw)[0]
-        clean = base.replace("_", " ").replace("-", " ").strip()
-        if clean and clean.lower() not in _GENERIC_FILENAMES:
-            return clean[:max_len]
-
-    # 2. structure_rationale — short executive-facing sentence from the result
-    rationale = (result.get("structure_rationale") or "").strip()
-    if rationale:
-        if len(rationale) <= max_len:
-            return rationale
-        return rationale[:max_len].rsplit(" ", 1)[0] + "…"
-
-    # 3. First block title
-    blocks = result.get("blocks") or []
-    if blocks and isinstance(blocks[0], dict):
-        title = (blocks[0].get("title") or "").strip()
-        if title:
-            return title[:max_len]
-
-    return None
+from shared_configuration import (
+    core_assign_report,
+    core_revoke_report,
+    get_admin_shared_config,
+    get_round_robin_user,
+    check_role_has_permission,
+    get_user_shared_reports,
+)
 
 # # Run tests
 # run_language_tests()
 
 
+@radar_bp.route("/radar/assign", methods=["POST"])
+@permission_required_body("kb.doc.edit")
+async def assign_radar():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    report_id = data.get("report_id")
+    report_name = data.get("report_name")
+    assignment_type = data.get("assignment_type")
+    client_user_id = data.get("client_user_id")
+    role_id = data.get("role_id")
+
+    if not user_id or not report_id or not assignment_type:
+        return jsonify({"error": "userid, report_id, assignment_type required"}), 400
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+
+        if assignment_type == "manual":
+            if not client_user_id:
+                return jsonify({"error": "user_id required for manual assignment"}), 400
+
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT email FROM users WHERE user_id=%s", (client_user_id,)
+                )
+                user_row = cursor.fetchone()
+                if not user_row:
+                    return jsonify({"error": "User not found"}), 404
+            user_email = user_row["email"]
+
+        elif assignment_type == "role":
+            if not role_id:
+                return jsonify({"error": "role_id required for role assignment"}), 400
+
+            if not check_role_has_permission(conn, user_id, role_id, "kb.doc.view"):
+                return (
+                    jsonify({"error": "Role does not have radar access permission"}),
+                    403,
+                )
+
+            user_obj, error_msg = get_round_robin_user(
+                user_id, role_id, "radar", conn, "kb.doc.view"
+            )
+            if not user_obj:
+                return jsonify({"error": error_msg or "No eligible users found"}), 400
+            client_user_id = user_obj["user_id"]
+            user_email = user_obj["email"]
+
+        else:
+            return jsonify({"error": "assignment_type must be 'manual' or 'role'"}), 400
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT email FROM users WHERE user_id=%s", (user_id,))
+            admin_row = cursor.fetchone()
+            if not admin_row:
+                return jsonify({"error": "Admin not found"}), 404
+        admin_email = admin_row["email"]
+
+        dbserver = LanceDBServer()
+        sharing_access, error = core_assign_report(
+            user_id,
+            admin_email,
+            client_user_id,
+            user_email,
+            report_id,
+            "radar",
+            report_name,
+            conn,
+            dbserver,
+        )
+
+        if error:
+            return jsonify({"error": error}), (
+                403 if "permission" in error.lower() else 400
+            )
+
+        return jsonify({"success": True, "sharing_access": sharing_access}), 200
+
+    except Exception as e:
+        logger.error(f"Error in assign_radar: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@radar_bp.route("/radar/revoke", methods=["POST"])
+@permission_required_body("kb.doc.edit")
+async def revoke_radar():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    client_user_id = data.get("client_user_id")
+    report_id = data.get("report_id")
+
+    if not user_id or not client_user_id or not report_id:
+        return jsonify({"error": "userid, user_id, report_id required"}), 400
+
+    try:
+        dbserver = LanceDBServer()
+        sharing_access, error = core_revoke_report(
+            user_id, client_user_id, report_id, "radar", dbserver
+        )
+
+        if error:
+            return jsonify({"error": error}), 400
+
+        return jsonify({"success": True, "sharing_access": sharing_access}), 200
+
+    except Exception as e:
+        logger.error(f"Error in revoke_radar: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@radar_bp.route("/radar/sharing/<report_id>", methods=["GET"])
 @permission_required_body("kb.doc.view")
+def get_radar_sharing(report_id):
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id query param required"}), 400
+
+    try:
+        config = get_admin_shared_config(user_id)
+        sharing_access = (
+            config.get("reports", {}).get(report_id, {}).get("sharing_access", [])
+        )
+        return jsonify({"sharing_access": sharing_access}), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_radar_sharing: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@radar_bp.route("/radar/sharedconfig/<user_id>", methods=["GET"])
+@permission_required_body("kb.doc.view")
+def get_radar_sharedconfig(user_id):
+    try:
+        config = get_admin_shared_config(user_id)
+        return jsonify(config), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_radar_sharedconfig: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
+@permission_required_body("kb.doc.view")
 def radarapp(userid):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -300,9 +406,6 @@ def run_radar_review_sync(
         logger.exception("Thread runner crashed")
     finally:
         loop.close()
-
-
-import asyncio
 
 
 async def merge_radar(raw_chunks, user_id, credits, output_language="english"):
@@ -900,9 +1003,6 @@ async def run_radar_review_redis(
         )
 
         if refactor_result:
-            # Derive name from report content when not explicitly provided
-            if not name:
-                name = _extract_report_name(data_sources, refactor_result)
             await dbserver.radar_upsert_review(
                 user_id=user_id,
                 name=name,
@@ -1024,7 +1124,6 @@ def group_radars(rows: list[dict]):
         grouped[radar_id]["reviews"].append(
             {
                 "review_id": row.get("review_id"),
-                "name": row.get("name"),
                 "user_input": row.get("user_input"),
                 "status": row.get("status"),
                 "started_at": row.get("started_at", 0),
@@ -1043,44 +1142,63 @@ def group_radars(rows: list[dict]):
     )
 
 
+@radar_bp.route("/radar/reviews/<user_id>", methods=["GET"])
 @permission_required_body("kb.doc.view")
-@radar_bp.route("/radar/reviews/<userid>", methods=["GET"])
-async def list_radar_reviews(userid):
+async def list_radar_reviews(user_id):
     dbserver = LanceDBServer()
-    rows = await dbserver.radar_get_review_index(userid)
+    rows = await dbserver.radar_get_review_index(user_id)
+    if not rows:
+        shared_reports = get_user_shared_reports(user_id)
+        shared_radar_ids = [
+            rid for rid, data in shared_reports.items() if data.get("type") == "radar"
+        ]
+
+        for shared_id in shared_radar_ids:
+            shared_data = shared_reports[shared_id]
+            main_user_id = shared_data.get("mainuser_id")
+
+            try:
+                shared_record = await dbserver.radar_get_by_id(main_user_id, shared_id)
+                if shared_record:
+                    shared_record["shared"] = True
+                    shared_record["shared_by"] = main_user_id
+                    return shared_record
+            except Exception as e:
+                logger.warning(f"Could not fetch shared radar {shared_id}: {e}")
+
     return jsonify(group_radars(rows))
 
 
-@permission_required_body("kb.doc.edit")
-@radar_bp.route("/radar/rename", methods=["POST"])
-async def rename_radar_review():
-    data = request.get_json(force=True)
-    userid = data.get("userid")
-    review_id = data.get("review_id")
-    name = (data.get("name") or "").strip()
-
-    if not userid or not review_id or not name:
-        return jsonify({"error": "userid, review_id, and name are required"}), 400
-
-    dbserver = LanceDBServer()
-    await dbserver.radar_update_name(user_id=userid, review_id=review_id, name=name)
-    return jsonify({"success": True, "review_id": review_id, "name": name})
-
-
-@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/docs", methods=["POST"])
+@permission_required_body("kb.doc.view")
 async def get_radar_doc_byid():
     data = request.get_json(force=True)
-    userid = data.get("userid")
+    # user_id = req_data.get("user_id")
+    # docid = req_data.get("docid")
+    userid = data.get("user_id") or data.get("userid")
     id = data.get("id")
     docid = data.get("docid")
     dbserver = LanceDBServer()
+
     data = await dbserver.radar_get_review(user_id=userid, review_id=docid)
+
+    if not data:
+        shared_reports = get_user_shared_reports(userid)
+        if docid in shared_reports:
+            shared_data = shared_reports[docid]
+            main_user_id = shared_data.get("mainuser_id")
+            data = await dbserver.radar_get_review(
+                user_id=main_user_id, review_id=docid
+            )
+            if data:
+                data["shared"] = True
+                data["shared_by"] = main_user_id
+
     return jsonify(data)
 
 
-@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/review", methods=["POST"])
+@permission_required_body("kb.doc.edit")
 async def radar_review():
 
     data = request.get_json()
@@ -1110,8 +1228,8 @@ async def radar_review():
     return jsonify(state)
 
 
-@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/analyze", methods=["POST"])
+@permission_required_body("kb.doc.edit")
 async def radar_analyze():
 
     data = request.get_json()
@@ -1137,8 +1255,8 @@ async def radar_analyze():
     return jsonify(state)
 
 
-@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/decide", methods=["POST"])
+@permission_required_body("kb.doc.edit")
 async def radar_decide():
 
     data = request.get_json()
@@ -1164,8 +1282,8 @@ async def radar_decide():
     return jsonify(state)
 
 
-@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/status", methods=["GET"])
+@permission_required_body("kb.doc.view")
 async def radar_status():
 
     job_id = request.args.get("job_id")
@@ -1183,8 +1301,8 @@ async def radar_status():
     return jsonify(job)
 
 
-@permission_required_body("kb.doc.view")
 @radar_bp.route("/radar/current", methods=["GET"])
+@permission_required_body("kb.doc.view")
 async def radar_current():
 
     userid = request.args.get("userid")
@@ -1201,8 +1319,306 @@ async def radar_current():
     return jsonify(job)
 
 
-@permission_required_body("kb.doc.edit")
+# @radar_bp.route("/radar/changeblock", methods=["POST"])
+# @permission_required_body("kb.doc.edit")
+# async def radar_change_block_preview():
+#     data = request.get_json(force=True)
+
+#     user_id = data.get("userid")
+#     review_id = data.get("review_id")
+#     result_id = data.get("result_id")
+#     block_id = data.get("block_id")
+#     micro_block = data.get("micro_id")
+#     user_requested_change = data.get("user_input")
+#     credits = Credits()
+
+#     if not user_id or not block_id or not user_requested_change:
+#         return (
+#             jsonify({"error": "userid, block_id, and user_input are required"}),
+#             400,
+#         )
+
+#     # 🔥 Either result_id OR review_id must be present
+#     if not (result_id or review_id):
+#         return (
+#             jsonify({"error": "Either result_id or review_id must be provided"}),
+#             400,
+#         )
+
+#     dbserver = LanceDBServer()
+#     record = None
+#     original_json = None
+#     if review_id:
+#         record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
+
+#         if not record or not record.get("result"):
+#             return jsonify({"error": "RADAR review not found"}), 404
+
+#         original_json = record["result"]
+#     elif result_id:
+#         record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
+
+#         if not record or not record.get("result"):
+#             return jsonify({"error": "runbook review result not found"}), 404
+
+#         original_json = record["result"]
+#     else:
+#         return jsonify({"error": "Either review_id or result_id is required"}), 400
+
+#     try:
+#         review_temp = RADAR_TEMPLATE["radar_change_block_prompt"]
+#     except KeyError:
+#         return jsonify({"error": "Missing radar_change_block_prompt template"}), 500
+
+#     prompt = (
+#         review_temp.replace("{{original_json}}", json.dumps(original_json, indent=2))
+#         .replace("{{block_change}}", block_id)
+#         .replace("{{microblock}}", micro_block or "")
+#         .replace("{{user_requested_change}}", user_requested_change)
+#     )
+
+#     try:
+#         llm_response = await get_think_fire_response2_og(
+#             user_message=prompt,
+#             user_id=user_id,
+#             credits=credits,
+#         )
+
+#         if llm_response == "INSUFFICIENT":
+#             return jsonify({"error": "Insufficient AI credits"}), 402
+
+#         # Try strict parse first, then extract JSON from text
+#         payload = _safe_json_parse(llm_response)
+#         if not payload:
+#             try:
+#                 json_text = extract_json(llm_response)
+#                 payload = json.loads(json_text)
+#             except Exception as parse_err:
+#                 return (
+#                     jsonify(
+#                         {
+#                             "error": "Invalid model response",
+#                             "details": str(parse_err),
+#                             "raw_preview": llm_response[:1000],
+#                         }
+#                     ),
+#                     502,
+#                 )
+
+#         # If model rejects the change, pass it through cleanly
+#         if payload.get("status") in {"rejected", "error"}:
+#             return jsonify(payload), 400
+
+#         required_keys = {"block_id", "block_type", "changed_block"}
+#         if not required_keys.issubset(payload.keys()):
+#             return (
+#                 jsonify(
+#                     {
+#                         "error": "Invalid model response",
+#                         "details": "Missing required preview keys",
+#                         "raw_preview": llm_response[:1000],
+#                     }
+#                 ),
+#                 502,
+#             )
+
+#         return jsonify(payload)
+
+#     except Exception as e:
+#         return (
+#             jsonify({"error": "Failed to generate block preview", "details": str(e)}),
+#             500,
+#         )
+
+
+# @radar_bp.route("/radar/changeblock/confirm", methods=["POST"])
+# @permission_required_body("kb.doc.edit")
+# async def radar_change_block_confirm():
+#     data = request.get_json(force=True)
+
+#     user_id = data.get("userid")
+#     review_id = data.get("review_id")
+#     result_id = data.get("result_id")
+#     block_id = data.get("block_id")
+#     micro_block = data.get("micro_id")
+#     changed_block = data.get("changed_block")
+
+#     if not user_id or not block_id or not changed_block:
+#         return (
+#             jsonify({"error": "userid, block_id, and user_input are required"}),
+#             400,
+#         )
+
+#     # 🔥 Either result_id OR review_id must be present
+#     if not (result_id or review_id):
+#         return (
+#             jsonify({"error": "Either result_id or review_id must be provided"}),
+#             400,
+#         )
+#     dbserver = LanceDBServer()
+#     record = None
+#     updated_json = None
+#     if review_id:
+#         record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
+
+#         if not record or not record.get("result"):
+#             return jsonify({"error": "RADAR review not found"}), 404
+
+#         updated_json = record["result"]
+#     elif result_id:
+#         record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
+
+#         if not record or not record.get("result"):
+#             return jsonify({"error": "Runbook review result not found"}), 404
+
+#         updated_json = record["result"]
+#     else:
+#         return jsonify({"error": "Either review_id or result_id is required"}), 400
+
+#     # 🔧 Safe deterministic merge
+#     block_found = False
+
+#     for block in updated_json.get("blocks", []):
+#         if block.get("block_id") == block_id:
+#             if micro_block:
+#                 for micro in block.get("micro_blocks", []):
+#                     if micro.get("micro_id") == micro_block:
+#                         micro.update(changed_block)
+#                         block_found = True
+#                         break
+#             else:
+#                 block.update(changed_block)
+#                 block_found = True
+
+#         if block_found:
+#             break
+
+#     if not block_found:
+#         return jsonify({"error": "Target block or micro-block not found"}), 404
+
+#     try:
+#         if review_id:
+#             await dbserver.radar_update_result(
+#                 user_id=user_id,
+#                 review_id=review_id,
+#                 new_result=updated_json,
+#             )
+#         elif result_id:
+#             await dbserver.update_runbook_result(
+#                 user_id=user_id,
+#                 result_id=result_id,
+#                 new_result=updated_json,
+#             )
+
+#         return jsonify(
+#             {
+#                 "status": "ok",
+#                 "message": "RADAR block updated successfully",
+#                 "block_id": block_id,
+#                 "micro_id": micro_block or None,
+#             }
+#         )
+
+
+#     except Exception as e:
+#         return (
+#             jsonify({"error": "Failed to persist RADAR update", "details": str(e)}),
+#             500,
+#         )
+def find_block_by_id(
+    original_json: dict,
+    block_id: str,
+    micro_id: str | None = None,
+):
+    """
+    Find a RADAR block or micro-block by block_id + optional micro_id.
+
+    Supports:
+    - top-level blocks
+    - nested micro blocks
+    - blocks stored under:
+        original_json["blocks"]
+
+    Returns:
+    {
+        "block": <matched block>,
+        "parent_block": <parent block or None>,
+        "micro_block": <matched micro block or None>,
+        "index": <top-level index>,
+        "micro_index": <micro index or None>,
+    }
+
+    Returns None if not found.
+    """
+
+    if not original_json:
+        return None
+
+    blocks = original_json.get("blocks", [])
+
+    if not isinstance(blocks, list):
+        return None
+
+    for block_index, block in enumerate(blocks):
+
+        if not isinstance(block, dict):
+            continue
+
+        current_block_id = block.get("block_id")
+
+        # --------------------------------------------------
+        # Direct block match
+        # --------------------------------------------------
+        if current_block_id == block_id and not micro_id:
+
+            return {
+                "block": block,
+                "parent_block": None,
+                "micro_block": None,
+                "index": block_index,
+                "micro_index": None,
+            }
+
+        # --------------------------------------------------
+        # Micro block search
+        # --------------------------------------------------
+        possible_micro_keys = [
+            "micro_blocks",
+            "microblocks",
+            "children",
+            "sections",
+            "items",
+        ]
+
+        for key in possible_micro_keys:
+
+            micro_blocks = block.get(key)
+
+            if not isinstance(micro_blocks, list):
+                continue
+
+            for micro_index, micro_block in enumerate(micro_blocks):
+
+                if not isinstance(micro_block, dict):
+                    continue
+
+                current_micro_id = micro_block.get("micro_id") or micro_block.get("id")
+
+                if current_block_id == block_id and current_micro_id == micro_id:
+
+                    return {
+                        "block": block,
+                        "parent_block": block,
+                        "micro_block": micro_block,
+                        "index": block_index,
+                        "micro_index": micro_index,
+                    }
+
+    return None
+
+
 @radar_bp.route("/radar/changeblock", methods=["POST"])
+@permission_required_body("kb.doc.edit")
 async def radar_change_block_preview():
     data = request.get_json(force=True)
 
@@ -1212,6 +1628,7 @@ async def radar_change_block_preview():
     block_id = data.get("block_id")
     micro_block = data.get("micro_id")
     user_requested_change = data.get("user_input")
+
     credits = Credits()
 
     if not user_id or not block_id or not user_requested_change:
@@ -1220,57 +1637,221 @@ async def radar_change_block_preview():
             400,
         )
 
-    # 🔥 Either result_id OR review_id must be present
-    if not (result_id or review_id):
+    if not (review_id or result_id):
         return (
-            jsonify({"error": "Either result_id or review_id must be provided"}),
+            jsonify({"error": "Either review_id or result_id must be provided"}),
             400,
         )
 
-    dbserver = LanceDBServer()
-    record = None
-    original_json = None
-    if review_id:
-        record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
-
-        if not record or not record.get("result"):
-            return jsonify({"error": "RADAR review not found"}), 404
-
-        original_json = record["result"]
-    elif result_id:
-        record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
-
-        if not record or not record.get("result"):
-            return jsonify({"error": "runbook review result not found"}), 404
-
-        original_json = record["result"]
-    else:
-        return jsonify({"error": "Either review_id or result_id is required"}), 400
-
     try:
-        review_temp = RADAR_TEMPLATE["radar_change_block_prompt"]
-    except KeyError:
-        return jsonify({"error": "Missing radar_change_block_prompt template"}), 500
 
-    prompt = (
-        review_temp.replace("{{original_json}}", json.dumps(original_json, indent=2))
-        .replace("{{block_change}}", block_id)
-        .replace("{{microblock}}", micro_block or "")
-        .replace("{{user_requested_change}}", user_requested_change)
-    )
+        # --------------------------------------------------
+        # Resolve composite/shared user
+        # --------------------------------------------------
+        logged_in_user_id, parsed_user_id = parse_composite_user_id(user_id)
 
-    try:
-        llm_response = await get_think_fire_response2_og(
+        if not parsed_user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        dbserver = LanceDBServer()
+
+        record = None
+        original_json = None
+        owner_user_id = parsed_user_id
+        shared_access = False
+
+        # ==================================================
+        # REVIEW FLOW
+        # ==================================================
+        if review_id:
+
+            record = await dbserver.radar_get_review(
+                user_id=parsed_user_id,
+                review_id=review_id,
+            )
+
+            # ----------------------------------------------
+            # Shared access fallback
+            # ----------------------------------------------
+            if not record or not record.get("result"):
+
+                shared_reports = get_user_shared_reports(parsed_user_id)
+
+                shared_entry = None
+
+                for _, sdata in shared_reports.items():
+
+                    if (
+                        sdata.get("type") == "radar"
+                        and sdata.get("review_id") == review_id
+                    ):
+                        shared_entry = sdata
+                        break
+
+                if shared_entry:
+
+                    main_user_id = shared_entry.get("mainuser_id")
+
+                    record = await dbserver.radar_get_review(
+                        user_id=main_user_id,
+                        review_id=review_id,
+                    )
+
+                    if record and record.get("result"):
+                        owner_user_id = main_user_id
+                        shared_access = True
+
+            if not record or not record.get("result"):
+                return jsonify({"error": "RADAR review not found"}), 404
+
+            original_json = record["result"]
+
+        # ==================================================
+        # RUNBOOK RESULT FLOW
+        # ==================================================
+        elif result_id:
+
+            record = await dbserver.runbook_get_result(
+                user_id=parsed_user_id,
+                result_id=result_id,
+            )
+
+            # ----------------------------------------------
+            # Shared access fallback
+            # ----------------------------------------------
+            if not record or not record.get("result"):
+
+                shared_reports = get_user_shared_reports(parsed_user_id)
+
+                logger.info(
+                    "shared_reports for %s => %s",
+                    parsed_user_id,
+                    shared_reports,
+                )
+
+                shared_entry = None
+
+                for _, sdata in shared_reports.items():
+
+                    logger.info("checking shared entry => %s", sdata)
+
+                    # FIXED:
+                    # shared data stores reportid NOT result_id
+                    if (
+                        sdata.get("type") == "runbook"
+                        and sdata.get("reportid") == result_id
+                    ):
+                        shared_entry = sdata
+                        break
+
+                logger.info("matched shared entry => %s", shared_entry)
+
+                if shared_entry:
+
+                    main_user_id = shared_entry.get("mainuser_id")
+
+                    logger.info(
+                        "loading shared runbook result from owner=%s result_id=%s",
+                        main_user_id,
+                        result_id,
+                    )
+
+                    record = await dbserver.runbook_get_result(
+                        user_id=main_user_id,
+                        result_id=result_id,
+                    )
+
+                    logger.info("shared runbook result => %s", bool(record))
+
+                    if record and record.get("result"):
+
+                        owner_user_id = main_user_id
+                        shared_access = True
+
+            if not record or not record.get("result"):
+
+                logger.error(
+                    "Runbook result not found user=%s owner=%s result_id=%s",
+                    parsed_user_id,
+                    owner_user_id,
+                    result_id,
+                )
+
+                return jsonify({"error": "Runbook review result not found"}), 404
+
+            original_json = record["result"]
+        else:
+            return (
+                jsonify({"error": "Either review_id or result_id is required"}),
+                400,
+            )
+
+        # --------------------------------------------------
+        # Prompt Build
+        # --------------------------------------------------
+        try:
+            review_temp = RADAR_TEMPLATE["radar_change_block_prompt"]
+        except KeyError:
+            return (
+                jsonify({"error": "Missing radar_change_block_prompt template"}),
+                500,
+            )
+        target_block_data = find_block_by_id(
+            original_json,
+            block_id,
+            micro_block,
+        )
+
+        if not target_block_data:
+            return jsonify({"error": "Target block not found"}), 404
+
+        # prompt = (
+        #     review_temp.replace(
+        #         "{{original_json}}",
+        #         json.dumps(original_json, indent=2),
+        #     )
+        #     .replace("{{block_change}}", block_id)
+        #     .replace("{{microblock}}", micro_block or "")
+        #     .replace("{{user_requested_change}}", user_requested_change)
+        # )
+        prompt = (
+            review_temp.replace(
+                "{{target_block_json}}",
+                json.dumps(target_block_data, indent=2),
+            )
+            .replace(
+                "{{document_metadata}}",
+                json.dumps(
+                    {
+                        "review_type": original_json.get("review_type"),
+                        "framework": original_json.get("framework"),
+                        "title": original_json.get("title"),
+                    },
+                    indent=2,
+                ),
+            )
+            .replace("{{block_change}}", block_id)
+            .replace("{{microblock}}", micro_block or "")
+            .replace("{{user_requested_change}}", user_requested_change)
+        )
+
+        # --------------------------------------------------
+        # LLM
+        # --------------------------------------------------
+        llm_response = await get_think_fire_response2_chunked(
             user_message=prompt,
-            user_id=user_id,
+            user_id=owner_user_id,
             credits=credits,
         )
 
         if llm_response == "INSUFFICIENT":
             return jsonify({"error": "Insufficient AI credits"}), 402
 
-        # Try strict parse first, then extract JSON from text
+        # --------------------------------------------------
+        # Parse response
+        # --------------------------------------------------
         payload = _safe_json_parse(llm_response)
+
         if not payload:
             try:
                 json_text = extract_json(llm_response)
@@ -1287,11 +1868,18 @@ async def radar_change_block_preview():
                     502,
                 )
 
-        # If model rejects the change, pass it through cleanly
+        # --------------------------------------------------
+        # Model rejected
+        # --------------------------------------------------
         if payload.get("status") in {"rejected", "error"}:
             return jsonify(payload), 400
 
-        required_keys = {"block_id", "block_type", "changed_block"}
+        required_keys = {
+            "block_id",
+            "block_type",
+            "changed_block",
+        }
+
         if not required_keys.issubset(payload.keys()):
             return (
                 jsonify(
@@ -1304,18 +1892,37 @@ async def radar_change_block_preview():
                 502,
             )
 
+        # Optional metadata
+        payload["shared"] = shared_access
+        payload["owner_user_id"] = owner_user_id
+
         return jsonify(payload)
 
     except Exception as e:
+
+        tb = traceback.format_exc()
+
+        logger.error(
+            "radar_change_block_preview error: %s\n%s",
+            e,
+            tb,
+        )
+
         return (
-            jsonify({"error": "Failed to generate block preview", "details": str(e)}),
+            jsonify(
+                {
+                    "error": "Failed to generate block preview",
+                    "details": str(e),
+                }
+            ),
             500,
         )
 
 
-@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/changeblock/confirm", methods=["POST"])
+@permission_required_body("kb.doc.edit")
 async def radar_change_block_confirm():
+
     data = request.get_json(force=True)
 
     user_id = data.get("userid")
@@ -1327,67 +1934,208 @@ async def radar_change_block_confirm():
 
     if not user_id or not block_id or not changed_block:
         return (
-            jsonify({"error": "userid, block_id, and user_input are required"}),
+            jsonify({"error": "userid, block_id, and changed_block are required"}),
             400,
         )
 
-    # 🔥 Either result_id OR review_id must be present
-    if not (result_id or review_id):
+    if not (review_id or result_id):
         return (
-            jsonify({"error": "Either result_id or review_id must be provided"}),
+            jsonify({"error": "Either review_id or result_id must be provided"}),
             400,
         )
-    dbserver = LanceDBServer()
-    record = None
-    updated_json = None
-    if review_id:
-        record = await dbserver.radar_get_review(user_id=user_id, review_id=review_id)
-
-        if not record or not record.get("result"):
-            return jsonify({"error": "RADAR review not found"}), 404
-
-        updated_json = record["result"]
-    elif result_id:
-        record = await dbserver.runbook_get_result(user_id=user_id, result_id=result_id)
-
-        if not record or not record.get("result"):
-            return jsonify({"error": "Runbook review result not found"}), 404
-
-        updated_json = record["result"]
-    else:
-        return jsonify({"error": "Either review_id or result_id is required"}), 400
-
-    # 🔧 Safe deterministic merge
-    block_found = False
-
-    for block in updated_json.get("blocks", []):
-        if block.get("block_id") == block_id:
-            if micro_block:
-                for micro in block.get("micro_blocks", []):
-                    if micro.get("micro_id") == micro_block:
-                        micro.update(changed_block)
-                        block_found = True
-                        break
-            else:
-                block.update(changed_block)
-                block_found = True
-
-        if block_found:
-            break
-
-    if not block_found:
-        return jsonify({"error": "Target block or micro-block not found"}), 404
 
     try:
+
+        # --------------------------------------------------
+        # Resolve composite/shared user
+        # --------------------------------------------------
+        logged_in_user_id, parsed_user_id = parse_composite_user_id(user_id)
+
+        if not parsed_user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        dbserver = LanceDBServer()
+
+        record = None
+        updated_json = None
+        owner_user_id = parsed_user_id
+        shared_access = False
+
+        # ==================================================
+        # REVIEW FLOW
+        # ==================================================
         if review_id:
+
+            record = await dbserver.radar_get_review(
+                user_id=parsed_user_id,
+                review_id=review_id,
+            )
+
+            # ----------------------------------------------
+            # Shared access fallback
+            # ----------------------------------------------
+            if not record or not record.get("result"):
+
+                shared_reports = get_user_shared_reports(parsed_user_id)
+
+                shared_entry = None
+
+                for _, sdata in shared_reports.items():
+
+                    if (
+                        sdata.get("type") == "radar"
+                        and sdata.get("review_id") == review_id
+                    ):
+                        shared_entry = sdata
+                        break
+
+                if shared_entry:
+
+                    main_user_id = shared_entry.get("mainuser_id")
+
+                    record = await dbserver.radar_get_review(
+                        user_id=main_user_id,
+                        review_id=review_id,
+                    )
+
+                    if record and record.get("result"):
+                        owner_user_id = main_user_id
+                        shared_access = True
+
+            if not record or not record.get("result"):
+                return jsonify({"error": "RADAR review not found"}), 404
+
+            updated_json = record["result"]
+
+        # ==================================================
+        # RUNBOOK RESULT FLOW
+        # ==================================================
+        elif result_id:
+
+            record = await dbserver.runbook_get_result(
+                user_id=parsed_user_id,
+                result_id=result_id,
+            )
+
+            # ----------------------------------------------
+            # Shared access fallback
+            # ----------------------------------------------
+            if not record or not record.get("result"):
+
+                shared_reports = get_user_shared_reports(parsed_user_id)
+
+                logger.info(
+                    "shared_reports for %s => %s",
+                    parsed_user_id,
+                    shared_reports,
+                )
+
+                shared_entry = None
+
+                for _, sdata in shared_reports.items():
+
+                    logger.info("checking shared entry => %s", sdata)
+
+                    # FIXED:
+                    # shared data stores reportid NOT result_id
+                    if (
+                        sdata.get("type") == "runbook"
+                        and sdata.get("reportid") == result_id
+                    ):
+                        shared_entry = sdata
+                        break
+
+                logger.info("matched shared entry => %s", shared_entry)
+
+                if shared_entry:
+
+                    main_user_id = shared_entry.get("mainuser_id")
+
+                    logger.info(
+                        "loading shared runbook result from owner=%s result_id=%s",
+                        main_user_id,
+                        result_id,
+                    )
+
+                    record = await dbserver.runbook_get_result(
+                        user_id=main_user_id,
+                        result_id=result_id,
+                    )
+
+                    logger.info("shared runbook result => %s", bool(record))
+
+                    if record and record.get("result"):
+
+                        owner_user_id = main_user_id
+                        shared_access = True
+
+            if not record or not record.get("result"):
+
+                logger.error(
+                    "Runbook result not found user=%s owner=%s result_id=%s",
+                    parsed_user_id,
+                    owner_user_id,
+                    result_id,
+                )
+
+                return jsonify({"error": "Runbook review result not found"}), 404
+
+            original_json = record["result"]
+
+        else:
+            return (
+                jsonify({"error": "Either review_id or result_id is required"}),
+                400,
+            )
+
+        # --------------------------------------------------
+        # Safe deterministic merge
+        # --------------------------------------------------
+        block_found = False
+
+        for block in updated_json.get("blocks", []):
+
+            if block.get("block_id") == block_id:
+
+                if micro_block:
+
+                    for micro in block.get("micro_blocks", []):
+
+                        if micro.get("micro_id") == micro_block:
+
+                            micro.update(changed_block)
+                            block_found = True
+                            break
+
+                else:
+
+                    block.update(changed_block)
+                    block_found = True
+
+            if block_found:
+                break
+
+        if not block_found:
+            return (
+                jsonify({"error": "Target block or micro-block not found"}),
+                404,
+            )
+
+        # --------------------------------------------------
+        # Persist
+        # --------------------------------------------------
+        if review_id:
+
             await dbserver.radar_update_result(
-                user_id=user_id,
+                user_id=owner_user_id,
                 review_id=review_id,
                 new_result=updated_json,
             )
+
         elif result_id:
+
             await dbserver.update_runbook_result(
-                user_id=user_id,
+                user_id=owner_user_id,
                 result_id=result_id,
                 new_result=updated_json,
             )
@@ -1398,18 +2146,34 @@ async def radar_change_block_confirm():
                 "message": "RADAR block updated successfully",
                 "block_id": block_id,
                 "micro_id": micro_block or None,
+                "shared": shared_access,
+                "owner_user_id": owner_user_id,
             }
         )
 
     except Exception as e:
+
+        tb = traceback.format_exc()
+
+        logger.error(
+            "radar_change_block_confirm error: %s\n%s",
+            e,
+            tb,
+        )
+
         return (
-            jsonify({"error": "Failed to persist RADAR update", "details": str(e)}),
+            jsonify(
+                {
+                    "error": "Failed to persist RADAR update",
+                    "details": str(e),
+                }
+            ),
             500,
         )
 
 
-@permission_required_body("kb.doc.edit")
 @radar_bp.route("/radar/knowledge/analyze", methods=["POST"])
+@permission_required_body("kb.doc.edit")
 async def radar_knowledge_analyze():
     import os
     import inspect
@@ -1607,8 +2371,8 @@ async def radar_knowledge_analyze():
     )
 
 
-@permission_required_body("kb.doc.delete")
 @radar_bp.route("/radar/delete", methods=["POST"])
+@permission_required_body("kb.doc.delete")
 async def delete_radar_files():
     data = request.get_json(force=True)
 

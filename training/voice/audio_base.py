@@ -561,7 +561,7 @@ def get_audio_config():
     config_filename = fetch_document_link(agentid)
     # print("config filename", config_filename)
     if not config_filename:
-        return jsonify({"error": "No audios found for this user"}), 404
+        return jsonify({"error": "No audios found for this user"}), 200
     try:
         config = read_json_from_s3(config_filename)
         if config:

@@ -699,7 +699,7 @@ def edit_policy():
 
 
 @policy_hub_bp.route("/edit-status", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def edit_status():
     job_id = request.args.get("job_id")
     if not job_id:
@@ -726,7 +726,7 @@ def edit_status():
 
 
 @policy_hub_bp.route("/list", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def list_policies():
     user_id = request.args.get("user_id")
     if not user_id:
@@ -754,7 +754,7 @@ def list_policies():
 
 
 @policy_hub_bp.route("/update", methods=["POST"])
-@permission_required_body("compliance.report.edit")
+@permission_required_body("policyhub.edit")
 def update_policy():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
@@ -912,7 +912,7 @@ def _lance_index_worker(framework_id: str, rows: list[dict]):
 
 
 @policy_hub_bp.route("/frameworks/available", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def list_available_frameworks():
     """Return all framework names + IDs for the Select Frameworks dropdown.
 
@@ -951,7 +951,7 @@ def list_available_frameworks():
 
 
 @policy_hub_bp.route("/frameworks/access", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def check_framework_access():
     """Return whether the authenticated session has framework access.
 
@@ -964,7 +964,7 @@ def check_framework_access():
 
 
 @policy_hub_bp.route("/frameworks", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def list_frameworks():
     denied = _require_framework_owner()
     if denied:
@@ -989,7 +989,7 @@ def list_frameworks():
 
 
 @policy_hub_bp.route("/frameworks/list", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def list_frameworks_rows():
     # denied = _require_framework_owner()
     # if denied:
@@ -1063,7 +1063,7 @@ def upload_framework_preview():
 
 
 @policy_hub_bp.route("/frameworks/save", methods=["POST"])
-@permission_required_body("compliance.framework.create")
+@permission_required_body("policyhub.framework.create")
 def save_framework():
     """Confirm and persist a framework (new or update)."""
     denied = _require_framework_owner()
@@ -1113,7 +1113,7 @@ def save_framework():
 
 
 @policy_hub_bp.route("/frameworks/search", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 async def search_frameworks():
     """Semantic search over framework rows stored in LanceDB."""
     denied = _require_framework_owner()
@@ -1158,7 +1158,7 @@ async def search_frameworks():
 
 
 @policy_hub_bp.route("/frameworks/<framework_id>", methods=["GET"])
-@permission_required_body("compliance.report.read")
+@permission_required_body("policyhub.view")
 def get_framework(framework_id: str):
     denied = _require_framework_owner()
     if denied:
