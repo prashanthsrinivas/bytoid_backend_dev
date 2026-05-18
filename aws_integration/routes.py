@@ -653,8 +653,11 @@ def aws_delete_app(app_id):
 
         conn = connect_to_rds()
         with conn.cursor() as cur:
+            # Hard delete so the unique constraint (user_id, app_name) is freed,
+            # allowing a new app with the same name to be created.
+            # Child endpoints are removed automatically via ON DELETE CASCADE.
             cur.execute(
-                "UPDATE aws_external_apps SET status='inactive', updated_at=NOW() WHERE id=%s AND user_id=%s",
+                "DELETE FROM aws_external_apps WHERE id=%s AND user_id=%s",
                 (app_id, user_id),
             )
         conn.commit()
@@ -946,12 +949,63 @@ def aws_delete_endpoint(endpoint_id):
 
         conn = connect_to_rds()
         with conn.cursor() as cur:
+            # Hard delete so the unique constraints (app_id, name) and
+            # (app_id, path, method) are freed, allowing re-creation.
             cur.execute(
-                "UPDATE aws_external_app_endpoints SET is_active=0, updated_at=NOW() WHERE id=%s AND user_id=%s",
+                "DELETE FROM aws_external_app_endpoints WHERE id=%s AND user_id=%s",
                 (endpoint_id, user_id),
             )
         conn.commit()
         return jsonify({"success": True})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# Connector — Cleanup inactive / duplicate records
+# ─────────────────────────────────────────────────────────────
+
+@aws_integration_bp.route("/connector/cleanup-inactive", methods=["DELETE"])
+def aws_cleanup_inactive():
+    """
+    Hard-deletes all inactive apps (status='inactive') and deactivated endpoints
+    (is_active=0) for the calling admin.  Frees the unique-key slots so new apps
+    or endpoints with the same name / path+method can be created.
+    Child endpoints of deleted apps are removed automatically via ON DELETE CASCADE.
+    """
+    conn = None
+    try:
+        data = request.get_json(force=True) or {}
+        user_id = data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+
+        ok, err = _admin_only_check(user_id)
+        if not ok:
+            return err
+
+        conn = connect_to_rds()
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM aws_external_app_endpoints WHERE user_id=%s AND is_active=0",
+                (user_id,),
+            )
+            deleted_endpoints = cur.rowcount
+
+            cur.execute(
+                "DELETE FROM aws_external_apps WHERE user_id=%s AND status='inactive'",
+                (user_id,),
+            )
+            deleted_apps = cur.rowcount
+
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "deleted_apps": deleted_apps,
+            "deleted_endpoints": deleted_endpoints,
+        })
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
