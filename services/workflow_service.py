@@ -2527,8 +2527,8 @@ class WorkflowRunnerV2:
             # Return AI result for frontend or further processing
             return ai_result
         except Exception as e:
-            # traceback.print_exc()
-            self.logger.info("Error in check_input_tone: %s", e)
+            import traceback as _tb
+            self.logger.error("Error in check_input_tone: %s\n%s", e, _tb.format_exc())
             return {
                 "response_message": "Error processing option.",
                 "wf_single_runner": False,
