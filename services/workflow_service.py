@@ -2349,9 +2349,11 @@ class WorkflowRunnerV2:
                 chat_log["chat_summarization"] = new_summary
 
                 self.saveworkflowtos3()
+                return chat_entry
 
         except Exception as e:
             self.logger.warning(f"Failed to log chat entry: {e}")
+        return None
 
     async def check_input_tone(self, user_input: str):
         try:
@@ -2426,9 +2428,11 @@ class WorkflowRunnerV2:
                                     "wf_single_runner": False,
                                     "confirm_step": False,
                                 }
-                                await self.savechatcheck(
+                                chat_entry = await self.savechatcheck(
                                     ai_result=ai_result, user_input=user_input
                                 )
+                                if chat_entry:
+                                    ai_result["chat_entry"] = chat_entry
 
                                 # IMPORTANT: hard stop downstream triggers
                                 return ai_result
@@ -2522,7 +2526,9 @@ class WorkflowRunnerV2:
                 return {"message": "problem with server."}
 
             # print("log chat check")
-            await self.savechatcheck(ai_result=ai_result, user_input=user_input)
+            chat_entry = await self.savechatcheck(ai_result=ai_result, user_input=user_input)
+            if chat_entry:
+                ai_result["chat_entry"] = chat_entry
 
             # Return AI result for frontend or further processing
             return ai_result
@@ -2726,6 +2732,7 @@ class WorkflowRunnerV2:
         # ------------------------------------------------------------------
         self.saveworkflowtos3()
 
+        result["chat_entry"] = chat_entry
         return result
 
     async def update_steps_workflow(self, user_input: str):
