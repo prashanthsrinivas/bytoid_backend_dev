@@ -2528,8 +2528,12 @@ class WorkflowRunnerV2:
             return ai_result
         except Exception as e:
             # traceback.print_exc()
-            # logger.info("Error %s", e)
-            return None
+            self.logger.info("Error in check_input_tone: %s", e)
+            return {
+                "response_message": "Error processing option.",
+                "wf_single_runner": False,
+                "log_status": "error",
+            }
 
     async def execute_from_text_input(self, user_input: str, step_id, base_input=None):
         """

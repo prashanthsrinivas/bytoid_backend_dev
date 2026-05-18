@@ -1485,6 +1485,11 @@ def testworkflowbyinput_stream():
             ) as runner:
                 result = asyncio.run(runner.check_input_tone(user_input=userinput))
 
+            if result is None:
+                result = {
+                    "response_message": "Error processing option.",
+                    "wf_single_runner": False,
+                }
             yield f"event: done\ndata: {json.dumps(result)}\n\n"
 
         except Exception as e:
