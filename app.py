@@ -121,12 +121,10 @@ def is_origin_allowed(origin: str | None) -> bool:
 
 
 @app.after_request
-def after_request(response):
+def cors_after_request(response):
     origin = request.headers.get("Origin")
 
     if is_origin_allowed(origin):
-        # If no origin (mobile app), use *
-        # If has origin, echo it back
         if origin:
             response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -144,7 +142,19 @@ def after_request(response):
 # Handle preflight OPTIONS requests
 @app.route("/<path:path>", methods=["OPTIONS"])
 def handle_options(path):
-    return "", 204
+    from flask import make_response
+    origin = request.headers.get("Origin", "")
+    resp = make_response("", 204)
+    if is_origin_allowed(origin):
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-Requested-With"
+        )
+        resp.headers["Access-Control-Max-Age"] = "3600"
+    return resp
 
 
 blueprints = [
@@ -311,7 +321,7 @@ def audit_before_request():
 
 
 @app.after_request
-def after_request(response):
+def log_after_request(response):
     duration = round((time.time() - g.start_time) * 1000, 2)
 
     blueprint_name = request.blueprint or "root"
