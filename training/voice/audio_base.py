@@ -318,9 +318,17 @@ def process_audio_stream():
                 pass
             loop.close()
 
-    return Response(
+    from utils.app_configs import ALLOWED_ORIGINS
+    sse_response = Response(
         stream_with_context(wrapped_stream(userid)), content_type="text/event-stream"
     )
+    origin = request.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        sse_response.headers["Access-Control-Allow-Origin"] = origin
+        sse_response.headers["Access-Control-Allow-Credentials"] = "true"
+    sse_response.headers["Cache-Control"] = "no-cache"
+    sse_response.headers["X-Accel-Buffering"] = "no"
+    return sse_response
 
 
 @permission_required_body("kb.voice.manage")

@@ -39,7 +39,7 @@ from utils.normal import (
 from .background_worker import JobManager
 import pytz, pymysql
 from utils.FileHandler import FileProcessor
-from utils.app_configs import ACCESSIBLE_IDS, IS_DEV
+from utils.app_configs import ACCESSIBLE_IDS, ALLOWED_ORIGINS, IS_DEV
 from utils.base_logger import get_logger
 from utils.permission_required import permission_required_body
 
@@ -1495,7 +1495,16 @@ def testworkflowbyinput_stream():
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
-    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
+    response = Response(
+        stream_with_context(event_stream()), mimetype="text/event-stream"
+    )
+    origin = request.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 @playbook_bp.route("/clear-playground-data", methods=["POST"])
