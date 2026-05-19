@@ -1976,6 +1976,142 @@ def aws_instantiate_global_app():
             conn.close()
 
 
+@aws_integration_bp.route("/user/global-apps/install-all", methods=["POST"])
+def aws_install_all_global_apps():
+    """Install every ready global AWS app that the user has not yet installed."""
+    body = request.json or {}
+    user_id = body.get("user_id") or _extract_user_id()
+
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id required"}), 400
+
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        apps_installed = 0
+        apps_skipped = 0
+        endpoints_installed = 0
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM global_aws_apps WHERE status='ready' ORDER BY id",
+            )
+            global_apps = cur.fetchall()
+
+            for g in global_apps:
+                global_app_id = g["id"]
+
+                # Skip if already installed
+                cur.execute(
+                    "SELECT id FROM aws_external_apps WHERE user_id=%s AND source_global_aws_app_id=%s LIMIT 1",
+                    (user_id, global_app_id),
+                )
+                if cur.fetchone():
+                    apps_skipped += 1
+                    continue
+
+                # Unique name for this user
+                base_name = g["app_name"]
+                app_name = base_name
+                suffix = 2
+                while True:
+                    cur.execute(
+                        "SELECT id FROM aws_external_apps WHERE user_id=%s AND app_name=%s",
+                        (user_id, app_name),
+                    )
+                    if not cur.fetchone():
+                        break
+                    app_name = f"{base_name} ({suffix})"
+                    suffix += 1
+
+                cur.execute(
+                    """
+                    INSERT INTO aws_external_apps (
+                        user_id, app_name, provider, base_url, auth_type, auth_config,
+                        headers, method, query_params, path_params,
+                        timeout_seconds, retry_count, retry_backoff_seconds,
+                        is_universal, source_global_aws_app_id, status
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        user_id,
+                        app_name,
+                        g.get("provider", "aws"),
+                        g["base_url"],
+                        g.get("auth_type", "aws_sigv4"),
+                        json.dumps({}),
+                        json.dumps(_parse_json_field(g.get("headers")) or {}),
+                        g.get("method", "GET"),
+                        json.dumps(_parse_json_field(g.get("query_params")) or {}),
+                        json.dumps(_parse_json_field(g.get("path_params")) or {}),
+                        g.get("timeout_seconds") or 10,
+                        0,
+                        0,
+                        1,
+                        global_app_id,
+                        "active",
+                    ),
+                )
+                new_app_id = cur.lastrowid
+                apps_installed += 1
+
+                # Auto-install all ready endpoints that don't require user config
+                cur.execute(
+                    "SELECT * FROM global_aws_app_endpoints WHERE app_id=%s AND is_active=1 AND status='ready'",
+                    (global_app_id,),
+                )
+                for ep in cur.fetchall():
+                    schema = _parse_json_field(ep.get("required_config_schema"))
+                    if schema and any(
+                        isinstance(v, dict) and v.get("required")
+                        for v in schema.values()
+                    ):
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO aws_external_app_endpoints (
+                            app_id, user_id, name, path, method,
+                            headers, query_params, path_params, body_template,
+                            timeout_seconds, is_active
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
+                        (
+                            new_app_id,
+                            user_id,
+                            ep["name"],
+                            ep["path"],
+                            ep.get("method", "GET"),
+                            json.dumps(_parse_json_field(ep.get("headers")) or {}),
+                            json.dumps(_parse_json_field(ep.get("query_params")) or {}),
+                            json.dumps(_parse_json_field(ep.get("path_params")) or {}),
+                            json.dumps(_parse_json_field(ep.get("body_template")) or {}),
+                            ep.get("timeout_seconds"),
+                            1,
+                        ),
+                    )
+                    endpoints_installed += 1
+
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "apps_installed": apps_installed,
+            "apps_skipped": apps_skipped,
+            "endpoints_installed": endpoints_installed,
+            "message": f"Installed {apps_installed} app(s), skipped {apps_skipped} already-installed.",
+        })
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @aws_integration_bp.route("/user/global-endpoint/instantiate", methods=["POST"])
 def aws_instantiate_global_endpoint():
     """Clone a single global_aws_app_endpoints row into the user's local app.
