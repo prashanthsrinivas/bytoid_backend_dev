@@ -1,0 +1,27 @@
+{
+  "strict": false,
+  "debug": true,
+
+  "sp": {
+    "entityId": "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/azure",
+    "assertionConsumerService": {
+      "url": "https://rtdtj5q9dh.execute-api.ca-central-1.amazonaws.com/azure/saml/acs",
+      "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+    }
+  },
+
+  "idp": {
+    "entityId": "PLACEHOLDER_AZURE_ENTRA_ENTITY_ID",
+    "singleSignOnService": {
+      "url": "PLACEHOLDER_AZURE_ENTRA_SSO_URL",
+      "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+    },
+    "x509cert": "PLACEHOLDER_AZURE_ENTRA_CERT"
+  },
+
+  "security": {
+    "wantAssertionsSigned": false,
+    "wantMessagesSigned": false,
+    "wantNameId": false
+  }
+}

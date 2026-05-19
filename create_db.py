@@ -3437,6 +3437,383 @@ def create_aws_external_app_endpoints_table():
         connection.close()
 
 
+# ============================================================
+# Azure Integration tables (mirror of the AWS ones above)
+# ============================================================
+
+def create_azure_idp_configs_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS azure_idp_configs (
+                id            INT AUTO_INCREMENT PRIMARY KEY,
+                user_id       VARCHAR(36) NOT NULL,
+                entity_id     TEXT NOT NULL,
+                sso_url       TEXT NOT NULL,
+                x509_cert     TEXT NOT NULL,
+                azure_region  VARCHAR(64) DEFAULT 'eastus',
+                tenant_id     VARCHAR(36) NOT NULL,
+                client_id     VARCHAR(36) NOT NULL,
+                client_secret TEXT NOT NULL,
+                default_scope VARCHAR(255) DEFAULT 'https://graph.microsoft.com/.default',
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user (user_id)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ azure_idp_configs table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create azure_idp_configs table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_azure_saml_sessions_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS azure_saml_sessions (
+                id               INT AUTO_INCREMENT PRIMARY KEY,
+                user_id          VARCHAR(36) NOT NULL,
+                azure_tenant_id  VARCHAR(36),
+                azure_object_id  VARCHAR(36),
+                azure_upn        VARCHAR(255),
+                access_token     TEXT,
+                refresh_token    TEXT,
+                scope            VARCHAR(255),
+                azure_region     VARCHAR(64) DEFAULT 'eastus',
+                expires_at       DATETIME,
+                created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user (user_id),
+                INDEX idx_expires (expires_at)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ azure_saml_sessions table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create azure_saml_sessions table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_global_azure_apps_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS global_azure_apps (
+                id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_name               VARCHAR(100) NOT NULL,
+                provider               VARCHAR(50) NOT NULL DEFAULT 'azure',
+                base_url               TEXT NOT NULL,
+                auth_type              ENUM('azure_oauth','none') DEFAULT 'azure_oauth',
+                auth_config            JSON DEFAULT NULL,
+                headers                JSON DEFAULT NULL,
+                method                 ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                query_params           JSON DEFAULT NULL,
+                path_params            JSON DEFAULT NULL,
+                timeout_seconds        INT DEFAULT 10,
+                is_universal           BOOLEAN NOT NULL DEFAULT TRUE,
+                status                 ENUM('ready','development','removed') DEFAULT 'development',
+                notes                  TEXT DEFAULT NULL,
+                required_config_schema JSON DEFAULT NULL,
+                category               VARCHAR(50) DEFAULT NULL,
+                priority               VARCHAR(20) DEFAULT NULL,
+                connection_type        VARCHAR(20) DEFAULT NULL,
+                created_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at             DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_global_azure_app_name (app_name),
+                INDEX idx_global_azure_apps_status (status)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ global_azure_apps table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create global_azure_apps table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_global_azure_app_endpoints_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS global_azure_app_endpoints (
+                id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_id                 BIGINT NOT NULL,
+                name                   VARCHAR(100) NOT NULL,
+                path                   VARCHAR(255) NOT NULL,
+                method                 ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                headers                JSON DEFAULT NULL,
+                query_params           JSON DEFAULT NULL,
+                path_params            JSON DEFAULT NULL,
+                body_template          JSON DEFAULT NULL,
+                timeout_seconds        INT DEFAULT NULL,
+                is_active              BOOLEAN DEFAULT TRUE,
+                status                 ENUM('ready','development','removed') DEFAULT 'development',
+                notes                  TEXT DEFAULT NULL,
+                required_config_schema JSON DEFAULT NULL,
+                graph_scope            VARCHAR(255) DEFAULT NULL,
+                body_params            JSON DEFAULT NULL,
+                base_url_override      VARCHAR(255) DEFAULT NULL,
+                created_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at             DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_global_azure_endpoint_name (app_id, name),
+                UNIQUE KEY uq_global_azure_path_method (app_id, path, method),
+                INDEX idx_global_azure_endpoint_app (app_id),
+                INDEX idx_global_azure_endpoint_status (status),
+                CONSTRAINT fk_global_azure_endpoint_app
+                    FOREIGN KEY (app_id)
+                    REFERENCES global_azure_apps(id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        connection.commit()
+        print("✅ global_azure_app_endpoints table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create global_azure_app_endpoints table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def migrate_global_azure_schema():
+    """Idempotently add GRC metadata columns to global_azure_apps and
+    global_azure_app_endpoints. Mirror of migrate_global_aws_schema."""
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        db_name = cursor.fetchone()[0]
+
+        def _column_exists(table, column):
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
+                """,
+                (db_name, table, column),
+            )
+            return cursor.fetchone()[0] > 0
+
+        pending = [
+            ("global_azure_apps",          "category",        "ADD COLUMN category        VARCHAR(50)  DEFAULT NULL"),
+            ("global_azure_apps",          "priority",        "ADD COLUMN priority        VARCHAR(20)  DEFAULT NULL"),
+            ("global_azure_apps",          "connection_type", "ADD COLUMN connection_type VARCHAR(20)  DEFAULT NULL"),
+            ("global_azure_app_endpoints", "graph_scope",     "ADD COLUMN graph_scope     VARCHAR(255) DEFAULT NULL"),
+            ("global_azure_app_endpoints", "body_params",     "ADD COLUMN body_params     JSON         DEFAULT NULL"),
+            ("global_azure_app_endpoints", "base_url_override","ADD COLUMN base_url_override VARCHAR(255) DEFAULT NULL"),
+        ]
+
+        added = []
+        for table, column, ddl in pending:
+            if not _column_exists(table, column):
+                cursor.execute(f"ALTER TABLE {table} {ddl}")
+                added.append(f"{table}.{column}")
+
+        connection.commit()
+        if added:
+            print("✅ migrate_global_azure_schema added:", ", ".join(added))
+        else:
+            print("✅ migrate_global_azure_schema: all columns already present")
+    except Exception as e:
+        connection.rollback()
+        print("❌ migrate_global_azure_schema failed:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def alter_azure_external_apps_add_global_link():
+    """Adds is_universal + source_global_azure_app_id columns to an existing
+    azure_external_apps table. Mirror of alter_aws_external_apps_add_global_link."""
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME   = 'azure_external_apps'
+              AND COLUMN_NAME IN ('is_universal', 'source_global_azure_app_id')
+            """
+        )
+        existing = {row[0] for row in cursor.fetchall()}
+
+        if "is_universal" not in existing:
+            cursor.execute(
+                "ALTER TABLE azure_external_apps "
+                "ADD COLUMN is_universal BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        if "source_global_azure_app_id" not in existing:
+            cursor.execute(
+                "ALTER TABLE azure_external_apps "
+                "ADD COLUMN source_global_azure_app_id BIGINT DEFAULT NULL"
+            )
+            cursor.execute(
+                "ALTER TABLE azure_external_apps "
+                "ADD INDEX idx_azure_external_source (source_global_azure_app_id)"
+            )
+
+        connection.commit()
+        print("✅ azure_external_apps altered (is_universal + source_global_azure_app_id)")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to alter azure_external_apps:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_azure_external_apps_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS azure_external_apps (
+                id                         BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id                    VARCHAR(64) NOT NULL,
+                app_name                   VARCHAR(100) NOT NULL,
+                provider                   VARCHAR(50) DEFAULT 'azure',
+                base_url                   TEXT NOT NULL,
+                auth_type                  ENUM('bearer','api_key','basic','oauth2','azure_oauth','none') DEFAULT 'azure_oauth',
+                auth_config                JSON,
+                headers                    JSON,
+                method                     ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                query_params               JSON,
+                path_params                JSON,
+                timeout_seconds            INT DEFAULT 10,
+                retry_count                INT DEFAULT 0,
+                retry_backoff_seconds      INT DEFAULT 0,
+                is_universal               BOOLEAN NOT NULL DEFAULT FALSE,
+                source_global_azure_app_id BIGINT DEFAULT NULL,
+                status                     ENUM('active','inactive') DEFAULT 'active',
+                last_test_status           ENUM('success','failed'),
+                last_error                 JSON,
+                last_tested_at             DATETIME,
+                schedules                  JSON,
+                created_at                 DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at                 DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user_app (user_id, app_name),
+                INDEX idx_azure_external_source (source_global_azure_app_id)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ azure_external_apps table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create azure_external_apps table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_azure_external_app_endpoints_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS azure_external_app_endpoints (
+                id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_id           BIGINT NOT NULL,
+                user_id          VARCHAR(64) NOT NULL,
+                name             VARCHAR(100) NOT NULL,
+                path             VARCHAR(255) NOT NULL,
+                method           ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                headers          JSON,
+                query_params     JSON,
+                path_params      JSON,
+                body_template    JSON,
+                timeout_seconds  INT,
+                is_active        BOOLEAN DEFAULT TRUE,
+                last_tested_at   DATETIME,
+                last_test_status ENUM('success','failed'),
+                last_error       JSON,
+                schedules        JSON,
+                created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_app_endpoint_name (app_id, name),
+                UNIQUE KEY uq_app_path_method (app_id, path, method),
+                INDEX idx_app_id (app_id),
+                INDEX idx_user_id (user_id),
+                FOREIGN KEY (app_id) REFERENCES azure_external_apps(id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.commit()
+        print("✅ azure_external_app_endpoints table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create azure_external_app_endpoints table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # print("HHSS")
@@ -3511,4 +3888,12 @@ if __name__ == "__main__":
     create_global_aws_apps_table()
     create_global_aws_app_endpoints_table()
     migrate_global_aws_schema()
+    create_azure_idp_configs_table()
+    create_azure_saml_sessions_table()
+    create_azure_external_apps_table()
+    create_azure_external_app_endpoints_table()
+    alter_azure_external_apps_add_global_link()
+    create_global_azure_apps_table()
+    create_global_azure_app_endpoints_table()
+    migrate_global_azure_schema()
     print("ok")

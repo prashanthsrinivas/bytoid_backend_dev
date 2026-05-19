@@ -48,6 +48,9 @@ class APIConnector:
         ):
             raise ValueError("AWS SigV4 auth requires: access_key_id, secret_access_key, region, service")
 
+        if auth_type == "azure_oauth" and "access_token" not in auth:
+            raise ValueError("Azure OAuth auth requires: access_token")
+
     # -------------------------
     # OAuth2
     # -------------------------
@@ -90,6 +93,9 @@ class APIConnector:
         elif auth_type == "oauth2":
             token = self._get_oauth2_token(auth)
             headers["Authorization"] = f"Bearer {token}"
+
+        elif auth_type == "azure_oauth":
+            headers["Authorization"] = f"Bearer {self._render(auth['access_token'])}"
 
         return headers
 

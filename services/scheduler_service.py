@@ -542,3 +542,139 @@ class APIConnectorScheduler:
             )
             task_ids.append(task.id)
         return {"scheduled_runs": len(task_ids), "task_ids": task_ids}
+
+
+# =========================================================
+# Azure API Connector Scheduler — mirror of APIConnectorScheduler
+# but dispatches to tasks.schedule_azure_app_endpoint /
+# tasks.schedule_azure_app / tasks.run_azure_endpoint_interval so
+# scheduled jobs hit azure_external_app_endpoints, not the generic table.
+# =========================================================
+class AzureAPIConnectorScheduler:
+    redis_service = get_redis()
+
+    # ========================
+    # Timezone Helpers
+    # ========================
+    @staticmethod
+    def to_utc(dt: datetime, timezone: str):
+        tz = pytz.timezone(timezone)
+        return tz.localize(dt).astimezone(pytz.UTC)
+
+    @staticmethod
+    def local_time_to_utc_hour_min(hour, minute, timezone):
+        local_dt = datetime.combine(date.today(), time(hour, minute))
+        utc_dt = AzureAPIConnectorScheduler.to_utc(local_dt, timezone)
+        return utc_dt.hour, utc_dt.minute
+
+    # ========================
+    # Stop/Disable Helpers
+    # ========================
+    @staticmethod
+    def revoke_task(task_id):
+        celery.control.revoke(task_id, terminate=True)
+        celery.backend.forget(task_id)
+
+    @staticmethod
+    def disable_celery_entry(entry_name):
+        celery.conf.beat_schedule.pop(entry_name, None)
+
+    @staticmethod
+    async def is_schedule_disabled(stop_key: str):
+        status = await AzureAPIConnectorScheduler.redis_service.get(stop_key)
+        return status == "disabled"
+
+    @staticmethod
+    async def make_schedule_disabled(stop_key: str):
+        status = await AzureAPIConnectorScheduler.redis_service.set(
+            key=stop_key, value="disabled"
+        )
+        return status == "disabled"
+
+    # ========================
+    # ONE-TIME
+    # ========================
+    @staticmethod
+    async def schedule_endpoint_once(userid, endpoint_id, run_at, timezone):
+        dt_utc = AzureAPIConnectorScheduler.to_utc(run_at, timezone)
+        task = celery.send_task(
+            "tasks.schedule_azure_app_endpoint",
+            args=[userid, endpoint_id],
+            eta=dt_utc,
+        )
+        return {"task_id": task.id, "run_at_utc": dt_utc.isoformat()}
+
+    # ========================
+    # DAILY / WEEKLY / MONTHLY (Beat Schedules)
+    # ========================
+    @staticmethod
+    async def schedule_endpoint_daily(userid, endpoint_id, hour, minute, timezone):
+        key = f"azure_endpoint_daily_{userid}_{endpoint_id}"
+        utc_hour, utc_minute = AzureAPIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_azure_app_endpoint",
+            "schedule": crontab(hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_weekly(
+        userid, endpoint_id, weekday, hour, minute, timezone
+    ):
+        key = f"azure_endpoint_weekly_{userid}_{endpoint_id}_{weekday}"
+        utc_hour, utc_minute = AzureAPIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_azure_app_endpoint",
+            "schedule": crontab(weekday=weekday, hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_monthly(
+        userid, endpoint_id, day, hour, minute, timezone
+    ):
+        key = f"azure_endpoint_monthly_{userid}_{endpoint_id}_{day}"
+        utc_hour, utc_minute = AzureAPIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_azure_app_endpoint",
+            "schedule": crontab(day_of_month=day, hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    # ========================
+    # INTERVAL (dynamic, self-rescheduling)
+    # ========================
+    @staticmethod
+    async def schedule_endpoint_interval(userid, endpoint_id, interval_seconds):
+        stop_key = f"azure_endpoint:{endpoint_id}:{userid}:interval"
+        task = celery.send_task(
+            "tasks.run_azure_endpoint_interval",
+            args=[userid, endpoint_id, interval_seconds, stop_key],
+        )
+        return {"task_id": task.id, "stop_key": stop_key}
+
+    # ========================
+    # CUSTOM DATES (multiple one-time runs)
+    # ========================
+    @staticmethod
+    async def schedule_endpoint_custom_dates(userid, endpoint_id, datetimes, timezone):
+        task_ids = []
+        for dt_str in datetimes:
+            dt = datetime.fromisoformat(dt_str)
+            dt_utc = AzureAPIConnectorScheduler.to_utc(dt, timezone)
+            task = celery.send_task(
+                "tasks.schedule_azure_app_endpoint",
+                args=[userid, endpoint_id],
+                eta=dt_utc,
+            )
+            task_ids.append(task.id)
+        return {"scheduled_runs": len(task_ids), "task_ids": task_ids}

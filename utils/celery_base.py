@@ -797,6 +797,49 @@ def run_endpoint_interval(self, userid, endpoint_id, interval_seconds, stop_key=
     )
 
 
+@celery.task(bind=True, max_retries=3, name="tasks.schedule_azure_app")
+def run_schedule_azure_app(self, userid, app_id):
+    from azure_integration.helpers import _execute_azure_app_internal
+
+    try:
+        return asyncio.run(_execute_azure_app_internal(app_id, userid))
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.schedule_azure_app_endpoint")
+def run_schedule_azure_app_endpoint(self, userid, endpoint_id, context=None):
+    from azure_integration.helpers import _execute_azure_endpoint_internal
+
+    try:
+        return asyncio.run(_execute_azure_endpoint_internal(endpoint_id, userid))
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.run_azure_endpoint_interval")
+def run_azure_endpoint_interval(self, userid, endpoint_id, interval_seconds, stop_key=None):
+    """
+    Executes an Azure endpoint and reschedules itself.
+    stop_key: optional unique key to check if this interval should stop.
+    """
+    from services.scheduler_service import AzureAPIConnectorScheduler
+    from azure_integration.helpers import _execute_azure_endpoint_internal
+
+    if stop_key and asyncio.run(AzureAPIConnectorScheduler.is_schedule_disabled(stop_key)):
+        return {"stopped": True}
+
+    try:
+        asyncio.run(_execute_azure_endpoint_internal(endpoint_id, userid))
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+    self.apply_async(
+        args=[userid, endpoint_id, interval_seconds, stop_key],
+        countdown=interval_seconds,
+    )
+
+
 @celery.task(bind=True, max_retries=3, name="tasks.trigger_runbooks_api")
 def trigger_runbooks_api_task(self, user_id, app_id, endpoint_id, record):
     import asyncio

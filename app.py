@@ -40,6 +40,7 @@ from plans.routes import plans_bp
 from bytoid_pro_dev.routes import bytoid_dev_pro_bp
 from apiConnector.routes import apiconnector_bp
 from aws_integration.routes import aws_integration_bp
+from azure_integration.routes import azure_integration_bp
 from radar.routes import radar_bp
 from runbook.routes import runbook_bp
 from config_evidences.routes import config_evidences_bp
@@ -190,6 +191,7 @@ blueprints = [
     payments_bp,
     bytoid_dev_pro_bp,
     aws_integration_bp,
+    azure_integration_bp,
     apiconnector_bp,
     radar_bp,
     runbook_bp,
