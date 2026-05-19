@@ -3240,7 +3240,8 @@ def create_global_aws_app_endpoints_table():
 
 def migrate_global_aws_schema():
     """Idempotently add GRC metadata columns to global_aws_apps and
-    global_aws_app_endpoints. Safe to run on every startup via IF NOT EXISTS."""
+    global_aws_app_endpoints. Uses INFORMATION_SCHEMA to check for each column
+    before issuing ALTER TABLE, so it works on any MySQL version."""
     connection = connect_to_rds()
     if connection is None:
         print("❌ DB connection failed")
@@ -3248,24 +3249,40 @@ def migrate_global_aws_schema():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
-            ALTER TABLE global_aws_apps
-              ADD COLUMN IF NOT EXISTS category        VARCHAR(50)  DEFAULT NULL,
-              ADD COLUMN IF NOT EXISTS priority        VARCHAR(20)  DEFAULT NULL,
-              ADD COLUMN IF NOT EXISTS connection_type VARCHAR(20)  DEFAULT NULL
-            """
-        )
-        cursor.execute(
-            """
-            ALTER TABLE global_aws_app_endpoints
-              ADD COLUMN IF NOT EXISTS sigv4_service     VARCHAR(50)  DEFAULT NULL,
-              ADD COLUMN IF NOT EXISTS body_params       JSON         DEFAULT NULL,
-              ADD COLUMN IF NOT EXISTS base_url_override VARCHAR(255) DEFAULT NULL
-            """
-        )
+        # Fetch the current DB name so INFORMATION_SCHEMA queries are scoped correctly
+        cursor.execute("SELECT DATABASE()")
+        db_name = cursor.fetchone()[0]
+
+        def _column_exists(table, column):
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
+                """,
+                (db_name, table, column),
+            )
+            return cursor.fetchone()[0] > 0
+
+        pending = [
+            ("global_aws_apps",          "category",        "ADD COLUMN category        VARCHAR(50)  DEFAULT NULL"),
+            ("global_aws_apps",          "priority",        "ADD COLUMN priority        VARCHAR(20)  DEFAULT NULL"),
+            ("global_aws_apps",          "connection_type", "ADD COLUMN connection_type VARCHAR(20)  DEFAULT NULL"),
+            ("global_aws_app_endpoints", "sigv4_service",   "ADD COLUMN sigv4_service     VARCHAR(50)  DEFAULT NULL"),
+            ("global_aws_app_endpoints", "body_params",     "ADD COLUMN body_params       JSON         DEFAULT NULL"),
+            ("global_aws_app_endpoints", "base_url_override","ADD COLUMN base_url_override VARCHAR(255) DEFAULT NULL"),
+        ]
+
+        added = []
+        for table, column, ddl in pending:
+            if not _column_exists(table, column):
+                cursor.execute(f"ALTER TABLE {table} {ddl}")
+                added.append(f"{table}.{column}")
+
         connection.commit()
-        print("✅ migrate_global_aws_schema complete")
+        if added:
+            print("✅ migrate_global_aws_schema added:", ", ".join(added))
+        else:
+            print("✅ migrate_global_aws_schema: all columns already present")
     except Exception as e:
         connection.rollback()
         print("❌ migrate_global_aws_schema failed:", str(e))
