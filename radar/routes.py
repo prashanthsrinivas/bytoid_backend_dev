@@ -34,6 +34,7 @@ from utils.fireworkzz import (
 import os
 from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file, parse_composite_user_id
+from utils.normal import load_yaml_file, parse_composite_user_id
 from utils.base_logger import get_logger
 from utils.app_configs import IS_DEV
 
@@ -1702,7 +1703,6 @@ async def radar_change_block_preview():
             jsonify({"error": "Either review_id or result_id must be provided"}),
             400,
         )
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
 
