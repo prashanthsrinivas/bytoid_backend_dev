@@ -2072,3 +2072,894 @@ def aws_instantiate_global_endpoint():
     finally:
         if conn:
             conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# Admin — Seed global AWS GRC integration templates
+# ─────────────────────────────────────────────────────────────
+
+_P = lambda *names: [{"name": n, "type": "string", "required": True} for n in names]
+_B = lambda *names: [{"name": n, "type": "string", "required": True} for n in names]
+
+_SEED_INTEGRATIONS = [
+    {
+        "app_name": "AWS Security Hub",
+        "category": "Aggregation",
+        "priority": "Critical",
+        "connection_type": "Prerequisite",
+        "base_url": "https://securityhub.ca-central-1.amazonaws.com",
+        "sigv4_service": "securityhub",
+        "endpoints": [
+            {
+                "name": "Enable Account",
+                "method": "POST",
+                "path": "/accounts/enable",
+                "path_params": [],
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Findings",
+                "method": "POST",
+                "path": "/findings",
+                "path_params": [],
+                "body_template": {"Filters": {"RecordState": "ACTIVE", "SeverityLabel": ["CRITICAL", "HIGH"]}, "MaxResults": 100},
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Create Findings Filter",
+                "method": "POST",
+                "path": "/findings/filters",
+                "path_params": [],
+                "body_template": {"Name": "<filter_name>", "Filters": {"RecordState": "ACTIVE", "SeverityLabel": ["HIGH", "CRITICAL"]}, "Action": "FILTER"},
+                "body_params": _B("filter_name"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS Config",
+        "category": "Compliance",
+        "priority": "Critical",
+        "connection_type": "Prerequisite",
+        "base_url": "https://config.ca-central-1.amazonaws.com",
+        "sigv4_service": "config",
+        "endpoints": [
+            {"name": "List Config Rules", "method": "GET", "path": "/configrules", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Get Compliance Details", "method": "GET", "path": "/compliancedetails", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Configuration Items", "method": "GET", "path": "/configurationitems", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "Amazon GuardDuty",
+        "category": "Threat",
+        "priority": "Critical",
+        "connection_type": "Auto",
+        "base_url": "https://guardduty.ca-central-1.amazonaws.com",
+        "sigv4_service": "guardduty",
+        "endpoints": [
+            {
+                "name": "List Findings",
+                "method": "GET",
+                "path": "/detector/{id}/findings",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Findings",
+                "method": "POST",
+                "path": "/detector/{id}/findings/get",
+                "path_params": _P("id"),
+                "body_template": {"FindingIds": ["<finding_id>"]},
+                "body_params": _B("finding_id"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Findings Statistics",
+                "method": "GET",
+                "path": "/detector/{id}/findings/statistics",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "Amazon Inspector",
+        "category": "Threat",
+        "priority": "Critical",
+        "connection_type": "Auto",
+        "base_url": "https://inspector2.ca-central-1.amazonaws.com",
+        "sigv4_service": "inspector2",
+        "endpoints": [
+            {
+                "name": "List Findings",
+                "method": "POST",
+                "path": "/findings/list",
+                "path_params": [],
+                "body_template": {"filterCriteria": {"findingStatus": "ACTIVE", "severity": ["HIGH", "CRITICAL"]}, "maxResults": 100},
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Describe Findings",
+                "method": "POST",
+                "path": "/findings/describe",
+                "path_params": [],
+                "body_template": {"findingArns": ["<finding_arn>"]},
+                "body_params": _B("finding_arn"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Findings Statistics",
+                "method": "POST",
+                "path": "/findings/statistics",
+                "path_params": [],
+                "body_template": {"findingStatisticTypes": ["COUNT_BY_SEVERITY"]},
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "Amazon Macie",
+        "category": "Threat",
+        "priority": "High",
+        "connection_type": "Auto",
+        "base_url": "https://macie2.ca-central-1.amazonaws.com",
+        "sigv4_service": "macie2",
+        "endpoints": [
+            {"name": "List Findings", "method": "GET", "path": "/findings", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Describe Findings",
+                "method": "POST",
+                "path": "/findings/describe",
+                "path_params": [],
+                "body_template": {"findingIds": ["<finding_id>"]},
+                "body_params": _B("finding_id"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {"name": "Get Findings Statistics", "method": "GET", "path": "/findings/statistics", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "Amazon Detective",
+        "category": "Threat",
+        "priority": "Medium",
+        "connection_type": "Auto",
+        "base_url": "https://detective.ca-central-1.amazonaws.com",
+        "sigv4_service": "detective",
+        "endpoints": [
+            {
+                "name": "Create Graph",
+                "method": "POST",
+                "path": "/graphs",
+                "path_params": [],
+                "body_template": {"Tags": {"<tag_key>": "<tag_value>"}},
+                "body_params": [
+                    {"name": "tag_key", "type": "string", "required": False},
+                    {"name": "tag_value", "type": "string", "required": False},
+                ],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Investigation",
+                "method": "GET",
+                "path": "/investigations/{id}",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Members",
+                "method": "POST",
+                "path": "/members/get",
+                "path_params": [],
+                "body_template": {"AccountIds": ["<account_id>"]},
+                "body_params": _B("account_id"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS IAM",
+        "category": "Identity",
+        "priority": "Critical",
+        "connection_type": "Manual",
+        "base_url": "https://iam.amazonaws.com",
+        "sigv4_service": "iam",
+        "endpoints": [
+            {"name": "Get Credential Report", "method": "GET", "path": "/credential-report", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Get Access Advisor", "method": "GET", "path": "/access-advisor", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Get Policy Versions",
+                "method": "GET",
+                "path": "/policy/{arn}/versions",
+                "path_params": _P("arn"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "IAM Access Analyzer",
+        "category": "Identity",
+        "priority": "Critical",
+        "connection_type": "Manual",
+        "base_url": "https://access-analyzer.ca-central-1.amazonaws.com",
+        "sigv4_service": "access-analyzer",
+        "endpoints": [
+            {"name": "List Analyzers", "method": "GET", "path": "/analyzer", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "List Findings",
+                "method": "GET",
+                "path": "/analyzer/{name}/finding",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Finding",
+                "method": "GET",
+                "path": "/analyzer/{name}/finding/{id}",
+                "path_params": _P("name", "id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "IAM Identity Center",
+        "category": "Identity",
+        "priority": "High",
+        "connection_type": "Manual",
+        "base_url": "https://sso.ca-central-1.amazonaws.com",
+        "sigv4_service": "sso",
+        "endpoints": [
+            {"name": "List Instances", "method": "GET", "path": "/instances", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Users", "method": "GET", "path": "/users", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Account Assignments", "method": "GET", "path": "/accounts/assignments", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "Amazon Cognito",
+        "category": "Identity",
+        "priority": "Medium",
+        "connection_type": "Manual",
+        "base_url": "https://cognito-idp.ca-central-1.amazonaws.com",
+        "sigv4_service": "cognito-idp",
+        "endpoints": [
+            {
+                "name": "List Users",
+                "method": "GET",
+                "path": "/userpools/{id}/users",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Describe Risk Config",
+                "method": "POST",
+                "path": "/riskconfig/describe",
+                "path_params": [],
+                "body_template": {"UserPoolId": "<user_pool_id>"},
+                "body_params": _B("user_pool_id"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {"name": "Get Sign-in Log", "method": "GET", "path": "/signinlog", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS CloudTrail",
+        "category": "Logging",
+        "priority": "Critical",
+        "connection_type": "Manual",
+        "base_url": "https://cloudtrail.ca-central-1.amazonaws.com",
+        "sigv4_service": "cloudtrail",
+        "endpoints": [
+            {"name": "List Trails", "method": "GET", "path": "/trails", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Lookup Events",
+                "method": "POST",
+                "path": "/LookupEvents",
+                "path_params": [],
+                "body_template": {"LookupAttributes": [{"AttributeKey": "EventName", "AttributeValue": "<event_name>"}], "MaxResults": 50, "StartTime": "<start_time_iso>", "EndTime": "<end_time_iso>"},
+                "body_params": _B("event_name", "start_time_iso", "end_time_iso"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Trail Status",
+                "method": "GET",
+                "path": "/trails/{name}/status",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "Amazon CloudWatch",
+        "category": "Logging",
+        "priority": "High",
+        "connection_type": "Manual",
+        "base_url": "https://monitoring.ca-central-1.amazonaws.com",
+        "sigv4_service": "monitoring",
+        "endpoints": [
+            {"name": "List Alarms", "method": "GET", "path": "/alarms", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Filter Log Events",
+                "method": "POST",
+                "path": "/logs/filter-log-events",
+                "path_params": [],
+                "body_template": {"logGroupName": "<log_group_name>", "filterPattern": "<filter_pattern>", "startTime": "<start_epoch_ms>", "endTime": "<end_epoch_ms>"},
+                "body_params": _B("log_group_name", "filter_pattern", "start_epoch_ms", "end_epoch_ms"),
+                "sigv4_service": "logs",
+                "base_url_override": "https://logs.ca-central-1.amazonaws.com",
+            },
+            {"name": "Get Metric Statistics", "method": "GET", "path": "/metrics/statistics", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS Health",
+        "category": "Logging",
+        "priority": "Medium",
+        "connection_type": "Auto",
+        "base_url": "https://health.us-east-1.amazonaws.com",
+        "sigv4_service": "health",
+        "endpoints": [
+            {
+                "name": "Describe Events",
+                "method": "POST",
+                "path": "/DescribeEvents",
+                "path_params": [],
+                "body_template": {"filter": {"services": ["<aws_service>"], "eventStatusCodes": ["upcoming", "open"]}, "maxResults": 100},
+                "body_params": _B("aws_service"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Describe Event Details",
+                "method": "POST",
+                "path": "/DescribeEventDetails",
+                "path_params": [],
+                "body_template": {"eventArns": ["<event_arn>"]},
+                "body_params": _B("event_arn"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Describe Affected Entities",
+                "method": "POST",
+                "path": "/DescribeAffectedEntities",
+                "path_params": [],
+                "body_template": {"filter": {"eventArns": ["<event_arn>"]}, "maxResults": 100},
+                "body_params": _B("event_arn"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS WAF",
+        "category": "Network",
+        "priority": "Critical",
+        "connection_type": "Manual",
+        "base_url": "https://wafv2.ca-central-1.amazonaws.com",
+        "sigv4_service": "wafv2",
+        "endpoints": [
+            {"name": "List Web ACLs", "method": "GET", "path": "/webacls", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Get Sampled Requests", "method": "GET", "path": "/sampledrequest", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Logging Configurations", "method": "GET", "path": "/loggingconfigurations", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS Shield Advanced",
+        "category": "Network",
+        "priority": "High",
+        "connection_type": "Manual",
+        "base_url": "https://shield.us-east-1.amazonaws.com",
+        "sigv4_service": "shield",
+        "endpoints": [
+            {"name": "List Attacks", "method": "GET", "path": "/attacks", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Describe Attack",
+                "method": "GET",
+                "path": "/attacks/{id}",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {"name": "List Protections", "method": "GET", "path": "/protections", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS Firewall Manager",
+        "category": "Network",
+        "priority": "High",
+        "connection_type": "Auto",
+        "base_url": "https://fms.ca-central-1.amazonaws.com",
+        "sigv4_service": "fms",
+        "endpoints": [
+            {"name": "List Policies", "method": "GET", "path": "/policies", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Get Compliance Detail", "method": "GET", "path": "/compliancedetail", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Get Violation Summary", "method": "GET", "path": "/violationsummary", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS Network Firewall",
+        "category": "Network",
+        "priority": "Medium",
+        "connection_type": "Manual",
+        "base_url": "https://network-firewall.ca-central-1.amazonaws.com",
+        "sigv4_service": "network-firewall",
+        "endpoints": [
+            {"name": "List Firewalls", "method": "GET", "path": "/firewalls", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Firewall Policies", "method": "GET", "path": "/firewall-policies", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Rule Groups", "method": "GET", "path": "/rule-groups", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "VPC Flow Logs",
+        "category": "Network",
+        "priority": "Medium",
+        "connection_type": "Manual",
+        "base_url": "https://ec2.ca-central-1.amazonaws.com",
+        "sigv4_service": "ec2",
+        "endpoints": [
+            {
+                "name": "Describe Flow Logs",
+                "method": "POST",
+                "path": "/DescribeFlowLogs",
+                "path_params": [],
+                "body_template": {"Filters": [{"Name": "resource-id", "Values": ["<vpc_id>"]}]},
+                "body_params": _B("vpc_id"),
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Filter Log Events",
+                "method": "POST",
+                "path": "/filter-log-events",
+                "path_params": [],
+                "body_template": {"logGroupName": "<log_group_name>", "filterPattern": "REJECT", "startTime": "<start_epoch_ms>", "endTime": "<end_epoch_ms>"},
+                "body_params": _B("log_group_name", "start_epoch_ms", "end_epoch_ms"),
+                "sigv4_service": "logs",
+                "base_url_override": "https://logs.ca-central-1.amazonaws.com",
+            },
+        ],
+    },
+    {
+        "app_name": "AWS Secrets Manager",
+        "category": "Secrets",
+        "priority": "High",
+        "connection_type": "Manual",
+        "base_url": "https://secretsmanager.ca-central-1.amazonaws.com",
+        "sigv4_service": "secretsmanager",
+        "endpoints": [
+            {"name": "List Secrets", "method": "GET", "path": "/listsecrets", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Describe Secret", "method": "GET", "path": "/describesecret", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Get Rotation Status", "method": "GET", "path": "/rotatesecret/status", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS KMS",
+        "category": "Secrets",
+        "priority": "High",
+        "connection_type": "Auto",
+        "base_url": "https://kms.ca-central-1.amazonaws.com",
+        "sigv4_service": "kms",
+        "endpoints": [
+            {"name": "List Keys", "method": "GET", "path": "/keys", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Get Key Policy",
+                "method": "GET",
+                "path": "/key/{id}/policy",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Key Rotation Status",
+                "method": "GET",
+                "path": "/key/{id}/rotation-status",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS Certificate Manager",
+        "category": "Secrets",
+        "priority": "Medium",
+        "connection_type": "Auto",
+        "base_url": "https://acm.ca-central-1.amazonaws.com",
+        "sigv4_service": "acm",
+        "endpoints": [
+            {"name": "List Certificates", "method": "GET", "path": "/certificates", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Describe Certificate",
+                "method": "GET",
+                "path": "/certificate/{arn}",
+                "path_params": _P("arn"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Renewal Details",
+                "method": "GET",
+                "path": "/certificate/{arn}/renewal",
+                "path_params": _P("arn"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "Amazon ECR",
+        "category": "Containers",
+        "priority": "High",
+        "connection_type": "Auto",
+        "base_url": "https://ecr.ca-central-1.amazonaws.com",
+        "sigv4_service": "ecr",
+        "endpoints": [
+            {"name": "List Repositories", "method": "GET", "path": "/repositories", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Image Scan Findings", "method": "GET", "path": "/imagescanning/findings", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "Describe Image Scan Findings", "method": "GET", "path": "/imagescanning/findings/list", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "Amazon EKS",
+        "category": "Containers",
+        "priority": "High",
+        "connection_type": "Manual",
+        "base_url": "https://eks.ca-central-1.amazonaws.com",
+        "sigv4_service": "eks",
+        "endpoints": [
+            {
+                "name": "Describe Cluster",
+                "method": "GET",
+                "path": "/clusters/{name}",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "List Audit Logs",
+                "method": "GET",
+                "path": "/clusters/{name}/audit-logs",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "List Addons",
+                "method": "GET",
+                "path": "/clusters/{name}/addons",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS Lambda",
+        "category": "Serverless",
+        "priority": "Medium",
+        "connection_type": "Manual",
+        "base_url": "https://lambda.ca-central-1.amazonaws.com",
+        "sigv4_service": "lambda",
+        "endpoints": [
+            {"name": "List Functions", "method": "GET", "path": "/functions", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Get Function Policy",
+                "method": "GET",
+                "path": "/functions/{name}/policy",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Function Configuration",
+                "method": "GET",
+                "path": "/functions/{name}/configuration",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "Amazon S3",
+        "category": "Storage",
+        "priority": "Critical",
+        "connection_type": "Manual",
+        "base_url": "https://s3.ca-central-1.amazonaws.com",
+        "sigv4_service": "s3",
+        "endpoints": [
+            {"name": "List Buckets", "method": "GET", "path": "/buckets", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Get Bucket Policy",
+                "method": "GET",
+                "path": "/bucket/{name}/policy",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {
+                "name": "Get Public Access Block",
+                "method": "GET",
+                "path": "/bucket/{name}/public-access-block",
+                "path_params": _P("name"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS Organizations",
+        "category": "Governance",
+        "priority": "High",
+        "connection_type": "Manual",
+        "base_url": "https://organizations.us-east-1.amazonaws.com",
+        "sigv4_service": "organizations",
+        "endpoints": [
+            {"name": "List Accounts", "method": "GET", "path": "/accounts", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Policies", "method": "GET", "path": "/policies", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "List Targets for Policy",
+                "method": "GET",
+                "path": "/policies/{id}/targets",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS Audit Manager",
+        "category": "Governance",
+        "priority": "High",
+        "connection_type": "Manual",
+        "base_url": "https://auditmanager.ca-central-1.amazonaws.com",
+        "sigv4_service": "auditmanager",
+        "endpoints": [
+            {"name": "List Assessments", "method": "GET", "path": "/assessments", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "List Evidence Folders",
+                "method": "GET",
+                "path": "/assessments/{id}/evidenceFolders",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {"name": "Get Evidence", "method": "GET", "path": "/evidence", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS Trusted Advisor",
+        "category": "Governance",
+        "priority": "Medium",
+        "connection_type": "Manual",
+        "base_url": "https://support.us-east-1.amazonaws.com",
+        "sigv4_service": "support",
+        "endpoints": [
+            {"name": "List Trusted Advisor Checks", "method": "GET", "path": "/trustedadvisor/checks", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Get Check Result",
+                "method": "GET",
+                "path": "/trustedadvisor/check-result/{id}",
+                "path_params": _P("id"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+        ],
+    },
+    {
+        "app_name": "AWS Control Tower",
+        "category": "Governance",
+        "priority": "Medium",
+        "connection_type": "Manual",
+        "base_url": "https://controltower.ca-central-1.amazonaws.com",
+        "sigv4_service": "controltower",
+        "endpoints": [
+            {"name": "List Controls", "method": "GET", "path": "/controls", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {
+                "name": "Get Control Status",
+                "method": "GET",
+                "path": "/controls/{arn}/status",
+                "path_params": _P("arn"),
+                "body_template": None,
+                "body_params": [],
+                "sigv4_service": None,
+                "base_url_override": None,
+            },
+            {"name": "Get Landing Zone Status", "method": "GET", "path": "/landingzone/status", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+    {
+        "app_name": "AWS RAM",
+        "category": "Governance",
+        "priority": "Low",
+        "connection_type": "Manual",
+        "base_url": "https://ram.ca-central-1.amazonaws.com",
+        "sigv4_service": "ram",
+        "endpoints": [
+            {"name": "List Resources", "method": "GET", "path": "/resources", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Resource Shares", "method": "GET", "path": "/resource-shares", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+            {"name": "List Principals", "method": "GET", "path": "/principals", "path_params": [], "body_template": None, "body_params": [], "sigv4_service": None, "base_url_override": None},
+        ],
+    },
+]
+
+
+@aws_integration_bp.route("/admin/seed-global-integrations", methods=["POST"])
+def aws_seed_global_integrations():
+    """Upsert all 30 AWS GRC service integration templates (88 endpoints).
+    Restricted to ACCESSIBLE_IDS. Idempotent — safe to re-run."""
+    data = request.get_json(force=True) or {}
+    user_id = data.get("user_id") or _extract_user_id()
+
+    ok, err = _admin_only_check(user_id)
+    if not ok:
+        return err
+    if user_id not in ACCESSIBLE_IDS:
+        return jsonify({"success": False, "error": "Only service@bytoid.ca can seed global AWS integrations."}), 403
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        integrations_created = 0
+        integrations_skipped = 0
+        endpoints_created = 0
+        endpoints_skipped = 0
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for integration in _SEED_INTEGRATIONS:
+                app_name = integration["app_name"]
+
+                cur.execute(
+                    "SELECT id FROM global_aws_apps WHERE app_name=%s LIMIT 1",
+                    (app_name,),
+                )
+                existing_app = cur.fetchone()
+
+                if existing_app:
+                    app_id = existing_app["id"]
+                    integrations_skipped += 1
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO global_aws_apps
+                            (app_name, provider, base_url, auth_type, auth_config,
+                             headers, timeout_seconds, is_universal, status,
+                             category, priority, connection_type)
+                        VALUES (%s,'aws',%s,'aws_sigv4',%s,'{}',60,1,'ready',%s,%s,%s)
+                        """,
+                        (
+                            app_name,
+                            integration["base_url"],
+                            json.dumps({"sigv4_service": integration["sigv4_service"]}),
+                            integration["category"],
+                            integration["priority"],
+                            integration["connection_type"],
+                        ),
+                    )
+                    app_id = cur.lastrowid
+                    integrations_created += 1
+
+                for ep in integration["endpoints"]:
+                    cur.execute(
+                        """
+                        SELECT id FROM global_aws_app_endpoints
+                        WHERE app_id=%s AND name=%s AND method=%s AND path=%s
+                        LIMIT 1
+                        """,
+                        (app_id, ep["name"], ep["method"], ep["path"]),
+                    )
+                    if cur.fetchone():
+                        endpoints_skipped += 1
+                        continue
+
+                    cur.execute(
+                        """
+                        INSERT INTO global_aws_app_endpoints
+                            (app_id, name, path, method, headers,
+                             path_params, body_template, body_params,
+                             timeout_seconds, is_active, status,
+                             sigv4_service, base_url_override)
+                        VALUES (%s,%s,%s,%s,'{"Content-Type":"application/json"}',%s,%s,%s,60,1,'ready',%s,%s)
+                        """,
+                        (
+                            app_id,
+                            ep["name"],
+                            ep["path"],
+                            ep["method"],
+                            json.dumps(ep["path_params"]) if ep["path_params"] else "[]",
+                            json.dumps(ep["body_template"]) if ep["body_template"] is not None else None,
+                            json.dumps(ep["body_params"]) if ep["body_params"] else "[]",
+                            ep.get("sigv4_service"),
+                            ep.get("base_url_override"),
+                        ),
+                    )
+                    endpoints_created += 1
+
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "integrations_created": integrations_created,
+            "integrations_skipped": integrations_skipped,
+            "endpoints_created": endpoints_created,
+            "endpoints_skipped": endpoints_skipped,
+            "total_integrations": 30,
+            "total_endpoints": 88,
+        })
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()

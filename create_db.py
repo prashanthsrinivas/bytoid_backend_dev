@@ -3165,6 +3165,9 @@ def create_global_aws_apps_table():
                 status                 ENUM('ready','development','removed') DEFAULT 'development',
                 notes                  TEXT DEFAULT NULL,
                 required_config_schema JSON DEFAULT NULL,
+                category               VARCHAR(50) DEFAULT NULL,
+                priority               VARCHAR(20) DEFAULT NULL,
+                connection_type        VARCHAR(20) DEFAULT NULL,
                 created_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at             DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uq_global_aws_app_name (app_name),
@@ -3208,6 +3211,9 @@ def create_global_aws_app_endpoints_table():
                 status                 ENUM('ready','development','removed') DEFAULT 'development',
                 notes                  TEXT DEFAULT NULL,
                 required_config_schema JSON DEFAULT NULL,
+                sigv4_service          VARCHAR(50) DEFAULT NULL,
+                body_params            JSON DEFAULT NULL,
+                base_url_override      VARCHAR(255) DEFAULT NULL,
                 created_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at             DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uq_global_aws_endpoint_name (app_id, name),
@@ -3226,6 +3232,43 @@ def create_global_aws_app_endpoints_table():
     except Exception as e:
         connection.rollback()
         print("❌ Failed to create global_aws_app_endpoints table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def migrate_global_aws_schema():
+    """Idempotently add GRC metadata columns to global_aws_apps and
+    global_aws_app_endpoints. Safe to run on every startup via IF NOT EXISTS."""
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            ALTER TABLE global_aws_apps
+              ADD COLUMN IF NOT EXISTS category        VARCHAR(50)  DEFAULT NULL,
+              ADD COLUMN IF NOT EXISTS priority        VARCHAR(20)  DEFAULT NULL,
+              ADD COLUMN IF NOT EXISTS connection_type VARCHAR(20)  DEFAULT NULL
+            """
+        )
+        cursor.execute(
+            """
+            ALTER TABLE global_aws_app_endpoints
+              ADD COLUMN IF NOT EXISTS sigv4_service     VARCHAR(50)  DEFAULT NULL,
+              ADD COLUMN IF NOT EXISTS body_params       JSON         DEFAULT NULL,
+              ADD COLUMN IF NOT EXISTS base_url_override VARCHAR(255) DEFAULT NULL
+            """
+        )
+        connection.commit()
+        print("✅ migrate_global_aws_schema complete")
+    except Exception as e:
+        connection.rollback()
+        print("❌ migrate_global_aws_schema failed:", str(e))
         raise
     finally:
         cursor.close()
@@ -3450,4 +3493,5 @@ if __name__ == "__main__":
     alter_aws_external_apps_add_global_link()
     create_global_aws_apps_table()
     create_global_aws_app_endpoints_table()
+    migrate_global_aws_schema()
     print("ok")
