@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import subprocess
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
@@ -2182,3 +2184,90 @@ def azure_instantiate_global_endpoint():
     finally:
         if conn:
             conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# Unit Test Results API (service@bytoid.ca only)
+# ─────────────────────────────────────────────────────────────
+
+_RESULTS_FILE = os.path.join(
+    os.path.dirname(__file__), "..", "testing", "results", "latest.json"
+)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read_test_results():
+    """Load and normalise the pytest-json-report output file."""
+    path = os.path.abspath(_RESULTS_FILE)
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+
+    summary = raw.get("summary", {})
+    tests = [
+        {
+            "nodeid": t.get("nodeid"),
+            "outcome": t.get("outcome"),
+            "duration": round(t.get("duration", 0), 4),
+            "longrepr": (t.get("call") or {}).get("longrepr"),
+        }
+        for t in raw.get("tests", [])
+    ]
+    return {
+        "summary": {
+            "total": summary.get("total", 0),
+            "passed": summary.get("passed", 0),
+            "failed": summary.get("failed", 0),
+            "error": summary.get("error", 0),
+            "duration": round(raw.get("duration", 0), 3),
+            "created": raw.get("created"),
+        },
+        "tests": tests,
+    }
+
+
+@azure_integration_bp.route("/test-results", methods=["GET"])
+def azure_get_test_results():
+    user_id = request.args.get("user_id") or _extract_user_id()
+    if not user_id or user_id not in ACCESSIBLE_IDS:
+        return jsonify({"success": False, "error": "Access restricted to service@bytoid.ca"}), 403
+
+    results = _read_test_results()
+    if results is None:
+        return jsonify({"success": False, "error": "No test results found. Run tests first."}), 404
+
+    return jsonify({"success": True, **results})
+
+
+@azure_integration_bp.route("/run-tests", methods=["POST"])
+def azure_run_tests():
+    data = request.get_json(force=True) or {}
+    user_id = data.get("user_id") or _extract_user_id()
+    if not user_id or user_id not in ACCESSIBLE_IDS:
+        return jsonify({"success": False, "error": "Access restricted to service@bytoid.ca"}), 403
+
+    results_dir = os.path.join(_PROJECT_ROOT, "testing", "results")
+    os.makedirs(results_dir, exist_ok=True)
+
+    try:
+        proc = subprocess.run(
+            [
+                "pytest", "testing/", "-v", "--tb=short",
+                "--json-report",
+                "--json-report-file=testing/results/latest.json",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Test run timed out after 120s"}), 504
+
+    results = _read_test_results() or {}
+    return jsonify({
+        "success": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        **results,
+    })
