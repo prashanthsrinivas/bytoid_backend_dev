@@ -2280,8 +2280,12 @@ def azure_run_tests():
         return jsonify({"success": False, "error": f"Failed to launch test runner: {exc}"}), 500
 
     results = _read_test_results() or {}
-    return jsonify({
+    response = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
         **results,
-    })
+    }
+    if not results:
+        response["stdout"] = proc.stdout[-3000:] if proc.stdout else ""
+        response["stderr"] = proc.stderr[-3000:] if proc.stderr else ""
+    return jsonify(response)
