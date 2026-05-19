@@ -118,7 +118,7 @@ def get_all_user_agents(userid):
                 cursor.execute(
                     """
                     SELECT 
-                        u.email,P
+                        u.email,
                         u.user_id,
                         l.launch_id,
                         l.sub_agent_id_fk,
