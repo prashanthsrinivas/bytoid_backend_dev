@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
@@ -2250,20 +2251,26 @@ def azure_run_tests():
     results_dir = os.path.join(_PROJECT_ROOT, "testing", "results")
     os.makedirs(results_dir, exist_ok=True)
 
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _PROJECT_ROOT
+
     try:
         proc = subprocess.run(
             [
-                "pytest", "testing/", "-v", "--tb=short",
+                sys.executable, "-m", "pytest", "testing/", "-v", "--tb=short",
                 "--json-report",
                 "--json-report-file=testing/results/latest.json",
             ],
             capture_output=True,
             text=True,
             cwd=_PROJECT_ROOT,
+            env=env,
             timeout=120,
         )
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "Test run timed out after 120s"}), 504
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to launch test runner: {exc}"}), 500
 
     results = _read_test_results() or {}
     return jsonify({
