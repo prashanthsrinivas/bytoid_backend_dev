@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+import traceback
 import uuid
 import yaml
 from datetime import datetime, timezone
@@ -27,6 +28,21 @@ from utils.s3_utils import (
     list_all_files,
     load_yaml_from_s3,
     s3bucket,
+)
+from services.audit_log_service import (
+    log_audit_event,
+    build_audit_actor,
+    TRUST_CENTER_INTERNAL_SHARED,
+    TRUST_CENTER_INTERNAL_SHARE_REVOKED,
+)
+from shared_configuration import (
+    check_role_has_permission,
+    core_assign_resource,
+    core_list_resource_shares,
+    core_revoke_resource,
+    get_round_robin_user_for_resource,
+    get_user_resource_access,
+    get_user_shared_resources,
 )
 
 S3_BUCKET = os.getenv("S3_BUCKET")
@@ -158,6 +174,41 @@ def _get_user_id() -> str | None:
         or request.args.get("user_id")
         or (request.get_json(silent=True) or {}).get("user_id")
     )
+
+
+def _check_trust_center_access(baseuser, need_level):
+    """
+    Resolve the trust-center owner and ensure the requester has the required access.
+
+    `need_level` is 'view' or 'edit'. 'edit' grants 'view' implicitly; a 'view'
+    share entry does NOT satisfy an 'edit' requirement.
+
+    Returns (owner_user_id, error_tuple).
+    """
+    if not baseuser:
+        return None, (jsonify({"error": "Unauthorized"}), 401)
+
+    logged_in_user_id, owner_id = parse_composite_user_id(baseuser)
+    if not owner_id:
+        return None, (jsonify({"error": "Invalid user_id"}), 400)
+
+    if not logged_in_user_id or logged_in_user_id == owner_id:
+        return owner_id, None
+
+    access = get_user_resource_access(
+        "trust_center", owner_id, owner_id, logged_in_user_id
+    )
+    if not access.get("granted"):
+        return None, (
+            jsonify({"error": "Access to this trust center has not been granted"}),
+            403,
+        )
+    if need_level == "edit" and access.get("level") != "edit":
+        return None, (
+            jsonify({"error": "Edit access required"}),
+            403,
+        )
+    return owner_id, None
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -511,9 +562,9 @@ def _generate_whitepaper(user_id: str, job_id: str, session_id: str | None = Non
 @permission_required("trustcenter.view")
 def get_trust_center():
     baseuser = _get_user_id()
-    if not baseuser:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    user_id, err = _check_trust_center_access(baseuser, "view")
+    if err:
+        return err
 
     tc = _get_trust_center(user_id)
 
@@ -609,9 +660,9 @@ def get_status():
 def patch_whitepaper():
     data = request.get_json(silent=True) or {}
     baseuser = _get_user_id()
-    if not baseuser:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    user_id, err = _check_trust_center_access(baseuser, "edit")
+    if err:
+        return err
 
     content = data.get("content")
     if not content:
@@ -635,10 +686,10 @@ def patch_whitepaper():
 @trust_center_bp.route("/whitepaper/regenerate", methods=["POST"])
 @permission_required("trustcenter.whitepaper.regenerate")
 def regenerate_whitepaper():
-    user_id = _get_user_id()
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = _get_user_id()
+    user_id, err = _check_trust_center_access(baseuser, "edit")
+    if err:
+        return err
     job_id = uuid.uuid4().hex[:12]
     data = request.get_json(silent=True) or {}
     session_id = data.get("session_id")
@@ -653,10 +704,10 @@ def regenerate_whitepaper():
 @trust_center_bp.route("/whitepaper/pdf", methods=["GET"])
 @permission_required("trustcenter.document.download")
 def get_whitepaper_pdf():
-    user_id = _get_user_id()
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = _get_user_id()
+    user_id, err = _check_trust_center_access(baseuser, "view")
+    if err:
+        return err
     wp_key = _wp_key(user_id)
     try:
         data = load_yaml_from_s3(wp_key) or {}
@@ -672,10 +723,10 @@ def get_whitepaper_pdf():
 @trust_center_bp.route("/documents", methods=["POST"])
 @permission_required("trustcenter.document.upload")
 def upload_document():
-    user_id = _get_user_id()
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = _get_user_id()
+    user_id, err = _check_trust_center_access(baseuser, "edit")
+    if err:
+        return err
 
     file = request.files.get("file")
     label = request.form.get("label", "").strip()
@@ -748,10 +799,10 @@ def upload_document():
 @trust_center_bp.route("/documents/<doc_id>", methods=["DELETE"])
 @permission_required("trustcenter.document.delete")
 def delete_document(doc_id: str):
-    user_id = _get_user_id()
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = _get_user_id()
+    user_id, err = _check_trust_center_access(baseuser, "edit")
+    if err:
+        return err
 
     conn = connect_to_rds()
     with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -783,16 +834,39 @@ def delete_document(doc_id: str):
 @trust_center_bp.route("/documents/<doc_id>/download", methods=["GET"])
 @permission_required("trustcenter.document.download")
 def download_document(doc_id: str):
+    baseuser = _get_user_id()
+    if not baseuser:
+        return jsonify({"error": "Unauthorized"}), 401
+
     conn = connect_to_rds()
     with conn.cursor(pymysql.cursors.DictCursor) as cursor:
         cursor.execute(
-            "SELECT s3_key FROM trust_center_documents WHERE id=%s", (doc_id,)
+            """SELECT tcd.s3_key, tc.owner_user_id
+               FROM trust_center_documents tcd
+               JOIN trust_centers tc ON tc.id = tcd.trust_center_id
+               WHERE tcd.id=%s""",
+            (doc_id,),
         )
         doc = cursor.fetchone()
     conn.close()
 
     if not doc:
         return jsonify({"error": "Not found"}), 404
+
+    # Rewrite the baseuser to target the document's actual owner so the share
+    # lookup runs against the right trust center (not whichever owner the
+    # caller's composite happened to encode).
+    logged_in_user_id, _ = parse_composite_user_id(baseuser)
+    requester = logged_in_user_id or baseuser
+    owner_id = doc["owner_user_id"]
+    effective_baseuser = (
+        requester
+        if requester == owner_id
+        else f"{requester}##SU##{owner_id}"
+    )
+    _, err = _check_trust_center_access(effective_baseuser, "view")
+    if err:
+        return err
 
     url = generate_presigned_url(doc["s3_key"])
     return jsonify({"url": url})
@@ -802,10 +876,10 @@ def download_document(doc_id: str):
 @permission_required("trustcenter.share")
 def share_trust_center():
     data = request.get_json(silent=True) or {}
-    user_id = _get_user_id()
-    if not user_id:
-        return jsonify({"error": "Unauthorized"}), 401
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = _get_user_id()
+    user_id, err = _check_trust_center_access(baseuser, "edit")
+    if err:
+        return err
 
     emails = data.get("emails", [])
     if not emails:
@@ -953,3 +1027,227 @@ def accept_nda(owner_user_id: str):
     conn.close()
 
     return jsonify({"ok": True})
+
+
+# ─────────────────────────────────────────────────────────────
+# Trust Center internal share (user/role with view or edit access)
+#
+# This is separate from the external email+NDA share above. The internal
+# share grants organisation users (by id or role) view-only or edit access
+# to the same trust center, identified by the owner's user_id.
+# ─────────────────────────────────────────────────────────────
+
+
+@trust_center_bp.route("/internal-share", methods=["POST"])
+@permission_required("trustcenter.share")
+def internal_share_trust_center():
+    data = request.get_json(silent=True) or {}
+    baseuser = _get_user_id()
+    if not baseuser:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    assignment_type = data.get("assignment_type")
+    client_user_id = data.get("client_user_id")
+    role_id = data.get("role_id")
+    level = (data.get("level") or "").strip().lower()
+
+    if level not in ("view", "edit"):
+        return jsonify({"error": "level must be 'view' or 'edit'"}), 400
+    if not assignment_type:
+        return jsonify({"error": "assignment_type required"}), 400
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        required_permission = "trustcenter.view"
+
+        if assignment_type == "manual":
+            if not client_user_id:
+                return jsonify({"error": "client_user_id required for manual"}), 400
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute("SELECT email FROM users WHERE user_id=%s", (client_user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"error": "User not found"}), 404
+                user_email = row["email"]
+
+        elif assignment_type == "role":
+            if not role_id:
+                return jsonify({"error": "role_id required for role"}), 400
+            if not check_role_has_permission(conn, admin_id, role_id, required_permission):
+                return (
+                    jsonify({"error": "Role does not have trust center view permission"}),
+                    403,
+                )
+            user_obj, error_msg = get_round_robin_user_for_resource(
+                admin_id, role_id, "trust_center", conn, required_permission
+            )
+            if not user_obj:
+                return jsonify({"error": error_msg or "No eligible users"}), 400
+            client_user_id = user_obj["user_id"]
+            user_email = user_obj["email"]
+        else:
+            return jsonify({"error": "assignment_type must be 'manual' or 'role'"}), 400
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT email FROM users WHERE user_id=%s", (admin_id,))
+            admin_row = cur.fetchone()
+            if not admin_row:
+                return jsonify({"error": "Admin not found"}), 404
+            admin_email = admin_row["email"]
+
+        sharing_access, error = core_assign_resource(
+            "trust_center",
+            admin_id,
+            admin_email,
+            client_user_id,
+            user_email,
+            admin_id,  # resource_id = owner_user_id (one TC per admin)
+            "Trust Center",
+            conn,
+            level=level,
+        )
+        if error:
+            return (
+                jsonify({"error": error}),
+                403 if "permission" in error.lower() else 400,
+            )
+
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRUST_CENTER_INTERNAL_SHARED,
+            endpoint="/trust-center/internal-share",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "target_user_id": client_user_id,
+                "assignment_type": assignment_type,
+                "role_id": role_id,
+                "level": level,
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "client_user_id": client_user_id,
+                    "level": level,
+                    "sharing_access": sharing_access,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error("internal_share_trust_center error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@trust_center_bp.route("/internal-revoke-share", methods=["POST"])
+@permission_required("trustcenter.share")
+def internal_revoke_trust_center_share():
+    data = request.get_json(silent=True) or {}
+    baseuser = _get_user_id()
+    if not baseuser:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    client_user_id = data.get("client_user_id")
+    if not client_user_id:
+        return jsonify({"error": "client_user_id required"}), 400
+
+    try:
+        sharing_access, error = core_revoke_resource(
+            "trust_center", admin_id, client_user_id, admin_id
+        )
+        if error:
+            return jsonify({"error": error}), 400
+
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRUST_CENTER_INTERNAL_SHARE_REVOKED,
+            endpoint="/trust-center/internal-revoke-share",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={"target_user_id": client_user_id},
+        )
+        g.audit_logged = True
+
+        return jsonify({"success": True, "sharing_access": sharing_access}), 200
+    except Exception as e:
+        logger.error("internal_revoke_trust_center_share error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@trust_center_bp.route("/internal-sharing", methods=["GET"])
+@permission_required("trustcenter.view")
+def get_trust_center_internal_sharing():
+    baseuser = _get_user_id()
+    if not baseuser:
+        return jsonify({"error": "Unauthorized"}), 401
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+    try:
+        sharing_access, _ = core_list_resource_shares(
+            "trust_center", admin_id, admin_id
+        )
+        return jsonify({"sharing_access": sharing_access}), 200
+    except Exception as e:
+        logger.error("get_trust_center_internal_sharing error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@trust_center_bp.route("/internal-shared", methods=["GET"])
+@permission_required("trustcenter.view")
+def list_trust_centers_shared_to_me():
+    """List trust centers shared TO the requesting user (internal share)."""
+    baseuser = _get_user_id()
+    if not baseuser:
+        return jsonify({"error": "Unauthorized"}), 401
+    logged_in_user_id, target_user_id = parse_composite_user_id(baseuser)
+    requester = logged_in_user_id or target_user_id
+    try:
+        shared = get_user_shared_resources(requester, "trust_center")
+        return (
+            jsonify(
+                {
+                    "user_id": requester,
+                    "shared_trust_centers": list(shared.values()),
+                }
+            ),
+            200,
+        )
+    except Exception as e:
+        logger.error("list_trust_centers_shared_to_me error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500

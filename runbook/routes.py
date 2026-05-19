@@ -44,6 +44,8 @@ from services.audit_log_service import (
     RUNBOOK_SCHEDULED,
     RUNBOOK_EVIDENCE_UPDATED,
     RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
+    REPORT_SHARED,
+    REPORT_SHARE_REVOKED,
     build_audit_actor,
 )
 import time, uuid, os, json
@@ -178,6 +180,30 @@ def assign_runbook():
                 403 if "permission" in error.lower() else 400
             )
 
+        try:
+            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(admin_id)
+            log_audit_event(
+                action=REPORT_SHARED,
+                endpoint="/runbook/assign",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_uid,
+                actor_email=actor_email,
+                acting_on_behalf_of_user_id=behalf_uid,
+                acting_on_behalf_of_email=behalf_email,
+                metadata={
+                    "report_type": "runbook",
+                    "runbook_id": runbook_id,
+                    "result_id": result_id,
+                    "target_user_id": user_id,
+                    "assignment_type": assignment_type,
+                    "role_id": role_id,
+                },
+            )
+            g.audit_logged = True
+        except Exception as audit_exc:
+            logger.warning(f"audit log failed for /runbook/assign: {audit_exc}")
+
         return jsonify({"success": True, "sharing_access": sharing_access}), 200
 
     except Exception as e:
@@ -212,6 +238,28 @@ def revoke_runbook():
 
         if error:
             return jsonify({"error": error}), 400
+
+        try:
+            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(admin_id)
+            log_audit_event(
+                action=REPORT_SHARE_REVOKED,
+                endpoint="/runbook/revoke",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_uid,
+                actor_email=actor_email,
+                acting_on_behalf_of_user_id=behalf_uid,
+                acting_on_behalf_of_email=behalf_email,
+                metadata={
+                    "report_type": "runbook",
+                    "runbook_id": runbook_id,
+                    "result_id": result_id,
+                    "target_user_id": user_id,
+                },
+            )
+            g.audit_logged = True
+        except Exception as audit_exc:
+            logger.warning(f"audit log failed for /runbook/revoke: {audit_exc}")
 
         return jsonify({"success": True, "sharing_access": sharing_access}), 200
 

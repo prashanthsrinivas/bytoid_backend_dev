@@ -10,7 +10,7 @@ from credits_route.route import Credits
 from cust_helpers import pathconfig
 from db.db_checkers import get_notes_data
 from db.lance_db_service import LanceDBServer
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 from utils.permission_required import permission_required_body
 from db.rds_db import connect_to_rds
 import uuid
@@ -49,6 +49,12 @@ from shared_configuration import (
     get_round_robin_user,
     check_role_has_permission,
     get_user_shared_reports,
+)
+from services.audit_log_service import (
+    log_audit_event,
+    build_audit_actor,
+    REPORT_SHARED,
+    REPORT_SHARE_REVOKED,
 )
 
 # # Run tests
@@ -132,6 +138,29 @@ async def assign_radar():
                 403 if "permission" in error.lower() else 400
             )
 
+        try:
+            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+            log_audit_event(
+                action=REPORT_SHARED,
+                endpoint="/radar/assign",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_uid,
+                actor_email=actor_email,
+                acting_on_behalf_of_user_id=behalf_uid,
+                acting_on_behalf_of_email=behalf_email,
+                metadata={
+                    "report_type": "radar",
+                    "report_id": report_id,
+                    "target_user_id": client_user_id,
+                    "assignment_type": assignment_type,
+                    "role_id": role_id,
+                },
+            )
+            g.audit_logged = True
+        except Exception as audit_exc:
+            logger.warning(f"audit log failed for /radar/assign: {audit_exc}")
+
         return jsonify({"success": True, "sharing_access": sharing_access}), 200
 
     except Exception as e:
@@ -161,6 +190,27 @@ async def revoke_radar():
 
         if error:
             return jsonify({"error": error}), 400
+
+        try:
+            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+            log_audit_event(
+                action=REPORT_SHARE_REVOKED,
+                endpoint="/radar/revoke",
+                ip=request.remote_addr,
+                status="success",
+                actor_user_id=actor_uid,
+                actor_email=actor_email,
+                acting_on_behalf_of_user_id=behalf_uid,
+                acting_on_behalf_of_email=behalf_email,
+                metadata={
+                    "report_type": "radar",
+                    "report_id": report_id,
+                    "target_user_id": client_user_id,
+                },
+            )
+            g.audit_logged = True
+        except Exception as audit_exc:
+            logger.warning(f"audit log failed for /radar/revoke: {audit_exc}")
 
         return jsonify({"success": True, "sharing_access": sharing_access}), 200
 

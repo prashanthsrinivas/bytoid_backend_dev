@@ -4,11 +4,13 @@ import json
 import os
 import re
 import threading
+import traceback
 import uuid
 import yaml
 from datetime import datetime, timezone
 
 import pandas as pd
+import pymysql
 
 from flask import Blueprint, request, jsonify, g
 
@@ -16,6 +18,7 @@ from credits_route.route import Credits
 from utils.normal import parse_composite_user_id
 from utils.permission_required import permission_required_body
 from db.db_checkers import get_email_by_id
+from db.rds_db import connect_to_rds
 from db.lance_db_service import LanceDBServer, VectorData, QueryData
 from utils.app_configs import FRAMEWORK_OWNER
 from utils.base_logger import get_logger
@@ -27,12 +30,46 @@ from utils.s3_utils import (
     delete_file_from_s3,
     list_all_files,
 )
+from services.audit_log_service import (
+    log_audit_event,
+    build_audit_actor,
+    POLICY_SHARED,
+    POLICY_SHARE_REVOKED,
+)
+from shared_configuration import (
+    check_role_has_permission,
+    core_assign_resource,
+    core_list_resource_shares,
+    core_revoke_resource,
+    get_round_robin_user_for_resource,
+    get_user_resource_access,
+    get_user_shared_resources,
+)
 
 S3_BUCKET = os.getenv("S3_BUCKET")
 logger = get_logger(__name__)
 policy_hub_bp = Blueprint("policy_hub", __name__, url_prefix="/policy-hub")
 
 _jobs_lock = threading.Lock()
+
+
+# ── Share access helper ──────────────────────────────────────────────────────
+
+
+def _check_policy_share_access(baseuser, policy_id):
+    """Resolve owner and ensure the requester has access. Returns (owner_id, err_tuple)."""
+    logged_in_user_id, owner_id = parse_composite_user_id(baseuser)
+    if not owner_id:
+        return None, (jsonify({"error": "Invalid user_id"}), 400)
+    if not logged_in_user_id or logged_in_user_id == owner_id:
+        return owner_id, None
+    access = get_user_resource_access("policy", owner_id, policy_id, logged_in_user_id)
+    if not access.get("granted"):
+        return None, (
+            jsonify({"error": "Access to this policy has not been granted"}),
+            403,
+        )
+    return owner_id, None
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
@@ -657,8 +694,7 @@ def _edit_worker(
 @permission_required_body("policyhub.edit")
 def edit_policy():
     body = request.get_json(silent=True) or {}
-    user_id = body.get("user_id")
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = body.get("user_id")
     policy_id = body.get("policy_id")
     document_title = body.get("document_title", "")
     document_content = body.get("document_content", "")
@@ -666,7 +702,7 @@ def edit_policy():
     selected_text = body.get("selected_text", "").strip()
     section_title = body.get("section_title", "").strip()
 
-    if not user_id or not policy_id or not document_content or not instruction:
+    if not baseuser or not policy_id or not document_content or not instruction:
         return (
             jsonify(
                 {
@@ -675,6 +711,9 @@ def edit_policy():
             ),
             400,
         )
+    user_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
 
     job_id = str(uuid.uuid4())
     _save_job(job_id, {"status": "processing"})
@@ -728,10 +767,10 @@ def edit_status():
 @policy_hub_bp.route("/list", methods=["GET"])
 @permission_required_body("policyhub.view")
 def list_policies():
-    user_id = request.args.get("user_id")
-    if not user_id:
+    raw_user_id = request.args.get("user_id")
+    if not raw_user_id:
         return jsonify({"error": "user_id is required"}), 400
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    logged_in_user_id, user_id = parse_composite_user_id(raw_user_id)
 
     prefix = f"{user_id}/policies/"
     s3_objects = list_all_files(folder=prefix)
@@ -746,6 +785,24 @@ def list_policies():
         if data:
             items.append(data)
 
+    # Union any policies shared TO `user_id` (the resolved owner from the parsed
+    # request — equals the requester for plain user_ids, equals the impersonation
+    # target for composite). This must run for both cases, otherwise composite
+    # admin views miss their shared-to-them policies.
+    try:
+        shared_index = get_user_shared_resources(user_id, "policy") or {}
+    except Exception:
+        shared_index = {}
+    for policy_id, entry in shared_index.items():
+        owner_id = entry.get("mainuser_id")
+        if not owner_id or owner_id == user_id:
+            continue
+        owner_policy = load_yaml_from_s3(_s3_key(owner_id, policy_id))
+        if not owner_policy:
+            continue
+        owner_policy = {**owner_policy, "owner_user_id": owner_id, "shared": True}
+        items.append(owner_policy)
+
     items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return jsonify({"items": items}), 200
 
@@ -757,12 +814,14 @@ def list_policies():
 @permission_required_body("policyhub.edit")
 def update_policy():
     body = request.get_json(silent=True) or {}
-    user_id = body.get("user_id")
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = body.get("user_id")
     policy_id = body.get("policy_id")
 
-    if not user_id or not policy_id:
+    if not baseuser or not policy_id:
         return jsonify({"error": "user_id and policy_id are required"}), 400
+    user_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
 
     key = _s3_key(user_id, policy_id)
     existing = load_yaml_from_s3(key)
@@ -793,12 +852,15 @@ def update_policy():
 @permission_required_body("policyhub.delete")
 def delete_policy():
     body = request.get_json(silent=True) or {}
-    user_id = body.get("user_id")
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    baseuser = body.get("user_id")
     policy_id = body.get("policy_id")
 
-    if not user_id or not policy_id:
+    if not baseuser or not policy_id:
         return jsonify({"error": "user_id and policy_id are required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    if logged_in_user_id and logged_in_user_id != user_id:
+        # Only the owner may delete a policy.
+        return jsonify({"error": "Only the owner can delete a policy"}), 403
 
     key = _s3_key(user_id, policy_id)
     ok = delete_file_from_s3(key)
@@ -1189,3 +1251,226 @@ async def delete_framework(framework_id: str):
         logger.error("LanceDB delete failed for framework %s: %s", framework_id, e)
 
     return jsonify({"status": "ok"}), 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Policy share / assign access
+# ─────────────────────────────────────────────────────────────
+
+
+@policy_hub_bp.route("/share", methods=["POST"])
+@permission_required_body("policyhub.edit")
+def share_policy():
+    data = request.get_json() or {}
+    baseuser = data.get("user_id")
+    policy_id = data.get("policy_id")
+    policy_name = data.get("policy_name")
+    assignment_type = data.get("assignment_type")
+    client_user_id = data.get("client_user_id")
+    role_id = data.get("role_id")
+
+    if not baseuser or not policy_id or not assignment_type:
+        return (
+            jsonify({"error": "user_id, policy_id, assignment_type required"}),
+            400,
+        )
+
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    if not policy_name:
+        owner_policy = load_yaml_from_s3(_s3_key(admin_id, policy_id))
+        if owner_policy:
+            policy_name = owner_policy.get("title") or policy_id
+        else:
+            policy_name = policy_id
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        required_permission = "policyhub.view"
+
+        if assignment_type == "manual":
+            if not client_user_id:
+                return jsonify({"error": "client_user_id required for manual"}), 400
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute("SELECT email FROM users WHERE user_id=%s", (client_user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"error": "User not found"}), 404
+                user_email = row["email"]
+
+        elif assignment_type == "role":
+            if not role_id:
+                return jsonify({"error": "role_id required for role"}), 400
+            if not check_role_has_permission(conn, admin_id, role_id, required_permission):
+                return (
+                    jsonify({"error": "Role does not have policy view permission"}),
+                    403,
+                )
+            user_obj, error_msg = get_round_robin_user_for_resource(
+                admin_id, role_id, "policy", conn, required_permission
+            )
+            if not user_obj:
+                return jsonify({"error": error_msg or "No eligible users"}), 400
+            client_user_id = user_obj["user_id"]
+            user_email = user_obj["email"]
+        else:
+            return jsonify({"error": "assignment_type must be 'manual' or 'role'"}), 400
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT email FROM users WHERE user_id=%s", (admin_id,))
+            admin_row = cur.fetchone()
+            if not admin_row:
+                return jsonify({"error": "Admin not found"}), 404
+            admin_email = admin_row["email"]
+
+        sharing_access, error = core_assign_resource(
+            "policy",
+            admin_id,
+            admin_email,
+            client_user_id,
+            user_email,
+            policy_id,
+            policy_name,
+            conn,
+        )
+        if error:
+            return (
+                jsonify({"error": error}),
+                403 if "permission" in error.lower() else 400,
+            )
+
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=POLICY_SHARED,
+            endpoint="/policy-hub/share",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "policy_id": policy_id,
+                "target_user_id": client_user_id,
+                "assignment_type": assignment_type,
+                "role_id": role_id,
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "policy_id": policy_id,
+                    "client_user_id": client_user_id,
+                    "sharing_access": sharing_access,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error("share_policy error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@policy_hub_bp.route("/revoke-share", methods=["POST"])
+@permission_required_body("policyhub.edit")
+def revoke_policy_share():
+    data = request.get_json() or {}
+    baseuser = data.get("user_id")
+    client_user_id = data.get("client_user_id")
+    policy_id = data.get("policy_id")
+
+    if not baseuser or not client_user_id or not policy_id:
+        return (
+            jsonify({"error": "user_id, client_user_id, policy_id required"}),
+            400,
+        )
+
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    try:
+        sharing_access, error = core_revoke_resource(
+            "policy", admin_id, client_user_id, policy_id
+        )
+        if error:
+            return jsonify({"error": error}), 400
+
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=POLICY_SHARE_REVOKED,
+            endpoint="/policy-hub/revoke-share",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "policy_id": policy_id,
+                "target_user_id": client_user_id,
+            },
+        )
+        g.audit_logged = True
+
+        return jsonify({"success": True, "sharing_access": sharing_access}), 200
+    except Exception as e:
+        logger.error("revoke_policy_share error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@policy_hub_bp.route("/sharing/<policy_id>", methods=["GET"])
+@permission_required_body("policyhub.view")
+def get_policy_sharing(policy_id):
+    baseuser = request.args.get("user_id")
+    if not baseuser:
+        return jsonify({"error": "user_id query param required"}), 400
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+    try:
+        sharing_access, _ = core_list_resource_shares("policy", admin_id, policy_id)
+        return jsonify({"sharing_access": sharing_access}), 200
+    except Exception as e:
+        logger.error("get_policy_sharing error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@policy_hub_bp.route("/shared", methods=["GET"])
+@permission_required_body("policyhub.view")
+def list_shared_policies():
+    """List policies shared TO the requesting user."""
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+    logged_in_user_id, target_user_id = parse_composite_user_id(user_id)
+    requester = logged_in_user_id or target_user_id
+    try:
+        shared = get_user_shared_resources(requester, "policy")
+        return (
+            jsonify({"user_id": requester, "shared_policies": list(shared.values())}),
+            200,
+        )
+    except Exception as e:
+        logger.error("list_shared_policies error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500

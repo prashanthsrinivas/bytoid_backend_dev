@@ -5,9 +5,12 @@ import json
 import uuid
 import re
 
+import pymysql
+
 from utils.normal import parse_composite_user_id
 from utils.app_configs import IS_DEV, FRAMEWORK_OWNER
 from db.lance_db_service import LanceDBServer
+from db.rds_db import connect_to_rds
 from flask import Blueprint, jsonify, request, g
 from utils.permission_required import permission_required_body
 from services.audit_log_service import (
@@ -23,8 +26,19 @@ from services.audit_log_service import (
     TRACKER_FRAMEWORK_ADDED,
     TRACKER_FRAMEWORK_UPDATED,
     TRACKER_FRAMEWORK_REMOVED,
+    TRACKER_SHARED,
+    TRACKER_SHARE_REVOKED,
 )
 from db.db_checkers import get_email_by_id
+from shared_configuration import (
+    check_role_has_permission,
+    core_assign_resource,
+    core_list_resource_shares,
+    core_revoke_resource,
+    get_round_robin_user_for_resource,
+    get_user_resource_access,
+    get_user_shared_resources,
+)
 from tab_tracker.helper import (
     check_config_exist,
     create_empty_tracker_config,
@@ -57,6 +71,29 @@ from utils.base_logger import get_logger
 tracker_bp = Blueprint("tracker", __name__)
 dbserver = LanceDBServer()
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
+
+
+def _check_tracker_share_access(baseuser, tracker_id):
+    """
+    Resolve owner and ensure the requester has access.
+
+    Returns (owner_user_id, error_tuple). When error_tuple is non-None, the
+    caller should return it directly (jsonify, status).
+    """
+    logged_in_user_id, owner_id = parse_composite_user_id(baseuser)
+    if not owner_id:
+        return None, (jsonify({"error": "Invalid user_id"}), 400)
+
+    if not logged_in_user_id or logged_in_user_id == owner_id:
+        return owner_id, None
+
+    access = get_user_resource_access("tracker", owner_id, tracker_id, logged_in_user_id)
+    if not access.get("granted"):
+        return None, (
+            jsonify({"error": "Access to this tracker has not been granted"}),
+            403,
+        )
+    return owner_id, None
 
 
 def extract_block_schema(block, tracker_type):
@@ -479,20 +516,33 @@ def list_trackers_api():
         # Fetch tracker config
         config_path, config_data = check_config_exist(user_id)
 
-        if not config_data:
-            return (
-                jsonify(
-                    {
-                        "user_id": user_id,
-                        "trackers": [],
-                        "count": 0,
-                        "message": "No tracker config found for this user",
-                    }
-                ),
-                200,
-            )
+        trackers = (config_data or {}).get("trackers", [])
 
-        trackers = config_data.get("trackers", [])
+        # Union trackers shared TO `user_id`. Always runs — the parsed
+        # user_id is the right entity to look up shared resources for in
+        # both plain and composite cases. (Mirrors /policy-hub/list.)
+        try:
+            shared_index = get_user_shared_resources(user_id, "tracker") or {}
+        except Exception:
+            shared_index = {}
+        for tracker_id, entry in shared_index.items():
+            owner_id = entry.get("mainuser_id")
+            if not owner_id or owner_id == user_id:
+                continue
+            _, owner_config = check_config_exist(owner_id)
+            owner_meta = next(
+                (
+                    t
+                    for t in (owner_config or {}).get("trackers", [])
+                    if t.get("tracker_id") == tracker_id
+                ),
+                None,
+            )
+            if not owner_meta:
+                continue
+            trackers.append(
+                {**owner_meta, "owner_user_id": owner_id, "shared": True}
+            )
 
         return (
             jsonify({"user_id": user_id, "trackers": trackers, "count": len(trackers)}),
@@ -508,15 +558,17 @@ def list_trackers_api():
 @permission_required_body("trackers.table.view")
 async def get_tracker_details_api():
     try:
-        user_id = str(request.args.get("user_id"))
+        baseuser = str(request.args.get("user_id"))
         tracker_id = request.args.get("tracker_id")
 
-        if not all([user_id, tracker_id]):
+        if not all([baseuser, tracker_id]):
             return (
                 jsonify({"error": "Missing required parameters: user_id, tracker_id"}),
                 400,
             )
-        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+        user_id, err = _check_tracker_share_access(baseuser, tracker_id)
+        if err:
+            return err
 
         # Look up tracker metadata from config first
         config_path, config_data = check_config_exist(user_id)
@@ -772,17 +824,19 @@ def check_duplicate_result_api():
 @permission_required_body("trackers.table.view")
 def view_tracker_content_api():
     try:
-        user_id = str(request.args.get("user_id"))
+        baseuser = str(request.args.get("user_id"))
         tracker_id = request.args.get("tracker_id")
         limit = int(request.args.get("limit", 100))
         offset = int(request.args.get("offset", 0))
 
-        if not all([user_id, tracker_id]):
+        if not all([baseuser, tracker_id]):
             return (
                 jsonify({"error": "Missing required parameters: user_id, tracker_id"}),
                 400,
             )
-        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+        user_id, err = _check_tracker_share_access(baseuser, tracker_id)
+        if err:
+            return err
 
         if limit < 1 or limit > 1000:
             limit = 100
@@ -1643,7 +1697,9 @@ async def modify_tracker_details():
                 ),
                 400,
             )
-        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+        user_id, err = _check_tracker_share_access(baseuser, tracker_id)
+        if err:
+            return err
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
             (
@@ -1749,7 +1805,9 @@ async def add_tracker_entry():
                 ),
                 400,
             )
-        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+        user_id, err = _check_tracker_share_access(baseuser, tracker_id)
+        if err:
+            return err
         config_path, config_data = check_config_exist(user_id)
         tracker_meta = next(
             (
@@ -3433,3 +3491,240 @@ async def tracker_job_status(job_id):
     if not job:
         return jsonify({"status": "not_found"}), 404
     return jsonify(job)
+
+
+# ─────────────────────────────────────────────────────────────
+# Tracker share / assign access
+# ─────────────────────────────────────────────────────────────
+
+
+def _lookup_tracker_name(owner_id, tracker_id):
+    config_path, config_data = check_config_exist(owner_id)
+    if not config_data:
+        return None
+    for t in config_data.get("trackers", []):
+        if t.get("tracker_id") == tracker_id:
+            return t.get("name")
+    return None
+
+
+@tracker_bp.route("/tracker/share", methods=["POST"])
+@permission_required_body("trackers.table.edit")
+def share_tracker():
+    """Assign a tracker to a user (manual) or pick one via round-robin (role)."""
+    data = request.get_json() or {}
+    baseuser = data.get("user_id")
+    tracker_id = data.get("tracker_id")
+    tracker_name = data.get("tracker_name")
+    assignment_type = data.get("assignment_type")
+    client_user_id = data.get("client_user_id")
+    role_id = data.get("role_id")
+
+    if not baseuser or not tracker_id or not assignment_type:
+        return (
+            jsonify({"error": "user_id, tracker_id, assignment_type required"}),
+            400,
+        )
+
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    if not tracker_name:
+        tracker_name = _lookup_tracker_name(admin_id, tracker_id) or tracker_id
+
+    conn = None
+    try:
+        conn = connect_to_rds()
+        required_permission = "trackers.table.view"
+
+        if assignment_type == "manual":
+            if not client_user_id:
+                return jsonify({"error": "client_user_id required for manual"}), 400
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute("SELECT email FROM users WHERE user_id=%s", (client_user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"error": "User not found"}), 404
+                user_email = row["email"]
+
+        elif assignment_type == "role":
+            if not role_id:
+                return jsonify({"error": "role_id required for role"}), 400
+            if not check_role_has_permission(conn, admin_id, role_id, required_permission):
+                return (
+                    jsonify({"error": "Role does not have tracker view permission"}),
+                    403,
+                )
+            user_obj, error_msg = get_round_robin_user_for_resource(
+                admin_id, role_id, "tracker", conn, required_permission
+            )
+            if not user_obj:
+                return jsonify({"error": error_msg or "No eligible users"}), 400
+            client_user_id = user_obj["user_id"]
+            user_email = user_obj["email"]
+        else:
+            return jsonify({"error": "assignment_type must be 'manual' or 'role'"}), 400
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT email FROM users WHERE user_id=%s", (admin_id,))
+            admin_row = cur.fetchone()
+            if not admin_row:
+                return jsonify({"error": "Admin not found"}), 404
+            admin_email = admin_row["email"]
+
+        sharing_access, error = core_assign_resource(
+            "tracker",
+            admin_id,
+            admin_email,
+            client_user_id,
+            user_email,
+            tracker_id,
+            tracker_name,
+            conn,
+        )
+        if error:
+            return (
+                jsonify({"error": error}),
+                403 if "permission" in error.lower() else 400,
+            )
+
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_SHARED,
+            endpoint="/tracker/share",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "target_user_id": client_user_id,
+                "assignment_type": assignment_type,
+                "role_id": role_id,
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "tracker_id": tracker_id,
+                    "client_user_id": client_user_id,
+                    "sharing_access": sharing_access,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logging.error(f"share_tracker error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@tracker_bp.route("/tracker/revoke-share", methods=["POST"])
+@permission_required_body("trackers.table.edit")
+def revoke_tracker_share():
+    data = request.get_json() or {}
+    baseuser = data.get("user_id")
+    client_user_id = data.get("client_user_id")
+    tracker_id = data.get("tracker_id")
+
+    if not baseuser or not client_user_id or not tracker_id:
+        return (
+            jsonify({"error": "user_id, client_user_id, tracker_id required"}),
+            400,
+        )
+
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    try:
+        sharing_access, error = core_revoke_resource(
+            "tracker", admin_id, client_user_id, tracker_id
+        )
+        if error:
+            return jsonify({"error": error}), 400
+
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_SHARE_REVOKED,
+            endpoint="/tracker/revoke-share",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "target_user_id": client_user_id,
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify({"success": True, "sharing_access": sharing_access}),
+            200,
+        )
+    except Exception as e:
+        logging.error(f"revoke_tracker_share error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_bp.route("/tracker/sharing/<tracker_id>", methods=["GET"])
+@permission_required_body("trackers.table.view")
+def get_tracker_sharing(tracker_id):
+    baseuser = request.args.get("user_id")
+    if not baseuser:
+        return jsonify({"error": "user_id query param required"}), 400
+
+    _, admin_id = parse_composite_user_id(baseuser)
+    if not admin_id:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    try:
+        sharing_access, _ = core_list_resource_shares("tracker", admin_id, tracker_id)
+        return jsonify({"sharing_access": sharing_access}), 200
+    except Exception as e:
+        logging.error(f"get_tracker_sharing error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_bp.route("/tracker/shared", methods=["GET"])
+@permission_required_body("trackers.table.view")
+def list_shared_trackers():
+    """List trackers shared TO the requesting user."""
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+
+    logged_in_user_id, target_user_id = parse_composite_user_id(user_id)
+    requester = logged_in_user_id or target_user_id
+
+    try:
+        shared = get_user_shared_resources(requester, "tracker")
+        return (
+            jsonify({"user_id": requester, "shared_trackers": list(shared.values())}),
+            200,
+        )
+    except Exception as e:
+        logging.error(f"list_shared_trackers error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500

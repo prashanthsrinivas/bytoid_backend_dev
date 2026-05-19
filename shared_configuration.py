@@ -15,6 +15,31 @@ PERMISSION_MAP = {
 }
 
 
+RESOURCE_CONFIG = {
+    "tracker": {
+        "admin_config_path": "{admin_id}/tracker/sharedconfig.json",
+        "user_index_path": "{user_id}/shared/tracker.json",
+        "required_permission": "trackers.table.view",
+        "single_assignee": False,
+        "supports_levels": False,
+    },
+    "policy": {
+        "admin_config_path": "{admin_id}/policies/sharedconfig.json",
+        "user_index_path": "{user_id}/shared/policy.json",
+        "required_permission": "policyhub.view",
+        "single_assignee": False,
+        "supports_levels": False,
+    },
+    "trust_center": {
+        "admin_config_path": "{admin_id}/trust_center/sharedconfig.json",
+        "user_index_path": "{user_id}/shared/trust_center.json",
+        "required_permission": "trustcenter.view",
+        "single_assignee": False,
+        "supports_levels": True,
+    },
+}
+
+
 def save_json_to_s3(data, s3_key):
     """Write JSON data to S3."""
     try:
@@ -63,12 +88,18 @@ def save_user_shared_reports(user_id, reports):
 
 
 def get_next_color(existing_entries):
-    """Find the next available color from the palette."""
+    """Find the next available color from the palette.
+
+    When all palette colors are in use (multi-assignee resources may have more
+    than `len(COLOR_PALETTE)` simultaneous sharers), cycle deterministically by
+    the existing-entry count so subsequent sharers don't all collapse onto the
+    last palette colour.
+    """
     used_colors = {entry.get("colorindication") for entry in existing_entries}
     for color in COLOR_PALETTE:
         if color not in used_colors:
             return color
-    return COLOR_PALETTE[-1]
+    return COLOR_PALETTE[len(existing_entries) % len(COLOR_PALETTE)]
 
 
 def get_role_users_from_db(conn, admin_id, role_id):
@@ -403,3 +434,289 @@ def core_revoke_report(admin_id, user_id, report_id, report_type, dbserver):
     except Exception as e:
         logger.error(f"Error in core_revoke_report: {e}", exc_info=True)
         return None, str(e)
+
+
+# ─────────────────────────────────────────────────────────────
+# Generic resource sharing (trackers, policies, trust center)
+# ─────────────────────────────────────────────────────────────
+
+
+def _resource_config(resource_type):
+    cfg = RESOURCE_CONFIG.get(resource_type)
+    if not cfg:
+        raise ValueError(f"Unknown resource_type: {resource_type}")
+    return cfg
+
+
+def get_admin_resource_config(admin_id, resource_type):
+    """Read admin's share config for a given resource type from S3."""
+    cfg = _resource_config(resource_type)
+    s3_key = cfg["admin_config_path"].format(admin_id=admin_id)
+    config = read_json_from_s3(s3_key)
+    if not config:
+        return {"users": {}, "resources": {}}
+    return config
+
+
+def save_admin_resource_config(admin_id, resource_type, config):
+    cfg = _resource_config(resource_type)
+    s3_key = cfg["admin_config_path"].format(admin_id=admin_id)
+    return save_json_to_s3(config, s3_key)
+
+
+def get_user_shared_resources(user_id, resource_type):
+    """Read a user's index of resources shared TO them, for a given type."""
+    cfg = _resource_config(resource_type)
+    s3_key = cfg["user_index_path"].format(user_id=user_id)
+    data = read_json_from_s3(s3_key)
+    if not data:
+        return {}
+    return data
+
+
+def save_user_shared_resources(user_id, resource_type, data):
+    cfg = _resource_config(resource_type)
+    s3_key = cfg["user_index_path"].format(user_id=user_id)
+    return save_json_to_s3(data, s3_key)
+
+
+def core_assign_resource(
+    resource_type,
+    admin_id,
+    admin_email,
+    user_id,
+    user_email,
+    resource_id,
+    resource_name,
+    conn,
+    level=None,
+):
+    """
+    Generic share/assign for trackers, policies, and trust center.
+
+    For resources with supports_levels=True (trust_center), `level` must be 'view' or 'edit'.
+    For multi-assignee resources, an assignment does NOT revoke other users' access.
+    """
+    try:
+        cfg = _resource_config(resource_type)
+        required_permission = cfg["required_permission"]
+        single_assignee = cfg["single_assignee"]
+        supports_levels = cfg["supports_levels"]
+
+        if supports_levels:
+            if level not in ("view", "edit"):
+                return None, "level must be 'view' or 'edit'"
+        else:
+            level = None
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT permissions FROM users WHERE user_id=%s",
+                (user_id,),
+            )
+            user_row = cursor.fetchone()
+            if not user_row:
+                return None, "Target user not found"
+
+            if not check_user_has_permission(
+                user_row.get("permissions"), required_permission
+            ):
+                return (
+                    None,
+                    f"User does not have required permission: {required_permission}",
+                )
+
+        config = get_admin_resource_config(admin_id, resource_type)
+        config.setdefault("resources", {})
+        config.setdefault("users", {})
+
+        resource_entry = config["resources"].setdefault(
+            resource_id, {"sharing_access": [], "name": resource_name}
+        )
+        if resource_name and not resource_entry.get("name"):
+            resource_entry["name"] = resource_name
+
+        sharing_access = resource_entry.get("sharing_access", [])
+
+        admin_entry = next((e for e in sharing_access if e["id"] == admin_id), None)
+        if not admin_entry:
+            new_admin = {
+                "id": admin_id,
+                "email": admin_email,
+                "colorindication": "black",
+                "access": True,
+            }
+            if supports_levels:
+                new_admin["level"] = "edit"
+            sharing_access.append(new_admin)
+
+        if single_assignee:
+            for entry in sharing_access:
+                if entry["id"] != admin_id and entry.get("access"):
+                    entry["access"] = False
+
+        user_entry = next((e for e in sharing_access if e["id"] == user_id), None)
+        if not user_entry:
+            next_color = get_next_color(sharing_access)
+            new_entry = {
+                "id": user_id,
+                "email": user_email,
+                "colorindication": next_color,
+                "access": True,
+            }
+            if supports_levels:
+                new_entry["level"] = level
+            sharing_access.append(new_entry)
+        else:
+            user_entry["access"] = True
+            user_entry["email"] = user_email
+            if supports_levels:
+                user_entry["level"] = level
+
+        resource_entry["sharing_access"] = sharing_access
+
+        user_data = config["users"].setdefault(
+            user_id, {"email": user_email, "count": 0, "resources": []}
+        )
+        user_data["email"] = user_email
+
+        existing = next(
+            (r for r in user_data.get("resources", []) if r["id"] == resource_id),
+            None,
+        )
+        if not existing:
+            new_res = {
+                "type": resource_type,
+                "id": resource_id,
+                "name": resource_name,
+                "assigned_at": datetime.utcnow().isoformat(),
+            }
+            if supports_levels:
+                new_res["level"] = level
+            user_data.setdefault("resources", []).append(new_res)
+            user_data["count"] = user_data.get("count", 0) + 1
+        elif supports_levels:
+            existing["level"] = level
+
+        save_admin_resource_config(admin_id, resource_type, config)
+
+        user_index = get_user_shared_resources(user_id, resource_type)
+        entry = {
+            "resource_id": resource_id,
+            "dateofaccess": datetime.utcnow().isoformat(),
+            "mainuser_id": admin_id,
+            "name": resource_name,
+            "type": resource_type,
+        }
+        if supports_levels:
+            entry["level"] = level
+        user_index[resource_id] = entry
+        save_user_shared_resources(user_id, resource_type, user_index)
+
+        return sharing_access, None
+
+    except Exception as e:
+        logger.error(f"Error in core_assign_resource: {e}", exc_info=True)
+        return None, str(e)
+
+
+def core_revoke_resource(resource_type, admin_id, user_id, resource_id):
+    """Generic revoke for trackers, policies, and trust center."""
+    try:
+        _resource_config(resource_type)
+        config = get_admin_resource_config(admin_id, resource_type)
+
+        if resource_id in config.get("resources", {}):
+            sharing_access = config["resources"][resource_id].get("sharing_access", [])
+            for entry in sharing_access:
+                if entry["id"] == user_id:
+                    entry["access"] = False
+            config["resources"][resource_id]["sharing_access"] = sharing_access
+        else:
+            sharing_access = []
+
+        if user_id in config.get("users", {}):
+            user_data = config["users"][user_id]
+            before = len(user_data.get("resources", []))
+            user_data["resources"] = [
+                r for r in user_data.get("resources", []) if r["id"] != resource_id
+            ]
+            removed = before - len(user_data["resources"])
+            user_data["count"] = max(0, user_data.get("count", 0) - removed)
+
+        save_admin_resource_config(admin_id, resource_type, config)
+
+        user_index = get_user_shared_resources(user_id, resource_type)
+        if resource_id in user_index:
+            del user_index[resource_id]
+            save_user_shared_resources(user_id, resource_type, user_index)
+
+        return sharing_access, None
+
+    except Exception as e:
+        logger.error(f"Error in core_revoke_resource: {e}", exc_info=True)
+        return None, str(e)
+
+
+def core_list_resource_shares(resource_type, admin_id, resource_id):
+    """Return the sharing_access list for one resource."""
+    try:
+        _resource_config(resource_type)
+        config = get_admin_resource_config(admin_id, resource_type)
+        return (
+            config.get("resources", {}).get(resource_id, {}).get("sharing_access", []),
+            None,
+        )
+    except Exception as e:
+        logger.error(f"Error in core_list_resource_shares: {e}", exc_info=True)
+        return [], str(e)
+
+
+def get_round_robin_user_for_resource(
+    admin_id, role_id, resource_type, conn, required_permission=None
+):
+    """Pick the user in `role_id` with the fewest existing shares of `resource_type`."""
+    cfg = _resource_config(resource_type)
+    if required_permission is None:
+        required_permission = cfg["required_permission"]
+
+    role_users = get_role_users_from_db(conn, admin_id, role_id)
+    if not role_users:
+        return None, "No users found in this role"
+
+    eligible = []
+    for user in role_users:
+        if check_user_has_permission(user.get("permissions"), required_permission):
+            eligible.append(user)
+    if not eligible:
+        return None, f"No users in this role have permission: {required_permission}"
+
+    config = get_admin_resource_config(admin_id, resource_type)
+    counts = {
+        uid: udata.get("count", 0)
+        for uid, udata in config.get("users", {}).items()
+    }
+
+    chosen = min(eligible, key=lambda u: counts.get(u["user_id"], 0))
+    return chosen, None
+
+
+def get_user_resource_access(resource_type, admin_id, resource_id, user_id):
+    """
+    Resolve whether `user_id` has access to `resource_id` owned by `admin_id`.
+
+    Returns a dict:
+      {"granted": bool, "level": "view"|"edit"|None}
+
+    The owner (admin_id == user_id) always returns granted=True with level='edit'.
+    """
+    if not user_id:
+        return {"granted": False, "level": None}
+    if admin_id and admin_id == user_id:
+        return {"granted": True, "level": "edit"}
+
+    sharing_access, _ = core_list_resource_shares(resource_type, admin_id, resource_id)
+    entry = next((e for e in sharing_access if e["id"] == user_id), None)
+    if not entry or not entry.get("access"):
+        return {"granted": False, "level": None}
+    return {"granted": True, "level": entry.get("level")}
