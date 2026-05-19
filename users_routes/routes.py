@@ -1654,19 +1654,34 @@ def add_domain():
         if not is_valid_domain(new_domain):
             return jsonify({"error": "Invalid or non-existing domain"}), 400
         conn = connect_to_rds()
-        domains = fetch_user_domains(user_id, conn)
-        if not domains:
-            # Initialize if no domain exists
-            user_domain = email.split("@")[-1].lower() if email and "@" in email else ""
-            domains = {"primary": user_domain, "secondary": []}
+        raw_domains = fetch_user_domains(user_id, conn)
+        user_domain = email.split("@")[-1].lower() if email and "@" in email else ""
+
+        # Normalize legacy shapes: column may be missing, a plain string, or a JSON list.
+        if isinstance(raw_domains, dict):
+            primary = (raw_domains.get("primary") or user_domain or "").lower()
+            secondary_raw = raw_domains.get("secondary") or []
+            if not isinstance(secondary_raw, list):
+                secondary_raw = [secondary_raw]
+        elif isinstance(raw_domains, list):
+            primary = user_domain
+            secondary_raw = raw_domains
+        elif isinstance(raw_domains, str) and raw_domains:
+            primary = raw_domains.lower()
+            secondary_raw = []
+        else:
+            primary = user_domain
+            secondary_raw = []
+
+        secondary_domains = [
+            str(d).lower() for d in secondary_raw if isinstance(d, str) and d
+        ]
+        domains = {"primary": primary, "secondary": secondary_domains}
 
         # Avoid duplicates
-        secondary_domains = domains.get("secondary") or []
-        domains["secondary"] = secondary_domains
-        if new_domain.lower() != domains[
-            "primary"
-        ].lower() and new_domain.lower() not in [d.lower() for d in secondary_domains]:
-            secondary_domains.append(new_domain.lower())
+        new_domain_lower = new_domain.lower()
+        if new_domain_lower != primary and new_domain_lower not in secondary_domains:
+            secondary_domains.append(new_domain_lower)
 
         with conn.cursor() as cursor:
             cursor.execute(
