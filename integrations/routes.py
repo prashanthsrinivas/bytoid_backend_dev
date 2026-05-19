@@ -1,5 +1,6 @@
 from flask import Blueprint, request, redirect, g, jsonify
 from db.rds_db import connect_to_rds
+from utils.normal import parse_composite_user_id
 from services.audit_log_service import log_audit_event, INTEGRATION_DELETED
 from db.db_checkers import get_email_by_id
 import pymysql
@@ -53,6 +54,7 @@ def check_integrations():
 
         if not user_id or not platform or not type_:
             return {"error": "user_id, platform, and type are required"}, 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         query = """
             SELECT *
@@ -92,6 +94,7 @@ def check_integrations():
 def get_all_integrations_for_user():
     data = request.json
     user_id = data.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     return get_all_integrations(user_id)
 
 
@@ -324,6 +327,7 @@ async def delete_integration():
 
         if not primary_user_id or not platform:
             return {"error": "primary_user_id are required"}, 400
+        logged_in_user_id, primary_user_id = parse_composite_user_id(primary_user_id)
 
         query = """
             SELECT user_id

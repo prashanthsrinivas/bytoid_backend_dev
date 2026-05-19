@@ -7,13 +7,15 @@ import pytz
 from utils.base_logger import get_logger
 from services.microsoft_calender_service import MicrosoftGraphCalendarService
 from umail_helper.mails_process import get_integration_users
-from utils.normal import sanitize_value, strip_html
+from utils.normal import parse_composite_user_id, sanitize_value, strip_html
+from utils.permission_required import permission_required_body
 from utils.permission_required import permission_required_body
 
 logger = get_logger(__name__)
 calenders_bp = Blueprint("calender", __name__)
 
 
+@permission_required_body("calendar.view_confirmed")
 @calenders_bp.route("/check-user-events", methods=["POST"])
 @permission_required_body("calender.view.confirmed")
 def get_all_user_events():
@@ -28,6 +30,7 @@ def get_all_user_events():
 
         if not userid:
             return {"success": False, "message": "userid required"}, 400
+        logged_in_user_id, userid = parse_composite_user_id(userid)
 
         # Normalize holidays boolean
         if isinstance(holidays_param, str):
@@ -86,6 +89,7 @@ def get_all_user_events():
         return {"success": False, "error": str(e)}, 500
 
 
+@permission_required_body("calendar.create")
 @calenders_bp.route("/create-user-event", methods=["POST"])
 @permission_required_body("calender.create")
 def create_user_event():
@@ -108,6 +112,7 @@ def create_user_event():
                 "success": False,
                 "message": "start_time and end_time required",
             }, 400
+        logged_in_user_id, userid = parse_composite_user_id(userid)
 
         # Normalize boolean
         if isinstance(googlemeet, str):
@@ -159,6 +164,7 @@ def create_user_event():
         return {"success": False, "error": str(e)}, 500
 
 
+@permission_required_body("calendar.create")
 @calenders_bp.route("/update-user-event", methods=["POST"])
 @permission_required_body("calender.edit")
 def update_user_event():
@@ -181,6 +187,7 @@ def update_user_event():
 
         if isinstance(googlemeet, str):
             googlemeet = googlemeet.lower() in ["true", "1", "yes"]
+        logged_in_user_id, userid = parse_composite_user_id(userid)
 
         val = fetch_user_Social(user_id=userid)
 
@@ -229,6 +236,7 @@ def update_user_event():
         return {"success": False, "error": "Internal server error"}, 500
 
 
+@permission_required_body("calendar.create")
 @calenders_bp.route("/delete-user-event", methods=["POST"])
 @permission_required_body("calender.delete")
 def delete_user_event():
@@ -240,6 +248,7 @@ def delete_user_event():
 
         if not userid or not event_id:
             return {"success": False, "message": "userid and event_id required"}, 400
+        logged_in_user_id, userid = parse_composite_user_id(userid)
 
         val = fetch_user_Social(user_id=userid)
 

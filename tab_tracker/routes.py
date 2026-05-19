@@ -3,10 +3,8 @@ import os
 import traceback
 import json
 import uuid
-import re
-
 import pymysql
-
+from shared_configuration import *
 from utils.normal import parse_composite_user_id
 from utils.app_configs import IS_DEV, FRAMEWORK_OWNER
 from db.lance_db_service import LanceDBServer
@@ -14,6 +12,7 @@ from db.rds_db import connect_to_rds
 from flask import Blueprint, jsonify, request, g
 from utils.permission_required import permission_required_body
 from services.audit_log_service import (
+    TRACKER_SHARE_REVOKED,
     log_audit_event,
     build_audit_actor,
     TRACKER_CREATED,
@@ -26,19 +25,11 @@ from services.audit_log_service import (
     TRACKER_FRAMEWORK_ADDED,
     TRACKER_FRAMEWORK_UPDATED,
     TRACKER_FRAMEWORK_REMOVED,
+    TRACKER_ROW_OPTION_ADDED,
+    TRACKER_ROW_OPTION_REMOVED,
     TRACKER_SHARED,
-    TRACKER_SHARE_REVOKED,
 )
 from db.db_checkers import get_email_by_id
-from shared_configuration import (
-    check_role_has_permission,
-    core_assign_resource,
-    core_list_resource_shares,
-    core_revoke_resource,
-    get_round_robin_user_for_resource,
-    get_user_resource_access,
-    get_user_shared_resources,
-)
 from tab_tracker.helper import (
     check_config_exist,
     create_empty_tracker_config,
@@ -49,18 +40,19 @@ from tab_tracker.helper import (
     ensure_tracker_file_exists,
     apply_entry_updates,
     _rebuild_micro_blocks_from_tracker,
+    add_row_option,
+    remove_row_option,
 )
 from utils.s3_utils import (
     upload_any_file,
     read_json_from_s3,
     delete_file_from_s3,
     load_yaml_from_s3,
-    list_all_files,
 )
 from utils.fireworkzz import (
-    analyze_tracker_framework_policies,
     analyze_tracker_framework_rows,
     quality_review_framework_assignments,
+    deduplicate_subsections,
 )
 from credits_route.route import Credits
 from playbook.background_worker import JobManager
@@ -87,7 +79,9 @@ def _check_tracker_share_access(baseuser, tracker_id):
     if not logged_in_user_id or logged_in_user_id == owner_id:
         return owner_id, None
 
-    access = get_user_resource_access("tracker", owner_id, tracker_id, logged_in_user_id)
+    access = get_user_resource_access(
+        "tracker", owner_id, tracker_id, logged_in_user_id
+    )
     if not access.get("granted"):
         return None, (
             jsonify({"error": "Access to this tracker has not been granted"}),
@@ -543,9 +537,7 @@ def list_trackers_api():
             )
             if not owner_meta:
                 continue
-            trackers.append(
-                {**owner_meta, "owner_user_id": owner_id, "shared": True}
-            )
+            trackers.append({**owner_meta, "owner_user_id": owner_id, "shared": True})
 
         return (
             jsonify({"user_id": user_id, "trackers": trackers, "count": len(trackers)}),
@@ -2858,6 +2850,11 @@ async def _add_framework_worker(data: dict, job_id: str = None) -> dict:
                         for idx in fw_indices
                         if 0 <= idx < len(fw_rows)
                     ]
+                    # Only deduplicate subsections if we're over the max — otherwise keep all entries
+                    if len(new_entries) > 8:
+                        new_entries = deduplicate_subsections(new_entries)
+                    if len(new_entries) > 8:
+                        new_entries = new_entries[:8]  # hard cap after dedup
                     row["values"][new_col_id] = new_entries
                     if new_entries:
                         rows_assigned += 1
@@ -3174,11 +3171,47 @@ async def _update_framework_worker(data: dict, job_id: str = None) -> dict:
 
             await emit(
                 msg_builder_main.job_progress(
-                    job_id, session_id, "saving", "Saving updated assignments…", 88
+                    job_id, session_id, "review", "Running quality review…", 80
                 )
             )
 
-            for assignment in ai_result.get("assignments", []):
+            # Per-row review with progress callback
+            rows_to_review = len(
+                [a for a in ai_result.get("assignments", []) if a.get("fw_row_indices")]
+            )
+            reviewed_count = 0
+
+            async def on_row_reviewed():
+                nonlocal reviewed_count
+                reviewed_count += 1
+                pct = 80 + int(reviewed_count / max(rows_to_review, 1) * 8)  # 80 → 88
+                await emit(
+                    msg_builder_main.job_progress(
+                        job_id,
+                        session_id,
+                        "review",
+                        f"Reviewing row {reviewed_count}/{rows_to_review}…",
+                        pct,
+                    )
+                )
+
+            assignments = await quality_review_framework_assignments(
+                rows=rows_analysis_input,
+                fw_rows=fw_rows,
+                assignments=ai_result.get("assignments", []),
+                framework_name=framework_name,
+                user_id=user_id,
+                credits=credits,
+                on_row_done=on_row_reviewed,
+            )
+
+            await emit(
+                msg_builder_main.job_progress(
+                    job_id, session_id, "saving", "Saving updated assignments…", 90
+                )
+            )
+
+            for assignment in assignments:
                 row_id = assignment.get("row_id")
                 fw_indices = assignment.get("fw_row_indices", [])
                 if isinstance(fw_indices, int):
@@ -3195,6 +3228,11 @@ async def _update_framework_worker(data: dict, job_id: str = None) -> dict:
                         for idx in fw_indices
                         if 0 <= idx < len(fw_rows)
                     ]
+                    # Only deduplicate subsections if we're over the max — otherwise keep all entries
+                    if len(new_entries) > 8:
+                        new_entries = deduplicate_subsections(new_entries)
+                    if len(new_entries) > 8:
+                        new_entries = new_entries[:8]  # hard cap after dedup
                     row["values"][fw_col_id] = new_entries
                     if new_entries:
                         rows_assigned += 1
@@ -3482,6 +3520,162 @@ def remove_tracker_framework():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
+@tracker_bp.route("/tracker/add-row-option", methods=["POST"])
+@permission_required_body("trackers.table.edit")
+def add_row_option_api():
+    """
+    Add options to a tracker row's column (typically framework columns).
+
+    Request:
+        - user_id: User ID
+        - tracker_id: Tracker ID
+        - row_id: Row ID (internal row_id, not row_index)
+        - column_id: Column ID to update
+        - options: List of dicts with "requirement" and "section" keys
+
+    Returns:
+        - success: boolean
+        - added: number of options added
+        - skipped_duplicates: number of duplicates skipped
+        - current_options: updated list of options in the column
+    """
+    try:
+        baseuser = str(request.get_json().get("user_id"))
+        tracker_id = request.get_json().get("tracker_id")
+        row_id = request.get_json().get("row_id")
+        column_id = request.get_json().get("column_id")
+        options = request.get_json().get("options")
+
+        if not all([baseuser, tracker_id, row_id, column_id]):
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, tracker_id, row_id, column_id"
+                    }
+                ),
+                400,
+            )
+
+        if not isinstance(options, list) or not options:
+            return jsonify({"error": "Options must be a non-empty list"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        # Add options to row
+        result = add_row_option(user_id, tracker_id, row_id, column_id, options)
+
+        if not result.get("success"):
+            return jsonify(result), 500
+
+        # Audit logging
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_ROW_OPTION_ADDED,
+            endpoint="/tracker/add-row-option",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "row_id": row_id,
+                "column_id": column_id,
+                "added_count": result.get("added"),
+                "skipped_count": result.get("skipped_duplicates"),
+            },
+        )
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        logging.error(f"Add row option error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@tracker_bp.route("/tracker/remove-row-option", methods=["POST"])
+@permission_required_body("trackers.table.edit")
+def remove_row_option_api():
+    """
+    Remove options from a tracker row's column (typically framework columns).
+
+    Request:
+        - user_id: User ID
+        - tracker_id: Tracker ID
+        - row_id: Row ID (internal row_id, not row_index)
+        - column_id: Column ID to update
+        - options: List of dicts with "requirement" and "section" keys to remove
+
+    Returns:
+        - success: boolean
+        - removed: number of options removed
+        - current_options: updated list of options in the column
+    """
+    try:
+        baseuser = str(request.get_json().get("user_id"))
+        tracker_id = request.get_json().get("tracker_id")
+        row_id = request.get_json().get("row_id")
+        column_id = request.get_json().get("column_id")
+        options = request.get_json().get("options")
+
+        if not all([baseuser, tracker_id, row_id, column_id]):
+            return (
+                jsonify(
+                    {
+                        "error": "Missing required fields: user_id, tracker_id, row_id, column_id"
+                    }
+                ),
+                400,
+            )
+
+        if not isinstance(options, list) or not options:
+            return jsonify({"error": "Options must be a non-empty list"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        # Remove options from row
+        result = remove_row_option(user_id, tracker_id, row_id, column_id, options)
+
+        if not result.get("success"):
+            return jsonify(result), 500
+
+        # Audit logging
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_ROW_OPTION_REMOVED,
+            endpoint="/tracker/remove-row-option",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "row_id": row_id,
+                "column_id": column_id,
+                "removed_count": result.get("removed"),
+            },
+        )
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        logging.error(f"Remove row option error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
 # @permission_required_body("trackers.table.view")
 @tracker_bp.route("/tracker/jbs/<job_id>", methods=["GET"])
 async def tracker_job_status(job_id):
@@ -3545,7 +3739,9 @@ def share_tracker():
             if not client_user_id:
                 return jsonify({"error": "client_user_id required for manual"}), 400
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
-                cur.execute("SELECT email FROM users WHERE user_id=%s", (client_user_id,))
+                cur.execute(
+                    "SELECT email FROM users WHERE user_id=%s", (client_user_id,)
+                )
                 row = cur.fetchone()
                 if not row:
                     return jsonify({"error": "User not found"}), 404
@@ -3554,7 +3750,9 @@ def share_tracker():
         elif assignment_type == "role":
             if not role_id:
                 return jsonify({"error": "role_id required for role"}), 400
-            if not check_role_has_permission(conn, admin_id, role_id, required_permission):
+            if not check_role_has_permission(
+                conn, admin_id, role_id, required_permission
+            ):
                 return (
                     jsonify({"error": "Role does not have tracker view permission"}),
                     403,

@@ -14,6 +14,7 @@ from agent_route.ag_helperzz import (
     remove_https_prefix,
 )
 from db.db_checkers import ensure_starter_credits_for_user
+from utils.normal import parse_composite_user_id
 from .microsoft_helpers import retrieve_auth_state_from_redis
 from integrations.integrations_helpers import get_all_integrations
 from umail_helper.helper import store_integrations_in_redis
@@ -65,7 +66,6 @@ import re
 from bs4 import BeautifulSoup
 from utils.celery_base import delayed_trigger, lock_client
 from utils.delay_mails import read_status_file, write_status_file
-
 
 # Load environment variables
 load_dotenv()
@@ -341,85 +341,89 @@ def is_microsoft_allowed_origin(origin):
 
 # ------ login related ------------#
 
+
 @microsoft_bp.route("/saml/login", methods=["GET"])
 async def saml_login():
-   try:
-       # 🔹 Get user from session (must be set after SAML auth)
-       user = session.get("user")
+    try:
+        # 🔹 Get user from session (must be set after SAML auth)
+        user = session.get("user")
 
-       if not user:
-           return jsonify({"error": "User not authenticated"}), 401
+        if not user:
+            return jsonify({"error": "User not authenticated"}), 401
 
-       user_id = user.get("id")
+        user_id = user.get("id")
 
-       # 🔹 onboarding check (same pattern as Microsoft)
-       newuser = check_onboarding_user(user_id)
+        # 🔹 onboarding check (same pattern as Microsoft)
+        newuser = check_onboarding_user(user_id)
 
-       # 🔹 API key
-       apikey = fetch_apikey_from_launch(user_id)
+        # 🔹 API key
+        apikey = fetch_apikey_from_launch(user_id)
 
-       # 🔹 DB connection
-       connection = connect_to_rds()
+        # 🔹 DB connection
+        connection = connect_to_rds()
 
-       # 🔹 Credits
-       credits = CreditManager(connection)
-       avail_credits = credits.check_if_remaining(user_id=user_id)
-       credit_status = avail_credits.get("status")
-       message = avail_credits.get("message")
+        # 🔹 Credits
+        credits = CreditManager(connection)
+        avail_credits = credits.check_if_remaining(user_id=user_id)
+        credit_status = avail_credits.get("status")
+        message = avail_credits.get("message")
 
-       connection.close()
+        connection.close()
 
-       # 🔹 SESSION LOGIN (IMPORTANT - same as Microsoft)
-       session_id, access_token_session, refresh_token_session = await session_login(user_id)
+        # 🔹 SESSION LOGIN (IMPORTANT - same as Microsoft)
+        session_id, access_token_session, refresh_token_session = await session_login(
+            user_id
+        )
 
-       # 🔹 RESPONSE (same structure as Microsoft callback)
-       response = make_response(
-           jsonify(
-               {
-                   "status": "success",
-                   "userid": user_id,
-                   "user_onboarded": newuser,
-                   "api_key": apikey or "",
-                   "service": "saml",
-                   "credit_status": credit_status,
-                   "message": message,
-               }
-           )
-       )
+        # 🔹 RESPONSE (same structure as Microsoft callback)
+        response = make_response(
+            jsonify(
+                {
+                    "status": "success",
+                    "userid": user_id,
+                    "user_onboarded": newuser,
+                    "api_key": apikey or "",
+                    "service": "saml",
+                    "credit_status": credit_status,
+                    "message": message,
+                }
+            )
+        )
 
-       # 🔹 cookies (same as Microsoft)
-       response.set_cookie(
-           "session_id",
-           session_id,
-           max_age=30 * 24 * 60 * 60,
-           httponly=True,
-           secure=True,
-           samesite="None",
-       )
+        # 🔹 cookies (same as Microsoft)
+        response.set_cookie(
+            "session_id",
+            session_id,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
 
-       response.set_cookie(
-           "access_token",
-           access_token_session,
-           max_age=30 * 24 * 60 * 60,
-           httponly=True,
-           secure=True,
-           samesite="None",
-       )
+        response.set_cookie(
+            "access_token",
+            access_token_session,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
 
-       response.set_cookie(
-           "refresh_token",
-           refresh_token_session,
-           max_age=30 * 24 * 60 * 60,
-           httponly=True,
-           secure=True,
-           samesite="None",
-       )
+        response.set_cookie(
+            "refresh_token",
+            refresh_token_session,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+        )
 
-       return response
+        return response
 
-   except Exception as e:
-       logger.error(f"SAML Login error: {str(e)}")
-       return jsonify({"error": "SAML login failed"}), 500
+    except Exception as e:
+        logger.error(f"SAML Login error: {str(e)}")
+        return jsonify({"error": "SAML login failed"}), 500
+
 
 @microsoft_bp.route("/microsoft/login", methods=["GET", "OPTIONS"])
 def microsoft_login():
@@ -437,7 +441,6 @@ def microsoft_login():
         )
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return response
-        
 
     logger.info("🚀 Starting Microsoft OAuth login (global access)")
 
@@ -620,8 +623,6 @@ async def microsoft_callback():
                 "SELECT user_id, user_type FROM users WHERE email = %s", (email,)
             )
 
-
-
             existing_user = cursor.fetchone()
 
             if existing_user:
@@ -747,8 +748,7 @@ async def microsoft_callback():
                 )
                 internal_subscription_id = f"starter_{user_id}"
                 # 3️⃣ Fetch STARTER plan
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT plan_code, monthly_token_limit
                     FROM plans
                     WHERE plan_code IN ('STARTER', 'FREE')
@@ -758,8 +758,7 @@ async def microsoft_callback():
                         WHEN 'FREE' THEN 2
                     END
                     LIMIT 1
-                    """
-                )
+                    """)
 
                 starter_plan = cursor.fetchone()
 
@@ -1213,6 +1212,7 @@ def microsoft_get_emails_infinite():
 
         if not email and not user_id:
             return jsonify({"error": "User authentication required"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         conn = connect_to_rds()
         cursor_db = conn.cursor()
@@ -1415,6 +1415,7 @@ def microsoft_get_email_detail():
 
         if not email and not user_id:
             return jsonify({"error": "User authentication required"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         conn = connect_to_rds()
         cursor = conn.cursor()
@@ -1813,6 +1814,7 @@ def microsoft_get_emails_batch():
 
         if not user_id:
             return jsonify({"error": "User ID is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         logger.info(
             f"🚀 Starting batch email fetch for user: {user_id} (batch_size: {batch_size}, months: {months}, page_token: {page_token is not None})"
@@ -1893,6 +1895,7 @@ async def microsoft_get_emails_count():
 
         if not user_id:
             return jsonify({"error": "User ID is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         logger.info(f"📊 Getting email count for user: {user_id}")
 
@@ -1946,6 +1949,7 @@ def microsoft_fetch_all_emails():
 
         if not user_id:
             return jsonify({"error": "User ID is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         logger.info(f"🚀 Starting comprehensive email fetch for user: {user_id}")
         logger.info(f"📊 Parameters: {months} months, max {max_emails} emails")
@@ -2229,6 +2233,7 @@ async def trigger_email_fetch():
 
         if not user_id:
             return jsonify({"error": "User ID is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         logger.info(f"🔄 Manual trigger for email fetch: {user_id}")
 
@@ -2971,7 +2976,9 @@ def teams_send_message(user_id, chat_id, message_text, integration=None):
             conn.close()
             raise Exception("No active Microsoft user found.")
         access_token, refresh_token = row
-        expired, access_token = check_microsoft_token_expiry_normal(cursor, conn, user_id)
+        expired, access_token = check_microsoft_token_expiry_normal(
+            cursor, conn, user_id
+        )
 
     cursor.close()
     conn.close()
@@ -3038,6 +3045,7 @@ def process_outlook():
         apikey = data.get("api_key")
         id = data.get("user_id")
         primary_provider = data.get("primary_provider")
+        logged_in_user_id, id = parse_composite_user_id(id)
 
         # print("----------------------------")
         # print(f"primary_provider:{primary_provider}")
@@ -3370,6 +3378,7 @@ def get_outlook_token(inuser=None, value=None, in_connection=None):
         connection = connect_to_rds()
     else:
         connection = in_connection
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
         with connection.cursor() as cursor:
@@ -3434,6 +3443,7 @@ def check_microsoft_user():
 
         if not user_id:
             return jsonify({"error": "User ID is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         conn = connect_to_rds()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -3654,7 +3664,9 @@ async def outlook_webhook():
 
         recent = await lock_client.get(dedup_key)
         if recent:
-            logger.info(f"Duplicate webhook skipped for {user_id}, historyId={history_id}")
+            logger.info(
+                f"Duplicate webhook skipped for {user_id}, historyId={history_id}"
+            )
             continue
 
         await lock_client.set(dedup_key, "1", ex=300)  # 5-minute dedupe window
@@ -3687,7 +3699,9 @@ async def outlook_webhook():
         try:
             # check if it is expired and refresh if expired
             if integration:
-                check_result = check_and_refresh_token(user_id, cursor, conn)  # TODO ....
+                check_result = check_and_refresh_token(
+                    user_id, cursor, conn
+                )  # TODO ....
                 # print(f"check_result : {check_result}")
                 if not check_result:
                     # print("cannot refresh token")

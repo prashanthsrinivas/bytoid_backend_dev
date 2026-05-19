@@ -77,7 +77,6 @@ PERMISSION_METADATA = {
         "type": "read",
         "dependencies": []
     },
-    
     "compliance.standalone.create": {
         "label": "Create Standalone Reports",
         "module": "Compliance",

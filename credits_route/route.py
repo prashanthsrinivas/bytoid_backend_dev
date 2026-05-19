@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, g
 from db.rds_db import connect_to_rds
 from db.db_checkers import get_email_by_id
 import pymysql
+from utils.normal import parse_composite_user_id
 from services.credit_system import CreditManager, InsufficientCreditsError
 from datetime import datetime, timedelta
 from utils.app_configs import ACCESSIBLE_IDS
@@ -191,6 +192,8 @@ async def get_credits():
         return jsonify({"error": "user_id is required"}), 400
     if not user_id or user_id in ("failure", "None"):
         return jsonify({"error": "user_id is required"}), 400
+
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     # redis = RedisService()
     # key = CreditManager.summary_key.format(user_id)
 
@@ -245,6 +248,7 @@ def get_credit_buckets():
     user_id = request.args.get("user_id")
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
     cur = conn.cursor()
@@ -289,6 +293,7 @@ def get_credit_usage():
 
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -396,6 +401,8 @@ def credit_summary():
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
 
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
     conn = connect_to_rds()
     cur = conn.cursor()
 
@@ -431,13 +438,25 @@ def add_credits_route():
     if not body:
         return jsonify({"error": "Request body is required"}), 400
 
-    user_id = body.get("user_id")
+    baseuser = body.get("user_id")
     customer_id = body.get("customer_id")
     customer_email = body.get("customer_email")
     number_credits = body.get("number_credits")
 
-    if not user_id or (not customer_id and not customer_email) or number_credits is None:
-        return jsonify({"error": "user_id, number_credits, and either customer_id or customer_email are required"}), 400
+    if (
+        not user_id
+        or (not customer_id and not customer_email)
+        or number_credits is None
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "user_id, number_credits, and either customer_id or customer_email are required"
+                }
+            ),
+            400,
+        )
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     if user_id not in ACCESSIBLE_IDS:
         return jsonify({"error": "Unauthorized"}), 403
@@ -486,13 +505,18 @@ def add_credits_route():
             },
         )
         g.audit_logged = True
-        return jsonify({
-            "success": True,
-            "bucket_id": bucket_id,
-            "customer_id": resolved_customer_id,
-            "credits_added": number_credits,
-            "expires_at": expires_at.isoformat(),
-        }), 200
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "bucket_id": bucket_id,
+                    "customer_id": resolved_customer_id,
+                    "credits_added": number_credits,
+                    "expires_at": expires_at.isoformat(),
+                }
+            ),
+            200,
+        )
     finally:
         if conn:
             conn.close()

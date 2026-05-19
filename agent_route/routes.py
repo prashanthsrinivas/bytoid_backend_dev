@@ -27,6 +27,7 @@ from utils.fireworkzz import (
     get_fireworks_response,
 )
 from utils.normal import load_yaml_file, parse_composite_user_id
+from utils.permission_required import permission_required_body
 import uuid
 import traceback
 from db.rds_db import connect_to_rds, safe_execute
@@ -364,6 +365,7 @@ def get_training_settings():
 
 
 @agent_bps.route("/process-query-key-og", methods=["POST"])
+@permission_required_body("intake.bytoid_reference")
 @permission_required_body("intake.bytoid_reference")
 def checkquerywithApiKeyog():
     try:
@@ -1138,6 +1140,7 @@ async def process_query_worker(data, job_id=None):
 
 @agent_bps.route("/process-query-key", methods=["POST"])
 @permission_required_body("intake.bytoid_reference")
+@permission_required_body("intake.bytoid_reference")
 async def checkquerywithApiKey():
     data = request.json
 
@@ -1476,6 +1479,7 @@ async def updateClarifications(userid=None, industry=None):
 
 # --- Main endpoint (updated) ---
 @agent_bps.route("/get-ai-suggestion", methods=["POST"])
+@permission_required_body("intake.bytoid_reference")
 @permission_required_body("intake.bytoid_reference")
 async def get_ai_suggestion():
     try:

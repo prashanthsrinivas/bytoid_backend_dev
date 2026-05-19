@@ -7,6 +7,7 @@ from utils.app_configs import IS_DEV
 from credits_route.route import Credits
 from db.rds_db import connect_to_rds
 from flask import request, jsonify, Blueprint
+from utils.permission_required import permission_required_body
 import logging
 from utils.fireworkzz import (
     get_coder_fire_response,
@@ -625,6 +626,7 @@ async def bytoidpro_think():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think/status", methods=["POST"])
+@permission_required_body("intake.bytoid_pro")
 def check_job_status():
     json_body = request.get_json()
     job_id = json_body.get("job_id")

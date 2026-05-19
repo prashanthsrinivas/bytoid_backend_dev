@@ -24,6 +24,7 @@ from utils.permission_resolver import resolve_permissions
 from utils.s3_utils import read_json_from_s3
 from datetime import timedelta, date as _date
 import os 
+from utils.permission_required import permission_required_body
 
 inv_users_bp = Blueprint("invited_users", __name__)
 
@@ -390,18 +391,23 @@ def bulk_assign_role():
     target_emails = data.get("target_emails")
 
     if not baseuser or not role_id or not target_emails:
-        return jsonify({"error": "Missing required fields: userid, role_id, target_emails"}), 400
+        return (
+            jsonify(
+                {"error": "Missing required fields: userid, role_id, target_emails"}
+            ),
+            400,
+        )
     if not isinstance(target_emails, list) or len(target_emails) == 0:
         return jsonify({"error": "target_emails must be a non-empty list"}), 400
 
     # Session check
-    session_user_id = session.get("user_id")
-    if not session_user_id:
-        return jsonify({"error": "Unauthorized"}), 401
+    # session_user_id = session.get("user_id")
+    # if not session_user_id:
+    #     return jsonify({"error": "Unauthorized"}), 401
 
     logged_in_user_id, userid = parse_composite_user_id(baseuser)
-    if userid != session_user_id:
-        return jsonify({"error": "Forbidden: userid does not match session"}), 403
+    # if userid != session_user_id:
+    #     return jsonify({"error": "Forbidden: userid does not match session"}), 403
 
     conn = None
     success = []
@@ -433,7 +439,8 @@ def bulk_assign_role():
 
             # Load admin's permissions ledger
             admin_permissions = (
-                json.loads(admin["permissions"]) if admin["permissions"]
+                json.loads(admin["permissions"])
+                if admin["permissions"]
                 else {"invites": [], "shared": []}
             )
             if "shared" not in admin_permissions:
@@ -466,16 +473,20 @@ def bulk_assign_role():
 
                 # Validate user_type
                 if target["user_type"] in ("admin", "superadmin"):
-                    failed.append({
-                        "email": target_email,
-                        "reason": f"Cannot assign RBAC roles to {target['user_type']}s",
-                    })
+                    failed.append(
+                        {
+                            "email": target_email,
+                            "reason": f"Cannot assign RBAC roles to {target['user_type']}s",
+                        }
+                    )
                     continue
                 if target["user_type"] != "user":
-                    failed.append({
-                        "email": target_email,
-                        "reason": f"Invalid target user type: {target['user_type']}",
-                    })
+                    failed.append(
+                        {
+                            "email": target_email,
+                            "reason": f"Invalid target user type: {target['user_type']}",
+                        }
+                    )
                     continue
 
                 # Org membership validation (two-part fallback)
@@ -483,10 +494,12 @@ def bulk_assign_role():
                     target_email.lower() in org_email_set
                 )
                 if not in_org:
-                    failed.append({
-                        "email": target_email,
-                        "reason": "User is not in your organization",
-                    })
+                    failed.append(
+                        {
+                            "email": target_email,
+                            "reason": "User is not in your organization",
+                        }
+                    )
                     continue
 
                 # Write role to target's permissions
@@ -515,12 +528,14 @@ def bulk_assign_role():
                         break
 
                 if not upserted:
-                    admin_permissions["shared"].append({
-                        "email": target_email,
-                        "role": role,
-                        "status": "active",
-                        "accepted_at": now_iso,
-                    })
+                    admin_permissions["shared"].append(
+                        {
+                            "email": target_email,
+                            "role": role,
+                            "status": "active",
+                            "accepted_at": now_iso,
+                        }
+                    )
 
                 success.append({"email": target_email, "role_id": role["id"]})
 
@@ -533,7 +548,9 @@ def bulk_assign_role():
             conn.commit()
 
         # Audit log (one event for the batch)
-        actor_uid, actor_email_log, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        actor_uid, actor_email_log, behalf_uid, behalf_email = build_audit_actor(
+            baseuser
+        )
         log_audit_event(
             action=USER_ROLE_CHANGED,
             endpoint="/admin/bulk-assign-role",
@@ -607,12 +624,19 @@ def get_roles(userid):
             )
             org_row = cursor.fetchone()
 
-            org = org_row["company_name"]
+            org = (org_row.get("company_name") or "").strip()
+            if not org:
+                return jsonify({
+                    "roles": roles,
+                    "invited_users": [],
+                    "invited_users_structured": {"invites": [], "shared": []},
+                    "special_access_status": {},
+                }), 200
 
-            # get all users in same org
+            # get all users in same org (excluding self)
             cursor.execute(
-                "SELECT user_id, email, user_type FROM users WHERE company_name=%s",
-                (org,),
+                "SELECT user_id, email, user_type FROM users WHERE company_name=%s AND user_id != %s",
+                (org, userid),
             )
             all_users = cursor.fetchall()
 
@@ -667,6 +691,7 @@ def get_roles(userid):
         if conn:
             conn.close()
 
+
 @inv_users_bp.route("/admin/organization-users/<userid>", methods=["GET"])
 def get_organization_users(userid):
     logged_in_user_id, userid = parse_composite_user_id(userid)
@@ -703,15 +728,16 @@ def get_organization_users(userid):
             else:
                 # Google/Microsoft path: derive user list from admin's permissions ledger
                 admin_permissions = (
-                    json.loads(admin["permissions"]) if admin["permissions"]
+                    json.loads(admin["permissions"])
+                    if admin["permissions"]
                     else {"invites": [], "shared": []}
                 )
                 email_set = set()
                 for entry in admin_permissions.get("shared", []):
-                    if entry.get("email"):
+                    if entry.get("email") and entry.get("status") != "revoked":
                         email_set.add(entry["email"].lower())
                 for entry in admin_permissions.get("invites", []):
-                    if entry.get("email"):
+                    if entry.get("email") and entry.get("status") != "revoked":
                         email_set.add(entry["email"].lower())
 
                 if not email_set:
@@ -733,6 +759,9 @@ def get_organization_users(userid):
                 except (json.JSONDecodeError, TypeError):
                     user_perms = {}
 
+            if user_perms.get("status") == "revoked":
+                continue
+
             current_role = (
                 user_perms.get("role") if user_perms.get("status") == "active" else None
             )
@@ -740,14 +769,16 @@ def get_organization_users(userid):
             if created_at and hasattr(created_at, "isoformat"):
                 created_at = created_at.isoformat()
 
-            result.append({
-                "user_id": row["user_id"],
-                "email": row["email"],
-                "user_type": row["user_type"],
-                "social": row.get("social"),
-                "current_role": current_role,
-                "created_at": created_at,
-            })
+            result.append(
+                {
+                    "user_id": row["user_id"],
+                    "email": row["email"],
+                    "user_type": row["user_type"],
+                    "social": row.get("social"),
+                    "current_role": current_role,
+                    "created_at": created_at,
+                }
+            )
 
         return jsonify({"users": result}), 200
 
@@ -757,6 +788,56 @@ def get_organization_users(userid):
     finally:
         if conn:
             conn.close()
+
+
+@inv_users_bp.route("/admin/requestable-admins/<userid>", methods=["GET"])
+def get_requestable_admins(userid):
+    """Admins in the same org that the current user can request access from (no existing special_access)."""
+    logged_in_user_id, userid = parse_composite_user_id(userid)
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT user_type, company_name FROM users WHERE user_id=%s", (userid,)
+            )
+            me = cursor.fetchone()
+            if not me or me["user_type"] == "user":
+                return jsonify({"error": "Unauthorized"}), 403
+
+            company_name = (me.get("company_name") or "").strip()
+            if not company_name:
+                return jsonify({"admins": []}), 200
+
+            cursor.execute(
+                """SELECT user_id, email FROM users
+                   WHERE company_name=%s AND user_type='admin' AND user_id != %s""",
+                (company_name, userid),
+            )
+            org_admins = cursor.fetchall()
+
+            requestable = []
+            for admin in org_admins:
+                cursor.execute(
+                    """SELECT 1 FROM special_access
+                       WHERE (grantor_admin_id=%s AND target_admin_id=%s)
+                          OR (grantor_admin_id=%s AND target_admin_id=%s)""",
+                    (admin["user_id"], userid, userid, admin["user_id"]),
+                )
+                if not cursor.fetchone():
+                    requestable.append(
+                        {"user_id": admin["user_id"], "email": admin["email"]}
+                    )
+
+        return jsonify({"admins": requestable}), 200
+
+    except Exception as e:
+        logger.error(f"[get_requestable_admins] {str(e)}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 @inv_users_bp.route("/admin/permissions", methods=["GET"])
 def get_permissions():
@@ -783,6 +864,8 @@ def get_permissions():
         "evidence": "Evidence Config",
         "agents": "Agents",
         "radar": "Radar",
+        "policyhub": "Policy Hub",
+        "trustcenter": "Trust Center",
     }
 
     for key, label in PERMISSIONS.items():
@@ -1056,7 +1139,7 @@ def send_invite_user():
 
             user_email = row["email"]
             user_source = (row.get("social") or "").strip().lower()
-            is_sso_admin = (user_source == "saml")
+            is_sso_admin = user_source == "saml"
 
             # SSO-specific validation: can't assign RBAC to admin users
             if is_sso_admin:
@@ -1064,7 +1147,10 @@ def send_invite_user():
                     existing_type = base_check.get("user_type")
                     if existing_type == "admin":
                         conn.rollback()
-                        return jsonify({"error": "Cannot assign RBAC to an admin user"}), 400
+                        return (
+                            jsonify({"error": "Cannot assign RBAC to an admin user"}),
+                            400,
+                        )
             else:
                 # non-SSO: existing guard
                 if base_check:
@@ -1109,15 +1195,27 @@ def send_invite_user():
 
             # For SSO admin + existing SSO user: directly apply RBAC, skip invite ledger
             if is_sso_admin and base_check and base_check.get("user_type") == "user":
-                direct_payload = {**new_permission, "status": "active",
-                                  "applied_at": datetime.utcnow().isoformat()}
-                cursor.execute("UPDATE users SET permissions=%s WHERE user_id=%s",
-                               (json.dumps(direct_payload), base_check["user_id"]))
+                direct_payload = {
+                    **new_permission,
+                    "status": "active",
+                    "applied_at": datetime.utcnow().isoformat(),
+                }
+                cursor.execute(
+                    "UPDATE users SET permissions=%s WHERE user_id=%s",
+                    (json.dumps(direct_payload), base_check["user_id"]),
+                )
                 permissions.setdefault("shared", [])
-                permissions["shared"].append({**new_permission, "status": "active",
-                                             "accepted_at": datetime.utcnow().isoformat()})
-                cursor.execute("UPDATE users SET permissions=%s WHERE user_id=%s",
-                               (json.dumps(permissions), userid))
+                permissions["shared"].append(
+                    {
+                        **new_permission,
+                        "status": "active",
+                        "accepted_at": datetime.utcnow().isoformat(),
+                    }
+                )
+                cursor.execute(
+                    "UPDATE users SET permissions=%s WHERE user_id=%s",
+                    (json.dumps(permissions), userid),
+                )
                 conn.commit()
                 actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(
                     baseuserid
@@ -1139,7 +1237,12 @@ def send_invite_user():
                     },
                 )
                 g.audit_logged = True
-                return jsonify({"message": "Role assigned directly to existing SSO user."}), 200
+                return (
+                    jsonify(
+                        {"message": "Role assigned directly to existing SSO user."}
+                    ),
+                    200,
+                )
 
             # Append inside "invites"
             permissions["invites"].append(new_permission)
@@ -1200,7 +1303,9 @@ def send_invite_user():
                     else:
                         email_error = "Email not sent: mail provider not connected. The invite was saved — use Resend to deliver it once connected."
             except Exception as email_exc:
-                logger.error(f"[invite_user] Email send failed for {email}: {email_exc}")
+                logger.error(
+                    f"[invite_user] Email send failed for {email}: {email_exc}"
+                )
                 email_error = f"Invite saved but email delivery failed: {email_exc}"
 
         actor_uid, actor_email_v, behalf_uid, behalf_email = build_audit_actor(
@@ -1226,7 +1331,10 @@ def send_invite_user():
         g.audit_logged = True
 
         if is_sso_admin:
-            return jsonify({"message": "SSO invite queued. Role applied on next login."}), 200
+            return (
+                jsonify({"message": "SSO invite queued. Role applied on next login."}),
+                200,
+            )
 
         if email_error:
             return (
@@ -1255,6 +1363,7 @@ def delete_invite():
         if not invited_email:
             return jsonify({"error": "Invited user email is required"}), 400
 
+        logged_in_user_id, userid = parse_composite_user_id(userid)
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
@@ -1342,7 +1451,7 @@ def resend_invite():
 
         if not user_id or not invited_email:
             return jsonify({"error": "user_id and invited email are required"}), 400
-
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # fetch inviter details
@@ -1574,11 +1683,13 @@ def accept_from_link():
 
 
 @inv_users_bp.route("/admin/grant_special_access", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def grant_special_access():
     data = request.get_json()
 
     current_admin_id = data.get("user_id")
     target_admin_id = data.get("target_admin_id")
+    logged_in_user_id, current_admin_id = parse_composite_user_id(current_admin_id)
 
     conn = None
     try:
@@ -1648,11 +1759,13 @@ def grant_special_access():
 
 # SHARED USER ROLES APIS
 @inv_users_bp.route("/admin/request_special_access", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def request_special_access():
     data = request.get_json()
 
     requester_id = data.get("user_id")  # Admin A
     target_email = data.get("email")  # Admin B
+    logged_in_user_id, requester_id = parse_composite_user_id(requester_id)
 
     conn = None
     try:
@@ -1725,8 +1838,6 @@ def request_special_access():
                 invited_by=inviter_email,
             )
 
-            print("DEBUG user_source:", user_source)
-            # ✅ GET TOKEN + SOCIAL
             # check outlook connection
             if not has_outlook_connected(requester_id, cursor):
                 conn.commit()
@@ -1738,47 +1849,67 @@ def request_special_access():
                     ),
                     400,
                 )
-            try:
-                outlook_service = OutlookService(user_id=requester_id)
-                outlook_service.send_invitation_email(
-                    invitee=target_email,
-                    inviter=inviter_email,
-                    role={"name": "Admin Access", "id": "admin_access"},
-                    invite_link=link,
-                    business_info={},
-                )
-                conn.commit()
 
-                actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
-                    requester_id
-                )
-                log_audit_event(
-                    action=SPECIAL_ACCESS_REQUESTED,
-                    endpoint="/admin/request_special_access",
-                    ip=request.remote_addr,
-                    status="success",
-                    actor_user_id=actor_uid,
-                    actor_email=actor_email,
-                    target_user_id=target["user_id"],
-                    target_email=target_email,
-                    acting_on_behalf_of_user_id=behalf_uid,
-                    acting_on_behalf_of_email=behalf_email,
-                    metadata={"target_found": True},
-                )
-                g.audit_logged = True
+            conn.commit()
 
-                return jsonify({"message": "Request sent via Outlook"}), 200
+        email_error = None
+        try:
+            outlook_service = OutlookService(user_id=requester_id)
+            outlook_service.send_invitation_email(
+                invitee=target_email,
+                inviter=inviter_email,
+                role={"name": "Admin Access", "id": "admin_access"},
+                invite_link=link,
+                business_info={},
+            )
+        except Exception as e:
+            logger.error(
+                f"[request_special_access] Outlook error for {target_email}: {str(e)}"
+            )
+            email_error = str(e)
 
-            except Exception as e:
-                logger.error(f"Outlook error: {str(e)}")
-                conn.rollback()
-                return jsonify({"error": "Failed to send email"}), 500
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
+            requester_id
+        )
+        log_audit_event(
+            action=SPECIAL_ACCESS_REQUESTED,
+            endpoint="/admin/request_special_access",
+            ip=request.remote_addr,
+            status="success" if not email_error else "partial",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            target_user_id=target["user_id"],
+            target_email=target_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"target_found": True, "email_error": email_error},
+        )
+        g.audit_logged = True
+
+        if email_error:
+            return (
+                jsonify(
+                    {
+                        "message": "Access request created. Notification pending.",
+                        "warning": f"Email not sent: {email_error}",
+                    }
+                ),
+                200,
+            )
+        return jsonify({"message": "Request sent via Outlook"}), 200
+
+    except Exception as e:
+        logger.error(f"[request_special_access] {str(e)}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
     finally:
         if conn:
             conn.close()
 
 
 @inv_users_bp.route("/admin/accept_special_access", methods=["GET", "POST"])
+@permission_required_body("admin.manage_admins")
 def accept_special_access():
     data = request.get_json()
 
@@ -1856,25 +1987,26 @@ def accept_special_access():
 
 
 @inv_users_bp.route("/admin/revoke_special_access", methods=["POST"])
+@permission_required_body("admin.manage_admins")
 def revoke_special_access():
 
     data = request.get_json()
-    grantor_id = data.get("user_id")  # logged-in data owner (grantor_admin_id)
-    target_id = data.get("target_id") or data.get("target_admin_id")  # accessor being revoked (target_admin_id)
+    grantor_id = data.get("user_id")
+    target_email = data.get("email") or data.get("target_email") or data.get("target_id") or data.get("target_admin_id")
+    logged_in_user_id, grantor_id = parse_composite_user_id(grantor_id)
 
     conn = None
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            # Validate admins
             cursor.execute(
-                "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
+                "SELECT user_id, user_type, company_name, email FROM users WHERE user_id=%s",
                 (grantor_id,),
             )
             grantor = cursor.fetchone()
             cursor.execute(
-                "SELECT user_type, company_name, email FROM users WHERE user_id=%s",
-                (target_id,),
+                "SELECT user_id, user_type, company_name, email FROM users WHERE email=%s",
+                (target_email,),
             )
             target = cursor.fetchone()
             if not grantor or not target:
@@ -1883,13 +2015,16 @@ def revoke_special_access():
                 return jsonify({"error": "Only admins allowed"}), 403
             if grantor["company_name"] != target["company_name"]:
                 return jsonify({"error": "Different organization"}), 403
-            # Delete access: (grantor = data owner, target = accessor being revoked)
+
+            target_id = target["user_id"]
+
             cursor.execute(
                 """
                 DELETE FROM special_access
-                WHERE grantor_admin_id=%s AND target_admin_id=%s
+                WHERE (grantor_admin_id=%s AND target_admin_id=%s)
+                   OR (grantor_admin_id=%s AND target_admin_id=%s)
             """,
-                (grantor_id, target_id),
+                (grantor_id, target_id, target_id, grantor_id),
             )
             if cursor.rowcount == 0:
                 return (
@@ -1898,7 +2033,6 @@ def revoke_special_access():
                     ),
                     404,
                 )
-            # Notification (only fires when a row was actually deleted)
             cursor.execute(
                 """
                 INSERT INTO notifications (user_id, message)
@@ -2075,7 +2209,14 @@ def validate_invite(token):
 
             # Block SSO invites from the email-link path
             if permission_entry.get("invite_type") == "sso":
-                return jsonify({"error": "SSO users must authenticate via your organization's identity provider."}), 400
+                return (
+                    jsonify(
+                        {
+                            "error": "SSO users must authenticate via your organization's identity provider."
+                        }
+                    ),
+                    400,
+                )
 
             # 3️⃣ Expiry check
             if int(time()) > expiry:
@@ -2357,7 +2498,7 @@ def get_notifications(user_id):
 def revoke_shared_user_role():
     data = request.get_json()
     baseuser = data.get("user_id")  # admin
-    email = data.get("email")  # invited user
+    email = (data.get("email") or "").strip().lower()  # invited user
     logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
     try:
@@ -2386,11 +2527,8 @@ def revoke_shared_user_role():
 
             invited_permissions = json.loads(invited_row["permissions"] or "{}")
 
-            # Step 3: Update invited user → set role.status = revoked
-            if "status" in invited_permissions:
-                invited_permissions["status"] = "revoked"
-            else:
-                invited_permissions = {"status": "revoked"}
+            # Step 3: Update invited user → set status = revoked (preserve all other fields)
+            invited_permissions["status"] = "revoked"
 
             cursor.execute(
                 "UPDATE users SET permissions=%s WHERE email=%s",
@@ -2401,7 +2539,7 @@ def revoke_shared_user_role():
             for section in ["shared", "invites"]:
                 if section in permissions:
                     for p in permissions[section]:
-                        if p.get("email") == email:
+                        if (p.get("email") or "").strip().lower() == email:
                             p["status"] = "revoked"
 
             cursor.execute(
@@ -2638,6 +2776,7 @@ def activate_shared_user_role():
 @inv_users_bp.route("/admin/all_special_access_users/<userid>", methods=["GET"])
 def all_special_access_users(userid):
     conn = None
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -2675,6 +2814,7 @@ def all_special_access_users(userid):
 def all_special_access_sources(userid):
     """Get all admins whose data I can access (I am target, they are grantor)"""
     conn = None
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -2719,6 +2859,7 @@ def get_audit_logs():
         user_id = session.get("user_id")
         if not user_id:
             return jsonify({"error": "Unauthorized"}), 401
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         # 2. ADMIN TYPE CHECK (DB)
         conn = connect_to_rds()

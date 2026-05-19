@@ -4,6 +4,7 @@ import os
 import re
 import traceback
 import yaml
+from utils.app_configs import IS_DEV
 from dotenv import load_dotenv
 from fireworks.client import Fireworks
 from langchain_fireworks import FireworksEmbeddings
@@ -36,6 +37,9 @@ fw = Fireworks(api_key=FIREWORKS_KEY)
 
 NORMAL_MODEL = "qwen.qwen3-235b-a22b-2507-v1:0"
 THINK_MODEL = "qwen.qwen3-vl-235b-a22b"
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 
 
 def extract_bedrock_text(response_body: dict) -> str:
@@ -1113,43 +1117,214 @@ Do NOT include explanations, markdown, or extra text. JSON only."""
 #         "fw_row_indices": fw_row_indices,
 #         "_output_chars": len(response_text),
 #     }
+MODEL1 = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+MODEL2 = "moonshotai.kimi-k2.5"
+MODEL3 = "deepseek.v3.2"
+MODEL4 = "anthropic.claude-sonnet-4-6"
+
+
+# async def _analyze_single_row(
+#     row: dict, fw_rows_json: str, framework_name: str
+# ) -> dict:
+#     """Analyze one tracker row against the full framework requirements list."""
+#     try:
+
+#         row_json = json.dumps(
+#             {"row_id": row["row_id"], "data": row.get("col_values", {})}, indent=2
+#         )
+#         row_id = row["row_id"]
+#         prompt = f"""You are a compliance analyst. For the SINGLE tracker row below, identify which requirements from "{framework_name}" it directly relates to.
+#         STRICT MATCHING RULES:
+#         - Only assign a requirement when there is a CLEAR, DIRECT, SPECIFIC relationship between the row content and the requirement's subject matter.
+#         - A match is valid ONLY if: the row directly addresses what the requirement covers, OR compliance with the requirement would specifically depend on what this row describes.
+#         - A match is NOT valid if: the connection is vague, indirect, or the row and requirement belong to different topic domains.
+#         - When in doubt, return [].
+#         TRACKER ROW: {row_json}
+#         FRAMEWORK REQUIREMENTS (with index): {fw_rows_json}
+#         Return ONLY valid JSON (no markdown, no explanation):
+#         {{"row_id": "{row_id}", "fw_row_indices": [3, 7]}} or if nothing matches: {{"row_id": "{row_id}", "fw_row_indices": []}}"""
+#         # payload = {
+#         #     "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+#         #     "temperature": 0,
+#         #     "max_tokens": 2000,
+#         # }
+#         # response = await asyncio.to_thread(
+#         #     bedrock_runtime.invoke_model,
+#         #     modelId=THINK_MODEL,
+#         #     body=json.dumps(payload),
+#         #     contentType="application/json",
+#         #     accept="application/json",
+#         # )
+#         # body = json.loads(response["body"].read())
+#         # response_text = extract_bedrock_text(body)
+#         # payload = {
+#         #     "messages": [
+#         #         {
+#         #             "role": "user",
+#         #             "content": [{"type": "text", "text": prompt}],
+#         #         }
+#         #     ],
+#         #     "anthropic_version": "bedrock-2023-05-31",
+#         #     "temperature": 0,
+#         #     "max_tokens": 22000,
+#         # }
+#         payload = {
+#             "messages": [
+#                 {"role": "user", "content": [{"type": "text", "text": prompt}]}
+#             ],
+#             "temperature": 0,
+#             "max_tokens": 65500,
+#         }
+#         response = await asyncio.to_thread(
+#             bedrock_runtime.invoke_model,
+#             modelId=MODEL2,
+#             body=json.dumps(payload),
+#             contentType="application/json",
+#             accept="application/json",
+#         )
+#         body = json.loads(response["body"].read())
+#         logger.info("read response keys %s", body.keys())
+#         logger.info("read response %s", body)
+#         response_text = body["content"][0]["text"].strip()
+
+#         parsed = extract_json_safe(response_text)
+#         # parsed = extract_json_safe(response_text)
+#         fw_row_indices = []
+#         if isinstance(parsed, dict):
+#             raw = parsed.get("fw_row_indices", [])
+#             if isinstance(raw, list):
+#                 fw_row_indices = [i for i in raw if isinstance(i, int) and i >= 0]
+#                 return {
+#                     "row_id": row_id,
+#                     "fw_row_indices": fw_row_indices,
+#                     "_output_chars": len(response_text),
+#                 }
+#     except Exception as e:
+#         logger.info("error on single row analysis %s", e)
+
+
+def deduplicate_subsections(entries: list) -> list:
+    """Remove subsection entries when their parent section is already present.
+    E.g., [5, 5.1, 5.3, 7.1, 12.1] → [5, 7.1, 12.1]
+    """
+
+    def _parts(s):
+        try:
+            return [p.strip() for p in str(s).split(".") if p.strip()]
+        except Exception:
+            return [str(s)]
+
+    parts_list = [_parts(e.get("section", "")) for e in entries]
+    result = []
+    for i, (entry, parts_i) in enumerate(zip(entries, parts_list)):
+        is_subsection = any(
+            j != i
+            and len(parts_list[j]) < len(parts_i)
+            and parts_i[: len(parts_list[j])] == parts_list[j]
+            for j in range(len(entries))
+        )
+        if not is_subsection:
+            result.append(entry)
+    return result
 
 
 async def _analyze_single_row(
     row: dict, fw_rows_json: str, framework_name: str
 ) -> dict:
     """Analyze one tracker row against the full framework requirements list."""
+    try:
+        row_json = json.dumps(
+            {"row_id": row["row_id"], "data": row.get("col_values", {})},
+            indent=2,
+        )
 
-    row_json = json.dumps(
-        {"row_id": row["row_id"], "data": row.get("col_values", {})}, indent=2
-    )
-    row_id = row["row_id"]
-    prompt = f"""You are a compliance analyst. For the SINGLE tracker row below, identify which requirements from "{framework_name}" it directly relates to. STRICT MATCHING RULES: - Only assign a requirement when there is a CLEAR, DIRECT, SPECIFIC relationship between the row content and the requirement's subject matter. - A match is valid ONLY if: the row directly addresses what the requirement covers, OR compliance with the requirement would specifically depend on what this row describes. - A match is NOT valid if: the connection is vague, indirect, or the row and requirement belong to different topic domains. - When in doubt, return []. TRACKER ROW: {row_json} FRAMEWORK REQUIREMENTS (with index): {fw_rows_json} Return ONLY valid JSON (no markdown, no explanation): {{"row_id": "{row_id}", "fw_row_indices": [3, 7]}} or if nothing matches: {{"row_id": "{row_id}", "fw_row_indices": []}}"""
-    payload = {
-        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        "temperature": 0,
-        "max_tokens": 2000,
-    }
-    response = await asyncio.to_thread(
-        bedrock_runtime.invoke_model,
-        modelId=THINK_MODEL,
-        body=json.dumps(payload),
-        contentType="application/json",
-        accept="application/json",
-    )
-    body = json.loads(response["body"].read())
-    response_text = extract_bedrock_text(body)
-    parsed = extract_json_safe(response_text)
-    fw_row_indices = []
-    if isinstance(parsed, dict):
-        raw = parsed.get("fw_row_indices", [])
-        if isinstance(raw, list):
-            fw_row_indices = [i for i in raw if isinstance(i, int) and i >= 0]
-            return {
-                "row_id": row_id,
-                "fw_row_indices": fw_row_indices,
-                "_output_chars": len(response_text),
-            }
+        row_id = row["row_id"]
+
+        prompt = f"""You are a compliance analyst. For the SINGLE tracker row below, identify which requirements from "{framework_name}" it directly relates to.
+
+STRICT MATCHING RULES:
+- Only assign a requirement when there is a CLEAR, DIRECT, SPECIFIC relationship between the row content and the requirement's subject matter.
+- A match is valid ONLY if:
+  - the row directly addresses what the requirement covers, OR
+  - compliance with the requirement would specifically depend on what this row describes.
+- A match is NOT valid if:
+  - the connection is vague,
+  - indirect,
+  - or the row and requirement belong to different topic domains.
+- When in doubt, return [].
+
+ASSIGNMENT CONSTRAINTS:
+- Return 1–3 requirements per row. Exceed 3 only if more than 3 truly and directly apply (maximum: 5).
+- Prefer parent-level sections: if sub-requirements 5.1, 5.2, 5.3 all match, return the index for section 5 instead of all three.
+- If ANY requirement applies to this row, return at least 1. Only return empty fw_row_indices if the row is completely unrelated to every requirement in this framework.
+
+TRACKER ROW:
+{row_json}
+
+FRAMEWORK REQUIREMENTS (with index):
+{fw_rows_json}
+
+Return ONLY valid JSON.
+No markdown.
+No explanation.
+
+{{"row_id": "{row_id}", "fw_row_indices": [3, 7]}}
+
+or
+
+{{"row_id": "{row_id}", "fw_row_indices": []}}
+"""
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "temperature": 0,
+            "max_tokens": 4000,
+        }
+
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=MODEL2,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        body = json.loads(response["body"].read())
+
+        logger.info("read response keys %s", body.keys())
+
+        response_text = body["choices"][0]["message"]["content"].strip()
+
+        logger.info("kimi response text %s", response_text)
+
+        parsed = extract_json_safe(response_text)
+
+        fw_row_indices = []
+
+        if isinstance(parsed, dict):
+            raw = parsed.get("fw_row_indices", [])
+
+            if isinstance(raw, list):
+                fw_row_indices = [i for i in raw if isinstance(i, int) and i >= 0]
+
+        return {
+            "row_id": row_id,
+            "fw_row_indices": fw_row_indices,
+            "_output_chars": len(response_text),
+        }
+
+    except Exception as e:
+        logger.exception("error on single row analysis")
+        return {
+            "row_id": row.get("row_id"),
+            "fw_row_indices": [],
+            "_output_chars": 0,
+        }
 
 
 async def analyze_tracker_framework_rows(
@@ -1222,6 +1397,18 @@ async def analyze_tracker_framework_rows(
 
     results = await asyncio.gather(*[_bounded(row) for row in rows])
 
+    # Retry rows that came back empty (one retry only)
+    empty_rows = [row for row, r in zip(rows, results) if not r.get("fw_row_indices")]
+    if empty_rows:
+        retry_results = await asyncio.gather(*[_bounded(row) for row in empty_rows])
+        # Build lookup of retried results
+        retry_map = {r["row_id"]: r for r in retry_results}
+        # Replace empty entries with retry results (only if retry gave results)
+        results = [
+            retry_map.get(r["row_id"], r) if not r.get("fw_row_indices") else r
+            for r in results
+        ]
+
     assignments = []
     total_output_chars = 0
     for r in results:
@@ -1239,6 +1426,113 @@ async def analyze_tracker_framework_rows(
     return {"assignments": assignments}
 
 
+# async def _review_single_row_assignments(
+#     row_id: str,
+#     row_data: dict,
+#     fw_indices: list,
+#     fw_indexed: dict,
+#     framework_name: str,
+# ) -> dict:
+#     """Quality-review proposed assignments for one tracker row."""
+#     try:
+
+#         proposed = [
+#             {"fw_index": idx, "requirement": fw_indexed[idx]}
+#             for idx in fw_indices
+#             if idx in fw_indexed
+#         ]
+#         if not proposed:
+#             return {"row_id": row_id, "valid_indices": [], "_output_chars": 0}
+
+#         row_json = json.dumps(row_data, indent=2)
+#         proposed_json = json.dumps(proposed, indent=2)
+
+#         prompt = f"""You are a strict compliance quality reviewer. For the tracker row below, decide which proposed "{framework_name}" requirements are genuinely valid matches.
+
+#     APPROVAL CRITERIA — approve ONLY if ALL hold:
+#     1. The row content clearly and directly addresses the subject matter of the requirement.
+#     2. The relationship is specific and meaningful, not thematically adjacent or coincidental.
+#     3. A compliance auditor would recognize this as a valid, defensible mapping.
+
+#     REJECTION CRITERIA — reject if ANY apply:
+#     - The connection is indirect, vague, or requires significant interpretation.
+#     - The row and requirement belong to different topic domains.
+#     - You would need to stretch to justify the link.
+
+#     When in doubt, REJECT.
+
+#     ROW DATA:
+#     {row_json}
+
+#     PROPOSED REQUIREMENTS:
+#     {proposed_json}
+
+#     Return ONLY valid JSON with the fw_index values that pass review (no markdown):
+#     {{"valid_indices": [3, 7]}}
+#     or if none pass: {{"valid_indices": []}}"""
+
+#         # payload = {
+#         #     "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+#         #     "temperature": 0,
+#         #     "max_tokens": 1000,
+#         # }
+#         # response = await asyncio.to_thread(
+#         #     bedrock_runtime.invoke_model,
+#         #     modelId=THINK_MODEL,
+#         #     body=json.dumps(payload),
+#         #     contentType="application/json",
+#         #     accept="application/json",
+#         # )
+#         # body = json.loads(response["body"].read())
+#         # response_text = extract_bedrock_text(body)
+#         # parsed = extract_json_safe(response_text)
+#         # payload = {
+#         #     "messages": [
+#         #         {
+#         #             "role": "user",
+#         #             "content": [{"type": "text", "text": prompt}],
+#         #         }
+#         #     ],
+#         #     "anthropic_version": "bedrock-2023-05-31",
+#         #     "temperature": 0,
+#         #     "max_tokens": 22000,
+#         # }
+
+#         payload = {
+#             "messages": [
+#                 {"role": "user", "content": [{"type": "text", "text": prompt}]}
+#             ],
+#             "temperature": 0,
+#             "max_tokens": 65500,
+#         }
+#         response = await asyncio.to_thread(
+#             bedrock_runtime.invoke_model,
+#             modelId=MODEL2,
+#             body=json.dumps(payload),
+#             contentType="application/json",
+#             accept="application/json",
+#         )
+
+#         body = json.loads(response["body"].read())
+#         response_text = body["content"][0]["text"].strip()
+
+#         parsed = extract_json_safe(response_text)
+
+#         valid_indices = []
+#         if isinstance(parsed, dict):
+#             raw = parsed.get("valid_indices", [])
+#             if isinstance(raw, list):
+#                 valid_indices = [i for i in raw if isinstance(i, int)]
+
+#         return {
+#             "row_id": row_id,
+#             "valid_indices": valid_indices,
+#             "_output_chars": len(response_text),
+#         }
+#     except Exception as e:
+#         logger.info("error at review single row %s", e)
+
+
 async def _review_single_row_assignments(
     row_id: str,
     row_data: dict,
@@ -1247,31 +1541,39 @@ async def _review_single_row_assignments(
     framework_name: str,
 ) -> dict:
     """Quality-review proposed assignments for one tracker row."""
-    import json
-    import asyncio
 
-    proposed = [
-        {"fw_index": idx, "requirement": fw_indexed[idx]}
-        for idx in fw_indices
-        if idx in fw_indexed
-    ]
-    if not proposed:
-        return {"row_id": row_id, "valid_indices": [], "_output_chars": 0}
+    try:
+        proposed = [
+            {"fw_index": idx, "requirement": fw_indexed[idx]}
+            for idx in fw_indices
+            if idx in fw_indexed
+        ]
 
-    row_json = json.dumps(row_data, indent=2)
-    proposed_json = json.dumps(proposed, indent=2)
+        if not proposed:
+            return {
+                "row_id": row_id,
+                "valid_indices": [],
+                "_output_chars": 0,
+            }
 
-    prompt = f"""You are a strict compliance quality reviewer. For the tracker row below, decide which proposed "{framework_name}" requirements are genuinely valid matches.
+        row_json = json.dumps(row_data, indent=2)
+        proposed_json = json.dumps(proposed, indent=2)
 
-APPROVAL CRITERIA — approve ONLY if ALL hold:
-1. The row content clearly and directly addresses the subject matter of the requirement.
-2. The relationship is specific and meaningful, not thematically adjacent or coincidental.
-3. A compliance auditor would recognize this as a valid, defensible mapping.
+        prompt = f"""You are a strict compliance quality reviewer.
 
-REJECTION CRITERIA — reject if ANY apply:
-- The connection is indirect, vague, or requires significant interpretation.
-- The row and requirement belong to different topic domains.
-- You would need to stretch to justify the link.
+For the tracker row below, decide which proposed "{framework_name}" requirements are genuinely valid matches.
+
+APPROVAL CRITERIA:
+1. The row content clearly and directly addresses the subject matter.
+2. The relationship is specific and meaningful.
+3. A compliance auditor would recognize this as valid.
+
+REJECTION CRITERIA:
+- indirect relationship
+- vague relationship
+- thematic similarity only
+- requires stretching interpretation
+- different topic domains
 
 When in doubt, REJECT.
 
@@ -1281,37 +1583,66 @@ ROW DATA:
 PROPOSED REQUIREMENTS:
 {proposed_json}
 
-Return ONLY valid JSON with the fw_index values that pass review (no markdown):
+Return ONLY valid JSON.
+No markdown.
+No explanation.
+
 {{"valid_indices": [3, 7]}}
-or if none pass: {{"valid_indices": []}}"""
 
-    payload = {
-        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        "temperature": 0,
-        "max_tokens": 1000,
-    }
-    response = await asyncio.to_thread(
-        bedrock_runtime.invoke_model,
-        modelId=THINK_MODEL,
-        body=json.dumps(payload),
-        contentType="application/json",
-        accept="application/json",
-    )
-    body = json.loads(response["body"].read())
-    response_text = extract_bedrock_text(body)
-    parsed = extract_json_safe(response_text)
+or
 
-    valid_indices = []
-    if isinstance(parsed, dict):
-        raw = parsed.get("valid_indices", [])
-        if isinstance(raw, list):
-            valid_indices = [i for i in raw if isinstance(i, int)]
+{{"valid_indices": []}}
+"""
 
-    return {
-        "row_id": row_id,
-        "valid_indices": valid_indices,
-        "_output_chars": len(response_text),
-    }
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "temperature": 0,
+            "max_tokens": 3000,
+        }
+
+        response = await asyncio.to_thread(
+            bedrock_runtime.invoke_model,
+            modelId=MODEL2,
+            body=json.dumps(payload),
+            contentType="application/json",
+            accept="application/json",
+        )
+
+        body = json.loads(response["body"].read())
+
+        response_text = body["choices"][0]["message"]["content"].strip()
+
+        logger.info("review response %s", response_text)
+
+        parsed = extract_json_safe(response_text)
+
+        valid_indices = []
+
+        if isinstance(parsed, dict):
+            raw = parsed.get("valid_indices", [])
+
+            if isinstance(raw, list):
+                valid_indices = [i for i in raw if isinstance(i, int)]
+
+        return {
+            "row_id": row_id,
+            "valid_indices": valid_indices,
+            "_output_chars": len(response_text),
+        }
+
+    except Exception as e:
+        logger.exception("error at review single row")
+
+        return {
+            "row_id": row_id,
+            "valid_indices": [],
+            "_output_chars": 0,
+        }
 
 
 async def quality_review_framework_assignments(
@@ -1393,10 +1724,13 @@ async def quality_review_framework_assignments(
     reviewed = []
     for a in assignments:
         row_id = a.get("row_id")
+        original_indices = a.get("fw_row_indices", [])
         if row_id in review_map:
-            reviewed.append(
-                {"row_id": row_id, "fw_row_indices": list(review_map[row_id])}
-            )
+            kept = list(review_map[row_id])
+            # Minimum-1 guarantee: if reviewer stripped all but original had matches, keep top 1
+            if not kept and original_indices:
+                kept = original_indices[:1]
+            reviewed.append({"row_id": row_id, "fw_row_indices": kept})
         else:
             reviewed.append(a)
     return reviewed
@@ -1478,143 +1812,6 @@ async def get_extract_response(
     )
 
     return "\n\n".join(aggregated_parts)
-
-
-# async def get_think_bedrok_response(
-#     user_message: str,
-#     user_id,
-#     credits,
-#     total_input_chars=None,
-#     language="english",
-#     words_count=800,
-#     emit=None,
-#     session_id=None,
-#     job_id=None,
-#     mprogress=None,
-#     msg_builder=None,
-# ):
-
-#     import json
-#     import asyncio
-
-#     if not total_input_chars:
-#         total_input_chars = len(user_message)
-
-#     # Check credits BEFORE generation
-#     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
-#         return "INSUFFICIENT"
-
-#     words_per_chunk = 300
-#     num_chunks = (words_count + words_per_chunk - 1) // words_per_chunk
-#     if emit and msg_builder:
-#         await emit(
-#                 msg_builder.job_progress(
-#                     job_id,
-#                     session_id,
-#                     "report generation",
-#                     f"Initializing report generation. The report will be generated in {num_chunks} structured sections.",
-#                     mprogress,
-#                 )
-#             )
-
-#     aggregated_text = []
-#     total_output_chars = 0
-
-#     for i in range(num_chunks):
-
-#         chunk_words = min(words_per_chunk, words_count - i * words_per_chunk)
-
-#         if i == 0:
-#             chunk_prompt = f"""
-#                 {user_message}
-
-#                 STRICT INSTRUCTIONS:
-
-#                 1. Return ONLY valid JSON.
-#                 2. Do NOT include explanations.
-#                 3. Do NOT include markdown.
-#                 4. Do NOT include duplicate sections.
-#                 5. Each block_id must appear ONLY ONCE.
-#                 6. estimated_word_count must count ONLY visible words.
-#                 7. Ignore HTML tags when counting words.
-#                 8. Ignore CSS.
-#                 9. Ignore tag names like <p>, <div>, etc.
-#                 10. Count ONLY human-readable words.
-#                 11. the language must be used was {language}
-
-#                 Generate part {i+1}/{num_chunks}.
-#                 """
-#         else:
-#             context_preview = json.dumps(aggregated_text[-1], ensure_ascii=False)
-
-#             chunk_prompt = f"""
-#                 Previous JSON:
-
-#                 {context_preview}
-
-#                 STRICT CONTINUATION RULES:
-
-#                 1. Return ONLY valid JSON.
-#                 2. DO NOT repeat any existing block_id.
-#                 3. DO NOT repeat any micro_id.
-#                 4. ONLY generate NEW sections not already present.
-#                 5. Continue exactly where previous JSON ended.
-#                 6. Do NOT regenerate title, abstract, introduction, or existing sections.
-#                 7. estimated_word_count must count ONLY visible words.
-#                 8. Ignore HTML tags.
-#                 9. Ignore CSS.
-#                 10. Ignore markup.
-#                 11. the language must be used was {language}
-
-#                 Generate part {i+1}/{num_chunks}.
-#                 """
-
-#         payload = {
-#             "messages": [
-#                 {
-#                     "role": "user",
-#                     "content": [{"type": "text", "text": chunk_prompt}],
-#                 }
-#             ],
-#             "anthropic_version": "bedrock-2023-05-31",
-#             "temperature": 0,
-#             "max_tokens": 22000,
-#         }
-
-#         response = await asyncio.to_thread(
-#             bedrock_runtime.invoke_model,
-#             modelId="global.anthropic.claude-haiku-4-5-20251001-v1:0",
-#             body=json.dumps(payload),
-#             contentType="application/json",
-#             accept="application/json",
-#         )
-
-#         body = json.loads(response["body"].read())
-
-#         response_text = body["content"][0]["text"].strip()
-#         # print("resonse_text", response_text)
-
-#         parsed = extract_json_safe(response_text)
-
-#         if parsed:
-#             aggregated_text.append(parsed)
-#             total_output_chars += len(response_text)
-#         else:
-#             print("Invalid JSON chunk by claude", parsed)
-#             aggregated_text.append({"raw_text": response_text})
-
-#     # TOTAL chars consumed = input + output
-#     total_chars_used = total_input_chars + total_output_chars
-
-#     # Deduct credits AFTER generation
-#     await credits.update_ai_credits_redis(
-#         credit_type="think",
-#         total_chars=total_chars_used,
-#         user_id=user_id,
-#         reference_id="get_think_fire_response2_og2",
-#     )
-
-#     return aggregated_text
 
 
 async def get_think_bedrok_response(

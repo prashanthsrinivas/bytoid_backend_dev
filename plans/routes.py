@@ -5,6 +5,7 @@ from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, make_response
 import pymysql
 import json
+from utils.normal import parse_composite_user_id
 from services.redis_service import get_redis
 from dotenv import load_dotenv
 from utils.stripe_config import dev_stipe as stripe
@@ -86,14 +87,12 @@ def get_all_plans():
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT *
             FROM plans
             WHERE is_active = TRUE
             ORDER BY id ASC
-            """
-        )
+            """)
         plans = cursor.fetchall()
         updated = False
 
@@ -171,6 +170,7 @@ def get_all_plans():
 def add_plan():
     body = request.json or {}
     user_id = body.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if not user_id or not check_access(user_id):
         return jsonify({"error": "Unauthorized"}), 403
@@ -305,6 +305,7 @@ def edit_plan():
     body = request.json or {}
     user_id = body.get("user_id")
     plan_code = body.get("plan_code")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if not user_id or not check_access(user_id):
         return jsonify({"error": "Unauthorized"}), 403
@@ -453,6 +454,7 @@ def delete_plan():
     body = request.json or {}
     user_id = body.get("user_id")
     plan_code = body.get("plan_code")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if not user_id or not check_access(user_id):
         return jsonify({"error": "Unauthorized"}), 403

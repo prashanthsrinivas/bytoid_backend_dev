@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify, session, redirect, make_response
 from google_route.google_helpers import update_user_alive
+from utils.normal import parse_composite_user_id
 from services.gmail_service import GmailService
 from pydrive.auth import GoogleAuth
 from google_auth_oauthlib.flow import Flow
@@ -919,6 +920,7 @@ def get_token(inuser=None, value=None, in_connection=None):
             or inuser
             or data["userid"]
         )
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     if not in_connection:
         connection = connect_to_rds()
     else:
@@ -1040,6 +1042,7 @@ def token_update_and_check():
 
     if not user_id:
         return jsonify({"login_required": True}), 401
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     connection = connect_to_rds()
 
