@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -2251,13 +2252,19 @@ def azure_run_tests():
     results_dir = os.path.join(_PROJECT_ROOT, "testing", "results")
     os.makedirs(results_dir, exist_ok=True)
 
+    pytest_bin = shutil.which("pytest") or shutil.which("pytest3")
+    if pytest_bin:
+        cmd = [pytest_bin]
+    else:
+        cmd = [sys.executable, "-m", "pytest"]
+
     env = os.environ.copy()
     env["PYTHONPATH"] = _PROJECT_ROOT
 
     try:
         proc = subprocess.run(
-            [
-                sys.executable, "-m", "pytest", "testing/", "-v", "--tb=short",
+            cmd + [
+                "testing/", "-v", "--tb=short",
                 "--json-report",
                 "--json-report-file=testing/results/latest.json",
             ],
