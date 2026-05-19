@@ -625,7 +625,6 @@ async def bytoidpro_think():
 
 
 @bytoid_dev_pro_bp.route("/bytoidpro/think/status", methods=["POST"])
-@permission_required_body("intake.bytoid_pro")
 def check_job_status():
     json_body = request.get_json()
     job_id = json_body.get("job_id")

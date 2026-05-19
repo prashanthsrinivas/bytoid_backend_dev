@@ -51,8 +51,9 @@ def get_user_login_method(user_id):
 unified_bp = Blueprint("unified", __name__)
 
 
-@permission_required_body("taskbox.email.view")
+
 @unified_bp.route("/unified_drafts")
+@permission_required_body("taskbox.email.view")
 def unified_drafts():
     emails = asyncio.run(get_all_drafts())
     return jsonify(emails)
@@ -90,8 +91,9 @@ def get_latest_msg(content_dict, user_id):
     return messages
 
 
-@permission_required_body("taskbox.email.view")
+
 @unified_bp.route("/get_active_customers", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def get_active_customers():
 
     data = request.get_json()
@@ -148,8 +150,8 @@ def get_active_customers():
             connection.close()
 
 
-@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_dormant_customers", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def get_dormant_customers():
 
     data = request.get_json()
@@ -205,8 +207,8 @@ def get_dormant_customers():
             connection.close()
 
 
-@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_active_leads", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def get_active_leads():
 
     data = request.get_json()
@@ -263,8 +265,8 @@ def get_active_leads():
             connection.close()
 
 
-@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_dormant_leads", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def get_dormant_leads():
 
     data = request.get_json()
@@ -320,8 +322,8 @@ def get_dormant_leads():
             connection.close()
 
 
-@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_snoozed_customers", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def get_snoozed_customers():
 
     connection = None
@@ -374,8 +376,9 @@ def get_snoozed_customers():
             cursor.close()
 
 
-@permission_required_body("taskbox.email.change_status")
+
 @unified_bp.route("/snooze_customer", methods=["POST"])
+@permission_required_body("taskbox.email.change_status")
 def snooze_customer():
 
     connection = None
@@ -430,8 +433,8 @@ def snooze_customer():
             connection.close()
 
 
-@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_no_of_customers", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def get_no_of_customers():
 
     try:
@@ -526,8 +529,8 @@ def get_no_of_customers():
 # Notes Related Routes
 
 
-@permission_required_body("notes.create")
 @unified_bp.route("/create_note", methods=["POST"])
+@permission_required_body("notes.create")
 def create_note():
     """Create a new note for a conversation"""
     try:
@@ -646,9 +649,8 @@ def create_note():
         if connection:
             connection.close()
 
-
-@permission_required_body("notes.filter")
 @unified_bp.route("/get_conversation_notes", methods=["POST"])
+@permission_required_body("notes.filter")
 def get_conversation_notes():
     """Get all notes for a conversation"""
     try:
@@ -754,8 +756,8 @@ def get_conversation_notes():
             connection.close()
 
 
-@permission_required_body("notes.edit")
 @unified_bp.route("/update_note", methods=["POST"])
+@permission_required_body("notes.edit")
 def update_note():
     """Update an existing note"""
     data = request.get_json()
@@ -855,8 +857,8 @@ def update_note():
             connection.close()
 
 
-@permission_required_body("notes.delete")
 @unified_bp.route("/delete_note", methods=["POST"])
+@permission_required_body("notes.delete")
 def delete_note():
     """Soft delete a note"""
     data = request.get_json()
@@ -963,8 +965,8 @@ def delete_note():
             connection.close()
 
 
-@permission_required_body("notes.edit")
 @unified_bp.route("/search_users_for_sharing", methods=["POST"])
+@permission_required_body("notes.edit")
 def search_users_for_sharing():
     """Search for users by name or email"""
     data = request.get_json()
@@ -1108,8 +1110,8 @@ def check_user_sharing_permissions(cursor, user_id, target_email):
     return False, "Invalid user type"
 
 
-@permission_required_body("notes.edit")
 @unified_bp.route("/share_note_by_email", methods=["POST"])
+@permission_required_body("notes.edit")
 def share_note_by_email():
     """Share a note with another user based on hierarchical permissions"""
     data = request.get_json()
@@ -1250,8 +1252,8 @@ def share_note_by_email():
             connection.close()
 
 
-@permission_required_body("notes.filter")
 @unified_bp.route("/get_note_permissions", methods=["POST"])
+@permission_required_body("notes.filter")
 def get_note_permissions():
     """Get all users who have permissions for a note"""
     data = request.get_json()
@@ -1326,8 +1328,8 @@ def get_note_permissions():
             connection.close()
 
 
-@permission_required_body("taskbox.agent.assign")
 @unified_bp.route("/change_assignee", methods=["POST"])
+@permission_required_body("taskbox.agent.assign")
 def change_assignee():
 
     data = request.get_json()
@@ -1427,8 +1429,8 @@ def add_user_by_email(cursor, result_emails, email):
     return result_emails
 
 
-@permission_required_body("taskbox.email.view")
 @unified_bp.route("/get_assignee_list", methods=["POST"])
+@permission_required_body("taskbox.email.view")
 def get_assignee_list():
     """Get list of assignees (team members) for current user"""
     result_emails = []
@@ -1551,8 +1553,8 @@ def get_assignee_list():
             connection.close()
 
 
-@permission_required_body("notes.filter")
 @unified_bp.route("/get_user_notes", methods=["POST"])
+@permission_required_body("notes.filter")
 def get_user_notes():
     """Get all notes for a user including those shared with them, grouped by conversation"""
     # print("[DEBUG] Starting get_user_notes function")
@@ -1568,8 +1570,8 @@ def get_user_notes():
     return jsonify(val)
 
 
-@permission_required_body("admin.manage_users")
 @unified_bp.route("/check_notes_tables", methods=["GET"])
+@permission_required_body("admin.manage_users")
 def check_notes_tables():
     """Check the structure of existing notes tables"""
     try:

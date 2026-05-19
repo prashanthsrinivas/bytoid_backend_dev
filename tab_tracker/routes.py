@@ -186,7 +186,10 @@ async def create_tracker_api():
             try:
                 parsed = json.loads(parsed)
             except Exception:
-                return jsonify({"error": "Invalid JSON in structure_theme (nested)"}), 400
+                return (
+                    jsonify({"error": "Invalid JSON in structure_theme (nested)"}),
+                    400,
+                )
 
         # Step 3: Handle dict OR list
         if isinstance(parsed, dict):
@@ -3479,8 +3482,8 @@ def remove_tracker_framework():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
+# @permission_required_body("trackers.table.view")
 @tracker_bp.route("/tracker/jbs/<job_id>", methods=["GET"])
-@permission_required_body("trackers.table.view")
 async def tracker_job_status(job_id):
     """
     Poll the status of a background tracker job.

@@ -162,7 +162,7 @@ def assign_runbook():
                 400,
             )
 
-        sharing_access, error = core_assign_report(
+        sharing_access, error = _run_async(core_assign_report(
             admin_id,
             admin_email,
             user_id,
@@ -173,7 +173,7 @@ def assign_runbook():
             conn,
             dbserver,
             parent_id=runbook_id,
-        )
+        ))
 
         if error:
             return jsonify({"error": error}), (
@@ -232,9 +232,9 @@ def revoke_runbook():
         )
 
     try:
-        sharing_access, error = core_revoke_report(
+        sharing_access, error = _run_async(core_revoke_report(
             admin_id, user_id, result_id, "runbook", dbserver
-        )
+        ))
 
         if error:
             return jsonify({"error": error}), 400
@@ -819,8 +819,8 @@ def create_runbook():
         return jsonify({"error": str(e)}), 500
 
 
+# @permission_required_body("compliance.runbook.read")
 @runbook_bp.route("/runbook/status/<job_id>", methods=["GET"])
-@permission_required_body("compliance.runbook.read")
 def get_job_status(job_id):
     try:
         redis_service = get_redis()

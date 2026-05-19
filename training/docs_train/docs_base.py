@@ -174,8 +174,8 @@ async def execute_process_drive(data, job_id=None, session_id=None):
         db.close()
 
 
-@permission_required_body("kb.doc.upload")
 @docs_agent_bps.route("/process-drive", methods=["POST"])
+@permission_required_body("kb.doc.upload")
 async def download_files_stream():
     data = request.json
 
@@ -291,8 +291,9 @@ async def execute_process_local(data, job_id=None, session_id=None):
         raise
 
 
-@permission_required_body("kb.doc.upload")
+
 @docs_agent_bps.route("/process-local", methods=["POST"])
+@permission_required_body("kb.doc.upload")
 async def process_local():
     files = request.files.getlist("files")
     if not files:
@@ -420,8 +421,9 @@ def run_processing_in_background(
 # ─────────────────────────────────────────────
 
 
-@permission_required_body("kb.doc.view")
+
 @docs_agent_bps.route("/get-usersDocs", methods=["Get"])
+@permission_required_body("kb.doc.view")
 def getUsersDocs():
     userid = request.args.get("userid")
     if not userid:
@@ -440,8 +442,9 @@ def getUsersDocs():
 # ─────────────────────────────────────────────
 
 
-@permission_required_body("kb.doc.delete")
+
 @docs_agent_bps.route("/delete_file", methods=["DELETE"])
+@permission_required_body("kb.doc.delete")
 async def delete_file():
     userid = request.json.get("userid")
     filename = request.json.get("filename")

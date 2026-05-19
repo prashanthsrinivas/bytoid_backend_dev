@@ -1,5 +1,6 @@
 from db.rds_db import connect_to_rds
 from flask import Blueprint, request, jsonify, session, redirect
+from utils.permission_required import permission_required_body
 from utils.normal import parse_composite_user_id
 from utils.base_logger import get_logger
 import pymysql
@@ -10,6 +11,7 @@ logger = get_logger(__name__)
 
 
 @agent_hub_bp.route("/get_all_user_permissionsbased/<userid>", methods=["GET"])
+@permission_required_body("agents.view")
 def get_all_user_permissionsbased(userid):
     logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
@@ -48,6 +50,7 @@ def get_all_user_permissionsbased(userid):
 
 
 @agent_hub_bp.route("/get_all_user_agents/<userid>", methods=["GET"])
+@permission_required_body("agents.view")
 def get_all_user_agents(userid):
     logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
@@ -205,6 +208,7 @@ def get_all_user_agents(userid):
 
 
 @agent_hub_bp.route("/agents_hub/share", methods=["POST"])
+@permission_required_body("agents.share")
 def share_agent_hub_user():
     """
     Add invited users (emails list) to shared_hub_users of all agents
@@ -278,6 +282,7 @@ def share_agent_hub_user():
 
 
 @agent_hub_bp.route("/agents_hub/unshare", methods=["POST"])
+@permission_required_body("agents.unshare")
 def unshare_agent_hub_user():
     """
     Remove invited users (emails list) from shared_hub_users of all agents
@@ -350,6 +355,7 @@ def unshare_agent_hub_user():
 
 
 @agent_hub_bp.route("/delete_user_with_agents", methods=["POST"])
+@permission_required_body("agents.delete")
 def delete_user_with_agents():
     """
     Delete a user by email along with their launches, subagents,
@@ -447,6 +453,7 @@ def delete_user_with_agents():
 
 
 @agent_hub_bp.route("/get_all_mini_agents/<userid>", methods=["GET"])
+@permission_required_body("agents.view")
 def get_all_mini_agents(userid):
     logged_in_user_id, userid = parse_composite_user_id(userid)
     try:

@@ -2754,7 +2754,7 @@ async def _selected_columns_worker(data, job_id=None, session_id=None):
 
 
 @tracker_ai_bp.route("/tracker/ai/complete_tracker_change", methods=["POST"])
-@permission_required_body("trackers.table.edit")
+@permission_required_body("trackers.table.chat")
 async def complete_tracker_change():
     try:
         data = request.json
@@ -2776,7 +2776,7 @@ async def complete_tracker_change():
 
 
 @tracker_ai_bp.route("/tracker/ai/selected_tracker_change", methods=["POST"])
-@permission_required_body("trackers.table.edit")
+@permission_required_body("trackers.table.chat")
 async def selected_tracker_change():
     try:
         data = request.json
@@ -2798,7 +2798,7 @@ async def selected_tracker_change():
 
 
 @tracker_ai_bp.route("/tracker/ai/selected_row_tracker_change", methods=["POST"])
-@permission_required_body("trackers.table.edit")
+@permission_required_body("trackers.table.chat")
 async def selected_row_tracker_change():
     try:
         data = request.json
@@ -2817,7 +2817,7 @@ async def selected_row_tracker_change():
 
 
 @tracker_ai_bp.route("/tracker/ai/selected_column_tracker_change", methods=["POST"])
-@permission_required_body("trackers.table.edit")
+@permission_required_body("trackers.table.chat")
 async def selected_column_tracker_change():
     try:
         data = request.json
@@ -2836,7 +2836,7 @@ async def selected_column_tracker_change():
 
 
 @tracker_ai_bp.route("/tracker/ai/selected_rows_tracker_change", methods=["POST"])
-@permission_required_body("trackers.table.edit")
+@permission_required_body("trackers.table.chat")
 async def selected_rows_tracker_change():
     try:
         data = request.json
@@ -2855,7 +2855,7 @@ async def selected_rows_tracker_change():
 
 
 @tracker_ai_bp.route("/tracker/ai/selected_columns_tracker_change", methods=["POST"])
-@permission_required_body("trackers.table.edit")
+@permission_required_body("trackers.table.chat")
 async def selected_columns_tracker_change():
     try:
         data = request.json
@@ -2874,7 +2874,7 @@ async def selected_columns_tracker_change():
 
 
 @tracker_ai_bp.route("/tracker/ai/save_tracker_change", methods=["POST"])
-@permission_required_body("trackers.table.edit")
+@permission_required_body("trackers.table.chat")
 async def save_tracker_change():
     """
     Persist confirmed AI-modified tracker data to S3.

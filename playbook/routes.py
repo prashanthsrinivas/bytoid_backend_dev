@@ -342,8 +342,8 @@ async def updateInstruction_worker(data, job_id=None, session_id=None):
     return full_output
 
 
+# @permission_required_body("workflow.process.view")
 @playbook_bp.route("/playbook/jbs/<job_id>", methods=["GET"])
-@permission_required_body("workflow.process.view")
 def job_status(job_id):
     redisservice = get_redis()
 

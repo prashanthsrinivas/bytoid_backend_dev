@@ -18,6 +18,7 @@ PERMISSION_METADATA = {
         "type": "access",
         "dependencies": []
     },
+    
 
     # ================= INTAKE WORKFLOW =================
     "intake.bytoid_pro": {
@@ -76,19 +77,7 @@ PERMISSION_METADATA = {
         "type": "read",
         "dependencies": []
     },
-    "compliance.runbook.logs": {
-        "label": "View Runbook Logs",
-        "module": "Compliance",
-        "type": "read",
-        "dependencies": ["compliance.runbook.create"]
-    },
-   
-    "compliance.report.logs": {
-        "label": "View Report Logs",
-        "module": "Compliance",
-        "type": "read",
-        "dependencies": ["compliance.report.create"]
-    },
+    
     "compliance.standalone.create": {
         "label": "Create Standalone Reports",
         "module": "Compliance",
@@ -169,11 +158,11 @@ PERMISSION_METADATA = {
         "type": "delete",
         "dependencies": ["trackers.table.create"]
     },
-    "trackers.logs.view": {
-        "label": "View Tracker Logs",
+    "trackers.table.chat": {
+        "label": "Tracker AI Chat",
         "module": "Trackers",
-        "type": "read",
-        "dependencies": ["trackers.table.create"]
+        "type": "execute",
+        "dependencies": ["trackers.table.view"]
     },
 
     # ================= WORKFLOW BUILDER =================
@@ -237,63 +226,80 @@ PERMISSION_METADATA = {
         "type": "delete",
         "dependencies": ["workflow.template.create"]
     },
-    "workflow.logs.view": {
-        "label": "View Process Logs",
-        "module": "Workflow Builder",
-        "type": "read",
-        "dependencies": ["workflow.process.create"]
-    },
 
-    # ================= KNOWLEDGE BASE (PROFILE) =================
-    "kb.profile.view": {
-        "label": "View Profile",
-        "module": "Knowledge Base",
+    # ================= EVIDENCE ===============================
+    "evidence.view": {
+        "label": "View Evidence",
+        "module": "Evidence",
         "type": "read",
         "dependencies": []
     },
-    "kb.profile.edit_name": {
-        "label": "Edit Assistant Name",
-        "module": "Knowledge Base",
-        "type": "update",
-        "dependencies": ["kb.profile.view"]
+
+    "evidence.create": {
+        "label": "Create Evidence",
+        "module": "Evidence",
+        "type": "create",
+        "dependencies": ["evidence.view"]
     },
-    "kb.profile.edit_url": {
-        "label": "Edit Website URL",
-        "module": "Knowledge Base",
+
+    "evidence.edit": {
+        "label": "Edit Evidence",
+        "module": "Evidence",
         "type": "update",
-        "dependencies": ["kb.profile.view"]
+        "dependencies": ["evidence.create"]
     },
-    "kb.api.view": {
-        "label": "View API Key",
-        "module": "Knowledge Base",
+
+    "evidence.delete": {
+        "label": "Delete Evidence",
+        "module": "Evidence",
+        "type": "delete",
+        "dependencies": ["evidence.create"]
+    },
+
+    "evidence.execute": {
+        "label": "Run Evidence Check",
+        "module": "Evidence",
+        "type": "execute",
+        "dependencies": ["evidence.view"]
+    },
+
+    # ================ AGENT HUB ================================
+    "agents.view": {
+        "label": "View Agents",
+        "module": "Agents",
         "type": "read",
-        "dependencies": ["kb.profile.view"]
+        "dependencies": []
     },
+
+    "agents.share": {
+        "label": "Share Agent Permission",
+        "module": "Agents",
+        "type": "update",
+        "dependencies": ["agents.view"]
+    },
+
+    "agents.unshare": {
+        "label": "Unshare Agent Permission",
+        "module": "Agents",
+        "type": "update",
+        "dependencies": ["agents.view"]
+    },
+
+    "agents.delete": {
+        "label": "Remove Agent",
+        "module": "Agents",
+        "type": "delete",
+        "dependencies": ["agents.view"]
+        },
+
+    # ================= KNOWLEDGE BASE (PROFILE) =================
+    
     "kb.api.regenerate": {
         "label": "Regenerate API Key",
         "module": "Knowledge Base",
         "type": "update",
-        "dependencies": ["kb.api.view"]
+        "dependencies": []
     },
-    "kb.api.copy": {
-        "label": "Copy API Key",
-        "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.api.view"]
-    },
-    "kb.integration.view": {
-        "label": "View Integration Code",
-        "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.profile.view"]
-    },
-    "kb.integration.copy": {
-        "label": "Copy Integration Code",
-        "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.integration.view"]
-    },
-
     # ================= KNOWLEDGE BASE (WEB) =================
     "kb.web.view": {
         "label": "View Web Source",
@@ -307,49 +313,25 @@ PERMISSION_METADATA = {
         "type": "create",
         "dependencies": ["kb.web.view"]
     },
-    "kb.web.analyze": {
-        "label": "Analyze Web Source",
-        "module": "Knowledge Base",
-        "type": "execute",
-        "dependencies": ["kb.web.view"]
-    },
-    "kb.web.search": {
-        "label": "Search Web Source",
-        "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.web.view"]
-    },
-    "kb.web.structure": {
-        "label": "View Web Structure",
-        "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.web.view"]
-    },
     "kb.web.delete": {
         "label": "Delete Web Source",
         "module": "Knowledge Base",
         "type": "delete",
         "dependencies": ["kb.web.add"]
     },
-    "kb.web.logs": {
-        "label": "View Web Logs",
+    "kb.web.edit": {
+        "label": "Edit Web Source",
         "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.web.view"]
+        "type": "update",
+        "dependencies": ["kb.web.add"]
     },
 
     # ================= KNOWLEDGE BASE (RECORDINGS) =================
-    "kb.recording.create": {
-        "label": "Create Recording",
-        "module": "Knowledge Base",
-        "type": "create",
-        "dependencies": []
-    },
     "kb.recording.upload": {
         "label": "Upload Recording",
         "module": "Knowledge Base",
         "type": "create",
-        "dependencies": ["kb.recording.create"]
+        "dependencies": ["kb.recording.view"]
     },
     "kb.recording.view": {
         "label": "View Recordings",
@@ -361,25 +343,13 @@ PERMISSION_METADATA = {
         "label": "Delete Recording",
         "module": "Knowledge Base",
         "type": "delete",
-        "dependencies": ["kb.recording.create"]
-    },
-    "kb.recording.search": {
-        "label": "Search Recordings",
-        "module": "Knowledge Base",
-        "type": "read",
         "dependencies": ["kb.recording.view"]
-    },
-    "kb.recording.logs": {
-        "label": "View Recording Logs",
-        "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.recording.create"]
     },
     "kb.voice.manage": {
         "label": "Manage Voice Data",
         "module": "Knowledge Base",
         "type": "update",
-        "dependencies": ["kb.recording.create"]
+        "dependencies": ["kb.recording.view"]
     },
 
     # ================= KNOWLEDGE BASE (DOCUMENTS) =================
@@ -395,31 +365,34 @@ PERMISSION_METADATA = {
         "type": "read",
         "dependencies": []
     },
-    "kb.doc.edit": {
-        "label": "Edit Document",
-        "module": "Knowledge Base",
-        "type": "update",
-        "dependencies": ["kb.doc.upload"]
-    },
     "kb.doc.delete": {
         "label": "Delete Document",
         "module": "Knowledge Base",
         "type": "delete",
         "dependencies": ["kb.doc.upload"]
     },
-    "kb.doc.search": {
-        "label": "Search Documents",
-        "module": "Knowledge Base",
+    
+    # ================= REPORTS =================
+    "radar.view": {
+        "label": "View Reports",
+        "module": "Reports",
         "type": "read",
-        "dependencies": ["kb.doc.view"]
-    },
-    "kb.doc.logs": {
-        "label": "View Document Logs",
-        "module": "Knowledge Base",
-        "type": "read",
-        "dependencies": ["kb.doc.upload"]
+        "dependencies": []
     },
 
+    "radar.edit": {
+        "label": "Edit Reports",
+        "module": "Reports",
+        "type": "update",
+        "dependencies": ["radar.view"]
+    },
+
+    "radar.delete": {
+        "label": "Delete Reports",
+        "module": "Reports",
+        "type": "delete",
+        "dependencies": ["radar.view"]
+    },
     # ================= TASKBOX (EMAIL) =================
     "taskbox.email.view": {
         "label": "View Email Content",
@@ -435,30 +408,6 @@ PERMISSION_METADATA = {
     },
     "taskbox.email.draft": {
         "label": "Manage Drafts",
-        "module": "Taskbox",
-        "type": "update",
-        "dependencies": ["taskbox.email.view"]
-    },
-    "taskbox.email.sender": {
-        "label": "View Sender Details",
-        "module": "Taskbox",
-        "type": "read",
-        "dependencies": ["taskbox.email.view"]
-    },
-    "taskbox.email.subject": {
-        "label": "View Subject",
-        "module": "Taskbox",
-        "type": "read",
-        "dependencies": ["taskbox.email.view"]
-    },
-    "taskbox.email.status": {
-        "label": "View Status",
-        "module": "Taskbox",
-        "type": "read",
-        "dependencies": ["taskbox.email.view"]
-    },
-    "taskbox.email.priority": {
-        "label": "Change Priority",
         "module": "Taskbox",
         "type": "update",
         "dependencies": ["taskbox.email.view"]
@@ -503,24 +452,14 @@ PERMISSION_METADATA = {
     },
 
     # ================= TASKBOX (AUTOPILOT) =================
-    "taskbox.autopilot.add_email": {
-        "label": "Add Email",
-        "module": "Taskbox",
-        "type": "create",
-        "dependencies": ["taskbox.ai.autopilot"]
-    },
+    
     "taskbox.autopilot.enable": {
         "label": "Enable Autopilot",
         "module": "Taskbox",
         "type": "update",
         "dependencies": ["taskbox.ai.autopilot"]
     },
-    "taskbox.autopilot.confirm": {
-        "label": "Confirm Enable",
-        "module": "Taskbox",
-        "type": "update",
-        "dependencies": ["taskbox.autopilot.enable"]
-    },
+    
     "taskbox.autopilot.cancel": {
         "label": "Cancel Enable",
         "module": "Taskbox",
@@ -529,17 +468,12 @@ PERMISSION_METADATA = {
     },
 
     # ================= TASKBOX (AGENTS) =================
-    "taskbox.agent.select": {
-        "label": "Select Agent",
-        "module": "Taskbox",
-        "type": "read",
-        "dependencies": ["taskbox.email.view"]
-    },
+    
     "taskbox.agent.assign": {
         "label": "Assign Agent",
         "module": "Taskbox",
         "type": "update",
-        "dependencies": ["taskbox.agent.select"]
+        "dependencies": ["taskbox.email.view"]
     },
 
     # ================= NOTES =================
@@ -712,6 +646,12 @@ PERMISSION_METADATA = {
         "module": "Policy Hub",
         "type": "delete",
         "dependencies": ["policyhub.create"]
+    },
+    "policyhub.framework.view": {
+        "label": "View Frameworks",
+        "module": "Policy Hub",
+        "type": "read",
+        "dependencies": ["policyhub.view"]
     },
 
     "policyhub.framework.create": {

@@ -62,10 +62,10 @@ from services.audit_log_service import (
 
 
 @radar_bp.route("/radar/assign", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def assign_radar():
     data = request.get_json()
-    user_id = data.get("user_id")
+    user_id = data.get("user_id") or data.get("userid")
     report_id = data.get("report_id")
     report_name = data.get("report_name")
     assignment_type = data.get("assignment_type")
@@ -96,14 +96,14 @@ async def assign_radar():
             if not role_id:
                 return jsonify({"error": "role_id required for role assignment"}), 400
 
-            if not check_role_has_permission(conn, user_id, role_id, "kb.doc.view"):
+            if not check_role_has_permission(conn, user_id, role_id, "radar.view"):
                 return (
                     jsonify({"error": "Role does not have radar access permission"}),
                     403,
                 )
 
             user_obj, error_msg = get_round_robin_user(
-                user_id, role_id, "radar", conn, "kb.doc.view"
+                user_id, role_id, "radar", conn, "radar.view"
             )
             if not user_obj:
                 return jsonify({"error": error_msg or "No eligible users found"}), 400
@@ -121,7 +121,7 @@ async def assign_radar():
         admin_email = admin_row["email"]
 
         dbserver = LanceDBServer()
-        sharing_access, error = core_assign_report(
+        sharing_access, error = await core_assign_report(
             user_id,
             admin_email,
             client_user_id,
@@ -172,7 +172,7 @@ async def assign_radar():
 
 
 @radar_bp.route("/radar/revoke", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def revoke_radar():
     data = request.get_json()
     user_id = data.get("user_id")
@@ -184,7 +184,7 @@ async def revoke_radar():
 
     try:
         dbserver = LanceDBServer()
-        sharing_access, error = core_revoke_report(
+        sharing_access, error = await core_revoke_report(
             user_id, client_user_id, report_id, "radar", dbserver
         )
 
@@ -220,7 +220,7 @@ async def revoke_radar():
 
 
 @radar_bp.route("/radar/sharing/<report_id>", methods=["GET"])
-@permission_required_body("kb.doc.view")
+@permission_required_body("radar.view")
 def get_radar_sharing(report_id):
     user_id = request.args.get("user_id")
     if not user_id:
@@ -239,7 +239,7 @@ def get_radar_sharing(report_id):
 
 
 @radar_bp.route("/radar/sharedconfig/<user_id>", methods=["GET"])
-@permission_required_body("kb.doc.view")
+@permission_required_body("radar.view")
 def get_radar_sharedconfig(user_id):
     try:
         config = get_admin_shared_config(user_id)
@@ -251,7 +251,7 @@ def get_radar_sharedconfig(user_id):
 
 
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
-@permission_required_body("kb.doc.view")
+@permission_required_body("radar.view")
 def radarapp(userid):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
@@ -1193,7 +1193,7 @@ def group_radars(rows: list[dict]):
 
 
 @radar_bp.route("/radar/reviews/<user_id>", methods=["GET"])
-@permission_required_body("kb.doc.view")
+@permission_required_body("radar.view")
 async def list_radar_reviews(user_id):
     dbserver = LanceDBServer()
     rows = await dbserver.radar_get_review_index(user_id)
@@ -1220,7 +1220,7 @@ async def list_radar_reviews(user_id):
 
 
 @radar_bp.route("/radar/docs", methods=["POST"])
-@permission_required_body("kb.doc.view")
+@permission_required_body("radar.view")
 async def get_radar_doc_byid():
     data = request.get_json(force=True)
     # user_id = req_data.get("user_id")
@@ -1248,7 +1248,7 @@ async def get_radar_doc_byid():
 
 
 @radar_bp.route("/radar/review", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def radar_review():
 
     data = request.get_json()
@@ -1279,7 +1279,7 @@ async def radar_review():
 
 
 @radar_bp.route("/radar/analyze", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def radar_analyze():
 
     data = request.get_json()
@@ -1306,7 +1306,7 @@ async def radar_analyze():
 
 
 @radar_bp.route("/radar/decide", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def radar_decide():
 
     data = request.get_json()
@@ -1333,7 +1333,7 @@ async def radar_decide():
 
 
 @radar_bp.route("/radar/status", methods=["GET"])
-@permission_required_body("kb.doc.view")
+@permission_required_body("radar.view")
 async def radar_status():
 
     job_id = request.args.get("job_id")
@@ -1352,7 +1352,7 @@ async def radar_status():
 
 
 @radar_bp.route("/radar/current", methods=["GET"])
-@permission_required_body("kb.doc.view")
+@permission_required_body("radar.view")
 async def radar_current():
 
     userid = request.args.get("userid")
@@ -1370,7 +1370,7 @@ async def radar_current():
 
 
 # @radar_bp.route("/radar/changeblock", methods=["POST"])
-# @permission_required_body("kb.doc.edit")
+# @permission_required_body("radar.edit")
 # async def radar_change_block_preview():
 #     data = request.get_json(force=True)
 
@@ -1482,7 +1482,7 @@ async def radar_current():
 
 
 # @radar_bp.route("/radar/changeblock/confirm", methods=["POST"])
-# @permission_required_body("kb.doc.edit")
+# @permission_required_body("radar.edit")
 # async def radar_change_block_confirm():
 #     data = request.get_json(force=True)
 
@@ -1668,7 +1668,7 @@ def find_block_by_id(
 
 
 @radar_bp.route("/radar/changeblock", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def radar_change_block_preview():
     data = request.get_json(force=True)
 
@@ -1970,7 +1970,7 @@ async def radar_change_block_preview():
 
 
 @radar_bp.route("/radar/changeblock/confirm", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def radar_change_block_confirm():
 
     data = request.get_json(force=True)
@@ -2130,7 +2130,7 @@ async def radar_change_block_confirm():
 
                 return jsonify({"error": "Runbook review result not found"}), 404
 
-            original_json = record["result"]
+            updated_json = record["result"]
 
         else:
             return (
@@ -2223,7 +2223,7 @@ async def radar_change_block_confirm():
 
 
 @radar_bp.route("/radar/knowledge/analyze", methods=["POST"])
-@permission_required_body("kb.doc.edit")
+@permission_required_body("radar.edit")
 async def radar_knowledge_analyze():
     import os
     import inspect

@@ -15,7 +15,7 @@ calenders_bp = Blueprint("calender", __name__)
 
 
 @calenders_bp.route("/check-user-events", methods=["POST"])
-@permission_required_body("calendar.view.confirmed")
+@permission_required_body("calender.view.confirmed")
 def get_all_user_events():
     try:
         body = request.json or {}
@@ -142,7 +142,7 @@ def create_user_event():
         end_dt = parse_time(end_time_raw)
 
         # Create event
-        result = service.create_calendar_event(
+        result = service.create_calender_event(
             title=title,
             start_dt=start_dt,
             end_dt=end_dt,
@@ -209,7 +209,7 @@ def update_user_event():
         start_dt = parse_dt(start_time_raw)
         end_dt = parse_dt(end_time_raw)
 
-        updated_event = service.update_calendar_event(
+        updated_event = service.update_calender_event(
             event_id=event_id,
             title=title,
             start_dt=start_dt,
@@ -250,7 +250,7 @@ def delete_user_event():
         else:
             return {"success": False, "message": "Unsupported provider"}, 400
 
-        result = service.delete_calendar_event(event_id)
+        result = service.delete_calender_event(event_id)
 
         # 🔥 sanitize result too
         safe_result = sanitize_value(result)

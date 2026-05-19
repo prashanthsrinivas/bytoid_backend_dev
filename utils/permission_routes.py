@@ -1,77 +1,36 @@
 PERMISSION_ROUTES = {
-
-    "apps.endpoint.view": [
-        "/apps/get-endpoints",
-        "/apps/endpoint-details"
-    ],
-
-    "apps.endpoint.add": [
-        "/apps/create-endpoint"
-    ],
-
-    "apps.endpoint.edit": [
-        "/apps/update-endpoint"
-    ],
-
-    "apps.endpoint.delete": [
-        "/apps/delete-endpoint"
-    ],
-
+    "apps.endpoint.view": ["/apps/get-endpoints", "/apps/endpoint-details"],
+    "apps.endpoint.add": ["/apps/create-endpoint"],
+    "apps.endpoint.edit": ["/apps/update-endpoint"],
+    "apps.endpoint.delete": ["/apps/delete-endpoint"],
     "trackers.table.view": [
         "/tracker/list",
         "/tracker/details",
         "/tracker/view",
-        "/tracker/check-duplicate"
+        "/tracker/check-duplicate",
     ],
-
-    "trackers.table.create": [
-        "/tracker/create"
-    ],
-
-    "trackers.table.delete": [
-        "/tracker/delete"
-    ],
-
+    "trackers.table.create": ["/tracker/create"],
+    "trackers.table.delete": ["/tracker/delete"],
     "trackers.table.edit": [
         "/tracker/modify",
         "/tracker/sync-from-block",
         "/tracker/upload-evidence",
+    ],
+    "trackers.table.chat": [
         "/tracker/ai/complete_tracker_change",
         "/tracker/ai/selected_tracker_change",
         "/tracker/ai/selected_row_tracker_change",
         "/tracker/ai/selected_column_tracker_change",
         "/tracker/ai/selected_rows_tracker_change",
         "/tracker/ai/selected_columns_tracker_change",
-        "/tracker/ai/save_tracker_change"
+        "/tracker/ai/save_tracker_change",
     ],
-
-    "trackers.row.add": [
-        "/tracker/append",
-        "/tracker/add-entry"
-    ],
-
-    "trackers.column.add": [
-        "/tracker/add-column"
-    ],
-
-    "trackers.column.delete": [
-        "/tracker/delete-column"
-    ],
-
-    "trackers.framework.add": [
-        "/tracker/add-framework"
-    ],
-
-    "trackers.framework.edit": [
-        "/tracker/update-framework"
-    ],
-
-    "trackers.framework.delete": [
-        "/tracker/remove-framework"
-    ],
-
-    "trackers.logs.view": [],
-
+    "trackers.row.add": ["/tracker/append", "/tracker/add-entry"],
+    "trackers.column.add": ["/tracker/add-column"],
+    "trackers.column.delete": ["/tracker/delete-column"],
+    "trackers.framework.add": ["/tracker/add-framework"],
+    "trackers.framework.edit": ["/tracker/update-framework"],
+    "trackers.framework.delete": ["/tracker/remove-framework"],
     # ================= WORKFLOW BUILDER =================
     "workflow.process.view": [
         "/playbook/jbs/<job_id>",
@@ -82,15 +41,13 @@ PERMISSION_ROUTES = {
         "/list_chat_config",
         "/check_runbook_exists_playbook",
         "/evidence_confirmation",
-        "/questionarie_confirmation"
+        "/questionarie_confirmation",
     ],
-
     "workflow.process.create": [
         "/create_instruction",
         "/pb_temp_clone",
-        "/install_global_playbook"
+        "/install_global_playbook",
     ],
-
     "workflow.process.edit": [
         "/update_instruction",
         "/add_a_step",
@@ -115,14 +72,9 @@ PERMISSION_ROUTES = {
         "/edit_assigned_question",
         "/delete_assigned_question",
         "/morph_question",
-        "/assign_evidence_to_question"
+        "/assign_evidence_to_question",
     ],
-
-    "workflow.process.delete": [
-        "/delete_instruction",
-        "/pb_delete_clone"
-    ],
-
+    "workflow.process.delete": ["/delete_instruction", "/pb_delete_clone"],
     "workflow.process.execute": [
         "/run_workflow",
         "/run_workflow_step",
@@ -130,32 +82,25 @@ PERMISSION_ROUTES = {
         "/generate-workflow-input",
         "/test-mid",
         "/autocheck-workflow",
-        "/workflow/conversation"
+        "/workflow/conversation",
     ],
-
-    "workflow.process.schedule": [
-        "/schedule-workflow",
-        "/schedule-workflow-checker"
-    ],
-
+    "workflow.process.schedule": ["/schedule-workflow", "/schedule-workflow-checker"],
     "workflow.process.share": [
         "/share_playbook_template",
-        "/undo_share_playbook_template"
+        "/undo_share_playbook_template",
     ],
-
     "workflow.template.view": [
         "/get_all_global_instructions",
-        "/get_single_global_instruction"
+        "/get_single_global_instruction",
     ],
-
-    "workflow.template.create": [
-        "/make_global_playbook"
-    ],
-
-    "workflow.template.delete": [
-        "/delete_global_playbook"
-    ],
-
+    "workflow.template.create": ["/make_global_playbook"],
+    "workflow.template.delete": ["/delete_global_playbook"],
+    # ================= EVVIDENCE =================================
+    "evidence.view": ["/runbook/evidence/config", "/runbook_evidence_config"],
+    "evidence.create": ["/runbook/evidence/add"],
+    "evidence.edit": ["/runbook_evidence_configure", "/runbook/evidence/config"],
+    "evidence.delete": ["/runbook/evidence/config"],
+    "evidence.execute": ["/evidence_check"],
     # ================= COMPLIANCE ENGINE - RUNBOOK =================
     "compliance.runbook.read": [
         "/runbook/status/<job_id>",
@@ -167,17 +112,12 @@ PERMISSION_ROUTES = {
         "/runbook/check_playbook/<playbook_id>",
         "/result/<result_id>",
         "/check_pb_output",
-        "/runbook/evidence/config",
-        "/runbook_evidence_config",
-        "/evidence_check"
     ],
-
     "compliance.runbook.create": [
         "/runbook/create",
         "/create_playbook_runbook",
-        "/runbook/structure_extract"
+        "/runbook/structure_extract",
     ],
-
     "compliance.runbook.edit": [
         "/runbook/modify",
         "/runbook/delete_result",
@@ -186,141 +126,87 @@ PERMISSION_ROUTES = {
         "/result/<result_id>/evidence_analysis",
         "/result/<result_id>/evidence_admissibility",
         "/runbook/structure_extract_modify",
-        "/runbook/evidence/add",
-        "/runbook_evidence_configure"
     ],
-
     "compliance.runbook.delete": [
         "/runbook/delete/<runbook_id>",
-        "/runbook/delete_all"
+        "/runbook/delete_all",
     ],
-
-    "compliance.runbook.execute": [
-        "/schedule_runbook"
-    ],
-
+    "compliance.runbook.execute": ["/schedule_runbook"],
     # ================= CALENDAR =================
-
-    "calender.view.confirmed": [
-        "/check-user-events"
-    ],
-
-    "calender.create": [
-        "/create-user-event"
-    ],
-
-    "calender.edit": [
-        "/update-user-event"
-    ],
-
-    "calender.delete": [
-        "/delete-user-event"
-    ],
+    "calender.view.confirmed": ["/check-user-events"],
+    "calender.create": ["/create-user-event"],
+    "calender.edit": ["/update-user-event"],
+    "calender.delete": ["/delete-user-event"],
     # ================= POLICY HUB =================
-
     "policyhub.view": [
         "/policy-hub/status",
         "/policy-hub/edit-status",
         "/policy-hub/list",
+    ],
+    "policyhub.framework.view": [
         "/policy-hub/frameworks/available",
         "/policy-hub/frameworks/access",
         "/policy-hub/frameworks",
         "/policy-hub/frameworks/list",
         "/policy-hub/frameworks/search",
-        "/policy-hub/frameworks/<framework_id>"
+        "/policy-hub/frameworks/<framework_id>",
     ],
-
-    "policyhub.create": [
-        "/policy-hub/generate"
-    ],
-
-    "policyhub.edit": [
-        "/policy-hub/edit",
-        "/policy-hub/update"
-    ],
-
-    "policyhub.delete": [
-        "/policy-hub/delete"
-    ],
-
+    "policyhub.create": ["/policy-hub/generate"],
+    "policyhub.edit": ["/policy-hub/edit", "/policy-hub/update"],
+    "policyhub.delete": ["/policy-hub/delete"],
     "policyhub.framework.create": [
         "/policy-hub/frameworks/upload",
-        "/policy-hub/frameworks/save"
+        "/policy-hub/frameworks/save",
     ],
-
-    "policyhub.framework.delete": [
-        "/policy-hub/frameworks/<framework_id>"
-    ],
-
+    "policyhub.framework.delete": ["/policy-hub/frameworks/<framework_id>"],
     # ================= APPS / API CONNECTOR =================
     "apps.endpoint.view": [
         "/apiconnector/apps/<user_id>",
         "/apiconnector/apps/<int:app_id>/endpoints",
         "/apiconnector/apps/endpoints/<int:endpoint_id>/runs",
-        "/apiconnector/apps/endpoints/<int:endpoint_id>/runs/<filename>"
+        "/apiconnector/apps/endpoints/<int:endpoint_id>/runs/<filename>",
     ],
-
-    "apps.create": [
-        "/apiconnector/apps"
-    ],
-
+    "apps.create": ["/apiconnector/apps"],
     "apps.edit": [
         "/apiconnector/apps/<int:app_id>",
-        "/apiconnector/apps/<int:app_id>/auth"
+        "/apiconnector/apps/<int:app_id>/auth",
     ],
-
     "apps.delete": [
         "/apiconnector/apps/<int:app_id>",
-        "/apiconnector/apps/<int:app_id>/hard-delete"
+        "/apiconnector/apps/<int:app_id>/hard-delete",
     ],
-
-    "apps.endpoint.add": [
-        "/apiconnector/apps/<int:app_id>/endpoints"
-    ],
-
-    "apps.endpoint.edit": [
-        "/apiconnector/apps/endpoints/<int:endpoint_id>"
-    ],
-
-    "apps.endpoint.delete": [
-        "/apiconnector/apps/endpoints/<int:endpoint_id>"
-    ],
-
+    "apps.endpoint.add": ["/apiconnector/apps/<int:app_id>/endpoints"],
+    "apps.endpoint.edit": ["/apiconnector/apps/endpoints/<int:endpoint_id>"],
+    "apps.endpoint.delete": ["/apiconnector/apps/endpoints/<int:endpoint_id>"],
     "apps.endpoint.test": [
         "/apiconnector/apps/test",
         "/apiconnector/apps/endpoints/<int:endpoint_id>/test",
         "/apiconnector/apps/<int:app_id>/test",
-        "/apiconnector/apps/global/apps/<app_id>/<endpoint_id>/test"
+        "/apiconnector/apps/global/apps/<app_id>/<endpoint_id>/test",
     ],
-
     "apps.endpoint.execute": [
         "/apiconnector/apps/<int:app_id>/execute",
-        "/apiconnector/apps/endpoints/<int:endpoint_id>/execute"
+        "/apiconnector/apps/endpoints/<int:endpoint_id>/execute",
     ],
-
     "apps.endpoint.schedule": [
         "/apiconnector/apps/<int:app_id>/schedule",
         "/apiconnector/apps/endpoints/<int:endpoint_id>/schedule",
-        "/apiconnector/apps/endpoints/<int:endpoint_id>/schedules/stop"
+        "/apiconnector/apps/endpoints/<int:endpoint_id>/schedules/stop",
     ],
-
     "apps.endpoint.push": [
         "/apiconnector/apps/admin/pushapp",
         "/apiconnector/apps/admin/pushapp_endpoint",
         "/apiconnector/apps/global/apps/change",
-        "/apiconnector/apps/global/app_endpoint/change"
+        "/apiconnector/apps/global/app_endpoint/change",
     ],
-
     "apps.view": [
         "/apiconnector/apps/global/apps/<user_id>",
-        "/apiconnector/apps/global/apps/<user_id>/<app_id>/endpoints"
+        "/apiconnector/apps/global/apps/<user_id>/<app_id>/endpoints",
     ],
-
     "apps.install": [
         "/apiconnector/apps/user/global-app/instantiate",
-        "/apiconnector/apps/user/global-endpoint/instantiate"
+        "/apiconnector/apps/user/global-endpoint/instantiate",
     ],
-
     # ================= TASKBOX (EMAIL) =================
     "taskbox.email.view": [
         "/gmail/drafts",
@@ -368,8 +254,8 @@ PERMISSION_ROUTES = {
         "/get_snoozed_customers",
         "/get_no_of_customers",
         "/get_assignee_list",
-        "/search-emails"],
-
+        "/search-emails",
+    ],
     "taskbox.email.send": [
         "/gmail/respond",
         "/gmail/forward",
@@ -378,77 +264,37 @@ PERMISSION_ROUTES = {
         "/send-reply",
         "/send-reply_test",
         "/send-reply-with-attachments",
-        "/send-mail"
+        "/send-mail",
     ],
-
-    "taskbox.email.draft": [
-        "/gmail/drafts/<draft_id>",
-        "/gmail/create_draft"
-    ],
-
+    "taskbox.email.draft": ["/gmail/drafts/<draft_id>", "/gmail/create_draft"],
     "taskbox.email.attachments.view": [
         "/attachment-test",
         "/attach-file",
-        "/attach-files"
+        "/attach-files",
     ],
-
     "taskbox.email.attachments.download": [
         "/gmail/attachment/download",
-        "/gmail/download_attachment"
+        "/gmail/download_attachment",
     ],
-
-    "taskbox.email.change_status": [
-        "/snooze_customer"
-    ],
-
+    "taskbox.email.change_status": ["/snooze_customer"],
     "taskbox.autopilot.enable": [
         "/ai_autopilot",
         "/ai_autopilot-reset/<userid>",
-        "/auto-reply-email"
+        "/auto-reply-email",
     ],
-
-    "taskbox.autopilot.cancel": [
-        "/ai_autopilot-revoke"
-    ],
-
-    "taskbox.ai.switch": [
-        "/ai_autopilot-mode"
-    ],
-
-    "taskbox.ai.autopilot": [
-        "/ai_autopilot/<userid>"
-    ],
-
-    "taskbox.ai.suggest": [
-        "/ai_suggest",
-        "/test_functions"
-    ],
-
-    "taskbox.agent.assign": [
-        "/ai_autopilot-update-agent",
-        "/change_assignee"
-    ],
-
-    "notes.create": [
-        "/create_note"
-    ],
-
-    "notes.edit": [
-        "/update_note",
-        "/search_users_for_sharing",
-        "/share_note_by_email"
-    ],
-
-    "notes.delete": [
-        "/delete_note"
-    ],
-
+    "taskbox.autopilot.cancel": ["/ai_autopilot-revoke"],
+    "taskbox.ai.switch": ["/ai_autopilot-mode"],
+    "taskbox.ai.autopilot": ["/ai_autopilot/<userid>"],
+    "taskbox.ai.suggest": ["/ai_suggest", "/test_functions"],
+    "taskbox.agent.assign": ["/ai_autopilot-update-agent", "/change_assignee"],
+    "notes.create": ["/create_note"],
+    "notes.edit": ["/update_note", "/search_users_for_sharing", "/share_note_by_email"],
+    "notes.delete": ["/delete_note"],
     "notes.filter": [
         "/get_conversation_notes",
         "/get_note_permissions",
-        "/get_user_notes"
+        "/get_user_notes",
     ],
-
     "admin.manage_users": [
         "/deletedb/<user_id>",
         "/delete_user_cache/<primary_user_id>",
@@ -456,37 +302,14 @@ PERMISSION_ROUTES = {
         "/start_gmail_watches",
         "/check_redis",
         "/microsoft/session-debug",
-        "/check_notes_tables"
+        "/check_notes_tables",
     ],
     # ================= KNOWLEDGE BASE (RADAR / DOCS) =================
     "kb.doc.view": [
-        "/radar/apps/list/<userid>",
-        "/radar/reviews/<userid>",
-        "/radar/docs",
-        "/radar/status",
-        "/radar/current",
-        "/get-usersDocs"
+        "/get-usersDocs",
     ],
-
-    "kb.doc.upload": [
-        "/process-drive",
-        "/process-local"
-    ],
-
-    "kb.doc.edit": [
-        "/radar/review",
-        "/radar/analyze",
-        "/radar/decide",
-        "/radar/changeblock",
-        "/radar/changeblock/confirm",
-        "/radar/knowledge/analyze"
-    ],
-
-    "kb.doc.delete": [
-        "/radar/delete",
-        "/delete_file"
-    ],
-
+    "kb.doc.upload": ["/process-drive", "/process-local"],
+    "kb.doc.delete": ["/delete_file"],
     # ================= KNOWLEDGE BASE (WEB / SCRAPE) =================
     "kb.web.view": [
         "/get-youtube-summaries",
@@ -495,9 +318,8 @@ PERMISSION_ROUTES = {
         "/get-website-details",
         "/get-website-summary",
         "/list-scraped-websites",
-        "/check-scrape-check"
+        "/check-scrape-check",
     ],
-
     "kb.web.add": [
         "/scrape-youtube",
         "/scrape",
@@ -505,130 +327,121 @@ PERMISSION_ROUTES = {
         "/scrape-website-fast",
         "/save-website-summary",
         "/scrape-website-page",
-        "/scrape-and-summarize-fast"
+        "/scrape-and-summarize-fast",
     ],
-
     "kb.web.edit": [
         "/edit-website-summary",
         "/edit-internal_link-summary",
         "/update-contacts-scraped",
-        "/update-scraped-status"
+        "/update-scraped-status",
     ],
-
     "kb.web.delete": [
         "/delete-youtube-summary",
         "/delete-website-summary",
-        "/delete-internal_link-summary"
+        "/delete-internal_link-summary",
     ],
-
+    "kb.api.regenerate": ["/generate-website-api-key"],
     # ================= KNOWLEDGE BASE (VOICE / RECORDINGS) =================
-    "kb.recording.view": [
-        "/get-audio-config",
-        "/get-audio-transcript"
+    "kb.recording.view": ["/get-audio-config", "/get-audio-transcript"],
+    "kb.recording.upload": ["/process_audio"],
+    "kb.recording.delete": ["/delete-audio"],
+    "kb.voice.manage": ["/update-transcript", "/update-audio-contacts"],
+    # ================ RADAR =========================
+    "radar.view": [
+        "/radar/apps/list/<userid>",
+        "/radar/reviews/<user_id>",
+        "/radar/docs",
+        "/radar/status",
+        "/radar/current",
+        "/radar/sharing/<report_id>",
+        "/radar/sharedconfig/<user_id>",
+        "/radar/sharing/<report_id>",
+        "/radar/sharedconfig/<user_id>",
     ],
-
-    "kb.recording.upload": [
-        "/process_audio"
+    "radar.edit": [
+        "/radar/review",
+        "/radar/analyze",
+        "/radar/decide",
+        "/radar/assign",
+        "/radar/revoke",
+        "/radar/changeblock",
+        "/radar/changeblock/confirm",
+        "/radar/knowledge/analyze",
+        "/radar/assign",
+        "/radar/revoke",
+        "/radar/changeblock",
+        "/radar/changeblock/confirm",
+        "/radar/knowledge/analyze",
     ],
-
-    "kb.recording.delete": [
-        "/delete-audio"
-    ],
-
-    "kb.voice.manage": [
-        "/update-transcript",
-        "/update-audio-contacts"
-    ],
-
+    "radar.delete": ["/radar/delete"],
     # ================= TEAM =================
-
-    "team.search": [
-        "/contacts/list"
-    ],
-
-    "team.add_vendor": [
-        "/contacts/save"
-    ],
-
-    "team.member.view": [
-        "/contacts/basic_info"
-    ],
-
-    "team.member.edit": [
-        "/contacts/save_edit"
-    ],
-
-    "team.member.delete": [
-        "/users/delete_contacts"
-    ],
-
-    "team.group.view": [
-        "/users/get_group",
-        "/users/get_all_groups"
-    ],
-
-    "team.group.create": [
-        "/users/save_group"
-    ],
-
-    "team.group.edit": [
-        "/users/edit_group"
-    ],
-
-    "team.group.delete": [
-        "/users/delete_group"
-    ],
-
-
+    "team.search": ["/contacts/list"],
+    "team.add_vendor": ["/contacts/save"],
+    "team.member.view": ["/contacts/basic_info"],
+    "team.member.edit": ["/contacts/save_edit"],
+    "team.member.delete": ["/users/delete_contacts"],
+    "team.group.view": ["/users/get_group", "/users/get_all_groups"],
+    "team.group.create": ["/users/save_group"],
+    "team.group.edit": ["/users/edit_group"],
+    "team.group.delete": ["/users/delete_group"],
     # ======= Trust Center ========
-    "trustcenter.view": [
-        "/trust-center",
-        "/trust-center/status"
-    ],
-
-    "trustcenter.share": [
-        "/trust-center/share"
-    ],
-
-    "trustcenter.whitepaper.regenerate": [
-        "/trust-center/whitepaper/regenerate"
-    ],
-
+    "trustcenter.view": ["/trust-center", "/trust-center/status"],
+    "trustcenter.share": ["/trust-center/share"],
+    "trustcenter.whitepaper.regenerate": ["/trust-center/whitepaper/regenerate"],
     "trustcenter.document.download": [
         "/trust-center/whitepaper/pdf",
-        "/trust-center/documents/<doc_id>/download"
+        "/trust-center/documents/<doc_id>/download",
     ],
-
-    "trustcenter.whitepaper.edit": [
-            "/trust-center/whitepaper"
-    ],
-
-    "trustcenter.document.upload": [
-        "/trust-center/documents"
-    ],  
+    "trustcenter.whitepaper.edit": ["/trust-center/whitepaper"],
+    "trustcenter.document.upload": ["/trust-center/documents"],
     "trustcenter.document.delete": ["/trust-center/documents/<doc_id>"],
-
-    "kb.api.regenerate": ["/generate-website-api-key"],
-
     "admin.manage_admins": [
-        "/admin/roles-add", "/admin/assign-role", "/admin/bulk-assign-role",
-        "/admin/roles-get/<userid>", "/admin/organization-users/<userid>",
-        "/admin/roles-update", "/admin/roles-delete/<userid>/<role_id>",
-        "/admin/invite_user", "/admin/delete-invite", "/admin/resend-invite",
-        "/admin/edit_shared_user_role", "/admin/revoke_shared_user_role",
-        "/admin/delete_shared_user_role", "/admin/activate_shared_user_role",
+        "/admin/roles-add",
+        "/admin/assign-role",
+        "/admin/bulk-assign-role",
+        "/admin/roles-get/<userid>",
+        "/admin/organization-users/<userid>",
+        "/admin/roles-update",
+        "/admin/roles-delete/<userid>/<role_id>",
+        "/admin/invite_user",
+        "/admin/delete-invite",
+        "/admin/resend-invite",
+        "/admin/edit_shared_user_role",
+        "/admin/revoke_shared_user_role",
+        "/admin/delete_shared_user_role",
+        "/admin/activate_shared_user_role",
         "/admin/all_special_access_users/<userid>",
-        "/admin/all_special_access_sources/<userid>", "/admin/audit-logs"
+        "/admin/all_special_access_sources/<userid>",
+        "/admin/audit-logs",
     ],
-
+    # ================= INTAKE WORKFLOW =================
+    "intake.bytoid_pro": [
+        "/bytoid-pro-dev/upload",
+        "/bytoid-pro-dev/bytoidpro/think_og",
+        "/bytoid-pro-dev/bytoidpro/handle_audio_fallback",
+        "/bytoid-pro-dev/bytoidpro/think",
+        "/bytoid-pro-dev/bytoidpro/chat_history",
+        "/bytoid-pro-dev/bytoidpro/get_a_chat",
+    ],
     "intake.bytoid_reference": [
-        "/process-query-key-og", "/process-query-key", "/get-ai-suggestion"
+        "/process-query-key-og",
+        "/process-query-key",
+        "/get-ai-suggestion",
     ],
-
     "compliance.standalone.create": [
-        "/generate_report", "/post_clarifications", "/finalize_report", "/list_all_draft_reports"
+        "/generate_report",
+        "/post_clarifications",
+        "/finalize_report",
+        "/list_all_draft_reports",
     ],
-
     "compliance.standalone.edit": ["/change_name"],
-
+    # ================= AGENTS ==============
+    "agents.view": [
+        "/get_all_user_permissionsbased/<userid>",
+        "/get_all_user_agents/<userid>",
+        "/get_all_mini_agents/<userid>",
+    ],
+    "agents.share": ["/agents_hub/share"],
+    "agents.unshare": ["/agents_hub/unshare"],
+    "agents.delete": ["/delete_user_with_agents"],
 }

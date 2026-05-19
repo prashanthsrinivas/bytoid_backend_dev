@@ -1,180 +1,149 @@
 PERMISSIONS = {
-
-   # ================= WORKSPACE =================
-   "workspace.intake_workflow": "Intake Workflow Access",
-   "workspace.compliance_engine": "Compliance Engine Access",
-   "workspace.trackers": "Trackers Access",
-
-   # ================= INTAKE WORKFLOW =================
-   "intake.bytoid_pro": "Bytoid Pro",
-   "intake.bytoid_reference": "Bytoid Reference",
-   "intake.bytoid_support": "Bytoid Support",
-   "intake.workflow_process": "Workflow Process",
-
-   # ================= COMPLIANCE ENGINE =================
-   "compliance.runbook.create": "Create Runbooks",
-   "compliance.runbook.edit": "Edit Runbooks",
-   "compliance.runbook.delete": "Delete Runbooks",
-   "compliance.runbook.execute": "Execute Runbook",
-   "compliance.standalone.create": "Create Standalone Reports",
-   "compliance.standalone.edit": "Edit Standalone Reports",
-   "compliance.standalone.delete": "Delete Standalone Reports",
-   "compliance.runbook.read": "View Runbooks",
-   "compliance.runbook.logs": "View Runbook Logs",
-   "compliance.report.logs": "View Report Logs",
-         
-   # ================= TRACKERS =================
-   "trackers.table.view": "View Trackers",
-   "trackers.table.create": "Create Table",
-   "trackers.table.edit": "Edit Table",
-   "trackers.table.delete": "Delete Table",
-   "trackers.row.add": "Add Rows",
-   "trackers.column.add": "Add Columns",
-   "trackers.column.delete": "Delete Columns",
-   "trackers.framework.add": "Add Framework",
-   "trackers.framework.edit": "Edit Framework",
-   "trackers.framework.delete": "Delete Framework",
-   "trackers.logs.view": "View Tracker Logs",
-
-   # ================= WORKFLOW BUILDER =================
-   "workflow.process.view": "View Processes",
-   "workflow.template.view": "View Global Templates",
-   "workflow.process.create": "Create Process",
-   "workflow.process.edit": "Edit Process",
-   "workflow.process.delete": "Delete Process",
-   "workflow.process.share": "Share Process",
-   "workflow.process.execute": "Execute Process",
-   "workflow.process.schedule": "Schedule Process",
-   "workflow.template.create": "Make Global Templates",
-   "workflow.template.delete": "Delete Global Templates",
-   "workflow.logs.view": "View Process Logs",
-
-   # ================= KNOWLEDGE BASE (PROFILE) =================
-   "kb.profile.view": "View Profile",
-   "kb.profile.edit_name": "Edit Assistant Name",
-   "kb.profile.edit_url": "Edit Website URL",
-   "kb.api.view": "View API Key",
-   "kb.api.regenerate": "Regenerate API Key",
-   "kb.api.copy": "Copy API Key",
-   "kb.integration.view": "View Integration Code",
-   "kb.integration.copy": "Copy Integration Code",
-
-   # ================= KNOWLEDGE BASE (WEB) =================
-   "kb.web.view": "View Web Source",
-   "kb.web.add": "Add Web Source",
-   "kb.web.analyze": "Analyze Web Source",
-   "kb.web.search": "Search Web Source",
-   "kb.web.structure": "View Web Structure",
-   "kb.web.delete": "Delete Web Source",
-   "kb.web.logs": "View Web Logs",
-
-   # ================= KNOWLEDGE BASE (RECORDINGS) =================
-   "kb.recording.create": "Create Recording",
-   "kb.recording.upload": "Upload Recording",
-   "kb.recording.view": "View Recordings",
-   "kb.recording.delete": "Delete Recording",
-   "kb.recording.search": "Search Recordings",
-   "kb.recording.logs": "View Recording Logs",
-   "kb.voice.manage": "Manage Voice Data",
-
-   # ================= KNOWLEDGE BASE (DOCUMENTS) =================
-   "kb.doc.upload": "Upload Document",
-   "kb.doc.view": "View Documents",
-   "kb.doc.edit": "Edit Document",
-   "kb.doc.delete": "Delete Document",
-   "kb.doc.search": "Search Documents",
-   "kb.doc.logs": "View Document Logs",
-
-   # ================= TASKBOX (EMAIL) =================
-   "taskbox.email.view": "View Email Content",
-   "taskbox.email.send": "Send Email",
-   "taskbox.email.draft": "Manage Drafts",
-   "taskbox.email.sender": "View Sender Details",
-   "taskbox.email.subject": "View Subject",
-   "taskbox.email.status": "View Status",
-   "taskbox.email.priority": "Change Priority",
-   "taskbox.email.change_status": "Change Status",
-   "taskbox.email.attachments.view": "View Attachments",
-   "taskbox.email.attachments.download": "Download Attachments",
-
-   # ================= TASKBOX (AI ASSIST) =================
-   "taskbox.ai.suggest": "View AI Suggest Tab",
-   "taskbox.ai.autopilot": "View Autopilot Tab",
-   "taskbox.ai.switch": "Switch AI Modes",
-
-   # ================= TASKBOX (AUTOPILOT) =================
-   "taskbox.autopilot.add_email": "Add Email",
-   "taskbox.autopilot.enable": "Enable Autopilot",
-   "taskbox.autopilot.confirm": "Confirm Enable",
-   "taskbox.autopilot.cancel": "Cancel Enable",
-
-   # ================= TASKBOX (AGENTS) =================
-   "taskbox.agent.select": "Select Agent",
-   "taskbox.agent.assign": "Assign Agent",
-
-   # ================= NOTES =================
-   "notes.create": "Create Note",
-   "notes.edit": "Edit Note",
-   "notes.delete": "Delete Note",
-   "notes.filter": "Filter Notes",
-
-   # ================= CALENDAR =================
-   "calendar.create": "Create Event",
-   "calendar.view.cancelled": "View Cancelled Events",
-   "calendar.view.confirmed": "View Confirmed Events",
-   "calendar.edit": "Edit Calendar Events",
-   "calendar.delete": "Delete Calendar Events",
-
-   # ================= MY APPS =================
-   "apps.create": "Create App",
-   "apps.edit": "Edit App",
-   "apps.delete": "Delete App",
-   "apps.view": "View Global Apps",
-   "apps.install": "Install App",
-   "apps.endpoint.view": "View Endpoints",
-   "apps.endpoint.add": "Add Endpoint",
-   "apps.endpoint.edit": "Edit Endpoint",
-   "apps.endpoint.schedule": "Schedule Endpoint",
-   "apps.endpoint.test": "Test Endpoint",
-   "apps.endpoint.execute": "Execute Endpoint",
-   "apps.endpoint.push": "Push to Global",
-   "apps.endpoint.delete": "Delete Endpoint",
-
-   # ================= TEAM =================
-   "team.search": "Search Agents",
-   "team.filter": "Filter by Status",
-   "team.add_vendor": "Add Vendor",
-   "team.workflow.view": "View Workflows",
-   "team.status.view": "View Status",
-   "team.access.add": "Add Access",
-   "team.access.share": "Share Access",
-   "team.member.view": "View Member Details",
-   "team.member.edit": "Edit Member",
-   "team.member.delete": "Delete Member",
-   "team.group.view": "View Groups",
-   "team.group.create": "Create Groups",
-   "team.group.edit": "Edit Groups",
-   "team.group.delete": "Delete Groups",
-
-   # ================= ADMIN =================
-   "admin.manage_users": "Manage Users",
-   "admin.manage_admins": "Manage Admin Access",
-
-   # ======== Trust Center ===========
-   "trustcenter.view": "View Trust Center",
-   "trustcenter.share": "Share Trust Center",
-   "trustcenter.whitepaper.regenerate": "Regenerate Whitepaper",
-   "trustcenter.document.download": "Download PDF",
-   "trustcenter.whitepaper.edit": "Edit Whitepaper",
-   "trustcenter.document.upload": "Upload Documents",
-   "trustcenter.document.delete": "Delete Documents",
-
-   # ================= POLICY HUB =================
-   "policyhub.view": "View Policy Hub",
-   "policyhub.create": "Create Policies",
-   "policyhub.edit": "Edit Policies",
-   "policyhub.delete": "Delete Policies",
-   "policyhub.framework.create": "Upload Frameworks",
-   "policyhub.framework.delete": "Delete Frameworks",
-
+    # ================= WORKSPACE =================
+    "workspace.intake_workflow": "Intake Workflow Access",
+    "workspace.compliance_engine": "Compliance Engine Access",
+    "workspace.trackers": "Trackers Access",
+    # ================= INTAKE WORKFLOW =================
+    "intake.bytoid_pro": "Bytoid Pro",
+    "intake.bytoid_reference": "Bytoid Reference",
+    "intake.bytoid_support": "Bytoid Support",
+    "intake.workflow_process": "Workflow Process",
+    # ================= COMPLIANCE ENGINE =================
+    "compliance.runbook.create": "Create Runbooks",
+    "compliance.runbook.edit": "Edit Runbooks",
+    "compliance.runbook.delete": "Delete Runbooks",
+    "compliance.runbook.execute": "Execute Runbook",
+    "compliance.standalone.create": "Create Standalone Reports",
+    "compliance.standalone.edit": "Edit Standalone Reports",
+    "compliance.standalone.delete": "Delete Standalone Reports",
+    "compliance.runbook.read": "View Runbooks",
+    # ================= TRACKERS =================
+    "trackers.table.view": "View Trackers",
+    "trackers.table.create": "Create Table",
+    "trackers.table.edit": "Edit Table",
+    "trackers.table.delete": "Delete Table",
+    "trackers.row.add": "Add Rows",
+    "trackers.column.add": "Add Columns",
+    "trackers.column.delete": "Delete Columns",
+    "trackers.framework.add": "Add Framework",
+    "trackers.framework.edit": "Edit Framework",
+    "trackers.framework.delete": "Delete Framework",
+    "trackers.table.chat": "Tracker Ai chat",
+    # ================= WORKFLOW BUILDER =================
+    "workflow.process.view": "View Processes",
+    "workflow.template.view": "View Global Templates",
+    "workflow.process.create": "Create Process",
+    "workflow.process.edit": "Edit Process",
+    "workflow.process.delete": "Delete Process",
+    "workflow.process.share": "Share Process",
+    "workflow.process.execute": "Execute Process",
+    "workflow.process.schedule": "Schedule Process",
+    "workflow.template.create": "Make Global Templates",
+    "workflow.template.delete": "Delete Global Templates",
+    # ================= EVIDENCE ==============================
+    "evidence.view": "View Evidence",
+    "evidence.create": "Create Evidence",
+    "evidence.edit": "Edit Evidence",
+    "evidence.delete": "Delete Evidence",
+    "evidence.execute": "Run Evidence Check",
+    # ================= AGENTS HUB ==============================
+    "agents.view": "View agents",
+    "agents.share": "share agent permission",
+    "agents.unshare": "Unshare agent permission",
+    "agents.delete": "Remove agent",
+    # ================= KNOWLEDGE BASE (PROFILE) =================
+    "kb.api.regenerate": "Regenerate API Key",
+    # ================= KNOWLEDGE BASE (WEB) =================
+    "kb.web.view": "View Web Source",
+    "kb.web.add": "Add Web Source",
+    "kb.web.edit": "edit web sources",
+    "kb.web.delete": "Delete Web Source",
+    # ================= KNOWLEDGE BASE (RECORDINGS) =================
+    "kb.recording.upload": "create Recording",
+    "kb.recording.view": "View Recordings",
+    "kb.recording.delete": "Delete Recording",
+    "kb.voice.manage": "Manage Voice Data",
+    # ================= KNOWLEDGE BASE (DOCUMENTS) =================
+    "kb.doc.upload": "Upload Document",
+    "kb.doc.view": "View Documents",
+    "kb.doc.delete": "Delete Document",
+    # ================= REPORTS =================
+    "radar.view": "View Reports",
+    "radar.edit": "Edit Reports",
+    "radar.delete": "Delete Reports",
+    # ================= TASKBOX (EMAIL) =================
+    "taskbox.email.view": "View Email Content",
+    "taskbox.email.send": "Send Email",
+    "taskbox.email.draft": "Manage Drafts",
+    "taskbox.email.change_status": "Change Status",
+    "taskbox.email.attachments.view": "View Attachments",
+    "taskbox.email.attachments.download": "Download Attachments",
+    # ================= TASKBOX (AI ASSIST) =================
+    "taskbox.ai.suggest": "View AI Suggest Tab",
+    "taskbox.ai.autopilot": "View Autopilot Tab",
+    "taskbox.ai.switch": "Switch AI Modes",
+    # ================= TASKBOX (AUTOPILOT) =================
+    "taskbox.autopilot.enable": "Enable Autopilot",
+    "taskbox.autopilot.cancel": "Cancel Enable",
+    # ================= TASKBOX (AGENTS) =================
+    "taskbox.agent.assign": "Assign Agent",
+    # ================= NOTES =================
+    "notes.create": "Create Note",
+    "notes.edit": "Edit Note",
+    "notes.delete": "Delete Note",
+    "notes.filter": "Filter Notes",
+    # ================= CALENDAR =================
+    "calender.create": "Create Event",
+    "calender.view.cancelled": "View Cancelled Events",
+    "calender.view.confirmed": "View Confirmed Events",
+    "calender.edit": "Edit Calender Events",
+    "calender.delete": "Delete Calender Events",
+    # ================= MY APPS =================
+    "apps.create": "Create App",
+    "apps.edit": "Edit App",
+    "apps.delete": "Delete App",
+    "apps.view": "View Global Apps",
+    "apps.install": "Install App",
+    "apps.endpoint.view": "View Endpoints",
+    "apps.endpoint.add": "Add Endpoint",
+    "apps.endpoint.edit": "Edit Endpoint",
+    "apps.endpoint.schedule": "Schedule Endpoint",
+    "apps.endpoint.test": "Test Endpoint",
+    "apps.endpoint.execute": "Execute Endpoint",
+    "apps.endpoint.push": "Push to Global",
+    "apps.endpoint.delete": "Delete Endpoint",
+    # ================= TEAM =================
+    "team.search": "Search Agents",
+    "team.filter": "Filter by Status",
+    "team.add_vendor": "Add Vendor",
+    "team.workflow.view": "View Workflows",
+    "team.status.view": "View Status",
+    "team.access.add": "Add Access",
+    "team.access.share": "Share Access",
+    "team.member.view": "View Member Details",
+    "team.member.edit": "Edit Member",
+    "team.member.delete": "Delete Member",
+    "team.group.view": "View Groups",
+    "team.group.create": "Create Groups",
+    "team.group.edit": "Edit Groups",
+    "team.group.delete": "Delete Groups",
+    # ================= ADMIN =================
+    "admin.manage_users": "Manage Users",
+    "admin.manage_admins": "Manage Admin Access",
+    # ======== Trust Center ===========
+    "trustcenter.view": "View Trust Center",
+    "trustcenter.share": "Share Trust Center",
+    "trustcenter.whitepaper.regenerate": "Regenerate Whitepaper",
+    "trustcenter.document.download": "Download PDF",
+    "trustcenter.whitepaper.edit": "Edit Whitepaper",
+    "trustcenter.document.upload": "Upload Documents",
+    "trustcenter.document.delete": "Delete Documents",
+    # ================= POLICY HUB =================
+    "policyhub.view": "View Policy Hub",
+    "policyhub.create": "Create Policies",
+    "policyhub.edit": "Edit Policies",
+    "policyhub.delete": "Delete Policies",
+    "policyhub.framework.create": "Upload Frameworks",
+    "policyhub.framework.delete": "Delete Frameworks",
+    "policyhub.framework.view": "View Frameworks",
 }

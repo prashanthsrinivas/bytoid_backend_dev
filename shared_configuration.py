@@ -194,7 +194,7 @@ def get_round_robin_user(admin_id, role_id, report_type, conn, required_permissi
     return chosen_user, None
 
 
-def core_assign_report(
+async def core_assign_report(
     admin_id,
     admin_email,
     user_id,
@@ -303,47 +303,35 @@ def core_assign_report(
         user_shared_reports[report_id] = entry
         save_user_shared_reports(user_id, user_shared_reports)
 
-        import asyncio
-
-        async def update_lancedb_meta():
-            try:
-                if report_type == "radar":
-                    record = await dbserver.radar_get_by_id(admin_id, report_id)
-                    if record:
-                        result = record.get("result")
-                        if isinstance(result, str):
-                            result = json.loads(result)
-                        if "document_meta" not in result:
-                            result["document_meta"] = {}
-                        result["document_meta"]["sharing_access"] = sharing_access
-                        await dbserver.radar_update_result(
-                            admin_id,
-                            record.get("review_id"),
-                            result,
-                        )
-                elif report_type == "runbook":
-                    result_record = await dbserver.runbook_get_result(admin_id, report_id)
-                    if result_record and result_record.get("status") != "not_found":
-                        result_doc = result_record.get("result")
-                        if isinstance(result_doc, str):
-                            result_doc = json.loads(result_doc)
-                        if "document_meta" not in result_doc:
-                            result_doc["document_meta"] = {}
-                        result_doc["document_meta"]["sharing_access"] = sharing_access
-                        await dbserver.update_runbook_result(
-                            admin_id,
-                            report_id,
-                            result_doc,
-                        )
-            except Exception as e:
-                logger.error(f"Failed to update LanceDB meta: {e}", exc_info=True)
-
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(update_lancedb_meta())
-            finally:
-                loop.close()
+            if report_type == "radar":
+                record = await dbserver.radar_get_by_id(admin_id, report_id)
+                if record:
+                    result = record.get("result")
+                    if isinstance(result, str):
+                        result = json.loads(result)
+                    if "document_meta" not in result:
+                        result["document_meta"] = {}
+                    result["document_meta"]["sharing_access"] = sharing_access
+                    await dbserver.radar_update_result(
+                        admin_id,
+                        record.get("review_id"),
+                        result,
+                    )
+            elif report_type == "runbook":
+                result_record = await dbserver.runbook_get_result(admin_id, report_id)
+                if result_record and result_record.get("status") != "not_found":
+                    result_doc = result_record.get("result")
+                    if isinstance(result_doc, str):
+                        result_doc = json.loads(result_doc)
+                    if "document_meta" not in result_doc:
+                        result_doc["document_meta"] = {}
+                    result_doc["document_meta"]["sharing_access"] = sharing_access
+                    await dbserver.update_runbook_result(
+                        admin_id,
+                        report_id,
+                        result_doc,
+                    )
         except Exception as e:
             logger.warning(f"Could not update LanceDB meta: {e}")
 
@@ -354,7 +342,7 @@ def core_assign_report(
         return None, str(e)
 
 
-def core_revoke_report(admin_id, user_id, report_id, report_type, dbserver):
+async def core_revoke_report(admin_id, user_id, report_id, report_type, dbserver):
     """
     Core logic to revoke access to a report from a user.
     Updates sharedconfigs.json, user's shared_reports.json, and LanceDB document_meta.
@@ -383,49 +371,37 @@ def core_revoke_report(admin_id, user_id, report_id, report_type, dbserver):
             del user_shared_reports[report_id]
         save_user_shared_reports(user_id, user_shared_reports)
 
-        import asyncio
-
         sharing_access = config.get("reports", {}).get(report_id, {}).get("sharing_access", [])
 
-        async def update_lancedb_meta_revoke():
-            try:
-                if report_type == "radar":
-                    record = await dbserver.radar_get_by_id(admin_id, report_id)
-                    if record:
-                        result = record.get("result")
-                        if isinstance(result, str):
-                            result = json.loads(result)
-                        if "document_meta" not in result:
-                            result["document_meta"] = {}
-                        result["document_meta"]["sharing_access"] = sharing_access
-                        await dbserver.radar_update_result(
-                            admin_id,
-                            record.get("review_id"),
-                            result,
-                        )
-                elif report_type == "runbook":
-                    result_record = await dbserver.runbook_get_result(admin_id, report_id)
-                    if result_record and result_record.get("status") != "not_found":
-                        result_doc = result_record.get("result")
-                        if isinstance(result_doc, str):
-                            result_doc = json.loads(result_doc)
-                        if "document_meta" not in result_doc:
-                            result_doc["document_meta"] = {}
-                        result_doc["document_meta"]["sharing_access"] = sharing_access
-                        await dbserver.update_runbook_result(
-                            admin_id,
-                            report_id,
-                            result_doc,
-                        )
-            except Exception as e:
-                logger.error(f"Failed to update LanceDB meta on revoke: {e}", exc_info=True)
-
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(update_lancedb_meta_revoke())
-            finally:
-                loop.close()
+            if report_type == "radar":
+                record = await dbserver.radar_get_by_id(admin_id, report_id)
+                if record:
+                    result = record.get("result")
+                    if isinstance(result, str):
+                        result = json.loads(result)
+                    if "document_meta" not in result:
+                        result["document_meta"] = {}
+                    result["document_meta"]["sharing_access"] = sharing_access
+                    await dbserver.radar_update_result(
+                        admin_id,
+                        record.get("review_id"),
+                        result,
+                    )
+            elif report_type == "runbook":
+                result_record = await dbserver.runbook_get_result(admin_id, report_id)
+                if result_record and result_record.get("status") != "not_found":
+                    result_doc = result_record.get("result")
+                    if isinstance(result_doc, str):
+                        result_doc = json.loads(result_doc)
+                    if "document_meta" not in result_doc:
+                        result_doc["document_meta"] = {}
+                    result_doc["document_meta"]["sharing_access"] = sharing_access
+                    await dbserver.update_runbook_result(
+                        admin_id,
+                        report_id,
+                        result_doc,
+                    )
         except Exception as e:
             logger.warning(f"Could not update LanceDB meta on revoke: {e}")
 

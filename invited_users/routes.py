@@ -779,6 +779,10 @@ def get_permissions():
         "policyhub": "Policyhub",
         "trustcenter": "Trustcenter",
         "calender": "Calender",
+        "evidence config": "Evidence Config",
+        "evidence": "Evidence Config",
+        "agents": "Agents",
+        "radar": "Radar",
     }
 
     for key, label in PERMISSIONS.items():
@@ -1879,14 +1883,13 @@ def revoke_special_access():
                 return jsonify({"error": "Only admins allowed"}), 403
             if grantor["company_name"] != target["company_name"]:
                 return jsonify({"error": "Different organization"}), 403
-            # Delete access: bidirectional match handles both column orderings
+            # Delete access: (grantor = data owner, target = accessor being revoked)
             cursor.execute(
                 """
                 DELETE FROM special_access
-                WHERE (grantor_admin_id=%s AND target_admin_id=%s)
-                   OR (grantor_admin_id=%s AND target_admin_id=%s)
+                WHERE grantor_admin_id=%s AND target_admin_id=%s
             """,
-                (grantor_id, target_id, target_id, grantor_id),
+                (grantor_id, target_id),
             )
             if cursor.rowcount == 0:
                 return (
