@@ -30,11 +30,17 @@ _BACKURL = os.getenv("BACKURL", "https://app.bytoid.ai")
 # Event type → template name mapping
 _TEMPLATE_MAP = {
     "WORKFLOW_SUBMITTED": "assigned_for_review",
-    "WORKFLOW_REVIEW_APPROVED": "assigned_for_approval",
-    "WORKFLOW_CHANGES_REQUESTED": "changes_requested",
+    "WORKFLOW_QUALITY_APPROVED": "assigned_for_approval",
+    "WORKFLOW_QUALITY_SENT_BACK": "changes_requested",
+    "WORKFLOW_GOVERNANCE_APPROVED": "assigned_for_approval",
+    "WORKFLOW_GOVERNANCE_SENT_BACK": "changes_requested",
     "WORKFLOW_APPROVED": "approved",
+    "WORKFLOW_APPROVAL_SENT_BACK": "changes_requested",
     "WORKFLOW_PUBLISHED": "published",
     "WORKFLOW_REASSIGNED": "reassigned",
+    # Legacy aliases kept for older audit records
+    "WORKFLOW_REVIEW_APPROVED": "assigned_for_approval",
+    "WORKFLOW_CHANGES_REQUESTED": "changes_requested",
 }
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -135,21 +141,36 @@ def notify_workflow_reassigned(workflow_id: str, row: dict, new_user_id: str, ro
 
 
 def _resolve_recipients(workflow: dict, event_type: str, **kwargs) -> list[str]:
-    """Return the list of user_ids who should receive this notification."""
+    """Return the list of user_ids who should receive this notification.
+
+    Send-back events notify BOTH the sender's stage holder AND the target stage holder
+    so all impacted stakeholders see the comment with their notification + email.
+    """
     owner = workflow.get("owner_user_id")
-    reviewer = workflow.get("current_reviewer")
+    quality = workflow.get("current_quality_reviewer") or workflow.get("current_reviewer")
+    governance = workflow.get("current_governance_reviewer")
     approver = workflow.get("current_approver")
     new_user_id = kwargs.get("new_user_id")
 
     mapping = {
-        "WORKFLOW_SUBMITTED": [r for r in [reviewer] if r],
-        "WORKFLOW_REVIEW_APPROVED": [r for r in [approver] if r],
-        "WORKFLOW_CHANGES_REQUESTED": [r for r in [owner] if r],
-        "WORKFLOW_APPROVED": [r for r in [owner] if r],
-        "WORKFLOW_PUBLISHED": [r for r in [reviewer, approver] if r],
-        "WORKFLOW_REASSIGNED": [r for r in [new_user_id] if r],
+        # Forward
+        "WORKFLOW_SUBMITTED":           [quality],                                  # → quality reviewer
+        "WORKFLOW_QUALITY_APPROVED":    [governance],                               # → governance reviewer
+        "WORKFLOW_GOVERNANCE_APPROVED": [approver],                                 # → approver
+        "WORKFLOW_APPROVED":            [owner, quality, governance],               # FYI
+        "WORKFLOW_PUBLISHED":           [owner, quality, governance, approver],     # FYI
+        # Send back — notify BOTH stages (sender + target)
+        "WORKFLOW_QUALITY_SENT_BACK":   [owner, quality],                           # back to intake
+        "WORKFLOW_GOVERNANCE_SENT_BACK":[quality, governance],                      # back to quality
+        "WORKFLOW_APPROVAL_SENT_BACK":  [governance, approver],                     # back to governance
+        # Reassign
+        "WORKFLOW_REASSIGNED":          [new_user_id],
+        # Legacy aliases
+        "WORKFLOW_REVIEW_APPROVED":     [governance or approver],
+        "WORKFLOW_CHANGES_REQUESTED":   [owner, quality],
     }
-    return list(dict.fromkeys(mapping.get(event_type, [])))
+    raw = mapping.get(event_type, [])
+    return list(dict.fromkeys([r for r in raw if r]))
 
 
 # ── Context builder ───────────────────────────────────────────────────────────
@@ -179,14 +200,41 @@ def _build_context(workflow: dict, event_type: str, comment: str | None = None, 
 def _insert_in_app_notification(
     workflow: dict, event_type: str, user_id: str, context: dict
 ):
-    message = {
-        "WORKFLOW_SUBMITTED": "A document has been submitted for your review.",
-        "WORKFLOW_REVIEW_APPROVED": "A document you reviewed has been forwarded for approval.",
-        "WORKFLOW_CHANGES_REQUESTED": "Changes have been requested on your document.",
-        "WORKFLOW_APPROVED": "Your document has been approved and is ready to publish.",
+    base_message = {
+        "WORKFLOW_SUBMITTED": "A document has been submitted for quality review.",
+        "WORKFLOW_QUALITY_APPROVED": "A document is ready for your governance review.",
+        "WORKFLOW_QUALITY_SENT_BACK": "Changes have been requested on the intake.",
+        "WORKFLOW_GOVERNANCE_APPROVED": "A document is ready for your approval.",
+        "WORKFLOW_GOVERNANCE_SENT_BACK": "Document has been sent back for quality review.",
+        "WORKFLOW_APPROVED": "A document has been approved and is ready to publish.",
+        "WORKFLOW_APPROVAL_SENT_BACK": "Document has been sent back for governance review.",
         "WORKFLOW_PUBLISHED": "A document has been published.",
         "WORKFLOW_REASSIGNED": "You have been assigned to a document.",
+        # Legacy
+        "WORKFLOW_REVIEW_APPROVED": "A document you reviewed has been forwarded for approval.",
+        "WORKFLOW_CHANGES_REQUESTED": "Changes have been requested on your document.",
     }.get(event_type, "Workflow update.")
+
+    # Append the first 120 chars of the comment when present, so reviewers see context
+    # without having to open the document.
+    comment = (context.get("comment") or "").strip()
+    if comment:
+        snippet = comment if len(comment) <= 120 else comment[:117] + "..."
+        message = f"{base_message} Reason: {snippet}"
+    else:
+        message = base_message
+
+    action_required_events = {
+        "WORKFLOW_SUBMITTED",
+        "WORKFLOW_QUALITY_APPROVED",
+        "WORKFLOW_GOVERNANCE_APPROVED",
+        "WORKFLOW_QUALITY_SENT_BACK",
+        "WORKFLOW_GOVERNANCE_SENT_BACK",
+        "WORKFLOW_APPROVAL_SENT_BACK",
+        "WORKFLOW_REASSIGNED",
+        "WORKFLOW_REVIEW_APPROVED",
+        "WORKFLOW_CHANGES_REQUESTED",
+    }
 
     _insert_raw_in_app_notification(
         user_id=user_id,
@@ -195,7 +243,7 @@ def _insert_in_app_notification(
         doc_type=workflow.get("doc_type"),
         doc_id=workflow.get("doc_id"),
         message=message,
-        action_required=event_type in ("WORKFLOW_SUBMITTED", "WORKFLOW_REVIEW_APPROVED", "WORKFLOW_REASSIGNED"),
+        action_required=event_type in action_required_events,
     )
 
 
@@ -305,13 +353,16 @@ def render_email(template_name: str, context: dict) -> tuple[str, str, str]:
     subject_map = {
         "assigned_for_review": 'Review requested: {doc_type} "{doc_title}"',
         "assigned_for_approval": 'Approval requested: {doc_type} "{doc_title}"',
-        "changes_requested": 'Changes requested on "{doc_title}"',
+        "changes_requested": 'Sent back for changes: "{doc_title}"',
         "approved": '"{doc_title}" approved',
         "published": '"{doc_title}" is now published',
         "reassigned": 'You have been assigned to "{doc_title}"',
     }
     subject_template = subject_map.get(template_name, "Workflow update")
-    subject = subject_template.format(**context)
+    # Defensive .get-fallback so missing context keys don't crash rendering
+    safe_ctx = {**context, "doc_type": context.get("doc_type") or "document",
+                "doc_title": context.get("doc_title") or "Untitled"}
+    subject = subject_template.format(**safe_ctx)
 
     html_tpl = _jinja.get_template(f"{template_name}.html")
     txt_tpl = _jinja.get_template(f"{template_name}.txt")

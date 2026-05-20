@@ -13,23 +13,23 @@ logger = get_logger(__name__)
 # ── Default state machine ─────────────────────────────────────────────────────
 
 DEFAULT_STATES_JSON = {
-    "states": ["draft", "in_review", "changes_requested", "approved", "published"],
+    "states": ["draft", "quality_review", "governance_review", "approval", "published"],
     "transitions": {
-        "draft": ["in_review"],
-        "in_review": ["approved", "changes_requested"],
-        "changes_requested": ["draft", "in_review"],
-        "approved": ["published", "changes_requested"],
+        "draft": ["quality_review"],
+        "quality_review": ["governance_review", "draft"],
+        "governance_review": ["approval", "quality_review"],
+        "approval": ["published", "governance_review"],
         "published": ["draft"],
     },
     "required_permission_per_transition": {
-        "draft->in_review": "workflow.submit",
-        "in_review->approved": "workflow.review",
-        "in_review->changes_requested": "workflow.review",
-        "approved->published": "workflow.approve",
-        "approved->changes_requested": "workflow.approve",
+        "draft->quality_review": "workflow.submit",
+        "quality_review->governance_review": "workflow.review",
+        "quality_review->draft": "workflow.review",
+        "governance_review->approval": "workflow.review",
+        "governance_review->quality_review": "workflow.review",
+        "approval->published": "workflow.approve",
+        "approval->governance_review": "workflow.approve",
         "published->draft": "workflow.submit",
-        "changes_requested->draft": "workflow.submit",
-        "changes_requested->in_review": "workflow.submit",
     },
 }
 
@@ -115,7 +115,8 @@ def create_workflow(
     doc_id: str,
     doc_version: str,
     owner_user_id: str,
-    reviewer_user_id: str | None = None,
+    quality_reviewer_user_id: str | None = None,
+    governance_reviewer_user_id: str | None = None,
     approver_user_id: str | None = None,
 ) -> dict:
     """Insert a new document_workflow row at state='draft' and return it."""
@@ -127,12 +128,18 @@ def create_workflow(
             cur.execute(
                 """INSERT INTO document_workflow
                    (workflow_id, org_id, doc_type, doc_id, doc_version,
-                    owner_user_id, state, current_reviewer, current_approver,
-                    state_version, created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,'draft',%s,%s,1,%s)""",
+                    owner_user_id, state, current_reviewer,
+                    current_quality_reviewer, current_governance_reviewer,
+                    current_approver, state_version, created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,'draft',%s,%s,%s,%s,1,%s)""",
                 (
                     workflow_id, org_id, doc_type, doc_id, doc_version,
-                    owner_user_id, reviewer_user_id, approver_user_id, now,
+                    owner_user_id,
+                    quality_reviewer_user_id,           # current_reviewer alias = QR
+                    quality_reviewer_user_id,
+                    governance_reviewer_user_id,
+                    approver_user_id,
+                    now,
                 ),
             )
         conn.commit()
@@ -149,7 +156,8 @@ def transition(
     to_state: str,
     actor_user_id: str,
     comment: str | None = None,
-    reviewer_user_id: str | None = None,
+    quality_reviewer_user_id: str | None = None,
+    governance_reviewer_user_id: str | None = None,
     approver_user_id: str | None = None,
 ) -> dict:
     """Perform a state transition with optimistic locking.
@@ -190,13 +198,18 @@ def transition(
                 "state": to_state,
                 "state_version": current_version + 1,
             }
-            if to_state == "in_review" and reviewer_user_id:
-                updates["current_reviewer"] = reviewer_user_id
-            if to_state in ("approved", "published") and approver_user_id:
+            # Assign reviewer/approver columns when transitioning INTO their respective stages
+            if to_state == "quality_review" and quality_reviewer_user_id:
+                updates["current_quality_reviewer"] = quality_reviewer_user_id
+                updates["current_reviewer"] = quality_reviewer_user_id  # legacy alias
+            if to_state == "governance_review" and governance_reviewer_user_id:
+                updates["current_governance_reviewer"] = governance_reviewer_user_id
+            if to_state in ("approval", "published") and approver_user_id:
                 updates["current_approver"] = approver_user_id
-            if to_state == "in_review":
+            # Timestamps
+            if to_state == "quality_review" and not row.get("submitted_at"):
                 updates["submitted_at"] = now
-            if to_state == "approved":
+            if to_state == "approval":
                 updates["approved_at"] = now
             if to_state == "published":
                 updates["published_at"] = now
@@ -262,15 +275,24 @@ def get_workflow_history(workflow_id: str, page: int = 1, page_size: int = 50) -
 
 def get_inbox(
     user_id: str,
-    role: str,  # 'reviewer' | 'approver'
+    role: str,  # 'quality_reviewer' | 'governance_reviewer' | 'approver' | 'reviewer' (legacy)
     org_id: str,
     doc_type: str | None = None,
     page: int = 1,
     page_size: int = 25,
 ) -> tuple[list, int]:
-    """Return paginated inbox rows for a reviewer or approver."""
-    col = "current_reviewer" if role == "reviewer" else "current_approver"
-    state_filter = "in_review" if role == "reviewer" else "approved"
+    """Return paginated inbox rows for a reviewer or approver by stage role."""
+    if role in ("reviewer", "quality_reviewer"):
+        col = "current_quality_reviewer"
+        state_filter = "quality_review"
+    elif role == "governance_reviewer":
+        col = "current_governance_reviewer"
+        state_filter = "governance_review"
+    elif role == "approver":
+        col = "current_approver"
+        state_filter = "approval"
+    else:
+        raise ValueError(f"Unknown role: {role}")
 
     params: list = [user_id, state_filter]
     extra = ""
@@ -300,6 +322,34 @@ def get_inbox(
     return rows, total
 
 
+def get_workflow_for_doc_any_role(
+    doc_type: str,
+    doc_id: str,
+    user_id: str,
+) -> dict | None:
+    """Return the active WorkflowRow for a doc if the user is a party to it.
+
+    Visible if the user is owner / quality_reviewer / governance_reviewer / approver.
+    Returns None if no row exists or the user is not a party.
+    """
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM document_workflow
+                   WHERE doc_type=%s AND doc_id=%s
+                     AND (owner_user_id=%s OR current_reviewer=%s
+                          OR current_quality_reviewer=%s OR current_governance_reviewer=%s
+                          OR current_approver=%s)
+                   ORDER BY created_at DESC LIMIT 1""",
+                (doc_type, doc_id, user_id, user_id, user_id, user_id, user_id),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
 def bootstrap_schema() -> None:
     """Create workflow tables if they don't exist. Idempotent — safe to call on every startup."""
     _ddl = [
@@ -314,23 +364,27 @@ def bootstrap_schema() -> None:
           PRIMARY KEY (org_id, doc_type)
         )""",
         """CREATE TABLE IF NOT EXISTS document_workflow (
-          workflow_id       CHAR(36)     NOT NULL,
-          org_id            VARCHAR(64)  NOT NULL,
-          doc_type          VARCHAR(32)  NOT NULL,
-          doc_id            VARCHAR(64)  NOT NULL,
-          doc_version       VARCHAR(32)  NOT NULL,
-          owner_user_id     VARCHAR(64)  NOT NULL,
-          state             VARCHAR(32)  NOT NULL DEFAULT 'draft',
-          current_reviewer  VARCHAR(64)  NULL,
-          current_approver  VARCHAR(64)  NULL,
-          state_version     INT          NOT NULL DEFAULT 1,
-          submitted_at      TIMESTAMP    NULL,
-          approved_at       TIMESTAMP    NULL,
-          published_at      TIMESTAMP    NULL,
-          created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+          workflow_id                   CHAR(36)     NOT NULL,
+          org_id                        VARCHAR(64)  NOT NULL,
+          doc_type                      VARCHAR(32)  NOT NULL,
+          doc_id                        VARCHAR(64)  NOT NULL,
+          doc_version                   VARCHAR(32)  NOT NULL,
+          owner_user_id                 VARCHAR(64)  NOT NULL,
+          state                         VARCHAR(32)  NOT NULL DEFAULT 'draft',
+          current_reviewer              VARCHAR(64)  NULL,
+          current_quality_reviewer      VARCHAR(64)  NULL,
+          current_governance_reviewer   VARCHAR(64)  NULL,
+          current_approver              VARCHAR(64)  NULL,
+          state_version                 INT          NOT NULL DEFAULT 1,
+          submitted_at                  TIMESTAMP    NULL,
+          approved_at                   TIMESTAMP    NULL,
+          published_at                  TIMESTAMP    NULL,
+          created_at                    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (workflow_id),
           UNIQUE KEY uq_doc (doc_type, doc_id, doc_version),
           INDEX idx_reviewer (current_reviewer, state),
+          INDEX idx_quality_reviewer (current_quality_reviewer, state),
+          INDEX idx_governance_reviewer (current_governance_reviewer, state),
           INDEX idx_approver (current_approver, state),
           INDEX idx_org (org_id, doc_type, state)
         )""",
@@ -377,6 +431,21 @@ def bootstrap_schema() -> None:
         "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS workflow_state VARCHAR(32) NULL",
         "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_required TINYINT(1) DEFAULT 0",
     ]
+    # Migration: add multi-stage reviewer columns + backfill from legacy current_reviewer.
+    # MySQL versions vary on IF NOT EXISTS for ADD COLUMN; we wrap each in try/except.
+    _workflow_alters = [
+        "ALTER TABLE document_workflow ADD COLUMN current_quality_reviewer VARCHAR(64) NULL",
+        "ALTER TABLE document_workflow ADD COLUMN current_governance_reviewer VARCHAR(64) NULL",
+        "ALTER TABLE document_workflow ADD INDEX idx_quality_reviewer (current_quality_reviewer, state)",
+        "ALTER TABLE document_workflow ADD INDEX idx_governance_reviewer (current_governance_reviewer, state)",
+        # Backfill quality reviewer from legacy column where empty.
+        "UPDATE document_workflow SET current_quality_reviewer = current_reviewer "
+        "WHERE current_quality_reviewer IS NULL AND current_reviewer IS NOT NULL",
+        # State value rename: in_review → quality_review, approved → approval.
+        "UPDATE document_workflow SET state='quality_review' WHERE state='in_review'",
+        "UPDATE document_workflow SET state='approval' WHERE state='approved'",
+        "UPDATE document_workflow SET state='draft' WHERE state='changes_requested'",
+    ]
     conn = connect_to_rds()
     if not conn:
         logger.warning("bootstrap_schema: no DB connection available")
@@ -390,6 +459,11 @@ def bootstrap_schema() -> None:
                     cur.execute(stmt)
                 except Exception:
                     pass
+            for stmt in _workflow_alters:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    pass  # column/index may already exist; ignore
         conn.commit()
         logger.info("workflow schema bootstrap complete")
     except Exception as exc:
