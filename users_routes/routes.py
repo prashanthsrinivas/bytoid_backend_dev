@@ -1220,11 +1220,10 @@ def forgot_password():
             logger.error("User with this email is not exists")
             return jsonify({"error": "User with this email is not exists"})
 
-        reset_url = generate_hashed_url(
-            base_url=f"{os.getenv('BASE_FRNT_URL')}/ResetPassword",
-            invited_to=email,
-            invited_by=os.getenv("TEST_EMAIL2"),
-        )
+        expiry_time = int(time.time()) + 3600
+        payload = f"{os.getenv('TEST_EMAIL2')}|{email}|{expiry_time}"
+        token = fernet.encrypt(payload.encode()).decode()
+        reset_url = f"{os.getenv('BASE_FRNT_URL')}/ResetPassword/{token}"
 
         send_password_reset_email(email, reset_url)
         logger.info("Reset link sent to email")
