@@ -587,42 +587,81 @@ def bulk_assign_role():
 def get_roles(userid):
     """Get all roles and invited users for a user"""
     conn = None
-    logged_in_user_id, userid = parse_composite_user_id(userid)
     try:
-        special_access_status = {}
+        logged_in_user_id, userid = parse_composite_user_id(userid)
+
         conn = connect_to_rds()
+
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+
+            # Get current user details
             cursor.execute(
-                "SELECT roles_creation,user_type, permissions FROM users WHERE user_id=%s",
+                """
+                SELECT roles_creation, user_type, permissions, company_name
+                FROM users
+                WHERE user_id=%s
+                """,
                 (userid,),
             )
+
             row = cursor.fetchone()
 
             if not row:
                 return jsonify({"error": "User not found"}), 404
+
             if row["user_type"] == "user":
                 return jsonify({"error": "Access denied"}), 403
 
             roles = (
                 json.loads(row["roles_creation"]) if row.get("roles_creation") else []
             )
+
             permissions = (
                 json.loads(row["permissions"]) if row.get("permissions") else {}
             )
 
-            # Build structured lists from the permissions ledger
-            shared = [e for e in permissions.get("shared", []) if "email" in e]
-            invites = [e for e in permissions.get("invites", []) if "email" in e]
-            emails = [e["email"] for e in shared] + [e["email"] for e in invites]
-            # Step 1: get org id
-            # get org from company_name
-            cursor.execute(
-                "SELECT company_name FROM users WHERE user_id=%s",
-                (userid,),
-            )
-            org_row = cursor.fetchone()
+            # Existing permissions-based users
+            shared = [
+                entry
+                for entry in permissions.get("shared", [])
+                if isinstance(entry, dict) and entry.get("email")
+            ]
 
-            org = (org_row.get("company_name") or "").strip()
+            invites = [
+                entry
+                for entry in permissions.get("invites", [])
+                if isinstance(entry, dict) and entry.get("email")
+            ]
+
+            shared_emails = {entry["email"] for entry in shared}
+            invite_emails = {entry["email"] for entry in invites}
+
+            emails = list(shared_emails)
+
+            invited_special_users = {}
+
+            if emails:
+                fmt = ",".join(["%s"] * len(emails))
+
+                cursor.execute(
+                    f"""
+                    SELECT email, special_access
+                    FROM users
+                    WHERE email IN ({fmt})
+                    """,
+                    tuple(emails),
+                )
+
+                rows = cursor.fetchall()
+
+                invited_special_users = {
+                    row["email"]: bool(row.get("special_access")) for row in rows
+                }
+            special_access_status = {}
+
+            org = (row.get("company_name") or "").strip()
+
+            # If no organization found
             if not org:
                 return (
                     jsonify(
@@ -633,59 +672,107 @@ def get_roles(userid):
                                 "invites": invites,
                                 "shared": shared,
                             },
-                            "special_access_status": {},
+                            "special_access_status": special_access_status,
+                            "invited_special_users": invited_special_users,
                         }
                     ),
                     200,
                 )
 
-            # get all users in same org (excluding self)
+            # Fetch all users in same org
             cursor.execute(
-                "SELECT user_id, email, user_type FROM users WHERE company_name=%s AND user_id != %s",
+                """
+                SELECT
+                    user_id,
+                    email,
+                    user_type,
+                    special_access
+                FROM users
+                WHERE company_name=%s
+                AND user_id != %s
+                """,
                 (org, userid),
             )
+
             all_users = cursor.fetchall()
 
-            # emails = []
-            special_access_status = {}
-            shared_emails = {e["email"] for e in shared}
-
             for user in all_users:
+
+                # Only admin users
                 if user["user_type"] != "admin":
                     continue
-                email = user["email"]
-                if email in shared_emails:
-                    continue
-                cursor.execute(
-                    """
-                    SELECT 1 FROM special_access
-                    WHERE (grantor_admin_id=%s AND target_admin_id=%s)
-                    OR (grantor_admin_id=%s AND target_admin_id=%s)
-                """,
-                    (userid, user["user_id"], user["user_id"], userid),
-                )
-                access = cursor.fetchone()
-                has_access = bool(access)
 
-                emails.append(email)
+                email = user.get("email")
+
+                if not email:
+                    continue
+
+                # Skip if already in permissions list
+                if email in shared_emails or email in invite_emails:
+                    continue
+
+                # First check direct column-based special access
+                has_access = bool(user.get("special_access"))
+
+                # Fallback to old special_access table
+                if not has_access:
+                    cursor.execute(
+                        """
+                        SELECT 1
+                        FROM special_access
+                        WHERE (
+                            grantor_admin_id=%s
+                            AND target_admin_id=%s
+                        )
+                        OR (
+                            grantor_admin_id=%s
+                            AND target_admin_id=%s
+                        )
+                        LIMIT 1
+                        """,
+                        (
+                            userid,
+                            user["user_id"],
+                            user["user_id"],
+                            userid,
+                        ),
+                    )
+
+                    access = cursor.fetchone()
+                    has_access = bool(access)
+
                 special_access_status[email] = has_access
+
                 user_obj = {
                     "email": email,
-                    "role": {"id": "admin_access", "name": "Admin", "permissions": []},
+                    "role": {
+                        "id": "admin_access",
+                        "name": "Admin",
+                        "permissions": [],
+                    },
                     "status": "active" if has_access else "pending",
                 }
+
                 if has_access:
                     shared.append(user_obj)
+                    shared_emails.add(email)
                 else:
                     invites.append(user_obj)
+                    invite_emails.add(email)
+
+                emails.append(email)
 
         return (
             jsonify(
                 {
                     "roles": roles,
                     "invited_users": emails,
-                    "invited_users_structured": {"invites": invites, "shared": shared},
+                    "invited_users_structured": {
+                        "invites": invites,
+                        "shared": shared,
+                    },
                     "special_access_status": special_access_status,
+                    "invited_special_users": invited_special_users,
                 }
             ),
             200,
@@ -2052,6 +2139,29 @@ def revoke_special_access():
             """,
                 (target_id, "Your admin access has been revoked"),
             )
+
+            # Remove target from grantor's permissions (shared + invites)
+            cursor.execute(
+                "SELECT permissions FROM users WHERE user_id=%s",
+                (grantor_id,),
+            )
+            perm_row = cursor.fetchone()
+            if perm_row and perm_row.get("permissions"):
+                perms = json.loads(perm_row["permissions"])
+                target_em = target.get("email", "")
+                perms["shared"] = [
+                    e for e in perms.get("shared", [])
+                    if not (isinstance(e, dict) and e.get("email") == target_em)
+                ]
+                perms["invites"] = [
+                    e for e in perms.get("invites", [])
+                    if not (isinstance(e, dict) and e.get("email") == target_em)
+                ]
+                cursor.execute(
+                    "UPDATE users SET permissions=%s WHERE user_id=%s",
+                    (json.dumps(perms), grantor_id),
+                )
+
             conn.commit()
         actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(grantor_id)
         log_audit_event(
