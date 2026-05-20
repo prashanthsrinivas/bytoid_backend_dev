@@ -245,6 +245,7 @@ def get_subagent_by_user_id(userid, connection=None):
 
 
 def get_user_id(email):
+    own_connection = None
     try:
         if connection is None:
             connection = connect_to_rds()
@@ -258,7 +259,7 @@ def get_user_id(email):
                 WHERE email = %s
                 LIMIT 1
                 """,
-                (userid,),
+                (email,),
             )
 
             result = cursor.fetchone()

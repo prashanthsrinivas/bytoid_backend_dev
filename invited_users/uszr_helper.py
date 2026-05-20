@@ -63,31 +63,30 @@ def get_user_info(email):
 import uuid
 
 
-def create_invited_user(email, connection, permission, launch_id_fk):
+def create_invited_user(email, connection, permission, launch_id_fk=None):
     try:
         with connection.cursor() as cursor:
 
             # generate unique user_id
             user_id = str(uuid.uuid4())
-            # print("Launch id ", launch_id_fk)  # Not inserting now
 
             cursor.execute(
                 """
                 INSERT INTO users (
-                    user_id, user_type, launch_id_fk, first_name, last_name, email, phone, 
-                    client_id, client_secret, token, refresh_token, expiry, password_hash, 
-                    profile_pic, location, social, created_in, updated_in, logged_in_at, 
-                    logged_out_at, sociallinks, subscribe_id, roles_creation, permissions, special_access 
+                    user_id, user_type, launch_id_fk, first_name, last_name, email, phone,
+                    client_id, client_secret, token, refresh_token, expiry, password_hash,
+                    profile_pic, location, social, created_in, updated_in, logged_in_at,
+                    logged_out_at, sociallinks, subscribe_id, roles_creation, permissions
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    NOW(), NOW(), NOW(), %s, %s, %s, %s, %s, %s
+                    NOW(), NOW(), NOW(), %s, %s, %s, %s, %s
                 )
                 """,
                 (
                     user_id,
                     "user",  # user_type
-                    None,  # launch_id_fk
+                    launch_id_fk,  # launch_id_fk - use parameter value (may be None for direct-reg users)
                     None,  # first_name
                     None,  # last_name
                     email,
@@ -106,7 +105,6 @@ def create_invited_user(email, connection, permission, launch_id_fk):
                     None,  # subscribe_id
                     None,  # roles_creation
                     permission,  # permissions
-                    False,
                 ),
             )
 
@@ -115,5 +113,7 @@ def create_invited_user(email, connection, permission, launch_id_fk):
             return True
 
     except Exception as e:
-        #print(f"❌ Error creating invited user: {e}")
+        from utils.base_logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"❌ Error creating invited user for {email}: {e}", exc_info=True)
         return False

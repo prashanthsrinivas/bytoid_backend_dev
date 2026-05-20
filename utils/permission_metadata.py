@@ -376,21 +376,21 @@ PERMISSION_METADATA = {
         "label": "View Reports",
         "module": "Reports",
         "type": "read",
-        "dependencies": []
+        "dependencies": ["compliance.runbook.read"]
     },
 
     "radar.edit": {
         "label": "Edit Reports",
         "module": "Reports",
         "type": "update",
-        "dependencies": ["radar.view"]
+        "dependencies": ["compliance.runbook.edit"]
     },
 
     "radar.delete": {
         "label": "Delete Reports",
         "module": "Reports",
         "type": "delete",
-        "dependencies": ["radar.view"]
+        "dependencies": ["compliance.runbook.delete"]
     },
     # ================= TASKBOX (EMAIL) =================
     "taskbox.email.view": {

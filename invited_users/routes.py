@@ -2175,7 +2175,7 @@ def validate_invite(token):
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # 1️⃣ Fetch inviter
             cursor.execute(
-                "SELECT permissions, launch_id_fk FROM users WHERE email = %s",
+                "SELECT permissions, launch_id_fk, company_name FROM users WHERE email = %s",
                 (invited_by,),
             )
             inviter = cursor.fetchone()
@@ -2518,34 +2518,46 @@ def revoke_shared_user_role():
 
             permissions = json.loads(admin_row["permissions"] or "{}")
 
-            # Step 2: Fetch invited user permissions
-            cursor.execute("SELECT permissions FROM users WHERE email = %s", (email,))
+            # Step 2: Fetch invited user
+            cursor.execute(
+                "SELECT user_id, user_type, permissions FROM users WHERE email = %s",
+                (email,),
+            )
             invited_row = cursor.fetchone()
             if not invited_row:
                 conn.rollback()
                 return jsonify({"error": "Invited user not found"}), 404
 
-            invited_permissions = json.loads(invited_row["permissions"] or "{}")
-
-            # Step 3: Update invited user → set status = revoked (preserve all other fields)
-            invited_permissions["status"] = "revoked"
-
-            cursor.execute(
-                "UPDATE users SET permissions=%s WHERE email=%s",
-                (json.dumps(invited_permissions), email),
-            )
-
-            # Step 4: Update admin → set status revoked in shared/invites
-            for section in ["shared", "invites"]:
-                if section in permissions:
-                    for p in permissions[section]:
-                        if (p.get("email") or "").strip().lower() == email:
-                            p["status"] = "revoked"
-
-            cursor.execute(
-                "UPDATE users SET permissions=%s WHERE user_id=%s",
-                (json.dumps(permissions), user_id),
-            )
+            if invited_row["user_type"] == "admin":
+                # Admin-to-admin special access lives in the special_access table
+                cursor.execute(
+                    """
+                    DELETE FROM special_access
+                    WHERE (grantor_admin_id=%s AND target_admin_id=%s)
+                       OR (grantor_admin_id=%s AND target_admin_id=%s)
+                    """,
+                    (user_id, invited_row["user_id"], invited_row["user_id"], user_id),
+                )
+                if cursor.rowcount == 0:
+                    conn.rollback()
+                    return jsonify({"error": "Access record not found"}), 404
+            else:
+                # Regular invited user: relationship lives in users.permissions JSON
+                invited_permissions = json.loads(invited_row["permissions"] or "{}")
+                invited_permissions["status"] = "revoked"
+                cursor.execute(
+                    "UPDATE users SET permissions=%s WHERE email=%s",
+                    (json.dumps(invited_permissions), email),
+                )
+                for section in ["shared", "invites"]:
+                    if section in permissions:
+                        for p in permissions[section]:
+                            if (p.get("email") or "").strip().lower() == email:
+                                p["status"] = "revoked"
+                cursor.execute(
+                    "UPDATE users SET permissions=%s WHERE user_id=%s",
+                    (json.dumps(permissions), user_id),
+                )
 
             conn.commit()
 

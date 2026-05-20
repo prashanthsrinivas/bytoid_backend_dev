@@ -110,13 +110,19 @@ def get_role_users_from_db(conn, admin_id, role_id):
                 """
                 SELECT user_id, email, permissions
                 FROM users
-                WHERE (company_name = (SELECT company_name FROM users WHERE user_id=%s)
-                       OR launch_id_fk = (SELECT launch_id_fk FROM users WHERE user_id=%s))
+                WHERE (
+                    (company_name IS NOT NULL
+                     AND company_name = (SELECT company_name FROM users WHERE user_id=%s))
+                    OR (launch_id_fk IS NOT NULL
+                        AND launch_id_fk = (SELECT launch_id_fk FROM users WHERE user_id=%s))
+                    OR JSON_UNQUOTE(JSON_EXTRACT(permissions, '$.invited_by'))
+                       = (SELECT email FROM users WHERE user_id=%s)
+                )
                 AND user_type = 'user'
                 AND JSON_UNQUOTE(JSON_EXTRACT(permissions, '$.role.id')) = %s
                 AND JSON_UNQUOTE(JSON_EXTRACT(permissions, '$.status')) = 'active'
                 """,
-                (admin_id, admin_id, role_id),
+                (admin_id, admin_id, admin_id, role_id),
             )
             rows = cursor.fetchall()
             return rows or []
