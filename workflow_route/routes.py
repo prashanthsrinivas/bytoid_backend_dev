@@ -435,8 +435,6 @@ def workflow_inbox():
 
     logged_in, user_id = parse_composite_user_id(baseuser)
     org_id = _get_user_org(user_id)
-    if not org_id:
-        return jsonify({"error": "User org not found"}), 404
 
     try:
         rows, total = get_inbox(user_id, role, org_id, doc_type=doc_type, page=page, page_size=page_size)
