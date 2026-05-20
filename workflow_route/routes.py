@@ -112,9 +112,11 @@ def get_workflow_config_all():
         return jsonify({"error": "User org not found"}), 404
 
     doc_types = ["policy", "procedure", "runbook", "report"]
-    configs = {}
+    configs = []
     for dt in doc_types:
-        configs[dt] = get_workflow_config(org_id, dt)
+        entry = get_workflow_config(org_id, dt)
+        entry["doc_type"] = dt
+        configs.append(entry)
 
     return jsonify({"org_id": org_id, "configs": configs}), 200
 
