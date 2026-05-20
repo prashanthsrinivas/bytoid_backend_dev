@@ -61,13 +61,22 @@ WORKFLOW_REASSIGNED = "WORKFLOW_REASSIGNED"
 
 
 def _get_user_org(user_id: str) -> str | None:
-    """Resolve org identifier for a user from the DB."""
+    """Resolve org identifier for a user — company_name first, launch_id_fk as fallback."""
     conn = connect_to_rds()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            cur.execute("SELECT company_name FROM users WHERE user_id=%s LIMIT 1", (user_id,))
+            cur.execute(
+                "SELECT company_name, launch_id_fk FROM users WHERE user_id=%s LIMIT 1",
+                (user_id,),
+            )
             row = cur.fetchone()
-        return (row["company_name"] or "").strip() or None if row else None
+        if not row:
+            return None
+        company = (row["company_name"] or "").strip()
+        if company:
+            return company
+        launch = (row["launch_id_fk"] or "").strip()
+        return f"launch:{launch}" if launch else None
     finally:
         conn.close()
 
