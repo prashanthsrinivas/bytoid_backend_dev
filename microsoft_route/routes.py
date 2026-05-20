@@ -3026,7 +3026,7 @@ def download_onedrive_file(session, file_id, local_path):
     return True
 
 
-@permission_required_body("taskbox.email.view")
+@permission_required_body("kb.doc")
 @microsoft_bp.route("/process-outlook", methods=["POST"])
 def process_outlook():
     try:

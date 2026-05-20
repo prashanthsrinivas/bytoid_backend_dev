@@ -308,7 +308,7 @@ PERMISSION_ROUTES = {
     "kb.doc.view": [
         "/get-usersDocs",
     ],
-    "kb.doc.upload": ["/process-drive", "/process-local"],
+    "kb.doc.upload": ["/process-drive", "/process-outlook", "/process-local"],
     "kb.doc.delete": ["/delete_file"],
     # ================= KNOWLEDGE BASE (WEB / SCRAPE) =================
     "kb.web.view": [
