@@ -4,17 +4,25 @@ from flask import request, jsonify, session, Blueprint, g
 from db.rds_db import connect_to_rds
 import uuid
 from datetime import datetime, timezone
+from utils.normal import parse_composite_user_id
 from umail_helper.helper import delete_user_sync_time, delete_from_cache_sync
 from utils.s3_utils import (
     delete_folder_from_s3,
 )
 from umail_helper.ticketalloc import TicketAllocator
 from threading import Thread
-from services.audit_log_service import log_audit_event, CONTACT_BULK_DELETED, CONTACT_GROUP_DELETED, build_audit_actor, CONTACT_CREATED, CONTACT_UPDATED, CONTACT_GROUP_CREATED, CONTACT_GROUP_UPDATED
+from services.audit_log_service import (
+    log_audit_event,
+    CONTACT_BULK_DELETED,
+    CONTACT_GROUP_DELETED,
+    build_audit_actor,
+    CONTACT_CREATED,
+    CONTACT_UPDATED,
+    CONTACT_GROUP_CREATED,
+    CONTACT_GROUP_UPDATED,
+)
 from db.db_checkers import get_email_by_id
 from utils.permission_required import permission_required_body
-
-
 
 # from session_middleware import session_check
 
@@ -22,6 +30,7 @@ from utils.permission_required import permission_required_body
 contacts_bp = Blueprint("contacts", __name__)
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/contacts/save", methods=["POST"])
 @permission_required_body("team.add_vendor")
 def save_contact():
@@ -57,6 +66,8 @@ def save_contact():
             return jsonify({"error": "First name is required"}), 400
         if not type:
             return jsonify({"error": "Type is required"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         if not any(
             [
@@ -212,7 +223,12 @@ def save_contact():
                 connection.commit()
 
                 # Audit logging
-                actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+                (
+                    actor_user_id,
+                    actor_email,
+                    acting_on_behalf_of_user_id,
+                    acting_on_behalf_of_email,
+                ) = build_audit_actor(user_id)
                 log_audit_event(
                     action=CONTACT_CREATED,
                     endpoint="/contacts/save",
@@ -246,6 +262,7 @@ def save_contact():
             connection.close()
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/contacts/save_edit", methods=["POST"])
 @permission_required_body("team.member.edit")
 def save_edit_contact():
@@ -254,7 +271,7 @@ def save_edit_contact():
     try:
         data = request.get_json() or {}
 
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
         # print(f"user is is:{user_id}")
         first_name = data.get("firstName")
         last_name = data.get("lastName") or None
@@ -276,12 +293,13 @@ def save_edit_contact():
         status_val = status.lower() if status and status.strip() else None
         source_val = source.lower() if source and source.strip() else None
 
-        if not user_id:
+        if not baseuser:
             return jsonify({"error": "User not logged in"}), 400
         if not first_name:
             return jsonify({"error": "First name is required"}), 400
         if not type:
             return jsonify({"error": "Type is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         if not any(
             [
@@ -402,7 +420,12 @@ def save_edit_contact():
                 connection.commit()
 
                 # Audit logging
-                actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+                (
+                    actor_user_id,
+                    actor_email,
+                    acting_on_behalf_of_user_id,
+                    acting_on_behalf_of_email,
+                ) = build_audit_actor(baseuser)
                 log_audit_event(
                     action=CONTACT_UPDATED,
                     endpoint="/contacts/save_edit",
@@ -414,7 +437,9 @@ def save_edit_contact():
                     acting_on_behalf_of_email=acting_on_behalf_of_email,
                     metadata={
                         "contact_type": type,
-                        "fields_changed": len([k for k, v in fields.items() if v is not None]),
+                        "fields_changed": len(
+                            [k for k, v in fields.items() if v is not None]
+                        ),
                     },
                 )
                 g.audit_logged = True
@@ -433,6 +458,7 @@ def save_edit_contact():
             connection.close()
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/users/delete_contacts", methods=["POST"])
 @permission_required_body("team.member.delete")
 def delete_contacts():
@@ -440,13 +466,14 @@ def delete_contacts():
     try:
         data = request.get_json() or {}
 
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
         client_ids = data.get("contact_ids")  # list
 
         if not user_id:
             return jsonify({"error": "user_id is required"}), 400
         if not client_ids or not isinstance(client_ids, list):
             return jsonify({"error": "client_ids must be a list"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         connection = connect_to_rds()
         client_placeholders = ",".join(["%s"] * len(client_ids))
@@ -609,7 +636,7 @@ def delete_contacts():
         # else:
         #    #print("No cache found")
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=CONTACT_BULK_DELETED,
             endpoint="/users/delete_contacts",
@@ -709,6 +736,7 @@ def add_synced_contact(user_id, cursor, participant, first_name, last_name):
     return users_clients_id
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/contacts/list", methods=["GET"])
 @permission_required_body("team.search")
 def get_contacts_by_user(userid=None):
@@ -718,6 +746,7 @@ def get_contacts_by_user(userid=None):
     try:
         user_id = request.args.get("user_id") or session.get("user_id") or userid
         connection = connect_to_rds()
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
         with connection.cursor() as cursor:
             query = """
                 SELECT uc.users_clients_id, uc.first_name, uc.last_name, uc.email_id, uc.type
@@ -756,6 +785,7 @@ def get_contacts_by_user(userid=None):
         return jsonify({"error": str(e)}), 500
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/contacts/basic_info", methods=["POST"])
 @permission_required_body("team.member.view")
 def get_basic_info():
@@ -826,6 +856,7 @@ def get_basic_info():
 # ------------------- GROUPS ---------------------#
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/users/save_group", methods=["POST"])
 @permission_required_body("team.group.create")
 def save_group():
@@ -833,16 +864,17 @@ def save_group():
     try:
         data = request.get_json() or {}
 
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
         group_name = data.get("group_name")
         client_ids = data.get("client_ids")  # list
 
-        if not user_id:
+        if not baseuser:
             return jsonify({"error": "user_id is required"}), 400
         if not group_name:
             return jsonify({"error": "group_name is required"}), 400
         if not client_ids or not isinstance(client_ids, list):
             return jsonify({"error": "client_ids must be a list"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         now = datetime.utcnow().isoformat()  # timestamp
 
@@ -882,7 +914,12 @@ def save_group():
             connection.commit()
 
             # Audit logging
-            actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+            (
+                actor_user_id,
+                actor_email,
+                acting_on_behalf_of_user_id,
+                acting_on_behalf_of_email,
+            ) = build_audit_actor(baseuser)
             log_audit_event(
                 action=CONTACT_GROUP_CREATED,
                 endpoint="/users/save_group",
@@ -914,6 +951,7 @@ def save_group():
             connection.close()
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/users/edit_group", methods=["POST"])
 @permission_required_body("team.group.edit")
 def edit_group():
@@ -921,17 +959,18 @@ def edit_group():
     try:
         data = request.get_json() or {}
 
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
         group_name = data.get("group_name")
         client_ids = data.get("client_ids")
         group_id = data.get("group_id")
 
-        if not user_id:
+        if not baseuser:
             return jsonify({"error": "user_id is required"}), 400
         if not group_name:
             return jsonify({"error": "group_name is required"}), 400
         if not client_ids or not isinstance(client_ids, list):
             return jsonify({"error": "client_ids must be a list"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         connection = connect_to_rds()
         with connection.cursor() as cursor:
@@ -968,7 +1007,12 @@ def edit_group():
             connection.commit()
 
             # Audit logging
-            actor_user_id, actor_email, acting_on_behalf_of_user_id, acting_on_behalf_of_email = build_audit_actor(user_id)
+            (
+                actor_user_id,
+                actor_email,
+                acting_on_behalf_of_user_id,
+                acting_on_behalf_of_email,
+            ) = build_audit_actor(baseuser)
             log_audit_event(
                 action=CONTACT_GROUP_UPDATED,
                 endpoint="/users/edit_group",
@@ -1000,6 +1044,7 @@ def edit_group():
             connection.close()
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/users/get_group", methods=["POST"])
 @permission_required_body("team.group.view")
 def get_group():
@@ -1007,13 +1052,14 @@ def get_group():
     try:
         data = request.get_json() or {}
 
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
         group_id = data.get("group_id")
 
-        if not user_id:
+        if not baseuser:
             return jsonify({"error": "user_id is required"}), 400
         if not group_id:
             return jsonify({"error": "group_id is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         connection = connect_to_rds()
         with connection.cursor() as cursor:
@@ -1084,6 +1130,7 @@ def get_group():
             connection.close()
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/users/delete_group", methods=["POST"])
 @permission_required_body("team.group.delete")
 def delete_group():
@@ -1091,13 +1138,14 @@ def delete_group():
     try:
         data = request.get_json() or {}
 
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
         group_id = data.get("group_ids")
 
-        if not user_id:
+        if not baseuser:
             return jsonify({"error": "user_id is required"}), 400
         if not group_id:
             return jsonify({"error": "group_id is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         connection = connect_to_rds()
         with connection.cursor() as cursor:
@@ -1131,7 +1179,7 @@ def delete_group():
                 )
                 connection.commit()
 
-        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=CONTACT_GROUP_DELETED,
             endpoint="/users/delete_group",
@@ -1159,16 +1207,18 @@ def delete_group():
             connection.close()
 
 
+@permission_required_body("team.search")
 @contacts_bp.route("/users/get_all_groups", methods=["POST"])
 @permission_required_body("team.group.view")
 def get_all_groups():
     connection = None
     try:
         data = request.get_json() or {}
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
 
-        if not user_id:
+        if not baseuser:
             return jsonify({"error": "user_id is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         connection = connect_to_rds()
         with connection.cursor() as cursor:

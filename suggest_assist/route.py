@@ -4,7 +4,7 @@ import json
 import os
 from credits_route.route import Credits
 from cust_helpers import pathconfig
-from db.db_checkers import get_business_info, get_userid
+from db.db_checkers import get_business_info, get_user_id
 from flask import Blueprint, request, jsonify
 from utils.permission_required import permission_required_body
 from services.redis_service import get_redis
@@ -15,8 +15,7 @@ from utils.base_logger import get_logger
 from utils.celery_base import delayed_trigger, lock_client
 from db.rds_db import connect_to_rds
 from utils.fireworkzz import get_fireworks_response2
-from utils.normal import load_yaml_file
-
+from utils.normal import load_yaml_file, parse_composite_user_id
 
 assist_suggest_bp = Blueprint("assistsuggest", __name__)
 logger = get_logger(__name__)
@@ -48,7 +47,7 @@ async def receive_gmail_notification():
         return "Invalid Pub/Sub message data", 400
     print("got hook from", user_email)
     redis = get_redis()
-    user_id = get_userid(user_email)
+    user_id = get_user_id(user_email)
     val = await redis.exists(f"user_alive:{user_id}")
     if not val:
         print("user skipped not alive")
@@ -141,14 +140,14 @@ async def receive_gmail_notification():
 @permission_required_body("taskbox.autopilot.enable")
 async def triggerassist():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     from_email = data.get("email")
     selected_agent = data.get("selected_agent")
-
-    if not userid or not from_email:
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    if not user_id or not from_email:
         return jsonify({"error": "Missing required fields"}), 400
 
-    with UmailAutoService(userid) as service:
+    with UmailAutoService(user_id) as service:
         return await service.activate_autopilot(from_email, selected_agent)
 
 
@@ -156,14 +155,14 @@ async def triggerassist():
 @permission_required_body("taskbox.autopilot.cancel")
 def revoke_autopilot():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     target_email = data.get("email")
     pilot_override = data.get("pilot_override", False)
 
-    if not userid or not target_email:
+    if not user_id or not target_email:
         return jsonify({"error": "Missing required fields"}), 400
-
-    with UmailAutoService(userid) as service:
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    with UmailAutoService(user_id) as service:
         return service.revoke_autopilot(target_email, pilot_override)
 
 
@@ -171,45 +170,48 @@ def revoke_autopilot():
 @permission_required_body("taskbox.ai.switch")
 def changepilotmode():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     new_mode = data.get("mode")
 
-    if not userid or not new_mode:
+    if not user_id or not new_mode:
         return jsonify({"error": "Missing required fields"}), 400
-
-    with UmailAutoService(userid) as service:
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    with UmailAutoService(user_id) as service:
         return service.change_autopilot_mode(new_mode)
 
 
-@assist_suggest_bp.route("/ai_autopilot-reset/<userid>", methods=["GET"])
 @permission_required_body("taskbox.autopilot.enable")
+@assist_suggest_bp.route("/ai_autopilot-reset/<userid>", methods=["GET"])
 def reset_autopilot(userid):
+    logged_in_user_id, user_id = parse_composite_user_id(userid)
     with UmailAutoService(userid) as service:
         return service.reset_autopilot()
 
 
-@assist_suggest_bp.route("/ai_autopilot/<userid>", methods=["GET"])
 @permission_required_body("taskbox.ai.autopilot")
+@assist_suggest_bp.route("/ai_autopilot/<userid>", methods=["GET"])
 def get_autopilot(userid):
-    with UmailAutoService(userid) as service:
+    logged_in_user_id, user_id = parse_composite_user_id(userid)
+    with UmailAutoService(user_id) as service:
         autopilot_data, err, code = service.fetch_autopilot()
         if err:
             return jsonify(err), code
-        return jsonify({"user_id": userid, "autopilot": autopilot_data}), 200
+        return jsonify({"user_id": user_id, "autopilot": autopilot_data}), 200
 
 
 @assist_suggest_bp.route("/ai_autopilot-update-agent", methods=["POST"])
 @permission_required_body("taskbox.agent.assign")
 def update_selected_agent():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     target_email = data.get("email")
     selected_agent = data.get("selected_agent")
 
-    if not all([userid, target_email, selected_agent]):
+    if not all([user_id, target_email, selected_agent]):
         return jsonify({"error": "Missing required fields"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
-    with UmailAutoService(userid) as service:
+    with UmailAutoService(user_id) as service:
         # Reuse activate_autopilot logic to update selected_agent
         return service.activate_autopilot(target_email, selected_agent)
 
@@ -221,13 +223,14 @@ def update_selected_agent():
 @permission_required_body("taskbox.autopilot.enable")
 async def make_reply_email():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     from_email = data.get("email")
 
-    if not userid or not from_email:
+    if not user_id or not from_email:
         return jsonify({"error": "Missing required fields"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
-    with UmailAutoService(userid) as service:
+    with UmailAutoService(user_id) as service:
         success = await service.auto_reply_umail_email(from_email)
         if success is True:
             return jsonify({"status": "sent"}), 200
@@ -235,7 +238,7 @@ async def make_reply_email():
             return jsonify({"status": "already_replied"}), 200
         else:
             return jsonify({"error": "Unable to process auto-reply"}), 500
-    # success, msg = await helper_make_reply_email(userid=userid, from_email=from_email)
+    # success, msg = await helper_make_reply_email(user_id=user_id, from_email=from_email)
     # if success is True:
     #     return jsonify({"status": msg}), 200
     # elif success is False:
@@ -248,19 +251,20 @@ async def make_reply_email():
 @permission_required_body("taskbox.ai.suggest")
 async def triggersuggest():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     msg_body = data.get("msg_body")
     conv_id = data.get("conversation_id")
 
-    if not all([userid, conv_id]):
+    if not all([user_id, conv_id]):
         return jsonify({"error": "Missing required fields"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     if msg_body:
-        with UmailAutoService(userid) as service:
+        with UmailAutoService(user_id) as service:
             return await service.suggest_umail_reply(msg_body, conv_id)
     else:
         connection = connect_to_rds()
-        businessdata = get_business_info(connection=connection, userid=userid)
+        businessdata = get_business_info(connection=connection, user_id=user_id)
         task_credits = Credits(db=connection)
 
         business_name = businessdata.get("BusinessName") if businessdata else ""
@@ -295,7 +299,7 @@ async def triggersuggest():
         )
         ai_reply = normalize_ai_response(
             await get_fireworks_response2(
-                user_id=userid,
+                user_id=user_id,
                 user_message=filled_prompt,
                 role="system",
                 credits=task_credits,
@@ -312,9 +316,10 @@ async def triggersuggest():
 @permission_required_body("taskbox.ai.suggest")
 async def messcheckgmail():
     data = request.json
-    userid = data.get("user_id")
+    user_id = data.get("user_id")
     userinput = data.get("userinput")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     ##print("userinp", userinput)
     # Connect to DB
-    with UmailAutoService(userid) as service:
-        return await service.generate_file_from_ai(userid, user_input=userinput)
+    with UmailAutoService(user_id) as service:
+        return await service.generate_file_from_ai(user_id, user_input=userinput)

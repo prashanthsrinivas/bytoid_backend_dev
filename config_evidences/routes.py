@@ -10,6 +10,7 @@ from utils.permission_required import permission_required_body
 from db.lance_db_service import LanceDBServer
 from db.db_checkers import get_email_by_id
 from services.audit_log_service import (
+    build_audit_actor,
     log_audit_event,
     EVIDENCE_CONFIG_ADDED,
     EVIDENCE_CONFIG_UPDATED,
@@ -231,7 +232,7 @@ def delete_evidence_config():
 def add_evidence_entry():
     try:
         data = request.get_json()
-        user_id = data.get("user_id")
+        baseuser = data.get("user_id")
         entry_data = {
             "type": data.get("type"),
             "number": data.get("number"),
@@ -243,6 +244,7 @@ def add_evidence_entry():
 
         if not user_id:
             return jsonify({"error": "user_id is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
         try:
             _validate_evidence_entry(entry_data)
@@ -267,14 +269,16 @@ def add_evidence_entry():
             if result.get("status") != "success":
                 return jsonify(result), 500
 
-        actor_email = get_email_by_id(user_id)
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
         log_audit_event(
             action=EVIDENCE_CONFIG_ADDED,
             endpoint="/runbook/evidence/add",
             ip=request.remote_addr,
             status="success",
-            actor_user_id=user_id,
+            actor_user_id=actor_uid,
             actor_email=actor_email,
+            acting_on_behalf_of_email=behalf_email,
+            acting_on_behalf_of_user_id=behalf_uid,
             metadata={
                 "evidence_type": entry_data.get("type"),
                 "artifact": entry_data.get("artifact"),
@@ -315,6 +319,7 @@ async def runbook_evidence_configure():
                 ),
                 400,
             )
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         await dbserver.update_runbook(
             user_id,

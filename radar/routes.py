@@ -34,6 +34,7 @@ from utils.fireworkzz import (
 import os
 from utils.img_tokens import image_credit_cost
 from utils.normal import load_yaml_file, parse_composite_user_id
+from utils.normal import load_yaml_file, parse_composite_user_id
 from utils.base_logger import get_logger
 from utils.app_configs import IS_DEV
 
@@ -139,7 +140,9 @@ async def assign_radar():
             )
 
         try:
-            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
+                user_id
+            )
             log_audit_event(
                 action=REPORT_SHARED,
                 endpoint="/radar/assign",
@@ -192,7 +195,9 @@ async def revoke_radar():
             return jsonify({"error": error}), 400
 
         try:
-            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(user_id)
+            actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(
+                user_id
+            )
             log_audit_event(
                 action=REPORT_SHARE_REVOKED,
                 endpoint="/radar/revoke",
@@ -253,6 +258,7 @@ def get_radar_sharedconfig(user_id):
 @radar_bp.route("/radar/apps/list/<userid>", methods=["GET"])
 @permission_required_body("radar.view")
 def radarapp(userid):
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
 
@@ -1228,6 +1234,7 @@ async def get_radar_doc_byid():
     userid = data.get("user_id") or data.get("userid")
     id = data.get("id")
     docid = data.get("docid")
+    logged_in_user_id, userid = parse_composite_user_id(userid)
     dbserver = LanceDBServer()
 
     data = await dbserver.radar_get_review(user_id=userid, review_id=docid)
@@ -1257,6 +1264,7 @@ async def radar_review():
 
     if not userid:
         return jsonify({"error": "userid required"}), 400
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     job_id, state = await create_radar_job(userid, data, "review")
 
@@ -1285,6 +1293,7 @@ async def radar_analyze():
     data = request.get_json()
 
     userid = data.get("userid")
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     job_id, state = await create_radar_job(userid, data, "analyze")
 
@@ -1312,6 +1321,7 @@ async def radar_decide():
     data = request.get_json()
 
     userid = data.get("userid")
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     job_id, state = await create_radar_job(userid, data, "decide")
 
@@ -1356,6 +1366,7 @@ async def radar_status():
 async def radar_current():
 
     userid = request.args.get("userid")
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     redis = get_redis()
 
@@ -2238,6 +2249,7 @@ async def radar_knowledge_analyze():
 
     if not userid or not user_analyze_input:
         return jsonify({"error": "userid and analyze_input are required"}), 400
+    logged_in_user_id, userid = parse_composite_user_id(userid)
 
     # 🔹 Files & dynamic top_k logic
     filenames = data_sources.get("filenames", [])
@@ -2428,6 +2440,7 @@ async def delete_radar_files():
 
     user_id = data.get("user_id")
     review_id = data.get("review_id")
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     dbserver = LanceDBServer()
     result = await dbserver.radar_delete_review(user_id, review_id)

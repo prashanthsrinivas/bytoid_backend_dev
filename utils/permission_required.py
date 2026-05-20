@@ -143,13 +143,14 @@ def permission_required(required_permission):
                         if owner["user_type"] == "admin":
                             cursor.execute(
                                 """
-                                SELECT 1 FROM special_access
-                                WHERE grantor_admin_id=%s AND target_admin_id=%s
+                                SELECT access_level FROM special_access
+                                WHERE grantor_admin_id=%s AND target_admin_id=%s AND status='approved'
                             """,
                                 (owner_user_id, user_id),
                             )
 
-                            if not cursor.fetchone():
+                            sa_row = cursor.fetchone()
+                            if not sa_row:
                                 return (
                                     jsonify({"error": "Admin access restricted"}),
                                     403,
@@ -157,6 +158,19 @@ def permission_required(required_permission):
 
                             g.acting_on_behalf_of_user_id = owner_user_id
                             g.acting_on_behalf_of_email = owner.get("email")
+                            g.access_level = sa_row["access_level"]
+
+                            # Enforce viewer access: block all write operations
+                            if g.access_level == "viewer":
+                                method = request.method
+                                if method in ("POST", "PUT", "PATCH", "DELETE"):
+                                    return (
+                                        jsonify(
+                                            {"error": "Viewer access cannot modify resources"}
+                                        ),
+                                        403,
+                                    )
+
                             return f(*args, **kwargs)
 
                     # NORMAL USER PATH
@@ -251,13 +265,14 @@ def permission_required_body(required_permission):
 
                             cursor.execute(
                                 """
-                                SELECT 1 FROM special_access
-                                WHERE grantor_admin_id=%s AND target_admin_id=%s
+                                SELECT access_level FROM special_access
+                                WHERE grantor_admin_id=%s AND target_admin_id=%s AND status='approved'
                                 """,
                                 (owner_user_id, user_id),
                             )
 
-                            if not cursor.fetchone():
+                            sa_row = cursor.fetchone()
+                            if not sa_row:
                                 return (
                                     jsonify({"error": "Admin access restricted"}),
                                     403,
@@ -265,6 +280,18 @@ def permission_required_body(required_permission):
 
                             g.acting_on_behalf_of_user_id = owner_user_id
                             g.acting_on_behalf_of_email = owner.get("email")
+                            g.access_level = sa_row["access_level"]
+
+                            # Enforce viewer access: block all write operations
+                            if g.access_level == "viewer":
+                                method = request.method
+                                if method in ("POST", "PUT", "PATCH", "DELETE"):
+                                    return (
+                                        jsonify(
+                                            {"error": "Viewer access cannot modify resources"}
+                                        ),
+                                        403,
+                                    )
 
                             return None
 

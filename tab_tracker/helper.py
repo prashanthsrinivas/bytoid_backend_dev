@@ -5,23 +5,28 @@ from utils.normal import ensure_dir
 import os
 import json
 
-from utils.s3_utils import delete_file_from_s3, read_json_from_s3, upload_any_file, save_any_s3
+from utils.s3_utils import (
+    delete_file_from_s3,
+    read_json_from_s3,
+    upload_any_file,
+    save_any_s3,
+)
+
 
 def _get_local_tmp_path():
     path = "data/tmp_json/config_tracker.json"
     ensure_dir(os.path.dirname(path))
     return path
 
+
 def check_config_exist(user_id):
     config_path = f"{user_id}/tracker/config_tracker.json"
     config_data = read_json_from_s3(config_path)
-    return config_path,config_data
+    return config_path, config_data
+
 
 def create_empty_tracker_config(user_id):
-    config_data = {
-        "user_id": user_id,
-        "trackers": []
-    }
+    config_data = {"user_id": user_id, "trackers": []}
 
     filename = "config_tracker.json"
     local_path = f"/tmp/{filename}"
@@ -31,23 +36,16 @@ def create_empty_tracker_config(user_id):
         json.dump(config_data, f, indent=2)
 
     upload_any_file(
-        file_path=local_path,
-        user_id=user_id,
-        file_name=s3_key,
-        type="tracker"
+        file_path=local_path, user_id=user_id, file_name=s3_key, type="tracker"
     )
 
     os.remove(local_path)
 
-    return s3_key 
+    return s3_key
+
 
 def create_tracker_config(
-    config_path,
-    user_id,
-    name,
-    tracker_type,
-    runbook_id,
-    block_id=None
+    config_path, user_id, name, tracker_type, runbook_id, block_id=None
 ):
     local_path = _get_local_tmp_path()
     user_id = str(user_id)
@@ -55,10 +53,7 @@ def create_tracker_config(
     # Step 1: Read config
     config_data = read_json_from_s3(config_path)
     if not config_data:
-        config_data = {
-            "user_id": user_id,
-            "trackers": []
-        }
+        config_data = {"user_id": user_id, "trackers": []}
 
     # Step 2: Prevent duplicate name
     for t in config_data["trackers"]:
@@ -75,7 +70,7 @@ def create_tracker_config(
         "type": tracker_type,  # table | matrix | scorecard
         "runbook_id": runbook_id,
         "block_id": block_id,
-        "file_path": file_path
+        "file_path": file_path,
     }
 
     config_data["trackers"].append(new_tracker)
@@ -86,22 +81,15 @@ def create_tracker_config(
 
     # Step 5: Upload
     upload_any_file(
-        file_path=local_path,
-        user_id=user_id,
-        file_name=config_path,
-        type="tracker"
+        file_path=local_path, user_id=user_id, file_name=config_path, type="tracker"
     )
 
     os.remove(local_path)
 
     return tracker_id, file_path
 
-def update_tracker_config(
-    config_path,
-    user_id,
-    tracker_id,
-    updates
-):
+
+def update_tracker_config(config_path, user_id, tracker_id, updates):
     local_path = _get_local_tmp_path()
     user_id = str(user_id)
 
@@ -124,21 +112,15 @@ def update_tracker_config(
         json.dump(config_data, f, indent=2)
 
     upload_any_file(
-        file_path=local_path,
-        user_id=user_id,
-        file_name=config_path,
-        type="tracker"
+        file_path=local_path, user_id=user_id, file_name=config_path, type="tracker"
     )
 
     os.remove(local_path)
 
     return True
 
-def delete_tracker_config(
-    config_path,
-    user_id,
-    tracker_id
-):
+
+def delete_tracker_config(config_path, user_id, tracker_id):
     local_path = _get_local_tmp_path()
     user_id = str(user_id)
 
@@ -159,19 +141,14 @@ def delete_tracker_config(
         raise ValueError("Tracker not found")
 
     # Step 1: Remove from config
-    config_data["trackers"] = [
-        t for t in trackers if t["tracker_id"] != tracker_id
-    ]
+    config_data["trackers"] = [t for t in trackers if t["tracker_id"] != tracker_id]
 
     # Step 2: Save config
     with open(local_path, "w") as f:
         json.dump(config_data, f, indent=2)
 
     upload_any_file(
-        file_path=local_path,
-        user_id=user_id,
-        file_name=config_path,
-        type="tracker"
+        file_path=local_path, user_id=user_id, file_name=config_path, type="tracker"
     )
 
     os.remove(local_path)
@@ -185,7 +162,7 @@ def delete_tracker_config(
 def create_tracker_file(
     user_id,
     tracker_id,
-    tracker_type,   # table | matrix | scorecard
+    tracker_type,  # table | matrix | scorecard
     runbook_id,
     block_config=None,  # Optional: block schema from runbook
 ):
@@ -205,7 +182,7 @@ def create_tracker_file(
         "tracker_id": tracker_id,
         "type": tracker_type,
         "runbook_id": runbook_id,
-        "source_blocks": []
+        "source_blocks": [],
     }
 
     # Step 2: Type-specific initialization with schema from block_config
@@ -216,20 +193,17 @@ def create_tracker_file(
         if block_config and "columns" in block_config:
             # Initialize columns from block schema
             for idx, col in enumerate(block_config["columns"]):
-                columns.append({
-                    "id": f"col_{idx + 1}",
-                    "name": col.get("name", f"Column {idx + 1}"),
-                    "type": col.get("type", "text"),
-                    "source_column": col.get("name", f"Column {idx + 1}"),
-                    "enum": col.get("enum", [])
-                })
+                columns.append(
+                    {
+                        "id": f"col_{idx + 1}",
+                        "name": col.get("name", f"Column {idx + 1}"),
+                        "type": col.get("type", "text"),
+                        "source_column": col.get("name", f"Column {idx + 1}"),
+                        "enum": col.get("enum", []),
+                    }
+                )
 
-        tracker_data.update({
-            "schema": {
-                "columns": columns
-            },
-            "rows": []
-        })
+        tracker_data.update({"schema": {"columns": columns}, "rows": []})
 
     # ✅ MATRIX
     elif tracker_type == "matrix":
@@ -246,14 +220,16 @@ def create_tracker_file(
             if "cell_value" in block_config:
                 cell_value_label = block_config["cell_value"]
 
-        tracker_data.update({
-            "schema": {
-                "rows": rows,
-                "columns": columns,
-                "cell_value_label": cell_value_label
-            },
-            "cells": []
-        })
+        tracker_data.update(
+            {
+                "schema": {
+                    "rows": rows,
+                    "columns": columns,
+                    "cell_value_label": cell_value_label,
+                },
+                "cells": [],
+            }
+        )
 
     # ✅ SCORECARD
     elif tracker_type == "scorecard":
@@ -261,15 +237,12 @@ def create_tracker_file(
         if block_config and "metrics" in block_config:
             # Initialize metrics from block schema
             for metric in block_config["metrics"]:
-                metric_name = metric if isinstance(metric, str) else metric.get("name", "")
+                metric_name = (
+                    metric if isinstance(metric, str) else metric.get("name", "")
+                )
                 metrics.append(metric_name)
 
-        tracker_data.update({
-            "schema": {
-                "metrics": metrics
-            },
-            "records": []
-        })
+        tracker_data.update({"schema": {"metrics": metrics}, "records": []})
 
     else:
         raise ValueError("Invalid tracker type")
@@ -280,10 +253,7 @@ def create_tracker_file(
 
     # Step 4: Upload to S3
     upload_any_file(
-        file_path=local_path,
-        user_id=user_id,
-        s3_key_C=s3_path,
-        type="tracker"
+        file_path=local_path, user_id=user_id, s3_key_C=s3_path, type="tracker"
     )
 
     # Step 5: Cleanup
@@ -293,6 +263,7 @@ def create_tracker_file(
         pass
 
     return s3_path
+
 
 def normalize_block_for_append(block, tracker_type):
     """
@@ -324,7 +295,10 @@ def normalize_block_for_append(block, tracker_type):
                     elif isinstance(rows[0], (list, tuple)) and headers:
                         converted_rows = []
                         for row_array in rows:
-                            row_dict = {headers[i]: row_array[i] for i in range(min(len(headers), len(row_array)))}
+                            row_dict = {
+                                headers[i]: row_array[i]
+                                for i in range(min(len(headers), len(row_array)))
+                            }
                             converted_rows.append(row_dict)
                         block["headers"] = headers
                         block["rows"] = converted_rows
@@ -352,11 +326,13 @@ def normalize_block_for_append(block, tracker_type):
                             for col_idx, cell_value in enumerate(row):
                                 if col_idx < len(x_values):
                                     col_label = x_values[col_idx]
-                                    cells.append({
-                                        "row": row_label,
-                                        "column": col_label,
-                                        "value": cell_value
-                                    })
+                                    cells.append(
+                                        {
+                                            "row": row_label,
+                                            "column": col_label,
+                                            "value": cell_value,
+                                        }
+                                    )
 
                     block["data"] = cells
                     block["x_axis"] = x_axis
@@ -381,7 +357,10 @@ def normalize_block_for_append(block, tracker_type):
                     block["headers"] = list(block["data"][0].keys())
                     block["rows"] = block["data"]
             elif "columns" in block and "rows" in block:
-                block["headers"] = [c.get("name", c) if isinstance(c, dict) else c for c in block.get("columns", [])]
+                block["headers"] = [
+                    c.get("name", c) if isinstance(c, dict) else c
+                    for c in block.get("columns", [])
+                ]
 
     elif tracker_type == "matrix":
         if "data" not in block and "cells" in block:
@@ -392,7 +371,9 @@ def normalize_block_for_append(block, tracker_type):
             if "records" in block:
                 block["data"] = block["records"]
             elif "metrics" in block and isinstance(block["metrics"], dict):
-                block["data"] = [{"metric": k, "value": v} for k, v in block["metrics"].items()]
+                block["data"] = [
+                    {"metric": k, "value": v} for k, v in block["metrics"].items()
+                ]
 
     return block
 
@@ -425,18 +406,16 @@ def append_table(tracker, block, result_id):
         if header not in col_map:
             # New column - create it
             new_col_id = f"col_{len(schema_cols) + 1}"
-            new_col = {
-                "id": new_col_id,
-                "name": header,
-                "source_column": header
-            }
+            new_col = {"id": new_col_id, "name": header, "source_column": header}
             schema_cols.append(new_col)
             col_map[header] = new_col_id
-            new_columns_created.append({
-                "column_name": header,
-                "column_id": new_col_id,
-                "reason": "Not found in tracker schema"
-            })
+            new_columns_created.append(
+                {
+                    "column_name": header,
+                    "column_id": new_col_id,
+                    "reason": "Not found in tracker schema",
+                }
+            )
         else:
             # Existing column
             columns_matched.append(header)
@@ -451,11 +430,12 @@ def append_table(tracker, block, result_id):
 
         # 🔒 Dedup check: Use row_index if micro_id is missing
         exists = any(
-            r["result_id"] == result_id and
-            r["source"]["block_id"] == block["block_id"] and
-            (
+            r["result_id"] == result_id
+            and r["source"]["block_id"] == block["block_id"]
+            and (
                 # If micro_id exists, use it for dedup
-                (micro_id is not None and r["source"]["micro_id"] == micro_id) or
+                (micro_id is not None and r["source"]["micro_id"] == micro_id)
+                or
                 # If micro_id is missing, use row_index as unique identifier
                 (micro_id is None and r["source"]["row_index"] == idx)
             )
@@ -475,11 +455,7 @@ def append_table(tracker, block, result_id):
                 # handle unexpected key (new column at row level)
                 new_col_id = f"col_{len(schema_cols) + 1}"
 
-                new_col = {
-                    "id": new_col_id,
-                    "name": key,
-                    "source_column": key
-                }
+                new_col = {"id": new_col_id, "name": key, "source_column": key}
                 schema_cols.append(new_col)
 
                 col_map[key] = new_col_id
@@ -487,32 +463,35 @@ def append_table(tracker, block, result_id):
 
                 # Track if this is a new column not in headers
                 if key not in new_columns_created:
-                    new_columns_created.append({
-                        "column_name": key,
-                        "column_id": new_col_id,
-                        "reason": "Found in row data but not in headers"
-                    })
+                    new_columns_created.append(
+                        {
+                            "column_name": key,
+                            "column_id": new_col_id,
+                            "reason": "Found in row data but not in headers",
+                        }
+                    )
 
-        tracker["rows"].append({
-            "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
-            "result_id": result_id,
-            "source": {
-                "block_id": block["block_id"],
-                "micro_id": micro_id,
-                "row_index": idx
-            },
-            "values": values,
-            "last_updated_from": "report"
-        })
+        tracker["rows"].append(
+            {
+                "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
+                "result_id": result_id,
+                "source": {
+                    "block_id": block["block_id"],
+                    "micro_id": micro_id,
+                    "row_index": idx,
+                },
+                "values": values,
+                "last_updated_from": "report",
+            }
+        )
 
         rows_appended += 1
 
     # Step 3: Update source_blocks
     if block["block_id"] not in [b["block_id"] for b in tracker["source_blocks"]]:
-        tracker["source_blocks"].append({
-            "block_id": block["block_id"],
-            "block_title": block.get("block_title", "")
-        })
+        tracker["source_blocks"].append(
+            {"block_id": block["block_id"], "block_title": block.get("block_title", "")}
+        )
 
     # Return metadata about changes
     return {
@@ -521,9 +500,10 @@ def append_table(tracker, block, result_id):
         "column_discrepancies": {
             "matched_columns": sorted(list(columns_matched)),
             "new_columns_created": new_columns_created,
-            "total_columns_in_schema": len(schema_cols)
-        }
+            "total_columns_in_schema": len(schema_cols),
+        },
     }
+
 
 def append_matrix(tracker, block, result_id):
     """
@@ -567,9 +547,9 @@ def append_matrix(tracker, block, result_id):
 
         # Step 2: Dedup check
         exists = any(
-            c["row"] == row_key and
-            c["column"] == col_key and
-            c["result_id"] == result_id
+            c["row"] == row_key
+            and c["column"] == col_key
+            and c["result_id"] == result_id
             for c in tracker["cells"]
         )
         if exists:
@@ -577,21 +557,17 @@ def append_matrix(tracker, block, result_id):
             continue
 
         # Step 3: Append
-        tracker["cells"].append({
-            "row": row_key,
-            "column": col_key,
-            "value": value,
-            "result_id": result_id
-        })
+        tracker["cells"].append(
+            {"row": row_key, "column": col_key, "value": value, "result_id": result_id}
+        )
 
         cells_appended += 1
 
     # Step 4: Source tracking
     if block["block_id"] not in [b["block_id"] for b in tracker["source_blocks"]]:
-        tracker["source_blocks"].append({
-            "block_id": block["block_id"],
-            "block_title": block.get("block_title", "")
-        })
+        tracker["source_blocks"].append(
+            {"block_id": block["block_id"], "block_title": block.get("block_title", "")}
+        )
 
     # Return metadata about changes
     return {
@@ -601,8 +577,8 @@ def append_matrix(tracker, block, result_id):
             "new_rows": new_rows_created,
             "new_columns": new_columns_created,
             "total_rows": len(schema["rows"]),
-            "total_columns": len(schema["columns"])
-        }
+            "total_columns": len(schema["columns"]),
+        },
     }
 
 
@@ -642,8 +618,7 @@ def append_scorecard(tracker, block, result_id):
 
         # Step 2: Dedup check
         exists = any(
-            r["metric"] == metric and
-            r["result_id"] == result_id
+            r["metric"] == metric and r["result_id"] == result_id
             for r in tracker["records"]
         )
         if exists:
@@ -651,20 +626,17 @@ def append_scorecard(tracker, block, result_id):
             continue
 
         # Step 3: Append
-        tracker["records"].append({
-            "metric": metric,
-            "value": value,
-            "result_id": result_id
-        })
+        tracker["records"].append(
+            {"metric": metric, "value": value, "result_id": result_id}
+        )
 
         records_appended += 1
 
     # Step 4: Source tracking
     if block["block_id"] not in [b["block_id"] for b in tracker["source_blocks"]]:
-        tracker["source_blocks"].append({
-            "block_id": block["block_id"],
-            "block_title": block.get("block_title", "")
-        })
+        tracker["source_blocks"].append(
+            {"block_id": block["block_id"], "block_title": block.get("block_title", "")}
+        )
 
     # Return metadata about changes
     return {
@@ -672,9 +644,10 @@ def append_scorecard(tracker, block, result_id):
         "records_skipped_dedup": records_skipped_dedup,
         "metric_discrepancies": {
             "new_metrics": new_metrics_created,
-            "total_metrics": len(schema["metrics"])
-        }
+            "total_metrics": len(schema["metrics"]),
+        },
     }
+
 
 def append_to_tracker(tracker, block, result_id):
     """
@@ -717,7 +690,7 @@ def save_tracker_file(user_id, tracker_id, tracker_data):
         file_path=local_path,
         user_id=user_id,
         s3_key_C=s3_path,  # Use custom key to bypass basename extraction
-        type="tracker"
+        type="tracker",
     )
 
     try:
@@ -728,7 +701,9 @@ def save_tracker_file(user_id, tracker_id, tracker_data):
     return s3_path
 
 
-def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, block_config=None):
+def ensure_tracker_file_exists(
+    user_id, tracker_id, tracker_type, runbook_id, block_config=None
+):
     """
     Check if tracker file exists. If not, create it with schema.
     Returns (exists: bool, tracker_data: dict)
@@ -742,7 +717,11 @@ def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, bl
             if tracker_type == "table":
                 tracker_data["schema"] = {"columns": []}
             elif tracker_type == "matrix":
-                tracker_data["schema"] = {"rows": [], "columns": [], "cell_value_label": "Value"}
+                tracker_data["schema"] = {
+                    "rows": [],
+                    "columns": [],
+                    "cell_value_label": "Value",
+                }
             elif tracker_type == "scorecard":
                 tracker_data["schema"] = {"metrics": []}
         if tracker_type == "table" and "rows" not in tracker_data:
@@ -759,7 +738,7 @@ def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, bl
         "tracker_id": tracker_id,
         "type": tracker_type,
         "runbook_id": runbook_id,
-        "source_blocks": []
+        "source_blocks": [],
     }
 
     # Initialize schema based on type and block_config
@@ -767,18 +746,17 @@ def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, bl
         columns = []
         if block_config and "columns" in block_config:
             for idx, col in enumerate(block_config["columns"]):
-                columns.append({
-                    "id": f"col_{idx + 1}",
-                    "name": col.get("name", f"Column {idx + 1}"),
-                    "type": col.get("type", "text"),
-                    "source_column": col.get("name", f"Column {idx + 1}"),
-                    "enum": col.get("enum", [])
-                })
+                columns.append(
+                    {
+                        "id": f"col_{idx + 1}",
+                        "name": col.get("name", f"Column {idx + 1}"),
+                        "type": col.get("type", "text"),
+                        "source_column": col.get("name", f"Column {idx + 1}"),
+                        "enum": col.get("enum", []),
+                    }
+                )
 
-        tracker_data.update({
-            "schema": {"columns": columns},
-            "rows": []
-        })
+        tracker_data.update({"schema": {"columns": columns}, "rows": []})
 
     elif tracker_type == "matrix":
         rows = []
@@ -793,26 +771,27 @@ def ensure_tracker_file_exists(user_id, tracker_id, tracker_type, runbook_id, bl
             if "cell_value" in block_config:
                 cell_value_label = block_config["cell_value"]
 
-        tracker_data.update({
-            "schema": {
-                "rows": rows,
-                "columns": columns,
-                "cell_value_label": cell_value_label
-            },
-            "cells": []
-        })
+        tracker_data.update(
+            {
+                "schema": {
+                    "rows": rows,
+                    "columns": columns,
+                    "cell_value_label": cell_value_label,
+                },
+                "cells": [],
+            }
+        )
 
     elif tracker_type == "scorecard":
         metrics = []
         if block_config and "metrics" in block_config:
             for metric in block_config["metrics"]:
-                metric_name = metric if isinstance(metric, str) else metric.get("name", "")
+                metric_name = (
+                    metric if isinstance(metric, str) else metric.get("name", "")
+                )
                 metrics.append(metric_name)
 
-        tracker_data.update({
-            "schema": {"metrics": metrics},
-            "records": []
-        })
+        tracker_data.update({"schema": {"metrics": metrics}, "records": []})
 
     # Save the newly created tracker
     save_tracker_file(user_id, tracker_id, tracker_data)
@@ -836,7 +815,11 @@ def apply_entry_updates(tracker_data, tracker_type, result_id, entry_updates):
             col_label = update.get("column")
             new_value = update.get("value")
             for cell in tracker_data.get("cells", []):
-                if cell.get("result_id") == result_id and cell.get("row") == row_label and cell.get("column") == col_label:
+                if (
+                    cell.get("result_id") == result_id
+                    and cell.get("row") == row_label
+                    and cell.get("column") == col_label
+                ):
                     cell["value"] = new_value
                     break
     elif tracker_type == "scorecard":
@@ -844,7 +827,10 @@ def apply_entry_updates(tracker_data, tracker_type, result_id, entry_updates):
             metric = update.get("metric")
             new_value = update.get("value")
             for record in tracker_data.get("records", []):
-                if record.get("result_id") == result_id and record.get("metric") == metric:
+                if (
+                    record.get("result_id") == result_id
+                    and record.get("metric") == metric
+                ):
                     record["value"] = new_value
                     break
 
@@ -853,7 +839,10 @@ def sync_block_to_tracker(user_id, tracker_id, block, result_id):
     config_path, config_data = check_config_exist(user_id)
     if not config_data:
         return
-    tracker_entry = next((t for t in config_data.get("trackers", []) if t["tracker_id"] == tracker_id), None)
+    tracker_entry = next(
+        (t for t in config_data.get("trackers", []) if t["tracker_id"] == tracker_id),
+        None,
+    )
     if not tracker_entry:
         return
     tracker_data = read_json_from_s3(tracker_entry["file_path"])
@@ -877,11 +866,23 @@ def _update_or_append_entries(tracker_data, block, result_id):
 
 def _update_or_append_table(tracker, block, result_id, block_id):
     # Check if rows for this result_id + block_id already exist in the tracker
-    rows_to_delete = [r for r in tracker.get("rows", []) if r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id]
+    rows_to_delete = [
+        r
+        for r in tracker.get("rows", [])
+        if r.get("result_id") == result_id
+        and r.get("source", {}).get("block_id") == block_id
+    ]
 
     if rows_to_delete:
         # Delete old rows for this result_id + block_id, then append new ones
-        tracker["rows"] = [r for r in tracker.get("rows", []) if not (r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id)]
+        tracker["rows"] = [
+            r
+            for r in tracker.get("rows", [])
+            if not (
+                r.get("result_id") == result_id
+                and r.get("source", {}).get("block_id") == block_id
+            )
+        ]
         append_table(tracker, block, result_id)
     else:
         # No existing rows found, just append normally
@@ -907,14 +908,17 @@ def _detect_row_changes(current_rows, new_rows):
         - new_indices: list of indices beyond len(current_rows)
     """
     changed_indices = [
-        i for i in range(min(len(current_rows), len(new_rows)))
+        i
+        for i in range(min(len(current_rows), len(new_rows)))
         if current_rows[i] != new_rows[i]
     ]
     new_indices = list(range(len(current_rows), len(new_rows)))
     return changed_indices, new_indices
 
 
-def _apply_row_changes_to_tracker(tracker_data, new_rows, result_id, block_id, changed_indices, new_indices):
+def _apply_row_changes_to_tracker(
+    tracker_data, new_rows, result_id, block_id, changed_indices, new_indices
+):
     """
     Surgically update tracker rows: only update changed rows, append new ones.
     Preserves unchanged rows in the tracker.
@@ -928,8 +932,10 @@ def _apply_row_changes_to_tracker(tracker_data, new_rows, result_id, block_id, c
             row_dict = new_rows[idx]
             # Find tracker row with matching row_index
             matching_rows = [
-                r for r in tracker_data.get("rows", [])
-                if r.get("result_id") == result_id and r.get("source", {}).get("row_index") == idx
+                r
+                for r in tracker_data.get("rows", [])
+                if r.get("result_id") == result_id
+                and r.get("source", {}).get("row_index") == idx
             ]
             for tr in matching_rows:
                 values = {}
@@ -948,50 +954,70 @@ def _apply_row_changes_to_tracker(tracker_data, new_rows, result_id, block_id, c
                 if key not in col_map:
                     # New column found in row, add to schema
                     new_col_id = f"col_{len(schema_cols) + 1}"
-                    new_col = {
-                        "id": new_col_id,
-                        "name": key,
-                        "source_column": key
-                    }
+                    new_col = {"id": new_col_id, "name": key, "source_column": key}
                     schema_cols.append(new_col)
                     col_map[key] = new_col_id
                     values[new_col_id] = val
                 else:
                     values[col_map[key]] = val
 
-            tracker_data.get("rows", []).append({
-                "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
-                "result_id": result_id,
-                "source": {
-                    "block_id": block_id,
-                    "micro_id": None,
-                    "row_index": idx
-                },
-                "values": values,
-                "last_updated_from": "sync"
-            })
+            tracker_data.get("rows", []).append(
+                {
+                    "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
+                    "result_id": result_id,
+                    "source": {
+                        "block_id": block_id,
+                        "micro_id": None,
+                        "row_index": idx,
+                    },
+                    "values": values,
+                    "last_updated_from": "sync",
+                }
+            )
 
 
 def _update_or_append_matrix(tracker, block, result_id, block_id):
-    cells_to_update = [c for c in tracker.get("cells", []) if c.get("result_id") == result_id]
+    cells_to_update = [
+        c for c in tracker.get("cells", []) if c.get("result_id") == result_id
+    ]
     if cells_to_update:
-        tracker["cells"] = [c for c in tracker.get("cells", []) if not (c.get("result_id") == result_id and any(cd.get("result_id") == result_id for cd in block.get("data", [])))]
-        tracker["cells"].extend([dict(c, result_id=result_id) for c in block.get("data", [])])
+        tracker["cells"] = [
+            c
+            for c in tracker.get("cells", [])
+            if not (
+                c.get("result_id") == result_id
+                and any(
+                    cd.get("result_id") == result_id for cd in block.get("data", [])
+                )
+            )
+        ]
+        tracker["cells"].extend(
+            [dict(c, result_id=result_id) for c in block.get("data", [])]
+        )
     else:
         append_matrix(tracker, block, result_id)
 
 
 def _update_or_append_scorecard(tracker, block, result_id, block_id):
-    records_to_update = [rec for rec in tracker.get("records", []) if rec.get("result_id") == result_id]
+    records_to_update = [
+        rec for rec in tracker.get("records", []) if rec.get("result_id") == result_id
+    ]
     if records_to_update:
-        tracker["records"] = [rec for rec in tracker.get("records", []) if rec.get("result_id") != result_id]
-        tracker["records"].extend([dict(rec, result_id=result_id) for rec in block.get("data", [])])
+        tracker["records"] = [
+            rec
+            for rec in tracker.get("records", [])
+            if rec.get("result_id") != result_id
+        ]
+        tracker["records"].extend(
+            [dict(rec, result_id=result_id) for rec in block.get("data", [])]
+        )
     else:
         append_scorecard(tracker, block, result_id)
 
 
 def sync_tracker_to_runbook_block(dbserver, user_id, result_id, block_id, tracker_data):
     import asyncio
+
     async def _sync():
         result_data = await dbserver.runbook_get_result(user_id, result_id)
         if result_data.get("status") != "completed":
@@ -1001,16 +1027,21 @@ def sync_tracker_to_runbook_block(dbserver, user_id, result_id, block_id, tracke
         target_block = next((b for b in blocks if b.get("block_id") == block_id), None)
         if not target_block:
             return
-        updated_micro = _rebuild_micro_blocks_from_tracker(tracker_data, result_id, block_id)
+        updated_micro = _rebuild_micro_blocks_from_tracker(
+            tracker_data, result_id, block_id
+        )
         target_block["micro_blocks"] = updated_micro
         await dbserver.update_runbook_result(user_id, result_id, {"blocks": blocks})
+
     asyncio.run(_sync())
 
 
 def _rebuild_micro_blocks_from_tracker(tracker_data, result_id, block_id):
     tracker_type = tracker_data.get("type")
     if tracker_type == "table":
-        rows = [r for r in tracker_data.get("rows", []) if r.get("result_id") == result_id]
+        rows = [
+            r for r in tracker_data.get("rows", []) if r.get("result_id") == result_id
+        ]
         if not rows:
             return []
         schema_cols = tracker_data.get("schema", {}).get("columns", [])
@@ -1022,15 +1053,22 @@ def _rebuild_micro_blocks_from_tracker(tracker_data, result_id, block_id):
                 col_name = col_id_to_name.get(col_id, col_id)
                 row_dict[col_name] = val
             rebuilt_rows.append(row_dict)
-        return [{
-            "type": "table_schema",
-            "data": {
-                "rows": rebuilt_rows,
-                "columns": [{"name": col["source_column"], "id": col["id"]} for col in schema_cols]
+        return [
+            {
+                "type": "table_schema",
+                "data": {
+                    "rows": rebuilt_rows,
+                    "columns": [
+                        {"name": col["source_column"], "id": col["id"]}
+                        for col in schema_cols
+                    ],
+                },
             }
-        }]
+        ]
     elif tracker_type == "matrix":
-        cells = [c for c in tracker_data.get("cells", []) if c.get("result_id") == result_id]
+        cells = [
+            c for c in tracker_data.get("cells", []) if c.get("result_id") == result_id
+        ]
         if not cells:
             return []
         schema = tracker_data.get("schema", {})
@@ -1042,20 +1080,23 @@ def _rebuild_micro_blocks_from_tracker(tracker_data, result_id, block_id):
             col_idx = columns.index(cell["column"]) if cell["column"] in columns else -1
             if row_idx >= 0 and col_idx >= 0:
                 matrix[row_idx][col_idx] = cell["value"]
-        return [{
-            "type": "matrix_schema",
-            "data": {"matrix": matrix},
-            "x_axis": {"values": columns},
-            "y_axis": {"values": rows}
-        }]
+        return [
+            {
+                "type": "matrix_schema",
+                "data": {"matrix": matrix},
+                "x_axis": {"values": columns},
+                "y_axis": {"values": rows},
+            }
+        ]
     elif tracker_type == "scorecard":
-        records = [rec for rec in tracker_data.get("records", []) if rec.get("result_id") == result_id]
+        records = [
+            rec
+            for rec in tracker_data.get("records", [])
+            if rec.get("result_id") == result_id
+        ]
         if not records:
             return []
-        return [{
-            "type": "scorecard_schema",
-            "data": {"records": records}
-        }]
+        return [{"type": "scorecard_schema", "data": {"records": records}}]
     return []
 
 
@@ -1088,8 +1129,12 @@ def update_tracker_from_block(tracker_data, block, result_id, block_id):
         # Step 1: Remove existing rows from this result_id and block_id
         initial_count = len(rows)
         tracker_data["rows"] = [
-            r for r in rows
-            if not (r.get("result_id") == result_id and r.get("source", {}).get("block_id") == block_id)
+            r
+            for r in rows
+            if not (
+                r.get("result_id") == result_id
+                and r.get("source", {}).get("block_id") == block_id
+            )
         ]
         summary["rows_removed"] = initial_count - len(tracker_data["rows"])
 
@@ -1102,11 +1147,9 @@ def update_tracker_from_block(tracker_data, block, result_id, block_id):
         for header in block_data.get("headers", []):
             if header not in col_map:
                 new_col_id = f"col_{len(schema_cols) + 1}"
-                schema_cols.append({
-                    "id": new_col_id,
-                    "name": header,
-                    "source_column": header
-                })
+                schema_cols.append(
+                    {"id": new_col_id, "name": header, "source_column": header}
+                )
                 col_map[header] = new_col_id
 
         # Add new rows
@@ -1116,17 +1159,19 @@ def update_tracker_from_block(tracker_data, block, result_id, block_id):
                 if key in col_map:
                     values[col_map[key]] = val
 
-            tracker_data["rows"].append({
-                "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
-                "result_id": result_id,
-                "source": {
-                    "block_id": block_id,
-                    "micro_id": row_data.get("micro_id"),
-                    "row_index": idx
-                },
-                "values": values,
-                "last_updated_from": "report"
-            })
+            tracker_data["rows"].append(
+                {
+                    "row_id": f"trk_r_{uuid.uuid4().hex[:8]}",
+                    "result_id": result_id,
+                    "source": {
+                        "block_id": block_id,
+                        "micro_id": row_data.get("micro_id"),
+                        "row_index": idx,
+                    },
+                    "values": values,
+                    "last_updated_from": "report",
+                }
+            )
             summary["rows_added"] += 1
 
     elif tracker_type == "matrix":
@@ -1155,12 +1200,14 @@ def update_tracker_from_block(tracker_data, block, result_id, block_id):
             if col_key not in schema["columns"]:
                 schema["columns"].append(col_key)
 
-            tracker_data["cells"].append({
-                "row": row_key,
-                "column": col_key,
-                "value": value,
-                "result_id": result_id
-            })
+            tracker_data["cells"].append(
+                {
+                    "row": row_key,
+                    "column": col_key,
+                    "value": value,
+                    "result_id": result_id,
+                }
+            )
             summary["cells_added"] += 1
 
     elif tracker_type == "scorecard":
@@ -1168,7 +1215,9 @@ def update_tracker_from_block(tracker_data, block, result_id, block_id):
 
         # Step 1: Remove existing records from this result_id
         initial_count = len(records)
-        tracker_data["records"] = [r for r in records if r.get("result_id") != result_id]
+        tracker_data["records"] = [
+            r for r in records if r.get("result_id") != result_id
+        ]
         summary["records_removed"] = initial_count - len(tracker_data["records"])
 
         # Step 2: Add new records from the updated block
@@ -1186,11 +1235,9 @@ def update_tracker_from_block(tracker_data, block, result_id, block_id):
             if metric not in schema["metrics"]:
                 schema["metrics"].append(metric)
 
-            tracker_data["records"].append({
-                "metric": metric,
-                "value": value,
-                "result_id": result_id
-            })
+            tracker_data["records"].append(
+                {"metric": metric, "value": value, "result_id": result_id}
+            )
             summary["records_added"] += 1
 
     return summary
@@ -1237,17 +1284,16 @@ def upload_evidence_file(user_id, tracker_id, row_id, column_id, file_obj, filen
             "success": True,
             "s3_key": s3_key,
             "filename": safe_name,
-            "file_size": os.path.getsize(local_path) if os.path.exists(local_path) else 0,
+            "file_size": (
+                os.path.getsize(local_path) if os.path.exists(local_path) else 0
+            ),
             "upload_timestamp": datetime.utcnow().isoformat(),
             "column_id": column_id,
-            "row_id": row_id
+            "row_id": row_id,
         }
 
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
 
 
 def update_tracker_evidence(user_id, tracker_id, row_id, column_id, s3_key):
@@ -1274,7 +1320,10 @@ def update_tracker_evidence(user_id, tracker_id, row_id, column_id, s3_key):
         tracker_type = tracker_data.get("type")
 
         if tracker_type != "table":
-            return {"success": False, "error": "Evidence upload only supported for table trackers"}
+            return {
+                "success": False,
+                "error": "Evidence upload only supported for table trackers",
+            }
 
         rows = tracker_data.get("rows", [])
         row_found = False
@@ -1302,14 +1351,188 @@ def update_tracker_evidence(user_id, tracker_id, row_id, column_id, s3_key):
             "tracker_id": tracker_id,
             "row_id": row_id,
             "column_id": column_id,
-            "s3_key": s3_key
+            "s3_key": s3_key,
         }
 
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def add_row_option(user_id, tracker_id, row_id, column_id, options):
+    """
+    Add options to a tracker row's column (typically framework columns).
+
+    Args:
+        user_id: User ID
+        tracker_id: Tracker ID
+        row_id: Row ID (internal row_id from tracker, not row_index)
+        column_id: Column ID to update
+        options: List of dicts with "requirement" and "section" keys
+
+    Returns:
+        dict with success status, added count, skipped count, and current options
+    """
+    try:
+        tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
+        tracker_data = read_json_from_s3(tracker_path)
+
+        if not tracker_data:
+            return {"success": False, "error": "Tracker not found"}
+
+        tracker_type = tracker_data.get("type")
+
+        if tracker_type != "table":
+            return {
+                "success": False,
+                "error": "Options can only be added to table trackers",
+            }
+
+        if not isinstance(options, list) or not options:
+            return {"success": False, "error": "Options must be a non-empty list"}
+
+        rows = tracker_data.get("rows", [])
+        row_found = False
+        added_count = 0
+        skipped_count = 0
+        updated_options = None
+
+        for row in rows:
+            if row.get("row_id") == row_id:
+                if "values" not in row:
+                    row["values"] = {}
+
+                # Ensure column value is a list
+                if column_id not in row["values"] or not isinstance(
+                    row["values"][column_id], list
+                ):
+                    row["values"][column_id] = []
+
+                current_list = row["values"][column_id]
+
+                # Build set of existing options for dedup check
+                existing = {
+                    (opt.get("requirement"), opt.get("section")) for opt in current_list
+                }
+
+                # Add new options, deduplicating
+                for opt in options:
+                    opt_tuple = (opt.get("requirement"), opt.get("section"))
+                    if opt_tuple not in existing:
+                        current_list.append(opt)
+                        existing.add(opt_tuple)
+                        added_count += 1
+                    else:
+                        skipped_count += 1
+
+                row["last_updated_from"] = "manual"
+                updated_options = current_list
+                row_found = True
+                break
+
+        if not row_found:
+            return {"success": False, "error": f"Row '{row_id}' not found in tracker"}
+
+        # Save updated tracker
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
         return {
-            "success": False,
-            "error": str(e)
+            "success": True,
+            "message": "Options added to tracker row",
+            "tracker_id": tracker_id,
+            "row_id": row_id,
+            "column_id": column_id,
+            "added": added_count,
         }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def remove_row_option(user_id, tracker_id, row_id, column_id, options):
+    """
+    Remove options from a tracker row's column (typically framework columns).
+
+    Args:
+        user_id: User ID
+        tracker_id: Tracker ID
+        row_id: Row ID (internal row_id from tracker, not row_index)
+        column_id: Column ID to update
+        options: List of dicts with "requirement" and "section" keys to remove
+
+    Returns:
+        dict with success status, removed count, and current options
+    """
+    try:
+        tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
+        tracker_data = read_json_from_s3(tracker_path)
+
+        if not tracker_data:
+            return {"success": False, "error": "Tracker not found"}
+
+        tracker_type = tracker_data.get("type")
+
+        if tracker_type != "table":
+            return {
+                "success": False,
+                "error": "Options can only be removed from table trackers",
+            }
+
+        if not isinstance(options, list) or not options:
+            return {"success": False, "error": "Options must be a non-empty list"}
+
+        rows = tracker_data.get("rows", [])
+        row_found = False
+        removed_count = 0
+        updated_options = None
+
+        for row in rows:
+            if row.get("row_id") == row_id:
+                if "values" not in row:
+                    row["values"] = {}
+
+                # Ensure column value is a list
+                if column_id not in row["values"] or not isinstance(
+                    row["values"][column_id], list
+                ):
+                    row["values"][column_id] = []
+
+                # Build set of options to remove
+                to_remove = {
+                    (opt.get("requirement"), opt.get("section")) for opt in options
+                }
+
+                # Filter current list
+                original_count = len(row["values"][column_id])
+                row["values"][column_id] = [
+                    opt
+                    for opt in row["values"][column_id]
+                    if (opt.get("requirement"), opt.get("section")) not in to_remove
+                ]
+                removed_count = original_count - len(row["values"][column_id])
+
+                row["last_updated_from"] = "manual"
+                updated_options = row["values"][column_id]
+                row_found = True
+                break
+
+        if not row_found:
+            return {"success": False, "error": f"Row '{row_id}' not found in tracker"}
+
+        # Save updated tracker
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        return {
+            "success": True,
+            "message": "Options removed from tracker row",
+            "tracker_id": tracker_id,
+            "row_id": row_id,
+            "column_id": column_id,
+            "removed": removed_count,
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 def propagate_assessment_status_to_policy_cells(
     tracker_data: dict, result_id: str | None = None

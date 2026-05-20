@@ -4,6 +4,7 @@ import json
 from db.rds_db import connect_to_rds
 from db.db_checkers import get_email_by_id
 from flask import Blueprint, request, jsonify
+from utils.normal import parse_composite_user_id
 from services.redis_service import get_redis
 import pymysql
 from services.stripe_webhook_handler import StripeWebhookHandler
@@ -136,6 +137,7 @@ def subscribe():
 
     if not user_id or not price_id:
         return jsonify({"error": "user_id & price_id required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
     cur = conn.cursor()
@@ -293,6 +295,7 @@ def subscribe():
         return jsonify({"error": str(e.user_message or e)}), 400
     except Exception as e:
         import traceback
+
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
     finally:
         cur.close()
@@ -312,6 +315,7 @@ def paymenttopup():
 
     if not user_id or not plan_code:
         return jsonify({"error": "user_id & plan_code required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     connection = connect_to_rds()
     if not email:
@@ -366,6 +370,7 @@ def cancel_subscription():
 
     if not subscription_id or not user_id:
         return jsonify({"error": "subscription_id & user_id required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
         # Cancel in Stripe — webhook will handle DB update
@@ -425,6 +430,7 @@ def format_subscription(sub, plan):
 def get_user_subscriptions(user_id):
     if not user_id or user_id in ("failure", "None"):
         return jsonify({"error": "user_id is required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
     conn = connect_to_rds()
     if not conn:
         return jsonify({"error": "DB connection failed"}), 500
@@ -607,6 +613,7 @@ def reconcile_missing_invoice(payment_row):
 def get_user_payments(user_id):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
+    logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     try:
         cur.execute(

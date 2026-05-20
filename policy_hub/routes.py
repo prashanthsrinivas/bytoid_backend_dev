@@ -1028,6 +1028,7 @@ def edit_policy():
 
 @policy_hub_bp.route("/edit-status", methods=["GET"])
 @permission_required_body("policyhub.view")
+@permission_required_body("policyhub.view")
 def edit_status():
     job_id = request.args.get("job_id")
     if not job_id:
@@ -1054,6 +1055,7 @@ def edit_status():
 
 
 @policy_hub_bp.route("/list", methods=["GET"])
+@permission_required_body("policyhub.view")
 @permission_required_body("policyhub.view")
 def list_policies():
     raw_user_id = request.args.get("user_id")
@@ -1610,7 +1612,9 @@ def share_policy():
             if not client_user_id:
                 return jsonify({"error": "client_user_id required for manual"}), 400
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
-                cur.execute("SELECT email FROM users WHERE user_id=%s", (client_user_id,))
+                cur.execute(
+                    "SELECT email FROM users WHERE user_id=%s", (client_user_id,)
+                )
                 row = cur.fetchone()
                 if not row:
                     return jsonify({"error": "User not found"}), 404
@@ -1619,7 +1623,9 @@ def share_policy():
         elif assignment_type == "role":
             if not role_id:
                 return jsonify({"error": "role_id required for role"}), 400
-            if not check_role_has_permission(conn, admin_id, role_id, required_permission):
+            if not check_role_has_permission(
+                conn, admin_id, role_id, required_permission
+            ):
                 return (
                     jsonify({"error": "Role does not have policy view permission"}),
                     403,
