@@ -28,6 +28,10 @@ from services.audit_log_service import (
     TRACKER_FRAMEWORK_REMOVED,
     TRACKER_SHARED,
     TRACKER_SHARE_REVOKED,
+    TRACKER_POLICY_ADDED,
+    TRACKER_POLICY_UPDATED,
+    TRACKER_POLICY_REMOVED,
+    TRACKER_POLICY_REMAPPED,
 )
 from db.db_checkers import get_email_by_id
 from shared_configuration import (
@@ -49,6 +53,7 @@ from tab_tracker.helper import (
     ensure_tracker_file_exists,
     apply_entry_updates,
     _rebuild_micro_blocks_from_tracker,
+    propagate_assessment_status_to_policy_cells,
 )
 from utils.s3_utils import (
     upload_any_file,
@@ -61,6 +66,9 @@ from utils.fireworkzz import (
     analyze_tracker_framework_policies,
     analyze_tracker_framework_rows,
     quality_review_framework_assignments,
+    analyze_tracker_policy_rows,
+    quality_review_policy_assignments,
+    fetch_policy_statements,
 )
 from credits_route.route import Credits
 from playbook.background_worker import JobManager
@@ -3731,3 +3739,663 @@ def list_shared_trackers():
     except Exception as e:
         logging.error(f"list_shared_trackers error: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
+
+
+# ── Policy Statement Mapping ──────────────────────────────────────────────────
+
+
+def _make_policy_col_id(schema_cols: list) -> str:
+    """Generate a unique policy column ID that doesn't collide with existing IDs."""
+    existing_ids = {col["id"] for col in schema_cols}
+    n = len(schema_cols) + 1
+    while f"pol_{n}" in existing_ids:
+        n += 1
+    return f"pol_{n}"
+
+
+def _load_tracker(user_id: str, tracker_id: str):
+    """Load tracker meta + data; returns (tracker_meta, tracker_data) or raises."""
+    config_path, config_data = check_config_exist(user_id)
+    tracker_meta = next(
+        (t for t in (config_data or {}).get("trackers", []) if t["tracker_id"] == tracker_id),
+        None,
+    )
+    if not tracker_meta:
+        return None, None
+    return tracker_meta, read_json_from_s3(tracker_meta["file_path"])
+
+
+async def _add_policy_worker(data: dict, job_id: str = None) -> dict:
+    """Background worker: create a per-policy column and AI-match each row to statements."""
+    baseuser = str(data.get("user_id", ""))
+    tracker_id = data.get("tracker_id")
+    policy_id = data.get("policy_id")
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    session_id = data.get("session_id")
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            try:
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=msg.get("message"),
+                    scope=msg.get("scope", "job"),
+                    session_id=msg.get("session_id"),
+                    job_id=msg.get("job_id"),
+                    msg_type=msg.get("type"),
+                    stage=msg.get("stage"),
+                    progress=msg.get("progress"),
+                    feature="tracker_policy_mapping",
+                )
+            except Exception:
+                pass
+
+    await emit(msg_builder_main.job_progress(job_id, session_id, "init", "Starting policy analysis…", 5))
+
+    # Load policy from S3
+    from utils.s3_utils import load_yaml_from_s3 as _load_yaml
+    from utils.app_configs import FRAMEWORK_OWNER as _FW_OWNER
+    pol_key = f"{user_id}/policies/{policy_id}.yaml"
+    pol_data = _load_yaml(pol_key)
+    if not pol_data:
+        raise Exception(f"Policy not found: {policy_id}")
+    policy_name = pol_data.get("title", policy_id)
+    policy_version = pol_data.get("metadata", {}).get("version", "1.0") if isinstance(pol_data.get("metadata"), dict) else pol_data.get("version", "1.0")
+    doc_type = pol_data.get("type", "policy")
+
+    await emit(msg_builder_main.job_progress(job_id, session_id, "loading", f"Loading {policy_name} statements", 15))
+
+    # Fetch statements from LanceDB (fall back to parsing YAML sections)
+    statements = await fetch_policy_statements(policy_id, version=policy_version)
+    if not statements:
+        raw_sections = pol_data.get("sections", [])
+        statements = [
+            {"statement_id": s["id"], "text": s["text"], "section_id": s.get("section_id", ""), "seq": s.get("seq", i)}
+            for sec in raw_sections
+            for i, s in enumerate(sec.get("statements", []))
+        ]
+
+    tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
+    if not tracker_meta or not tracker_data:
+        raise Exception(f"Tracker not found: {tracker_id}")
+
+    if any(p["id"] == policy_id for p in tracker_data.get("policies", [])):
+        raise Exception("Policy already linked to this tracker")
+
+    # Create per-policy column
+    await emit(msg_builder_main.job_progress(job_id, session_id, "setup", f"Creating {policy_name} column", 20))
+
+    schema_cols = tracker_data.get("schema", {}).get("columns", [])
+    new_col_id = _make_policy_col_id(schema_cols)
+    new_col = {
+        "id": new_col_id,
+        "name": policy_name,
+        "source_column": "policies",
+        "type": "policy_statements",
+        "policy_id": policy_id,
+        "policy_version": policy_version,
+        "doc_type": doc_type,
+    }
+    schema_cols.append(new_col)
+    tracker_data["schema"]["columns"] = schema_cols
+
+    for row in tracker_data.get("rows", []):
+        row["values"].setdefault(new_col_id, [])
+
+    rows_for_analysis = tracker_data.get("rows", [])
+    rows_assigned = 0
+
+    if rows_for_analysis and statements:
+        credits = Credits(user_id)
+        rows_input = [
+            {
+                "row_id": row.get("row_id"),
+                "col_values": {
+                    col.get("name"): row["values"].get(col.get("id"), "")
+                    for col in schema_cols
+                    if col.get("source_column") not in ("frameworks", "policies")
+                },
+            }
+            for row in rows_for_analysis
+        ]
+
+        await emit(msg_builder_main.job_progress(job_id, session_id, "analysis", f"Analyzing {len(rows_input)} rows against {len(statements)} statements…", 25))
+
+        total_rows = len(rows_input)
+        analyzed_count = 0
+
+        async def on_row_analyzed():
+            nonlocal analyzed_count
+            analyzed_count += 1
+            pct = 25 + int(analyzed_count / total_rows * 40)
+            await emit(msg_builder_main.job_progress(job_id, session_id, "analysis", f"Analyzing row {analyzed_count}/{total_rows}…", pct))
+
+        ai_result = await analyze_tracker_policy_rows(
+            rows=rows_input,
+            statements=statements,
+            policy_id=policy_id,
+            policy_name=policy_name,
+            version=policy_version,
+            user_id=user_id,
+            credits=credits,
+            on_row_done=on_row_analyzed,
+        )
+
+        await emit(msg_builder_main.job_progress(job_id, session_id, "review", "Running quality review…", 68))
+
+        rows_to_review = len([a for a in ai_result.get("assignments", []) if a.get("stmt_indices")])
+        reviewed_count = 0
+
+        async def on_row_reviewed():
+            nonlocal reviewed_count
+            reviewed_count += 1
+            pct = 68 + int(reviewed_count / max(rows_to_review, 1) * 17)
+            await emit(msg_builder_main.job_progress(job_id, session_id, "review", f"Reviewing row {reviewed_count}/{rows_to_review}…", pct))
+
+        assignments = await quality_review_policy_assignments(
+            rows=rows_input,
+            statements=statements,
+            assignments=ai_result.get("assignments", []),
+            policy_name=policy_name,
+            user_id=user_id,
+            credits=credits,
+            on_row_done=on_row_reviewed,
+        )
+
+        await emit(msg_builder_main.job_progress(job_id, session_id, "saving", "Saving policy assignments…", 88))
+
+        stmts_by_idx = {i: s for i, s in enumerate(statements)}
+        for assignment in assignments:
+            row_id = assignment.get("row_id")
+            stmt_indices = assignment.get("stmt_indices", [])
+            row = next((r for r in rows_for_analysis if r.get("row_id") == row_id), None)
+            if row:
+                new_entries = [
+                    {
+                        "statement_id": stmts_by_idx[idx]["statement_id"],
+                        "statement_text": stmts_by_idx[idx]["text"],
+                        "section_id": stmts_by_idx[idx].get("section_id", ""),
+                        "mapped_against_version": policy_version,
+                        "status": "not_assessed",
+                    }
+                    for idx in stmt_indices
+                    if idx in stmts_by_idx
+                ]
+                row["values"][new_col_id] = new_entries
+                if new_entries:
+                    rows_assigned += 1
+
+    tracker_data.setdefault("policies", []).append(
+        {"id": policy_id, "name": policy_name, "type": doc_type, "version": policy_version}
+    )
+    save_tracker_file(user_id, tracker_id, tracker_data)
+
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    log_audit_event(
+        action=TRACKER_POLICY_ADDED,
+        endpoint="/tracker/add-policy",
+        ip=data.get("_ip", "background"),
+        status="success",
+        actor_user_id=actor_uid,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=behalf_uid,
+        acting_on_behalf_of_email=behalf_email,
+        metadata={"tracker_id": tracker_id, "policy_id": policy_id, "rows_assigned": rows_assigned},
+    )
+
+    await emit(msg_builder_main.job_progress(job_id, session_id, "done", f"Policy linked — {rows_assigned} rows assigned", 100))
+    return {"rows_assigned": rows_assigned, "policy_id": policy_id}
+
+
+@tracker_bp.route("/tracker/add-policy", methods=["POST"])
+@permission_required_body("trackers.policy.add")
+async def add_tracker_policy():
+    """Link a Policy Hub policy to a tracker and AI-map rows to statements.
+
+    Body: { user_id, tracker_id, policy_id, session_id? }
+    Returns 202 { job_id }.
+    """
+    try:
+        data = request.json or {}
+        baseuser = str(data.get("user_id", ""))
+        tracker_id = data.get("tracker_id")
+        policy_id = data.get("policy_id")
+
+        if not all([baseuser, tracker_id, policy_id]):
+            return jsonify({"error": "Missing required fields: user_id, tracker_id, policy_id"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        from utils.s3_utils import load_yaml_from_s3 as _load_yaml
+        pol_data = _load_yaml(f"{user_id}/policies/{policy_id}.yaml")
+        if not pol_data:
+            return jsonify({"error": f"Policy not found: {policy_id}"}), 404
+
+        tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        if any(p["id"] == policy_id for p in tracker_data.get("policies", [])):
+            return jsonify({"error": "Policy already linked to this tracker"}), 409
+
+        data["_ip"] = request.remote_addr
+        job_id = await JobManager.submit_job(_add_policy_worker, data)
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_POLICY_ADDED,
+            endpoint="/tracker/add-policy",
+            ip=request.remote_addr,
+            status="accepted",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"tracker_id": tracker_id, "policy_id": policy_id},
+        )
+        g.audit_logged = True
+        return jsonify({"job_id": job_id, "status": "PROCESSING"}), 202
+
+    except Exception:
+        logging.error(f"add_tracker_policy error: {traceback.format_exc()}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@tracker_bp.route("/tracker/remove-policy", methods=["DELETE"])
+@permission_required_body("trackers.policy.delete")
+def remove_tracker_policy():
+    """Remove a policy link from a tracker and delete all statement assignments.
+
+    Body: { user_id, tracker_id, policy_id }
+    """
+    try:
+        data = request.json or {}
+        baseuser = str(data.get("user_id", ""))
+        tracker_id = data.get("tracker_id")
+        policy_id = data.get("policy_id")
+
+        if not all([baseuser, tracker_id, policy_id]):
+            return jsonify({"error": "Missing required fields: user_id, tracker_id, policy_id"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+        tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        policies = tracker_data.get("policies", [])
+        policy = next((p for p in policies if p["id"] == policy_id), None)
+        if not policy:
+            return jsonify({"error": f"Policy not linked to this tracker: {policy_id}"}), 404
+
+        policy_name = policy.get("name", policy_id)
+
+        tracker_data["policies"] = [p for p in policies if p["id"] != policy_id]
+
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        pol_col = next(
+            (col for col in schema_cols if col.get("source_column") == "policies" and col.get("policy_id") == policy_id),
+            None,
+        )
+        rows_affected = 0
+        column_removed = False
+
+        if pol_col:
+            pol_col_id = pol_col["id"]
+            for row in tracker_data.get("rows", []):
+                if pol_col_id in row["values"]:
+                    if row["values"][pol_col_id]:
+                        rows_affected += 1
+                    del row["values"][pol_col_id]
+            tracker_data["schema"]["columns"] = [col for col in schema_cols if col.get("id") != pol_col_id]
+            column_removed = True
+
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_POLICY_REMOVED,
+            endpoint="/tracker/remove-policy",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "policy_id": policy_id,
+                "policy_name": policy_name,
+                "rows_affected": rows_affected,
+                "column_removed": column_removed,
+            },
+        )
+        g.audit_logged = True
+        return jsonify({"message": "Policy removed", "rows_affected": rows_affected, "column_removed": column_removed}), 200
+
+    except Exception:
+        logging.error(f"remove_tracker_policy error: {traceback.format_exc()}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+async def _update_policy_worker(data: dict, job_id: str = None) -> dict:
+    """Re-run AI matching for an existing policy column after a policy edit."""
+    baseuser = str(data.get("user_id", ""))
+    tracker_id = data.get("tracker_id")
+    policy_id = data.get("policy_id")
+    logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+    session_id = data.get("session_id")
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            try:
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=msg.get("message"),
+                    scope=msg.get("scope", "job"),
+                    session_id=msg.get("session_id"),
+                    job_id=msg.get("job_id"),
+                    msg_type=msg.get("type"),
+                    stage=msg.get("stage"),
+                    progress=msg.get("progress"),
+                    feature="tracker_policy_mapping",
+                )
+            except Exception:
+                pass
+
+    await emit(msg_builder_main.job_progress(job_id, session_id, "init", "Re-mapping policy statements…", 5))
+
+    from utils.s3_utils import load_yaml_from_s3 as _load_yaml
+    pol_data = _load_yaml(f"{user_id}/policies/{policy_id}.yaml")
+    if not pol_data:
+        raise Exception(f"Policy not found: {policy_id}")
+    policy_name = pol_data.get("title", policy_id)
+    policy_version = pol_data.get("metadata", {}).get("version", "1.0") if isinstance(pol_data.get("metadata"), dict) else pol_data.get("version", "1.0")
+    doc_type = pol_data.get("type", "policy")
+
+    statements = await fetch_policy_statements(policy_id, version=policy_version)
+    if not statements:
+        raw_sections = pol_data.get("sections", [])
+        statements = [
+            {"statement_id": s["id"], "text": s["text"], "section_id": s.get("section_id", ""), "seq": s.get("seq", i)}
+            for sec in raw_sections
+            for i, s in enumerate(sec.get("statements", []))
+        ]
+
+    tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
+    if not tracker_meta or not tracker_data:
+        raise Exception(f"Tracker not found: {tracker_id}")
+
+    schema_cols = tracker_data.get("schema", {}).get("columns", [])
+    pol_col = next(
+        (col for col in schema_cols if col.get("source_column") == "policies" and col.get("policy_id") == policy_id),
+        None,
+    )
+    if not pol_col:
+        raise Exception(f"Policy column not found in tracker for policy_id={policy_id}")
+
+    pol_col_id = pol_col["id"]
+    # Update column metadata to the current version
+    pol_col["policy_version"] = policy_version
+    pol_col["name"] = policy_name
+
+    rows_for_analysis = tracker_data.get("rows", [])
+    rows_assigned = 0
+
+    if rows_for_analysis and statements:
+        credits = Credits(user_id)
+        rows_input = [
+            {
+                "row_id": row.get("row_id"),
+                "col_values": {
+                    col.get("name"): row["values"].get(col.get("id"), "")
+                    for col in schema_cols
+                    if col.get("source_column") not in ("frameworks", "policies")
+                },
+            }
+            for row in rows_for_analysis
+        ]
+
+        total_rows = len(rows_input)
+        analyzed_count = 0
+
+        async def on_row_analyzed():
+            nonlocal analyzed_count
+            analyzed_count += 1
+            pct = 10 + int(analyzed_count / total_rows * 50)
+            await emit(msg_builder_main.job_progress(job_id, session_id, "analysis", f"Analyzing row {analyzed_count}/{total_rows}…", pct))
+
+        ai_result = await analyze_tracker_policy_rows(
+            rows=rows_input,
+            statements=statements,
+            policy_id=policy_id,
+            policy_name=policy_name,
+            version=policy_version,
+            user_id=user_id,
+            credits=credits,
+            on_row_done=on_row_analyzed,
+        )
+
+        rows_to_review = len([a for a in ai_result.get("assignments", []) if a.get("stmt_indices")])
+        reviewed_count = 0
+
+        async def on_row_reviewed():
+            nonlocal reviewed_count
+            reviewed_count += 1
+            pct = 60 + int(reviewed_count / max(rows_to_review, 1) * 25)
+            await emit(msg_builder_main.job_progress(job_id, session_id, "review", f"Reviewing row {reviewed_count}/{rows_to_review}…", pct))
+
+        assignments = await quality_review_policy_assignments(
+            rows=rows_input,
+            statements=statements,
+            assignments=ai_result.get("assignments", []),
+            policy_name=policy_name,
+            user_id=user_id,
+            credits=credits,
+            on_row_done=on_row_reviewed,
+        )
+
+        stmts_by_idx = {i: s for i, s in enumerate(statements)}
+        for assignment in assignments:
+            row_id = assignment.get("row_id")
+            stmt_indices = assignment.get("stmt_indices", [])
+            row = next((r for r in rows_for_analysis if r.get("row_id") == row_id), None)
+            if row:
+                new_entries = [
+                    {
+                        "statement_id": stmts_by_idx[idx]["statement_id"],
+                        "statement_text": stmts_by_idx[idx]["text"],
+                        "section_id": stmts_by_idx[idx].get("section_id", ""),
+                        "mapped_against_version": policy_version,
+                        "status": "not_assessed",
+                    }
+                    for idx in stmt_indices
+                    if idx in stmts_by_idx
+                ]
+                row["values"][pol_col_id] = new_entries
+                if new_entries:
+                    rows_assigned += 1
+
+    # Update policy list entry with new version
+    for p in tracker_data.get("policies", []):
+        if p["id"] == policy_id:
+            p["version"] = policy_version
+            p["name"] = policy_name
+
+    save_tracker_file(user_id, tracker_id, tracker_data)
+
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    log_audit_event(
+        action=TRACKER_POLICY_REMAPPED,
+        endpoint="/tracker/update-policy",
+        ip=data.get("_ip", "background"),
+        status="success",
+        actor_user_id=actor_uid,
+        actor_email=actor_email,
+        acting_on_behalf_of_user_id=behalf_uid,
+        acting_on_behalf_of_email=behalf_email,
+        metadata={"tracker_id": tracker_id, "policy_id": policy_id, "version": policy_version, "rows_assigned": rows_assigned},
+    )
+
+    await emit(msg_builder_main.job_progress(job_id, session_id, "done", f"Re-mapped — {rows_assigned} rows assigned", 100))
+    return {"rows_assigned": rows_assigned, "policy_id": policy_id, "version": policy_version}
+
+
+@tracker_bp.route("/tracker/update-policy", methods=["POST"])
+@permission_required_body("trackers.policy.update")
+async def update_tracker_policy():
+    """Re-run AI statement matching for a policy (e.g., after a policy edit).
+
+    Body: { user_id, tracker_id, policy_id, session_id? }
+    Returns 202 { job_id }.
+    """
+    try:
+        data = request.json or {}
+        baseuser = str(data.get("user_id", ""))
+        tracker_id = data.get("tracker_id")
+        policy_id = data.get("policy_id")
+
+        if not all([baseuser, tracker_id, policy_id]):
+            return jsonify({"error": "Missing required fields: user_id, tracker_id, policy_id"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+        tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        if not any(p["id"] == policy_id for p in tracker_data.get("policies", [])):
+            return jsonify({"error": f"Policy not linked to this tracker: {policy_id}"}), 404
+
+        data["_ip"] = request.remote_addr
+        job_id = await JobManager.submit_job(_update_policy_worker, data)
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_POLICY_UPDATED,
+            endpoint="/tracker/update-policy",
+            ip=request.remote_addr,
+            status="accepted",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={"tracker_id": tracker_id, "policy_id": policy_id},
+        )
+        g.audit_logged = True
+        return jsonify({"job_id": job_id, "status": "PROCESSING"}), 202
+
+    except Exception:
+        logging.error(f"update_tracker_policy error: {traceback.format_exc()}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@tracker_bp.route("/tracker/sync-policy-status", methods=["POST"])
+@permission_required_body("trackers.policy.update")
+def sync_policy_status():
+    """Refresh pass/fail status on policy cells from latest assessment results.
+
+    Body: { user_id, tracker_id, result_id? }
+    When result_id is omitted, all policy cells are refreshed.
+    """
+    try:
+        data = request.json or {}
+        baseuser = str(data.get("user_id", ""))
+        tracker_id = data.get("tracker_id")
+        result_id = data.get("result_id")
+
+        if not all([baseuser, tracker_id]):
+            return jsonify({"error": "Missing required fields: user_id, tracker_id"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+        tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        updated = propagate_assessment_status_to_policy_cells(tracker_data, result_id)
+        if updated:
+            save_tracker_file(user_id, tracker_id, tracker_data)
+
+        return jsonify({"status": "ok", "cells_updated": updated}), 200
+
+    except Exception:
+        logging.error(f"sync_policy_status error: {traceback.format_exc()}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+
+@tracker_bp.route("/tracker/policy-mapping/<tracker_id>", methods=["GET"])
+@permission_required_body("trackers.table.view")
+def get_policy_mapping(tracker_id: str):
+    """Paginated read of policy statement cells for a tracker.
+
+    Query params: user_id, page (1-indexed), page_size (default 50, max 200),
+                  policy_id (filter), status (filter: passed|failed|not_assessed|superseded)
+    """
+    try:
+        baseuser = request.args.get("user_id", "")
+        if not baseuser:
+            return jsonify({"error": "user_id required"}), 400
+
+        page = max(1, int(request.args.get("page", 1)))
+        page_size = min(200, max(1, int(request.args.get("page_size", 50))))
+        filter_policy_id = request.args.get("policy_id")
+        filter_status = request.args.get("status")
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+        tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        policy_cols = [col for col in schema_cols if col.get("source_column") == "policies"]
+        if filter_policy_id:
+            policy_cols = [col for col in policy_cols if col.get("policy_id") == filter_policy_id]
+
+        results = []
+        for row in tracker_data.get("rows", []):
+            row_id = row.get("row_id")
+            for col in policy_cols:
+                col_id = col["id"]
+                cell = row["values"].get(col_id)
+                if not isinstance(cell, list):
+                    continue
+                entries = cell
+                if filter_status:
+                    entries = [e for e in entries if e.get("status") == filter_status]
+                if entries:
+                    results.append({
+                        "row_id": row_id,
+                        "policy_id": col.get("policy_id"),
+                        "policy_name": col.get("name"),
+                        "policy_version": col.get("policy_version"),
+                        "statements": entries,
+                    })
+
+        total = len(results)
+        start = (page - 1) * page_size
+        page_results = results[start: start + page_size]
+
+        from flask import Response
+        import json as _json
+        resp = Response(
+            _json.dumps({"items": page_results, "page": page, "page_size": page_size, "total": total}),
+            status=200,
+            mimetype="application/json",
+        )
+        resp.headers["X-Total-Count"] = str(total)
+        return resp
+
+    except Exception:
+        logging.error(f"get_policy_mapping error: {traceback.format_exc()}")
+        return jsonify({"error": "Internal server error"}), 500

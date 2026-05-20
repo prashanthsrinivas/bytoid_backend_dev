@@ -1,17 +1,16 @@
 import os
-import uuid
-from credits_route.route import Credits
 import lancedb
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 import numpy as np
 import pyarrow as pa
-import pandas as pd
-import json, random, asyncio, time
+import json
+import random
+import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from db.rds_db import connect_to_rds
-from flask import jsonify
 from utils.key_rotation_manager import SecureKMSService
 import re
 from utils.base_logger import get_logger
@@ -230,14 +229,28 @@ def parse_ts(ts):
 
 
 class MetricsClient:
+    """Thin proxy to the real Prometheus-backed metrics service."""
+
     def increment(self, name: str, value: float = 1, tags: dict = None):
-        logger.debug(f"[metric] increment {name} +{value} tags={tags}")
+        try:
+            from services.metrics_service import metrics as _m
+            _m.increment(name, value, tags)
+        except Exception:
+            logger.debug("[metric] increment %s +%s tags=%s", name, value, tags)
 
     def timing(self, name: str, ms: float, tags: dict = None):
-        logger.debug(f"[metric] timing {name}: {ms}ms tags={tags}")
+        try:
+            from services.metrics_service import metrics as _m
+            _m.timing(name, ms, tags)
+        except Exception:
+            logger.debug("[metric] timing %s: %sms tags=%s", name, ms, tags)
 
     def gauge(self, name: str, value: float, tags: dict = None):
-        logger.debug(f"[metric] gauge {name}: {value} tags={tags}")
+        try:
+            from services.metrics_service import metrics as _m
+            _m.gauge(name, value, tags)
+        except Exception:
+            logger.debug("[metric] gauge %s: %s tags=%s", name, value, tags)
 
 
 def report_exception(exc: Exception, context: dict = None):
@@ -1425,7 +1438,7 @@ class LanceDBServer:
             # 🔥 Always try to open first
             return self.db.open_table(table_name)
 
-        except Exception as e:
+        except Exception:
             # print(
             #     f"[DEBUG] Scrape table not found for user {user_id}, creating new one"
             # )
@@ -1893,7 +1906,7 @@ class LanceDBServer:
                 "score": best_distance,
             }
 
-        except Exception as e:
+        except Exception:
             # print(f"Error searching scraped data by URL: {e}")
             raise
 
@@ -2681,7 +2694,7 @@ class LanceDBServer:
             # print(f"matched_content : {matched_content}")
             return matched_content
 
-        except Exception as e:
+        except Exception:
             # print(f"Semantic search failed: {str(e)}")
             return []
 
@@ -3589,4 +3602,182 @@ class LanceDBServer:
         await asyncio.to_thread(_update)
 
         return {"status": "updated", "runbook_id": runbook_id}
+
+    # ── Policy Statements table (index_policy_statements) ────────────────────
+    # Separate from the shared index_* table used by frameworks.
+    # Schema carries per-statement metadata (section_id, seq, version, status).
+
+    _POLICY_STMT_TABLE = "index_policy_statements"
+
+    def _get_policy_statements_table(self):
+        """Open or create the shared index_policy_statements table."""
+        table_name = self._POLICY_STMT_TABLE
+        self.db = self._connect_if_needed()
+        try:
+            return self.db.open_table(table_name)
+        except Exception:
+            schema = pa.schema(
+                [
+                    pa.field("statement_id", pa.string()),
+                    pa.field("policy_id", pa.string()),
+                    pa.field("doc_type", pa.string()),
+                    pa.field("section_id", pa.string()),
+                    pa.field("seq", pa.int32()),
+                    pa.field("text", pa.string()),
+                    pa.field("version", pa.string()),
+                    pa.field("status", pa.string()),
+                    pa.field("embedding", pa.list_(pa.float32(), EMBEDDING_DIM)),
+                ]
+            )
+            dummy = [
+                {
+                    "statement_id": "init",
+                    "policy_id": "init",
+                    "doc_type": "policy",
+                    "section_id": "init",
+                    "seq": 0,
+                    "text": "init",
+                    "version": "0",
+                    "status": "active",
+                    "embedding": np.zeros(EMBEDDING_DIM, dtype=np.float32),
+                }
+            ]
+            table = self.db.create_table(
+                table_name, data=dummy, schema=schema, mode="create"
+            )
+            try:
+                table.delete('statement_id == "init"')
+            except Exception as e:
+                logger.warning(
+                    "Failed to delete dummy row from %s: %s", table_name, e
+                )
+            logger.info("Created table %s", table_name)
+            return table
+
+    async def upsert_policy_statements(self, rows: list[dict]) -> None:
+        """Insert policy statement rows into index_policy_statements.
+
+        Caller is responsible for calling delete_policy_statements first to
+        avoid duplicates (delete-then-insert pattern matching insert_batch).
+        """
+        if not rows:
+            return
+        try:
+            table = await asyncio.to_thread(self._get_policy_statements_table)
+            records = [
+                {
+                    "statement_id": r["statement_id"],
+                    "policy_id": r["policy_id"],
+                    "doc_type": r.get("doc_type", "policy"),
+                    "section_id": r.get("section_id", ""),
+                    "seq": int(r.get("seq", 0)),
+                    "text": r["text"],
+                    "version": r.get("version", ""),
+                    "status": r.get("status", "active"),
+                    "embedding": np.array(r["embedding"], dtype=np.float32),
+                }
+                for r in rows
+            ]
+            await asyncio.to_thread(table.add, records)
+            logger.info(
+                "upsert_policy_statements: inserted %d rows for policy=%s",
+                len(records),
+                rows[0].get("policy_id"),
+            )
+        except Exception as exc:
+            logger.exception("upsert_policy_statements failed: %s", exc)
+            raise
+
+    async def delete_policy_statements(
+        self, policy_id: str, version: str | None = None
+    ) -> None:
+        """Delete all statement rows for a given policy_id (and optional version)."""
+        try:
+            table = await asyncio.to_thread(self._get_policy_statements_table)
+            if version:
+                where = f'policy_id == "{policy_id}" AND version == "{version}"'
+            else:
+                where = f'policy_id == "{policy_id}"'
+            await asyncio.to_thread(table.delete, where)
+            logger.debug(
+                "delete_policy_statements: policy=%s version=%s", policy_id, version
+            )
+        except Exception as exc:
+            logger.exception(
+                "delete_policy_statements failed for policy=%s: %s", policy_id, exc
+            )
+            raise
+
+    async def mark_policy_statements_superseded(
+        self, policy_id: str, statement_ids: list[str]
+    ) -> None:
+        """Update status='superseded' for the given statement IDs."""
+        if not statement_ids:
+            return
+        try:
+            table = await asyncio.to_thread(self._get_policy_statements_table)
+            for stmt_id in statement_ids:
+                await asyncio.to_thread(
+                    lambda sid=stmt_id: table.update(
+                        where=f'policy_id == "{policy_id}" AND statement_id == "{sid}"',
+                        values={"status": "superseded"},
+                    )
+                )
+            logger.debug(
+                "mark_policy_statements_superseded: policy=%s count=%d",
+                policy_id,
+                len(statement_ids),
+            )
+        except Exception as exc:
+            logger.exception(
+                "mark_policy_statements_superseded failed for policy=%s: %s",
+                policy_id,
+                exc,
+            )
+            raise
+
+    async def query_policy_statements(
+        self,
+        policy_id: str,
+        embedding: list[float],
+        top_k: int = 10,
+        version: str | None = None,
+        active_only: bool = True,
+    ) -> list[dict]:
+        """Search policy statements by semantic similarity.
+
+        Filters by policy_id and optionally by version and/or active status.
+        """
+        try:
+            table = await asyncio.to_thread(self._get_policy_statements_table)
+            vec = np.array(embedding, dtype=np.float32)
+
+            conditions = [f'policy_id == "{policy_id}"']
+            if version:
+                conditions.append(f'version == "{version}"')
+            if active_only:
+                conditions.append('status == "active"')
+            where_clause = " AND ".join(conditions)
+
+            def _search():
+                return (
+                    table.search(vec, vector_column_name="embedding")
+                    .where(where_clause)
+                    .limit(top_k)
+                    .to_list()
+                )
+
+            results = await asyncio.to_thread(_search)
+            logger.debug(
+                "query_policy_statements: policy=%s top_k=%d results=%d",
+                policy_id,
+                top_k,
+                len(results),
+            )
+            return results
+        except Exception as exc:
+            logger.exception(
+                "query_policy_statements failed for policy=%s: %s", policy_id, exc
+            )
+            raise
 

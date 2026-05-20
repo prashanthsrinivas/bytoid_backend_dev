@@ -1,0 +1,9 @@
+Hi {{ recipient_name }},
+
+{{ actor_name }} has submitted "{{ doc_title }}" ({{ doc_type }}, v{{ doc_version }}) for your review.
+{% if comment %}
+Note from {{ actor_name }}: "{{ comment }}"
+{% endif %}
+Review it here: {{ link }}
+
+— Bytoid

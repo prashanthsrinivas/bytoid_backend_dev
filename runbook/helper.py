@@ -513,6 +513,11 @@ async def _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_i
                     continue
 
                 append_to_tracker(tracker_data, block, new_result_id)
+                try:
+                    from tab_tracker.helper import propagate_assessment_status_to_policy_cells
+                    propagate_assessment_status_to_policy_cells(tracker_data, new_result_id)
+                except Exception as _pex:
+                    logger.warning("propagate_assessment_status_to_policy_cells failed: %s", _pex)
                 save_tracker_file(user_id, tracker_id, tracker_data)
                 update_tracker_config(
                     config_path=config_path,

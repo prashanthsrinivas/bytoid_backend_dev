@@ -1,0 +1,7 @@
+Hi {{ recipient_name }},
+
+"{{ doc_title }}" (v{{ doc_version }}) has been published. It is now the authoritative version for the organization.
+
+View: {{ link }}
+
+— Bytoid

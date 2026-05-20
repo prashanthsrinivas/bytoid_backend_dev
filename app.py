@@ -50,6 +50,7 @@ from tab_tracker.tab_ai_tracker.routes import tracker_ai_bp
 from websockets_custom.routes import ws_bp
 from policy_hub.routes import policy_hub_bp
 from trust_center.routes import trust_center_bp
+from workflow_route.routes import workflow_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -202,6 +203,7 @@ blueprints = [
     tracker_ai_bp,
     policy_hub_bp,
     trust_center_bp,
+    workflow_bp,
 ]
 
 for bp in blueprints:
@@ -218,6 +220,10 @@ os.makedirs("data", exist_ok=True)
 
 for bp in blueprints:
     app.register_blueprint(bp)
+
+# Register Prometheus /metrics scrape endpoint
+from services.metrics_service import register_metrics_endpoint
+register_metrics_endpoint(app)
 
 from collections import defaultdict
 
@@ -264,7 +270,8 @@ def save_routes_to_json(file_path="all_apis.json"):
 
 
 # logger = get_logger("api")
-import time, uuid
+import time
+import uuid
 
 
 @app.before_request

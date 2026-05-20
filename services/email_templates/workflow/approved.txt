@@ -1,0 +1,7 @@
+Hi {{ recipient_name }},
+
+{{ approver_name }} approved "{{ doc_title }}" (v{{ doc_version }}). It is ready to publish.
+
+Publish it: {{ link }}
+
+— Bytoid

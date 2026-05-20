@@ -1,0 +1,9 @@
+Hi {{ recipient_name }},
+
+{{ admin_name }} assigned you as {{ role }} for "{{ doc_title }}" (v{{ doc_version }}).
+{% if comment %}
+Reason: "{{ comment }}"
+{% endif %}
+Open the document: {{ link }}
+
+— Bytoid

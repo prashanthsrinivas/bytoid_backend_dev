@@ -2170,3 +2170,303 @@ async def get_coder_fire_response(user_message: str, role: str, credits, user_id
         )
 
     return response_text
+
+
+# ── Policy statement tracker mapping ─────────────────────────────────────────
+
+
+async def _analyze_single_row_policy(
+    row: dict, stmts_json: str, policy_name: str
+) -> dict:
+    """Analyze one tracker row against a list of policy statements."""
+    row_json = json.dumps(
+        {"row_id": row["row_id"], "data": row.get("col_values", {})}, indent=2
+    )
+    row_id = row["row_id"]
+    prompt = (
+        f'You are a compliance analyst. For the SINGLE tracker row below, identify which '
+        f'statements from the policy "{policy_name}" it directly relates to. '
+        f"STRICT MATCHING RULES: Only assign a statement when there is a CLEAR, DIRECT, "
+        f"SPECIFIC relationship. When in doubt, return []. "
+        f"TRACKER ROW: {row_json} "
+        f"POLICY STATEMENTS (each has an index and statement_id): {stmts_json} "
+        f'Return ONLY valid JSON (no markdown, no explanation): '
+        f'{{"row_id": "{row_id}", "stmt_indices": [0, 2]}} '
+        f'or if nothing matches: {{"row_id": "{row_id}", "stmt_indices": []}}'
+    )
+    payload = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "temperature": 0,
+        "max_tokens": 2000,
+    }
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=THINK_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
+    )
+    body = json.loads(response["body"].read())
+    response_text = extract_bedrock_text(body)
+    parsed = extract_json_safe(response_text)
+    stmt_indices = []
+    if isinstance(parsed, dict):
+        raw = parsed.get("stmt_indices", [])
+        if isinstance(raw, list):
+            stmt_indices = [i for i in raw if isinstance(i, int) and i >= 0]
+    return {
+        "row_id": row_id,
+        "stmt_indices": stmt_indices,
+        "_output_chars": len(response_text),
+    }
+
+
+async def analyze_tracker_policy_rows(
+    rows: list,
+    statements: list,
+    policy_id: str,
+    policy_name: str,
+    version: str,
+    user_id: str,
+    credits,
+    on_row_done=None,
+) -> dict:
+    """Match tracker rows to policy statements.
+
+    Args:
+        rows: list of {row_id, col_values: {col_name: value}}
+        statements: list of {statement_id, text, section_id, seq}
+        policy_id: UUID of the policy
+        policy_name: Display name of the policy
+        version: Policy version string
+        user_id: User ID for credit tracking
+        credits: Credits instance
+        on_row_done: optional async callback invoked after each row completes
+
+    Returns:
+        {
+            "assignments": [
+                {"row_id": "trk_r_xxx", "stmt_indices": [0, 2]},
+                {"row_id": "trk_r_yyy", "stmt_indices": []}
+            ]
+        }
+    """
+    if not rows or not statements:
+        return {"assignments": []}
+
+    stmts_indexed = [
+        {"index": i, "statement_id": s["statement_id"], "text": s["text"]}
+        for i, s in enumerate(statements)
+    ]
+    stmts_json = json.dumps(stmts_indexed, indent=2)
+    stmts_json_capped = stmts_json[:150000]
+
+    per_row_input = len(stmts_json_capped) + 500
+    total_input_chars = per_row_input * len(rows)
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return {"assignments": []}
+
+    sem = asyncio.Semaphore(5)
+
+    async def _bounded(row):
+        async with sem:
+            try:
+                result = await _analyze_single_row_policy(row, stmts_json_capped, policy_name)
+            except Exception:
+                logging.error(
+                    f"Error analyzing row {row.get('row_id')} for policy {policy_id}: "
+                    f"{traceback.format_exc()}"
+                )
+                result = {
+                    "row_id": row["row_id"],
+                    "stmt_indices": [],
+                    "_output_chars": 0,
+                }
+            if on_row_done:
+                await on_row_done()
+            return result
+
+    results = await asyncio.gather(*[_bounded(row) for row in rows])
+
+    assignments = []
+    total_output_chars = 0
+    for r in results:
+        assignments.append({"row_id": r["row_id"], "stmt_indices": r["stmt_indices"]})
+        total_output_chars += r.get("_output_chars", 0)
+
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_input_chars + total_output_chars,
+        user_id=user_id,
+        reference_id="analyze_tracker_policy_rows",
+    )
+    return {"assignments": assignments}
+
+
+async def _review_single_row_policy_assignments(
+    row_id: str,
+    row_data: dict,
+    stmt_indices: list,
+    stmts_indexed: dict,
+    policy_name: str,
+) -> dict:
+    """Quality-review proposed policy statement assignments for one tracker row."""
+    proposed = [
+        {"index": idx, "text": stmts_indexed[idx]["text"]}
+        for idx in stmt_indices
+        if idx in stmts_indexed
+    ]
+    if not proposed:
+        return {"row_id": row_id, "valid_indices": [], "_output_chars": 0}
+
+    row_json = json.dumps(row_data, indent=2)
+    proposed_json = json.dumps(proposed, indent=2)
+
+    prompt = (
+        f'You are a strict compliance quality reviewer. For the tracker row below, decide '
+        f'which proposed "{policy_name}" statement assignments are genuinely valid.\n\n'
+        f"APPROVAL CRITERIA — approve ONLY if ALL hold:\n"
+        f"1. The row content clearly and directly addresses the subject matter of the statement.\n"
+        f"2. The relationship is specific and meaningful, not thematically adjacent.\n"
+        f"3. A compliance auditor would recognize this as a valid, defensible mapping.\n\n"
+        f"TRACKER ROW:\n{row_json}\n\n"
+        f"PROPOSED STATEMENT ASSIGNMENTS:\n{proposed_json}\n\n"
+        f"Return ONLY valid JSON listing only the approved indices:\n"
+        f'{{"row_id": "{row_id}", "valid_indices": [0, 2]}}'
+    )
+    payload = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "temperature": 0,
+        "max_tokens": 1000,
+    }
+    response = await asyncio.to_thread(
+        bedrock_runtime.invoke_model,
+        modelId=THINK_MODEL,
+        body=json.dumps(payload),
+        contentType="application/json",
+        accept="application/json",
+    )
+    body = json.loads(response["body"].read())
+    response_text = extract_bedrock_text(body)
+    parsed = extract_json_safe(response_text)
+    valid_indices = []
+    if isinstance(parsed, dict):
+        raw = parsed.get("valid_indices", [])
+        if isinstance(raw, list):
+            valid_indices = [i for i in raw if isinstance(i, int)]
+    return {"row_id": row_id, "valid_indices": valid_indices, "_output_chars": len(response_text)}
+
+
+async def quality_review_policy_assignments(
+    rows: list,
+    statements: list,
+    assignments: list,
+    policy_name: str,
+    user_id: str,
+    credits,
+    on_row_done=None,
+) -> list:
+    """Second-pass quality review for policy statement assignments."""
+    if not assignments:
+        return assignments
+
+    row_map = {r["row_id"]: r.get("col_values", {}) for r in rows}
+    stmts_indexed = {i: s for i, s in enumerate(statements)}
+
+    rows_with_assignments = [a for a in assignments if a.get("stmt_indices")]
+    if not rows_with_assignments:
+        return assignments
+
+    total_input_chars = sum(
+        len(json.dumps(row_map.get(a["row_id"], {})))
+        + len(json.dumps([stmts_indexed[i] for i in a["stmt_indices"] if i in stmts_indexed]))
+        for a in rows_with_assignments
+    )
+    if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
+        return assignments
+
+    sem = asyncio.Semaphore(5)
+
+    async def _bounded_review(assignment):
+        row_id = assignment["row_id"]
+        stmt_indices = assignment.get("stmt_indices") or []
+        async with sem:
+            try:
+                result = await _review_single_row_policy_assignments(
+                    row_id,
+                    row_map.get(row_id, {}),
+                    stmt_indices,
+                    stmts_indexed,
+                    policy_name,
+                )
+            except Exception:
+                logging.error(
+                    f"Error reviewing policy row {row_id}: {traceback.format_exc()}"
+                )
+                result = {"row_id": row_id, "valid_indices": stmt_indices, "_output_chars": 0}
+            if on_row_done:
+                await on_row_done()
+            return result
+
+    results = await asyncio.gather(*[_bounded_review(a) for a in rows_with_assignments])
+
+    review_map = {r["row_id"]: set(r["valid_indices"]) for r in results}
+    total_output_chars = sum(r.get("_output_chars", 0) for r in results)
+
+    await credits.update_ai_credits_redis(
+        credit_type="think",
+        total_chars=total_input_chars + total_output_chars,
+        user_id=user_id,
+        reference_id="quality_review_policy_assignments",
+    )
+
+    reviewed = []
+    for a in assignments:
+        row_id = a.get("row_id")
+        if row_id in review_map:
+            reviewed.append({"row_id": row_id, "stmt_indices": list(review_map[row_id])})
+        else:
+            reviewed.append(a)
+    return reviewed
+
+
+async def fetch_policy_statements(
+    policy_id: str,
+    version: str | None = None,
+    active_only: bool = True,
+) -> list[dict]:
+    """Fetch policy statements for a given policy from LanceDB.
+
+    Returns a list of {statement_id, text, section_id, seq, status} dicts,
+    ordered by seq. Falls back to [] on error so callers degrade gracefully.
+    """
+    from db.lance_db_service import LanceDBServer
+
+    lance = LanceDBServer()
+    try:
+        table = lance._get_policy_statements_table()
+        where_clauses = [f"policy_id == '{policy_id}'"]
+        if version:
+            where_clauses.append(f"version == '{version}'")
+        if active_only:
+            where_clauses.append("status == 'active'")
+        where = " AND ".join(where_clauses)
+        results = table.search().where(where).limit(10000).to_list()
+        return sorted(
+            [
+                {
+                    "statement_id": r["statement_id"],
+                    "text": r["text"],
+                    "section_id": r["section_id"],
+                    "seq": r["seq"],
+                    "status": r["status"],
+                }
+                for r in results
+            ],
+            key=lambda x: x["seq"],
+        )
+    except Exception as exc:
+        logging.error(
+            "fetch_policy_statements failed for policy=%s: %s", policy_id, exc
+        )
+        return []

@@ -235,7 +235,6 @@ def web_umail_sync(self, user_id, channel=None, integration=None):
 
 @new_celery.task(bind=True, name="umail_helper.delayed_trigger")
 def delayed_trigger(self, user_email, history_id, channel=None, integration=None):
-    import time
     from utils.delay_mails import DelayTrigger
 
     # print(f"inside delayed_trigger, cahnnel : {channel}")
@@ -407,7 +406,7 @@ async def send_bulk_emails(self, user_id: str, email_count: int, receiver_email:
                     body_text=email_body_html["email_body_html"],
                 )
                 sent += 1
-            except Exception as send_err:
+            except Exception:
                 failed += 1
                 # print(f"Email send failed ({i}):", send_err)
 
@@ -654,7 +653,7 @@ def run_scheduled_step_job(self, userid, filename, stepid):
 
         return result
 
-    except Exception as e:
+    except Exception:
         # print("error", e)
         raise
 
@@ -738,7 +737,7 @@ def run_back_scrape(self, url, user_id, level):
 
 @celery.task(bind=True, max_retries=3, name="tasks.schedule_app")
 def run_schedule_app(self, userid, app_id):
-    from apiConnector.helpers import _execute_app_internal, is_schedule_active
+    from apiConnector.helpers import _execute_app_internal
 
     # 🛑 HARD STOP if user disabled it
     if not is_schedule_app_active(app_id):
@@ -1088,3 +1087,235 @@ def analyze_runbook_questions_task(
     finally:
         # 🔓 Always release lock
         asyncio.run(lock_client.delete(lock_key))
+
+
+# ── Workflow email task ───────────────────────────────────────────────────────
+
+
+@celery.task(
+    bind=True,
+    name="tasks.send_workflow_email",
+    autoretry_for=(Exception,),
+    retry_kwargs={"max_retries": 6},
+    retry_backoff=True,
+    retry_backoff_max=900,
+    retry_jitter=True,
+)
+def send_workflow_email(
+    self,
+    workflow_id: str,
+    event_type: str,
+    recipient_email: str,
+    recipient_user_id: str,
+    template_name: str,
+    context: dict,
+):
+    """Send a workflow notification email via Graph API raw-MIME path.
+
+    Retries up to 6 times with exponential backoff (max 900s). On terminal
+    failure, writes to workflow_email_dlq and posts an in-app notification.
+    """
+    import os
+    import requests as _requests
+    from services.workflow_notifications_service import render_email, build_multipart_mime
+
+    from_email = os.getenv("WORKFLOW_SENDER_EMAIL", "noreply@bytoid.ai")
+    sender_user_id = os.getenv("WORKFLOW_SENDER_GRAPH_USER_ID", "")
+
+    try:
+        subject, html_body, text_body = render_email(template_name, context)
+        raw_mime = build_multipart_mime(from_email, recipient_email, subject, html_body, text_body)
+
+        # Graph API raw-MIME sendMail
+        access_token = _get_graph_access_token()
+        url = f"https://graph.microsoft.com/v1.0/users/{sender_user_id}/sendMail"
+        resp = _requests.post(
+            url,
+            data=raw_mime,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "text/plain",
+            },
+            timeout=30,
+        )
+        if resp.status_code not in (200, 202):
+            raise Exception(f"Graph sendMail returned {resp.status_code}: {resp.text[:500]}")
+
+    except Exception as exc:
+        if self.request.retries >= self.max_retries:
+            # Terminal failure — write DLQ and post in-app notification
+            _workflow_email_terminal_failure(
+                workflow_id, recipient_user_id, recipient_email, template_name, context, str(exc)
+            )
+        raise self.retry(exc=exc)
+
+
+def _get_graph_access_token() -> str:
+    """Obtain a Microsoft Graph access token for the sender account."""
+    import os
+    import requests as _requests
+
+    tenant_id = os.getenv("MICROSOFT_TENANT_ID", "")
+    client_id = os.getenv("MICROSOFT_CLIENT_ID", "")
+    client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "")
+
+    resp = _requests.post(
+        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": "https://graph.microsoft.com/.default",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def _workflow_email_terminal_failure(
+    workflow_id: str,
+    recipient_user_id: str,
+    recipient_email: str,
+    template_name: str,
+    context: dict,
+    error: str,
+):
+    """On terminal DLQ failure: update DLQ row, post in-app notification."""
+    from db.rds_db import connect_to_rds as _rds
+    conn = _rds()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workflow_email_dlq SET status='permanent_failure', last_error=%s "
+                "WHERE workflow_id=%s AND recipient=%s AND template_name=%s AND status='pending' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (error[:2000], workflow_id, recipient_email, template_name),
+            )
+        conn.commit()
+    except Exception as exc:
+        print(f"[workflow] DLQ update failed: {exc}")
+    finally:
+        conn.close()
+
+    # In-app notification to recipient
+    from services.workflow_notifications_service import _insert_raw_in_app_notification
+    _insert_raw_in_app_notification(
+        user_id=recipient_user_id,
+        workflow_id=workflow_id,
+        workflow_state=None,
+        doc_type=context.get("doc_type"),
+        doc_id=context.get("doc_title"),
+        message="Email delivery failed for a workflow notification. Please check your workflow inbox.",
+        action_required=False,
+    )
+
+
+# ── Legacy policy migration tasks ────────────────────────────────────────────
+
+
+@celery.task(
+    bind=True,
+    name="tasks.migrate_legacy_policy",
+    max_retries=5,
+    default_retry_delay=30,
+)
+def migrate_legacy_policy(self, key: str, data: dict, dry_run: bool = False):
+    """Celery worker: migrate one legacy policy YAML to V2 structured schema."""
+    import asyncio as _asyncio
+    from policy_hub.migrate_legacy_policies import _migrate_one_policy
+
+    try:
+        loop = _asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(_migrate_one_policy(key, data, dry_run=dry_run))
+        finally:
+            loop.close()
+        if result.get("status") == "migration_failed":
+            logger.error("migrate_legacy_policy: %s", result)
+        else:
+            logger.info("migrate_legacy_policy: %s", result)
+        return result
+    except Exception as exc:
+        countdown = min(2 ** self.request.retries, 600)
+        logger.warning(
+            "migrate_legacy_policy retrying (attempt %d): %s — retry in %ds",
+            self.request.retries,
+            exc,
+            countdown,
+        )
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+@celery.task(
+    bind=True,
+    name="tasks.migrate_legacy_policies_org",
+    max_retries=3,
+)
+def migrate_legacy_policies_org(self, user_id: str, dry_run: bool = False, policy_id: str | None = None):
+    """Orchestrator: list legacy policies for an org and dispatch in chunks.
+
+    Uses a Redis lock (migration_lock:{user_id}) so two concurrent invocations
+    for the same org never overlap.
+    """
+    from utils.app_configs import MIGRATION_CHUNK_SIZE
+    from policy_hub.migrate_legacy_policies import list_legacy_policy_keys
+    from utils.s3_utils import load_yaml_from_s3
+
+    lock_key = f"migration_lock:{user_id}"
+    lock_ttl = 600  # 10 minutes; refreshed each chunk
+
+    # Acquire per-org migration lock
+    acquired = run_async(lock_client.set(lock_key, "1", ex=lock_ttl, nx=True))
+    if not acquired:
+        logger.warning("migrate_legacy_policies_org: lock held for org %s — skipping", user_id)
+        return {"status": "locked", "user_id": user_id}
+
+    try:
+        if policy_id:
+            key = f"{user_id}/policies/{policy_id}.yaml"
+            data = load_yaml_from_s3(key)
+            if not data:
+                return {"status": "not_found", "policy_id": policy_id}
+            keys = [(key, data)]
+        else:
+            raw_keys = list_legacy_policy_keys(user_id)
+            keys = []
+            for k in raw_keys:
+                d = load_yaml_from_s3(k)
+                if d:
+                    keys.append((k, d))
+
+        total = len(keys)
+        logger.info("migrate_legacy_policies_org: %d policies to migrate for %s", total, user_id)
+
+        results = []
+        for chunk_start in range(0, total, MIGRATION_CHUNK_SIZE):
+            chunk = keys[chunk_start: chunk_start + MIGRATION_CHUNK_SIZE]
+
+            # Dispatch chunk synchronously (blocking) using a chord-like pattern:
+            # run each task and wait before the next chunk.
+            chunk_results = []
+            for k, d in chunk:
+                res = migrate_legacy_policy.apply(args=[k, d, dry_run])
+                chunk_results.append(res.get(timeout=300))
+
+            results.extend(chunk_results)
+
+            # Refresh lock TTL after each chunk
+            run_async(lock_client.expire(lock_key, lock_ttl))
+
+        ok = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "ok")
+        failed = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "migration_failed")
+        dry = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "dry_run")
+        logger.info(
+            "migrate_legacy_policies_org done: total=%d ok=%d failed=%d dry=%d",
+            total, ok, failed, dry,
+        )
+        return {"status": "done", "total": total, "ok": ok, "failed": failed, "dry_run": dry}
+
+    except Exception as exc:
+        logger.error("migrate_legacy_policies_org error for %s: %s", user_id, exc)
+        raise
+    finally:
+        run_async(lock_client.delete(lock_key))

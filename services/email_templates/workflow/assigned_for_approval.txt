@@ -1,0 +1,7 @@
+Hi {{ recipient_name }},
+
+{{ reviewer_name }} approved the review of "{{ doc_title }}" (v{{ doc_version }}) and it is now awaiting your approval.
+
+Approve or reject: {{ link }}
+
+— Bytoid

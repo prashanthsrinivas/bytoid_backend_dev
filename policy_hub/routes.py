@@ -20,8 +20,14 @@ from utils.permission_required import permission_required_body
 from db.db_checkers import get_email_by_id
 from db.rds_db import connect_to_rds
 from db.lance_db_service import LanceDBServer, VectorData, QueryData
-from utils.app_configs import FRAMEWORK_OWNER
+from utils.app_configs import FRAMEWORK_OWNER, policy_hub_v2_enabled, statement_reid_threshold
 from utils.base_logger import get_logger
+from policy_hub.templates import get_template, validate as validate_template
+from policy_hub.structured import (
+    parse_document_html,
+    reconcile_statement_ids,
+    sync_statements_to_lance,
+)
 from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
 from utils.s3_utils import (
     s3bucket,
@@ -156,6 +162,32 @@ def _enumeration_prompt(prompt: str, fw_list: str, type_filter: str) -> str:
     )
 
 
+def _v2_section_requirements(doc_type: str) -> str:
+    """Build the ordered section list injected into the V2 generation prompt."""
+    try:
+        template = get_template(doc_type)
+    except KeyError:
+        return ""
+    lines = []
+    for sec in template:
+        required_tag = "" if sec.required else " (optional)"
+        lines.append(
+            f'  <div data-section-id="{sec.id}">\n'
+            f'    <h2 data-section-id="{sec.id}">{sec.title}{required_tag}</h2>\n'
+            f"    <!-- {sec.prompt_help} -->"
+        )
+        if sec.kind in ("statements", "steps"):
+            tag = "ol" if sec.kind == "steps" else "ul"
+            lines.append(
+                f"    <!-- Each item MUST use: <li data-statement-id=\"{{NEW_UUID}}\">…</li> -->\n"
+                f"    <{tag}>\n"
+                f'      <li data-statement-id="{{NEW_UUID}}">first item</li>\n'
+                f"    </{tag}>"
+            )
+        lines.append("  </div>")
+    return "\n".join(lines)
+
+
 def _doc_generation_prompt(
     title: str,
     doc_type: str,
@@ -163,6 +195,7 @@ def _doc_generation_prompt(
     fw_list: str,
     user_context: str,
     controls: str = "",
+    v2: bool = False,
 ) -> str:
     stmt_heading = "Policy Statement" if doc_type == "policy" else "Procedure Steps"
     enforce_heading = "Enforcement" if doc_type == "policy" else "Compliance Monitoring"
@@ -262,13 +295,123 @@ def _doc_generation_prompt(
         "    </tbody>\n"
         "  </table>\n\n"
         "</div>\n\n"
-        f"Include these sections in order: Purpose, Scope, {stmt_heading}, "
-        f"Roles and Responsibilities, {enforce_heading}, References, Document Control.\n"
-        "Document Control table rows: Version (1.0), Effective Date ([Insert Date]), "
-        "Review Cycle, Document Owner, Classification (e.g., Internal / Confidential).\n\n"
-        "Output ONLY the HTML fragment. No markdown. No preamble. No code fences. "
+        + (
+            # V2: inject the ordered section list with data-section-id / data-statement-id requirements
+            (
+                "REQUIRED DOCUMENT STRUCTURE — follow exactly:\n"
+                "Wrap each section in <div data-section-id=\"{section_id}\"> and use an <h2> for the heading.\n"
+                "For Policy Statements and Procedure Steps sections, each item MUST be:\n"
+                '  <li data-statement-id="{NEW_UUID}">…</li>\n'
+                "where {NEW_UUID} is a freshly generated UUID (e.g., 3f2a1b4c-...). "
+                "Never reuse UUIDs across items.\n\n"
+                "Section order and IDs:\n"
+                + _v2_section_requirements(doc_type)
+                + "\n\n"
+            )
+            if v2
+            else (
+                f"Include these sections in order: Purpose, Scope, {stmt_heading}, "
+                f"Roles and Responsibilities, {enforce_heading}, References, Document Control.\n"
+                "Document Control table rows: Version (1.0), Effective Date ([Insert Date]), "
+                "Review Cycle, Document Owner, Classification (e.g., Internal / Confidential).\n"
+            )
+        )
+        + "Output ONLY the HTML fragment. No markdown. No preamble. No code fences. "
         "Do not truncate or summarize — write every section in full."
     )
+
+
+# ── V2 helpers (no-op when flag is off) ──────────────────────────────────────
+
+
+def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEventLoop) -> dict:
+    """Parse HTML into structured sections, validate, and add V2 fields to *item*.
+
+    Mutates and returns *item*. On any failure, leaves V2 fields absent so the
+    document degrades gracefully to legacy mode.
+    """
+    try:
+        parsed = parse_document_html(content, doc_type)
+        validation = validate_template(content, doc_type)
+
+        # If template validation fails, retry once with a corrective nudge by
+        # re-prompting is out of scope here — just mark needs_review and carry on.
+        item["template_version"] = 1
+        item["validation_status"] = "ok" if validation.ok else "needs_review"
+        item["migration_status"] = "ok"
+
+        # Build the sections list for storage alongside the legacy content blob.
+        # Sections are stored as plain dicts so PyYAML can serialise them.
+        sections_data = []
+        for sec in parsed.sections:
+            sec_dict: dict = {
+                "id": sec.id,
+                "title": sec.title,
+                "kind": sec.kind,
+                "body_html": sec.body_html,
+            }
+            if sec.statements:
+                sec_dict["statements"] = [
+                    {
+                        "id": s.id,
+                        "text": s.text,
+                        "seq": s.seq,
+                        "section_id": s.section_id,
+                        "status": s.status,
+                    }
+                    for s in sec.statements
+                ]
+            sections_data.append(sec_dict)
+
+        item["sections"] = sections_data
+        item["metadata"] = parsed.metadata
+
+        if not validation.ok:
+            logger.warning(
+                "Template validation needs_review for policy=%s: missing=%s",
+                item.get("policy_id"),
+                validation.missing_sections,
+            )
+    except Exception as exc:
+        logger.error(
+            "_enrich_v2 failed for policy=%s: %s", item.get("policy_id"), exc
+        )
+    return item
+
+
+def _sync_statements(item: dict, user_id: str, doc_type: str, loop: asyncio.AbstractEventLoop) -> None:
+    """Sync policy statements to LanceDB in the background thread's event loop."""
+    from policy_hub.structured import Statement
+
+    policy_id = item.get("policy_id", "")
+    version = item.get("metadata", {}).get("version", "1.0")
+    statements: list[Statement] = []
+
+    for sec in item.get("sections", []):
+        for s in sec.get("statements", []):
+            statements.append(
+                Statement(
+                    id=s["id"],
+                    text=s["text"],
+                    seq=s["seq"],
+                    section_id=s.get("section_id", sec["id"]),
+                )
+            )
+
+    if not statements:
+        return
+
+    try:
+        loop.run_until_complete(
+            sync_statements_to_lance(
+                policy_id=policy_id,
+                doc_type=doc_type,
+                version=version,
+                statements=statements,
+            )
+        )
+    except Exception as exc:
+        logger.error("_sync_statements failed for policy=%s: %s", policy_id, exc)
 
 
 # ── Background generation worker ──────────────────────────────────────────────
@@ -321,6 +464,7 @@ def _generation_worker(
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    v2 = policy_hub_v2_enabled(user_id)
     try:
         credits = Credits()
         total = len(docs)
@@ -346,7 +490,8 @@ def _generation_worker(
                     get_fireworks_response2(
                         user_id=user_id,
                         user_message=_doc_generation_prompt(
-                            title, d_type, description, fw_list, prompt, controls
+                            title, d_type, description, fw_list, prompt, controls,
+                            v2=v2,
                         ),
                         role="user",
                         credits=credits,
@@ -375,8 +520,16 @@ def _generation_worker(
                     "content": content,
                     "s3_key": key,
                     "created_at": created_at,
+                    "etag": str(uuid.uuid4()),
                 }
+
+                if v2:
+                    item = _enrich_v2(item, content, d_type, loop)
+
                 _write_yaml_to_s3(key, item)
+
+                if v2:
+                    _sync_statements(item, user_id, d_type, loop)
 
             except Exception as e:
                 logger.error("Failed to generate '%s': %s", title, e)
@@ -572,6 +725,29 @@ def _find_section(html: str, needle: str) -> tuple[str, int, int] | None:
 # ── 1c. EDIT ──────────────────────────────────────────────────────────────────
 
 
+def _build_statement_id_instructions(section_html: str) -> str:
+    """Extract existing data-statement-id values from *section_html* and build the
+    preservation instruction block injected into the edit prompt."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(section_html, "lxml")
+    existing_ids = [li.get("data-statement-id") for li in soup.find_all("li") if li.get("data-statement-id")]
+    if not existing_ids:
+        return ""
+    ids_list = "\n".join(f"  - {sid}" for sid in existing_ids)
+    return (
+        "\n\nSTATEMENT ID PRESERVATION RULES (mandatory):\n"
+        "The <li> elements in this section have stable data-statement-id attributes that\n"
+        "MUST be preserved verbatim in your output. The existing IDs are:\n"
+        + ids_list
+        + "\n- Keep each id on the rewritten item that corresponds to it.\n"
+        "- If you split a statement, keep the original id on the first part; add a NEW UUID on the second.\n"
+        "- If you merge statements, keep one id; omit the others (they'll be marked superseded).\n"
+        "- If you delete a statement, simply omit its <li> entirely.\n"
+        "- New statements you add must each have a NEW UUID data-statement-id.\n"
+    )
+
+
 def _edit_worker(
     user_id,
     job_id,
@@ -584,6 +760,7 @@ def _edit_worker(
 ):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    v2 = policy_hub_v2_enabled(user_id)
     try:
         credits = Credits()
         needle = selected_text or section_title
@@ -598,6 +775,7 @@ def _edit_worker(
                 if selected_text
                 else f'Target section: "{section_title}"\n'
             )
+            stmt_id_block = _build_statement_id_instructions(section_html) if v2 else ""
             ai_prompt = (
                 "You are an expert GRC policy writer editing a compliance document section.\n\n"
                 f"Document title: {document_title}\n"
@@ -605,6 +783,7 @@ def _edit_worker(
                 + focus
                 + "\nRewrite this section per the instruction:\n\n"
                 + section_html
+                + stmt_id_block
                 + "\n\nReturn EXACTLY:\n"
                 "[EXPLANATION]\n1–2 sentence summary.\n[/EXPLANATION]\n"
                 "[SECTION]\nRewritten section HTML only — no surrounding document, no code fences.\n[/SECTION]\n\n"
@@ -665,6 +844,16 @@ def _edit_worker(
         if existing:
             existing["content"] = updated_content
             existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+            existing["etag"] = str(uuid.uuid4())
+
+            if v2:
+                # Reconcile statement IDs and rebuild structured sections
+                doc_type = existing.get("type", "policy")
+                threshold = statement_reid_threshold(user_id)
+                existing = _reconcile_and_enrich_edit(
+                    existing, updated_content, doc_type, threshold, loop
+                )
+
             try:
                 _write_yaml_to_s3(key, existing)
             except Exception as e:
@@ -688,6 +877,106 @@ def _edit_worker(
             pass
     finally:
         loop.close()
+
+
+def _reconcile_and_enrich_edit(
+    existing: dict,
+    updated_content: str,
+    doc_type: str,
+    threshold: float,
+    loop: asyncio.AbstractEventLoop,
+) -> dict:
+    """Reconcile statement IDs after an edit, rebuild sections, sync to LanceDB."""
+    from policy_hub.structured import Statement
+
+    policy_id = existing.get("policy_id", "")
+    version = existing.get("metadata", {}).get("version", "1.0")
+
+    try:
+        # Build old statements index from existing YAML sections
+        old_stmts_by_section: dict[str, list] = {}
+        for sec in existing.get("sections", []):
+            raw_stmts = sec.get("statements", [])
+            if raw_stmts:
+                old_stmts_by_section[sec["id"]] = [
+                    Statement(
+                        id=s["id"],
+                        text=s["text"],
+                        seq=s["seq"],
+                        section_id=s.get("section_id", sec["id"]),
+                    )
+                    for s in raw_stmts
+                ]
+
+        # Parse the updated HTML into new sections
+        parsed = parse_document_html(updated_content, doc_type)
+        validation = validate_template(updated_content, doc_type)
+        existing["validation_status"] = "ok" if validation.ok else "needs_review"
+
+        all_active: list[Statement] = []
+        all_superseded: list[Statement] = []
+        new_sections_data = []
+
+        for sec in parsed.sections:
+            old = old_stmts_by_section.get(sec.id, [])
+            if sec.statements and old:
+                # Reconcile IDs for this section
+                sec_html = sec.body_html
+                active, superseded = reconcile_statement_ids(
+                    old, sec_html, sec.id, similarity_threshold=threshold
+                )
+                # Replace the parsed statements with reconciled ones
+                sec.statements = active
+                all_active.extend(active)
+                all_superseded.extend(superseded)
+            else:
+                all_active.extend(sec.statements)
+
+            sec_dict: dict = {
+                "id": sec.id,
+                "title": sec.title,
+                "kind": sec.kind,
+                "body_html": sec.body_html,
+            }
+            if sec.statements:
+                sec_dict["statements"] = [
+                    {
+                        "id": s.id,
+                        "text": s.text,
+                        "seq": s.seq,
+                        "section_id": s.section_id,
+                        "status": s.status,
+                    }
+                    for s in sec.statements
+                ]
+            new_sections_data.append(sec_dict)
+
+        existing["sections"] = new_sections_data
+
+        # Sync to LanceDB
+        try:
+            loop.run_until_complete(
+                sync_statements_to_lance(
+                    policy_id=policy_id,
+                    doc_type=doc_type,
+                    version=version,
+                    statements=all_active,
+                    superseded=all_superseded,
+                )
+            )
+        except Exception as exc:
+            logger.error(
+                "_reconcile_and_enrich_edit LanceDB sync failed for policy=%s: %s",
+                policy_id,
+                exc,
+            )
+
+    except Exception as exc:
+        logger.error(
+            "_reconcile_and_enrich_edit failed for policy=%s: %s", policy_id, exc
+        )
+
+    return existing
 
 
 @policy_hub_bp.route("/edit", methods=["POST"])
@@ -828,13 +1117,39 @@ def update_policy():
     if not existing:
         return jsonify({"error": "Policy not found"}), 404
 
+    v2 = policy_hub_v2_enabled(user_id)
+
+    # Optimistic locking: clients that send an etag must match the stored one.
+    if v2 and "etag" in body:
+        if body["etag"] != existing.get("etag"):
+            return jsonify(
+                {
+                    "error": "Document was modified since you last loaded it. Please reload.",
+                    "current_etag": existing.get("etag"),
+                }
+            ), 409
+
+    content_updated = False
     if "title" in body:
         existing["title"] = body["title"]
     if "content" in body:
         existing["content"] = body["content"]
+        content_updated = True
     if "frameworks" in body:
         existing["frameworks"] = body["frameworks"]
     existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+    existing["etag"] = str(uuid.uuid4())
+
+    if v2 and content_updated:
+        doc_type = existing.get("type", "policy")
+        threshold = statement_reid_threshold(user_id)
+        loop = asyncio.new_event_loop()
+        try:
+            existing = _reconcile_and_enrich_edit(
+                existing, existing["content"], doc_type, threshold, loop
+            )
+        finally:
+            loop.close()
 
     try:
         _write_yaml_to_s3(key, existing)
@@ -1474,3 +1789,45 @@ def list_shared_policies():
     except Exception as e:
         logger.error("list_shared_policies error: %s", traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+
+
+# ── Legacy migration admin endpoint ──────────────────────────────────────────
+
+
+@policy_hub_bp.route("/admin/migrate", methods=["POST"])
+def admin_migrate_policies():
+    """Queue legacy policy migration for an org.
+
+    Gated to FRAMEWORK_OWNER. Supports:
+      ?dry_run=true   — count only, no writes
+      ?policy_id=X    — target a single policy (by policy_id, not full S3 key)
+    """
+    guard = _require_framework_owner()
+    if guard is not None:
+        return guard
+
+    body = request.get_json(silent=True) or {}
+    user_id = body.get("user_id") or request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+
+    dry_run = request.args.get("dry_run", "").lower() == "true"
+    single_policy_id = request.args.get("policy_id") or body.get("policy_id")
+
+    try:
+        from utils.celery_base import migrate_legacy_policies_org
+
+        task = migrate_legacy_policies_org.delay(
+            user_id=user_id,
+            dry_run=dry_run,
+            policy_id=single_policy_id,
+        )
+        return jsonify({
+            "status": "queued",
+            "task_id": task.id,
+            "dry_run": dry_run,
+            "policy_id": single_policy_id,
+        }), 202
+    except Exception as exc:
+        logger.error("admin_migrate_policies error: %s", exc)
+        return jsonify({"error": str(exc)}), 500

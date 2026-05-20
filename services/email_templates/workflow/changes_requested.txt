@@ -1,0 +1,9 @@
+Hi {{ recipient_name }},
+
+{{ actor_name }} requested changes to "{{ doc_title }}" (v{{ doc_version }}).
+{% if comment %}
+Their comment: "{{ comment }}"
+{% endif %}
+Open the document: {{ link }}
+
+— Bytoid

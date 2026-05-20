@@ -1311,4 +1311,48 @@ def update_tracker_evidence(user_id, tracker_id, row_id, column_id, s3_key):
             "error": str(e)
         }
 
+def propagate_assessment_status_to_policy_cells(
+    tracker_data: dict, result_id: str | None = None
+) -> int:
+    """Update pass/fail status on policy statement cells from assessment result blocks.
+
+    Finds rows that reference result_id (or all rows if result_id is None), reads their
+    verdict, and sets the status on every policy column cell in those rows. Superseded
+    statement entries are never overwritten.
+
+    Returns the count of cell entries updated.
+    """
+    schema_cols = tracker_data.get("schema", {}).get("columns", [])
+    policy_col_ids = {col["id"] for col in schema_cols if col.get("source_column") == "policies"}
+    if not policy_col_ids:
+        return 0
+
+    updated = 0
+    for row in tracker_data.get("rows", []):
+        row_result_id = row.get("result_id")
+        if result_id and row_result_id != result_id:
+            continue
+
+        verdict = row.get("verdict")
+        if not verdict:
+            continue
+
+        status = (
+            "passed"
+            if str(verdict).lower() in ("pass", "passed", "true", "yes")
+            else "failed"
+        )
+
+        for col_id in policy_col_ids:
+            cell = row["values"].get(col_id)
+            if not isinstance(cell, list):
+                continue
+            for entry in cell:
+                if isinstance(entry, dict) and entry.get("status") != "superseded":
+                    entry["status"] = status
+                    updated += 1
+
+    return updated
+
+
 # def get_block_data(user_id,runbook_id):
