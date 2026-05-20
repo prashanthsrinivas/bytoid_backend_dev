@@ -1221,7 +1221,7 @@ def forgot_password():
             return jsonify({"error": "User with this email is not exists"})
 
         reset_url = generate_hashed_url(
-            base_url=f"{os.getenv('BASE_FRNT_URL')}/forgot-password",
+            base_url=f"{os.getenv('BASE_FRNT_URL')}/ResetPassword",
             invited_to=email,
             invited_by=os.getenv("TEST_EMAIL2"),
         )
