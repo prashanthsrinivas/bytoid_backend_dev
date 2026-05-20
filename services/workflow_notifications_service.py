@@ -12,6 +12,8 @@ import uuid
 from email.message import EmailMessage
 from pathlib import Path
 
+import pymysql.cursors
+
 from jinja2 import Environment, FileSystemLoader
 
 from db.rds_db import connect_to_rds
@@ -373,7 +375,7 @@ def _get_org_workflow_managers(org_id: str) -> list[str]:
     """Return user_ids with workflow.config.manage permission in the org."""
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 "SELECT user_id FROM users WHERE org_id=%s "
                 "AND JSON_CONTAINS(roles_creation, '\"workflow.config.manage\"')",

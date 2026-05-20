@@ -3,6 +3,8 @@
 import uuid
 from datetime import datetime, timezone
 
+import pymysql.cursors
+
 from db.rds_db import connect_to_rds
 from utils.base_logger import get_logger
 
@@ -51,7 +53,7 @@ def get_workflow_config(org_id: str, doc_type: str) -> dict:
     """Return the workflow_config row for (org_id, doc_type), or the default."""
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 "SELECT states_json, assignment_mode, reviewer_role_id, approver_role_id "
                 "FROM workflow_config WHERE org_id=%s AND doc_type=%s",
@@ -81,7 +83,7 @@ def get_workflow_config(org_id: str, doc_type: str) -> dict:
 def get_workflow(workflow_id: str) -> dict:
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 "SELECT * FROM document_workflow WHERE workflow_id=%s", (workflow_id,)
             )
@@ -96,7 +98,7 @@ def get_workflow(workflow_id: str) -> dict:
 def get_workflow_for_doc(doc_type: str, doc_id: str, doc_version: str) -> dict | None:
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 "SELECT * FROM document_workflow WHERE doc_type=%s AND doc_id=%s AND doc_version=%s",
                 (doc_type, doc_id, doc_version),
@@ -121,7 +123,7 @@ def create_workflow(
     now = datetime.now(timezone.utc)
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 """INSERT INTO document_workflow
                    (workflow_id, org_id, doc_type, doc_id, doc_version,
@@ -158,7 +160,7 @@ def transition(
     """
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             # Lock the row
             cur.execute(
                 "SELECT * FROM document_workflow WHERE workflow_id=%s FOR UPDATE",
@@ -224,7 +226,7 @@ def _append_event(
     event_id = str(uuid.uuid4())
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 """INSERT INTO document_workflow_events
                    (event_id, workflow_id, from_state, to_state, actor_user_id, comment)
@@ -241,7 +243,7 @@ def get_workflow_history(workflow_id: str, page: int = 1, page_size: int = 50) -
     offset = (page - 1) * page_size
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM document_workflow_events WHERE workflow_id=%s",
                 (workflow_id,),
@@ -279,7 +281,7 @@ def get_inbox(
     offset = (page - 1) * page_size
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 f"SELECT COUNT(*) AS cnt FROM document_workflow "
                 f"WHERE {col}=%s AND state=%s{extra}",

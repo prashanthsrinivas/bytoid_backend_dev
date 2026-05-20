@@ -15,6 +15,8 @@ Endpoints:
 import json
 import uuid
 
+import pymysql.cursors
+
 from flask import Blueprint, g, jsonify, request
 
 from services.audit_log_service import build_audit_actor, log_audit_event
@@ -56,7 +58,7 @@ def _get_user_org(user_id: str) -> str | None:
     """Resolve org_id for a user from the DB."""
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute("SELECT org_id FROM users WHERE user_id=%s LIMIT 1", (user_id,))
             row = cur.fetchone()
         return row["org_id"] if row else None

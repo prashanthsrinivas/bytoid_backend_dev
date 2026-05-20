@@ -2,6 +2,8 @@
 
 import uuid
 
+import pymysql.cursors
+
 from db.rds_db import connect_to_rds
 from utils.base_logger import get_logger
 
@@ -19,7 +21,7 @@ def reassign_orphaned_workflows(deactivated_user_id: str, org_id: str) -> int:
     conn = connect_to_rds()
     touched = 0
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             # Find workflows where the deactivated user is the current reviewer/approver
             cur.execute(
                 """SELECT w.*, c.assignment_mode, c.reviewer_role_id, c.approver_role_id
@@ -82,7 +84,7 @@ def _do_reassign(
     col = "current_reviewer" if role == "reviewer" else "current_approver"
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 f"UPDATE document_workflow SET {col}=%s, state_version=state_version+1 WHERE workflow_id=%s",
                 (new_user_id, workflow_id),
@@ -102,7 +104,7 @@ def _nullify_and_notify(workflow_id: str, row: dict, role: str, org_id: str):
     col = "current_reviewer" if role == "reviewer" else "current_approver"
     conn = connect_to_rds()
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 f"UPDATE document_workflow SET {col}=NULL, state_version=state_version+1 WHERE workflow_id=%s",
                 (workflow_id,),
