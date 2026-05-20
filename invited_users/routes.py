@@ -23,7 +23,7 @@ from services.outlook_service import OutlookService
 from utils.permission_resolver import resolve_permissions
 from utils.s3_utils import read_json_from_s3
 from datetime import timedelta, date as _date
-import os 
+import os
 from utils.permission_required import permission_required_body
 
 inv_users_bp = Blueprint("invited_users", __name__)
@@ -606,16 +606,14 @@ def get_roles(userid):
             roles = (
                 json.loads(row["roles_creation"]) if row.get("roles_creation") else []
             )
-            # permissions = (
-            #     json.loads(row["permissions"]) if row.get("permissions") else []
-            # )
+            permissions = (
+                json.loads(row["permissions"]) if row.get("permissions") else {}
+            )
 
-            # # Get shared emails from permissions
-            # emails = [
-            #     entry["email"]
-            #     for entry in permissions.get("shared", [])
-            #     if "email" in entry
-            # ]
+            # Build structured lists from the permissions ledger
+            shared = [e for e in permissions.get("shared", []) if "email" in e]
+            invites = [e for e in permissions.get("invites", []) if "email" in e]
+            emails = [e["email"] for e in shared] + [e["email"] for e in invites]
             # Step 1: get org id
             # get org from company_name
             cursor.execute(
@@ -626,12 +624,20 @@ def get_roles(userid):
 
             org = (org_row.get("company_name") or "").strip()
             if not org:
-                return jsonify({
-                    "roles": roles,
-                    "invited_users": [],
-                    "invited_users_structured": {"invites": [], "shared": []},
-                    "special_access_status": {},
-                }), 200
+                return (
+                    jsonify(
+                        {
+                            "roles": roles,
+                            "invited_users": emails,
+                            "invited_users_structured": {
+                                "invites": invites,
+                                "shared": shared,
+                            },
+                            "special_access_status": {},
+                        }
+                    ),
+                    200,
+                )
 
             # get all users in same org (excluding self)
             cursor.execute(
@@ -640,15 +646,16 @@ def get_roles(userid):
             )
             all_users = cursor.fetchall()
 
-            emails = []
+            # emails = []
             special_access_status = {}
-            invites = []
-            shared = []
+            shared_emails = {e["email"] for e in shared}
 
             for user in all_users:
                 if user["user_type"] != "admin":
                     continue
                 email = user["email"]
+                if email in shared_emails:
+                    continue
                 cursor.execute(
                     """
                     SELECT 1 FROM special_access
@@ -1992,7 +1999,12 @@ def revoke_special_access():
 
     data = request.get_json()
     grantor_id = data.get("user_id")
-    target_email = data.get("email") or data.get("target_email") or data.get("target_id") or data.get("target_admin_id")
+    target_email = (
+        data.get("email")
+        or data.get("target_email")
+        or data.get("target_id")
+        or data.get("target_admin_id")
+    )
     logged_in_user_id, grantor_id = parse_composite_user_id(grantor_id)
 
     conn = None
