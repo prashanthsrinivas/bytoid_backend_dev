@@ -851,11 +851,13 @@ def send_email_link():
                     <p>The link will expire in 1 hour</p>"""
         gmail_service = GmailService("109161866299858012556")
         # send email
-        gmail_service.send_email(
+        result = gmail_service.send_email(
             receipent_emails=email,
             subject="Verification for new user creation",
             body_text=html,
         )
+        if isinstance(result, dict) and result.get("success") is False:
+            raise Exception(result.get("error", "Failed to send verification email"))
         logger.info("Email sent successfully")
         return jsonify({"message": "Email sent successfully"}), 200
     except Exception as e:
@@ -1243,11 +1245,13 @@ def send_password_reset_email(email, reset_url):
     """
 
     gmail_service = GmailService("109161866299858012556")
-    gmail_service.send_email(
+    result = gmail_service.send_email(
         receipent_emails=email,
         subject="Reset your password",
         body_text=html,
     )
+    if isinstance(result, dict) and result.get("success") is False:
+        raise Exception(result.get("error", "Failed to send password reset email"))
 
 
 # validation of reset link
