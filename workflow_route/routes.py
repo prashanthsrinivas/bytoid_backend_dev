@@ -29,6 +29,7 @@ from workflow_route.state_machine import (
     WorkflowConflictError,
     WorkflowNotFoundError,
     WorkflowTransitionError,
+    bootstrap_schema,
     create_workflow,
     get_inbox,
     get_workflow,
@@ -41,6 +42,11 @@ from db.rds_db import connect_to_rds
 
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 workflow_bp = Blueprint("workflow", __name__, url_prefix="/workflow")
+
+try:
+    bootstrap_schema()
+except Exception as _bs_exc:
+    logger.warning("workflow schema bootstrap failed: %s", _bs_exc)
 
 # ── Audit action constants ────────────────────────────────────────────────────
 
@@ -409,8 +415,11 @@ def workflow_inbox():
     baseuser = request.args.get("user_id", "")
     role = request.args.get("role", "reviewer")
     doc_type = request.args.get("doc_type")
-    page = max(1, int(request.args.get("page", 1)))
-    page_size = min(100, max(1, int(request.args.get("page_size", 25))))
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+        page_size = min(100, max(1, int(request.args.get("page_size") or 25)))
+    except (TypeError, ValueError):
+        page, page_size = 1, 25
 
     if role not in ("reviewer", "approver"):
         return jsonify({"error": "role must be 'reviewer' or 'approver'"}), 400
@@ -420,7 +429,11 @@ def workflow_inbox():
     if not org_id:
         return jsonify({"error": "User org not found"}), 404
 
-    rows, total = get_inbox(user_id, role, org_id, doc_type=doc_type, page=page, page_size=page_size)
+    try:
+        rows, total = get_inbox(user_id, role, org_id, doc_type=doc_type, page=page, page_size=page_size)
+    except Exception as exc:
+        logger.error("get_inbox failed for user=%s role=%s: %s", user_id, role, exc)
+        return jsonify({"error": "Failed to fetch inbox"}), 500
 
     from flask import Response
     import json as _json
@@ -443,8 +456,11 @@ def workflow_history(workflow_id: str):
 
     Query params: user_id, page, page_size
     """
-    page = max(1, int(request.args.get("page", 1)))
-    page_size = min(200, max(1, int(request.args.get("page_size", 50))))
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+        page_size = min(200, max(1, int(request.args.get("page_size") or 50)))
+    except (TypeError, ValueError):
+        page, page_size = 1, 50
 
     try:
         get_workflow(workflow_id)  # verify it exists

@@ -298,3 +298,105 @@ def get_inbox(
     finally:
         conn.close()
     return rows, total
+
+
+def bootstrap_schema() -> None:
+    """Create workflow tables if they don't exist. Idempotent — safe to call on every startup."""
+    _ddl = [
+        """CREATE TABLE IF NOT EXISTS workflow_config (
+          org_id            VARCHAR(64)  NOT NULL,
+          doc_type          VARCHAR(32)  NOT NULL,
+          assignment_mode   VARCHAR(32)  NOT NULL DEFAULT 'per_document',
+          reviewer_role_id  VARCHAR(64)  NULL,
+          approver_role_id  VARCHAR(64)  NULL,
+          states_json       JSON         NOT NULL,
+          updated_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (org_id, doc_type)
+        )""",
+        """CREATE TABLE IF NOT EXISTS document_workflow (
+          workflow_id       CHAR(36)     NOT NULL,
+          org_id            VARCHAR(64)  NOT NULL,
+          doc_type          VARCHAR(32)  NOT NULL,
+          doc_id            VARCHAR(64)  NOT NULL,
+          doc_version       VARCHAR(32)  NOT NULL,
+          owner_user_id     VARCHAR(64)  NOT NULL,
+          state             VARCHAR(32)  NOT NULL DEFAULT 'draft',
+          current_reviewer  VARCHAR(64)  NULL,
+          current_approver  VARCHAR(64)  NULL,
+          state_version     INT          NOT NULL DEFAULT 1,
+          submitted_at      TIMESTAMP    NULL,
+          approved_at       TIMESTAMP    NULL,
+          published_at      TIMESTAMP    NULL,
+          created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (workflow_id),
+          UNIQUE KEY uq_doc (doc_type, doc_id, doc_version),
+          INDEX idx_reviewer (current_reviewer, state),
+          INDEX idx_approver (current_approver, state),
+          INDEX idx_org (org_id, doc_type, state)
+        )""",
+        """CREATE TABLE IF NOT EXISTS document_workflow_events (
+          event_id          CHAR(36)     NOT NULL,
+          workflow_id       CHAR(36)     NOT NULL,
+          from_state        VARCHAR(32)  NULL,
+          to_state          VARCHAR(32)  NOT NULL,
+          actor_user_id     VARCHAR(64)  NOT NULL,
+          comment           TEXT         NULL,
+          created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (event_id),
+          INDEX idx_wf (workflow_id, created_at)
+        )""",
+        """CREATE TABLE IF NOT EXISTS workflow_email_dlq (
+          dlq_id            CHAR(36)     NOT NULL,
+          workflow_id       CHAR(36)     NULL,
+          event_id          CHAR(36)     NULL,
+          org_id            VARCHAR(64)  NOT NULL,
+          recipient         VARCHAR(255) NOT NULL,
+          template_name     VARCHAR(64)  NOT NULL,
+          context_json      TEXT         NOT NULL,
+          last_error        TEXT         NULL,
+          retry_count       INT          NOT NULL DEFAULT 0,
+          last_retry_at     TIMESTAMP    NULL,
+          status            VARCHAR(32)  NOT NULL DEFAULT 'pending',
+          created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (dlq_id),
+          INDEX idx_pending (status, created_at),
+          INDEX idx_org (org_id, status)
+        )""",
+        """CREATE TABLE IF NOT EXISTS org_feature_flags (
+          org_id      VARCHAR(64)  NOT NULL,
+          flag_name   VARCHAR(64)  NOT NULL,
+          flag_value  VARCHAR(255) NOT NULL DEFAULT 'false',
+          updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (org_id, flag_name)
+        )""",
+    ]
+    _notification_alters = [
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS doc_type VARCHAR(32) NULL",
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS doc_id VARCHAR(64) NULL",
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS workflow_id CHAR(36) NULL",
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS workflow_state VARCHAR(32) NULL",
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_required TINYINT(1) DEFAULT 0",
+    ]
+    conn = connect_to_rds()
+    if not conn:
+        logger.warning("bootstrap_schema: no DB connection available")
+        return
+    try:
+        with conn.cursor() as cur:
+            for stmt in _ddl:
+                cur.execute(stmt)
+            for stmt in _notification_alters:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    pass
+        conn.commit()
+        logger.info("workflow schema bootstrap complete")
+    except Exception as exc:
+        logger.error("bootstrap_schema failed: %s", exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
