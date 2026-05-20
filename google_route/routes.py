@@ -10,8 +10,6 @@ from google.oauth2 import id_token
 from datetime import datetime, timedelta
 import uuid
 import os
-
-os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 import requests
 from db.rds_db import connect_to_rds
 from dotenv import load_dotenv
@@ -32,7 +30,6 @@ from integrations.integrations_helpers import get_all_integrations
 from umail_helper.helper import store_integrations_in_redis
 from microsoft_route.microsoft_helpers import (
     OutlookSubscriptionManager,
-    refresh_expired_microsoft_tokens,
     check_microsoft_token_expiry,
 )
 from umail_helper.mails_process import check_mailbox
@@ -45,6 +42,7 @@ google_bp = Blueprint("auth", __name__)
 logger = get_logger(__name__)
 
 dev_val = os.getenv("BASE_FRNT_URL", "")
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 
 @google_bp.route("/login")

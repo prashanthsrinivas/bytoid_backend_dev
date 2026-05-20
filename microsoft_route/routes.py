@@ -3026,8 +3026,8 @@ def download_onedrive_file(session, file_id, local_path):
     return True
 
 
-@permission_required_body("taskbox.email.view")
 @microsoft_bp.route("/process-outlook", methods=["POST"])
+@permission_required_body("kb.doc.upload")
 def process_outlook():
     try:
         data = request.json
@@ -3131,6 +3131,7 @@ def process_outlook():
             )
 
         from utils.app_configs import ALLOWED_ORIGINS
+
         sse_response = Response(
             stream_with_context(event_stream()), mimetype="text/event-stream"
         )

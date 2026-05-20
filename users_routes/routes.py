@@ -629,7 +629,7 @@ def get_user_permissions(userid):
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
-                "SELECT user_type, permissions FROM users WHERE user_id=%s",
+                "SELECT user_type, permissions,special_access FROM users WHERE user_id=%s",
                 (userid,),
             )
             row = cursor.fetchone()
@@ -639,7 +639,7 @@ def get_user_permissions(userid):
         if not row:
             return jsonify({"error": "User not found"}), 404
 
-        if row["user_type"] in ("admin", "superadmin"):
+        if row["user_type"] in ("admin", "superadmin") or row["special_access"]:
             return jsonify({"permissions": "ALL"}), 200
 
         # Non-admin → parse JSON
