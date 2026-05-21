@@ -7,6 +7,7 @@ import pymysql
 from utils.app_configs import IS_DEV
 from db.rds_db import connect_to_rds
 from utils.normal import parse_composite_user_id
+from utils.permission_resolver import resolve_permissions
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
@@ -194,7 +195,8 @@ def permission_required(required_permission):
                     if not role or permissions.get("status") != "active":
                         return jsonify({"error": "No active role assigned"}), 403
 
-                    if required_permission not in role.get("permissions", []):
+                    effective_perms = resolve_permissions(role.get("permissions", []))
+                    if required_permission not in effective_perms:
                         return jsonify({"error": "Permission denied"}), 403
 
                     return f(*args, **kwargs)
@@ -316,7 +318,8 @@ def permission_required_body(required_permission):
                     if not role or permissions.get("status") != "active":
                         return jsonify({"error": "No active role assigned"}), 403
 
-                    if required_permission not in role.get("permissions", []):
+                    effective_perms = resolve_permissions(role.get("permissions", []))
+                    if required_permission not in effective_perms:
                         return jsonify({"error": "Permission denied"}), 403
 
                     return None

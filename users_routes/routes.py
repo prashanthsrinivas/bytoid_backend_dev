@@ -12,6 +12,7 @@ from datetime import datetime
 from microsoft_route.routes import get_microsoft_redirect_uri
 from utils.base_logger import get_logger
 from utils.permission_required import permission_required_body
+from utils.permission_resolver import resolve_permissions
 from werkzeug.utils import secure_filename
 from utils.s3_utils import attach_CLDFRNT_url, generate_presigned_url, upload_any_file
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -651,6 +652,10 @@ def get_user_permissions(userid):
                 permissions = {}
 
         role_permissions = permissions.get("role", {})
+        if role_permissions.get("permissions"):
+            role_permissions["permissions"] = resolve_permissions(
+                role_permissions["permissions"]
+            )
         role_permissions["status"] = permissions.get("status")
 
         return jsonify({"permissions": role_permissions}), 200
