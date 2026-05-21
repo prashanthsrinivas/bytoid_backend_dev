@@ -1838,7 +1838,7 @@ def testmidcheck():
     filedata = body.get("ques_file")
     credits = Credits()
     try:
-        ai = AutoMateService(user_id=user_id, credits=credits)
+        ai = AutoMateService(userid=user_id, credits=credits)
         val = _run_async(ai.generate_questions_from_file(file_data=filedata))
         return jsonify({"data": val})
     except Exception as e:
@@ -2634,7 +2634,7 @@ def check_formcreation():
     from services.automate_service import AutoMateService
 
     credits = Credits()
-    val = AutoMateService(user_id=user_id, credits=credits)
+    val = AutoMateService(userid=user_id, credits=credits)
 
     kak = _run_async(val.generate_form_schema(user_input))
 
@@ -2652,7 +2652,7 @@ async def send_ques_byfile_bk(
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
-    ai = AutoMateService(user_id=user_id, credits=credits, workflow=workflow_json)
+    ai = AutoMateService(userid=user_id, credits=credits, workflow=workflow_json)
 
     result = await ai.generate_questions_from_file(extracted_files)
     return result
