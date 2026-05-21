@@ -51,7 +51,7 @@ PERMISSION_METADATA = {
         "label": "View Runbooks",
         "module": "Compliance",
         "type": "read",
-        "dependencies": ["workspace.compliance_engine"]
+        "dependencies": ["workspace.compliance_engine", "radar.view"]
     },
     "compliance.runbook.create": {
         "label": "Create Runbooks",
@@ -376,21 +376,21 @@ PERMISSION_METADATA = {
         "label": "View Reports",
         "module": "Reports",
         "type": "read",
-        "dependencies": ["compliance.runbook.read"]
+        "dependencies": ["workspace.compliance_engine"]
     },
 
     "radar.edit": {
         "label": "Edit Reports",
         "module": "Reports",
         "type": "update",
-        "dependencies": ["compliance.runbook.edit"]
+        "dependencies": ["radar.view"]
     },
 
     "radar.delete": {
         "label": "Delete Reports",
         "module": "Reports",
         "type": "delete",
-        "dependencies": ["compliance.runbook.delete"]
+        "dependencies": ["radar.view"]
     },
     # ================= TASKBOX (EMAIL) =================
     "taskbox.email.view": {
