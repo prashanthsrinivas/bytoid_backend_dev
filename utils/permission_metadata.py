@@ -47,11 +47,17 @@ PERMISSION_METADATA = {
     },
 
     # ================= COMPLIANCE ENGINE =================
+    "compliance.runbook.read": {
+        "label": "View Runbooks",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine"]
+    },
     "compliance.runbook.create": {
         "label": "Create Runbooks",
         "module": "Compliance",
         "type": "create",
-        "dependencies": ["workspace.compliance_engine"]
+        "dependencies": ["workspace.compliance_engine", "compliance.runbook.read"]
     },
     "compliance.runbook.edit": {
         "label": "Edit Runbooks",
@@ -70,12 +76,6 @@ PERMISSION_METADATA = {
         "module": "Compliance",
         "type": "execute",
         "dependencies": ["compliance.runbook.read"]
-    },
-    "compliance.runbook.read": {
-        "label": " View Runbooks",
-        "module": "Compliance",
-        "type": "read",
-        "dependencies": []
     },
     "compliance.standalone.create": {
         "label": "Create Standalone Reports",
