@@ -1457,13 +1457,20 @@ def result_list(user_id):
         finally:
             loop.close()
 
-        shared_reports = get_user_shared_reports(user_id)
+        shared_reports = get_user_shared_reports(user_id) or {}
+        if not isinstance(shared_reports, dict):
+            shared_reports = {}
 
         shared_runbook_entries = {
-            rid: d for rid, d in shared_reports.items() if d.get("type") == "runbook"
+            rid: d
+            for rid, d in shared_reports.items()
+            if isinstance(d, dict) and d.get("type") == "runbook"
         }
 
-        # ONLY fetch explicitly shared result IDs
+        # Fetch each explicitly-shared result. Backfill sdata["runbook_id"] from
+        # the fetched result when the share entry lacks it (older shares written
+        # before parent_id was passed) so the downstream runbook resolution and
+        # the filter both see the parent.
         for result_id_key, sdata in shared_runbook_entries.items():
             main_user_id = sdata.get("mainuser_id")
 
@@ -1481,13 +1488,17 @@ def result_list(user_id):
                 if shared_result and shared_result.get("status") != "not_found":
                     shared_result["shared"] = True
                     shared_result["shared_by"] = main_user_id
-
                     result = (result or []) + [shared_result]
+
+                    if not sdata.get("runbook_id") and shared_result.get(
+                        "runbook_id"
+                    ):
+                        sdata["runbook_id"] = shared_result.get("runbook_id")
 
             except Exception as e:
                 logger.warning(f"Could not fetch shared result {result_id_key}: {e}")
 
-        # Fetch shared runbooks
+        # Fetch shared runbook definitions (after backfill above)
         added_runbook_ids = set()
 
         for sdata in shared_runbook_entries.values():
@@ -1526,28 +1537,30 @@ def result_list(user_id):
             rb.get("runbook_id") for rb in (runbooks or []) if rb.get("runbook_id")
         }
 
-        # ONLY keep:
-        # 1. valid status
-        # 2. non-zero risk score
-        # 3. existing runbook
-        # 4. explicitly shared OR owned
+        # Keep when:
+        # - valid status
+        # - (explicitly shared with this user) OR (owned by this user AND parent runbook is known)
+        # Shared reports are explicitly authorized, so a missing/unfetchable
+        # parent runbook should not hide them. Risk score is no longer used as
+        # a visibility gate — UI handles display ordering.
         shared_result_ids = set(shared_runbook_entries.keys())
 
         valid_statuses = {"completed", "success", "done", "draft"}
 
-        filtered_results = [
-            r
-            for r in (result or [])
-            if (
-                r.get("status") in valid_statuses
-                and (r.get("risk_score") or 0) != 0
-                and r.get("runbook_id") in runbook_ids
-                and (
-                    r.get("result_id") in shared_result_ids
-                    or r.get("user_id") == user_id
-                )
-            )
-        ]
+        def _keep(r):
+            if not isinstance(r, dict):
+                return False
+            if r.get("status") not in valid_statuses:
+                return False
+            is_shared = r.get("result_id") in shared_result_ids
+            is_owned = r.get("user_id") == user_id
+            if not (is_shared or is_owned):
+                return False
+            if is_owned and not is_shared and r.get("runbook_id") not in runbook_ids:
+                return False
+            return True
+
+        filtered_results = [r for r in (result or []) if _keep(r)]
 
         filtered_results.sort(
             key=lambda r: r.get("ended_at") or 0,

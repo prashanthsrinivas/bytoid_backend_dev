@@ -1202,25 +1202,46 @@ def group_radars(rows: list[dict]):
 @permission_required_body("radar.view")
 async def list_radar_reviews(user_id):
     dbserver = LanceDBServer()
-    rows = await dbserver.radar_get_review_index(user_id)
-    if not rows:
-        shared_reports = get_user_shared_reports(user_id)
-        shared_radar_ids = [
-            rid for rid, data in shared_reports.items() if data.get("type") == "radar"
-        ]
+    rows = await dbserver.radar_get_review_index(user_id) or []
 
-        for shared_id in shared_radar_ids:
-            shared_data = shared_reports[shared_id]
+    # Always merge in shared radar reviews — regardless of whether the user
+    # has owned rows. Previous code only fell back to shared when owned was
+    # empty AND returned a single record (not a list) inside the loop, which
+    # left shared users with an empty workspace.
+    try:
+        shared_reports = get_user_shared_reports(user_id) or {}
+        if not isinstance(shared_reports, dict):
+            shared_reports = {}
+
+        shared_radar_entries = {
+            rid: data
+            for rid, data in shared_reports.items()
+            if isinstance(data, dict) and data.get("type") == "radar"
+        }
+
+        for shared_id, shared_data in shared_radar_entries.items():
             main_user_id = shared_data.get("mainuser_id")
-
             try:
-                shared_record = await dbserver.radar_get_by_id(main_user_id, shared_id)
-                if shared_record:
-                    shared_record["shared"] = True
-                    shared_record["shared_by"] = main_user_id
-                    return shared_record
+                shared_record = await dbserver.radar_get_by_id(
+                    main_user_id, shared_id
+                )
             except Exception as e:
                 logger.warning(f"Could not fetch shared radar {shared_id}: {e}")
+                continue
+
+            if not shared_record:
+                continue
+
+            if isinstance(shared_record, list):
+                shared_record = shared_record[0] if shared_record else None
+                if not shared_record:
+                    continue
+
+            shared_record["shared"] = True
+            shared_record["shared_by"] = main_user_id
+            rows.append(shared_record)
+    except Exception as e:
+        logger.warning(f"shared radar merge failed for user {user_id}: {e}")
 
     return jsonify(group_radars(rows))
 
