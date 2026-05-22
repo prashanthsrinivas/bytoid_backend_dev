@@ -240,11 +240,11 @@ def submit_for_review():
             }), 400
 
     # Create or resume workflow
-    existing = get_workflow_for_doc(doc_type, doc_id, doc_version)
-    if existing:
-        if existing["state"] != "draft":
-            return jsonify({"error": f"Document is already in state '{existing['state']}'"}), 409
-        try:
+    try:
+        existing = get_workflow_for_doc(doc_type, doc_id, doc_version)
+        if existing:
+            if existing["state"] != "draft":
+                return jsonify({"error": f"Document is already in state '{existing['state']}'"}), 409
             wf = transition(
                 existing["workflow_id"],
                 existing["state_version"],
@@ -255,28 +255,28 @@ def submit_for_review():
                 governance_reviewer_user_id=governance_reviewer_user_id,
                 approver_user_id=approver_user_id,
             )
-        except (WorkflowConflictError, WorkflowTransitionError) as exc:
-            return jsonify({"error": str(exc)}), 409
-    else:
-        wf = create_workflow(
-            org_id=org_id,
-            doc_type=doc_type,
-            doc_id=doc_id,
-            doc_version=doc_version,
-            owner_user_id=user_id,
-            quality_reviewer_user_id=quality_reviewer_user_id,
-            governance_reviewer_user_id=governance_reviewer_user_id,
-            approver_user_id=approver_user_id,
-        )
-        try:
+        else:
+            wf = create_workflow(
+                org_id=org_id,
+                doc_type=doc_type,
+                doc_id=doc_id,
+                doc_version=doc_version,
+                owner_user_id=user_id,
+                quality_reviewer_user_id=quality_reviewer_user_id,
+                governance_reviewer_user_id=governance_reviewer_user_id,
+                approver_user_id=approver_user_id,
+            )
             wf = transition(
                 wf["workflow_id"], 1, "quality_review", user_id, comment=comment,
                 quality_reviewer_user_id=quality_reviewer_user_id,
                 governance_reviewer_user_id=governance_reviewer_user_id,
                 approver_user_id=approver_user_id,
             )
-        except (WorkflowConflictError, WorkflowTransitionError) as exc:
-            return jsonify({"error": str(exc)}), 409
+    except (WorkflowConflictError, WorkflowTransitionError) as exc:
+        return jsonify({"error": str(exc)}), 409
+    except Exception as exc:
+        logger.exception("submit_for_review unexpected error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     _notify(wf, WORKFLOW_SUBMITTED, comment=comment)
 
@@ -364,6 +364,9 @@ def review_document():
         wf = get_workflow(workflow_id)
     except WorkflowNotFoundError:
         return jsonify({"error": "Workflow not found"}), 404
+    except Exception as exc:
+        logger.exception("review_document get_workflow error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     # Map stage to the state the workflow must currently be in
     expected_state = {"quality": "quality_review", "governance": "governance_review", "approval": "approval"}[stage]
@@ -394,6 +397,9 @@ def review_document():
         return jsonify({"error": str(exc), "current_state_version": wf["state_version"]}), 409
     except WorkflowTransitionError as exc:
         return jsonify({"error": str(exc)}), 409
+    except Exception as exc:
+        logger.exception("review_document transition error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     _notify(updated, audit_action, comment=comment, previous_state=expected_state)
 
@@ -470,6 +476,9 @@ def _dispatch_review(body: dict):
         wf = get_workflow(workflow_id)
     except WorkflowNotFoundError:
         return jsonify({"error": "Workflow not found"}), 404
+    except Exception as exc:
+        logger.exception("_dispatch_review get_workflow error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     expected_state = {"quality": "quality_review", "governance": "governance_review", "approval": "approval"}[stage]
     if wf.get("state") != expected_state:
@@ -495,6 +504,9 @@ def _dispatch_review(body: dict):
         return jsonify({"error": str(exc), "current_state_version": wf["state_version"]}), 409
     except WorkflowTransitionError as exc:
         return jsonify({"error": str(exc)}), 409
+    except Exception as exc:
+        logger.exception("_dispatch_review transition error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     _notify(updated, audit_action, comment=comment, previous_state=expected_state)
 
@@ -609,6 +621,9 @@ def publish_document():
         wf = get_workflow(workflow_id)
     except WorkflowNotFoundError:
         return jsonify({"error": "Workflow not found"}), 404
+    except Exception as exc:
+        logger.exception("publish_document get_workflow error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     if wf.get("owner_user_id") != user_id:
         return jsonify({"error": "Only the document owner can publish"}), 403
@@ -622,6 +637,9 @@ def publish_document():
         return jsonify({"error": str(exc), "current_state_version": wf["state_version"]}), 409
     except WorkflowTransitionError as exc:
         return jsonify({"error": str(exc)}), 409
+    except Exception as exc:
+        logger.exception("publish_document transition error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     _notify(updated, WORKFLOW_PUBLISHED, comment=comment)
 
@@ -753,6 +771,9 @@ def reassign_workflow():
         wf = get_workflow(workflow_id)
     except WorkflowNotFoundError:
         return jsonify({"error": "Workflow not found"}), 404
+    except Exception as exc:
+        logger.exception("reassign_workflow get_workflow error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
 
     col = {
         "reviewer": "current_quality_reviewer",          # legacy alias
@@ -776,10 +797,17 @@ def reassign_workflow():
                 (event_id, workflow_id, wf["state"], "reassigned", user_id, new_user_id, comment),
             )
         conn.commit()
+    except Exception as exc:
+        logger.exception("reassign_workflow DB error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
     finally:
         conn.close()
 
-    updated = get_workflow(workflow_id)
+    try:
+        updated = get_workflow(workflow_id)
+    except Exception as exc:
+        logger.exception("reassign_workflow post-update get_workflow error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
     _notify(updated, WORKFLOW_REASSIGNED, comment=comment, new_user_id=new_user_id, role=role)
 
     logger.info(
