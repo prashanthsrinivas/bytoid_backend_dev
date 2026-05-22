@@ -12,6 +12,7 @@ from db.db_checkers import get_notes_data
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, g, jsonify, request
 from utils.permission_required import permission_required_body
+from utils.normal import parse_composite_user_id
 from db.rds_db import connect_to_rds
 import uuid
 
@@ -66,7 +67,8 @@ from services.audit_log_service import (
 @permission_required_body("radar.edit")
 async def assign_radar():
     data = request.get_json()
-    user_id = data.get("user_id") or data.get("userid")
+    base_user_id = data.get("user_id") or data.get("userid")
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
     report_id = data.get("report_id")
     report_name = data.get("report_name")
     assignment_type = data.get("assignment_type")
@@ -86,12 +88,14 @@ async def assign_radar():
 
             with conn.cursor(pymysql.cursors.DictCursor) as cursor:
                 cursor.execute(
-                    "SELECT email FROM users WHERE user_id=%s", (client_user_id,)
+                    "SELECT user_id, email FROM users WHERE user_id=%s OR email=%s",
+                    (client_user_id, client_user_id),
                 )
                 user_row = cursor.fetchone()
                 if not user_row:
                     return jsonify({"error": "User not found"}), 404
             user_email = user_row["email"]
+            client_user_id = user_row["user_id"]
 
         elif assignment_type == "role":
             if not role_id:
