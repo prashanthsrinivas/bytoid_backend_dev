@@ -569,9 +569,11 @@ async def user_alive():
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
 
-    redis = get_redis()
-
-    await update_user_alive(redis, user_id, is_alive)
+    try:
+        redis = get_redis()
+        await update_user_alive(redis, user_id, is_alive)
+    except Exception as e:
+        logger.warning("user_alive: Redis unavailable, heartbeat skipped: %s", e)
 
     return jsonify(
         {
