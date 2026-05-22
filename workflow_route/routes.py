@@ -118,6 +118,77 @@ def _resolve_assignee(workflow: dict, to_state: str) -> str | None:
     return None
 
 
+# ── Assignable-users endpoint ─────────────────────────────────────────────────
+
+
+@workflow_bp.route("/assignable-users", methods=["GET"])
+@permission_required_body("workflow.submit")
+def get_assignable_users():
+    """Return all active org members eligible to be assigned as workflow reviewers/approvers.
+
+    Unlike /admin/organization-users, this returns both user_type='user' and
+    user_type='admin' so that admin accounts (e.g. peer compliance officers) also
+    appear in the reviewer dropdowns.
+
+    Query: user_id
+    """
+    baseuser = request.args.get("user_id", "")
+    if not baseuser:
+        return jsonify({"error": "user_id is required"}), 400
+    logged_in, user_id = parse_composite_user_id(baseuser)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT user_id, user_type, company_name, launch_id_fk "
+                "FROM users WHERE user_id=%s LIMIT 1",
+                (user_id,),
+            )
+            caller = cur.fetchone()
+        if not caller:
+            return jsonify({"users": []}), 200
+
+        company_name = (caller.get("company_name") or "").strip()
+        launch_id = (caller.get("launch_id_fk") or "").strip()
+
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            if company_name:
+                # SAML org: everyone sharing the same company_name
+                cur.execute(
+                    "SELECT user_id, email, user_type FROM users "
+                    "WHERE company_name=%s AND user_id != %s",
+                    (company_name, user_id),
+                )
+            elif launch_id:
+                # Sub-user: everyone under the same root admin
+                cur.execute(
+                    "SELECT user_id, email, user_type FROM users "
+                    "WHERE (launch_id_fk=%s OR user_id=%s) AND user_id != %s",
+                    (launch_id, launch_id, user_id),
+                )
+            else:
+                # Root admin: return all users whose launch_id_fk points to this admin
+                cur.execute(
+                    "SELECT user_id, email, user_type FROM users "
+                    "WHERE launch_id_fk=%s AND user_id != %s",
+                    (user_id, user_id),
+                )
+            rows = cur.fetchall()
+    except Exception as exc:
+        logger.exception("get_assignable_users error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        conn.close()
+
+    result = [
+        {"user_id": row["user_id"], "email": row["email"], "user_type": row["user_type"]}
+        for row in rows
+        if row.get("email")
+    ]
+    return jsonify({"users": result}), 200
+
+
 # ── Config endpoints ──────────────────────────────────────────────────────────
 
 
