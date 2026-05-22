@@ -87,7 +87,8 @@ def _run_async(coro):
 @permission_required_body("compliance.runbook.edit")
 def assign_runbook():
     data = request.get_json()
-    admin_id = data.get("user_id")
+    base_user_id = data.get("user_id")
+    logged_in_user_id, admin_id = parse_composite_user_id(base_user_id)
     runbook_id = data.get("runbook_id")
     result_id = data.get("result_id")
     runbook_name = data.get("runbook_name")
@@ -115,11 +116,15 @@ def assign_runbook():
                 )
 
             with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-                cursor.execute("SELECT email FROM users WHERE user_id=%s", (user_id,))
+                cursor.execute(
+                    "SELECT user_id, email FROM users WHERE user_id=%s OR email=%s",
+                    (user_id, user_id),
+                )
                 user_row = cursor.fetchone()
                 if not user_row:
                     return jsonify({"error": "User not found"}), 404
             user_email = user_row["email"]
+            user_id = user_row["user_id"]
 
         elif assignment_type == "role":
             if not role_id:
@@ -218,7 +223,8 @@ def assign_runbook():
 @permission_required_body("compliance.runbook.edit")
 def revoke_runbook():
     data = request.get_json()
-    admin_id = data.get("user_id")
+    base_user_id = data.get("user_id")
+    logged_in_user_id, admin_id = parse_composite_user_id(base_user_id)
     user_id = data.get("target_user_id")
     runbook_id = data.get("runbook_id")
     result_id = data.get("result_id")
