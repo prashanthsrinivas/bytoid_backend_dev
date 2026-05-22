@@ -308,7 +308,8 @@ def review_document():
       state_version,
       stage: 'quality' | 'governance' | 'approval',
       decision: 'approve' | 'send_back',
-      comment?     # required when decision='send_back'
+      comment?,                    # required when decision='send_back'
+      governance_reviewer_user_id? # only used when stage='quality' + decision='approve'
     }
     """
     body = request.get_json(silent=True) or {}
@@ -318,6 +319,7 @@ def review_document():
     stage = body.get("stage")
     decision = body.get("decision")
     comment = body.get("comment")
+    governance_reviewer_user_id = body.get("governance_reviewer_user_id")
 
     if not all([baseuser, workflow_id, state_version is not None, stage, decision]):
         return jsonify({"error": "user_id, workflow_id, state_version, stage, decision are required"}), 400
@@ -348,12 +350,19 @@ def review_document():
         return jsonify({"error": f"Unsupported transition: {expected_state} + {decision}"}), 400
     to_state, audit_action, role_col = mapping
 
-    # Permission: the user must hold the role for this stage
-    if wf.get(role_col) != user_id:
+    # Permission: the user must hold the role for this stage.
+    # If no reviewer was assigned (NULL), the document owner may act to unblock the workflow.
+    assigned = wf.get(role_col)
+    if assigned and assigned != user_id:
         return jsonify({"error": f"You are not the current {stage} reviewer for this workflow"}), 403
+    if not assigned and wf.get("owner_user_id") != user_id:
+        return jsonify({"error": f"No {stage} reviewer is assigned; only the document owner can act"}), 403
 
     try:
-        updated = transition(wf["workflow_id"], int(state_version), to_state, user_id, comment=comment)
+        updated = transition(
+            wf["workflow_id"], int(state_version), to_state, user_id, comment=comment,
+            governance_reviewer_user_id=governance_reviewer_user_id,
+        )
     except WorkflowConflictError as exc:
         return jsonify({"error": str(exc), "current_state_version": wf["state_version"]}), 409
     except WorkflowTransitionError as exc:
@@ -406,6 +415,7 @@ def _dispatch_review(body: dict):
     stage = body.get("stage")
     decision = body.get("decision")
     comment = body.get("comment")
+    governance_reviewer_user_id = body.get("governance_reviewer_user_id")
 
     if not all([baseuser, workflow_id, state_version is not None, stage, decision]):
         return jsonify({"error": "user_id, workflow_id, state_version, stage, decision are required"}), 400
@@ -428,11 +438,18 @@ def _dispatch_review(body: dict):
     if not mapping:
         return jsonify({"error": "Unsupported transition"}), 400
     to_state, audit_action, role_col = mapping
-    if wf.get(role_col) != user_id:
+
+    assigned = wf.get(role_col)
+    if assigned and assigned != user_id:
         return jsonify({"error": f"You are not the current {stage} reviewer for this workflow"}), 403
+    if not assigned and wf.get("owner_user_id") != user_id:
+        return jsonify({"error": f"No {stage} reviewer is assigned; only the document owner can act"}), 403
 
     try:
-        updated = transition(wf["workflow_id"], int(state_version), to_state, user_id, comment=comment)
+        updated = transition(
+            wf["workflow_id"], int(state_version), to_state, user_id, comment=comment,
+            governance_reviewer_user_id=governance_reviewer_user_id,
+        )
     except WorkflowConflictError as exc:
         return jsonify({"error": str(exc), "current_state_version": wf["state_version"]}), 409
     except WorkflowTransitionError as exc:
