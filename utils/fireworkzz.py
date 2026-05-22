@@ -468,7 +468,7 @@ async def get_think_fire_response_og(
 
     print(f"messages : {messages}")
 
-    payload = {"messages": messages, "temperature": 0.1, "max_tokens": 228000}
+    payload = {"messages": messages, "temperature": 0.1, "max_tokens": 32000}
 
     response = await asyncio.to_thread(
         bedrock_runtime.invoke_model,
@@ -641,14 +641,14 @@ async def get_think_fire_response2_og(
         print("No sufficient credits for THINK_FIRE model")
         return "INSUFFICIENT"
 
-    # 2️⃣ Qwen payload
+    # 2️⃣ Kimi payload (OpenAI-style on Bedrock)
     payload = {
         "messages": [
             {"role": "user", "content": [{"type": "text", "text": user_message}]}
         ],
         "temperature": 0.1,
         "top_p": 0.95,
-        "max_tokens": 228000,
+        "max_tokens": 32000,
     }
 
     # 3️⃣ Invoke Bedrock (non-blocking)
@@ -2274,7 +2274,7 @@ Avoid emojis, markdown fences, or meta explanations.
 
     # print(f"messages : {messages}")
 
-    payload = {"messages": messages, "temperature": 0.1, "max_tokens": 228000}
+    payload = {"messages": messages, "temperature": 0.1, "max_tokens": 32000}
 
     response = await asyncio.to_thread(
         bedrock_runtime.invoke_model,
@@ -2322,7 +2322,7 @@ async def get_coder_fire_response(user_message: str, role: str, credits, user_id
         "Assume the user is a developer."
     )
 
-    # 2️⃣ Qwen payload (Bedrock format)
+    # 2️⃣ Kimi payload (Bedrock OpenAI-style)
     payload = {
         "messages": [
             {
@@ -2336,7 +2336,7 @@ async def get_coder_fire_response(user_message: str, role: str, credits, user_id
         ],
         "temperature": 0.1,
         "top_p": 0.95,
-        "max_tokens": 228000,
+        "max_tokens": 32000,
     }
 
     # 3️⃣ Invoke Bedrock (non-blocking)

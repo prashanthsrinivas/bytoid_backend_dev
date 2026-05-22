@@ -842,18 +842,19 @@ def get_job_status(job_id):
 
 
 async def execute_modify_runbook(data, job_id=None, session_id=None):
+    base_user_id = data.get("user_id")
+    logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
+
+    # ✅ single flag — defined OUTSIDE try so the except block can also emit
+    should_emit = bool(job_id and session_id)
+
+    async def emit(msg):
+        if should_emit:
+            await send(ws_sender, msg, user_id)
+
     try:
         dbserver = LanceDBServer()
 
-        # ✅ single flag
-        should_emit = bool(job_id and session_id)
-
-        async def emit(msg):
-            if should_emit:
-                await send(ws_sender, msg, user_id)
-
-        base_user_id = data.get("user_id")
-        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
         runbook_id = data.get("runbook_id")
         result_id = data.get("result_id")
         analyze_input = data.get("analyze_input") or data.get("user_input")
@@ -1002,6 +1003,13 @@ async def execute_modify_runbook(data, job_id=None, session_id=None):
 
     except Exception as e:
         logger.error("Runbook trigger error: %s", e, exc_info=IS_DEV)
+        await emit(
+            msg_builder.job_error(
+                job_id,
+                session_id,
+                "Runbook modification failed. Please try again.",
+            )
+        )
 
 
 @runbook_bp.route("/runbook/modify", methods=["POST"])
