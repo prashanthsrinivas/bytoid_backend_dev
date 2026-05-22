@@ -807,8 +807,27 @@ def get_organization_users(userid):
             # so they can still retrieve the org's user list for workflow assignment.
             if row["user_type"] != "admin":
                 root_id = (row.get("launch_id_fk") or "").strip()
+
+                # Fallback for users invited before the launch_id_fk fix:
+                # their permissions column stores invited_by (admin email).
+                if not root_id:
+                    try:
+                        user_perms = json.loads(row["permissions"]) if row.get("permissions") else {}
+                        invited_by_email = user_perms.get("invited_by", "")
+                        if invited_by_email:
+                            cursor.execute(
+                                "SELECT user_id FROM users WHERE email=%s AND user_type='admin' LIMIT 1",
+                                (invited_by_email,),
+                            )
+                            ref = cursor.fetchone()
+                            if ref:
+                                root_id = ref["user_id"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
                 if not root_id:
                     return jsonify({"users": []}), 200
+
                 cursor.execute(
                     "SELECT user_id, user_type, company_name, launch_id_fk, permissions "
                     "FROM users WHERE user_id=%s",
@@ -2312,7 +2331,7 @@ def validate_invite(token):
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # 1️⃣ Fetch inviter
             cursor.execute(
-                "SELECT permissions, launch_id_fk, company_name FROM users WHERE email = %s",
+                "SELECT user_id, permissions, launch_id_fk, company_name FROM users WHERE email = %s",
                 (invited_by,),
             )
             inviter = cursor.fetchone()
@@ -2330,7 +2349,9 @@ def validate_invite(token):
             if "shared" not in permissions:
                 permissions["shared"] = []
 
-            launch_id_fk = inviter["launch_id_fk"]
+            # Use the inviter's own user_id as fallback so invited users can
+            # always resolve their root admin via launch_id_fk.
+            launch_id_fk = inviter["launch_id_fk"] or inviter["user_id"]
 
             # 2️⃣ Find invitation entry
             permission_entry = next(

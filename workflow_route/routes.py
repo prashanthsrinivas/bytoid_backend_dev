@@ -163,8 +163,28 @@ def get_assignable_users():
                 rows = cur.fetchall()
         else:
             # Non-SAML: org membership is tracked in the root admin's permissions.shared.
-            # Resolve root admin: if caller is a sub-user, their launch_id_fk is the admin.
-            admin_id = launch_id if launch_id else user_id
+            # Resolve root admin via launch_id_fk, falling back to permissions.invited_by
+            # for users invited before the launch_id_fk fix (where it was stored as NULL).
+            admin_id = launch_id  # may be empty for legacy invited users
+
+            if not admin_id and caller.get("user_type") != "admin":
+                try:
+                    caller_perms = json.loads(caller["permissions"]) if caller.get("permissions") else {}
+                    invited_by_email = caller_perms.get("invited_by", "")
+                    if invited_by_email:
+                        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                            cur.execute(
+                                "SELECT user_id FROM users WHERE email=%s AND user_type='admin' LIMIT 1",
+                                (invited_by_email,),
+                            )
+                            ref = cur.fetchone()
+                            if ref:
+                                admin_id = ref["user_id"]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            if not admin_id:
+                admin_id = user_id
 
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 cur.execute(
