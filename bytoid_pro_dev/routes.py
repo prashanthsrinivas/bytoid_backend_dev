@@ -32,7 +32,7 @@ bytoid_dev_pro_bp = Blueprint("bytoid_dev_pro", __name__, url_prefix="/bytoid-pr
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
-MODEL_QWEN3_VL = "accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
+MODEL_QWEN3_VL = "moonshotai.kimi-k2.5"
 
 # ---- In-memory, ephemeral image store (RAM only; no disk, no AWS) ----
 # token -> {"bytes": b"...", "content_type": "image/jpeg", "exp": <epoch>, "hits": int}

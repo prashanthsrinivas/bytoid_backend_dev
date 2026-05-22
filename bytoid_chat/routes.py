@@ -12,7 +12,7 @@ import json
 
 url = "https://api.fireworks.ai/inference/v1/chat/completions"
 payload = {
-  "model": "accounts/fireworks/models/qwen3-vl-235b-a22b-thinking",
+  "model": "moonshotai.kimi-k2.5",
   "max_tokens": 32768,
   "top_p": 1,
   "top_k": 40,

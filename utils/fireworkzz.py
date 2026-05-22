@@ -35,8 +35,8 @@ THINK_FIRE = os.getenv("THINNKMODEL")
 CODER_FIRE = os.getenv("BYCODERMODEL")
 fw = Fireworks(api_key=FIREWORKS_KEY)
 
-NORMAL_MODEL = "qwen.qwen3-235b-a22b-2507-v1:0"
-THINK_MODEL = "qwen.qwen3-vl-235b-a22b"
+NORMAL_MODEL = "moonshotai.kimi-k2.5"
+THINK_MODEL = "moonshotai.kimi-k2.5"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)

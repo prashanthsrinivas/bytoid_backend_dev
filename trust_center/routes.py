@@ -59,7 +59,7 @@ _bedrock = boto3.client(
         read_timeout=300, connect_timeout=60, retries={"max_attempts": 2}
     ),
 )
-_THINK_MODEL = "qwen.qwen3-vl-235b-a22b"
+_THINK_MODEL = "moonshotai.kimi-k2.5"
 _CHUNK_WORDS = 1000
 
 DEFAULT_NDA_TEMPLATE = """NON-DISCLOSURE AGREEMENT
