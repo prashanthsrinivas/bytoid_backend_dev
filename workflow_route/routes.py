@@ -475,6 +475,10 @@ def _dispatch_review(body: dict):
 def workflow_by_doc(doc_type: str, doc_id: str):
     """Return the active WorkflowRow for a doc if the caller is owner/reviewer/approver.
 
+    Also handles shared-access users: if the caller has been granted shared
+    access to a runbook result (doc_type='runbook'), fetches the workflow on
+    behalf of the result owner so the step statuses are visible.
+
     Query: user_id
     """
     baseuser = request.args.get("user_id", "")
@@ -488,6 +492,29 @@ def workflow_by_doc(doc_type: str, doc_id: str):
     except Exception as exc:
         logger.error("get_workflow_for_doc_any_role failed: %s", exc)
         return jsonify({"error": "Failed to fetch workflow"}), 500
+
+    # Shared-access fallback: a user granted read access to a runbook result is
+    # not a workflow party (owner/reviewer/approver), so the query above returns
+    # null. Detect this case and re-fetch as the owner so step statuses are visible.
+    if not row and doc_type == "runbook":
+        try:
+            from shared_configuration import get_user_shared_reports, get_admin_shared_config
+            shared_reports = get_user_shared_reports(user_id) or {}
+            entry = shared_reports.get(doc_id)
+            if entry and entry.get("type") == "runbook":
+                main_user_id = entry.get("mainuser_id")
+                if main_user_id:
+                    # Verify that access hasn't been revoked in the owner's config
+                    admin_config = get_admin_shared_config(main_user_id)
+                    report_meta = admin_config.get("reports", {}).get(doc_id, {})
+                    sharing_access = report_meta.get("sharing_access", [])
+                    user_access = next(
+                        (e for e in sharing_access if e["id"] == user_id), None
+                    )
+                    if user_access and user_access.get("access"):
+                        row = get_workflow_for_doc_any_role(doc_type, doc_id, main_user_id)
+        except Exception as share_exc:
+            logger.warning("workflow shared-access fallback failed: %s", share_exc)
 
     if not row:
         return jsonify({"workflow": None}), 200
