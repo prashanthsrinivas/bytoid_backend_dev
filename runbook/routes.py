@@ -1342,24 +1342,33 @@ def get_runbook_results(runbook_id):
                 if not isinstance(shared_reports, dict):
                     shared_reports = {}
 
-                allowed_result_ids = [
-                    rid
+                # Candidates: every runbook-type share entry not already owned.
+                # We can't filter on sdata["runbook_id"] alone — older share
+                # entries don't have that field. Instead we fetch each result
+                # and use its own runbook_id as the authoritative match (with
+                # a fast-path skip when the share entry's runbook_id is set
+                # and clearly doesn't match).
+                candidate_entries = [
+                    (rid, sdata)
                     for rid, sdata in shared_reports.items()
                     if isinstance(sdata, dict)
                     and sdata.get("type") == "runbook"
-                    and sdata.get("runbook_id") == runbook_id
                     and rid not in owned_result_ids
+                    and (
+                        not sdata.get("runbook_id")
+                        or sdata.get("runbook_id") == runbook_id
+                    )
                 ]
 
-                if allowed_result_ids:
-                    main_user_id = shared_reports[allowed_result_ids[0]].get(
-                        "mainuser_id"
-                    )
-
+                if candidate_entries:
                     loop2 = asyncio.new_event_loop()
                     try:
                         shared_results = []
-                        for rid in allowed_result_ids:
+                        shared_by_for_runbook = None
+                        for rid, sdata in candidate_entries:
+                            main_user_id = sdata.get("mainuser_id")
+                            if not main_user_id:
+                                continue
                             try:
                                 r = loop2.run_until_complete(
                                     dbserver.runbook_get_result(main_user_id, rid)
@@ -1371,21 +1380,27 @@ def get_runbook_results(runbook_id):
                                     fetch_err,
                                 )
                                 continue
-                            if (
-                                isinstance(r, dict)
-                                and r.get("status") in valid_statuses
-                            ):
-                                r["shared"] = True
-                                r["shared_by"] = main_user_id
-                                shared_results.append(r)
+                            if not isinstance(r, dict):
+                                continue
+                            if r.get("status") not in valid_statuses:
+                                continue
+                            # Authoritative parent check from the result itself
+                            if r.get("runbook_id") != runbook_id:
+                                continue
+                            r["shared"] = True
+                            r["shared_by"] = main_user_id
+                            shared_results.append(r)
+                            shared_by_for_runbook = (
+                                shared_by_for_runbook or main_user_id
+                            )
 
                         owned_valid = owned_valid + shared_results
 
-                        if not runbook_details:
+                        if shared_by_for_runbook and not runbook_details:
                             try:
                                 runbook_details = loop2.run_until_complete(
                                     dbserver.get_runbook_by_id(
-                                        main_user_id, runbook_id
+                                        shared_by_for_runbook, runbook_id
                                     )
                                 )
                                 if isinstance(runbook_details, list):
