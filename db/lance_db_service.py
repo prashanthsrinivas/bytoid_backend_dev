@@ -3549,6 +3549,34 @@ class LanceDBServer:
 
         return row
 
+    async def runbook_get_result_by_id(self, user_id: str, result_id: str):
+        """Fetch a runbook result by result_id regardless of status.
+
+        Unlike runbook_get_result, does NOT filter to status='completed'.
+        Used for shared-result lookups where the result may be draft/success/done.
+        Returns None if not found or status is still running/failed/init.
+        """
+        table = await self._open_or_create_runbook_results_table(user_id)
+
+        def _query():
+            return table.search().where(f'result_id == "{result_id}"').to_list()
+
+        rows = await asyncio.to_thread(_query)
+        if not rows:
+            return None
+
+        # LanceDB is append-only; a result_id may have a 'running' row followed
+        # by a 'completed' row. Keep only finalized rows.
+        FINAL_STATUSES = {"completed", "success", "done", "draft"}
+        valid_rows = [r for r in rows if r.get("status") in FINAL_STATUSES]
+        if not valid_rows:
+            return None
+
+        # Pick most-recent by ended_at (handles compaction-lag duplicates)
+        row = max(valid_rows, key=lambda r: r.get("ended_at") or 0)
+        row["result"] = _safe_json_parse(row.get("result"))
+        return row
+
     async def update_runbook_result(
         self,
         user_id: str,

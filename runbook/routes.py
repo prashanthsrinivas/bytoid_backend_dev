@@ -1348,6 +1348,14 @@ def get_runbook_results(runbook_id):
                 #    that returns ALL statuses, not just "completed".
                 # 2. Legacy entries missing runbook_id. Must fetch individually
                 #    and check the result's own runbook_id field.
+                # All result_ids explicitly shared with this user (runbook type).
+                # Used as security boundary for the known-entries group.
+                authorized_shared_ids = {
+                    rid
+                    for rid, sdata in shared_reports.items()
+                    if isinstance(sdata, dict) and sdata.get("type") == "runbook"
+                }
+
                 known_entries = {}   # main_user_id -> True (deduped by owner)
                 legacy_entries = []  # (rid, main_user_id) pairs
 
@@ -1374,7 +1382,10 @@ def get_runbook_results(runbook_id):
                         shared_results = []
                         shared_owner = None
 
-                        # Group 1: fetch all results for this runbook from each owner
+                        # Group 1: fetch all results for this runbook from each owner.
+                        # get_runbook_results returns ALL statuses (no completed filter).
+                        # Security guard: only keep result_ids the user was explicitly
+                        # shared — prevents leaking sibling results from the same runbook.
                         for main_user_id in known_entries:
                             try:
                                 rows = loop2.run_until_complete(
@@ -1396,16 +1407,19 @@ def get_runbook_results(runbook_id):
                                     continue
                                 if row.get("result_id") in owned_result_ids:
                                     continue
+                                if row.get("result_id") not in authorized_shared_ids:
+                                    continue
                                 row["shared"] = True
                                 row["shared_by"] = main_user_id
                                 shared_results.append(row)
                                 shared_owner = shared_owner or main_user_id
 
-                        # Group 2: legacy entries — fetch individually, verify
+                        # Group 2: legacy entries (share entry missing runbook_id).
+                        # Use runbook_get_result_by_id so non-completed statuses are found.
                         for rid, main_user_id in legacy_entries:
                             try:
                                 r = loop2.run_until_complete(
-                                    dbserver.runbook_get_result(main_user_id, rid)
+                                    dbserver.runbook_get_result_by_id(main_user_id, rid)
                                 )
                             except Exception as fe:
                                 logger.warning(
@@ -1413,9 +1427,7 @@ def get_runbook_results(runbook_id):
                                     rid, fe,
                                 )
                                 continue
-                            if not isinstance(r, dict):
-                                continue
-                            if r.get("status") not in valid_statuses:
+                            if not r:
                                 continue
                             if r.get("runbook_id") != runbook_id:
                                 continue
@@ -1523,13 +1535,13 @@ def result_list(user_id):
 
                 try:
                     shared_result = loop2.run_until_complete(
-                        dbserver.runbook_get_result(main_user_id, result_id_key)
+                        dbserver.runbook_get_result_by_id(main_user_id, result_id_key)
                     )
 
                 finally:
                     loop2.close()
 
-                if shared_result and shared_result.get("status") != "not_found":
+                if shared_result:
                     shared_result["shared"] = True
                     shared_result["shared_by"] = main_user_id
                     result = (result or []) + [shared_result]
