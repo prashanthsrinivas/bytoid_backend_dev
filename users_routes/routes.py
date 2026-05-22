@@ -13,6 +13,7 @@ from microsoft_route.routes import get_microsoft_redirect_uri
 from utils.base_logger import get_logger
 from utils.permission_required import permission_required_body
 from utils.permission_resolver import resolve_permissions
+from utils.permission_metadata import DEFAULT_USER_PERMISSIONS
 from werkzeug.utils import secure_filename
 from utils.s3_utils import attach_CLDFRNT_url, generate_presigned_url, upload_any_file
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -935,6 +936,56 @@ def user_login():
             )
             g.audit_logged = True
             return jsonify({"error": "Incorrect password"}), 400
+
+        # Auto-baseline role: when a normal user has no usable role assigned,
+        # write a default permission set so they can actually use the app.
+        # Skips admins (they get permissions="ALL" downstream) and skips any
+        # user who already has an explicit active role with a non-empty
+        # permissions list — never overrides an intentional admin grant.
+        try:
+            if user.get("user_type") == "user":
+                raw_perms = user.get("permissions")
+                needs_baseline = False
+                if not raw_perms:
+                    needs_baseline = True
+                else:
+                    try:
+                        parsed = json.loads(raw_perms) if isinstance(raw_perms, str) else (raw_perms or {})
+                    except Exception:
+                        parsed = {}
+                    role_obj = (parsed or {}).get("role") or {}
+                    role_perms = role_obj.get("permissions") or []
+                    if parsed.get("status") != "active" or not role_perms:
+                        needs_baseline = True
+
+                if needs_baseline:
+                    now_iso = datetime.utcnow().isoformat()
+                    perms_blob = {
+                        "role": {
+                            "id": str(uuid.uuid4()),
+                            "name": "Default User",
+                            "permissions": list(DEFAULT_USER_PERMISSIONS),
+                        },
+                        "status": "active",
+                        "email": user["email"],
+                        "invited_by": "system",
+                        "created_at": now_iso,
+                        "applied_at": now_iso,
+                    }
+                    cursor.execute(
+                        "UPDATE users SET permissions=%s WHERE user_id=%s",
+                        (json.dumps(perms_blob), user["user_id"]),
+                    )
+                    conn.commit()
+                    logger.info(
+                        "baseline role auto-assigned to user %s", user["user_id"]
+                    )
+        except Exception as baseline_err:
+            logger.warning(
+                "baseline role auto-assign failed for %s: %s",
+                user.get("user_id"),
+                baseline_err,
+            )
 
         # onboarding check
         newuser = check_onboarding_user(user["user_id"])

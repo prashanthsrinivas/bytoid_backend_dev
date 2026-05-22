@@ -823,3 +823,15 @@ PERMISSION_METADATA = {
         "dependencies": ["trustcenter.document.upload"]
     },
 }
+
+
+DEFAULT_USER_PERMISSIONS = [
+    "workspace.compliance_engine",
+    "compliance.runbook.read",
+    "radar.view",
+    "kb.doc.view",
+    "taskbox.email.view",
+    "notes.filter",
+    "trackers.table.view",
+    "policyhub.view",
+]
