@@ -146,7 +146,7 @@ def create_workflow(
     finally:
         conn.close()
 
-    _append_event(workflow_id, None, "draft", owner_user_id, "Document created")
+    _append_event(workflow_id, None, "draft", owner_user_id, "Document created", assigned_to_user_id=owner_user_id)
     return get_workflow(workflow_id)
 
 
@@ -223,7 +223,22 @@ def transition(
     finally:
         conn.close()
 
-    event_id = _append_event(workflow_id, current_state, to_state, actor_user_id, comment)
+    # Resolve the user the work was just handed off to, for the event log.
+    if to_state == "quality_review":
+        assigned_to = updates.get("current_quality_reviewer") or row.get("current_quality_reviewer")
+    elif to_state == "governance_review":
+        assigned_to = updates.get("current_governance_reviewer") or row.get("current_governance_reviewer")
+    elif to_state in ("approval", "published"):
+        assigned_to = updates.get("current_approver") or row.get("current_approver")
+    elif to_state == "draft":
+        assigned_to = row.get("owner_user_id")
+    else:
+        assigned_to = None
+
+    event_id = _append_event(
+        workflow_id, current_state, to_state, actor_user_id, comment,
+        assigned_to_user_id=assigned_to,
+    )
     updated = get_workflow(workflow_id)
     updated["_event_id"] = event_id
     return updated
@@ -235,6 +250,7 @@ def _append_event(
     to_state: str,
     actor_user_id: str,
     comment: str | None,
+    assigned_to_user_id: str | None = None,
 ) -> str:
     event_id = str(uuid.uuid4())
     conn = connect_to_rds()
@@ -242,9 +258,11 @@ def _append_event(
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 """INSERT INTO document_workflow_events
-                   (event_id, workflow_id, from_state, to_state, actor_user_id, comment)
-                   VALUES (%s,%s,%s,%s,%s,%s)""",
-                (event_id, workflow_id, from_state, to_state, actor_user_id, comment),
+                   (event_id, workflow_id, from_state, to_state,
+                    actor_user_id, assigned_to_user_id, comment)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (event_id, workflow_id, from_state, to_state,
+                 actor_user_id, assigned_to_user_id, comment),
             )
         conn.commit()
     finally:
@@ -268,8 +286,29 @@ def get_workflow_history(workflow_id: str, page: int = 1, page_size: int = 50) -
                 (workflow_id, page_size, offset),
             )
             rows = [dict(r) for r in cur.fetchall()]
+
+        # Batched email lookup for actor + assignee — single query per page.
+        user_ids = {
+            uid
+            for row in rows
+            for uid in (row.get("actor_user_id"), row.get("assigned_to_user_id"))
+            if uid
+        }
+        emails: dict[str, str] = {}
+        if user_ids:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                placeholders = ",".join(["%s"] * len(user_ids))
+                cur.execute(
+                    f"SELECT user_id, email FROM users WHERE user_id IN ({placeholders})",
+                    tuple(user_ids),
+                )
+                emails = {r["user_id"]: r.get("email") for r in cur.fetchall()}
     finally:
         conn.close()
+
+    for row in rows:
+        row["actor_email"] = emails.get(row.get("actor_user_id"))
+        row["assigned_to_email"] = emails.get(row.get("assigned_to_user_id"))
     return rows, total
 
 
@@ -389,15 +428,17 @@ def bootstrap_schema() -> None:
           INDEX idx_org (org_id, doc_type, state)
         )""",
         """CREATE TABLE IF NOT EXISTS document_workflow_events (
-          event_id          CHAR(36)     NOT NULL,
-          workflow_id       CHAR(36)     NOT NULL,
-          from_state        VARCHAR(32)  NULL,
-          to_state          VARCHAR(32)  NOT NULL,
-          actor_user_id     VARCHAR(64)  NOT NULL,
-          comment           TEXT         NULL,
-          created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+          event_id            CHAR(36)     NOT NULL,
+          workflow_id         CHAR(36)     NOT NULL,
+          from_state          VARCHAR(32)  NULL,
+          to_state            VARCHAR(32)  NOT NULL,
+          actor_user_id       VARCHAR(64)  NOT NULL,
+          assigned_to_user_id VARCHAR(64)  NULL,
+          comment             TEXT         NULL,
+          created_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (event_id),
-          INDEX idx_wf (workflow_id, created_at)
+          INDEX idx_wf (workflow_id, created_at),
+          INDEX idx_assignee (assigned_to_user_id, created_at)
         )""",
         """CREATE TABLE IF NOT EXISTS workflow_email_dlq (
           dlq_id            CHAR(36)     NOT NULL,
@@ -445,6 +486,9 @@ def bootstrap_schema() -> None:
         "UPDATE document_workflow SET state='quality_review' WHERE state='in_review'",
         "UPDATE document_workflow SET state='approval' WHERE state='approved'",
         "UPDATE document_workflow SET state='draft' WHERE state='changes_requested'",
+        # Per-event assignee tracking — captures who the work was handed off to on each transition.
+        "ALTER TABLE document_workflow_events ADD COLUMN assigned_to_user_id VARCHAR(64) NULL",
+        "ALTER TABLE document_workflow_events ADD INDEX idx_assignee (assigned_to_user_id, created_at)",
     ]
     conn = connect_to_rds()
     if not conn:

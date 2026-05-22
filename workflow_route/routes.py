@@ -105,6 +105,19 @@ def _notify(workflow: dict, event_type: str, comment: str | None = None, **kwarg
         logger.error("workflow notification failed for %s: %s", event_type, exc)
 
 
+def _resolve_assignee(workflow: dict, to_state: str) -> str | None:
+    """Return the user_id the work is being handed off to for a given destination state."""
+    if to_state == "quality_review":
+        return workflow.get("current_quality_reviewer")
+    if to_state == "governance_review":
+        return workflow.get("current_governance_reviewer")
+    if to_state in ("approval", "published"):
+        return workflow.get("current_approver")
+    if to_state == "draft":
+        return workflow.get("owner_user_id")
+    return None
+
+
 # ── Config endpoints ──────────────────────────────────────────────────────────
 
 
@@ -267,6 +280,12 @@ def submit_for_review():
 
     _notify(wf, WORKFLOW_SUBMITTED, comment=comment)
 
+    assigned_to = wf.get("current_quality_reviewer")
+    logger.info(
+        "workflow %s: draft → quality_review by actor=%s assigned_to=%s comment=%r",
+        wf["workflow_id"], user_id, assigned_to, comment,
+    )
+
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
     log_audit_event(
         action=WORKFLOW_SUBMITTED,
@@ -277,7 +296,15 @@ def submit_for_review():
         actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid,
         acting_on_behalf_of_email=behalf_email,
-        metadata={"workflow_id": wf["workflow_id"], "doc_type": doc_type, "doc_id": doc_id},
+        metadata={
+            "workflow_id": wf["workflow_id"],
+            "doc_type": doc_type,
+            "doc_id": doc_id,
+            "from_state": "draft",
+            "to_state": "quality_review",
+            "assigned_to_user_id": assigned_to,
+            "comment": comment,
+        },
     )
     g.audit_logged = True
 
@@ -370,12 +397,26 @@ def review_document():
 
     _notify(updated, audit_action, comment=comment, previous_state=expected_state)
 
+    assigned_to = _resolve_assignee(updated, to_state)
+    logger.info(
+        "workflow %s: %s → %s by actor=%s assigned_to=%s comment=%r",
+        workflow_id, expected_state, to_state, user_id, assigned_to, comment,
+    )
+
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
     log_audit_event(
         action=audit_action, endpoint="/workflow/review", ip=request.remote_addr,
         status="success", actor_user_id=actor_uid, actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid, acting_on_behalf_of_email=behalf_email,
-        metadata={"workflow_id": workflow_id, "stage": stage, "decision": decision},
+        metadata={
+            "workflow_id": workflow_id,
+            "stage": stage,
+            "decision": decision,
+            "from_state": expected_state,
+            "to_state": to_state,
+            "assigned_to_user_id": assigned_to,
+            "comment": comment,
+        },
     )
     g.audit_logged = True
     return jsonify({"workflow_id": workflow_id, "state": updated["state"], "state_version": updated["state_version"]}), 200
@@ -456,12 +497,27 @@ def _dispatch_review(body: dict):
         return jsonify({"error": str(exc)}), 409
 
     _notify(updated, audit_action, comment=comment, previous_state=expected_state)
+
+    assigned_to = _resolve_assignee(updated, to_state)
+    logger.info(
+        "workflow %s: %s → %s by actor=%s assigned_to=%s comment=%r",
+        workflow_id, expected_state, to_state, user_id, assigned_to, comment,
+    )
+
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
     log_audit_event(
         action=audit_action, endpoint="/workflow/approve", ip=request.remote_addr,
         status="success", actor_user_id=actor_uid, actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid, acting_on_behalf_of_email=behalf_email,
-        metadata={"workflow_id": workflow_id, "stage": stage, "decision": decision},
+        metadata={
+            "workflow_id": workflow_id,
+            "stage": stage,
+            "decision": decision,
+            "from_state": expected_state,
+            "to_state": to_state,
+            "assigned_to_user_id": assigned_to,
+            "comment": comment,
+        },
     )
     g.audit_logged = True
     return jsonify({"workflow_id": workflow_id, "state": updated["state"], "state_version": updated["state_version"]}), 200
@@ -569,12 +625,24 @@ def publish_document():
 
     _notify(updated, WORKFLOW_PUBLISHED, comment=comment)
 
+    assigned_to = updated.get("owner_user_id")
+    logger.info(
+        "workflow %s: approval → published by actor=%s assigned_to=%s comment=%r",
+        workflow_id, user_id, assigned_to, comment,
+    )
+
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
     log_audit_event(
         action=WORKFLOW_PUBLISHED, endpoint="/workflow/publish", ip=request.remote_addr,
         status="success", actor_user_id=actor_uid, actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid, acting_on_behalf_of_email=behalf_email,
-        metadata={"workflow_id": workflow_id},
+        metadata={
+            "workflow_id": workflow_id,
+            "from_state": "approval",
+            "to_state": "published",
+            "assigned_to_user_id": assigned_to,
+            "comment": comment,
+        },
     )
     g.audit_logged = True
     return jsonify({"workflow_id": workflow_id, "state": "published"}), 200
@@ -692,6 +760,7 @@ def reassign_workflow():
         "governance_reviewer": "current_governance_reviewer",
         "approver": "current_approver",
     }[role]
+    previous_user_id = wf.get(col)
     conn = connect_to_rds()
     try:
         with conn.cursor() as cur:
@@ -702,9 +771,9 @@ def reassign_workflow():
             event_id = str(uuid.uuid4())
             cur.execute(
                 "INSERT INTO document_workflow_events "
-                "(event_id,workflow_id,from_state,to_state,actor_user_id,comment) "
-                "VALUES (%s,%s,%s,%s,%s,%s)",
-                (event_id, workflow_id, wf["state"], "reassigned", user_id, comment),
+                "(event_id,workflow_id,from_state,to_state,actor_user_id,assigned_to_user_id,comment) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (event_id, workflow_id, wf["state"], "reassigned", user_id, new_user_id, comment),
             )
         conn.commit()
     finally:
@@ -713,12 +782,24 @@ def reassign_workflow():
     updated = get_workflow(workflow_id)
     _notify(updated, WORKFLOW_REASSIGNED, comment=comment, new_user_id=new_user_id, role=role)
 
+    logger.info(
+        "workflow %s reassigned: role=%s previous=%s → new=%s by actor=%s comment=%r",
+        workflow_id, role, previous_user_id, new_user_id, user_id, comment,
+    )
+
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
     log_audit_event(
         action=WORKFLOW_REASSIGNED, endpoint="/workflow/reassign", ip=request.remote_addr,
         status="success", actor_user_id=actor_uid, actor_email=actor_email,
         acting_on_behalf_of_user_id=behalf_uid, acting_on_behalf_of_email=behalf_email,
-        metadata={"workflow_id": workflow_id, "role": role, "new_user_id": new_user_id},
+        metadata={
+            "workflow_id": workflow_id,
+            "role": role,
+            "previous_user_id": previous_user_id,
+            "assigned_to_user_id": new_user_id,
+            "new_user_id": new_user_id,  # back-compat with existing audit consumers
+            "comment": comment,
+        },
     )
     g.audit_logged = True
     return jsonify({"workflow_id": workflow_id, "state": updated["state"], role: new_user_id}), 200
