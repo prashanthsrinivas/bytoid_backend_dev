@@ -122,13 +122,13 @@ def _resolve_assignee(workflow: dict, to_state: str) -> str | None:
 
 
 @workflow_bp.route("/assignable-users", methods=["GET"])
-@permission_required_body("workflow.submit")
 def get_assignable_users():
     """Return all active org members eligible to be assigned as workflow reviewers/approvers.
 
-    Unlike /admin/organization-users, this returns both user_type='user' and
-    user_type='admin' so that admin accounts (e.g. peer compliance officers) also
-    appear in the reviewer dropdowns.
+    Works for both admin and user callers. For non-SAML orgs the org membership
+    is tracked via the root admin's permissions.shared list (populated when an
+    invite is accepted), so we resolve the root admin first and read from there.
+    Returns both user_type='user' and user_type='admin' accounts.
 
     Query: user_id
     """
@@ -141,7 +141,7 @@ def get_assignable_users():
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
-                "SELECT user_id, user_type, company_name, launch_id_fk "
+                "SELECT user_id, user_type, company_name, launch_id_fk, permissions "
                 "FROM users WHERE user_id=%s LIMIT 1",
                 (user_id,),
             )
@@ -152,40 +152,78 @@ def get_assignable_users():
         company_name = (caller.get("company_name") or "").strip()
         launch_id = (caller.get("launch_id_fk") or "").strip()
 
-        with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            if company_name:
-                # SAML org: everyone sharing the same company_name
+        if company_name:
+            # SAML org: everyone sharing the same company_name (any user type)
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 cur.execute(
                     "SELECT user_id, email, user_type FROM users "
                     "WHERE company_name=%s AND user_id != %s",
                     (company_name, user_id),
                 )
-            elif launch_id:
-                # Sub-user: everyone under the same root admin
+                rows = cur.fetchall()
+        else:
+            # Non-SAML: org membership is tracked in the root admin's permissions.shared.
+            # Resolve root admin: if caller is a sub-user, their launch_id_fk is the admin.
+            admin_id = launch_id if launch_id else user_id
+
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 cur.execute(
-                    "SELECT user_id, email, user_type FROM users "
-                    "WHERE (launch_id_fk=%s OR user_id=%s) AND user_id != %s",
-                    (launch_id, launch_id, user_id),
+                    "SELECT permissions FROM users WHERE user_id=%s LIMIT 1",
+                    (admin_id,),
                 )
-            else:
-                # Root admin: return all users whose launch_id_fk points to this admin
+                admin_row = cur.fetchone()
+
+            admin_perms = {}
+            if admin_row and admin_row.get("permissions"):
+                try:
+                    admin_perms = json.loads(admin_row["permissions"])
+                    if not isinstance(admin_perms, dict):
+                        admin_perms = {}
+                except (ValueError, TypeError):
+                    admin_perms = {}
+
+            email_set = set()
+            for entry in admin_perms.get("shared", []):
+                if entry.get("email") and entry.get("status") != "revoked":
+                    email_set.add(entry["email"].lower())
+            for entry in admin_perms.get("invites", []):
+                if entry.get("email") and entry.get("status") not in ("revoked", "pending"):
+                    email_set.add(entry["email"].lower())
+
+            if not email_set:
+                return jsonify({"users": []}), 200
+
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                placeholders = ",".join(["%s"] * len(email_set))
                 cur.execute(
-                    "SELECT user_id, email, user_type FROM users "
-                    "WHERE launch_id_fk=%s AND user_id != %s",
-                    (user_id, user_id),
+                    f"SELECT user_id, email, user_type, permissions FROM users "
+                    f"WHERE email IN ({placeholders}) AND user_id != %s",
+                    (*email_set, user_id),
                 )
-            rows = cur.fetchall()
+                rows = cur.fetchall()
+
     except Exception as exc:
         logger.exception("get_assignable_users error: %s", exc)
         return jsonify({"error": "Internal server error"}), 500
     finally:
         conn.close()
 
-    result = [
-        {"user_id": row["user_id"], "email": row["email"], "user_type": row["user_type"]}
-        for row in rows
-        if row.get("email")
-    ]
+    result = []
+    for row in rows:
+        # Skip revoked users
+        try:
+            perms = json.loads(row["permissions"]) if row.get("permissions") else {}
+            if isinstance(perms, dict) and perms.get("status") == "revoked":
+                continue
+        except (ValueError, TypeError):
+            pass
+        if row.get("email"):
+            result.append({
+                "user_id": row["user_id"],
+                "email": row["email"],
+                "user_type": row["user_type"],
+            })
+
     return jsonify({"users": result}), 200
 
 
