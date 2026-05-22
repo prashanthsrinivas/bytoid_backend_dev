@@ -4,6 +4,7 @@ from datetime import datetime
 from utils.s3_utils import read_json_from_s3, s3bucket, S3_BUCKET
 from db.rds_db import connect_to_rds
 from utils.base_logger import get_logger
+from utils.permission_resolver import resolve_permissions
 
 logger = get_logger(__name__)
 
@@ -132,7 +133,13 @@ def get_role_users_from_db(conn, admin_id, role_id):
 
 
 def check_user_has_permission(user_permissions_json, required_permission):
-    """Check if user's permissions JSON includes the required permission."""
+    """Check if user's permissions JSON grants the required permission.
+
+    Resolves transitive dependencies (e.g. compliance.runbook.read implies
+    radar.view) so the check matches the route decorator behavior. Without
+    resolution, a user whose role only declares the high-level permission
+    would be incorrectly rejected for shares that check a dependency.
+    """
     try:
         if isinstance(user_permissions_json, str):
             perms = json.loads(user_permissions_json)
@@ -142,14 +149,19 @@ def check_user_has_permission(user_permissions_json, required_permission):
         role = perms.get("role", {})
         if not role or perms.get("status") != "active":
             return False
-        return required_permission in role.get("permissions", [])
+        effective = resolve_permissions(role.get("permissions", []) or [])
+        return required_permission in effective
     except Exception as e:
         logger.error(f"Error checking user permission: {e}", exc_info=True)
         return False
 
 
 def check_role_has_permission(conn, admin_id, role_id, required_permission):
-    """Check if a role in the admin's roles_creation has the required permission."""
+    """Check if a role in the admin's roles_creation grants the required permission.
+
+    Resolves transitive dependencies so the check is consistent with the
+    route decorators and check_user_has_permission.
+    """
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
@@ -164,7 +176,8 @@ def check_role_has_permission(conn, admin_id, role_id, required_permission):
             role = next((r for r in roles if r.get("id") == role_id), None)
             if not role:
                 return False
-            return required_permission in role.get("permissions", [])
+            effective = resolve_permissions(role.get("permissions", []) or [])
+            return required_permission in effective
     except Exception as e:
         logger.error(f"Error checking role permission: {e}", exc_info=True)
         return False
@@ -218,6 +231,15 @@ async def core_assign_report(
     """
     try:
         required_permission = PERMISSION_MAP.get(report_type, "kb.doc.view")
+        logger.info(
+            "share start: type=%s admin=%s target=%s report=%s parent=%s required_perm=%s",
+            report_type,
+            admin_id,
+            user_id,
+            report_id,
+            parent_id,
+            required_permission,
+        )
 
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
@@ -226,9 +248,17 @@ async def core_assign_report(
             )
             user_row = cursor.fetchone()
             if not user_row:
+                logger.warning(
+                    "share denied: target user not found user_id=%s", user_id
+                )
                 return None, "Target user not found"
 
             if not check_user_has_permission(user_row.get("permissions"), required_permission):
+                logger.warning(
+                    "share denied: target user %s missing permission %s",
+                    user_id,
+                    required_permission,
+                )
                 return None, f"User does not have required permission: {required_permission}"
 
         config = get_admin_shared_config(admin_id)
@@ -308,6 +338,15 @@ async def core_assign_report(
             entry["runbook_id"] = parent_id
         user_shared_reports[report_id] = entry
         save_user_shared_reports(user_id, user_shared_reports)
+        logger.info(
+            "share landed: type=%s admin=%s target=%s report=%s parent=%s shared_count=%d",
+            report_type,
+            admin_id,
+            user_id,
+            report_id,
+            parent_id,
+            len(user_shared_reports),
+        )
 
         try:
             if report_type == "radar":
