@@ -793,17 +793,32 @@ def get_organization_users(userid):
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            # Fetch admin row
+            # Fetch the row for the requested user_id
             cursor.execute(
                 "SELECT user_id, user_type, company_name, launch_id_fk, permissions "
                 "FROM users WHERE user_id=%s",
                 (userid,),
             )
-            admin = cursor.fetchone()
-            if not admin:
+            row = cursor.fetchone()
+            if not row:
                 return jsonify({"error": "User not found"}), 404
-            if admin["user_type"] != "admin":
-                return jsonify({"error": "Access denied"}), 403
+
+            # Non-admin callers (e.g. invited users): resolve to their root admin
+            # so they can still retrieve the org's user list for workflow assignment.
+            if row["user_type"] != "admin":
+                root_id = (row.get("launch_id_fk") or "").strip()
+                if not root_id:
+                    return jsonify({"users": []}), 200
+                cursor.execute(
+                    "SELECT user_id, user_type, company_name, launch_id_fk, permissions "
+                    "FROM users WHERE user_id=%s",
+                    (root_id,),
+                )
+                admin = cursor.fetchone()
+                if not admin or admin["user_type"] != "admin":
+                    return jsonify({"users": []}), 200
+            else:
+                admin = row
 
             company_name = (admin.get("company_name") or "").strip()
 
