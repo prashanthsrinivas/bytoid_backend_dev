@@ -38,7 +38,6 @@ from utils.normal import (
 )
 from .background_worker import JobManager
 import pytz, pymysql
-from utils.FileHandler import FileProcessor
 from utils.app_configs import ACCESSIBLE_IDS, ALLOWED_ORIGINS, IS_DEV
 from utils.base_logger import get_logger
 from utils.permission_required import permission_required_body
@@ -466,9 +465,9 @@ def delete_instruction():
     baseuser = request.args.get("user_id")
     filename = request.args.get("filename")
 
-    if not user_id or not filename:
+    if not baseuser or not filename:
         return jsonify({"error": "user_id and filename are required"}), 400
-    if not user_id:
+    if not baseuser:
         return jsonify({"error": "user_id is required"}), 400
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
@@ -1041,7 +1040,14 @@ def delete_a_step():
     return save_playbook_to_s3(playbook, user_id, "Step deleted successfully", filename)
 
 
-async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data=None):
+async def modify_instruction(
+    ud_inst=None,
+    user_id=None,
+    filename=None,
+    add_data=None,
+    job_id=None,
+    session_id=None,
+):
     db = connect_to_rds()
     credits = Credits(db)
 
@@ -1297,7 +1303,7 @@ async def modify_instruction(ud_inst=None, user_id=None, filename=None, add_data
         db.close()
 
 
-async def modlmiddle(body):
+async def modlmiddle(body, job_id=None, session_id=None):
     update_instruction = body.get("modify_instructions")
     additional_data = body.get("additional_data") or ""
     user_id = body.get("user_id")
@@ -1309,6 +1315,8 @@ async def modlmiddle(body):
         user_id=user_id,
         filename=filename,
         add_data=additional_data,
+        job_id=job_id,
+        session_id=session_id,
     )
     return res
 

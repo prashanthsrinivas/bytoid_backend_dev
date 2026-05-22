@@ -75,6 +75,7 @@ class WorkflowRunnerV2:
         # Correctly load steps from workflow['steps'] instead of top-level steps
         workflow_steps = self.workflow_json.get("workflow", {}).get("steps", [])
         self.steps = {step["id"]: step for step in workflow_steps}
+        self.step_order = {step["id"]: idx for idx, step in enumerate(workflow_steps)}
         self.input_data = self.workflow_json.get("input_data", {})
         self.chat_history = self.workflow_json.get("chat", [])
         self.chat_log = self.workflow_json.get("chat_log", {})
@@ -178,19 +179,18 @@ class WorkflowRunnerV2:
         else:
             completed_steps = execution_data  # testing
 
-        completed_ids = {
-            int(k)
-            for k in completed_steps.keys()
-            if isinstance(k, (str, int)) and str(k).isdigit()
-        }
+        completed_ids = set(str(k) for k in completed_steps.keys())
         # print("completed ids", completed_ids)
 
-        # 🔹 Always respect workflow order
-        ordered_steps = sorted(self.steps.values(), key=lambda s: int(s.get("id", 0)))
+        # 🔹 Always respect workflow order (use insertion order for UUID ids)
+        ordered_steps = sorted(
+            self.steps.values(),
+            key=lambda s: self.step_order.get(s.get("id"), 0),
+        )
         # print("ordered steps", ordered_steps)
 
         for step in ordered_steps:
-            step_id = int(step.get("id"))
+            step_id = str(step.get("id"))
             if step_id not in completed_ids:
                 return step_id
 
@@ -1444,7 +1444,12 @@ class WorkflowRunnerV2:
         return None
 
     def get_step_data(self, step_id):
-        step = self.steps.get(int(step_id)) or self.steps.get(str(step_id))
+        step = self.steps.get(str(step_id))
+        if step is None:
+            try:
+                step = self.steps.get(int(step_id))
+            except (ValueError, TypeError):
+                pass
         return step
 
     def storeargument_results(self, nfunction_args, execution_result=None):
@@ -2084,7 +2089,7 @@ class WorkflowRunnerV2:
                 chid = str(uuid.uuid4().int)[0:6]
 
             if result.get("step_id"):
-                step_id = int(result["step_id"])
+                step_id = result["step_id"]
 
                 step = self.get_step_data(step_id)
                 title = step.get("title")
@@ -2526,7 +2531,9 @@ class WorkflowRunnerV2:
                 return {"message": "problem with server."}
 
             # print("log chat check")
-            chat_entry = await self.savechatcheck(ai_result=ai_result, user_input=user_input)
+            chat_entry = await self.savechatcheck(
+                ai_result=ai_result, user_input=user_input
+            )
             if chat_entry:
                 ai_result["chat_entry"] = chat_entry
 
@@ -2534,6 +2541,7 @@ class WorkflowRunnerV2:
             return ai_result
         except Exception as e:
             import traceback as _tb
+
             self.logger.error("Error in check_input_tone: %s\n%s", e, _tb.format_exc())
             return {
                 "response_message": "Error processing option.",
@@ -2594,12 +2602,9 @@ class WorkflowRunnerV2:
         pr_workflow = None
 
         if step_id is not None:
-            # sanitize step_id
+            # normalize: keep int for legacy numeric IDs, string for UUID IDs
             if isinstance(step_id, str) and step_id.strip().isdigit():
                 step_id = int(step_id)
-
-            if not isinstance(step_id, int):
-                raise ValueError("step_id must be an integer if provided")
 
             if not self.check_step_exists(step_id):
                 raise ValueError(f"Step {step_id} does not exist in workflow")
@@ -2663,10 +2668,7 @@ class WorkflowRunnerV2:
                 step_id = locked_step_id
             else:
                 # only allow AI step if not locked
-                try:
-                    step_id = int(ai_result.get("step_id"))
-                except (TypeError, ValueError):
-                    step_id = None
+                step_id = ai_result.get("step_id")
             # print(step_id, type(step_id), self.check_step_exists(step_id))
             if workflow_intent and step_id and self.check_step_exists(step_id):
                 result = await self._execute_step(step_id=step_id, ai_result=ai_result)
@@ -2710,7 +2712,7 @@ class WorkflowRunnerV2:
         # Record testing / online execution
         # ------------------------------------------------------------------
         if execution_status == "success" and workflow_intent and result.get("step_id"):
-            step_id = int(result["step_id"])
+            step_id = result["step_id"]
             step = self.get_step_data(step_id)
 
             log_entry = {
@@ -3191,9 +3193,11 @@ class WorkflowRunnerV2:
                 # 1️⃣ Explicit next_step
                 next_step_id = current_step.get("next_step")
 
-                # 2️⃣ Fallback: implicit next step by ID
+                # 2️⃣ Fallback: implicit next step by insertion order
                 if not next_step_id:
-                    sorted_step_ids = sorted(self.steps.keys())
+                    sorted_step_ids = sorted(
+                        self.steps.keys(), key=lambda k: self.step_order.get(k, 0)
+                    )
                     try:
                         current_index = sorted_step_ids.index(last_step_id)
                         if current_index + 1 < len(sorted_step_ids):
