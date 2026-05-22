@@ -1342,65 +1342,95 @@ def get_runbook_results(runbook_id):
                 if not isinstance(shared_reports, dict):
                     shared_reports = {}
 
-                # Candidates: every runbook-type share entry not already owned.
-                # We can't filter on sdata["runbook_id"] alone — older share
-                # entries don't have that field. Instead we fetch each result
-                # and use its own runbook_id as the authoritative match (with
-                # a fast-path skip when the share entry's runbook_id is set
-                # and clearly doesn't match).
-                candidate_entries = [
-                    (rid, sdata)
-                    for rid, sdata in shared_reports.items()
-                    if isinstance(sdata, dict)
-                    and sdata.get("type") == "runbook"
-                    and rid not in owned_result_ids
-                    and (
-                        not sdata.get("runbook_id")
-                        or sdata.get("runbook_id") == runbook_id
-                    )
-                ]
+                # Split share entries into two groups:
+                # 1. Entries with runbook_id matching the requested runbook.
+                #    Use get_runbook_results(main_user_id, runbook_id) — one call
+                #    that returns ALL statuses, not just "completed".
+                # 2. Legacy entries missing runbook_id. Must fetch individually
+                #    and check the result's own runbook_id field.
+                known_entries = {}   # main_user_id -> True (deduped by owner)
+                legacy_entries = []  # (rid, main_user_id) pairs
 
-                if candidate_entries:
+                for rid, sdata in shared_reports.items():
+                    if not isinstance(sdata, dict):
+                        continue
+                    if sdata.get("type") != "runbook":
+                        continue
+                    if rid in owned_result_ids:
+                        continue
+                    main_user_id = sdata.get("mainuser_id")
+                    if not main_user_id:
+                        continue
+                    rb_id = sdata.get("runbook_id")
+                    if rb_id == runbook_id:
+                        known_entries[main_user_id] = True
+                    elif not rb_id:
+                        legacy_entries.append((rid, main_user_id))
+                    # else: runbook_id set but doesn't match — skip
+
+                if known_entries or legacy_entries:
                     loop2 = asyncio.new_event_loop()
                     try:
                         shared_results = []
-                        shared_by_for_runbook = None
-                        for rid, sdata in candidate_entries:
-                            main_user_id = sdata.get("mainuser_id")
-                            if not main_user_id:
+                        shared_owner = None
+
+                        # Group 1: fetch all results for this runbook from each owner
+                        for main_user_id in known_entries:
+                            try:
+                                rows = loop2.run_until_complete(
+                                    dbserver.get_runbook_results(
+                                        main_user_id, runbook_id
+                                    )
+                                )
+                            except Exception as fe:
+                                logger.warning(
+                                    "shared runbook_results fetch failed "
+                                    "(owner=%s rb=%s): %s",
+                                    main_user_id, runbook_id, fe,
+                                )
                                 continue
+                            for row in (rows or []):
+                                if not isinstance(row, dict):
+                                    continue
+                                if row.get("status") not in valid_statuses:
+                                    continue
+                                if row.get("result_id") in owned_result_ids:
+                                    continue
+                                row["shared"] = True
+                                row["shared_by"] = main_user_id
+                                shared_results.append(row)
+                                shared_owner = shared_owner or main_user_id
+
+                        # Group 2: legacy entries — fetch individually, verify
+                        for rid, main_user_id in legacy_entries:
                             try:
                                 r = loop2.run_until_complete(
                                     dbserver.runbook_get_result(main_user_id, rid)
                                 )
-                            except Exception as fetch_err:
+                            except Exception as fe:
                                 logger.warning(
                                     "shared result fetch failed (rid=%s): %s",
-                                    rid,
-                                    fetch_err,
+                                    rid, fe,
                                 )
                                 continue
                             if not isinstance(r, dict):
                                 continue
                             if r.get("status") not in valid_statuses:
                                 continue
-                            # Authoritative parent check from the result itself
                             if r.get("runbook_id") != runbook_id:
                                 continue
                             r["shared"] = True
                             r["shared_by"] = main_user_id
                             shared_results.append(r)
-                            shared_by_for_runbook = (
-                                shared_by_for_runbook or main_user_id
-                            )
+                            shared_owner = shared_owner or main_user_id
 
                         owned_valid = owned_valid + shared_results
 
-                        if shared_by_for_runbook and not runbook_details:
+                        if shared_owner and not runbook_details:
                             try:
                                 runbook_details = loop2.run_until_complete(
                                     dbserver.get_runbook_by_id(
-                                        shared_by_for_runbook, runbook_id
+                                        shared_owner, runbook_id
                                     )
                                 )
                                 if isinstance(runbook_details, list):
@@ -1410,8 +1440,7 @@ def get_runbook_results(runbook_id):
                             except Exception as rb_err:
                                 logger.warning(
                                     "shared runbook fetch failed (rb=%s): %s",
-                                    runbook_id,
-                                    rb_err,
+                                    runbook_id, rb_err,
                                 )
                     finally:
                         loop2.close()
@@ -1570,6 +1599,11 @@ def result_list(user_id):
             is_shared = r.get("result_id") in shared_result_ids
             is_owned = r.get("user_id") == user_id
             if not (is_shared or is_owned):
+                return False
+            # For owned-but-not-shared results, require a non-zero risk score so
+            # that draft/test runs created via SU mode (scored 0) don't surface
+            # unless the admin explicitly assigned them for review.
+            if is_owned and not is_shared and (r.get("risk_score") or 0) == 0:
                 return False
             if is_owned and not is_shared and r.get("runbook_id") not in runbook_ids:
                 return False
