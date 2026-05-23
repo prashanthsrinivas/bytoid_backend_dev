@@ -661,23 +661,37 @@ def get_roles(userid):
 
             invited_special_users = {}
 
-            if emails:
-                fmt = ",".join(["%s"] * len(emails))
-
+            # Enrich shared/invites entries with user_id so the frontend can
+            # assign them as workflow reviewers/approvers. Permissions JSON only
+            # stores {email, role, status, accepted_at} — workflow tables key off
+            # user_id, so without this lookup the frontend cannot route assignments.
+            lookup_emails = list(shared_emails | invite_emails)
+            email_to_user_id = {}
+            if lookup_emails:
+                fmt = ",".join(["%s"] * len(lookup_emails))
                 cursor.execute(
                     f"""
-                    SELECT email, special_access
+                    SELECT user_id, email, special_access
                     FROM users
                     WHERE email IN ({fmt})
                     """,
-                    tuple(emails),
+                    tuple(lookup_emails),
                 )
-
                 rows = cursor.fetchall()
+                for r in rows:
+                    if r["email"] in shared_emails:
+                        invited_special_users[r["email"]] = bool(r.get("special_access"))
+                    if r.get("user_id"):
+                        email_to_user_id[r["email"]] = r["user_id"]
 
-                invited_special_users = {
-                    row["email"]: bool(row.get("special_access")) for row in rows
-                }
+            for entry in shared:
+                uid = email_to_user_id.get(entry.get("email"))
+                if uid and not entry.get("user_id"):
+                    entry["user_id"] = uid
+            for entry in invites:
+                uid = email_to_user_id.get(entry.get("email"))
+                if uid and not entry.get("user_id"):
+                    entry["user_id"] = uid
             special_access_status = {}
 
             org = (row.get("company_name") or "").strip()
@@ -773,6 +787,7 @@ def get_roles(userid):
                 special_access_status[email] = has_access
 
                 user_obj = {
+                    "user_id": user["user_id"],
                     "email": email,
                     "role": {
                         "id": "admin_access",
