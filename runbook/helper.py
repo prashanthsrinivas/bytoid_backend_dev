@@ -627,6 +627,138 @@ async def _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_i
         logger.error("_push_blocks_to_trackers error: %s", e, exc_info=IS_DEV)
 
 
+def _auto_submit_runbook_workflow(runbook_id: str, owner_user_id: str) -> None:
+    """Programmatically submit a freshly-generated runbook for review.
+
+    Mirrors POST /workflow/submit for the runbook doc_type, but only when
+    the org is configured for role-based assignment. Per-document orgs
+    (which require explicit per-runbook reviewer selection) are left in
+    draft so the existing "Send for review" UI flow still works.
+
+    Idempotent: if a workflow row already exists in a non-draft state,
+    skips entirely; if it exists in draft, transitions it forward.
+    Any failure here is logged and swallowed — runbook generation has
+    already succeeded and must not be rolled back.
+    """
+    try:
+        from workflow_route.state_machine import (
+            RoleResolutionError,
+            create_workflow,
+            get_user_org_id,
+            get_workflow_config,
+            get_workflow_for_doc,
+            pick_user_for_role,
+            transition,
+        )
+    except Exception as exc:
+        logger.warning("auto_submit: import failed for runbook=%s: %s", runbook_id, exc)
+        return
+
+    try:
+        org_id = get_user_org_id(owner_user_id)
+        if not org_id:
+            logger.info(
+                "auto_submit: skipping runbook=%s — owner=%s has no resolvable org",
+                runbook_id, owner_user_id,
+            )
+            return
+
+        config = get_workflow_config(org_id, "runbook")
+        if config.get("assignment_mode") != "role_based":
+            logger.debug(
+                "auto_submit: skipping runbook=%s — org=%s is per_document mode",
+                runbook_id, org_id,
+            )
+            return
+        if not config.get("reviewer_role_id") and not config.get("approver_role_id"):
+            logger.debug(
+                "auto_submit: skipping runbook=%s — org=%s has no role IDs configured",
+                runbook_id, org_id,
+            )
+            return
+
+        # Resolve each role slot independently; leave a slot empty on
+        # RoleResolutionError so the owner can act as fallback per
+        # workflow_route.routes.review_document.
+        def _resolve(role_id):
+            if not role_id:
+                return None
+            try:
+                uid, _ = pick_user_for_role(role_id, owner_user_id)
+                return uid
+            except RoleResolutionError as rre:
+                logger.warning(
+                    "auto_submit: role %s has no eligible user (runbook=%s): %s",
+                    role_id, runbook_id, rre,
+                )
+                return None
+
+        quality_reviewer_user_id = _resolve(config.get("reviewer_role_id"))
+        # workflow_config currently only carries reviewer_role_id and
+        # approver_role_id; governance reviewer reuses the quality slot
+        # until a dedicated column is added.
+        governance_reviewer_user_id = quality_reviewer_user_id
+        approver_user_id = _resolve(config.get("approver_role_id"))
+
+        doc_version = "1.0"
+        existing = get_workflow_for_doc("runbook", runbook_id, doc_version)
+        if existing and existing.get("state") != "draft":
+            logger.info(
+                "auto_submit: skipping runbook=%s — workflow %s already in state=%s",
+                runbook_id, existing.get("workflow_id"), existing.get("state"),
+            )
+            return
+
+        if existing:
+            wf = transition(
+                existing["workflow_id"],
+                existing["state_version"],
+                "quality_review",
+                owner_user_id,
+                quality_reviewer_user_id=quality_reviewer_user_id,
+                governance_reviewer_user_id=governance_reviewer_user_id,
+                approver_user_id=approver_user_id,
+            )
+        else:
+            wf = create_workflow(
+                org_id=org_id,
+                doc_type="runbook",
+                doc_id=runbook_id,
+                doc_version=doc_version,
+                owner_user_id=owner_user_id,
+                quality_reviewer_user_id=quality_reviewer_user_id,
+                governance_reviewer_user_id=governance_reviewer_user_id,
+                approver_user_id=approver_user_id,
+            )
+            wf = transition(
+                wf["workflow_id"], 1, "quality_review", owner_user_id,
+                quality_reviewer_user_id=quality_reviewer_user_id,
+                governance_reviewer_user_id=governance_reviewer_user_id,
+                approver_user_id=approver_user_id,
+            )
+
+        logger.info(
+            "auto_submit: runbook=%s workflow=%s submitted to quality_review (QR=%s, GR=%s, AP=%s)",
+            runbook_id, wf.get("workflow_id"),
+            quality_reviewer_user_id, governance_reviewer_user_id, approver_user_id,
+        )
+
+        try:
+            from services.workflow_notifications_service import notify_workflow_event
+            notify_workflow_event(wf, "WORKFLOW_SUBMITTED")
+        except Exception as notify_exc:
+            logger.warning(
+                "auto_submit: notification failed for runbook=%s workflow=%s: %s",
+                runbook_id, wf.get("workflow_id"), notify_exc,
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "auto_submit: failed for runbook=%s owner=%s (runbook result already saved): %s",
+            runbook_id, owner_user_id, exc, exc_info=IS_DEV,
+        )
+
+
 async def run_runbook_execution_engine(
     user_id,
     runbook,
@@ -1383,6 +1515,11 @@ async def run_runbook_execution_engine(
         asyncio.create_task(
             _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_id)
         )
+
+        # Auto-submit to review workflow when the org is role-based configured.
+        # Self-contained and best-effort: never fails runbook generation.
+        _auto_submit_runbook_workflow(runbook_id, user_id)
+
         if merged_result:
             name = runbook["name"] or runbook_id
             await emit(

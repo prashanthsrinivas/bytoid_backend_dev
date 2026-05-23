@@ -109,6 +109,38 @@ def get_workflow_for_doc(doc_type: str, doc_id: str, doc_version: str) -> dict |
     return dict(row) if row else None
 
 
+def get_user_org_id(user_id: str) -> str | None:
+    """Resolve org identifier for a user — company_name first, launch_id_fk as fallback.
+
+    Admin users who are the org root (no company_name, no launch_id_fk) use
+    ``launch:{user_id}`` so their org_id matches what invited users carry in
+    their own launch_id_fk field.
+
+    Returns None if the user doesn't exist or has no resolvable org.
+    """
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT company_name, launch_id_fk, user_type FROM users WHERE user_id=%s LIMIT 1",
+                (user_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        company = (row["company_name"] or "").strip()
+        if company:
+            return company
+        launch = (row["launch_id_fk"] or "").strip()
+        if launch:
+            return f"launch:{launch}"
+        if row.get("user_type") == "admin":
+            return f"launch:{user_id}"
+        return None
+    finally:
+        conn.close()
+
+
 def create_workflow(
     org_id: str,
     doc_type: str,

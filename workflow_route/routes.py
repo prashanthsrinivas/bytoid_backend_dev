@@ -36,6 +36,7 @@ from workflow_route.state_machine import (
     create_workflow,
     enrich_workflow_for_viewer,
     get_inbox,
+    get_user_org_id,
     get_workflow,
     get_workflow_config,
     get_workflow_for_doc,
@@ -73,34 +74,10 @@ WORKFLOW_CHANGES_REQUESTED = WORKFLOW_QUALITY_SENT_BACK
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _get_user_org(user_id: str) -> str | None:
-    """Resolve org identifier for a user — company_name first, launch_id_fk as fallback.
-
-    Admin users who are the org root (no company_name, no launch_id_fk) use
-    "launch:{user_id}" so their org_id matches what invited users carry in
-    their own launch_id_fk field.
-    """
-    conn = connect_to_rds()
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            cur.execute(
-                "SELECT company_name, launch_id_fk, user_type FROM users WHERE user_id=%s LIMIT 1",
-                (user_id,),
-            )
-            row = cur.fetchone()
-        if not row:
-            return None
-        company = (row["company_name"] or "").strip()
-        if company:
-            return company
-        launch = (row["launch_id_fk"] or "").strip()
-        if launch:
-            return f"launch:{launch}"
-        if row.get("user_type") == "admin":
-            return f"launch:{user_id}"
-        return None
-    finally:
-        conn.close()
+# Local alias preserved for in-file readability; canonical impl lives in
+# workflow_route.state_machine so non-route callers (e.g. runbook.helper)
+# can use the same resolution without importing this module.
+_get_user_org = get_user_org_id
 
 
 def _notify(workflow: dict, event_type: str, comment: str | None = None, **kwargs):
