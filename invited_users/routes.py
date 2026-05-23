@@ -53,6 +53,27 @@ load_dotenv()
 
 # BASE ROLES APIS FOR AMIN
 
+# Workflow permissions that every active org-member role should advertise so
+# they appear as eligible reviewers/approvers in the assignment UI. Actual
+# permission to act on a workflow is still enforced by the workflow endpoints
+# based on whether the user is the assigned reviewer/approver.
+WORKFLOW_BASELINE_PERMS = ["workflow.review", "workflow.submit", "workflow.approve"]
+
+
+def _ensure_workflow_perms(role):
+    """Inject baseline workflow permissions into a role dict (idempotent)."""
+    if not isinstance(role, dict):
+        return role
+    perms = role.get("permissions") or []
+    if not isinstance(perms, list):
+        return role
+    perm_set = set(perms)
+    for p in WORKFLOW_BASELINE_PERMS:
+        if p not in perm_set:
+            perms.append(p)
+    role["permissions"] = perms
+    return role
+
 
 def has_outlook_connected(user_id, cursor):
     cursor.execute(
@@ -663,6 +684,14 @@ def get_roles(userid):
 
             # If no organization found
             if not org:
+                for r in roles:
+                    _ensure_workflow_perms(r)
+                for entry in invites:
+                    if isinstance(entry.get("role"), dict):
+                        _ensure_workflow_perms(entry["role"])
+                for entry in shared:
+                    if isinstance(entry.get("role"), dict):
+                        _ensure_workflow_perms(entry["role"])
                 return (
                     jsonify(
                         {
@@ -761,6 +790,15 @@ def get_roles(userid):
                     invite_emails.add(email)
 
                 emails.append(email)
+
+        for r in roles:
+            _ensure_workflow_perms(r)
+        for entry in invites:
+            if isinstance(entry.get("role"), dict):
+                _ensure_workflow_perms(entry["role"])
+        for entry in shared:
+            if isinstance(entry.get("role"), dict):
+                _ensure_workflow_perms(entry["role"])
 
         return (
             jsonify(
@@ -893,6 +931,8 @@ def get_organization_users(userid):
             current_role = (
                 user_perms.get("role") if user_perms.get("status") == "active" else None
             )
+            if isinstance(current_role, dict):
+                _ensure_workflow_perms(current_role)
             created_at = row.get("created_in")
             if created_at and hasattr(created_at, "isoformat"):
                 created_at = created_at.isoformat()
