@@ -207,3 +207,17 @@ class WSMessageBuilder:
             "type": "error",
             "message": message,
         }
+
+    @staticmethod
+    def report_toast(message, report_name=None, status="creating"):
+        """Global floating-bar notification for report generation lifecycle.
+
+        status: "creating" | "done" | "error"
+        """
+        return {
+            "scope": "global",
+            "type": "report_toast",
+            "message": message,
+            "report_name": report_name,
+            "status": status,
+        }

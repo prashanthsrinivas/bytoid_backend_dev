@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from datetime import datetime
 import logging
@@ -377,10 +378,26 @@ def get_runbook_sharedconfig(user_id):
         return jsonify({"error": str(e)}), 500
 
 
+def _insert_report_notification(user_id, message):
+    """Insert a row into the notifications table for the given user. Non-fatal."""
+    try:
+        conn = connect_to_rds()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
+                (user_id, message),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("Failed to insert report notification: %s", exc)
+
+
 async def execute_runbook_create(data, job_id=None, session_id=None):
     user_id = data.get("user_id")
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
     progress = 0
+    report_name = data.get("name") or "Report"
 
     # ✅ single flag
     should_emit = bool(job_id and session_id)
@@ -395,6 +412,21 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             msg_builder.job_progress(
                 job_id, session_id, "init", "Starting runbook setup...", 5
             )
+        )
+        # Notify the admin: report processing has begun
+        await asyncio.to_thread(
+            _insert_report_notification,
+            user_id,
+            f'"{report_name}" is being created',
+        )
+        await send(
+            ws_sender,
+            msg_builder.report_toast(
+                f'"{report_name}" is being created',
+                report_name=report_name,
+                status="creating",
+            ),
+            user_id,
         )
 
         # 📂 FILE PROCESSING
@@ -729,6 +761,20 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
                     "Runbook created and processed successfully.",
                 )
             )
+            await asyncio.to_thread(
+                _insert_report_notification,
+                user_id,
+                f'"{report_name}" has been created successfully',
+            )
+            await send(
+                ws_sender,
+                msg_builder.report_toast(
+                    f'"{report_name}" has been created successfully',
+                    report_name=report_name,
+                    status="done",
+                ),
+                user_id,
+            )
         else:
             await emit(
                 msg_builder.job_error(
@@ -736,6 +782,15 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
                     session_id,
                     "Runbook execution failed. Please try again.",
                 )
+            )
+            await send(
+                ws_sender,
+                msg_builder.report_toast(
+                    f'"{report_name}" creation failed',
+                    report_name=report_name,
+                    status="error",
+                ),
+                user_id,
             )
 
         return result
@@ -749,6 +804,15 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
                 session_id,
                 "Runbook execution failed. Please try again.",
             )
+        )
+        await send(
+            ws_sender,
+            msg_builder.report_toast(
+                f'"{report_name}" creation failed',
+                report_name=report_name,
+                status="error",
+            ),
+            user_id,
         )
 
         raise
