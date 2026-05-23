@@ -176,16 +176,93 @@ def _is_forward_hop(from_state: str, to_state: str) -> bool:
     return _FORWARD_NEXT.get(from_state) == to_state
 
 
-def _assignee_for_state(row: dict, state: str) -> str | None:
+def _user_col_for_state(state: str) -> str | None:
     if state == "quality_review":
-        return row.get("current_quality_reviewer")
+        return "current_quality_reviewer"
     if state == "governance_review":
-        return row.get("current_governance_reviewer")
+        return "current_governance_reviewer"
     if state in ("approval", "published"):
-        return row.get("current_approver")
+        return "current_approver"
+    return None
+
+
+def _role_col_for_state(state: str) -> str | None:
+    # Quality review is always user-based (round-robin at submit), so it has no
+    # role column. Governance and approval are role-broadcast capable.
+    if state == "governance_review":
+        return "current_governance_reviewer_role"
+    if state in ("approval", "published"):
+        return "current_approver_role"
+    return None
+
+
+def _assignee_for_state(row: dict, state: str) -> str | None:
+    """Return the resolved user_id assignee for a state, or None if the stage
+    is role-broadcast (no specific user) or unconfigured.
+    """
+    user_col = _user_col_for_state(state)
+    if user_col:
+        return row.get(user_col)
     if state == "draft":
         return row.get("owner_user_id")
     return None
+
+
+def actor_eligible_for_state(
+    row: dict,
+    state: str,
+    actor_user_id: str,
+    actor_role_ids: set[str],
+) -> bool:
+    """True if ``actor_user_id`` can act on this stage.
+
+    Eligible if EITHER:
+      - the user-column for the stage matches actor (direct assignment), OR
+      - the user-column is NULL AND the role-column is set AND the actor is
+        a member of that role (broadcast assignment, first-to-act-wins).
+    """
+    user_col = _user_col_for_state(state)
+    if user_col:
+        direct = row.get(user_col)
+        if direct and direct == actor_user_id:
+            return True
+        role_col = _role_col_for_state(state)
+        if role_col and not direct:
+            role_id = row.get(role_col)
+            if role_id and role_id in actor_role_ids:
+                return True
+    if state == "draft" and row.get("owner_user_id") == actor_user_id:
+        return True
+    return False
+
+
+def get_actor_role_ids(user_id: str) -> set[str]:
+    """Return the set of role_ids the user belongs to.
+
+    Reads ``permissions.role.id`` from the user's row. Non-admin users carry a
+    single role today; the return type is a set so the eligibility check
+    composes cleanly if/when multi-role membership is added.
+    """
+    import json
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT permissions FROM users WHERE user_id=%s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row or not row.get("permissions"):
+        return set()
+    try:
+        perms = json.loads(row["permissions"]) if isinstance(row["permissions"], str) else row["permissions"]
+    except Exception:
+        return set()
+    role = (perms or {}).get("role") or {}
+    role_id = role.get("id")
+    return {role_id} if role_id else set()
 
 
 def _apply_single_transition(
@@ -234,6 +311,18 @@ def _apply_single_transition(
         updates["approved_at"] = now
     if to_state == "published":
         updates["published_at"] = now
+
+    # Claim role-broadcast stages on the way out. When transitioning AWAY from
+    # a stage whose user-column is NULL but role-column is set, the actor (who
+    # by the eligibility check is a role member) "claims" the slot: their id
+    # gets written to the *_reviewer column and the *_role column is cleared.
+    # Records who acted in the audit trail.
+    from_state = current_state
+    user_col = _user_col_for_state(from_state)
+    role_col = _role_col_for_state(from_state)
+    if user_col and role_col and not row.get(user_col) and row.get(role_col):
+        updates[user_col] = actor_user_id
+        updates[role_col] = None
 
     set_clause = ", ".join(f"{k}=%s" for k in updates)
     cur.execute(
@@ -327,13 +416,15 @@ def transition(
 
             # Auto-advance loop. Only enters for forward transitions — a
             # send_back must never chain into more approvals. Each iteration
-            # asks: is the actor the assignee of the stage we just entered?
-            # If yes, they'd just click "Approve" again, so do it for them.
+            # asks: is the actor eligible to act at the stage we just entered
+            # (either as direct assignee or as a member of the role-broadcast
+            # set)? If yes, they would just click "Approve" again, so do it
+            # for them. Role membership is fetched once per call.
             if _is_forward_hop(hop["from_state"], hop["to_state"]):
+                actor_role_ids = get_actor_role_ids(actor_user_id)
                 while True:
                     cur_state = row["state"]
-                    cur_assignee = _assignee_for_state(row, cur_state)
-                    if not cur_assignee or cur_assignee != actor_user_id:
+                    if not actor_eligible_for_state(row, cur_state, actor_user_id, actor_role_ids):
                         break
                     next_state = _next_forward_state(cur_state)
                     if not next_state:
@@ -586,9 +677,11 @@ def bootstrap_schema() -> None:
           owner_user_id                 VARCHAR(64)  NOT NULL,
           state                         VARCHAR(32)  NOT NULL DEFAULT 'draft',
           current_reviewer              VARCHAR(64)  NULL,
-          current_quality_reviewer      VARCHAR(64)  NULL,
-          current_governance_reviewer   VARCHAR(64)  NULL,
-          current_approver              VARCHAR(64)  NULL,
+          current_quality_reviewer         VARCHAR(64)  NULL,
+          current_governance_reviewer      VARCHAR(64)  NULL,
+          current_approver                 VARCHAR(64)  NULL,
+          current_governance_reviewer_role VARCHAR(64)  NULL,
+          current_approver_role            VARCHAR(64)  NULL,
           state_version                 INT          NOT NULL DEFAULT 1,
           submitted_at                  TIMESTAMP    NULL,
           approved_at                   TIMESTAMP    NULL,
@@ -600,6 +693,8 @@ def bootstrap_schema() -> None:
           INDEX idx_quality_reviewer (current_quality_reviewer, state),
           INDEX idx_governance_reviewer (current_governance_reviewer, state),
           INDEX idx_approver (current_approver, state),
+          INDEX idx_governance_reviewer_role (current_governance_reviewer_role, state),
+          INDEX idx_approver_role (current_approver_role, state),
           INDEX idx_org (org_id, doc_type, state)
         )""",
         """CREATE TABLE IF NOT EXISTS document_workflow_events (
@@ -652,8 +747,16 @@ def bootstrap_schema() -> None:
     _workflow_alters = [
         "ALTER TABLE document_workflow ADD COLUMN current_quality_reviewer VARCHAR(64) NULL",
         "ALTER TABLE document_workflow ADD COLUMN current_governance_reviewer VARCHAR(64) NULL",
+        # Role-broadcast assignment columns. When set, ANY active member of the
+        # role can act at that stage; whoever clicks Approve/Send-back first
+        # claims the slot (the row's *_reviewer column is updated to their id
+        # and the *_role column is cleared in the same transaction).
+        "ALTER TABLE document_workflow ADD COLUMN current_governance_reviewer_role VARCHAR(64) NULL",
+        "ALTER TABLE document_workflow ADD COLUMN current_approver_role VARCHAR(64) NULL",
         "ALTER TABLE document_workflow ADD INDEX idx_quality_reviewer (current_quality_reviewer, state)",
         "ALTER TABLE document_workflow ADD INDEX idx_governance_reviewer (current_governance_reviewer, state)",
+        "ALTER TABLE document_workflow ADD INDEX idx_governance_reviewer_role (current_governance_reviewer_role, state)",
+        "ALTER TABLE document_workflow ADD INDEX idx_approver_role (current_approver_role, state)",
         # Backfill quality reviewer from legacy column where empty.
         "UPDATE document_workflow SET current_quality_reviewer = current_reviewer "
         "WHERE current_quality_reviewer IS NULL AND current_reviewer IS NOT NULL",
