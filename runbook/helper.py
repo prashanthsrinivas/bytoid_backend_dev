@@ -1254,19 +1254,47 @@ async def run_runbook_execution_engine(
             label="governance framework",
         )
 
-        # Divide the total target across blocks — the prompt enforces
-        # ``{{requested_word_count}}`` as a per-block minimum, so passing the
-        # full target made a 6-block structure overshoot ~6x (e.g. 800 → 4800).
-        # 40-word floor keeps individual blocks from being truncated to nothing.
+        # Divide the total target across blocks and bound each section to a
+        # 75–200 word range. The radar prompt templates enforce
+        # ``{{requested_word_count}}`` as a per-block MINIMUM ("NEVER produce
+        # fewer than ... expand to reach"), with no upper cap — so even after
+        # dividing 850/6 ≈ 141, the LLM would expand each block to 800+ words
+        # and the report would still overshoot the total target ~6×. We attach
+        # an explicit upper-cap override at the end of each block_prompt below;
+        # this clamp sets the per-section target the override will quote.
         n_blocks = max(1, len(structure_file_payload["blocks"]))
         try:
             total_word_count = int(output_word_count)
         except (TypeError, ValueError):
             total_word_count = 800
-        per_block_word_count = max(40, total_word_count // n_blocks)
+        # Even split of the total budget across blocks, clamped to [75, 200] —
+        # the per-section range the product calls for. When n_blocks is large
+        # enough that even_split < 75, we keep 75 as a readability floor and
+        # accept that total may slightly exceed the requested budget.
+        even_split = total_word_count // n_blocks
+        per_block_word_count = max(75, min(200, even_split))
+        per_block_max = per_block_word_count  # hard ceiling used in the override
+        per_block_min = max(40, per_block_word_count // 2)
         logger.debug(
-            "Word-count budget: total=%s blocks=%d per_block=%d",
-            output_word_count, n_blocks, per_block_word_count,
+            "Word-count budget: total=%s blocks=%d even_split=%d target=[%d,%d]",
+            output_word_count, n_blocks, even_split, per_block_min, per_block_max,
+        )
+
+        # Final-position override appended to every block prompt. Position +
+        # explicit contradiction lets it supersede the earlier "MINIMUM ...
+        # NEVER produce fewer" language baked into the YAML templates without
+        # editing 8+ template sites.
+        _WORD_CAP_OVERRIDE = (
+            "\n\n"
+            "================================================================\n"
+            "FINAL WORD-COUNT OVERRIDE — HIGHEST PRIORITY, SUPERSEDES ALL EARLIER WORD-COUNT INSTRUCTIONS\n"
+            "================================================================\n"
+            f"For THIS block, produce BETWEEN {per_block_min} AND {per_block_max} visible prose words.\n"
+            f"HARD UPPER LIMIT: {per_block_max} words. If you produce more, the response is invalid.\n"
+            "Any earlier 'REQUIRED MINIMUM', 'expand explanations to reach', or 'NEVER produce fewer'\n"
+            "language is SUPERSEDED by this cap. Be concise — favor signal over volume.\n"
+            "Truncate, summarize, or omit lower-priority content to stay within the cap.\n"
+            "================================================================\n"
         )
 
         logger.debug("Before generating report")
@@ -1305,7 +1333,7 @@ async def run_runbook_execution_engine(
                 )
                 .replace("{{output_language}}", output_language)
                 .replace("{{requested_word_count}}", str(per_block_word_count))
-            )
+            ) + _WORD_CAP_OVERRIDE
 
             result = await get_think_bedrok_response(
                 user_message=block_prompt,
