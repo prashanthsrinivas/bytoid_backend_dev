@@ -9,6 +9,7 @@ It will print all matching workflows and ask which one to reset before making an
 
 import sys
 import uuid
+import argparse
 from datetime import datetime, timezone
 
 import pymysql
@@ -20,7 +21,7 @@ sys.path.insert(0, ".")
 from db.rds_db import connect_to_rds
 
 
-def main():
+def main(apply_mode: bool = False):
     conn = connect_to_rds()
     if not conn:
         print("ERROR: Could not connect to RDS.")
@@ -84,6 +85,14 @@ def main():
     if confirm.lower() != "yes":
         print("Aborted.")
         return
+    # Dry-run mode by default: require explicit --apply to make DB changes.
+    if not apply_mode:
+        print(
+            f"\nDry-run: would reset workflow {target['workflow_id']}"
+            f" from {target['state']} (v{target['state_version']}) → quality_review."
+        )
+        print("Run this script with --apply to perform the change.")
+        return
 
     conn = connect_to_rds()
     try:
@@ -139,4 +148,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Reset workflows from governance_review to quality_review."
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually perform DB updates. Without this flag the script runs in dry-run mode.",
+    )
+    args = parser.parse_args()
+    main(apply_mode=args.apply)
