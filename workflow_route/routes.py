@@ -118,6 +118,64 @@ def _resolve_assignee(workflow: dict, to_state: str) -> str | None:
     return None
 
 
+# Map auto-advanced destination state → audit action constant.
+# Used when emitting one audit row per auto-advanced hop.
+_STAGE_AUDIT_ACTION = {
+    "governance_review": "WORKFLOW_QUALITY_APPROVED",
+    "approval":          "WORKFLOW_GOVERNANCE_APPROVED",
+    "published":         "WORKFLOW_APPROVED",
+}
+
+
+def _log_chain_audits(
+    chain: list,
+    *,
+    first_action: str,
+    workflow_id: str,
+    endpoint: str,
+    actor_uid: str | None,
+    actor_email: str | None,
+    behalf_uid: str | None,
+    behalf_email: str | None,
+    extra_metadata: dict | None = None,
+):
+    """Emit one log_audit_event per hop in an auto-advance chain.
+
+    The first hop uses ``first_action`` (e.g. WORKFLOW_SUBMITTED for /submit,
+    or the per-stage approval constant for /review). Auto-advanced hops look
+    up their action by destination state and carry ``auto_advanced=True`` in
+    metadata so analytics can distinguish manual approvals from chained ones.
+    """
+    extras = extra_metadata or {}
+    for idx, hop in enumerate(chain or []):
+        if idx == 0:
+            action = first_action
+        else:
+            action = _STAGE_AUDIT_ACTION.get(hop.get("to_state"))
+            if not action:
+                continue
+        meta = {
+            "workflow_id": workflow_id,
+            "from_state": hop.get("from_state"),
+            "to_state": hop.get("to_state"),
+            "assigned_to_user_id": hop.get("assigned_to"),
+            "comment": hop.get("comment"),
+            "auto_advanced": bool(hop.get("auto")),
+        }
+        meta.update(extras)
+        log_audit_event(
+            action=action,
+            endpoint=endpoint,
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata=meta,
+        )
+
+
 # ── Assignable-users endpoint ─────────────────────────────────────────────────
 
 
@@ -408,36 +466,36 @@ def submit_for_review():
         return jsonify({"error": "Internal server error"}), 500
 
     _notify(wf, WORKFLOW_SUBMITTED, comment=comment)
+    # Auto-advanced into published in the same call (single-reviewer org case):
+    # send one terminal notification on top of the submission notification.
+    if wf.get("state") == "published":
+        _notify(wf, WORKFLOW_PUBLISHED, comment=comment)
 
-    assigned_to = wf.get("current_quality_reviewer")
+    chain = wf.get("_auto_advance_chain") or []
+    final_assigned_to = _resolve_assignee(wf, wf.get("state"))
     logger.info(
-        "workflow %s: draft → quality_review by actor=%s assigned_to=%s comment=%r",
-        wf["workflow_id"], user_id, assigned_to, comment,
+        "workflow %s: draft → %s by actor=%s assigned_to=%s comment=%r hops=%d",
+        wf["workflow_id"], wf.get("state"), user_id, final_assigned_to, comment, len(chain),
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
-    log_audit_event(
-        action=WORKFLOW_SUBMITTED,
+    _log_chain_audits(
+        chain,
+        first_action=WORKFLOW_SUBMITTED,
+        workflow_id=wf["workflow_id"],
         endpoint="/workflow/submit",
-        ip=request.remote_addr,
-        status="success",
-        actor_user_id=actor_uid,
-        actor_email=actor_email,
-        acting_on_behalf_of_user_id=behalf_uid,
-        acting_on_behalf_of_email=behalf_email,
-        metadata={
-            "workflow_id": wf["workflow_id"],
-            "doc_type": doc_type,
-            "doc_id": doc_id,
-            "from_state": "draft",
-            "to_state": "quality_review",
-            "assigned_to_user_id": assigned_to,
-            "comment": comment,
-        },
+        actor_uid=actor_uid, actor_email=actor_email,
+        behalf_uid=behalf_uid, behalf_email=behalf_email,
+        extra_metadata={"doc_type": doc_type, "doc_id": doc_id},
     )
     g.audit_logged = True
 
-    return jsonify({"workflow_id": wf["workflow_id"], "state": wf["state"]}), 200
+    return jsonify({
+        "workflow_id": wf["workflow_id"],
+        "state": wf["state"],
+        "state_version": wf.get("state_version"),
+        "auto_advanced_hops": max(0, len(chain) - 1),
+    }), 200
 
 
 # ── Review (stage-aware) ──────────────────────────────────────────────────────
@@ -531,30 +589,35 @@ def review_document():
         return jsonify({"error": "Internal server error"}), 500
 
     _notify(updated, audit_action, comment=comment, previous_state=expected_state)
+    if updated.get("state") == "published" and to_state != "published":
+        # Auto-advanced past `approval` to `published` — send the terminal
+        # publish notification on top of the manual approval notification.
+        _notify(updated, WORKFLOW_PUBLISHED, comment=comment)
 
-    assigned_to = _resolve_assignee(updated, to_state)
+    chain = updated.get("_auto_advance_chain") or []
+    final_assigned_to = _resolve_assignee(updated, updated.get("state"))
     logger.info(
-        "workflow %s: %s → %s by actor=%s assigned_to=%s comment=%r",
-        workflow_id, expected_state, to_state, user_id, assigned_to, comment,
+        "workflow %s: %s → %s by actor=%s assigned_to=%s comment=%r hops=%d",
+        workflow_id, expected_state, updated.get("state"), user_id, final_assigned_to, comment, len(chain),
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
-    log_audit_event(
-        action=audit_action, endpoint="/workflow/review", ip=request.remote_addr,
-        status="success", actor_user_id=actor_uid, actor_email=actor_email,
-        acting_on_behalf_of_user_id=behalf_uid, acting_on_behalf_of_email=behalf_email,
-        metadata={
-            "workflow_id": workflow_id,
-            "stage": stage,
-            "decision": decision,
-            "from_state": expected_state,
-            "to_state": to_state,
-            "assigned_to_user_id": assigned_to,
-            "comment": comment,
-        },
+    _log_chain_audits(
+        chain,
+        first_action=audit_action,
+        workflow_id=workflow_id,
+        endpoint="/workflow/review",
+        actor_uid=actor_uid, actor_email=actor_email,
+        behalf_uid=behalf_uid, behalf_email=behalf_email,
+        extra_metadata={"stage": stage, "decision": decision},
     )
     g.audit_logged = True
-    return jsonify({"workflow_id": workflow_id, "state": updated["state"], "state_version": updated["state_version"]}), 200
+    return jsonify({
+        "workflow_id": workflow_id,
+        "state": updated["state"],
+        "state_version": updated["state_version"],
+        "auto_advanced_hops": max(0, len(chain) - 1),
+    }), 200
 
 
 # ── Approve (legacy alias for stage=approval) ────────────────────────────────
@@ -638,30 +701,33 @@ def _dispatch_review(body: dict):
         return jsonify({"error": "Internal server error"}), 500
 
     _notify(updated, audit_action, comment=comment, previous_state=expected_state)
+    if updated.get("state") == "published" and to_state != "published":
+        _notify(updated, WORKFLOW_PUBLISHED, comment=comment)
 
-    assigned_to = _resolve_assignee(updated, to_state)
+    chain = updated.get("_auto_advance_chain") or []
+    final_assigned_to = _resolve_assignee(updated, updated.get("state"))
     logger.info(
-        "workflow %s: %s → %s by actor=%s assigned_to=%s comment=%r",
-        workflow_id, expected_state, to_state, user_id, assigned_to, comment,
+        "workflow %s: %s → %s by actor=%s assigned_to=%s comment=%r hops=%d",
+        workflow_id, expected_state, updated.get("state"), user_id, final_assigned_to, comment, len(chain),
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
-    log_audit_event(
-        action=audit_action, endpoint="/workflow/approve", ip=request.remote_addr,
-        status="success", actor_user_id=actor_uid, actor_email=actor_email,
-        acting_on_behalf_of_user_id=behalf_uid, acting_on_behalf_of_email=behalf_email,
-        metadata={
-            "workflow_id": workflow_id,
-            "stage": stage,
-            "decision": decision,
-            "from_state": expected_state,
-            "to_state": to_state,
-            "assigned_to_user_id": assigned_to,
-            "comment": comment,
-        },
+    _log_chain_audits(
+        chain,
+        first_action=audit_action,
+        workflow_id=workflow_id,
+        endpoint="/workflow/approve",
+        actor_uid=actor_uid, actor_email=actor_email,
+        behalf_uid=behalf_uid, behalf_email=behalf_email,
+        extra_metadata={"stage": stage, "decision": decision},
     )
     g.audit_logged = True
-    return jsonify({"workflow_id": workflow_id, "state": updated["state"], "state_version": updated["state_version"]}), 200
+    return jsonify({
+        "workflow_id": workflow_id,
+        "state": updated["state"],
+        "state_version": updated["state_version"],
+        "auto_advanced_hops": max(0, len(chain) - 1),
+    }), 200
 
 
 # ── By-doc lookup ─────────────────────────────────────────────────────────────

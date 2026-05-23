@@ -150,6 +150,123 @@ def create_workflow(
     return get_workflow(workflow_id)
 
 
+# ── Auto-advance helpers ──────────────────────────────────────────────────────
+#
+# Forward chain for the 3-stage review workflow. ``draft`` is included so the
+# initial submit (draft → quality_review) is recognised as a forward hop and
+# can trigger auto-advance for single-reviewer orgs. Send-back transitions
+# (governance_review → quality_review, approval → governance_review, etc.)
+# are deliberately absent — they must NOT chain.
+
+_FORWARD_NEXT = {
+    "draft":             "quality_review",
+    "quality_review":    "governance_review",
+    "governance_review": "approval",
+    "approval":          "published",
+}
+
+AUTO_ADVANCE_COMMENT = "[auto-advance: same reviewer]"
+
+
+def _next_forward_state(state: str) -> str | None:
+    return _FORWARD_NEXT.get(state)
+
+
+def _is_forward_hop(from_state: str, to_state: str) -> bool:
+    return _FORWARD_NEXT.get(from_state) == to_state
+
+
+def _assignee_for_state(row: dict, state: str) -> str | None:
+    if state == "quality_review":
+        return row.get("current_quality_reviewer")
+    if state == "governance_review":
+        return row.get("current_governance_reviewer")
+    if state in ("approval", "published"):
+        return row.get("current_approver")
+    if state == "draft":
+        return row.get("owner_user_id")
+    return None
+
+
+def _apply_single_transition(
+    cur,
+    config: dict,
+    row: dict,
+    to_state: str,
+    actor_user_id: str,
+    comment: str | None,
+    *,
+    quality_reviewer_user_id: str | None = None,
+    governance_reviewer_user_id: str | None = None,
+    approver_user_id: str | None = None,
+    is_auto: bool,
+) -> tuple[dict, dict]:
+    """Apply one state-machine hop within an open cursor.
+
+    Validates the transition, writes the UPDATE, and inserts the event row —
+    all under the caller's transaction so a chained auto-advance commits atomically.
+    Returns (updated_row_dict, hop_summary).
+    """
+    current_state = row["state"]
+    current_version = row["state_version"]
+
+    allowed = config["states_json"]["transitions"].get(current_state, [])
+    if to_state not in allowed:
+        raise WorkflowTransitionError(
+            f"Transition {current_state!r} → {to_state!r} not allowed"
+        )
+
+    now = datetime.now(timezone.utc)
+    updates: dict = {
+        "state": to_state,
+        "state_version": current_version + 1,
+    }
+    if to_state == "quality_review" and quality_reviewer_user_id:
+        updates["current_quality_reviewer"] = quality_reviewer_user_id
+        updates["current_reviewer"] = quality_reviewer_user_id  # legacy alias
+    if to_state == "governance_review" and governance_reviewer_user_id:
+        updates["current_governance_reviewer"] = governance_reviewer_user_id
+    if to_state in ("approval", "published") and approver_user_id:
+        updates["current_approver"] = approver_user_id
+    if to_state == "quality_review" and not row.get("submitted_at"):
+        updates["submitted_at"] = now
+    if to_state == "approval":
+        updates["approved_at"] = now
+    if to_state == "published":
+        updates["published_at"] = now
+
+    set_clause = ", ".join(f"{k}=%s" for k in updates)
+    cur.execute(
+        f"UPDATE document_workflow SET {set_clause} WHERE workflow_id=%s",
+        (*updates.values(), row["workflow_id"]),
+    )
+
+    # Reflect the writes back into the in-memory row so the auto-advance loop
+    # can read the freshly-assigned reviewer for the next stage.
+    row = {**row, **updates}
+
+    assigned_to = _assignee_for_state(row, to_state)
+
+    event_id = str(uuid.uuid4())
+    cur.execute(
+        """INSERT INTO document_workflow_events
+           (event_id, workflow_id, from_state, to_state,
+            actor_user_id, assigned_to_user_id, comment)
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+        (event_id, row["workflow_id"], current_state, to_state,
+         actor_user_id, assigned_to, comment),
+    )
+
+    return row, {
+        "from_state": current_state,
+        "to_state": to_state,
+        "event_id": event_id,
+        "assigned_to": assigned_to,
+        "auto": is_auto,
+        "comment": comment,
+    }
+
+
 def transition(
     workflow_id: str,
     expected_state_version: int,
@@ -162,14 +279,26 @@ def transition(
 ) -> dict:
     """Perform a state transition with optimistic locking.
 
+    After the requested (manual) transition completes, if the destination
+    state's assignee equals ``actor_user_id`` the workflow auto-advances to
+    the next forward stage. The chain repeats until the workflow reaches
+    ``published``, hits a stage with a different assignee, or has no further
+    forward state. All hops run under one ``FOR UPDATE`` lock and commit as
+    a single DB transaction.
+
+    Returns the updated workflow row plus two extra keys:
+      ``_event_id`` — the first (manual) hop's event id (legacy callers).
+      ``_auto_advance_chain`` — list of hop summaries; the first entry has
+        ``auto=False``, subsequent hops have ``auto=True``.
+
     Raises WorkflowConflictError if state_version doesn't match.
     Raises WorkflowTransitionError if the transition isn't allowed.
-    Returns the updated workflow row.
     """
+    chain: list[dict] = []
+
     conn = connect_to_rds()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            # Lock the row
             cur.execute(
                 "SELECT * FROM document_workflow WHERE workflow_id=%s FOR UPDATE",
                 (workflow_id,),
@@ -178,69 +307,52 @@ def transition(
             if not row:
                 raise WorkflowNotFoundError(workflow_id)
 
-            current_state = row["state"]
-            current_version = row["state_version"]
-
-            if current_version != expected_state_version:
+            if row["state_version"] != expected_state_version:
                 raise WorkflowConflictError(
-                    f"State version mismatch: expected {expected_state_version}, got {current_version}"
+                    f"State version mismatch: expected {expected_state_version}, "
+                    f"got {row['state_version']}"
                 )
 
             config = get_workflow_config(row["org_id"], row["doc_type"])
-            allowed_nexts = config["states_json"]["transitions"].get(current_state, [])
-            if to_state not in allowed_nexts:
-                raise WorkflowTransitionError(
-                    f"Transition {current_state!r} → {to_state!r} not allowed"
-                )
+            row = dict(row)
 
-            now = datetime.now(timezone.utc)
-            updates = {
-                "state": to_state,
-                "state_version": current_version + 1,
-            }
-            # Assign reviewer/approver columns when transitioning INTO their respective stages
-            if to_state == "quality_review" and quality_reviewer_user_id:
-                updates["current_quality_reviewer"] = quality_reviewer_user_id
-                updates["current_reviewer"] = quality_reviewer_user_id  # legacy alias
-            if to_state == "governance_review" and governance_reviewer_user_id:
-                updates["current_governance_reviewer"] = governance_reviewer_user_id
-            if to_state in ("approval", "published") and approver_user_id:
-                updates["current_approver"] = approver_user_id
-            # Timestamps
-            if to_state == "quality_review" and not row.get("submitted_at"):
-                updates["submitted_at"] = now
-            if to_state == "approval":
-                updates["approved_at"] = now
-            if to_state == "published":
-                updates["published_at"] = now
-
-            set_clause = ", ".join(f"{k}=%s" for k in updates)
-            cur.execute(
-                f"UPDATE document_workflow SET {set_clause} WHERE workflow_id=%s",
-                (*updates.values(), workflow_id),
+            row, hop = _apply_single_transition(
+                cur, config, row, to_state, actor_user_id, comment,
+                quality_reviewer_user_id=quality_reviewer_user_id,
+                governance_reviewer_user_id=governance_reviewer_user_id,
+                approver_user_id=approver_user_id,
+                is_auto=False,
             )
+            chain.append(hop)
+
+            # Auto-advance loop. Only enters for forward transitions — a
+            # send_back must never chain into more approvals. Each iteration
+            # asks: is the actor the assignee of the stage we just entered?
+            # If yes, they'd just click "Approve" again, so do it for them.
+            if _is_forward_hop(hop["from_state"], hop["to_state"]):
+                while True:
+                    cur_state = row["state"]
+                    cur_assignee = _assignee_for_state(row, cur_state)
+                    if not cur_assignee or cur_assignee != actor_user_id:
+                        break
+                    next_state = _next_forward_state(cur_state)
+                    if not next_state:
+                        break
+                    if next_state not in config["states_json"]["transitions"].get(cur_state, []):
+                        break
+                    row, hop = _apply_single_transition(
+                        cur, config, row, next_state, actor_user_id,
+                        AUTO_ADVANCE_COMMENT,
+                        is_auto=True,
+                    )
+                    chain.append(hop)
         conn.commit()
     finally:
         conn.close()
 
-    # Resolve the user the work was just handed off to, for the event log.
-    if to_state == "quality_review":
-        assigned_to = updates.get("current_quality_reviewer") or row.get("current_quality_reviewer")
-    elif to_state == "governance_review":
-        assigned_to = updates.get("current_governance_reviewer") or row.get("current_governance_reviewer")
-    elif to_state in ("approval", "published"):
-        assigned_to = updates.get("current_approver") or row.get("current_approver")
-    elif to_state == "draft":
-        assigned_to = row.get("owner_user_id")
-    else:
-        assigned_to = None
-
-    event_id = _append_event(
-        workflow_id, current_state, to_state, actor_user_id, comment,
-        assigned_to_user_id=assigned_to,
-    )
     updated = get_workflow(workflow_id)
-    updated["_event_id"] = event_id
+    updated["_event_id"] = chain[0]["event_id"]
+    updated["_auto_advance_chain"] = chain
     return updated
 
 
