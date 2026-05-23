@@ -770,8 +770,26 @@ async def run_runbook_execution_engine(
                 credits=credits,
                 total_input_chars=len(lang_prompt),
             )
-            # print("LANG RESULT RAW:", result)
-            lang_data = json.loads(result)
+            # The LLM occasionally returns empty / non-JSON / fenced-code
+            # responses. Fall back to defaults instead of failing the whole
+            # report — English / 800 words are the engine-wide defaults below.
+            lang_data: dict = {}
+            if result:
+                cleaned = result.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.strip("`")
+                    if cleaned.lower().startswith("json"):
+                        cleaned = cleaned[4:].lstrip()
+                try:
+                    parsed = json.loads(cleaned)
+                    if isinstance(parsed, dict):
+                        lang_data = parsed
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Language-detection LLM returned unparseable response; "
+                        "defaulting to English/800. raw=%r",
+                        result[:200] if isinstance(result, str) else result,
+                    )
 
             output_language = lang_data.get("language", "English")
             output_word_count = lang_data.get("word_count") or 800
