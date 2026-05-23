@@ -447,6 +447,63 @@ def transition(
     return updated
 
 
+def cancel_workflow(workflow_id: str, actor_user_id: str, comment: str | None = None) -> dict:
+    """Reset an in-flight workflow back to draft state.
+
+    Only the workflow owner may cancel. Resets state to 'draft', clears
+    reviewer/approver assignments, and records an event for the audit trail.
+    Raises WorkflowNotFoundError if not found, WorkflowTransitionError if the
+    actor is not the owner or the workflow is already published.
+    """
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM document_workflow WHERE workflow_id=%s FOR UPDATE",
+                (workflow_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise WorkflowNotFoundError(workflow_id)
+
+            row = dict(row)
+            if row["owner_user_id"] != actor_user_id:
+                raise WorkflowTransitionError("Only the workflow owner can cancel a review")
+            if row["state"] == "published":
+                raise WorkflowTransitionError("Cannot cancel a published workflow")
+            if row["state"] == "draft":
+                raise WorkflowTransitionError("Workflow is already in draft state")
+
+            prev_state = row["state"]
+            cur.execute(
+                """UPDATE document_workflow
+                   SET state='draft',
+                       state_version=state_version+1,
+                       current_reviewer=NULL,
+                       current_quality_reviewer=NULL,
+                       current_governance_reviewer=NULL,
+                       current_approver=NULL,
+                       submitted_at=NULL,
+                       approved_at=NULL
+                   WHERE workflow_id=%s""",
+                (workflow_id,),
+            )
+            event_id = str(uuid.uuid4())
+            cur.execute(
+                """INSERT INTO document_workflow_events
+                   (event_id, workflow_id, from_state, to_state,
+                    actor_user_id, assigned_to_user_id, comment)
+                   VALUES (%s,%s,%s,'draft',%s,%s,%s)""",
+                (event_id, workflow_id, prev_state, actor_user_id, actor_user_id,
+                 comment or "Review cancelled by owner"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return get_workflow(workflow_id)
+
+
 # ── Role-based assignee resolution ───────────────────────────────────────────
 
 

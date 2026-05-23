@@ -10,6 +10,7 @@ Endpoints:
   GET  /workflow/inbox
   GET  /workflow/history/<workflow_id>
   POST /workflow/reassign
+  POST /workflow/cancel
 """
 
 import json
@@ -31,6 +32,7 @@ from workflow_route.state_machine import (
     WorkflowNotFoundError,
     WorkflowTransitionError,
     bootstrap_schema,
+    cancel_workflow,
     create_workflow,
     get_inbox,
     get_workflow,
@@ -62,6 +64,7 @@ WORKFLOW_APPROVED = "WORKFLOW_APPROVED"  # approval → published
 WORKFLOW_APPROVAL_SENT_BACK = "WORKFLOW_APPROVAL_SENT_BACK"  # approval → governance_review
 WORKFLOW_PUBLISHED = "WORKFLOW_PUBLISHED"
 WORKFLOW_REASSIGNED = "WORKFLOW_REASSIGNED"
+WORKFLOW_CANCELLED = "WORKFLOW_CANCELLED"
 # Legacy constants (kept for back-compat in callers / DB audit logs)
 WORKFLOW_REVIEW_APPROVED = WORKFLOW_QUALITY_APPROVED
 WORKFLOW_CHANGES_REQUESTED = WORKFLOW_QUALITY_SENT_BACK
@@ -1050,3 +1053,58 @@ def reassign_workflow():
     )
     g.audit_logged = True
     return jsonify({"workflow_id": workflow_id, "state": updated["state"], role: new_user_id}), 200
+
+
+# ── Cancel (owner reset) ──────────────────────────────────────────────────────
+
+@workflow_bp.route("/cancel", methods=["POST"])
+@permission_required_body("workflow.submit")
+def cancel_workflow_route():
+    """Reset an active review workflow back to draft so the owner can resubmit.
+
+    Body: { user_id, doc_type, doc_id, doc_version?, comment? }
+    OR:   { user_id, workflow_id, comment? }
+    """
+    body = request.get_json(silent=True) or {}
+    baseuser = body.get("user_id", "")
+    workflow_id = body.get("workflow_id")
+    doc_type = body.get("doc_type")
+    doc_id = body.get("doc_id")
+    doc_version = body.get("doc_version", "1.0")
+    comment = body.get("comment")
+
+    if not baseuser:
+        return jsonify({"error": "user_id is required"}), 400
+    if not workflow_id and not all([doc_type, doc_id]):
+        return jsonify({"error": "Either workflow_id or (doc_type and doc_id) are required"}), 400
+
+    logged_in, user_id = parse_composite_user_id(baseuser)
+
+    try:
+        if not workflow_id:
+            wf = get_workflow_for_doc(doc_type, doc_id, doc_version)
+            if not wf:
+                return jsonify({"error": "No workflow found for this document"}), 404
+            workflow_id = wf["workflow_id"]
+
+        updated = cancel_workflow(workflow_id, user_id, comment)
+    except WorkflowNotFoundError:
+        return jsonify({"error": "Workflow not found"}), 404
+    except WorkflowTransitionError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except Exception as exc:
+        logger.exception("cancel_workflow unexpected error: %s", exc)
+        return jsonify({"error": "Internal server error"}), 500
+
+    logger.info("workflow %s cancelled by actor=%s comment=%r", workflow_id, user_id, comment)
+
+    actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    log_audit_event(
+        action=WORKFLOW_CANCELLED, endpoint="/workflow/cancel", ip=request.remote_addr,
+        status="success", actor_user_id=actor_uid, actor_email=actor_email,
+        acting_on_behalf_of_user_id=behalf_uid, acting_on_behalf_of_email=behalf_email,
+        metadata={"workflow_id": workflow_id, "doc_type": doc_type, "doc_id": doc_id, "comment": comment},
+    )
+    g.audit_logged = True
+
+    return jsonify({"workflow_id": workflow_id, "state": updated["state"]}), 200
