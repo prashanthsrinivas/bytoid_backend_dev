@@ -1,12 +1,18 @@
-from datetime import datetime
 import os
+from dotenv import load_dotenv
+
+# Must run before any module-level imports that call load_dotenv() + os.getenv()
+# (e.g. db/lance_db_service.py, utils/app_configs.py, db/rds_db.py)
+load_dotenv("/home/ec2-user/bytoid_python/.env")
+load_dotenv()  # fallback for local dev
+
+from datetime import datetime
 from random import uniform
 import shutil
 import time
 import traceback
 from apiConnector.helpers import is_schedule_app_active
 from cust_helpers import pathconfig
-from dotenv import load_dotenv
 from celery import Celery
 from celery.utils.log import get_task_logger
 import asyncio
@@ -34,7 +40,6 @@ from zoho_routes.routes import v2all_continuous_zoho
 # from umail_helper.auto_rep import autoReplyhelper
 
 logger = get_task_logger(__name__)
-load_dotenv()
 
 dev_val = os.getenv("DEV", "")
 base_ip = os.getenv("CELERY_BROKER_URL")

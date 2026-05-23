@@ -1569,6 +1569,13 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
     if isinstance(runbook, str):
         runbook = json.loads(runbook)
 
+    if not runbook:
+        logger.error(
+            "Runbook not found in DB: runbook_id=%s user_id=%s playbook_id=%s",
+            runbook_id, user_id, playbook_id,
+        )
+        return {"status": "failed", "error": "runbook_not_found"}
+
     logger.info(
         "Using runbook: %s - %s", runbook.get("runbook_id"), runbook.get("name")
     )
