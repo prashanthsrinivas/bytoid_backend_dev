@@ -1122,6 +1122,21 @@ async def run_runbook_execution_engine(
             label="governance framework",
         )
 
+        # Divide the total target across blocks — the prompt enforces
+        # ``{{requested_word_count}}`` as a per-block minimum, so passing the
+        # full target made a 6-block structure overshoot ~6x (e.g. 800 → 4800).
+        # 40-word floor keeps individual blocks from being truncated to nothing.
+        n_blocks = max(1, len(structure_file_payload["blocks"]))
+        try:
+            total_word_count = int(output_word_count)
+        except (TypeError, ValueError):
+            total_word_count = 800
+        per_block_word_count = max(40, total_word_count // n_blocks)
+        logger.debug(
+            "Word-count budget: total=%s blocks=%d per_block=%d",
+            output_word_count, n_blocks, per_block_word_count,
+        )
+
         logger.debug("Before generating report")
         for idx, block in enumerate(structure_file_payload["blocks"]):
 
@@ -1157,7 +1172,7 @@ async def run_runbook_execution_engine(
                     ),
                 )
                 .replace("{{output_language}}", output_language)
-                .replace("{{requested_word_count}}", str(output_word_count))
+                .replace("{{requested_word_count}}", str(per_block_word_count))
             )
 
             result = await get_think_bedrok_response(
