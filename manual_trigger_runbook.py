@@ -4,14 +4,20 @@ Useful when a runbook never generated a report because the questionnaire was
 completed under the old (pre-fix) race-conditioned code path, or to retry a
 known-failed report without re-answering questions.
 
-Two modes:
+Three modes:
 
 1. Direct (you already know the filename + runbook_id):
    python3 manual_trigger_runbook.py <user_id> <playbook_filename> <runbook_id>
 
-2. Lookup (you only know the playbook name and/or runbook name):
+2. Playbook lookup (you only know the playbook name and/or runbook name):
    python3 manual_trigger_runbook.py --list <user_id>
-       prints all playbook files + linked runbook_id under that user's S3 prefix
+       prints all playbook config files + linked runbook_id under the user's
+       S3 workflow prefix.
+
+3. Runbook lookup (check which runbook IDs actually exist in LanceDB):
+   python3 manual_trigger_runbook.py --list-runbooks <user_id>
+       prints every runbook record stored in LanceDB for this user, so you
+       can detect stale runbook_id references in playbook configs.
 
 Example direct:
    python3 manual_trigger_runbook.py 109161866299858012556 \\
@@ -80,9 +86,39 @@ def _list_playbooks(user_id: str) -> int:
     return 0
 
 
+def _list_runbooks(user_id: str) -> int:
+    """Print every runbook record in LanceDB for this user — raw, unfiltered.
+    Useful for detecting stale runbook_id references in playbook configs."""
+    import asyncio
+    import logging
+    from db.lance_db_service import LanceDBServer
+
+    logging.getLogger("utils.s3_utils").setLevel(logging.WARNING)
+
+    async def _go():
+        dbserver = LanceDBServer()
+        return await dbserver.get_user_runbook(user_id)
+
+    runbooks = asyncio.run(_go())
+    if not runbooks:
+        print(f"No runbooks found in LanceDB for user {user_id}")
+        return 0
+
+    print(f"{'RUNBOOK_ID':<32} {'CREATED':<25} NAME")
+    print("-" * 120)
+    for rb in runbooks:
+        rid = rb.get("runbook_id") or "(none)"
+        name = rb.get("name") or rb.get("runbook_name") or ""
+        created = str(rb.get("created_at") or rb.get("createdAt") or "")[:24]
+        print(f"{rid:<32} {created:<25} {name}")
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--list":
         return _list_playbooks(sys.argv[2])
+    if len(sys.argv) == 3 and sys.argv[1] == "--list-runbooks":
+        return _list_runbooks(sys.argv[2])
 
     if len(sys.argv) != 4:
         print(__doc__)
