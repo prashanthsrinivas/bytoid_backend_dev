@@ -2065,7 +2065,9 @@ async def Modify_default_structure(user_id, analyze_input, default_structure):
             credits=credits,
             total_input_chars=base_char,
         )
-        default_structure_payload = json.loads(result)
+        if result == "INSUFFICIENT":
+            raise ValueError("Insufficient AI credits to generate structure")
+        default_structure_payload = safe_json_parsestruy(result)
         logger.info("✅DEFAULT STRUCTURE MODIFIED")
 
         return default_structure_payload
