@@ -1673,6 +1673,17 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
             is_playbook_based_execution=True,
             custom_playbook_id=playbook_id,
         )
+        # The engine swallows its own exceptions and returns None on failure
+        # (after writing a status="failed" runbook_results row). Surface that
+        # as a structured failure here so the Celery result isn't misleading.
+        if result is None:
+            logger.error(
+                "run_runbook_execution_engine returned None — engine wrote a "
+                "status='failed' result row. playbook=%s runbook=%s user=%s "
+                "(see prior 'Runbook error: ...' log for the underlying exception)",
+                playbook_id, runbook_id, user_id,
+            )
+            return {"status": "failed", "error": "engine_returned_none"}
         logger.info(
             "Runbook execution finished: playbook=%s runbook=%s user=%s",
             playbook_id, runbook_id, user_id,

@@ -24,6 +24,12 @@ Four modes:
        updates the playbook's S3 JSON to point at <new_runbook_id> so future
        completed submissions trigger the right runbook automatically.
 
+5. Inspect reports (what runbook_results rows exist for a runbook):
+   python3 manual_trigger_runbook.py --list-reports <user_id> <runbook_id>
+       prints every runbook_results row in LanceDB for that runbook with
+       status / risk_score / started_at — useful to tell whether a 'success'
+       Celery task actually produced a usable report.
+
 Example direct:
    python3 manual_trigger_runbook.py 109161866299858012556 \\
        config_playbook_a25c9a5e.json runbook_68eab4
@@ -161,11 +167,44 @@ def _relink_playbook(user_id: str, playbook_filename: str, new_runbook_id: str) 
     return 0
 
 
+def _list_reports(user_id: str, runbook_id: str) -> int:
+    """Dump every runbook_results row in LanceDB for the given runbook."""
+    import asyncio
+    import logging
+    from db.lance_db_service import LanceDBServer
+
+    logging.getLogger("utils.s3_utils").setLevel(logging.WARNING)
+
+    async def _go():
+        dbserver = LanceDBServer()
+        return await dbserver.get_runbook_results(user_id, runbook_id)
+
+    rows = asyncio.run(_go())
+    if not rows:
+        print(f"No runbook_results rows found for runbook_id={runbook_id}")
+        return 0
+
+    print(f"{'RESULT_ID':<20} {'STATUS':<12} {'RISK':<8} {'STARTED_AT':<14} EXECUTION_ID")
+    print("-" * 110)
+    for r in rows:
+        rid = str(r.get("result_id") or "")[:18]
+        status = str(r.get("status") or "")[:10]
+        risk = r.get("risk_score")
+        risk_str = f"{risk:.2f}" if isinstance(risk, (int, float)) else "-"
+        started = str(r.get("started_at") or "")[:12]
+        exec_id = str(r.get("execution_id") or "")
+        print(f"{rid:<20} {status:<12} {risk_str:<8} {started:<14} {exec_id}")
+    print(f"\n{len(rows)} row(s) total")
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--list":
         return _list_playbooks(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == "--list-runbooks":
         return _list_runbooks(sys.argv[2])
+    if len(sys.argv) == 4 and sys.argv[1] == "--list-reports":
+        return _list_reports(sys.argv[2], sys.argv[3])
     if len(sys.argv) == 5 and sys.argv[1] == "--relink":
         return _relink_playbook(sys.argv[2], sys.argv[3], sys.argv[4])
 
