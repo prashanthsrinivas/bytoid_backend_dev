@@ -1540,9 +1540,15 @@ async def run_runbook_execution_engine(
                 "ended_at": int(time.time()),
             }
         )
-        asyncio.create_task(
-            _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_id)
-        )
+        # Await tracker push instead of firing-and-forgetting. The engine is
+        # often invoked under asyncio.run() (see run_runbook_job_wrapper), which
+        # closes the event loop on return — any pending create_task() coroutine
+        # gets cancelled mid-flight. That silently dropped tracker pushes for
+        # any tracker with linked frameworks, since their per-row LLM analysis
+        # ran longer than the parent's return path. _push_blocks_to_trackers
+        # already swallows its own exceptions, so awaiting it cannot block the
+        # engine from finishing successfully.
+        await _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_id)
 
         # Auto-submit to review workflow when the org is role-based configured.
         # Self-contained and best-effort: never fails runbook generation.
