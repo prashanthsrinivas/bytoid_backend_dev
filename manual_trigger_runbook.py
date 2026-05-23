@@ -34,37 +34,45 @@ def _list_playbooks(user_id: str) -> int:
     from utils.s3_utils import read_json_from_s3, s3bucket, S3_BUCKET
 
     prefix = f"{user_id}/workflow/"
-    bucket = s3bucket() if callable(s3bucket) else s3bucket
-    paginator = bucket.meta.client.get_paginator("list_objects_v2") if hasattr(bucket, "meta") else None
-
-    # Fallback to boto3 directly if s3bucket isn't a Bucket resource
-    if paginator is None:
-        import boto3
-        paginator = boto3.client("s3").get_paginator("list_objects_v2")
-        bucket_name = S3_BUCKET
-    else:
-        bucket_name = bucket.name
+    s3 = s3bucket()  # returns a boto3 s3 client
+    paginator = s3.get_paginator("list_objects_v2")
 
     print(f"{'PLAYBOOK FILE':<60} {'RUNBOOK_ID':<40} TITLE")
     print("-" * 130)
     found = 0
-    for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
             if not key.endswith(".json"):
                 continue
             filename = key.rsplit("/", 1)[-1]
+            # Only list root-level workflow config files (skip execution-id
+            # snapshots and per-step artifacts that share the .json suffix).
+            # Path shape: {user}/workflow/{basename}/{filename}.json — keep
+            # entries where the parent folder basename matches the filename
+            # stem (i.e. the canonical playbook file).
+            parts = key.split("/")
+            if len(parts) != 4:
+                continue
+            stem = filename[:-5]  # strip .json
+            if not stem.startswith(parts[2]):
+                continue
             try:
                 data = read_json_from_s3(key) or {}
             except Exception as e:
                 print(f"{filename:<60} <read error: {e}>")
                 continue
             runbook_id = data.get("runbook_id") or "(none)"
-            title = data.get("workflow", {}).get("title") or data.get("title") or ""
+            title = (
+                (data.get("workflow") or {}).get("title")
+                or data.get("title")
+                or data.get("name")
+                or ""
+            )
             print(f"{filename:<60} {runbook_id:<40} {title}")
             found += 1
     if not found:
-        print(f"No playbook .json files found under prefix s3://{bucket_name}/{prefix}")
+        print(f"No playbook .json files found under prefix s3://{S3_BUCKET}/{prefix}")
     return 0
 
 
