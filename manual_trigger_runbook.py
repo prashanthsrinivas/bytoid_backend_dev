@@ -4,7 +4,7 @@ Useful when a runbook never generated a report because the questionnaire was
 completed under the old (pre-fix) race-conditioned code path, or to retry a
 known-failed report without re-answering questions.
 
-Three modes:
+Four modes:
 
 1. Direct (you already know the filename + runbook_id):
    python3 manual_trigger_runbook.py <user_id> <playbook_filename> <runbook_id>
@@ -18,6 +18,11 @@ Three modes:
    python3 manual_trigger_runbook.py --list-runbooks <user_id>
        prints every runbook record stored in LanceDB for this user, so you
        can detect stale runbook_id references in playbook configs.
+
+4. Relink (fix a stale runbook_id pointer in a playbook config):
+   python3 manual_trigger_runbook.py --relink <user_id> <playbook_filename> <new_runbook_id>
+       updates the playbook's S3 JSON to point at <new_runbook_id> so future
+       completed submissions trigger the right runbook automatically.
 
 Example direct:
    python3 manual_trigger_runbook.py 109161866299858012556 \\
@@ -114,11 +119,55 @@ def _list_runbooks(user_id: str) -> int:
     return 0
 
 
+def _relink_playbook(user_id: str, playbook_filename: str, new_runbook_id: str) -> int:
+    """Rewrite a playbook config's `runbook_id` field in S3."""
+    import json
+    import logging
+    from utils.s3_utils import read_json_from_s3, s3bucket, S3_BUCKET
+
+    logging.getLogger("utils.s3_utils").setLevel(logging.WARNING)
+
+    if not playbook_filename.endswith(".json"):
+        print(f"ERROR: playbook_filename must end with .json (got {playbook_filename!r})")
+        return 2
+
+    stem = playbook_filename[:-5]
+    s3_key = f"{user_id}/workflow/{stem}/{playbook_filename}"
+
+    data = read_json_from_s3(s3_key)
+    if not data:
+        print(f"ERROR: playbook config not found at s3://{S3_BUCKET}/{s3_key}")
+        return 3
+
+    old_runbook_id = data.get("runbook_id")
+    if old_runbook_id == new_runbook_id:
+        print(f"No change needed — runbook_id already {new_runbook_id!r}")
+        return 0
+
+    data["runbook_id"] = new_runbook_id
+    s3 = s3bucket()
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=s3_key,
+        Body=json.dumps(data, default=str),
+        ContentType="application/json",
+    )
+    print(
+        f"Relinked playbook config:\n"
+        f"  s3://{S3_BUCKET}/{s3_key}\n"
+        f"  runbook_id: {old_runbook_id!r} -> {new_runbook_id!r}\n"
+        f"\nFuture completed submissions will now trigger {new_runbook_id}."
+    )
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--list":
         return _list_playbooks(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == "--list-runbooks":
         return _list_runbooks(sys.argv[2])
+    if len(sys.argv) == 5 and sys.argv[1] == "--relink":
+        return _relink_playbook(sys.argv[2], sys.argv[3], sys.argv[4])
 
     if len(sys.argv) != 4:
         print(__doc__)
