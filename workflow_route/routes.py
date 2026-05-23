@@ -34,6 +34,7 @@ from workflow_route.state_machine import (
     bootstrap_schema,
     cancel_workflow,
     create_workflow,
+    enrich_workflow_for_viewer,
     get_inbox,
     get_workflow,
     get_workflow_config,
@@ -809,10 +810,19 @@ def workflow_by_doc(doc_type: str, doc_id: str):
     if not row:
         return jsonify({"workflow": None}), 200
 
+    try:
+        enriched = enrich_workflow_for_viewer(row, user_id)
+    except Exception as enrich_exc:
+        logger.warning(
+            "workflow enrichment failed for workflow_id=%s viewer=%s: %s — returning raw row",
+            row.get("workflow_id"), user_id, enrich_exc,
+        )
+        enriched = row
+
     from flask import Response
     import json as _json
     return Response(
-        _json.dumps({"workflow": row}, default=str),
+        _json.dumps({"workflow": enriched}, default=str),
         status=200,
         mimetype="application/json",
     )

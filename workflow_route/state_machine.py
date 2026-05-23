@@ -712,6 +712,191 @@ def get_workflow_for_doc_any_role(
     return dict(row) if row else None
 
 
+# ── Workflow enrichment for client consumption ────────────────────────────────
+
+# Stepper order shown to clients. Keep aligned with DEFAULT_STATES_JSON["states"].
+_STEP_DEFINITIONS: list[tuple[str, str]] = [
+    ("draft", "Draft"),
+    ("quality_review", "Quality Review"),
+    ("governance_review", "Governance Review"),
+    ("approval", "Approval"),
+    ("published", "Published"),
+]
+_STEP_ORDER: list[str] = [sid for sid, _ in _STEP_DEFINITIONS]
+
+# State → column on document_workflow holding the user_id responsible for that step.
+_STATE_ASSIGNEE_COL: dict[str, str] = {
+    "draft": "owner_user_id",
+    "quality_review": "current_quality_reviewer",
+    "governance_review": "current_governance_reviewer",
+    "approval": "current_approver",
+    "published": "owner_user_id",
+}
+
+# State → (column, role label) for the viewer's role lookup.
+_ROLE_COLUMNS: list[tuple[str, str]] = [
+    ("owner_user_id", "owner"),
+    ("current_quality_reviewer", "quality_reviewer"),
+    ("current_governance_reviewer", "governance_reviewer"),
+    ("current_approver", "approver"),
+]
+
+# State → (assignee column, viewer role that can act on it).
+_STATE_ACTOR: dict[str, tuple[str, str]] = {
+    "quality_review": ("current_quality_reviewer", "quality_reviewer"),
+    "governance_review": ("current_governance_reviewer", "governance_reviewer"),
+    "approval": ("current_approver", "approver"),
+}
+
+
+def enrich_workflow_for_viewer(workflow: dict, viewer_user_id: str) -> dict:
+    """Augment a raw document_workflow row with assignee details, a per-step
+    timeline, and the viewer's permitted actions on the current state.
+
+    Adds these keys to the returned dict:
+      - assignees: {owner, quality_reviewer, governance_reviewer, approver},
+        each {user_id, email} or None.
+      - steps: ordered list of {id, label, status, assignee, started_at,
+        finished_at}, where status ∈ {complete, active, upcoming}.
+      - viewer: {user_id, email, role, permitted_actions,
+        is_assignee_for_current_step}. role is None for shared-access readers
+        who aren't a workflow party.
+    """
+    enriched = dict(workflow)
+    state = workflow.get("state") or "draft"
+
+    user_ids: set[str] = set()
+    for col, _ in _ROLE_COLUMNS:
+        uid = workflow.get(col)
+        if uid:
+            user_ids.add(uid)
+    if viewer_user_id:
+        user_ids.add(viewer_user_id)
+
+    emails: dict[str, str] = {}
+    if user_ids:
+        conn = connect_to_rds()
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                placeholders = ",".join(["%s"] * len(user_ids))
+                cur.execute(
+                    f"SELECT user_id, email FROM users WHERE user_id IN ({placeholders})",
+                    tuple(user_ids),
+                )
+                emails = {r["user_id"]: r.get("email") for r in cur.fetchall()}
+        finally:
+            conn.close()
+
+    def _principal(col: str) -> dict | None:
+        uid = workflow.get(col)
+        if not uid:
+            return None
+        return {"user_id": uid, "email": emails.get(uid)}
+
+    enriched["assignees"] = {
+        "owner": _principal("owner_user_id"),
+        "quality_reviewer": _principal("current_quality_reviewer"),
+        "governance_reviewer": _principal("current_governance_reviewer"),
+        "approver": _principal("current_approver"),
+    }
+
+    # Per-step timing from the events table: started_at = first event whose
+    # to_state == step; finished_at = first event whose from_state == step.
+    step_started: dict[str, object] = {}
+    step_finished: dict[str, object] = {}
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT from_state, to_state, created_at FROM document_workflow_events "
+                "WHERE workflow_id=%s ORDER BY created_at ASC",
+                (workflow["workflow_id"],),
+            )
+            events = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    for ev in events:
+        to_state = ev.get("to_state")
+        from_state = ev.get("from_state")
+        ts = ev.get("created_at")
+        if to_state in _STEP_ORDER and to_state not in step_started:
+            step_started[to_state] = ts
+        if from_state in _STEP_ORDER and from_state not in step_finished:
+            step_finished[from_state] = ts
+
+    try:
+        current_idx = _STEP_ORDER.index(state)
+    except ValueError:
+        current_idx = -1
+
+    steps: list[dict] = []
+    for idx, (sid, slabel) in enumerate(_STEP_DEFINITIONS):
+        if current_idx < 0:
+            status = "upcoming"
+        elif idx < current_idx:
+            status = "complete"
+        elif idx == current_idx:
+            status = "active"
+        else:
+            status = "upcoming"
+        assignee_col = _STATE_ASSIGNEE_COL.get(sid)
+        steps.append({
+            "id": sid,
+            "label": slabel,
+            "status": status,
+            "assignee": _principal(assignee_col) if assignee_col else None,
+            "started_at": step_started.get(sid),
+            "finished_at": step_finished.get(sid),
+        })
+    enriched["steps"] = steps
+
+    # Viewer role: first matching column wins (owner takes precedence over
+    # reviewer slots in the rare case a user holds both).
+    role: str | None = None
+    for col, label in _ROLE_COLUMNS:
+        if workflow.get(col) == viewer_user_id:
+            role = label
+            break
+
+    permitted_actions: list[str] = []
+    is_current_assignee = False
+    actor = _STATE_ACTOR.get(state)
+    if actor:
+        assignee_col, actor_role = actor
+        assigned_uid = workflow.get(assignee_col)
+        # Mirrors the assignment check in routes.py review_document(): the
+        # named assignee may act; if the slot is empty, the owner can act
+        # to unblock the workflow.
+        if role == actor_role and assigned_uid == viewer_user_id:
+            permitted_actions = ["approve", "send_back"]
+            is_current_assignee = True
+        elif not assigned_uid and role == "owner":
+            permitted_actions = ["approve", "send_back"]
+            is_current_assignee = True
+    elif state == "draft" and role == "owner":
+        permitted_actions = ["submit"]
+        is_current_assignee = True
+
+    # Owner can cancel any in-flight workflow (matches cancel_workflow() rules).
+    if role == "owner" and state not in ("draft", "published") and "cancel" not in permitted_actions:
+        permitted_actions.append("cancel")
+    # Owner publishes from the approval stage after the approver acts; that
+    # path is covered by the actor branch above (owner-as-fallback when no
+    # approver is assigned). Once the workflow reaches 'published' there are
+    # no further actions.
+
+    enriched["viewer"] = {
+        "user_id": viewer_user_id,
+        "email": emails.get(viewer_user_id),
+        "role": role,
+        "permitted_actions": permitted_actions,
+        "is_assignee_for_current_step": is_current_assignee,
+    }
+
+    return enriched
+
+
 def bootstrap_schema() -> None:
     """Create workflow tables if they don't exist. Idempotent — safe to call on every startup."""
     _ddl = [
