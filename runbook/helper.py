@@ -1527,19 +1527,6 @@ async def run_runbook_execution_engine(
         if custom_playbook_id:
             merged_result["document_meta"]["base_playbook_id"] = custom_playbook_id
 
-        await dbserver.insert_runbook_result(
-            {
-                "execution_id": execution_id,
-                "result_id": new_result_id,
-                "runbook_id": runbook_id,
-                "user_id": user_id,
-                "status": "completed",
-                "risk_score": merged_result["risk_score"],
-                "result": merged_result,
-                "started_at": int(time.time()),
-                "ended_at": int(time.time()),
-            }
-        )
         # Await tracker push instead of firing-and-forgetting. The engine is
         # often invoked under asyncio.run() (see run_runbook_job_wrapper), which
         # closes the event loop on return — any pending create_task() coroutine
@@ -1553,6 +1540,26 @@ async def run_runbook_execution_engine(
         # Auto-submit to review workflow when the org is role-based configured.
         # Self-contained and best-effort: never fails runbook generation.
         _auto_submit_runbook_workflow(runbook_id, user_id)
+
+        # Persist the completed result LAST. The frontend's "Report ready" pill
+        # polls /runbook/results and turns green the moment it sees a row with
+        # status='completed' — writing the row before tracker push + workflow
+        # submission caused the pill to claim readiness while post-processing
+        # was still running. Inserting last makes "completed" mean "the full
+        # post-generation pipeline finished".
+        await dbserver.insert_runbook_result(
+            {
+                "execution_id": execution_id,
+                "result_id": new_result_id,
+                "runbook_id": runbook_id,
+                "user_id": user_id,
+                "status": "completed",
+                "risk_score": merged_result["risk_score"],
+                "result": merged_result,
+                "started_at": int(time.time()),
+                "ended_at": int(time.time()),
+            }
+        )
 
         if merged_result:
             name = runbook["name"] or runbook_id
