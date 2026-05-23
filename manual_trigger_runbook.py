@@ -29,47 +29,51 @@ from utils.celery_base import create_playbook_runbook_task
 
 
 def _list_playbooks(user_id: str) -> int:
-    """Print every playbook config file under the user's workflow prefix,
-    with the runbook_id it is linked to (if any)."""
+    """Print every canonical playbook config file under the user's workflow
+    prefix, with the runbook_id it is linked to (if any) and the playbook
+    title. Execution snapshots (`<basename>_ch_*.json`) are filtered out."""
+    import logging
     from utils.s3_utils import read_json_from_s3, s3bucket, S3_BUCKET
 
+    # Quiet the per-read S3 logger so the listing isn't drowned in noise.
+    logging.getLogger("utils.s3_utils").setLevel(logging.WARNING)
+
     prefix = f"{user_id}/workflow/"
-    s3 = s3bucket()  # returns a boto3 s3 client
+    s3 = s3bucket()
     paginator = s3.get_paginator("list_objects_v2")
 
-    print(f"{'PLAYBOOK FILE':<60} {'RUNBOOK_ID':<40} TITLE")
-    print("-" * 130)
+    print(f"{'PLAYBOOK FILE':<32} {'RUNBOOK_ID':<32} TITLE")
+    print("-" * 120)
     found = 0
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
             if not key.endswith(".json"):
                 continue
-            filename = key.rsplit("/", 1)[-1]
-            # Only list root-level workflow config files (skip execution-id
-            # snapshots and per-step artifacts that share the .json suffix).
-            # Path shape: {user}/workflow/{basename}/{filename}.json — keep
-            # entries where the parent folder basename matches the filename
-            # stem (i.e. the canonical playbook file).
             parts = key.split("/")
+            # Canonical playbook path is {user}/workflow/{basename}/{basename}.json
+            # (exactly 4 segments, filename stem == folder basename).
             if len(parts) != 4:
                 continue
+            filename = parts[3]
             stem = filename[:-5]  # strip .json
-            if not stem.startswith(parts[2]):
+            if stem != parts[2]:
                 continue
             try:
                 data = read_json_from_s3(key) or {}
             except Exception as e:
-                print(f"{filename:<60} <read error: {e}>")
+                print(f"{filename:<32} <read error: {e}>")
                 continue
             runbook_id = data.get("runbook_id") or "(none)"
             title = (
-                (data.get("workflow") or {}).get("title")
+                (data.get("input_data") or {}).get("title")
+                or (data.get("workflow") or {}).get("name")
+                or (data.get("workflow") or {}).get("title")
                 or data.get("title")
                 or data.get("name")
                 or ""
             )
-            print(f"{filename:<60} {runbook_id:<40} {title}")
+            print(f"{filename:<32} {runbook_id:<32} {title}")
             found += 1
     if not found:
         print(f"No playbook .json files found under prefix s3://{S3_BUCKET}/{prefix}")
