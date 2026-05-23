@@ -2963,6 +2963,16 @@ class WorkflowRunnerV2:
         self.chat_history = chats
         self.saveworkflowtos3()
 
+        # ------------------------------
+        # TRIGGER RUNBOOK (if linked)
+        # ------------------------------
+        if all_answered:
+            runbook_id = self.workflow_json.get("runbook_id")
+            if runbook_id:
+                from utils.celery_base import create_playbook_runbook_task
+                self.logger.info("Form completed, triggering runbook task")
+                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
+
         return {
             "status": "success",
             "all_fields_answered": all_answered,
@@ -3121,6 +3131,16 @@ class WorkflowRunnerV2:
         self.workflow_json = workflow
 
         self.saveworkflowtos3()
+
+        # -------------------------------------------------
+        # TRIGGER RUNBOOK (if linked)
+        # -------------------------------------------------
+        if form_completed:
+            runbook_id = self.workflow_json.get("runbook_id")
+            if runbook_id:
+                from utils.celery_base import create_playbook_runbook_task
+                self.logger.info("Form completed, triggering runbook task")
+                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
 
         return {
             "status": "success",
