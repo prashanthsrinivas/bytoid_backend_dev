@@ -26,6 +26,7 @@ from utils.normal import parse_composite_user_id
 from utils.permission_required import permission_required_body
 from workflow_route.state_machine import (
     DEFAULT_STATES_JSON,
+    RoleResolutionError,
     WorkflowConflictError,
     WorkflowNotFoundError,
     WorkflowTransitionError,
@@ -37,6 +38,7 @@ from workflow_route.state_machine import (
     get_workflow_for_doc,
     get_workflow_for_doc_any_role,
     get_workflow_history,
+    pick_user_for_role,
     transition,
 )
 from db.rds_db import connect_to_rds
@@ -389,6 +391,11 @@ def submit_for_review():
     quality_reviewer_user_id = body.get("quality_reviewer_user_id") or body.get("reviewer_user_id")
     governance_reviewer_user_id = body.get("governance_reviewer_user_id")
     approver_user_id = body.get("approver_user_id")
+    # Per-slot role IDs — if supplied, the backend resolves to a concrete user
+    # via least-loaded round-robin. user_id takes precedence over role_id.
+    quality_reviewer_role_id = body.get("quality_reviewer_role_id")
+    governance_reviewer_role_id = body.get("governance_reviewer_role_id")
+    approver_role_id = body.get("approver_role_id")
     comment = body.get("comment")
 
     if not all([baseuser, doc_type, doc_id]):
@@ -399,23 +406,35 @@ def submit_for_review():
     if not org_id:
         return jsonify({"error": "User org not found"}), 404
 
-    # Resolve reviewer/approver for role_based mode
+    # Resolve any per-slot role IDs to concrete user IDs. Tracks which slots
+    # were role-resolved so the audit metadata can record it.
+    role_resolved: dict[str, str] = {}
+    try:
+        if not quality_reviewer_user_id and quality_reviewer_role_id:
+            quality_reviewer_user_id, _ = pick_user_for_role(quality_reviewer_role_id, user_id)
+            role_resolved["quality_reviewer"] = quality_reviewer_role_id
+        if not governance_reviewer_user_id and governance_reviewer_role_id:
+            governance_reviewer_user_id, _ = pick_user_for_role(governance_reviewer_role_id, user_id)
+            role_resolved["governance_reviewer"] = governance_reviewer_role_id
+        if not approver_user_id and approver_role_id:
+            approver_user_id, _ = pick_user_for_role(approver_role_id, user_id)
+            role_resolved["approver"] = approver_role_id
+    except RoleResolutionError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    # Resolve reviewer/approver for role_based mode (workflow_config defaults).
     config = get_workflow_config(org_id, doc_type)
-    if config["assignment_mode"] == "role_based" and not quality_reviewer_user_id:
+    if config["assignment_mode"] == "role_based" and not quality_reviewer_user_id and config.get("reviewer_role_id"):
         try:
-            from shared_configuration import get_round_robin_user_for_resource
-            quality_reviewer_user_id = get_round_robin_user_for_resource(
-                config["reviewer_role_id"], doc_id
-            )
-        except Exception:
+            quality_reviewer_user_id, _ = pick_user_for_role(config["reviewer_role_id"], user_id)
+            role_resolved["quality_reviewer"] = config["reviewer_role_id"]
+        except RoleResolutionError:
             pass
-    if config["assignment_mode"] == "role_based" and not approver_user_id:
+    if config["assignment_mode"] == "role_based" and not approver_user_id and config.get("approver_role_id"):
         try:
-            from shared_configuration import get_round_robin_user_for_resource
-            approver_user_id = get_round_robin_user_for_resource(
-                config["approver_role_id"], doc_id
-            )
-        except Exception:
+            approver_user_id, _ = pick_user_for_role(config["approver_role_id"], user_id)
+            role_resolved["approver"] = config["approver_role_id"]
+        except RoleResolutionError:
             pass
 
     # Per-document mode requires explicit assignments.
@@ -423,7 +442,8 @@ def submit_for_review():
         if not all([quality_reviewer_user_id, governance_reviewer_user_id, approver_user_id]):
             return jsonify({
                 "error": "quality_reviewer_user_id, governance_reviewer_user_id, "
-                         "and approver_user_id are required for per-document workflows"
+                         "and approver_user_id are required for per-document workflows "
+                         "(supply *_role_id alternatives to pick by role)"
             }), 400
 
     # Create or resume workflow
@@ -479,6 +499,9 @@ def submit_for_review():
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    extra_meta = {"doc_type": doc_type, "doc_id": doc_id}
+    if role_resolved:
+        extra_meta["role_resolved"] = role_resolved
     _log_chain_audits(
         chain,
         first_action=WORKFLOW_SUBMITTED,
@@ -486,7 +509,7 @@ def submit_for_review():
         endpoint="/workflow/submit",
         actor_uid=actor_uid, actor_email=actor_email,
         behalf_uid=behalf_uid, behalf_email=behalf_email,
-        extra_metadata={"doc_type": doc_type, "doc_id": doc_id},
+        extra_metadata=extra_meta,
     )
     g.audit_logged = True
 
@@ -495,6 +518,7 @@ def submit_for_review():
         "state": wf["state"],
         "state_version": wf.get("state_version"),
         "auto_advanced_hops": max(0, len(chain) - 1),
+        "role_resolved": role_resolved,
     }), 200
 
 

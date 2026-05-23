@@ -356,6 +356,69 @@ def transition(
     return updated
 
 
+# ── Role-based assignee resolution ───────────────────────────────────────────
+
+
+class RoleResolutionError(Exception):
+    """Raised when a role_id cannot be resolved to an eligible user."""
+
+
+def pick_user_for_role(role_id: str, requesting_user_id: str) -> tuple[str, str]:
+    """Resolve a workflow role assignment to a concrete user via least-loaded
+    round-robin.
+
+    Picks the user with the role who has the fewest active (non-terminal)
+    workflows assigned. Ties broken by ``user_id`` lexicographic order so
+    repeated calls are deterministic.
+
+    Returns (user_id, email). Raises RoleResolutionError if the role has no
+    eligible members in the requester's org.
+    """
+    from shared_configuration import get_role_users_from_db
+
+    conn = connect_to_rds()
+    try:
+        role_users = get_role_users_from_db(conn, requesting_user_id, role_id)
+        if not role_users:
+            raise RoleResolutionError(
+                f"No active users found for role {role_id!r}"
+            )
+
+        user_ids = [u["user_id"] for u in role_users]
+        counts: dict[str, int] = {uid: 0 for uid in user_ids}
+
+        placeholders = ",".join(["%s"] * len(user_ids))
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            # Count active workflows (not draft, not published) where this user
+            # is any of the three reviewer columns. Used as load signal so the
+            # round-robin spreads new assignments fairly.
+            cur.execute(
+                f"""SELECT u AS user_id, COUNT(*) AS cnt FROM (
+                       SELECT current_quality_reviewer AS u FROM document_workflow
+                       WHERE state NOT IN ('draft','published')
+                         AND current_quality_reviewer IN ({placeholders})
+                       UNION ALL
+                       SELECT current_governance_reviewer FROM document_workflow
+                       WHERE state NOT IN ('draft','published')
+                         AND current_governance_reviewer IN ({placeholders})
+                       UNION ALL
+                       SELECT current_approver FROM document_workflow
+                       WHERE state NOT IN ('draft','published')
+                         AND current_approver IN ({placeholders})
+                    ) t
+                    GROUP BY u""",
+                (*user_ids, *user_ids, *user_ids),
+            )
+            for r in cur.fetchall():
+                if r["user_id"] in counts:
+                    counts[r["user_id"]] = int(r["cnt"])
+    finally:
+        conn.close()
+
+    chosen = min(role_users, key=lambda u: (counts[u["user_id"]], u["user_id"]))
+    return chosen["user_id"], chosen.get("email") or ""
+
+
 def _append_event(
     workflow_id: str,
     from_state: str | None,
