@@ -2776,16 +2776,6 @@ class WorkflowRunnerV2:
                         answered += 1
 
         all_answered = total > 0 and answered == total
-        # print("all answered", all_answered)
-
-        if all_answered:
-            if self.workflow_json.get("runbook_id"):
-                from utils.celery_base import create_playbook_runbook_task
-
-                self.logger.info("all questions answered, triggering runbook task")
-
-                rb_pb_id = self.workflow_json["runbook_id"]
-                create_playbook_runbook_task.delay(self.userid, self.filename, rb_pb_id)
 
         return {
             "answered": answered,
@@ -2879,6 +2869,16 @@ class WorkflowRunnerV2:
         self.previous_data = execution_data
         self.chat_history = chats
         self.saveworkflowtos3()
+
+        # -------------------------------------------------
+        # 5. TRIGGER RUNBOOK (after save, to avoid stale S3 read in worker)
+        # -------------------------------------------------
+        if all_answered:
+            runbook_id = self.workflow_json.get("runbook_id")
+            if runbook_id:
+                from utils.celery_base import create_playbook_runbook_task
+                self.logger.info("All questions answered, triggering runbook task")
+                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
 
         return {
             "status": "success",
@@ -3261,6 +3261,16 @@ class WorkflowRunnerV2:
         self.previous_data = execution_data
         self.chat_history = chats
         self.saveworkflowtos3()
+
+        # -------------------------------------------------
+        # 5. TRIGGER RUNBOOK (after save, to avoid stale S3 read in worker)
+        # -------------------------------------------------
+        if all_answered:
+            runbook_id = self.workflow_json.get("runbook_id")
+            if runbook_id:
+                from utils.celery_base import create_playbook_runbook_task
+                self.logger.info("All questions answered, triggering runbook task")
+                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
 
         return {
             "status": "success",
@@ -4056,7 +4066,6 @@ class WorkflowRunnerV2:
         # SAVE EVIDENCE OVERVIEW + FILE REFS
         # ===========================
         cf_urls = [attach_CLDFRNT_url(k) for k in file_keys if k]
-        self._question_answer_stats()
 
         current_urls = self.workflow_json.get("evidences_ques", [])
         current_urls.extend(cf_urls)
@@ -4084,6 +4093,14 @@ class WorkflowRunnerV2:
             ],
         }
         self.saveworkflowtos3()
+
+        # Trigger runbook task after save when the questionnaire is fully answered.
+        if self._question_answer_stats()["all_answered"]:
+            runbook_id = self.workflow_json.get("runbook_id")
+            if runbook_id:
+                from utils.celery_base import create_playbook_runbook_task
+                self.logger.info("All questions answered, triggering runbook task")
+                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
 
         remaining = [q for q in assigned_ques if q.get("id") not in answered_qids]
         questions_needing_evidence = [

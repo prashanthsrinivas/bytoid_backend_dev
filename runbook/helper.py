@@ -1656,16 +1656,27 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
 
     # print("final: ", str(runbook.get("runtime_input"))[:100])
     logger.info("Executing runbook playbook")
-    await run_runbook_execution_engine(
-        dbserver=dbserver,
-        user_id=user_id,
-        runbook=runbook,
-        structure_file=structure_file,
-        structure_file_payload=structure_file_payload,
-        is_playbook_based_execution=True,
-        custom_playbook_id=playbook_id,
-    )
-    # ws_service.emit(user_id=user_id,message=)
+    try:
+        result = await run_runbook_execution_engine(
+            dbserver=dbserver,
+            user_id=user_id,
+            runbook=runbook,
+            structure_file=structure_file,
+            structure_file_payload=structure_file_payload,
+            is_playbook_based_execution=True,
+            custom_playbook_id=playbook_id,
+        )
+        logger.info(
+            "Runbook execution finished: playbook=%s runbook=%s user=%s",
+            playbook_id, runbook_id, user_id,
+        )
+        return {"status": "success", "result": result}
+    except Exception as exc:
+        logger.exception(
+            "run_runbook_execution_engine failed: playbook=%s runbook=%s user=%s",
+            playbook_id, runbook_id, user_id,
+        )
+        return {"status": "failed", "error": str(exc)}
 
 
 async def extract_qna_from_instruction(instruction_data):
