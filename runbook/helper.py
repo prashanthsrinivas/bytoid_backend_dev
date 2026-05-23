@@ -1607,6 +1607,13 @@ async def trigger_runbook_from_playbook(playbook_id, user_id, runbook_id):
     elif isinstance(raw_structure, dict):
         structure_file_payload = raw_structure
     instruction_data = await get_playbook_instruction(user_id, playbook_id)
+    if not instruction_data:
+        logger.error(
+            "Playbook instruction data missing: playbook=%s user=%s "
+            "(expected at S3 key {user}/workflow/<basename>/<playbook>.json)",
+            playbook_id, user_id,
+        )
+        return {"status": "failed", "error": "playbook_instruction_not_found"}
     logger.debug("Instruction data keys: %s", list(instruction_data.keys()))
 
     # Stash playbook evidence data for the execution engine
