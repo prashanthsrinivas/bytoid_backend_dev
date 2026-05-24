@@ -3025,15 +3025,30 @@ def pb_temp_clone_min():
 
         user_id = data.get("user_id")
         filename = data.get("filename")
+        assignment_id = data.get("assignment_id")
         is_global = data.get("is_global", False)
 
-        if not user_id or not filename:
-            return (
-                jsonify(
-                    {"status": "error", "message": "user_id and filename required"}
-                ),
-                400,
-            )
+        if not user_id:
+            return jsonify({"status": "error", "message": "user_id and filename required"}), 400
+
+        _, user_id = parse_composite_user_id(user_id)
+        source_user_id = user_id  # default: load from the caller's own space
+
+        # Assignment-based clone: resolve filename + source from the assignment record
+        if not filename and assignment_id:
+            conn = connect_to_rds()
+            try:
+                with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                    assignment = _get_assignment(user_id, assignment_id, cursor)
+            finally:
+                conn.close()
+            if not assignment:
+                return jsonify({"status": "error", "message": "Assignment not found"}), 404
+            filename = assignment["workflow_filename"]
+            source_user_id = assignment["admin_id"]
+
+        if not filename:
+            return jsonify({"status": "error", "message": "user_id and filename required"}), 400
 
         # ---------------------------------
         # ✅ Normalize filename
@@ -3046,7 +3061,7 @@ def pb_temp_clone_min():
         # ---------------------------------
         # ✅ Load workflow
         # ---------------------------------
-        wf_loc = f"{user_id}/workflow/{base}/{filename}"
+        wf_loc = f"{source_user_id}/workflow/{base}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
 
         if not workflow_json and is_global:
