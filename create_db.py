@@ -1388,6 +1388,37 @@ def add_column_workflow():
         connection.close()
 
 
+def create_intake_workflow_assignments_table():
+    """Create table to track questionnaire assignments deployed to role users"""
+    connection = connect_to_rds()
+    if connection is None:
+        return
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS intake_workflow_assignments (
+            assignment_id VARCHAR(36) PRIMARY KEY,
+            admin_id VARCHAR(128) NOT NULL,
+            recipient_user_id VARCHAR(128) NOT NULL,
+            workflow_filename TEXT NOT NULL,
+            workflow_display_name VARCHAR(255),
+            role_id VARCHAR(128),
+            role_name VARCHAR(128),
+            status ENUM('assigned','in_progress','completed') DEFAULT 'assigned',
+            assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_iwa_recipient (recipient_user_id),
+            INDEX idx_iwa_admin (admin_id)
+        );
+        """)
+        connection.commit()
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def create_scraped_websites_table():
     """Create table to store scraped website summaries"""
     connection = connect_to_rds()
@@ -3896,4 +3927,5 @@ if __name__ == "__main__":
     create_global_azure_apps_table()
     create_global_azure_app_endpoints_table()
     migrate_global_azure_schema()
+    create_intake_workflow_assignments_table()
     print("ok")

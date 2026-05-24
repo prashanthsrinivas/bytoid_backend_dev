@@ -4465,3 +4465,142 @@ def post_questionarie_confirmation():
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/deploy-questionnaire-by-role", methods=["POST"])
+@permission_required_body("workflow.process.share")
+def deploy_questionnaire_by_role():
+    try:
+        data = request.json or {}
+        base_user_id = data.get("user_id")
+        if not base_user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 401
+        _, admin_id = parse_composite_user_id(base_user_id)
+
+        filename = (data.get("filename") or "").strip()
+        if not filename:
+            return jsonify({"success": False, "error": "filename required"}), 400
+        if not filename.lower().endswith(".json"):
+            filename += ".json"
+
+        role_assigned = data.get("role_assigned", "")
+        is_for_all = (role_assigned == "__all__")
+        display_name = (data.get("display_name") or filename).strip()
+
+        conn = connect_to_rds()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+        # Fetch all emails in the selected role from admin's permissions
+        cursor.execute("SELECT permissions FROM users WHERE user_id = %s", (admin_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"success": False, "error": "Admin not found"}), 404
+
+        owner_permissions = json.loads(row.get("permissions") or "{}")
+        emails_with_role = []
+        for entry in owner_permissions.get("shared", []):
+            role = entry.get("role") or {}
+            if is_for_all or role.get("id") == role_assigned:
+                email = entry.get("email")
+                role_id = role.get("id", "")
+                role_name = role.get("name", "")
+                if email:
+                    emails_with_role.append((email.lower(), role_id, role_name))
+
+        if not emails_with_role:
+            conn.close()
+            return jsonify({"success": False, "error": "No users found for this role"}), 404
+
+        assigned_count = 0
+        for email, role_id, role_name in emails_with_role:
+            recipient_id = get_user_id(email)
+            if not recipient_id:
+                continue
+            # Skip duplicates (same admin+recipient+workflow already active)
+            cursor.execute(
+                "SELECT assignment_id FROM intake_workflow_assignments "
+                "WHERE admin_id=%s AND recipient_user_id=%s AND workflow_filename=%s "
+                "AND status != 'completed' LIMIT 1",
+                (admin_id, recipient_id, filename),
+            )
+            if cursor.fetchone():
+                continue
+            cursor.execute(
+                "INSERT INTO intake_workflow_assignments "
+                "(assignment_id, admin_id, recipient_user_id, workflow_filename, "
+                "workflow_display_name, role_id, role_name, status, assigned_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'assigned', NOW())",
+                (uuid.uuid4().hex, admin_id, recipient_id, filename,
+                 display_name, role_id, role_name),
+            )
+            assigned_count += 1
+
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "assigned_count": assigned_count}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@playbook_bp.route("/intake/assignments", methods=["GET"])
+def get_intake_assignments():
+    try:
+        base_user_id = request.args.get("user_id", "")
+        if not base_user_id:
+            return jsonify([]), 200
+        _, user_id = parse_composite_user_id(base_user_id)
+
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(
+                "SELECT assignment_id, admin_id, workflow_filename, workflow_display_name, "
+                "role_name, status, assigned_at "
+                "FROM intake_workflow_assignments "
+                "WHERE recipient_user_id=%s AND status != 'completed' "
+                "ORDER BY assigned_at DESC",
+                (user_id,),
+            )
+            rows = cursor.fetchall() or []
+        conn.close()
+        for r in rows:
+            if r.get("assigned_at"):
+                r["assigned_at"] = r["assigned_at"].isoformat()
+        return jsonify(rows), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify([]), 200
+
+
+@playbook_bp.route("/intake/assignments/<assignment_id>/status", methods=["POST"])
+def update_intake_assignment_status(assignment_id):
+    try:
+        data = request.json or {}
+        base_user_id = data.get("user_id")
+        if not base_user_id:
+            return jsonify({"success": False, "error": "user_id required"}), 401
+        _, user_id = parse_composite_user_id(base_user_id)
+        status = data.get("status", "in_progress")
+        if status not in ("assigned", "in_progress", "completed"):
+            return jsonify({"success": False, "error": "invalid status"}), 400
+
+        conn = connect_to_rds()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE intake_workflow_assignments SET status=%s "
+                "WHERE assignment_id=%s AND recipient_user_id=%s",
+                (status, assignment_id, user_id),
+            )
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
