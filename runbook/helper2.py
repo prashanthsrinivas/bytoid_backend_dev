@@ -160,6 +160,11 @@ async def modify_run_runbook_execution_engine(
     reference_sources = runbook.get("reference_sources")
     refernce_main_source = runbook.get("reference_main_source")
 
+    # Initialized here so all execution paths (update_only, add/update/delete)
+    # have these defined before the unconditional evidence-analysis block below.
+    data_checked = []
+    reference_RWA = []
+
     # ----------------------------
     # STRUCTURE LOAD
     # ----------------------------
@@ -237,7 +242,7 @@ async def modify_run_runbook_execution_engine(
             total_input_chars=len(lang_prompt),
         )
         # print("LANG RESULT RAW:", result)
-        lang_data = json.loads(result)
+        lang_data = safe_json_load(result, {})
 
         output_language = lang_data.get("language", "English")
         output_word_count = lang_data.get("word_count")

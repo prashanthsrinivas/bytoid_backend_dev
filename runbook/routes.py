@@ -1369,7 +1369,8 @@ def get_runbook_results(runbook_id):
     import asyncio
 
     try:
-        base_user_id = session.get("user_id") or request.args.get("user_id")
+        raw_uid = session.get("user_id") or request.args.get("user_id") or ""
+        base_user_id = raw_uid.strip().rstrip(".")
         logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
 
         if not user_id:
