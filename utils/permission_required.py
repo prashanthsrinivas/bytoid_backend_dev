@@ -298,6 +298,10 @@ def permission_required_body(required_permission):
                             return None
 
                     # NORMAL USER PATH
+                    # Self-access: user accessing their own data — always allowed
+                    if owner_user_id == user_id:
+                        return None
+
                     cursor.execute(
                         """
                         SELECT permissions

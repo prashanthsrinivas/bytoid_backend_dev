@@ -4935,3 +4935,100 @@ def complete_intake_questionnaire():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+
+@playbook_bp.route("/intake/questionnaire/clone", methods=["POST"])
+def clone_intake_questionnaire():
+    """
+    Clone an assigned questionnaire into the respondent's own S3 space.
+    The frontend calls this instead of /pb_temp_clone when opening an assigned questionnaire.
+    Only needs user_id + assignment_id — no filename or admin_id required from the frontend.
+    """
+    data = request.json or {}
+    user_id = data.get("user_id")
+    assignment_id = data.get("assignment_id")
+
+    if not user_id or not assignment_id:
+        return jsonify({"status": "error", "message": "user_id and assignment_id required"}), 400
+    _, user_id = parse_composite_user_id(user_id)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            assignment = _get_assignment(user_id, assignment_id, cursor)
+        if not assignment:
+            return jsonify({"status": "error", "message": "Assignment not found"}), 404
+        if assignment["status"] == "completed":
+            return jsonify({"status": "error", "message": "Assignment already completed"}), 400
+    finally:
+        conn.close()
+
+    admin_id = assignment["admin_id"]
+    filename = assignment["workflow_filename"]
+    if not filename.lower().endswith(".json"):
+        filename += ".json"
+
+    base = base_name(filename)
+
+    # Deterministic clone name — idempotent if called twice for same assignment
+    clone_filename = f"{base}_assign_{assignment_id[:8]}.json"
+    clone_s3_key = f"{user_id}/workflow/{base}/{clone_filename}"
+
+    # Return existing clone without re-creating
+    existing = read_json_from_s3(clone_s3_key)
+    if existing:
+        return jsonify({"status": "success", "new_filename": clone_filename}), 200
+
+    # Load original from admin's S3
+    source_s3_key = f"{admin_id}/workflow/{base}/{filename}"
+    workflow_json = read_json_from_s3(source_s3_key)
+    if not workflow_json:
+        return jsonify({"status": "error", "message": "Source questionnaire not found"}), 404
+
+    clone = {
+        "filename": clone_filename,
+        "reference_filename": filename,
+        "assignment_id": assignment_id,
+        "input_data": workflow_json.get("input_data", {}),
+        "workflow": workflow_json.get("workflow", {}),
+        "WorkflowDate": datetime.now().isoformat(),
+        "assigned_questions": workflow_json.get("assigned_questions", []),
+        "runbook_id": workflow_json.get("runbook_id", None),
+    }
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+            json.dump(clone, tmp, indent=2)
+            tmp_path = tmp.name
+
+        upload_any_file(file_path=tmp_path, user_id=user_id, s3_key_C=clone_s3_key)
+        os.remove(tmp_path)
+
+        # Update respondent's chat_config so the clone appears in their workflow list
+        config_path = f"{user_id}/workflow/chat_config.json"
+        config_data = read_json_from_s3(config_path) or []
+        now = datetime.now().isoformat()
+
+        already_listed = any(pb.get("name") == clone_filename for pb in config_data)
+        if not already_listed:
+            config_data.append({
+                "name": clone_filename,
+                "original": filename,
+                "assignment_id": assignment_id,
+                "description": workflow_json.get("input_data", {}).get("description"),
+                "title": workflow_json.get("input_data", {}).get("title"),
+                "num_steps": len(workflow_json.get("workflow", {}).get("steps", [])),
+                "runs": [{"name": clone_filename, "created_at": now}],
+            })
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp:
+                json.dump(config_data, tmp, indent=2)
+                tmp_path = tmp.name
+
+            upload_any_file(file_path=tmp_path, user_id=user_id, s3_key_C=config_path)
+            os.remove(tmp_path)
+
+        return jsonify({"status": "success", "new_filename": clone_filename}), 200
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
