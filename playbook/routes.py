@@ -4711,6 +4711,59 @@ def get_intake_questionnaire():
         conn.close()
 
 
+@playbook_bp.route("/intake/questionnaire/run", methods=["POST"])
+def run_intake_questionnaire():
+    """Execute the workflow to generate questions. Must be called before /answer."""
+    import asyncio
+    data = request.json or {}
+    user_id = data.get("user_id")
+    assignment_id = data.get("assignment_id")
+
+    if not user_id or not assignment_id:
+        return jsonify({"error": "user_id and assignment_id required"}), 400
+    _, user_id = parse_composite_user_id(user_id)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            assignment = _get_assignment(user_id, assignment_id, cursor)
+        if not assignment:
+            return jsonify({"error": "Assignment not found"}), 404
+        if assignment["status"] == "completed":
+            return jsonify({"error": "Assignment already completed"}), 400
+    finally:
+        conn.close()
+
+    admin_id = assignment["admin_id"]
+    filename = assignment["workflow_filename"]
+    if not filename.lower().endswith(".json"):
+        filename += ".json"
+
+    s3_key = f"{admin_id}/workflow/{base_name(filename)}/{filename}"
+    workflow_json = read_json_from_s3(s3_key)
+    if not workflow_json:
+        return jsonify({"error": "Questionnaire not found"}), 404
+
+    db = connect_to_rds()
+    credits = Credits(db=db)
+    try:
+        with WorkflowRunnerV2(
+            userid=admin_id,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+            db=db,
+            credits=credits,
+        ) as runner:
+            _run_async(runner.execute())
+            return jsonify({
+                "status": "success",
+                "execution_log": runner.get_execution_log(),
+            }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @playbook_bp.route("/intake/questionnaire/answer", methods=["POST"])
 def answer_intake_questionnaire():
     import asyncio
@@ -4824,7 +4877,6 @@ def complete_intake_questionnaire():
     data = request.json or {}
     user_id = data.get("user_id")
     assignment_id = data.get("assignment_id")
-    template = data.get("template")
     confirmed = data.get("confirmed", True)
 
     if not user_id or not assignment_id:
@@ -4844,6 +4896,14 @@ def complete_intake_questionnaire():
             filename = assignment["workflow_filename"]
             if not filename.lower().endswith(".json"):
                 filename += ".json"
+
+            user_data = get_userinfo(user_id)
+            full_name = (
+                f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip()
+                or "User"
+            )
+            display_name = assignment["workflow_display_name"] or filename
+            template = _build_questionnaire_template(full_name, display_name)
 
             s3_key = f"{admin_id}/workflow/{base_name(filename)}/{filename}"
             workflow_json = read_json_from_s3(s3_key)
@@ -4869,7 +4929,7 @@ def complete_intake_questionnaire():
             )
             conn.commit()
 
-        return jsonify({"status": "success", "completed": True}), 200
+        return jsonify({"status": "success", "completed": True, "template": template}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
