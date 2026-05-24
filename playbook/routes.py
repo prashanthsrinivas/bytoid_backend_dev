@@ -4514,9 +4514,15 @@ def deploy_questionnaire_by_role():
 
         assigned_count = 0
         for email, role_id, role_name in emails_with_role:
-            recipient_id = get_user_id(email)
-            if not recipient_id:
+            # Resolve email → user_id directly (get_user_id() has an UnboundLocalError bug)
+            cursor.execute(
+                "SELECT user_id FROM users WHERE email = %s LIMIT 1",
+                (email,),
+            )
+            uid_row = cursor.fetchone()
+            if not uid_row:
                 continue
+            recipient_id = uid_row["user_id"]
             # Skip duplicates (same admin+recipient+workflow already active)
             cursor.execute(
                 "SELECT assignment_id FROM intake_workflow_assignments "
