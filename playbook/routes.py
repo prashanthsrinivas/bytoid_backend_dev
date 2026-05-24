@@ -44,6 +44,12 @@ from utils.permission_required import permission_required_body
 
 playbook_bp = Blueprint("playbook", __name__)
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
+
+try:
+    from create_db import create_intake_workflow_assignments_table
+    create_intake_workflow_assignments_table()
+except Exception as _e:
+    logger.warning(f"intake_workflow_assignments table init skipped: {_e}")
 PLAY_TEMPLATE = load_yaml_file(path=pathconfig.play_template)
 MINOR_PROMPTS = load_yaml_file(path=pathconfig.minor_prompts)
 ALL_FUNCTIONS = read_function_jsons2(Full=True)
