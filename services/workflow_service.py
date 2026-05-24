@@ -1224,6 +1224,75 @@ class WorkflowRunnerV2:
 
         return False
 
+    def _trigger_runbook_owner(self, runbook_id: str) -> None:
+        """
+        Trigger the runbook task under the correct owner account.
+
+        For regular workflows: fires under self.userid with self.filename.
+        For assigned questionnaire clones (workflow_json has assignment_id):
+          1. Look up admin_id from intake_workflow_assignments.
+          2. Merge the respondent's Q&A data into the admin's original workflow in S3
+             so the report engine reads the correct answers.
+          3. Fire the task under admin_id with the original (reference) filename.
+        """
+        from utils.celery_base import create_playbook_runbook_task
+
+        assignment_id = self.workflow_json.get("assignment_id")
+        reference_filename = self.workflow_json.get("reference_filename")
+
+        if assignment_id and reference_filename:
+            conn = connect_to_rds()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT admin_id FROM intake_workflow_assignments "
+                        "WHERE assignment_id = %s LIMIT 1",
+                        (assignment_id,),
+                    )
+                    row = cur.fetchone()
+            finally:
+                conn.close()
+
+            if row:
+                admin_id = row[0]
+                if not reference_filename.lower().endswith(".json"):
+                    reference_filename = reference_filename + ".json"
+
+                ref_base = base_name(reference_filename)
+                admin_s3_key = f"{admin_id}/workflow/{ref_base}/{reference_filename}"
+                admin_workflow = read_json_from_s3(admin_s3_key) or {}
+
+                # Merge respondent's Q&A and evidence data into admin's workflow
+                for key in (
+                    "chat",
+                    "testing",
+                    "evidences_ques",
+                    "evidence_overview",
+                    "evidence_based_questions",
+                    "questionnaire_responses",
+                ):
+                    if key in self.workflow_json:
+                        admin_workflow[key] = self.workflow_json[key]
+
+                save_playbook_to_s3(
+                    admin_workflow,
+                    admin_id,
+                    "Questionnaire response synced from assignment",
+                    reference_filename,
+                )
+
+                self.logger.info(
+                    "Triggering runbook under admin owner: admin=%s file=%s runbook=%s",
+                    admin_id,
+                    reference_filename,
+                    runbook_id,
+                )
+                create_playbook_runbook_task.delay(admin_id, reference_filename, runbook_id)
+                return
+
+        # Default: fire under the workflow runner's own user
+        create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
+
     def saveworkflowtos3(self, finished=None):
         unallowed_keys = {"input_data", "workflow"}
 
@@ -2876,9 +2945,8 @@ class WorkflowRunnerV2:
         if all_answered:
             runbook_id = self.workflow_json.get("runbook_id")
             if runbook_id:
-                from utils.celery_base import create_playbook_runbook_task
                 self.logger.info("All questions answered, triggering runbook task")
-                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
+                self._trigger_runbook_owner(runbook_id)
 
         return {
             "status": "success",
@@ -2969,9 +3037,8 @@ class WorkflowRunnerV2:
         if all_answered:
             runbook_id = self.workflow_json.get("runbook_id")
             if runbook_id:
-                from utils.celery_base import create_playbook_runbook_task
                 self.logger.info("Form completed, triggering runbook task")
-                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
+                self._trigger_runbook_owner(runbook_id)
 
         return {
             "status": "success",
@@ -3138,9 +3205,8 @@ class WorkflowRunnerV2:
         if form_completed:
             runbook_id = self.workflow_json.get("runbook_id")
             if runbook_id:
-                from utils.celery_base import create_playbook_runbook_task
                 self.logger.info("Form completed, triggering runbook task")
-                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
+                self._trigger_runbook_owner(runbook_id)
 
         return {
             "status": "success",
@@ -3268,9 +3334,8 @@ class WorkflowRunnerV2:
         if all_answered:
             runbook_id = self.workflow_json.get("runbook_id")
             if runbook_id:
-                from utils.celery_base import create_playbook_runbook_task
                 self.logger.info("All questions answered, triggering runbook task")
-                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
+                self._trigger_runbook_owner(runbook_id)
 
         return {
             "status": "success",
@@ -4098,9 +4163,8 @@ class WorkflowRunnerV2:
         if self._question_answer_stats()["all_answered"]:
             runbook_id = self.workflow_json.get("runbook_id")
             if runbook_id:
-                from utils.celery_base import create_playbook_runbook_task
                 self.logger.info("All questions answered, triggering runbook task")
-                create_playbook_runbook_task.delay(self.userid, self.filename, runbook_id)
+                self._trigger_runbook_owner(runbook_id)
 
         remaining = [q for q in assigned_ques if q.get("id") not in answered_qids]
         questions_needing_evidence = [

@@ -30,6 +30,7 @@ class StripeWebhookHandler:
         self.event_type = event.get("type", "unknown")
         self.obj = event.get("data", {}).get("object", {})
 
+    @staticmethod
     def get_token_by_planidorpriceid(plancode=None, price_id=None):
         conn = connect_to_rds()
         cur = conn.cursor()
