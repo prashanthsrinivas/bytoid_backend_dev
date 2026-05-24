@@ -2447,6 +2447,38 @@ def toggle_evidence_admissibility(result_id):
         return jsonify({"error": str(e)}), 500
 
 
+@runbook_bp.route("/result/<result_id>/rename", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
+def rename_runbook_result(result_id):
+    try:
+        data = request.json or {}
+        base_user_id = data.get("user_id")
+        if not base_user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+        _, user_id = parse_composite_user_id(base_user_id)
+
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+
+        from runbook.utils import _safe_json_parse_full as _parse_helper
+
+        existing = _run_async(dbserver.runbook_get_result(user_id, result_id))
+        if not existing:
+            return jsonify({"error": "result not found"}), 404
+
+        result_blob = _parse_helper(existing.get("result")) or {}
+        if not isinstance(result_blob, dict):
+            result_blob = {}
+        result_blob["report_name"] = name
+
+        _run_async(dbserver.update_runbook_result(user_id, result_id, result_blob))
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @runbook_bp.route("/schedule_runbook", methods=["POST"])
 @permission_required_body("compliance.runbook.execute")
 def schedule_runbook():

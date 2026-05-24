@@ -26,6 +26,7 @@ from db.db_checkers import (
     check_onboarding_user,
     delete_user_domain,
     fetch_user_domains,
+    get_business_info,
     get_email_by_id,
 )
 from services.audit_log_service import (
@@ -1976,6 +1977,19 @@ def rotate_encryption_key():
         return jsonify({"encryption_key": rotate["encrypted_key"]}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@users_bp.route("/users/business_name/<userid>", methods=["GET"])
+def get_user_business_name(userid):
+    try:
+        from utils.normal import parse_composite_user_id
+        _, user_id = parse_composite_user_id(userid)
+        conn = connect_to_rds()
+        info = get_business_info(user_id, conn) or {}
+        conn.close()
+        return jsonify({"business_name": info.get("BusinessName") or ""}), 200
+    except Exception:
+        return jsonify({"business_name": ""}), 200
 
 
 # TEMP DEV ROUTE — remove after Phase 1 validation
