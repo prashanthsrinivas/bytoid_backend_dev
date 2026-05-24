@@ -524,75 +524,90 @@ async def _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_i
                     if new_rows:
                         fw_credits = Credits(user_id)
                         for fw_entry in linked_frameworks:
-                            fw_id = fw_entry.get("id")
+                            # Isolate each framework so an LLM failure (timeout,
+                            # malformed JSON, etc.) doesn't bubble up to the
+                            # outer except, which would skip save_tracker_file
+                            # below and silently drop every row we just appended.
+                            # The fresh row's framework column stays at its
+                            # setdefault [] when AI mapping fails — preserving
+                            # the row, just unmapped against this framework.
                             fw_name = fw_entry.get("name")
-                            fw_col = next(
-                                (
-                                    col for col in schema_cols
-                                    if col.get("source_column") == "frameworks"
-                                    and col.get("name") == fw_name
-                                ),
-                                None,
-                            )
-                            if not fw_col:
-                                continue
-                            fw_col_id = fw_col["id"]
-                            for row in new_rows:
-                                row["values"].setdefault(fw_col_id, [])
-                            fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{fw_id}.yaml"
-                            fw_data = load_yaml_from_s3(fw_s3_key)
-                            if not fw_data:
-                                continue
-                            fw_rows_data = fw_data.get("rows", [])
-                            fw_cols = fw_data.get("columns", [])
-                            req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
-                            sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
-                            if not fw_rows_data:
-                                continue
-                            rows_analysis_input = [
-                                {
-                                    "row_id": row.get("row_id"),
-                                    "col_values": {
-                                        col.get("name"): row["values"].get(col.get("id"), "")
-                                        for col in schema_cols
-                                        if col.get("source_column") != "frameworks"
-                                    },
-                                }
-                                for row in new_rows
-                            ]
-                            ai_result = await analyze_tracker_framework_rows(
-                                rows=rows_analysis_input,
-                                fw_rows=fw_rows_data,
-                                framework_id=fw_id,
-                                framework_name=fw_name,
-                                user_id=user_id,
-                                credits=fw_credits,
-                            )
-                            reviewed_assignments = await quality_review_framework_assignments(
-                                rows=rows_analysis_input,
-                                fw_rows=fw_rows_data,
-                                assignments=ai_result.get("assignments", []),
-                                framework_name=fw_name,
-                                user_id=user_id,
-                                credits=fw_credits,
-                            )
-                            for assignment in reviewed_assignments:
-                                row_id = assignment.get("row_id")
-                                fw_indices = assignment.get("fw_row_indices", [])
-                                if isinstance(fw_indices, int):
-                                    fw_indices = [fw_indices] if fw_indices >= 0 else []
-                                matched_row = next(
-                                    (r for r in new_rows if r.get("row_id") == row_id), None
+                            try:
+                                fw_id = fw_entry.get("id")
+                                fw_col = next(
+                                    (
+                                        col for col in schema_cols
+                                        if col.get("source_column") == "frameworks"
+                                        and col.get("name") == fw_name
+                                    ),
+                                    None,
                                 )
-                                if matched_row:
-                                    matched_row["values"][fw_col_id] = [
-                                        {
-                                            "requirement": fw_rows_data[idx].get(req_col, ""),
-                                            "section": fw_rows_data[idx].get(sec_col, ""),
-                                        }
-                                        for idx in fw_indices
-                                        if 0 <= idx < len(fw_rows_data)
-                                    ]
+                                if not fw_col:
+                                    continue
+                                fw_col_id = fw_col["id"]
+                                for row in new_rows:
+                                    row["values"].setdefault(fw_col_id, [])
+                                fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{fw_id}.yaml"
+                                fw_data = load_yaml_from_s3(fw_s3_key)
+                                if not fw_data:
+                                    continue
+                                fw_rows_data = fw_data.get("rows", [])
+                                fw_cols = fw_data.get("columns", [])
+                                req_col = fw_cols[0] if fw_cols else "REQUIREMENT/TASK"
+                                sec_col = fw_cols[1] if len(fw_cols) > 1 else "SECTION/CATEGORY"
+                                if not fw_rows_data:
+                                    continue
+                                rows_analysis_input = [
+                                    {
+                                        "row_id": row.get("row_id"),
+                                        "col_values": {
+                                            col.get("name"): row["values"].get(col.get("id"), "")
+                                            for col in schema_cols
+                                            if col.get("source_column") != "frameworks"
+                                        },
+                                    }
+                                    for row in new_rows
+                                ]
+                                ai_result = await analyze_tracker_framework_rows(
+                                    rows=rows_analysis_input,
+                                    fw_rows=fw_rows_data,
+                                    framework_id=fw_id,
+                                    framework_name=fw_name,
+                                    user_id=user_id,
+                                    credits=fw_credits,
+                                )
+                                reviewed_assignments = await quality_review_framework_assignments(
+                                    rows=rows_analysis_input,
+                                    fw_rows=fw_rows_data,
+                                    assignments=(ai_result or {}).get("assignments", []),
+                                    framework_name=fw_name,
+                                    user_id=user_id,
+                                    credits=fw_credits,
+                                )
+                                for assignment in reviewed_assignments or []:
+                                    row_id = assignment.get("row_id")
+                                    fw_indices = assignment.get("fw_row_indices", [])
+                                    if isinstance(fw_indices, int):
+                                        fw_indices = [fw_indices] if fw_indices >= 0 else []
+                                    matched_row = next(
+                                        (r for r in new_rows if r.get("row_id") == row_id), None
+                                    )
+                                    if matched_row:
+                                        matched_row["values"][fw_col_id] = [
+                                            {
+                                                "requirement": fw_rows_data[idx].get(req_col, ""),
+                                                "section": fw_rows_data[idx].get(sec_col, ""),
+                                            }
+                                            for idx in fw_indices
+                                            if 0 <= idx < len(fw_rows_data)
+                                        ]
+                            except Exception as fw_exc:
+                                logger.warning(
+                                    "Framework mapping failed for tracker=%s framework=%s — "
+                                    "rows will be saved with this framework column empty: %s",
+                                    tracker_id, fw_name, fw_exc, exc_info=IS_DEV,
+                                )
+                                continue
 
                 try:
                     from tab_tracker.helper import propagate_assessment_status_to_policy_cells
