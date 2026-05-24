@@ -398,7 +398,6 @@ def updateInstruction():
 
 
 @playbook_bp.route("/get_all_instructions", methods=["GET"])
-@permission_required_body("workflow.process.view")
 def get_all_instructions():
     user_id = request.args.get("user_id")
     is_admin = False
@@ -408,8 +407,37 @@ def get_all_instructions():
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     subagent_id = get_subagent_by_user_id(user_id)
+
+    # Shared/reviewer users have no subagent — return their assigned questionnaires
     if not subagent_id:
-        return jsonify({"error": "invalid credentials"}), 401
+        try:
+            conn = connect_to_rds()
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT assignment_id, admin_id, workflow_filename, "
+                    "workflow_display_name, status, assigned_at "
+                    "FROM intake_workflow_assignments "
+                    "WHERE recipient_user_id=%s AND status != 'completed' "
+                    "ORDER BY assigned_at DESC",
+                    (user_id,),
+                )
+                rows = cursor.fetchall() or []
+            conn.close()
+            assignments = []
+            for r in rows:
+                assignments.append({
+                    "filename": r["workflow_filename"],
+                    "title": r["workflow_display_name"] or r["workflow_filename"],
+                    "referece": "",
+                    "assignment_id": r["assignment_id"],
+                    "admin_id": r["admin_id"],
+                    "status": r["status"],
+                    "is_assigned": True,
+                    "assigned_at": r["assigned_at"].isoformat() if r.get("assigned_at") else None,
+                })
+            return jsonify({"data": assignments, "is_admin": False})
+        except Exception as e:
+            return jsonify({"error": f"Failed to fetch assignments: {str(e)}"}), 500
 
     playbook_id, config_path = check_subagent_by_playbook(subagent_id)
 
@@ -4616,3 +4644,234 @@ def update_intake_assignment_status(assignment_id):
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# =============================================================================
+# Intake questionnaire respondent endpoints
+# Auth: assignment ownership (no role permissions required)
+# =============================================================================
+
+def _get_assignment(user_id, assignment_id, cursor):
+    """Return assignment row if it belongs to user_id, else None."""
+    cursor.execute(
+        "SELECT assignment_id, admin_id, workflow_filename, workflow_display_name, status "
+        "FROM intake_workflow_assignments "
+        "WHERE assignment_id=%s AND recipient_user_id=%s",
+        (assignment_id, user_id),
+    )
+    return cursor.fetchone()
+
+
+@playbook_bp.route("/intake/questionnaire", methods=["GET"])
+def get_intake_questionnaire():
+    user_id = request.args.get("user_id")
+    assignment_id = request.args.get("assignment_id")
+
+    if not user_id or not assignment_id:
+        return jsonify({"error": "user_id and assignment_id required"}), 400
+    _, user_id = parse_composite_user_id(user_id)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            assignment = _get_assignment(user_id, assignment_id, cursor)
+            if not assignment:
+                return jsonify({"error": "Assignment not found"}), 404
+
+            if assignment["status"] == "assigned":
+                cursor.execute(
+                    "UPDATE intake_workflow_assignments SET status='in_progress' "
+                    "WHERE assignment_id=%s",
+                    (assignment_id,),
+                )
+                conn.commit()
+
+        admin_id = assignment["admin_id"]
+        filename = assignment["workflow_filename"]
+        if not filename.lower().endswith(".json"):
+            filename += ".json"
+
+        s3_key = f"{admin_id}/workflow/{base_name(filename)}/{filename}"
+        workflow_json = read_json_from_s3(s3_key)
+        if not workflow_json:
+            return jsonify({"error": "Questionnaire not found"}), 404
+
+        return jsonify({
+            "assignment_id": assignment_id,
+            "admin_id": admin_id,
+            "filename": filename,
+            "display_name": assignment["workflow_display_name"],
+            "status": "in_progress",
+            "workflow": workflow_json,
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@playbook_bp.route("/intake/questionnaire/answer", methods=["POST"])
+def answer_intake_questionnaire():
+    import asyncio
+    data = request.json or {}
+    user_id = data.get("user_id")
+    assignment_id = data.get("assignment_id")
+    question_id = data.get("question_id")
+    answer = data.get("answer")
+    comment = data.get("comment", "")
+    chat_id = data.get("chat_id") or assignment_id
+
+    if not user_id or not assignment_id:
+        return jsonify({"error": "user_id and assignment_id required"}), 400
+    if not question_id or answer is None:
+        return jsonify({"error": "question_id and answer required"}), 400
+    _, user_id = parse_composite_user_id(user_id)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            assignment = _get_assignment(user_id, assignment_id, cursor)
+        if not assignment:
+            return jsonify({"error": "Assignment not found"}), 404
+        if assignment["status"] == "completed":
+            return jsonify({"error": "Assignment already completed"}), 400
+    finally:
+        conn.close()
+
+    admin_id = assignment["admin_id"]
+    filename = assignment["workflow_filename"]
+    if not filename.lower().endswith(".json"):
+        filename += ".json"
+
+    s3_key = f"{admin_id}/workflow/{base_name(filename)}/{filename}"
+    workflow_json = read_json_from_s3(s3_key)
+    if not workflow_json:
+        return jsonify({"error": "Questionnaire not found"}), 404
+
+    try:
+        with WorkflowRunnerV2(
+            userid=admin_id,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as service:
+            result = asyncio.run(
+                service.answer_questions(
+                    answer=answer, comment=comment, qid=question_id, chid=chat_id
+                )
+            )
+        status_code = 200 if result.get("status") == "success" else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@playbook_bp.route("/intake/questionnaire/answer-bulk", methods=["POST"])
+def answer_intake_questionnaire_bulk():
+    import asyncio
+    data = request.json or {}
+    user_id = data.get("user_id")
+    assignment_id = data.get("assignment_id")
+    answers = data.get("answers")
+    chat_id = data.get("chat_id") or assignment_id
+
+    if not user_id or not assignment_id:
+        return jsonify({"error": "user_id and assignment_id required"}), 400
+    if not isinstance(answers, list) or not answers:
+        return jsonify({"error": "answers must be a non-empty list"}), 400
+    _, user_id = parse_composite_user_id(user_id)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            assignment = _get_assignment(user_id, assignment_id, cursor)
+        if not assignment:
+            return jsonify({"error": "Assignment not found"}), 404
+        if assignment["status"] == "completed":
+            return jsonify({"error": "Assignment already completed"}), 400
+    finally:
+        conn.close()
+
+    admin_id = assignment["admin_id"]
+    filename = assignment["workflow_filename"]
+    if not filename.lower().endswith(".json"):
+        filename += ".json"
+
+    s3_key = f"{admin_id}/workflow/{base_name(filename)}/{filename}"
+    workflow_json = read_json_from_s3(s3_key)
+    if not workflow_json:
+        return jsonify({"error": "Questionnaire not found"}), 404
+
+    try:
+        with WorkflowRunnerV2(
+            userid=admin_id,
+            filename=filename,
+            workflowJson=workflow_json,
+            testing=True,
+        ) as service:
+            result = asyncio.run(
+                service.answer_questions_bulk(answers=answers, chid=chat_id)
+            )
+        status_code = 200 if result.get("status") == "success" else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@playbook_bp.route("/intake/questionnaire/complete", methods=["POST"])
+def complete_intake_questionnaire():
+    data = request.json or {}
+    user_id = data.get("user_id")
+    assignment_id = data.get("assignment_id")
+    template = data.get("template")
+    confirmed = data.get("confirmed", True)
+
+    if not user_id or not assignment_id:
+        return jsonify({"error": "user_id and assignment_id required"}), 400
+    _, user_id = parse_composite_user_id(user_id)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            assignment = _get_assignment(user_id, assignment_id, cursor)
+            if not assignment:
+                return jsonify({"error": "Assignment not found"}), 404
+            if assignment["status"] == "completed":
+                return jsonify({"status": "already_completed"}), 200
+
+            admin_id = assignment["admin_id"]
+            filename = assignment["workflow_filename"]
+            if not filename.lower().endswith(".json"):
+                filename += ".json"
+
+            s3_key = f"{admin_id}/workflow/{base_name(filename)}/{filename}"
+            workflow_json = read_json_from_s3(s3_key)
+            if workflow_json:
+                if "questionnaire_responses" not in workflow_json:
+                    workflow_json["questionnaire_responses"] = []
+                workflow_json["questionnaire_responses"].append({
+                    "assignment_id": assignment_id,
+                    "respondent_user_id": user_id,
+                    "confirmed": bool(confirmed),
+                    "template": template,
+                    "completed_at": datetime.utcnow().isoformat(),
+                })
+                save_playbook_to_s3(
+                    workflow_json, admin_id,
+                    "Questionnaire response recorded", filename
+                )
+
+            cursor.execute(
+                "UPDATE intake_workflow_assignments SET status='completed' "
+                "WHERE assignment_id=%s AND recipient_user_id=%s",
+                (assignment_id, user_id),
+            )
+            conn.commit()
+
+        return jsonify({"status": "success", "completed": True}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
