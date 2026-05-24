@@ -547,14 +547,26 @@ async def modify_run_runbook_execution_engine(
         ]
         """
 
-            res = await get_think_fire_response2_og(
+            # Use the smart model — block regeneration produces structured
+            # JSON with table/matrix payloads that the fast model frequently
+            # mangles (markdown-wrapping, truncation, or echoing placeholders).
+            res = await get_think_bedrok_response(
                 user_message=update_prompt,
                 user_id=user_id,
                 credits=credits,
                 total_input_chars=len(update_prompt),
             )
 
-            updated_blocks = safe_json_load(res, [])
+            # _safe_json_parse_full strips ```json fences, handles embedded
+            # JSON, and tolerates dict-vs-list shapes — much more forgiving
+            # than the strict safe_json_load when models add prose.
+            parsed = _safe_json_parse_full(res)
+            if isinstance(parsed, list):
+                updated_blocks = parsed
+            elif isinstance(parsed, dict):
+                updated_blocks = [parsed]
+            else:
+                updated_blocks = []
 
             requested_ids = {b["block_id"] for b in blocks_to_update}
             returned_ids = {
