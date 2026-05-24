@@ -899,6 +899,9 @@ async def modify_run_runbook_execution_engine(
         )
     )
 
+    merged_result["result_id"] = new_result_id
+    merged_result["previous_result_id"] = result_id
+
     await dbserver.insert_runbook_result(
         {
             "execution_id": execution_id,

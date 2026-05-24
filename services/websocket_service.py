@@ -85,6 +85,8 @@ class WebSocketService:
         stage=None,
         progress=None,
         feature=None,
+        result_id=None,
+        previous_result_id=None,
     ):
         import json, time, asyncio
         from botocore.exceptions import ClientError
@@ -107,6 +109,8 @@ class WebSocketService:
             "progress": progress,
             "feature": feature,
             "timestamp": time.time(),
+            "result_id": result_id,
+            "previous_result_id": previous_result_id,
         }
 
         for sess_id, conn_id in connections.items():

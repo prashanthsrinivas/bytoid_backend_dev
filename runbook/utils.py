@@ -689,6 +689,8 @@ async def send(ws_sender, msg, user_id):
         stage=msg.get("stage"),
         progress=msg.get("progress"),
         feature="runbook",
+        result_id=msg.get("result_id"),
+        previous_result_id=msg.get("previous_result_id"),
     )
 
 
