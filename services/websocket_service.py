@@ -188,8 +188,8 @@ class WSMessageBuilder:
         }
 
     @staticmethod
-    def job_success(job_id, session_id, message):
-        return {
+    def job_success(job_id, session_id, message, result_id=None, previous_result_id=None):
+        payload = {
             "scope": "job",
             "job_id": job_id,
             "session_id": session_id,
@@ -197,6 +197,11 @@ class WSMessageBuilder:
             "message": message,
             "progress": 100,
         }
+        if result_id:
+            payload["result_id"] = result_id
+        if previous_result_id:
+            payload["previous_result_id"] = previous_result_id
+        return payload
 
     @staticmethod
     def job_error(job_id, session_id, message):

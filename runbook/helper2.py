@@ -918,6 +918,8 @@ async def modify_run_runbook_execution_engine(
                 job_id,
                 session_id,
                 "generated risk analysis and saving it to report",
+                result_id=new_result_id,
+                previous_result_id=result_id,
             )
         )
         name = runbook["name"] or runbook_id
