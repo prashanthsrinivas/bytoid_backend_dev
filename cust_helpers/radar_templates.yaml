@@ -877,21 +877,30 @@ radar_update_analyzer_prompt: |
   }
 
   ## 2. updateblocks
-  Only structural updates:
-  - change block_type
-  - change table structure
-  - change list/table/matrix structure
+  Use for ANY instruction that requires generating new or expanded content:
+  - "make bigger / longer / more detailed / expand" → include target_multiplier (e.g. 1.5, 2.0)
+  - "make smaller / shorter / condense / summarise"
+  - "rewrite / improve / enhance / elaborate"
+  - structural changes: change block_type, change table structure, change list/table/matrix structure
+  - style or tone changes: "make more formal", "use bullet points"
 
   {
     "type": "updateblocks",
     "blocks": [
       {
         "block_id": "",
-        "changes": ["structural changes only"],
+        "changes": ["describe what to change"],
+        "target_multiplier": 1.0,
         "reason": ""
       }
     ]
   }
+
+  target_multiplier rules:
+  - "1.5 times bigger" → 1.5
+  - "twice as long" → 2.0
+  - "shorter" / "condense" → 0.5
+  - no size instruction → 1.0 (content quality change only)
 
   ## 3. deleteblocks
   {
@@ -905,11 +914,15 @@ radar_update_analyzer_prompt: |
   }
 
   ## 4. updateonlycontent
-  ONLY safe content edits:
-  - HTML text changes
-  - table row updates
-  - list item updates
-  - matrix values
+  ONLY literal value substitutions that require NO content generation:
+  - Swap a specific date, status, label, or metric value
+  - Replace a table cell value with a known new value the user explicitly provided
+  - Update a list item with a user-supplied exact string
+
+  ❌ DO NOT use for:
+  - "make bigger / longer / more detailed / expand"
+  - "rewrite / improve / enhance / elaborate"
+  - Any instruction where the new content must be generated — those are updateblocks
 
   {
     "type": "updateonlycontent",

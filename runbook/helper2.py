@@ -382,11 +382,40 @@ async def modify_run_runbook_execution_engine(
             ]
             is_chart_update = has_chart_block(update_blocks)
 
+            # Derive per-block word-count targets from target_multiplier so the
+            # LLM knows exactly how much content to generate.
+            def _block_word_target(block, instruction):
+                multiplier = instruction.get("target_multiplier", 1.0)
+                if multiplier == 1.0:
+                    return None  # quality change only, no size target
+                # Count visible words in existing HTML content
+                existing_html = ""
+                for mb in block.get("micro_blocks", []):
+                    existing_html += mb.get("html", "")
+                import re as _re
+                words = len(_re.findall(r"\S+", _re.sub(r"<[^>]+>", " ", existing_html)))
+                target = max(50, int(words * multiplier))
+                return target
+
+            update_instructions_with_targets = []
+            for instr in update_blocks:
+                bid = instr.get("block_id")
+                matching = next((b for b in blocks_to_update if b.get("block_id") == bid), None)
+                if matching:
+                    target = _block_word_target(matching, instr)
+                    entry = dict(instr)
+                    if target:
+                        entry["target_visible_word_count"] = target
+                    update_instructions_with_targets.append(entry)
+                else:
+                    update_instructions_with_targets.append(instr)
+
             update_prompt = f"""
         You are a RADAR REPORT BLOCK MODIFIER.
 
         GOAL:
-        Update ONLY the specified blocks based on instructions.
+        Rewrite ONLY the specified blocks exactly as instructed. Produce real,
+        substantive content — not placeholders, not repetition of existing text.
 
         -----------------------------------
 
@@ -396,26 +425,23 @@ async def modify_run_runbook_execution_engine(
         USER REQUEST:
         {analyze_input}
 
-        UPDATE INSTRUCTIONS:
-        {json.dumps(update_blocks)}
+        UPDATE INSTRUCTIONS (includes target word counts where applicable):
+        {json.dumps(update_instructions_with_targets)}
 
         -----------------------------------
         STRICT RULES:
 
-        1. OUTPUT MUST BE JSON ARRAY ONLY
-        2. DO NOT change block_id
-        3. DO NOT add new blocks
-        4. DO NOT remove blocks
-        5. ONLY modify requested fields
+        1. OUTPUT MUST BE JSON ARRAY ONLY — no explanations, no markdown wrapper.
+        2. DO NOT change block_id or micro_id.
+        3. DO NOT add new blocks; DO NOT remove blocks.
+        4. Preserve micro_blocks array structure (count, order, content_type) exactly.
+        5. Where target_visible_word_count is provided, the generated html in that
+           block MUST contain at least that many visible words (count only words a
+           human would read — exclude HTML tags, JSON keys, IDs).
+        6. Maintain the existing executive tone, formatting, and HTML tag style.
+        7. Content MUST be substantive and coherent — never pad with filler phrases.
 
-        6. MAINTAIN:
-        - existing structure
-        - formatting
-        - tone consistency
-
-        7. If instruction is unclear → improve content logically
-        
-         {CHART_BLOCK_PROMPT if is_chart_update else ""}
+        {CHART_BLOCK_PROMPT if is_chart_update else ""}
 
         -----------------------------------
         OUTPUT FORMAT:
@@ -423,7 +449,7 @@ async def modify_run_runbook_execution_engine(
         [
         {{
             "block_id": "same_id",
-            ...
+            ...full block with updated micro_blocks...
         }}
         ]
         """
