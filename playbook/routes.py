@@ -2193,7 +2193,7 @@ def schedule_workflow():
     # Persist schedule + runtime
     # --------------------------------------------------
     update_playbook_schedule_and_runtime(
-        user_id=user_id,
+        userid=user_id,
         filename=filename,
         schedule=activation_schedule,
         runtime={
