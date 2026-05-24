@@ -811,6 +811,10 @@ radar_update_analyzer_prompt: |
   - UPDATE INSTRUCTIONS:
     {{analyze_input}}
 
+  - AVAILABLE BLOCKS (block_id → title lookup table — use these EXACT
+    block_ids in your output; do NOT invent or guess block_ids):
+    {{available_blocks}}
+
   - EXISTING DOCUMENT:
     {{last_radar_response}}
 
@@ -966,16 +970,22 @@ radar_update_analyzer_prompt: |
   (e.g. "Identified Privacy Risks table", "Executive Summary",
   "Mitigation Measures section"):
 
-  1. Search `last_radar_response` for a block whose `title` (or `name`)
-     matches the referenced wording, case-insensitive, allowing partial
-     matches on the distinctive noun phrase.
-  2. Use that block's `block_id` verbatim in your output.
-  3. Only mark the instruction as `needs_clarification` if NO block in
-     the document plausibly matches the wording.
+  1. Look at the AVAILABLE BLOCKS lookup table (provided in INPUTS).
+     Find the entry whose `title` matches the referenced wording,
+     case-insensitive, allowing partial matches on the distinctive
+     noun phrase (e.g. "Identified Privacy Risks table" matches the
+     entry titled "Identified Privacy Risks").
+  2. Use that entry's `block_id` VERBATIM in your output. Do NOT
+     paraphrase, truncate, or normalize the id.
+  3. If multiple entries plausibly match, pick the one whose title
+     contains the longest contiguous substring of the user's wording.
+  4. Only mark the instruction as `needs_clarification` if NO entry in
+     AVAILABLE BLOCKS plausibly matches.
 
   Do not invent block_ids. Do not skip resolution just because the user
   did not type the exact block_id string — titles are the user-facing
-  identifier and must be resolved to the underlying id.
+  identifier and must be resolved to the underlying id via the lookup
+  table.
 
   ─────────────────────────────
   📝 WORKED EXAMPLE

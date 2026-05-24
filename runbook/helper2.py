@@ -291,6 +291,22 @@ async def modify_run_runbook_execution_engine(
 
     existing_blocks = last_runbook_response.get("blocks", [])
 
+    # Build an explicit title→id index so the analyzer doesn't have to dig
+    # through the full document to resolve a block reference by title.
+    block_index = []
+    for b in existing_blocks:
+        if not isinstance(b, dict):
+            continue
+        title = (
+            b.get("title")
+            or b.get("name")
+            or b.get("heading")
+            or ""
+        )
+        bid = b.get("block_id")
+        if bid:
+            block_index.append({"block_id": bid, "title": str(title)})
+
     # ----------------------------
     # ANALYZER
     # ----------------------------
@@ -298,6 +314,7 @@ async def modify_run_runbook_execution_engine(
         RADAR_TEMPLATE["radar_update_analyzer_prompt"]
         .replace("{{analyze_input}}", analyze_input)
         .replace("{{last_radar_response}}", json.dumps(last_runbook_response))
+        .replace("{{available_blocks}}", json.dumps(block_index, indent=2))
     )
 
     analysis_raw = await get_think_fire_response2_og(
@@ -329,19 +346,47 @@ async def modify_run_runbook_execution_engine(
         and not update_only_content
         and not restructure_content
     ):
-        logger.warning(
-            "Modify analyzer returned empty classification for input: %s",
-            analyze_input,
-        )
-        await emit(
-            msg_builder.job_error(
-                job_id,
-                session_id,
-                "Could not identify which section to modify. "
-                "Please reference the section by its exact title.",
+        # Fallback: the analyzer LLM came back empty, but the user may have
+        # referenced a block by its title. Try a Python-side title-substring
+        # match against the index we built above. If we find one, force a
+        # updateblocks route so regeneration still happens.
+        instr_lower = (analyze_input or "").lower()
+        matched_blocks = [
+            entry for entry in block_index
+            if entry["title"]
+            and len(entry["title"]) > 3
+            and entry["title"].lower() in instr_lower
+        ]
+
+        if matched_blocks:
+            logger.info(
+                "Analyzer empty; title-substring fallback matched %s",
+                [m["block_id"] for m in matched_blocks],
             )
-        )
-        return None
+            update_blocks = [
+                {
+                    "block_id": m["block_id"],
+                    "changes": [analyze_input],
+                    "target_multiplier": 1.0,
+                    "reason": "Title-substring fallback (analyzer returned empty)",
+                }
+                for m in matched_blocks
+            ]
+        else:
+            logger.warning(
+                "Modify analyzer returned empty classification for input: %s "
+                "(no title-substring fallback hit either)",
+                analyze_input,
+            )
+            await emit(
+                msg_builder.job_error(
+                    job_id,
+                    session_id,
+                    "Could not identify which section to modify. "
+                    "Please reference the section by its exact title.",
+                )
+            )
+            return None
 
     # ----------------------------
     # UPDATE ONLY
