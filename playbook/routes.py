@@ -3035,8 +3035,9 @@ def pb_temp_clone_min():
         _, user_id = parse_composite_user_id(user_id)
         source_user_id = user_id  # default: load from the caller's own space
 
-        # Assignment-based clone: resolve filename + source from the assignment record
-        if not filename and assignment_id:
+        # Assignment-based clone: always use admin's space when assignment_id is present,
+        # whether or not filename was also provided by the caller.
+        if assignment_id:
             conn = connect_to_rds()
             try:
                 with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -3045,7 +3046,8 @@ def pb_temp_clone_min():
                 conn.close()
             if not assignment:
                 return jsonify({"status": "error", "message": "Assignment not found"}), 404
-            filename = assignment["workflow_filename"]
+            if not filename:
+                filename = assignment["workflow_filename"]
             source_user_id = assignment["admin_id"]
 
         if not filename:
