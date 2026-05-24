@@ -426,6 +426,7 @@ def get_all_instructions():
             assignments = []
             for r in rows:
                 assignments.append({
+                    "name": r["workflow_filename"],
                     "filename": r["workflow_filename"],
                     "title": r["workflow_display_name"] or r["workflow_filename"],
                     "referece": "",
