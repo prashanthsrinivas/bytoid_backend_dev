@@ -522,7 +522,7 @@ async def _push_blocks_to_trackers(user_id, runbook, merged_result, new_result_i
                     schema_cols = tracker_data.get("schema", {}).get("columns", [])
                     new_rows = tracker_data.get("rows", [])[before_row_count:]
                     if new_rows:
-                        fw_credits = Credits(user_id)
+                        fw_credits = Credits()
                         for fw_entry in linked_frameworks:
                             # Isolate each framework so an LLM failure (timeout,
                             # malformed JSON, etc.) doesn't bubble up to the
