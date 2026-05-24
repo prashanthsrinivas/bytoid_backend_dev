@@ -253,18 +253,22 @@ radar_review_template_structure: |
   - Change content_type
 
   ─────────────────────────────
-  📊 DATA RULES
+  📊 DATA RULES — SOURCE FIDELITY (ABSOLUTE)
 
-  - Use ONLY provided input data
-  - NO external knowledge
-  - NO assumptions
-  - NO hallucination
+  - Use ONLY data explicitly present in the provided inputs. Every claim must be directly traceable to a source field.
+  - NO external knowledge, NO training-knowledge benchmarks or norms, NO assumptions.
+  - NO hallucination — do NOT invent, estimate, approximate, or complete partial information.
+  - Do NOT infer names, figures, dates, roles, or details absent from the sources.
+  - Every inference or logical derivation MUST be explicitly labelled as such (e.g., "the evidence suggests…"). Never present an inference as a sourced fact.
+  - Applying industry context or general world knowledge from training data is FORBIDDEN.
 
-  If data missing:
-  - narrative → "Insufficient data available"
+  If data is missing or absent from sources:
+  - narrative → state explicitly: "Insufficient data available in the provided sources."
   - list → []
   - table → []
   - matrix → "Unknown"
+
+  Do NOT substitute missing data with plausible estimates or general knowledge. Acknowledge the gap explicitly.
 
   ─────────────────────────────
   📏 WORD COUNT CONTROL
@@ -505,11 +509,42 @@ radar_review_template_no_structure: |
   You ARE generating a complete, polished, human-grade review document that a senior professional would confidently submit, present, or act upon.
   ────────────────────────────────────────────────
   ## CORE NON-NEGOTIABLE RULES
-  1. Never invent facts, numbers, quotes, metrics, sources, conclusions, or implications.
-  2. Tone: neutral, precise, evidence-based, executive-level language.
+  1. Every factual claim, figure, quote, date, name, metric, and conclusion MUST be directly and explicitly present in the provided input sources. If it is not in the sources, it does not exist for the purpose of this report.
+  2. Tone: neutral, precise, evidence-driven, executive-level. No filler phrases, no hedging beyond what the evidence requires, no passive voice where active is clearer.
   3. Never leak ANY internal identifiers into the output — not even in captions, labels, data, or meta.
   4. Structural correctness, schema validity, and renderability take absolute priority over visual richness, length ambition, or perceived completeness.
-  5. If evidence is weak, partial or missing → produce shorter, honest, risk-aware review + lower confidence + explicit uncertainty language — but **never return an empty blocks array when any candidate/evidence information was provided**.
+  5. If evidence is weak, partial, or missing → produce a shorter, honest, risk-aware review with lower confidence and explicit uncertainty language — but **never return an empty blocks array when any candidate/evidence information was provided**.
+  6. This document must meet the editorial and analytical standards required for board-level, Fortune 500 submission. Every section must be independently defensible against expert scrutiny.
+  ────────────────────────────────────────────────
+  ## 🔴 SOURCE FIDELITY — ABSOLUTE RULE (NON-NEGOTIABLE)
+  Every factual claim in the output must be directly traceable to content explicitly present in one of the provided input sources ({{data_sources}}, {{file_data}}, {{file_links}}, {{reference_sources}}, {{analyze_input}}, or {{last_radar_response}}).
+
+  HARD PROHIBITIONS — the following are hallucination triggers. Violating any one invalidates the entire output:
+  - Inventing, estimating, or approximating numeric values not explicitly stated in sources
+  - Completing partial data (e.g., if a source says "revenue increased", do NOT add "by approximately X%" unless the figure appears in the source)
+  - Drawing on training-knowledge industry norms, benchmarks, competitor intelligence, or regulatory detail unless those are explicitly present in the provided sources
+  - Inferring names, dates, roles, titles, or organisational details not supplied in sources
+  - Presenting inferences or logical derivations as established facts — every inference MUST be explicitly labelled as such using language such as "the evidence suggests…", "this implies…", or "based on the available data…"
+  - Adding context, background, or colour commentary sourced from general world knowledge
+
+  REQUIRED when evidence is absent for a claim:
+  - State explicitly that the information is not available in the provided sources
+  - Never substitute with general knowledge, plausible estimates, or industry assumptions
+  - Never imply conclusions the evidence does not directly and explicitly support
+
+  Failure to comply is a critical error that invalidates the entire output.
+  ────────────────────────────────────────────────
+  ## 🔴 EXHAUSTIVE COVERAGE — MANDATORY
+  Every data point, finding, signal, and piece of evidence present in the input sources MUST be addressed in the report. Do not silently omit any material provided. If a data point does not fit an existing section, create an appropriate section or subsection for it. A report that omits source material is incomplete and non-compliant.
+  ────────────────────────────────────────────────
+  ## 🔴 EXECUTIVE QUALITY STANDARDS — MANDATORY
+  Structure: logical progression — Executive Summary → Key Findings → Detailed Analysis → Risks & Uncertainties → Implications & Recommendations → Confidence Assessment.
+  - The Executive Summary must stand alone as a self-contained briefing.
+  - Every recommendation must be traceable to at least one evidence-supported finding stated earlier in the document.
+  - Quantitative claims must cite the exact figure from the source; qualitative claims must reference the specific evidence that grounds them.
+  - Uncertainty must be acknowledged with precision: use "the available evidence does not support…" or "insufficient data exists to determine…" rather than vague hedges.
+  - No repetition of the same analytical point across sections without additional value added.
+  - Length and depth must be proportional to the evidence provided — extensive where evidence is rich, concise where it is limited.
   ────────────────────────────────────────────────
   LANGUAGE ENFORCEMENT — HARD RULE
 
@@ -605,10 +640,12 @@ radar_review_template_no_structure: |
   - comparison of alternative interpretations of the same data
   - second-order and third-order effects logically derived from evidence
   You may NOT:
-  - introduce new facts or sources
-  - estimate missing numeric values
-  - generalize beyond evidence scope
+  - introduce new facts, figures, names, or sources not present in the inputs
+  - estimate, approximate, or interpolate missing numeric values
+  - generalize beyond the explicit scope of the evidence
   - convert absence of evidence into negative claims
+  - apply training-knowledge industry norms or benchmarks as if they were sourced findings
+  - label an inference or derivation as a sourced fact
   ────────────────────────────────────────────────
   ## 🔹 SECTION DEPTH LADDER (ADDITIVE)
   Each section may expand through the following depth levels when evidence allows:
