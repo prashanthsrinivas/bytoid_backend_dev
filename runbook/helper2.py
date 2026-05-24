@@ -322,6 +322,27 @@ async def modify_run_runbook_execution_engine(
     update_only_content = analysis_json.get("updateonlycontent", [])
     restructure_content = analysis_json.get("restructure", [])
 
+    if (
+        not add_blocks
+        and not update_blocks
+        and not delete_blocks
+        and not update_only_content
+        and not restructure_content
+    ):
+        logger.warning(
+            "Modify analyzer returned empty classification for input: %s",
+            analyze_input,
+        )
+        await emit(
+            msg_builder.job_error(
+                job_id,
+                session_id,
+                "Could not identify which section to modify. "
+                "Please reference the section by its exact title.",
+            )
+        )
+        return None
+
     # ----------------------------
     # UPDATE ONLY
     # ----------------------------
@@ -380,6 +401,24 @@ async def modify_run_runbook_execution_engine(
                 for b in existing_blocks
                 if b["block_id"] in [u["block_id"] for u in update_blocks]
             ]
+
+            if not blocks_to_update:
+                logger.warning(
+                    "updateblocks: analyzer returned block_ids %s but none match "
+                    "existing blocks (have %s)",
+                    [u.get("block_id") for u in update_blocks],
+                    [b.get("block_id") for b in existing_blocks],
+                )
+                await emit(
+                    msg_builder.job_error(
+                        job_id,
+                        session_id,
+                        "Could not locate the section(s) to modify. "
+                        "Try referencing the section by its exact title.",
+                    )
+                )
+                return None
+
             is_chart_update = has_chart_block(update_blocks)
 
             # Derive per-block word-count targets from target_multiplier so the
@@ -440,6 +479,15 @@ async def modify_run_runbook_execution_engine(
            human would read — exclude HTML tags, JSON keys, IDs).
         6. Maintain the existing executive tone, formatting, and HTML tag style.
         7. Content MUST be substantive and coherent — never pad with filler phrases.
+        8. PLACEHOLDER DETECTION: if a micro_block's html contains only stub text
+           (cells filled with "text", empty strings, "TBD", "TODO", "Lorem ipsum",
+           or single-word boilerplate), you MUST replace it with substantive content
+           derived from (a) the user's instruction and (b) the rest of the document
+           for context. NEVER echo placeholder html back.
+        9. NO-RETURN-ON-FAIL: if you genuinely cannot generate substantive content
+           for a block (e.g. the instruction is incoherent), OMIT it from the output
+           array. Do NOT return the block unchanged. The caller treats an omitted
+           block as a regeneration failure.
 
         {CHART_BLOCK_PROMPT if is_chart_update else ""}
 
@@ -462,6 +510,31 @@ async def modify_run_runbook_execution_engine(
             )
 
             updated_blocks = safe_json_load(res, [])
+
+            requested_ids = {b["block_id"] for b in blocks_to_update}
+            returned_ids = {
+                b.get("block_id")
+                for b in updated_blocks
+                if isinstance(b, dict)
+            }
+
+            if not updated_blocks or not (requested_ids & returned_ids):
+                logger.warning(
+                    "updateblocks: LLM produced no matching blocks "
+                    "(requested=%s, returned=%s, raw_response_head=%s)",
+                    requested_ids,
+                    returned_ids,
+                    str(res)[:200],
+                )
+                await emit(
+                    msg_builder.job_error(
+                        job_id,
+                        session_id,
+                        "Could not regenerate the requested section(s). "
+                        "Try referencing the section by its exact title.",
+                    )
+                )
+                return None
 
             updated_map = {b["block_id"]: b for b in updated_blocks}
 
@@ -806,6 +879,12 @@ async def modify_run_runbook_execution_engine(
             merged_result = safe_json_load(merged_report, {})
 
         else:
+            logger.warning(
+                "Modify: reached no-op fall-through — analyzer returned empty "
+                "classification yet upstream guard did not catch it. "
+                "analyze_input=%s",
+                analyze_input,
+            )
             merged_result = last_runbook_response or {}
             merged_result["blocks"] = existing_blocks
 

@@ -881,6 +881,9 @@ radar_update_analyzer_prompt: |
   - "make bigger / longer / more detailed / expand" → include target_multiplier (e.g. 1.5, 2.0)
   - "make smaller / shorter / condense / summarise"
   - "rewrite / improve / enhance / elaborate"
+  - "fill in / populate / complete / the table/section is empty/blank/placeholder /
+     the cells say 'text' / cells are not filled" → updateblocks with target_multiplier: 1.0
+     (regeneration of an EXISTING block whose current content is stub/placeholder)
   - structural changes: change block_type, change table structure, change list/table/matrix structure
   - style or tone changes: "make more formal", "use bullet points"
 
@@ -922,6 +925,8 @@ radar_update_analyzer_prompt: |
   ❌ DO NOT use for:
   - "make bigger / longer / more detailed / expand"
   - "rewrite / improve / enhance / elaborate"
+  - "fill in", "populate", "complete", "the table/section is empty/blank/placeholder",
+    "the cells say 'text'" — these require regeneration → use updateblocks instead
   - Any instruction where the new content must be generated — those are updateblocks
 
   {
@@ -952,6 +957,45 @@ radar_update_analyzer_prompt: |
   {
     "intent": "restructure",
     "reason": "User requested full structural transformation of report"
+  }
+
+  ─────────────────────────────
+  🔑 BLOCK-ID RESOLUTION
+
+  When the user references a block by its visible title or topic
+  (e.g. "Identified Privacy Risks table", "Executive Summary",
+  "Mitigation Measures section"):
+
+  1. Search `last_radar_response` for a block whose `title` (or `name`)
+     matches the referenced wording, case-insensitive, allowing partial
+     matches on the distinctive noun phrase.
+  2. Use that block's `block_id` verbatim in your output.
+  3. Only mark the instruction as `needs_clarification` if NO block in
+     the document plausibly matches the wording.
+
+  Do not invent block_ids. Do not skip resolution just because the user
+  did not type the exact block_id string — titles are the user-facing
+  identifier and must be resolved to the underlying id.
+
+  ─────────────────────────────
+  📝 WORKED EXAMPLE
+
+  Instruction: "Identified Privacy Risks table is empty, fill it in"
+  Resolution:
+  - Find the block titled "Identified Privacy Risks" in last_radar_response.
+  - Its current cells contain only placeholder text ("text", empty strings).
+  - "Fill it in" is a regeneration request, NOT a literal value swap.
+  Routing:
+  {
+    "updateblocks": [
+      {
+        "block_id": "<the id of the Identified Privacy Risks block>",
+        "changes": ["fill in the empty/placeholder cells with substantive
+                     privacy-risk rows derived from the rest of the report"],
+        "target_multiplier": 1.0,
+        "reason": "Existing block has placeholder content; user requested fill-in"
+      }
+    ]
   }
 
   ─────────────────────────────
