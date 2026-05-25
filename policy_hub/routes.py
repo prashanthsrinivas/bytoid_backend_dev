@@ -823,10 +823,21 @@ def _upload_worker(
                 if raw_archive_error:
                     item["source_file"]["archive_error"] = raw_archive_error
 
+                # 3a. Persist the baseline YAML immediately so /list shows the
+                # document right away — before any LLM work that may take
+                # minutes or fail outright. Don't set migration_status here so
+                # the frontend treats it like a regular policy until enrichment
+                # decides otherwise.
                 if extraction_failed:
                     item["migration_status"] = "extraction_failed"
+                try:
                     _write_yaml_to_s3(key, item)
-                else:
+                except Exception as exc:
+                    logger.error(
+                        "Baseline YAML write failed for %s: %s", filename, exc
+                    )
+
+                if not extraction_failed:
                     # 4. LLM-map to V2 structured sections (when V2 is enabled)
                     if v2:
                         prompt = _upload_extraction_prompt(html, doc_type, filename)
@@ -869,8 +880,17 @@ def _upload_worker(
                                 )
                                 _enrich_v2(item, html, doc_type, loop)
                                 item.setdefault("migration_status", "needs_review")
+                    else:
+                        item["migration_status"] = "ok"
 
-                    _write_yaml_to_s3(key, item)
+                    # 4a. Re-write the enriched YAML so /list returns the
+                    # final structured version.
+                    try:
+                        _write_yaml_to_s3(key, item)
+                    except Exception as exc:
+                        logger.error(
+                            "Enriched YAML write failed for %s: %s", filename, exc
+                        )
 
                     # 5. Sync statements to LanceDB (only when we have structured sections)
                     if v2 and item.get("sections"):
