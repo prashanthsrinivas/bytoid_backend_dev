@@ -3153,6 +3153,12 @@ def pb_temp_clone_min():
             "assigned_questions": workflow_json.get("assigned_questions", []),
             "runbook_id": workflow_json.get("runbook_id", None),
         }
+        # Carry assignment context forward so downstream code (runbook trigger)
+        # can route results to the admin instead of the respondent.
+        if assignment_id:
+            new_workflow["assignment_id"] = assignment_id
+        if assignment_admin_id and assignment_admin_id != user_id:
+            new_workflow["assignment_admin_id"] = assignment_admin_id
 
         # ---------------------------------
         # ✅ Save new workflow to S3
