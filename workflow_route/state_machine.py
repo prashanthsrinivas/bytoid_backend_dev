@@ -109,6 +109,37 @@ def get_workflow_for_doc(doc_type: str, doc_id: str, doc_version: str) -> dict |
     return dict(row) if row else None
 
 
+def get_workflow_states_for_docs(doc_type: str, doc_ids: list[str]) -> dict[str, str]:
+    """Return {doc_id: state} for the latest workflow row per doc_id.
+
+    When multiple workflow rows exist for the same doc_id (different
+    doc_version), the one with the most recent created_at wins. Missing
+    doc_ids are simply absent from the result.
+    """
+    ids = [d for d in (doc_ids or []) if d]
+    if not ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(ids))
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                f"SELECT doc_id, state, created_at FROM document_workflow "
+                f"WHERE doc_type=%s AND doc_id IN ({placeholders})",
+                (doc_type, *ids),
+            )
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    latest: dict[str, dict] = {}
+    for r in rows:
+        prev = latest.get(r["doc_id"])
+        if not prev or (r.get("created_at") or 0) > (prev.get("created_at") or 0):
+            latest[r["doc_id"]] = r
+    return {doc_id: r["state"] for doc_id, r in latest.items()}
+
+
 def get_user_org_id(user_id: str) -> str | None:
     """Resolve org identifier for a user — company_name first, launch_id_fk as fallback.
 
