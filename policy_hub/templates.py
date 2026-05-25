@@ -195,9 +195,84 @@ PROCEDURE_TEMPLATE: list[SectionDef] = [
     ),
 ]
 
+STANDARD_TEMPLATE: list[SectionDef] = [
+    SectionDef(
+        id="standard.header",
+        title="Document Header",
+        kind="header_table",
+        prompt_help=(
+            "Render as a <table> with rows for: Standard Name, Document ID, "
+            "Version, Effective Date, Classification."
+        ),
+    ),
+    SectionDef(
+        id="standard.purpose",
+        title="Purpose",
+        kind="text",
+        prompt_help="State the rationale for this standard: its intent and the technical objective it codifies.",
+    ),
+    SectionDef(
+        id="standard.scope",
+        title="Scope",
+        kind="text",
+        prompt_help=(
+            "Describe applicability: systems, technologies, roles, and contexts in which this standard applies."
+        ),
+    ),
+    SectionDef(
+        id="standard.requirements",
+        title="Requirements",
+        kind="statements",
+        prompt_help=(
+            "Write normative, measurable requirements using 'must', 'shall', or 'is required'. "
+            "Each distinct requirement belongs in its own <li data-statement-id> element."
+        ),
+    ),
+    SectionDef(
+        id="standard.compliance",
+        title="Compliance and Enforcement",
+        kind="text",
+        prompt_help=(
+            "Describe how compliance is measured, audited, and enforced; "
+            "include consequences for non-compliance."
+        ),
+    ),
+    SectionDef(
+        id="standard.exceptions",
+        title="Exceptions",
+        kind="text",
+        prompt_help="Explain the process for requesting and approving deviations from this standard.",
+    ),
+    SectionDef(
+        id="standard.definitions",
+        title="Definitions / Glossary",
+        kind="text",
+        required=False,
+        prompt_help="Define key terminology used in this standard.",
+    ),
+    SectionDef(
+        id="standard.references",
+        title="Related Documents",
+        kind="text",
+        prompt_help=(
+            "Reference the parent policy, related procedures, and external framework controls "
+            "(e.g. ISO 27001 Annex A, NIST SP 800-53)."
+        ),
+    ),
+    SectionDef(
+        id="standard.revision_history",
+        title="Review and Revision History",
+        kind="history",
+        prompt_help=(
+            "Render as a <table> with columns: Version, Date, Author, Summary of Changes."
+        ),
+    ),
+]
+
 TEMPLATES: dict[str, list[SectionDef]] = {
     "policy": POLICY_TEMPLATE,
     "procedure": PROCEDURE_TEMPLATE,
+    "standard": STANDARD_TEMPLATE,
 }
 
 

@@ -1085,6 +1085,24 @@ def modify_runbook():
     logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
     session_id = data.get("session_id") or None
 
+    # Block edits once the report has moved to governance review or final
+    # approval. Quality reviewers can still edit (per product spec). The
+    # workflow doc_id is the result_id (each generated report is its own
+    # review unit).
+    result_id_for_gate = data.get("result_id")
+    if result_id_for_gate:
+        try:
+            from workflow_route.integration import assert_doc_editable
+
+            ok, reason, _ = assert_doc_editable(
+                "runbook", result_id_for_gate, user_id or logged_in_user_id or ""
+            )
+            if not ok:
+                return jsonify({"error": reason}), 403
+        except Exception:
+            # Fail open — never block edits because of a transient lookup failure.
+            pass
+
     # ✅ files
     structure_file = request.files.get("structure_file")
     files_main = request.files.getlist("files")  # ✅ FIX
@@ -1865,6 +1883,10 @@ def get_runbook(runbook_id, user_id):
         # FULL Recursive JSON Normalize
         # -----------------------------
         runbook = normalize_json(runbook)
+
+        # Note: workflow_state is NOT attached here — runbook workflows key on
+        # result_id, not runbook_id. The frontend reads canonical state from
+        # GET /workflow/by-doc/runbook/<result_id> instead.
 
         # -----------------------------
         # Response

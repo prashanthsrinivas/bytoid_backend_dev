@@ -2680,14 +2680,20 @@ def get_notifications(user_id):
         if conn is None:
             return jsonify({"notifications": []}), 200
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Include the workflow context columns so the bell can render
+            # which document needs action and route the click to the right
+            # workflow page. Without these the reviewer sees only a bare
+            # message and has no way to tell what to do.
             cursor.execute(
                 """
-                SELECT id, message, is_read, created_at
+                SELECT id, notification_id, message, is_read, created_at,
+                       doc_type, doc_id, workflow_id, workflow_state,
+                       action_required
                 FROM notifications
                 WHERE user_id=%s
                 ORDER BY created_at DESC
                 LIMIT 50
-            """,
+                """,
                 (user_id,),
             )
             rows = cursor.fetchall()
@@ -2696,6 +2702,9 @@ def get_notifications(user_id):
                     row["created_at"], "isoformat"
                 ):
                     row["created_at"] = row["created_at"].isoformat()
+                # MySQL returns TINYINT(1) as int; normalize to bool for clients.
+                if "action_required" in row and row["action_required"] is not None:
+                    row["action_required"] = bool(row["action_required"])
         return jsonify({"notifications": rows}), 200
 
     except Exception as e:

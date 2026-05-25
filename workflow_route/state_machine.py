@@ -656,21 +656,123 @@ def _append_event(
     return event_id
 
 
-def get_workflow_history(workflow_id: str, page: int = 1, page_size: int = 50) -> tuple[list, int]:
-    offset = (page - 1) * page_size
+def add_comment(
+    workflow_id: str,
+    actor_user_id: str,
+    comment: str,
+    attachments: list[dict] | None = None,
+) -> dict:
+    """Insert a manual comment row into the workflow activity feed.
+
+    ``attachments`` is a list of {s3_key, original_name, content_type, size}
+    dicts; an ``uploaded_at`` timestamp is stamped server-side. Workflow-scoped
+    (from_state/to_state left NULL) so the comment appears in every step's
+    activity panel.
+    """
+    import json as _json
+    event_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    attachments_payload = None
+    if attachments:
+        stamped = []
+        for att in attachments:
+            stamped.append({
+                "s3_key": att.get("s3_key"),
+                "original_name": att.get("original_name"),
+                "content_type": att.get("content_type"),
+                "size": att.get("size"),
+                "uploaded_at": now_iso,
+            })
+        attachments_payload = _json.dumps(stamped)
+
     conn = connect_to_rds()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
-                "SELECT COUNT(*) AS cnt FROM document_workflow_events WHERE workflow_id=%s",
+                """INSERT INTO document_workflow_events
+                   (event_id, workflow_id, from_state, to_state, kind,
+                    actor_user_id, assigned_to_user_id, comment, attachments_json)
+                   VALUES (%s,%s,NULL,NULL,'comment',%s,NULL,%s,%s)""",
+                (event_id, workflow_id, actor_user_id, comment, attachments_payload),
+            )
+            cur.execute(
+                "SELECT created_at FROM document_workflow_events WHERE event_id=%s",
+                (event_id,),
+            )
+            created_row = cur.fetchone() or {}
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "event_id": event_id,
+        "created_at": created_row.get("created_at"),
+    }
+
+
+def get_workflow_history(
+    workflow_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    state: str | None = None,
+) -> tuple[list, int]:
+    """Unified per-workflow history: state transitions, comments, field edits.
+
+    Each row carries a ``kind`` discriminator ('state_transition', 'comment',
+    or 'field_edit') so the frontend can render them in one chronological feed
+    without separate fetches. Rows are sorted newest-first.
+
+    When ``state`` is provided, the feed is scoped to the given workflow stage:
+    transition rows are filtered to those where ``from_state`` or ``to_state``
+    matches; comment rows are always included (comments are workflow-wide);
+    field-edit rows are always included (no per-state mapping).
+
+    Attachment rows have presigned download URLs injected per item.
+    """
+    from utils.s3_utils import generate_presigned_url
+
+    offset = (page - 1) * page_size
+
+    if state:
+        transition_where = (
+            "workflow_id=%s AND (kind='comment' OR from_state=%s OR to_state=%s)"
+        )
+        transition_params: tuple = (workflow_id, state, state)
+    else:
+        transition_where = "workflow_id=%s"
+        transition_params = (workflow_id,)
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                f"SELECT COUNT(*) AS cnt FROM document_workflow_events WHERE {transition_where}",
+                transition_params,
+            )
+            transition_total = cur.fetchone()["cnt"]
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM document_field_events WHERE workflow_id=%s",
                 (workflow_id,),
             )
-            total = cur.fetchone()["cnt"]
-            cur.execute(
-                "SELECT * FROM document_workflow_events WHERE workflow_id=%s "
-                "ORDER BY created_at DESC LIMIT %s OFFSET %s",
-                (workflow_id, page_size, offset),
+            field_total = cur.fetchone()["cnt"]
+            total = transition_total + field_total
+
+            query = (
+                "SELECT event_id, workflow_id, from_state, to_state, kind, "
+                "actor_user_id, assigned_to_user_id, comment, attachments_json, created_at, "
+                "NULL AS field_path, NULL AS before_snippet, NULL AS after_snippet, "
+                "NULL AS delta_chars, NULL AS previous_result_id, NULL AS new_result_id "
+                f"FROM document_workflow_events WHERE {transition_where} "
+                "UNION ALL "
+                "SELECT event_id, workflow_id, NULL AS from_state, NULL AS to_state, "
+                "'field_edit' AS kind, "
+                "actor_user_id, NULL AS assigned_to_user_id, NULL AS comment, "
+                "NULL AS attachments_json, created_at, "
+                "field_path, before_snippet, after_snippet, delta_chars, "
+                "previous_result_id, new_result_id "
+                "FROM document_field_events WHERE workflow_id=%s "
+                "ORDER BY created_at DESC LIMIT %s OFFSET %s"
             )
+            cur.execute(query, (*transition_params, workflow_id, page_size, offset))
             rows = [dict(r) for r in cur.fetchall()]
 
         # Batched email lookup for actor + assignee — single query per page.
@@ -692,9 +794,34 @@ def get_workflow_history(workflow_id: str, page: int = 1, page_size: int = 50) -
     finally:
         conn.close()
 
+    import json as _json
     for row in rows:
         row["actor_email"] = emails.get(row.get("actor_user_id"))
         row["assigned_to_email"] = emails.get(row.get("assigned_to_user_id"))
+
+        raw_kind = row.get("kind")
+        if raw_kind == "field_edit":
+            pass
+        elif raw_kind == "comment":
+            row["kind"] = "comment"
+        else:
+            row["kind"] = "state_transition"
+
+        att_raw = row.get("attachments_json")
+        if not att_raw:
+            row["attachments"] = []
+        else:
+            try:
+                att_list = att_raw if isinstance(att_raw, list) else _json.loads(att_raw)
+            except (TypeError, ValueError):
+                att_list = []
+            for att in att_list:
+                s3_key = att.get("s3_key")
+                if s3_key:
+                    att["download_url"] = generate_presigned_url(s3_key, expiration=3600)
+            row["attachments"] = att_list
+        row.pop("attachments_json", None)
+
     return rows, total
 
 
@@ -1006,14 +1133,39 @@ def bootstrap_schema() -> None:
           event_id            CHAR(36)     NOT NULL,
           workflow_id         CHAR(36)     NOT NULL,
           from_state          VARCHAR(32)  NULL,
-          to_state            VARCHAR(32)  NOT NULL,
+          to_state            VARCHAR(32)  NULL,
+          kind                VARCHAR(32)  NOT NULL DEFAULT 'transition',
           actor_user_id       VARCHAR(64)  NOT NULL,
           assigned_to_user_id VARCHAR(64)  NULL,
           comment             TEXT         NULL,
+          attachments_json    JSON         NULL,
           created_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (event_id),
           INDEX idx_wf (workflow_id, created_at),
-          INDEX idx_assignee (assigned_to_user_id, created_at)
+          INDEX idx_assignee (assigned_to_user_id, created_at),
+          INDEX idx_kind (workflow_id, kind, created_at)
+        )""",
+        # Field-level edit events for any document (runbook, policy, …). Lives
+        # outside document_workflow_events because edits don't have a to_state
+        # and can occur before a workflow row exists (workflow_id nullable).
+        # Snippets cap at 500 chars to keep rows small; delta_chars records the
+        # total length delta so the UI can summarize without inflating storage.
+        """CREATE TABLE IF NOT EXISTS document_field_events (
+          event_id           CHAR(36)     NOT NULL,
+          workflow_id        CHAR(36)     NULL,
+          doc_type           VARCHAR(32)  NOT NULL,
+          doc_id             VARCHAR(64)  NOT NULL,
+          previous_result_id VARCHAR(64)  NULL,
+          new_result_id      VARCHAR(64)  NULL,
+          actor_user_id      VARCHAR(64)  NOT NULL,
+          field_path         VARCHAR(512) NOT NULL,
+          before_snippet     VARCHAR(500) NULL,
+          after_snippet      VARCHAR(500) NULL,
+          delta_chars        INT          NULL,
+          created_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (event_id),
+          INDEX idx_wf (workflow_id, created_at),
+          INDEX idx_doc (doc_type, doc_id, created_at)
         )""",
         """CREATE TABLE IF NOT EXISTS workflow_email_dlq (
           dlq_id            CHAR(36)     NOT NULL,
@@ -1072,6 +1224,13 @@ def bootstrap_schema() -> None:
         # Per-event assignee tracking — captures who the work was handed off to on each transition.
         "ALTER TABLE document_workflow_events ADD COLUMN assigned_to_user_id VARCHAR(64) NULL",
         "ALTER TABLE document_workflow_events ADD INDEX idx_assignee (assigned_to_user_id, created_at)",
+        # Manual comments + screenshot attachments on the workflow activity feed.
+        # kind='comment' rows leave from_state/to_state NULL; kind='transition'
+        # is the legacy state-change row and is the default for existing data.
+        "ALTER TABLE document_workflow_events ADD COLUMN kind VARCHAR(32) NOT NULL DEFAULT 'transition'",
+        "ALTER TABLE document_workflow_events ADD COLUMN attachments_json JSON NULL",
+        "ALTER TABLE document_workflow_events MODIFY COLUMN to_state VARCHAR(32) NULL",
+        "ALTER TABLE document_workflow_events ADD INDEX idx_kind (workflow_id, kind, created_at)",
     ]
     conn = connect_to_rds()
     if not conn:
