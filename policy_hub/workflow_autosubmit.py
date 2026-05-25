@@ -3,14 +3,20 @@ from utils.base_logger import get_logger
 
 logger = get_logger(__name__)
 
+# Doc types that the workflow state machine actually accepts (see
+# workflow_route/routes.py:328). Policy hub also persists "standard"
+# documents, but the workflow layer rejects that type so we skip
+# auto-submit for them rather than 400 on every save.
+WORKFLOW_SUPPORTED_DOC_TYPES = ("policy", "procedure")
 
-def auto_submit_policy(policy_id: str, owner_user_id: str) -> None:
-    """Programmatically submit a freshly-saved policy for review.
 
-    Mirrors POST /workflow/submit for the policy doc_type, but only when
-    the org is configured for role-based assignment. Per-document orgs
-    (which require explicit per-policy reviewer selection) are left in
-    draft so the existing "Send for review" UI flow still works.
+def auto_submit_policy(policy_id: str, doc_type: str, owner_user_id: str) -> None:
+    """Programmatically submit a freshly-saved policy/procedure for review.
+
+    Mirrors POST /workflow/submit, but only when the org is configured
+    for role-based assignment. Per-document orgs (which require explicit
+    per-policy reviewer selection) are left in draft so the existing
+    "Send for review" UI flow still works.
 
     Idempotent: if a workflow row already exists in a non-draft state,
     skips entirely; if it exists in draft, transitions it forward.
@@ -21,6 +27,13 @@ def auto_submit_policy(policy_id: str, owner_user_id: str) -> None:
         logger.warning(
             "auto_submit_policy: missing policy_id=%s or owner=%s",
             policy_id, owner_user_id,
+        )
+        return
+
+    if doc_type not in WORKFLOW_SUPPORTED_DOC_TYPES:
+        logger.debug(
+            "auto_submit_policy: skipping policy=%s — doc_type=%s not workflow-supported",
+            policy_id, doc_type,
         )
         return
 
@@ -47,7 +60,7 @@ def auto_submit_policy(policy_id: str, owner_user_id: str) -> None:
             )
             return
 
-        config = get_workflow_config(org_id, "policy")
+        config = get_workflow_config(org_id, doc_type)
         if config.get("assignment_mode") != "role_based":
             logger.debug(
                 "auto_submit_policy: skipping policy=%s — org=%s is per_document mode",
@@ -82,7 +95,7 @@ def auto_submit_policy(policy_id: str, owner_user_id: str) -> None:
         approver_user_id = _resolve(config.get("approver_role_id"))
 
         doc_version = "1.0"
-        existing = get_workflow_for_doc("policy", policy_id, doc_version)
+        existing = get_workflow_for_doc(doc_type, policy_id, doc_version)
         if existing and existing.get("state") != "draft":
             logger.info(
                 "auto_submit_policy: skipping policy=%s — workflow %s already in state=%s",
@@ -103,7 +116,7 @@ def auto_submit_policy(policy_id: str, owner_user_id: str) -> None:
         else:
             wf = create_workflow(
                 org_id=org_id,
-                doc_type="policy",
+                doc_type=doc_type,
                 doc_id=policy_id,
                 doc_version=doc_version,
                 owner_user_id=owner_user_id,

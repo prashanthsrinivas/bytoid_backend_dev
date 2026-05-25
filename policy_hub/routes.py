@@ -646,7 +646,7 @@ def _generation_worker(
                 _write_yaml_to_s3(key, item)
 
                 try:
-                    auto_submit_policy(policy_id, user_id)
+                    auto_submit_policy(policy_id, d_type, user_id)
                 except Exception as wf_exc:
                     logger.warning(
                         "auto_submit_policy failed for generated policy=%s: %s",
@@ -1014,7 +1014,7 @@ def _upload_worker(
                         )
 
                     try:
-                        auto_submit_policy(policy_id, user_id)
+                        auto_submit_policy(policy_id, doc_type, user_id)
                     except Exception as wf_exc:
                         logger.warning(
                             "auto_submit_policy failed for uploaded policy=%s: %s",
@@ -1863,12 +1863,24 @@ def list_policies():
         items.append(owner_policy)
 
     try:
+        from policy_hub.workflow_autosubmit import WORKFLOW_SUPPORTED_DOC_TYPES
         from workflow_route.state_machine import get_workflow_states_for_docs
 
-        states_by_id = get_workflow_states_for_docs(
-            "policy",
-            [it.get("policy_id") for it in items if it.get("policy_id")],
-        )
+        # /list returns mixed types (policy / procedure / standard). The workflow
+        # state machine keys by (doc_type, doc_id), so group ids by type and
+        # query each supported doc_type once. "standard" is not workflow-supported
+        # by the backend so those items stay at workflow_state=None.
+        ids_by_type: dict[str, list[str]] = {}
+        for it in items:
+            t = it.get("type")
+            pid = it.get("policy_id")
+            if t in WORKFLOW_SUPPORTED_DOC_TYPES and pid:
+                ids_by_type.setdefault(t, []).append(pid)
+
+        states_by_id: dict[str, str] = {}
+        for t, ids in ids_by_type.items():
+            states_by_id.update(get_workflow_states_for_docs(t, ids))
+
         for it in items:
             it["workflow_state"] = states_by_id.get(it.get("policy_id"))
     except Exception as wf_exc:
