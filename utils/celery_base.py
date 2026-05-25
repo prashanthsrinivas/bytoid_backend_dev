@@ -1272,7 +1272,7 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
     from policy_hub.templates import validate as _validate
     from policy_hub.migrate_legacy_policies import _render_sections_to_html
     from policy_hub.routes import _write_yaml_to_s3, _sync_statements
-    from utils.s3_utils import s3bucket, load_yaml_from_s3, S3_BUCKET
+    from utils.s3_utils import s3bucket, load_yaml_from_s3, S3_BUCKET  # S3_BUCKET used for list_objects only
 
     types_to_process = (
         ["policy", "procedure", "standard"] if doc_type == "all" else [doc_type]
@@ -1297,7 +1297,7 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
 
     for key in keys:
         try:
-            data = load_yaml_from_s3(S3_BUCKET, key)
+            data = load_yaml_from_s3(key)
             if not data:
                 skipped += 1
                 continue
@@ -1313,13 +1313,15 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
 
             existing_sections = data.get("sections", [])
             new_sections = _replicate_sections(existing_sections, policy_type)
-            processed += 1
 
             existing_ids = [s["id"] for s in existing_sections]
             new_ids = [s["id"] for s in new_sections]
             if existing_ids == new_ids:
+                processed += 1
                 skipped += 1
                 continue
+
+            processed += 1
 
             rendered_html = _render_sections_to_html(new_sections)
             vr = _validate(rendered_html, policy_type)
