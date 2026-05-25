@@ -1071,9 +1071,13 @@ async def modify_run_runbook_execution_engine(
                 diff_before = {}
 
         if diff_before:  # only emit when we have something to compare
+            # Activity events key by the NEW result_id (matches the workflow's
+            # doc_id) so the per-report drawer surfaces them. previous_result_id
+            # records the lineage for the UI to chain edits by result rather
+            # than wall clock.
             emit_field_diff_events(
                 doc_type="runbook",
-                doc_id=runbook_id,
+                doc_id=new_result_id,
                 previous_result_id=result_id,
                 new_result_id=new_result_id,
                 actor_user_id=user_id,
