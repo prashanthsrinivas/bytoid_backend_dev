@@ -2,6 +2,10 @@
 
 import pytest
 
+# Re-export the db_stubs fixture so tests anywhere in this tree can request it
+# via `db_stubs` without explicit imports.
+from tests._db_stubs import db_stubs  # noqa: F401
+
 
 # ── Fixture HTML documents ────────────────────────────────────────────────────
 

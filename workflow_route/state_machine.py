@@ -626,6 +626,13 @@ def _append_event(
 
 
 def get_workflow_history(workflow_id: str, page: int = 1, page_size: int = 50) -> tuple[list, int]:
+    """Unified per-workflow history: state transitions + field edits.
+
+    Each row carries a ``kind`` discriminator ('state_transition' or
+    'field_edit') so the frontend can render them in one chronological feed
+    without two separate fetches. Rows are sorted newest-first to match the
+    drawer's existing rendering order.
+    """
     offset = (page - 1) * page_size
     conn = connect_to_rds()
     try:
@@ -634,11 +641,30 @@ def get_workflow_history(workflow_id: str, page: int = 1, page_size: int = 50) -
                 "SELECT COUNT(*) AS cnt FROM document_workflow_events WHERE workflow_id=%s",
                 (workflow_id,),
             )
-            total = cur.fetchone()["cnt"]
+            transition_total = cur.fetchone()["cnt"]
             cur.execute(
-                "SELECT * FROM document_workflow_events WHERE workflow_id=%s "
+                "SELECT COUNT(*) AS cnt FROM document_field_events WHERE workflow_id=%s",
+                (workflow_id,),
+            )
+            field_total = cur.fetchone()["cnt"]
+            total = transition_total + field_total
+
+            cur.execute(
+                "SELECT event_id, workflow_id, from_state, to_state, actor_user_id, "
+                "assigned_to_user_id, comment, created_at, "
+                "'state_transition' AS kind, "
+                "NULL AS field_path, NULL AS before_snippet, NULL AS after_snippet, "
+                "NULL AS delta_chars, NULL AS previous_result_id, NULL AS new_result_id "
+                "FROM document_workflow_events WHERE workflow_id=%s "
+                "UNION ALL "
+                "SELECT event_id, workflow_id, NULL AS from_state, NULL AS to_state, "
+                "actor_user_id, NULL AS assigned_to_user_id, NULL AS comment, created_at, "
+                "'field_edit' AS kind, "
+                "field_path, before_snippet, after_snippet, delta_chars, "
+                "previous_result_id, new_result_id "
+                "FROM document_field_events WHERE workflow_id=%s "
                 "ORDER BY created_at DESC LIMIT %s OFFSET %s",
-                (workflow_id, page_size, offset),
+                (workflow_id, workflow_id, page_size, offset),
             )
             rows = [dict(r) for r in cur.fetchall()]
 
@@ -983,6 +1009,28 @@ def bootstrap_schema() -> None:
           PRIMARY KEY (event_id),
           INDEX idx_wf (workflow_id, created_at),
           INDEX idx_assignee (assigned_to_user_id, created_at)
+        )""",
+        # Field-level edit events for any document (runbook, policy, …). Lives
+        # outside document_workflow_events because edits don't have a to_state
+        # and can occur before a workflow row exists (workflow_id nullable).
+        # Snippets cap at 500 chars to keep rows small; delta_chars records the
+        # total length delta so the UI can summarize without inflating storage.
+        """CREATE TABLE IF NOT EXISTS document_field_events (
+          event_id           CHAR(36)     NOT NULL,
+          workflow_id        CHAR(36)     NULL,
+          doc_type           VARCHAR(32)  NOT NULL,
+          doc_id             VARCHAR(64)  NOT NULL,
+          previous_result_id VARCHAR(64)  NULL,
+          new_result_id      VARCHAR(64)  NULL,
+          actor_user_id      VARCHAR(64)  NOT NULL,
+          field_path         VARCHAR(512) NOT NULL,
+          before_snippet     VARCHAR(500) NULL,
+          after_snippet      VARCHAR(500) NULL,
+          delta_chars        INT          NULL,
+          created_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (event_id),
+          INDEX idx_wf (workflow_id, created_at),
+          INDEX idx_doc (doc_type, doc_id, created_at)
         )""",
         """CREATE TABLE IF NOT EXISTS workflow_email_dlq (
           dlq_id            CHAR(36)     NOT NULL,

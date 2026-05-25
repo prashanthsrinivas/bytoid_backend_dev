@@ -1051,6 +1051,38 @@ async def modify_run_runbook_execution_engine(
             "ended_at": int(time.time()),
         }
     )
+
+    # Activity feed: emit one field-event per changed whitelisted section so
+    # the step drawer surfaces "who changed what" alongside state transitions.
+    # If the engine didn't already fetch the previous result (is_prev_needed=False),
+    # fetch it here just for diffing. Best-effort — never block the save path.
+    try:
+        from services.document_activity_service import emit_field_diff_events
+
+        diff_before = last_runbook_response
+        if not diff_before and result_id:
+            try:
+                prev = await dbserver.get_latest_runbook_result(
+                    user_id=user_id, runbook_id=runbook_id, result_id=result_id
+                )
+                if prev:
+                    diff_before = safe_json_load(prev.get("result"), {})
+            except Exception:
+                diff_before = {}
+
+        if diff_before:  # only emit when we have something to compare
+            emit_field_diff_events(
+                doc_type="runbook",
+                doc_id=runbook_id,
+                previous_result_id=result_id,
+                new_result_id=new_result_id,
+                actor_user_id=user_id,
+                before=diff_before,
+                after=merged_result or {},
+            )
+    except Exception:
+        logger.exception("emit_field_diff_events failed for runbook %s", runbook_id)
+
     if merged_result:
         await emit(
             msg_builder.job_success(
