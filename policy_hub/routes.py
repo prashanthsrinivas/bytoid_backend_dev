@@ -41,6 +41,7 @@ from policy_hub.structured import (
     sync_statements_to_lance,
 )
 from policy_hub.extract import extract_any
+from policy_hub.workflow_autosubmit import auto_submit_policy
 from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
 from utils.s3_utils import (
     s3bucket,
@@ -644,6 +645,14 @@ def _generation_worker(
 
                 _write_yaml_to_s3(key, item)
 
+                try:
+                    auto_submit_policy(policy_id, user_id)
+                except Exception as wf_exc:
+                    logger.warning(
+                        "auto_submit_policy failed for generated policy=%s: %s",
+                        policy_id, wf_exc,
+                    )
+
                 if v2:
                     _sync_statements(item, user_id, d_type, loop)
 
@@ -1002,6 +1011,14 @@ def _upload_worker(
                     except Exception as exc:
                         logger.error(
                             "Enriched YAML write failed for %s: %s", filename, exc
+                        )
+
+                    try:
+                        auto_submit_policy(policy_id, user_id)
+                    except Exception as wf_exc:
+                        logger.warning(
+                            "auto_submit_policy failed for uploaded policy=%s: %s",
+                            policy_id, wf_exc,
                         )
 
                     # 5. Sync statements to LanceDB (only when V2 is enabled, since
@@ -1844,6 +1861,18 @@ def list_policies():
             continue
         owner_policy = {**owner_policy, "owner_user_id": owner_id, "shared": True}
         items.append(owner_policy)
+
+    try:
+        from workflow_route.state_machine import get_workflow_states_for_docs
+
+        states_by_id = get_workflow_states_for_docs(
+            "policy",
+            [it.get("policy_id") for it in items if it.get("policy_id")],
+        )
+        for it in items:
+            it["workflow_state"] = states_by_id.get(it.get("policy_id"))
+    except Exception as wf_exc:
+        logger.warning("policy workflow_state lookup failed: %s", wf_exc)
 
     items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return jsonify({"items": items}), 200
