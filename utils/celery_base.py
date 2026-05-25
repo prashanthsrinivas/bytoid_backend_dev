@@ -1272,8 +1272,7 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
     from policy_hub.templates import validate as _validate
     from policy_hub.migrate_legacy_policies import _render_sections_to_html
     from policy_hub.routes import _write_yaml_to_s3, _sync_statements
-    from utils.s3_utils import s3bucket, load_yaml_from_s3
-    from utils.app_configs import S3_BUCKET
+    from utils.s3_utils import s3bucket, load_yaml_from_s3, S3_BUCKET
 
     types_to_process = (
         ["policy", "procedure", "standard"] if doc_type == "all" else [doc_type]
