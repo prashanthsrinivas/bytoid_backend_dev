@@ -29,6 +29,7 @@ from policy_hub.structured import (
     sync_statements_to_lance,
 )
 from policy_hub.extract import extract_any
+from policy_hub.replicate import replicate_template_to_org
 from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
 from utils.s3_utils import (
     s3bucket,
@@ -43,6 +44,7 @@ from services.audit_log_service import (
     POLICY_SHARED,
     POLICY_SHARE_REVOKED,
     POLICY_UPLOADED,
+    TEMPLATE_REPLICATED,
 )
 from shared_configuration import (
     check_role_has_permission,
@@ -2493,3 +2495,56 @@ def admin_migrate_policies():
     except Exception as exc:
         logger.error("admin_migrate_policies error: %s", exc)
         return jsonify({"error": str(exc)}), 500
+
+
+@policy_hub_bp.route("/admin/replicate-template", methods=["POST"])
+def admin_replicate_template():
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    user_id = g.get("user_id") or request.get_json(silent=True, force=True).get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    doc_type = request.args.get("doc_type", "all")
+    if doc_type not in ("all", "policy", "procedure", "standard"):
+        return jsonify({"error": "doc_type must be all|policy|procedure|standard"}), 400
+
+    dry_run = request.args.get("dry_run", "false").lower() == "true"
+
+    task = replicate_template_to_org.delay(user_id, doc_type, dry_run)
+
+    log_audit_event(
+        action=TEMPLATE_REPLICATED,
+        endpoint="/policy-hub/admin/replicate-template",
+        ip=request.remote_addr,
+        status="queued",
+        actor_user_id=user_id,
+        actor_email=get_email_by_id(user_id),
+        metadata={"doc_type": doc_type, "dry_run": dry_run, "task_id": task.id},
+    )
+
+    return jsonify({"task_id": task.id, "status": "queued", "doc_type": doc_type, "dry_run": dry_run}), 202
+
+
+@policy_hub_bp.route("/admin/replicate-status", methods=["GET"])
+def admin_replicate_status():
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    task_id = request.args.get("task_id")
+    if not task_id:
+        return jsonify({"error": "task_id is required"}), 400
+
+    result = replicate_template_to_org.AsyncResult(task_id)
+    state = result.state
+
+    payload = {"task_id": task_id, "state": state}
+    if state == "SUCCESS":
+        payload["result"] = result.result
+    elif state == "FAILURE":
+        payload["error"] = str(result.result)
+
+    return jsonify(payload), 200
