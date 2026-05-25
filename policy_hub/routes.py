@@ -29,7 +29,6 @@ from policy_hub.structured import (
     sync_statements_to_lance,
 )
 from policy_hub.extract import extract_any
-from policy_hub.replicate import replicate_template_to_org
 from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
 from utils.s3_utils import (
     s3bucket,
@@ -2609,6 +2608,10 @@ def admin_replicate_template():
 
     dry_run = request.args.get("dry_run", "false").lower() == "true"
 
+    # Lazy-import the Celery task so Flask app boot doesn't force a Redis
+    # connection at module load time.
+    from utils.celery_base import replicate_template_to_org
+
     task = replicate_template_to_org.delay(user_id, doc_type, dry_run)
 
     log_audit_event(
@@ -2633,6 +2636,8 @@ def admin_replicate_status():
     task_id = request.args.get("task_id")
     if not task_id:
         return jsonify({"error": "task_id is required"}), 400
+
+    from utils.celery_base import replicate_template_to_org
 
     result = replicate_template_to_org.AsyncResult(task_id)
     state = result.state
