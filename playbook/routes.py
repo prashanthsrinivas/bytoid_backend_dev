@@ -3033,10 +3033,11 @@ def pb_temp_clone_min():
             return jsonify({"status": "error", "message": "user_id and filename required"}), 400
 
         _, user_id = parse_composite_user_id(user_id)
-        source_user_id = user_id  # default: load from the caller's own space
 
-        # Assignment-based clone: always use admin's space when assignment_id is present,
-        # whether or not filename was also provided by the caller.
+        # Resolve assignment context first (if provided) so we know the admin's
+        # canonical workflow path and can use it as a fallback.
+        assignment_admin_id = None
+        assignment_filename = None
         if assignment_id:
             conn = connect_to_rds()
             try:
@@ -3046,9 +3047,10 @@ def pb_temp_clone_min():
                 conn.close()
             if not assignment:
                 return jsonify({"status": "error", "message": "Assignment not found"}), 404
+            assignment_admin_id = assignment["admin_id"]
+            assignment_filename = assignment["workflow_filename"]
             if not filename:
-                filename = assignment["workflow_filename"]
-            source_user_id = assignment["admin_id"]
+                filename = assignment_filename
 
         if not filename:
             return jsonify({"status": "error", "message": "user_id and filename required"}), 400
@@ -3062,15 +3064,42 @@ def pb_temp_clone_min():
         base = base_name(filename=filename)
 
         # ---------------------------------
-        # ✅ Load workflow
+        # ✅ Load workflow — try caller's space, then admin's space (assignment),
+        # then global. The first hit wins and becomes the source for the clone.
         # ---------------------------------
-        wf_loc = f"{source_user_id}/workflow/{base}/{filename}"
+        source_user_id = user_id
+        wf_loc = f"{user_id}/workflow/{base}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+
+        # Fallback: admin's space with the caller-provided filename
+        if not workflow_json and assignment_admin_id:
+            admin_loc = f"{assignment_admin_id}/workflow/{base}/{filename}"
+            workflow_json = read_json_from_s3(admin_loc)
+            if workflow_json:
+                source_user_id = assignment_admin_id
+
+        # Fallback: admin's space with the assignment's canonical filename
+        # (handles the case where the caller passed a stale/clone filename)
+        if not workflow_json and assignment_admin_id and assignment_filename:
+            canon = assignment_filename
+            if not canon.lower().endswith(".json"):
+                canon = f"{canon}.json"
+            canon_base = base_name(filename=canon)
+            admin_loc = f"{assignment_admin_id}/workflow/{canon_base}/{canon}"
+            workflow_json = read_json_from_s3(admin_loc)
+            if workflow_json:
+                source_user_id = assignment_admin_id
+                filename = canon
+                base = canon_base
 
         if not workflow_json and is_global:
             workflow_json = read_json_from_s3(f"workflow/global/{base}/{filename}")
 
         if not workflow_json:
+            logger.error(
+                "pb_temp_clone: workflow not found. user=%s filename=%s assignment_id=%s admin=%s",
+                user_id, filename, assignment_id, assignment_admin_id,
+            )
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
 
         # ---------------------------------
