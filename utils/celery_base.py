@@ -96,6 +96,7 @@ def make_celery(app_name=__name__):
             },  # required for AWS ElastiCache TLS
             redis_backend_use_ssl={"ssl_cert_reqs": "none"},
             worker_hijack_root_logger=False,
+            include=["utils.celery_base"],
         )
     else:
         print("connecting to Prod Redis for celery")
@@ -116,6 +117,7 @@ def make_celery(app_name=__name__):
                 "ssl_cert_reqs": "required",
             },
             worker_hijack_root_logger=False,
+            include=["utils.celery_base"],
         )
 
     return celery
