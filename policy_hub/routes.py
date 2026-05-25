@@ -28,6 +28,7 @@ from policy_hub.structured import (
     reconcile_statement_ids,
     sync_statements_to_lance,
 )
+from policy_hub.extract import extract_any
 from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
 from utils.s3_utils import (
     s3bucket,
@@ -41,6 +42,7 @@ from services.audit_log_service import (
     build_audit_actor,
     POLICY_SHARED,
     POLICY_SHARE_REVOKED,
+    POLICY_UPLOADED,
 )
 from shared_configuration import (
     check_role_has_permission,
@@ -83,6 +85,13 @@ def _check_policy_share_access(baseuser, policy_id):
 
 def _s3_key(user_id: str, policy_id: str) -> str:
     return f"{user_id}/policies/{policy_id}.yaml"
+
+
+def _raw_file_key(user_id: str, policy_id: str, ext: str) -> str:
+    """S3 key for the original uploaded file archived alongside the YAML."""
+    if ext and not ext.startswith("."):
+        ext = "." + ext
+    return f"{user_id}/policies/raw/{policy_id}{ext}"
 
 
 def _job_s3_key(job_id: str) -> str:
@@ -561,6 +570,367 @@ def _generation_worker(
         loop.close()
 
 
+# ── Upload helpers ───────────────────────────────────────────────────────────
+
+UPLOAD_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".html", ".htm"}
+UPLOAD_MAX_BYTES = 25 * 1024 * 1024  # 25 MB per file
+UPLOAD_MAX_FILES_PER_REQUEST = 20
+UPLOAD_MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".html": "text/html",
+    ".htm": "text/html",
+}
+VALID_DOC_TYPES = {"policy", "procedure", "standard"}
+
+
+def _resolve_user_id_multi_source():
+    """Resolve the target user_id from g, form, args, or JSON body.
+
+    Returns (logged_in_user_id, user_id) or (None, None) when no source has it.
+    Mirrors the chain used by `_require_framework_owner` but without the email
+    gate so non-admin users can upload too.
+    """
+    raw = (
+        getattr(g, "user_id", None)
+        or getattr(g, "session_user_id", None)
+        or request.form.get("user_id")
+        or request.args.get("user_id")
+        or (request.get_json(silent=True) or {}).get("user_id")
+    )
+    if not raw:
+        return None, None
+    return parse_composite_user_id(raw)
+
+
+def _strip_html_to_text(html: str, max_chars: int = 2000) -> str:
+    """Strip tags to plain text for the cheap classification call."""
+    from bs4 import BeautifulSoup
+
+    try:
+        text = BeautifulSoup(html or "", "lxml").get_text(" ", strip=True)
+    except Exception:
+        text = re.sub(r"<[^>]+>", " ", html or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars]
+
+
+def _classification_prompt(text_sample: str) -> str:
+    return (
+        "Classify the following compliance document as exactly ONE of: policy, procedure, standard.\n"
+        "- 'policy' states organizational rules and principles (uses 'shall', 'must').\n"
+        "- 'procedure' lists ordered operational steps to accomplish a task.\n"
+        "- 'standard' specifies technical or measurable requirements (e.g., minimum key length, password complexity).\n\n"
+        "Return ONLY one word — policy, procedure, or standard — with no punctuation or explanation.\n\n"
+        f"DOCUMENT CONTENT:\n{text_sample}\n\nAnswer:"
+    )
+
+
+async def _classify_doc_type_via_llm(html: str) -> str:
+    """Ask Fireworks to classify the document. Falls back to 'policy' on any failure."""
+    sample = _strip_html_to_text(html, max_chars=2000)
+    if not sample:
+        return "policy"
+    try:
+        resp = await get_fireworks_response2(
+            user_id="upload-classify",
+            user_message=_classification_prompt(sample),
+            role="user",
+            credits=None,
+            temp=0.0,
+        )
+        if not isinstance(resp, str):
+            return "policy"
+        first = resp.strip().lower().split()[0] if resp.strip() else ""
+        first = re.sub(r"[^a-z]", "", first)
+        if first in VALID_DOC_TYPES:
+            return first
+    except Exception as exc:
+        logger.warning("Doc-type classification failed: %s", exc)
+    return "policy"
+
+
+_UPLOAD_SCHEMA_DOC = """
+{
+  "template_version": 1,
+  "metadata": {
+    "document_id": "POL-001",
+    "version": "1.0",
+    "effective_date": "2026-01-01",
+    "classification": "Internal",
+    "title": "Document Title"
+  },
+  "sections": [
+    {"id": "<section_id>", "title": "<title>", "kind": "text", "body_html": "<p>…</p>"},
+    {"id": "<section_id>", "title": "<title>", "kind": "statements",
+     "statements": [{"id": "<uuid>", "text": "Statement text.", "seq": 1}]}
+  ]
+}
+"""
+
+
+def _upload_extraction_prompt(html: str, doc_type: str, filename: str) -> str:
+    """Build the Fireworks prompt that maps uploaded HTML to V2 structured sections."""
+    try:
+        template = get_template(doc_type)
+        sections_desc = "\n".join(
+            f"  - id={s.id}  title={s.title!r}  kind={s.kind}  required={s.required}"
+            for s in template
+        )
+    except KeyError:
+        sections_desc = "(unknown template)"
+
+    ext = os.path.splitext(filename or "")[1].lower().lstrip(".") or "file"
+
+    return (
+        "You are a compliance document structuring assistant. The HTML below was extracted "
+        f"from a user-uploaded {ext} file ({filename!r}). It may contain layout artifacts: "
+        "stray page numbers, repeated headers/footers, hyphenated word splits across lines, "
+        "and inconsistent heading hierarchy. Clean these as needed but preserve the "
+        "substantive content faithfully. Do NOT invent content that is not present.\n\n"
+        "If source content does not clearly map to a section in the target template, place "
+        "the closest content into the most-applicable section and leave any non-matching "
+        "content in that section's body_html.\n\n"
+        "TARGET SCHEMA:\n"
+        f"{_UPLOAD_SCHEMA_DOC}\n\n"
+        "TEMPLATE SECTIONS (map each heading to the closest section id):\n"
+        f"{sections_desc}\n\n"
+        "RULES:\n"
+        "- Assign every statement / step <li> a unique UUID v4 in the `id` field.\n"
+        "- For text sections, preserve cleaned content in body_html.\n"
+        "- Include every section from the template; use empty body_html (or empty statements) for missing ones.\n"
+        "- Return ONLY valid JSON — no markdown, no code fences, no explanation.\n\n"
+        f"SOURCE HTML:\n{(html or '')[:80000]}\n\n"
+        "JSON:"
+    )
+
+
+def _render_upload_sections_to_html(sections: list) -> str:
+    """Render structured sections back to canonical HTML for template validation."""
+    parts = []
+    for sec in sections or []:
+        sec_id = sec.get("id", "")
+        title = sec.get("title", "")
+        parts.append(f'<div data-section-id="{sec_id}">')
+        parts.append(f'<h2 data-section-id="{sec_id}">{title}</h2>')
+        statements = sec.get("statements") or []
+        if statements:
+            parts.append("<ul>")
+            for stmt in statements:
+                sid = stmt.get("id", "")
+                stmt_text = stmt.get("text", "")
+                attr = f' data-statement-id="{sid}"' if sid else ""
+                parts.append(f"<li{attr}>{stmt_text}</li>")
+            parts.append("</ul>")
+        if sec.get("body_html"):
+            parts.append(sec["body_html"])
+        parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _parse_llm_json(raw: str) -> dict | None:
+    """Tolerant JSON parse: strip fences, fall back to regex-extracted object."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
+    cleaned = re.sub(r"\n?```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+# ── Upload worker ────────────────────────────────────────────────────────────
+
+
+def _upload_worker(
+    user_id: str,
+    job_id: str,
+    files_payload: list,
+    frameworks: list,
+    remote_addr: str | None,
+    actor_email: str | None,
+):
+    """Background worker. For each uploaded file: extract → classify → write YAML → LLM-map → index."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    v2 = policy_hub_v2_enabled(user_id)
+    try:
+        total = len(files_payload)
+        for i, file_info in enumerate(files_payload):
+            policy_id = file_info["policy_id"]
+            filename = file_info["filename"]
+            ext = file_info["ext"]
+            file_bytes = file_info["file_bytes"]
+            type_hint = file_info.get("type_hint")
+            raw_key = file_info.get("raw_key")
+            raw_archive_error = file_info.get("raw_archive_error")
+
+            item = None
+            try:
+                # 1. Extract
+                try:
+                    html = extract_any(file_bytes, filename)
+                except Exception as exc:
+                    logger.error("Extraction crashed for %s: %s", filename, exc)
+                    html = ""
+
+                extraction_failed = not html or not html.strip()
+
+                # 2. Resolve doc type
+                if type_hint and type_hint in VALID_DOC_TYPES:
+                    doc_type = type_hint
+                elif extraction_failed:
+                    doc_type = "policy"
+                else:
+                    doc_type = loop.run_until_complete(_classify_doc_type_via_llm(html))
+
+                # 3. Build baseline item
+                created_at = datetime.now(timezone.utc).isoformat()
+                key = _s3_key(user_id, policy_id)
+                fallback_title = os.path.splitext(filename)[0] or "Uploaded Document"
+                title = (
+                    _extract_title(html, fallback=fallback_title)
+                    if not extraction_failed
+                    else fallback_title
+                )
+                item = {
+                    "policy_id": policy_id,
+                    "title": title,
+                    "type": doc_type,
+                    "frameworks": frameworks,
+                    "content": html,
+                    "s3_key": key,
+                    "created_at": created_at,
+                    "etag": str(uuid.uuid4()),
+                    "source_file": {
+                        "filename": filename,
+                        "s3_key": raw_key,
+                        "content_type": UPLOAD_MIME_TYPES.get(
+                            ext, "application/octet-stream"
+                        ),
+                        "size_bytes": len(file_bytes),
+                        "uploaded_at": created_at,
+                    },
+                }
+                if raw_archive_error:
+                    item["source_file"]["archive_error"] = raw_archive_error
+
+                if extraction_failed:
+                    item["migration_status"] = "extraction_failed"
+                    _write_yaml_to_s3(key, item)
+                else:
+                    # 4. LLM-map to V2 structured sections (when V2 is enabled)
+                    if v2:
+                        prompt = _upload_extraction_prompt(html, doc_type, filename)
+                        try:
+                            raw = loop.run_until_complete(
+                                get_fireworks_response2(
+                                    user_id=user_id,
+                                    user_message=prompt,
+                                    role="user",
+                                    credits=None,
+                                    temp=0.0,
+                                )
+                            )
+                        except Exception as exc:
+                            logger.error("LLM mapping crashed for %s: %s", filename, exc)
+                            raw = None
+
+                        if raw == "INSUFFICIENT":
+                            item["migration_status"] = "needs_review"
+                            item["error"] = "Insufficient credits during LLM mapping"
+                        else:
+                            structured = _parse_llm_json(raw) if raw else None
+                            if structured and isinstance(structured.get("sections"), list):
+                                item["template_version"] = 1
+                                item["metadata"] = structured.get(
+                                    "metadata", {}
+                                )
+                                item["sections"] = structured.get("sections", [])
+                                sections_html = _render_upload_sections_to_html(
+                                    item["sections"]
+                                )
+                                vr = validate_template(sections_html, doc_type)
+                                item["validation_status"] = "ok" if vr.ok else "needs_review"
+                                item["migration_status"] = "ok"
+                            else:
+                                # Fall back to legacy enrichment so the doc still has some structure
+                                logger.warning(
+                                    "LLM mapping returned unparseable JSON for %s — falling back to _enrich_v2",
+                                    filename,
+                                )
+                                _enrich_v2(item, html, doc_type, loop)
+                                item.setdefault("migration_status", "needs_review")
+
+                    _write_yaml_to_s3(key, item)
+
+                    # 5. Sync statements to LanceDB (only when we have structured sections)
+                    if v2 and item.get("sections"):
+                        _sync_statements(item, user_id, doc_type, loop)
+
+                # 6. Audit log
+                try:
+                    log_audit_event(
+                        action=POLICY_UPLOADED,
+                        endpoint="/policy-hub/upload",
+                        ip=remote_addr,
+                        status="success" if not extraction_failed else "partial",
+                        actor_user_id=user_id,
+                        actor_email=actor_email,
+                        metadata={
+                            "policy_id": policy_id,
+                            "filename": filename,
+                            "type": doc_type,
+                            "size_bytes": len(file_bytes),
+                            "migration_status": item.get("migration_status"),
+                        },
+                    )
+                except Exception:
+                    pass
+
+            except Exception as exc:
+                logger.error("Upload worker failed for %s: %s\n%s", filename, exc, traceback.format_exc())
+                item = item or {
+                    "policy_id": policy_id,
+                    "title": filename,
+                    "type": type_hint or "policy",
+                    "error": str(exc),
+                    "migration_status": "needs_review",
+                }
+
+            # 7. Update job state
+            job = _read_job(job_id) or {"items": [], "completed": 0}
+            job["completed"] = i + 1
+            if item:
+                job["items"].append(item)
+            if i + 1 >= total:
+                job["status"] = "done"
+            _save_job(job_id, job)
+
+        logger.info(
+            "Policy upload complete for user %s: %d files", user_id, total
+        )
+    except Exception as exc:
+        logger.error("Upload worker crashed for job %s: %s", job_id, exc)
+        try:
+            job = _read_job(job_id) or {}
+            job["status"] = "error"
+            job["error"] = str(exc)
+            _save_job(job_id, job)
+        except Exception:
+            pass
+    finally:
+        loop.close()
+
+
 # ── 1. GENERATE ───────────────────────────────────────────────────────────────
 
 
@@ -687,6 +1057,253 @@ def generate_status():
                 "items": job.get("items", []),
                 "documents": job.get("documents", []),
                 "error": job.get("error"),
+            }
+        ),
+        200,
+    )
+
+
+# ── 1d. UPLOAD ────────────────────────────────────────────────────────────────
+
+
+@policy_hub_bp.route("/upload", methods=["POST"])
+@permission_required_body("policyhub.create")
+def upload_policies():
+    """Upload one or more PDF/DOCX/HTML files as Policy Hub documents.
+
+    Multipart form fields:
+      files        (required, repeatable) — file parts
+      user_id      (required) — target user id (composite or raw)
+      frameworks   (optional) — JSON-encoded list of framework names
+      types        (optional) — JSON-encoded map of filename -> doc type
+      default_type (optional) — fallback doc type for files without a hint
+    """
+    logged_in_user_id, user_id = _resolve_user_id_multi_source()
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "At least one file is required"}), 400
+    if len(files) > UPLOAD_MAX_FILES_PER_REQUEST:
+        return (
+            jsonify(
+                {
+                    "error": f"Too many files. Maximum is {UPLOAD_MAX_FILES_PER_REQUEST} per request."
+                }
+            ),
+            400,
+        )
+
+    try:
+        frameworks = json.loads(request.form.get("frameworks") or "[]")
+        if not isinstance(frameworks, list):
+            frameworks = []
+    except json.JSONDecodeError:
+        return jsonify({"error": "frameworks must be a JSON array of strings"}), 400
+
+    try:
+        types_map = json.loads(request.form.get("types") or "{}")
+        if not isinstance(types_map, dict):
+            types_map = {}
+    except json.JSONDecodeError:
+        return jsonify({"error": "types must be a JSON object mapping filename to type"}), 400
+
+    default_type = (request.form.get("default_type") or "").strip().lower()
+    if default_type and default_type not in VALID_DOC_TYPES:
+        return (
+            jsonify(
+                {"error": f"default_type must be one of {sorted(VALID_DOC_TYPES)}"}
+            ),
+            400,
+        )
+
+    # Validate and read each file
+    files_payload = []
+    response_files = []
+    s3 = s3bucket()
+
+    for f in files:
+        if not f or not f.filename:
+            continue
+        filename = f.filename
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in UPLOAD_ALLOWED_EXTENSIONS:
+            return (
+                jsonify(
+                    {
+                        "error": f"Unsupported file type '{ext}' for {filename}. Accepted: {sorted(UPLOAD_ALLOWED_EXTENSIONS)}"
+                    }
+                ),
+                400,
+            )
+
+        file_bytes = f.read()
+        if not file_bytes:
+            return jsonify({"error": f"File '{filename}' is empty"}), 400
+        if len(file_bytes) > UPLOAD_MAX_BYTES:
+            return (
+                jsonify(
+                    {
+                        "error": f"File '{filename}' exceeds maximum size of {UPLOAD_MAX_BYTES // (1024 * 1024)}MB",
+                        "filename": filename,
+                    }
+                ),
+                413,
+            )
+
+        policy_id = str(uuid.uuid4())
+        raw_key = _raw_file_key(user_id, policy_id, ext)
+        mimetype = UPLOAD_MIME_TYPES.get(ext, "application/octet-stream")
+        raw_archive_error = None
+        try:
+            s3.upload_fileobj(
+                io.BytesIO(file_bytes),
+                S3_BUCKET,
+                raw_key,
+                ExtraArgs={"ContentType": mimetype},
+            )
+        except Exception as exc:
+            logger.error("Raw file archival failed for %s: %s", filename, exc)
+            raw_archive_error = str(exc)
+
+        # Resolve type hint: explicit map → default_type → None (worker classifies)
+        type_hint = types_map.get(filename) or default_type or None
+        if type_hint and type_hint not in VALID_DOC_TYPES:
+            type_hint = None
+
+        files_payload.append(
+            {
+                "policy_id": policy_id,
+                "filename": filename,
+                "ext": ext,
+                "file_bytes": file_bytes,
+                "type_hint": type_hint,
+                "raw_key": raw_key,
+                "raw_archive_error": raw_archive_error,
+            }
+        )
+        response_files.append(
+            {
+                "policy_id": policy_id,
+                "filename": filename,
+                "type_hint": type_hint,
+                "size_bytes": len(file_bytes),
+            }
+        )
+
+    if not files_payload:
+        return jsonify({"error": "No valid files in request"}), 400
+
+    # Create job
+    job_id = str(uuid.uuid4())
+    job_state = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "status": "processing",
+        "total": len(files_payload),
+        "completed": 0,
+        "items": [],
+        "files": response_files,
+        "frameworks": frameworks,
+        "error": None,
+    }
+    _save_job(job_id, job_state)
+
+    # Capture context that the background thread can't read off `request`
+    remote_addr = request.remote_addr
+    try:
+        actor_email = get_email_by_id(user_id)
+    except Exception:
+        actor_email = None
+
+    threading.Thread(
+        target=_upload_worker,
+        args=(user_id, job_id, files_payload, frameworks, remote_addr, actor_email),
+        daemon=True,
+    ).start()
+
+    return (
+        jsonify(
+            {
+                "job_id": job_id,
+                "status": "PROCESSING",
+                "total": len(files_payload),
+                "files": response_files,
+            }
+        ),
+        202,
+    )
+
+
+@policy_hub_bp.route("/upload-status", methods=["GET"])
+@permission_required_body("policyhub.view")
+def upload_status():
+    """Poll the state of a /upload job."""
+    job_id = request.args.get("job_id")
+    if not job_id:
+        return jsonify({"error": "job_id is required"}), 400
+
+    job = _read_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    return (
+        jsonify(
+            {
+                "job_id": job_id,
+                "status": job.get("status", "processing").upper(),
+                "total": job.get("total", 0),
+                "completed": job.get("completed", 0),
+                "items": job.get("items", []),
+                "files": job.get("files", []),
+                "error": job.get("error"),
+            }
+        ),
+        200,
+    )
+
+
+@policy_hub_bp.route("/download-raw", methods=["GET"])
+@permission_required_body("policyhub.view")
+def download_raw_policy():
+    """Return a presigned S3 URL for the original uploaded file."""
+    baseuser = request.args.get("user_id")
+    policy_id = request.args.get("policy_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id and policy_id are required"}), 400
+
+    user_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    data = load_yaml_from_s3(_s3_key(user_id, policy_id))
+    if not data:
+        return jsonify({"error": "Policy not found"}), 404
+
+    source = data.get("source_file") or {}
+    raw_key = source.get("s3_key")
+    if not raw_key:
+        return jsonify({"error": "No raw file archived for this policy"}), 404
+
+    try:
+        url = s3bucket().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": raw_key},
+            ExpiresIn=300,
+        )
+    except Exception as exc:
+        logger.error("Failed to presign raw download for %s: %s", policy_id, exc)
+        return jsonify({"error": "Failed to generate download URL"}), 500
+
+    return (
+        jsonify(
+            {
+                "url": url,
+                "filename": source.get("filename"),
+                "content_type": source.get("content_type"),
+                "size_bytes": source.get("size_bytes"),
+                "expires_in": 300,
             }
         ),
         200,
@@ -1180,9 +1797,28 @@ def delete_policy():
         return jsonify({"error": "Only the owner can delete a policy"}), 403
 
     key = _s3_key(user_id, policy_id)
+
+    # Look up any archived raw upload BEFORE deleting the YAML so we can clean it up too.
+    raw_key = None
+    try:
+        existing = load_yaml_from_s3(key)
+        if existing and isinstance(existing.get("source_file"), dict):
+            raw_key = existing["source_file"].get("s3_key")
+    except Exception as exc:
+        logger.warning("Could not inspect source_file before delete for %s: %s", policy_id, exc)
+
     ok = delete_file_from_s3(key)
     if not ok:
         return jsonify({"error": "Delete failed or file not found"}), 500
+
+    if raw_key:
+        try:
+            delete_file_from_s3(raw_key)
+        except Exception as exc:
+            logger.warning(
+                "Raw file cleanup failed for policy=%s raw_key=%s: %s",
+                policy_id, raw_key, exc,
+            )
 
     return jsonify({"status": "ok"}), 200
 
