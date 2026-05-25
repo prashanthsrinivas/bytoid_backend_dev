@@ -9,6 +9,8 @@ Endpoints:
   POST /workflow/publish
   GET  /workflow/inbox
   GET  /workflow/history/<workflow_id>
+  POST /workflow/comment
+  POST /workflow/upload_attachment
   POST /workflow/reassign
   POST /workflow/cancel
 """
@@ -31,6 +33,7 @@ from workflow_route.state_machine import (
     WorkflowConflictError,
     WorkflowNotFoundError,
     WorkflowTransitionError,
+    add_comment,
     bootstrap_schema,
     cancel_workflow,
     create_workflow,
@@ -925,7 +928,10 @@ def workflow_inbox():
 def workflow_history(workflow_id: str):
     """Paginated event history for a workflow.
 
-    Query params: user_id, page, page_size
+    Query params: user_id, page, page_size, state?
+    When ``state`` is provided (e.g. ``state=quality_review``), transition rows
+    are filtered to those touching that stage; manual comments are always
+    included regardless of state.
     """
     try:
         page = max(1, int(request.args.get("page") or 1))
@@ -933,12 +939,16 @@ def workflow_history(workflow_id: str):
     except (TypeError, ValueError):
         page, page_size = 1, 50
 
+    state = request.args.get("state") or None
+
     try:
         get_workflow(workflow_id)  # verify it exists
     except WorkflowNotFoundError:
         return jsonify({"error": "Workflow not found"}), 404
 
-    events, total = get_workflow_history(workflow_id, page=page, page_size=page_size)
+    events, total = get_workflow_history(
+        workflow_id, page=page, page_size=page_size, state=state
+    )
 
     from flask import Response
     import json as _json
@@ -949,6 +959,158 @@ def workflow_history(workflow_id: str):
     )
     resp.headers["X-Total-Count"] = str(total)
     return resp
+
+
+# ── Manual comments + screenshot attachments ─────────────────────────────────
+
+
+_ALLOWED_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
+_MAX_FILES_PER_REQUEST = 10
+_MAX_COMMENT_CHARS = 4000
+
+
+def _is_allowed_image(filename: str, content_type: str) -> bool:
+    if not filename or not content_type:
+        return False
+    if not content_type.lower().startswith("image/"):
+        return False
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return ext in _ALLOWED_IMAGE_EXTS
+
+
+@workflow_bp.route("/upload_attachment", methods=["POST"])
+@permission_required_body("workflow.review")
+def workflow_upload_attachment():
+    """Issue presigned S3 PUT URLs for screenshot uploads on a workflow.
+
+    Body: { user_id, workflow_id, files: [{filename, content_type}, ...] }
+    Returns the same shape as /playbook/make_s3upload:
+      { status, files: [{original_name, file_key, upload_url}] }
+    """
+    import os as _os
+    import uuid as _uuid
+    from datetime import datetime as _dt
+    from utils.s3_utils import s3bucket
+
+    body = request.get_json(silent=True) or {}
+    baseuser = body.get("user_id", "")
+    workflow_id = body.get("workflow_id")
+    files = body.get("files") or []
+
+    if not baseuser or not workflow_id or not isinstance(files, list) or not files:
+        return jsonify({"error": "user_id, workflow_id, and files[] are required"}), 400
+    if len(files) > _MAX_FILES_PER_REQUEST:
+        return jsonify({"error": f"Too many files (max {_MAX_FILES_PER_REQUEST})"}), 400
+
+    logged_in, user_id = parse_composite_user_id(baseuser)
+
+    try:
+        get_workflow(workflow_id)
+    except WorkflowNotFoundError:
+        return jsonify({"error": "Workflow not found"}), 404
+
+    bucket = _os.getenv("S3_BUCKET")
+    if not bucket:
+        logger.error("upload_attachment: S3_BUCKET not configured")
+        return jsonify({"error": "Upload not configured"}), 500
+
+    s3 = s3bucket()
+    response_files = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            return jsonify({"error": "each file must be an object"}), 400
+        filename = (entry.get("filename") or "").strip()
+        content_type = (entry.get("content_type") or "").strip()
+        if not _is_allowed_image(filename, content_type):
+            return jsonify({
+                "error": f"file '{filename}' rejected: only images "
+                         f"({', '.join(sorted(_ALLOWED_IMAGE_EXTS))}) are allowed"
+            }), 400
+
+        unique_id = _uuid.uuid4().hex
+        timestamp = _dt.utcnow().strftime("%Y%m%d%H%M%S")
+        s3_key = f"{user_id}/workflow_attachments/{workflow_id}/{timestamp}_{unique_id}_{filename}"
+        upload_url = s3.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={"Bucket": bucket, "Key": s3_key, "ContentType": content_type},
+            ExpiresIn=3600,
+        )
+        response_files.append({
+            "original_name": filename,
+            "file_key": s3_key,
+            "upload_url": upload_url,
+        })
+
+    return jsonify({"status": "success", "files": response_files}), 200
+
+
+@workflow_bp.route("/comment", methods=["POST"])
+@permission_required_body("workflow.review")
+def workflow_comment():
+    """Post a manual comment (with optional screenshot attachments) to a
+    workflow's activity feed.
+
+    Body: {
+        user_id, workflow_id,
+        comment: str,
+        attachments?: [{s3_key, original_name, content_type, size}]
+    }
+    Attachment s3_keys must live under {user_id}/workflow_attachments/{workflow_id}/
+    — the same prefix issued by /workflow/upload_attachment — to prevent
+    posting arbitrary keys.
+    """
+    body = request.get_json(silent=True) or {}
+    baseuser = body.get("user_id", "")
+    workflow_id = body.get("workflow_id")
+    comment = (body.get("comment") or "").strip()
+    attachments = body.get("attachments") or []
+
+    if not baseuser or not workflow_id:
+        return jsonify({"error": "user_id and workflow_id are required"}), 400
+    if not comment:
+        return jsonify({"error": "comment is required"}), 400
+    if len(comment) > _MAX_COMMENT_CHARS:
+        return jsonify({"error": f"comment exceeds {_MAX_COMMENT_CHARS} characters"}), 400
+    if not isinstance(attachments, list):
+        return jsonify({"error": "attachments must be a list"}), 400
+    if len(attachments) > _MAX_FILES_PER_REQUEST:
+        return jsonify({"error": f"Too many attachments (max {_MAX_FILES_PER_REQUEST})"}), 400
+
+    logged_in, user_id = parse_composite_user_id(baseuser)
+
+    try:
+        get_workflow(workflow_id)
+    except WorkflowNotFoundError:
+        return jsonify({"error": "Workflow not found"}), 404
+
+    expected_prefix = f"{user_id}/workflow_attachments/{workflow_id}/"
+    cleaned: list[dict] = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            return jsonify({"error": "each attachment must be an object"}), 400
+        s3_key = (att.get("s3_key") or "").strip()
+        if not s3_key.startswith(expected_prefix):
+            return jsonify({
+                "error": "attachment s3_key must be under your workflow upload prefix"
+            }), 400
+        cleaned.append({
+            "s3_key": s3_key,
+            "original_name": att.get("original_name"),
+            "content_type": att.get("content_type"),
+            "size": att.get("size"),
+        })
+
+    try:
+        result = add_comment(workflow_id, user_id, comment, cleaned)
+    except Exception as exc:
+        logger.exception("workflow_comment insert failed: %s", exc)
+        return jsonify({"error": "Failed to save comment"}), 500
+
+    return jsonify({
+        "status": "success",
+        "event_id": result["event_id"],
+        "created_at": str(result.get("created_at")) if result.get("created_at") else None,
+    }), 200
 
 
 # ── Reassign ──────────────────────────────────────────────────────────────────
