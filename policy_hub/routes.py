@@ -335,25 +335,99 @@ def _doc_generation_prompt(
 # ── V2 helpers (no-op when flag is off) ──────────────────────────────────────
 
 
+def _fallback_sections_from_html(html: str, doc_type: str) -> list[dict]:
+    """Heading-bucketing fallback when structured section extraction fails.
+
+    Builds an empty sections list from the template, then walks the source HTML
+    and buckets each <h1>/<h2>/<h3>-led chunk into the closest matching template
+    section (by keyword overlap on the heading text). Unmatched content lands in
+    the first text-kind section. Guarantees a non-empty sections[] for any doc_type.
+    """
+    from bs4 import BeautifulSoup
+
+    try:
+        template_defs = get_template(doc_type)
+    except KeyError:
+        template_defs = get_template("policy")
+
+    sections_by_id: dict[str, dict] = {}
+    for sd in template_defs:
+        sec: dict = {"id": sd.id, "title": sd.title, "kind": sd.kind, "body_html": ""}
+        if sd.kind in ("statements", "steps"):
+            sec["statements"] = []
+        sections_by_id[sd.id] = sec
+
+    if not html or not html.strip():
+        return list(sections_by_id.values())
+
+    soup = BeautifulSoup(html, "lxml")
+    body = soup.body or soup
+
+    chunks: list[tuple[str, str]] = []
+    current_heading: str | None = None
+    current_buf: list[str] = []
+    for elem in body.find_all(recursive=False):
+        name = (elem.name or "").lower()
+        if name in ("h1", "h2", "h3"):
+            if current_heading is not None or current_buf:
+                chunks.append((current_heading or "", "".join(current_buf)))
+            current_heading = elem.get_text(strip=True)
+            current_buf = []
+        else:
+            current_buf.append(str(elem))
+    if current_heading is not None or current_buf:
+        chunks.append((current_heading or "", "".join(current_buf)))
+
+    def _match_section(heading_text: str) -> str | None:
+        ht = heading_text.lower()
+        if not ht:
+            return None
+        heading_words = set(ht.split())
+        for sd in template_defs:
+            title_words = set(sd.title.lower().split())
+            if title_words & heading_words:
+                return sd.id
+        return None
+
+    orphans: list[str] = []
+    for heading, chunk_html in chunks:
+        sec_id = _match_section(heading)
+        if sec_id and sec_id in sections_by_id:
+            piece = f"<h3>{heading}</h3>\n{chunk_html}" if heading else chunk_html
+            sections_by_id[sec_id]["body_html"] += piece
+        else:
+            if heading:
+                orphans.append(f"<h3>{heading}</h3>\n{chunk_html}")
+            elif chunk_html.strip():
+                orphans.append(chunk_html)
+
+    if orphans:
+        first_text_id = next(
+            (sd.id for sd in template_defs if sd.kind == "text"),
+            template_defs[0].id if template_defs else None,
+        )
+        if first_text_id:
+            sections_by_id[first_text_id]["body_html"] += "\n".join(orphans)
+
+    return list(sections_by_id.values())
+
+
 def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEventLoop) -> dict:
     """Parse HTML into structured sections, validate, and add V2 fields to *item*.
 
-    Mutates and returns *item*. On any failure, leaves V2 fields absent so the
-    document degrades gracefully to legacy mode.
+    Mutates and returns *item*. Always guarantees a non-empty sections[] — on
+    parse failure or empty result, falls back to heading-bucketing via
+    _fallback_sections_from_html so every document has section-divided storage.
     """
+    sections_data: list[dict] = []
+    metadata: dict = {}
+    validation_ok = True
+
     try:
         parsed = parse_document_html(content, doc_type)
         validation = validate_template(content, doc_type)
+        validation_ok = validation.ok
 
-        # If template validation fails, retry once with a corrective nudge by
-        # re-prompting is out of scope here — just mark needs_review and carry on.
-        item["template_version"] = 1
-        item["validation_status"] = "ok" if validation.ok else "needs_review"
-        item["migration_status"] = "ok"
-
-        # Build the sections list for storage alongside the legacy content blob.
-        # Sections are stored as plain dicts so PyYAML can serialise them.
-        sections_data = []
         for sec in parsed.sections:
             sec_dict: dict = {
                 "id": sec.id,
@@ -373,9 +447,7 @@ def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEv
                     for s in sec.statements
                 ]
             sections_data.append(sec_dict)
-
-        item["sections"] = sections_data
-        item["metadata"] = parsed.metadata
+        metadata = parsed.metadata
 
         if not validation.ok:
             logger.warning(
@@ -384,9 +456,25 @@ def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEv
                 validation.missing_sections,
             )
     except Exception as exc:
-        logger.error(
-            "_enrich_v2 failed for policy=%s: %s", item.get("policy_id"), exc
+        logger.warning(
+            "_enrich_v2 structured parse failed for policy=%s: %s — using heading-bucketing fallback",
+            item.get("policy_id"),
+            exc,
         )
+
+    if not sections_data:
+        logger.info(
+            "_enrich_v2: falling back to heading-bucketing for policy=%s",
+            item.get("policy_id"),
+        )
+        sections_data = _fallback_sections_from_html(content, doc_type)
+        validation_ok = False
+
+    item["template_version"] = 1
+    item["validation_status"] = "ok" if validation_ok else "needs_review"
+    item["migration_status"] = "ok"
+    item["sections"] = sections_data
+    item["metadata"] = metadata
     return item
 
 
@@ -534,8 +622,10 @@ def _generation_worker(
                     "etag": str(uuid.uuid4()),
                 }
 
-                if v2:
-                    item = _enrich_v2(item, content, d_type, loop)
+                # Always enrich sections so every doc has section-divided
+                # storage matching the section-divided UI. _enrich_v2 has an
+                # internal heading-bucketing fallback if structured parsing fails.
+                item = _enrich_v2(item, content, d_type, loop)
 
                 _write_yaml_to_s3(key, item)
 
@@ -840,7 +930,10 @@ def _upload_worker(
                     )
 
                 if not extraction_failed:
-                    # 4. LLM-map to V2 structured sections (when V2 is enabled)
+                    # 4. LLM-map to V2 structured sections.
+                    # The v2 flag gates the *LLM* path (it costs credits). When
+                    # the flag is off, we still produce sections via _enrich_v2's
+                    # heading-bucketing fallback so storage always matches UI.
                     if v2:
                         prompt = _upload_extraction_prompt(html, doc_type, filename)
                         try:
@@ -883,7 +976,9 @@ def _upload_worker(
                                 _enrich_v2(item, html, doc_type, loop)
                                 item.setdefault("migration_status", "needs_review")
                     else:
-                        item["migration_status"] = "ok"
+                        # v2 disabled — still produce sections via heading-bucketing
+                        # so every uploaded doc has structured sections in storage.
+                        _enrich_v2(item, html, doc_type, loop)
 
                     # 4a. Re-write the enriched YAML so /list returns the
                     # final structured version.
@@ -894,7 +989,8 @@ def _upload_worker(
                             "Enriched YAML write failed for %s: %s", filename, exc
                         )
 
-                    # 5. Sync statements to LanceDB (only when we have structured sections)
+                    # 5. Sync statements to LanceDB (only when V2 is enabled, since
+                    # indexing costs an embedding call per statement)
                     if v2 and item.get("sections"):
                         _sync_statements(item, user_id, doc_type, loop)
 
