@@ -32,6 +32,8 @@ Thumbs.db
 *.log
 logs/
 
+schema.sql
+
 # Cache and Temporary Files
 *.cache
 *.bak
