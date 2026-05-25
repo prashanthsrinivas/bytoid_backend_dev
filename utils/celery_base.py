@@ -1307,10 +1307,6 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
                 skipped += 1
                 continue
 
-            if data.get("template_version") != 1:
-                skipped += 1
-                continue
-
             existing_sections = data.get("sections", [])
             new_sections = _replicate_sections(existing_sections, policy_type)
 
