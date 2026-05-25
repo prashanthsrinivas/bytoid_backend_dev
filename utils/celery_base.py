@@ -1308,7 +1308,7 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
                 continue
 
             existing_sections = data.get("sections", [])
-            new_sections = _replicate_sections(existing_sections, policy_type)
+            new_sections = _replicate_sections(existing_sections, policy_type, user_id=user_id)
 
             existing_ids = [s["id"] for s in existing_sections]
             new_ids = [s["id"] for s in new_sections]
@@ -1320,7 +1320,7 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
             processed += 1
 
             rendered_html = _render_sections_to_html(new_sections)
-            vr = _validate(rendered_html, policy_type)
+            vr = _validate(rendered_html, policy_type, user_id=user_id)
             new_validation_status = "ok" if vr.ok else "needs_review"
 
             if not dry_run:
@@ -1355,6 +1355,157 @@ def replicate_template_to_org(self, user_id: str, doc_type: str = "all", dry_run
         "doc_type": doc_type,
     }
     logger.info("replicate_template completed: %s", result)
+    return result
+
+
+@celery.task(
+    bind=True,
+    name="tasks.apply_template_to_org",
+    max_retries=2,
+)
+def apply_template_to_org(self, user_id: str, doc_type: str, dry_run: bool = False):
+    """AI-driven recategorisation of every policy of *doc_type* into the user's custom template.
+
+    For each policy YAML:
+      - Build prompt from existing sections/content + new template.
+      - Call Fireworks; parse JSON; validate.
+      - Apply (or just count, when dry_run) and sync statements to LanceDB.
+    Returns counts: { processed, updated, skipped, errors, dry_run, doc_type }.
+    """
+    import asyncio as _asyncio
+    import uuid as _uuid
+    from datetime import datetime as _datetime, timezone as _timezone
+
+    from policy_hub.template_storage import load_custom_template
+    from policy_hub.templates import validate as _validate
+    from policy_hub.routes import (
+        _apply_template_prompt,
+        _parse_llm_json,
+        _render_upload_sections_to_html,
+        _sync_statements,
+        _write_yaml_to_s3,
+    )
+    from utils.fireworkzz import get_fireworks_response2
+    from utils.s3_utils import S3_BUCKET, load_yaml_from_s3, s3bucket
+
+    custom_sections = load_custom_template(user_id, doc_type)
+    if not custom_sections:
+        return {
+            "error": "No custom template saved. Edit and save the template first.",
+            "dry_run": dry_run,
+            "doc_type": doc_type,
+        }
+
+    prefix = f"{user_id}/policies/"
+    try:
+        response = s3bucket().list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
+    except Exception as e:
+        logger.error("apply_template: S3 list failed for %s: %s", user_id, e)
+        return {"error": str(e), "dry_run": dry_run, "doc_type": doc_type}
+
+    keys = [
+        obj["Key"]
+        for obj in response.get("Contents", [])
+        if obj["Key"].endswith(".yaml")
+        and "/raw/" not in obj["Key"]
+        and "/jobs/" not in obj["Key"]
+    ]
+
+    processed, updated, skipped, errors = 0, 0, 0, []
+
+    for key in keys:
+        try:
+            data = load_yaml_from_s3(key)
+            if not data:
+                skipped += 1
+                continue
+
+            if data.get("type") != doc_type:
+                skipped += 1
+                continue
+
+            has_sections = bool(data.get("sections"))
+            has_content = bool(data.get("content"))
+            if not has_sections and not has_content:
+                skipped += 1
+                continue
+
+            processed += 1
+
+            prompt = _apply_template_prompt(data, custom_sections)
+            loop = _asyncio.new_event_loop()
+            try:
+                raw = loop.run_until_complete(
+                    get_fireworks_response2(
+                        user_id=user_id,
+                        user_message=prompt,
+                        role="user",
+                        credits=None,
+                        temp=0.0,
+                    )
+                )
+            except Exception as exc:
+                loop.close()
+                logger.warning("apply_template: LLM call failed for %s: %s", key, exc)
+                errors.append({"key": key, "error": f"LLM call failed: {exc}"})
+                continue
+
+            if raw == "INSUFFICIENT":
+                loop.close()
+                errors.append({"key": key, "error": "Insufficient credits"})
+                # Hard stop on credits exhaustion — do not burn remaining policies.
+                break
+
+            structured = _parse_llm_json(raw) if raw else None
+            if not (isinstance(structured, dict) and isinstance(structured.get("sections"), list)):
+                loop.close()
+                logger.warning(
+                    "apply_template: LLM returned unparseable JSON for %s — skipping",
+                    key,
+                )
+                errors.append({"key": key, "error": "LLM unparseable JSON"})
+                continue
+
+            new_sections = structured["sections"]
+            rendered_html = _render_upload_sections_to_html(new_sections)
+            vr = _validate(rendered_html, doc_type, user_id=user_id)
+            new_validation_status = "ok" if vr.ok else "needs_review"
+
+            if dry_run:
+                loop.close()
+                updated += 1
+                continue
+
+            data["template_version"] = 1
+            data["sections"] = new_sections
+            if isinstance(structured.get("metadata"), dict) and structured["metadata"]:
+                data["metadata"] = structured["metadata"]
+            data["validation_status"] = new_validation_status
+            data["etag"] = str(_uuid.uuid4())
+            data["updated_at"] = _datetime.now(_timezone.utc).isoformat()
+
+            _write_yaml_to_s3(key, data)
+            try:
+                _sync_statements(data, user_id, doc_type, loop)
+            except Exception as se:
+                logger.warning("apply_template: LanceDB sync failed for %s: %s", key, se)
+            finally:
+                loop.close()
+
+            updated += 1
+        except Exception as exc:
+            logger.error("apply_template: failed for %s: %s", key, exc)
+            errors.append({"key": key, "error": str(exc)})
+
+    result = {
+        "processed": processed,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "dry_run": dry_run,
+        "doc_type": doc_type,
+    }
+    logger.info("apply_template completed: %s", result)
     return result
 
 

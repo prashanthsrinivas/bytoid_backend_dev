@@ -5,14 +5,14 @@ from policy_hub.templates import get_template
 logger = logging.getLogger(__name__)
 
 
-def _replicate_sections(existing_sections: list, doc_type: str) -> list:
+def _replicate_sections(existing_sections: list, doc_type: str, user_id: str | None = None) -> list:
     """
     Sync existing sections list to the current template for doc_type.
     - Template sections: added (empty) if missing, reordered to match template order
     - Extra sections not in template: appended at end (preserved, not deleted)
     - Existing section content: kept exactly as-is
     """
-    template_defs = get_template(doc_type)
+    template_defs = get_template(doc_type, user_id=user_id)
     existing_by_id = {s["id"]: s for s in (existing_sections or [])}
     template_ids = {sd.id for sd in template_defs}
 

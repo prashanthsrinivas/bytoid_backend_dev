@@ -22,7 +22,19 @@ from db.rds_db import connect_to_rds
 from db.lance_db_service import LanceDBServer, VectorData, QueryData
 from utils.app_configs import FRAMEWORK_OWNER, policy_hub_v2_enabled, statement_reid_threshold
 from utils.base_logger import get_logger
-from policy_hub.templates import get_template, validate as validate_template
+from policy_hub.templates import (
+    get_template,
+    get_default_template,
+    serialize_section,
+    deserialize_section,
+    validate as validate_template,
+)
+from policy_hub.template_storage import (
+    load_custom_template,
+    save_custom_template,
+    delete_custom_template,
+    get_custom_template_metadata,
+)
 from policy_hub.structured import (
     parse_document_html,
     reconcile_statement_ids,
@@ -44,6 +56,9 @@ from services.audit_log_service import (
     POLICY_SHARE_REVOKED,
     POLICY_UPLOADED,
     TEMPLATE_REPLICATED,
+    TEMPLATE_EDITED,
+    TEMPLATE_RESET,
+    TEMPLATE_APPLIED,
 )
 from shared_configuration import (
     check_role_has_permission,
@@ -172,10 +187,10 @@ def _enumeration_prompt(prompt: str, fw_list: str, type_filter: str) -> str:
     )
 
 
-def _v2_section_requirements(doc_type: str) -> str:
+def _v2_section_requirements(doc_type: str, user_id: str | None = None) -> str:
     """Build the ordered section list injected into the V2 generation prompt."""
     try:
-        template = get_template(doc_type)
+        template = get_template(doc_type, user_id=user_id)
     except KeyError:
         return ""
     lines = []
@@ -206,6 +221,7 @@ def _doc_generation_prompt(
     user_context: str,
     controls: str = "",
     v2: bool = False,
+    user_id: str | None = None,
 ) -> str:
     stmt_heading = "Policy Statement" if doc_type == "policy" else "Procedure Steps"
     enforce_heading = "Enforcement" if doc_type == "policy" else "Compliance Monitoring"
@@ -315,7 +331,7 @@ def _doc_generation_prompt(
                 "where {NEW_UUID} is a freshly generated UUID (e.g., 3f2a1b4c-...). "
                 "Never reuse UUIDs across items.\n\n"
                 "Section order and IDs:\n"
-                + _v2_section_requirements(doc_type)
+                + _v2_section_requirements(doc_type, user_id=user_id)
                 + "\n\n"
             )
             if v2
@@ -334,7 +350,7 @@ def _doc_generation_prompt(
 # ── V2 helpers (no-op when flag is off) ──────────────────────────────────────
 
 
-def _fallback_sections_from_html(html: str, doc_type: str) -> list[dict]:
+def _fallback_sections_from_html(html: str, doc_type: str, user_id: str | None = None) -> list[dict]:
     """Heading-bucketing fallback when structured section extraction fails.
 
     Builds an empty sections list from the template, then walks the source HTML
@@ -345,9 +361,9 @@ def _fallback_sections_from_html(html: str, doc_type: str) -> list[dict]:
     from bs4 import BeautifulSoup
 
     try:
-        template_defs = get_template(doc_type)
+        template_defs = get_template(doc_type, user_id=user_id)
     except KeyError:
-        template_defs = get_template("policy")
+        template_defs = get_template("policy", user_id=user_id)
 
     sections_by_id: dict[str, dict] = {}
     for sd in template_defs:
@@ -411,7 +427,7 @@ def _fallback_sections_from_html(html: str, doc_type: str) -> list[dict]:
     return list(sections_by_id.values())
 
 
-def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEventLoop) -> dict:
+def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEventLoop, user_id: str | None = None) -> dict:
     """Parse HTML into structured sections, validate, and add V2 fields to *item*.
 
     Mutates and returns *item*. Always guarantees a non-empty sections[] — on
@@ -424,7 +440,7 @@ def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEv
 
     try:
         parsed = parse_document_html(content, doc_type)
-        validation = validate_template(content, doc_type)
+        validation = validate_template(content, doc_type, user_id=user_id)
         validation_ok = validation.ok
 
         for sec in parsed.sections:
@@ -466,7 +482,7 @@ def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEv
             "_enrich_v2: falling back to heading-bucketing for policy=%s",
             item.get("policy_id"),
         )
-        sections_data = _fallback_sections_from_html(content, doc_type)
+        sections_data = _fallback_sections_from_html(content, doc_type, user_id=user_id)
         validation_ok = False
 
     item["template_version"] = 1
@@ -589,7 +605,7 @@ def _generation_worker(
                         user_id=user_id,
                         user_message=_doc_generation_prompt(
                             title, d_type, description, fw_list, prompt, controls,
-                            v2=v2,
+                            v2=v2, user_id=user_id,
                         ),
                         role="user",
                         credits=credits,
@@ -624,7 +640,7 @@ def _generation_worker(
                 # Always enrich sections so every doc has section-divided
                 # storage matching the section-divided UI. _enrich_v2 has an
                 # internal heading-bucketing fallback if structured parsing fails.
-                item = _enrich_v2(item, content, d_type, loop)
+                item = _enrich_v2(item, content, d_type, loop, user_id=user_id)
 
                 _write_yaml_to_s3(key, item)
 
@@ -760,12 +776,12 @@ _UPLOAD_SCHEMA_DOC = """
 """
 
 
-def _upload_extraction_prompt(html: str, doc_type: str, filename: str) -> str:
+def _upload_extraction_prompt(html: str, doc_type: str, filename: str, user_id: str | None = None) -> str:
     """Build the Fireworks prompt that maps uploaded HTML to V2 structured sections."""
     try:
-        template = get_template(doc_type)
+        template = get_template(doc_type, user_id=user_id)
         sections_desc = "\n".join(
-            f"  - id={s.id}  title={s.title!r}  kind={s.kind}  required={s.required}"
+            f"  - id={s.id}  title={s.title!r}  kind={s.kind}  required={s.required}  hint={s.prompt_help!r}"
             for s in template
         )
     except KeyError:
@@ -934,7 +950,7 @@ def _upload_worker(
                     # the flag is off, we still produce sections via _enrich_v2's
                     # heading-bucketing fallback so storage always matches UI.
                     if v2:
-                        prompt = _upload_extraction_prompt(html, doc_type, filename)
+                        prompt = _upload_extraction_prompt(html, doc_type, filename, user_id=user_id)
                         try:
                             raw = loop.run_until_complete(
                                 get_fireworks_response2(
@@ -963,7 +979,7 @@ def _upload_worker(
                                 sections_html = _render_upload_sections_to_html(
                                     item["sections"]
                                 )
-                                vr = validate_template(sections_html, doc_type)
+                                vr = validate_template(sections_html, doc_type, user_id=user_id)
                                 item["validation_status"] = "ok" if vr.ok else "needs_review"
                                 item["migration_status"] = "ok"
                             else:
@@ -972,12 +988,12 @@ def _upload_worker(
                                     "LLM mapping returned unparseable JSON for %s — falling back to _enrich_v2",
                                     filename,
                                 )
-                                _enrich_v2(item, html, doc_type, loop)
+                                _enrich_v2(item, html, doc_type, loop, user_id=user_id)
                                 item.setdefault("migration_status", "needs_review")
                     else:
                         # v2 disabled — still produce sections via heading-bucketing
                         # so every uploaded doc has structured sections in storage.
-                        _enrich_v2(item, html, doc_type, loop)
+                        _enrich_v2(item, html, doc_type, loop, user_id=user_id)
 
                     # 4a. Re-write the enriched YAML so /list returns the
                     # final structured version.
@@ -1585,7 +1601,7 @@ def _edit_worker(
                 doc_type = existing.get("type", "policy")
                 threshold = statement_reid_threshold(user_id)
                 existing = _reconcile_and_enrich_edit(
-                    existing, updated_content, doc_type, threshold, loop
+                    existing, updated_content, doc_type, threshold, loop, user_id=user_id
                 )
 
             try:
@@ -1619,6 +1635,7 @@ def _reconcile_and_enrich_edit(
     doc_type: str,
     threshold: float,
     loop: asyncio.AbstractEventLoop,
+    user_id: str | None = None,
 ) -> dict:
     """Reconcile statement IDs after an edit, rebuild sections, sync to LanceDB."""
     from policy_hub.structured import Statement
@@ -1644,7 +1661,7 @@ def _reconcile_and_enrich_edit(
 
         # Parse the updated HTML into new sections
         parsed = parse_document_html(updated_content, doc_type)
-        validation = validate_template(updated_content, doc_type)
+        validation = validate_template(updated_content, doc_type, user_id=user_id)
         existing["validation_status"] = "ok" if validation.ok else "needs_review"
 
         all_active: list[Statement] = []
@@ -1882,7 +1899,7 @@ def update_policy():
         loop = asyncio.new_event_loop()
         try:
             existing = _reconcile_and_enrich_edit(
-                existing, existing["content"], doc_type, threshold, loop
+                existing, existing["content"], doc_type, threshold, loop, user_id=user_id
             )
         finally:
             loop.close()
@@ -2648,4 +2665,315 @@ def admin_replicate_status():
     elif state == "FAILURE":
         payload["error"] = str(result.result)
 
+    return jsonify(payload), 200
+
+
+# ─── Per-org Template editor + AI-driven apply ──────────────────────────────
+
+_VALID_TEMPLATE_DOC_TYPES = ("policy", "procedure", "standard")
+
+
+def _resolve_template_user_id() -> str | None:
+    """Resolve the acting user_id for a template endpoint."""
+    return (
+        getattr(g, "user_id", None)
+        or getattr(g, "session_user_id", None)
+        or request.form.get("user_id")
+        or request.args.get("user_id")
+        or (request.get_json(silent=True) or {}).get("user_id")
+    )
+
+
+def _apply_template_prompt(existing_yaml: dict, new_template: list) -> str:
+    """Build an LLM prompt that recategorises an existing policy under a new template.
+
+    *existing_yaml* is the parsed YAML dict (sections + content). *new_template* is
+    a list of SectionDef. The LLM must preserve all content; missing source
+    matches land in the closest section's body_html.
+    """
+    sections_desc = "\n".join(
+        f"  - id={s.id}  title={s.title!r}  kind={s.kind}  required={s.required}  hint={s.prompt_help!r}"
+        for s in new_template
+    )
+
+    # Build a single source HTML blob from the existing sections (preferred) or
+    # the legacy `content` field.
+    src_sections = existing_yaml.get("sections") or []
+    if src_sections:
+        source_html = _render_upload_sections_to_html(src_sections)
+    else:
+        source_html = existing_yaml.get("content") or ""
+
+    return (
+        "You are a compliance document restructuring assistant. The source HTML "
+        "below is an existing policy that must be reorganized to match a NEW "
+        "template structure. Your job: recategorize every existing statement and "
+        "every block of body content under the new template's section IDs.\n\n"
+        "STRICT RULES:\n"
+        "- Do NOT invent content not present in the source. Preserve wording.\n"
+        "- Every existing statement must end up in exactly one new section.\n"
+        "- If source content does not clearly map to any new section, place it in "
+        "the closest section's body_html (never drop content).\n"
+        "- Preserve existing statement IDs verbatim when the text is substantially unchanged.\n"
+        "- Include every section from the NEW template in the output, even when empty.\n"
+        "- Return ONLY valid JSON — no markdown, no code fences, no commentary.\n\n"
+        "TARGET SCHEMA:\n"
+        f"{_UPLOAD_SCHEMA_DOC}\n\n"
+        "NEW TEMPLATE SECTIONS (target structure):\n"
+        f"{sections_desc}\n\n"
+        f"SOURCE HTML:\n{(source_html or '')[:80000]}\n\n"
+        "JSON:"
+    )
+
+
+def _template_chat_prompt(current_sections: list, instruction: str, doc_type: str) -> str:
+    """Build an LLM prompt that revises the template draft based on a chat instruction."""
+    current_desc = json.dumps(
+        [serialize_section(s) for s in current_sections], indent=2
+    )
+    return (
+        "You are a compliance template designer. Below is the current draft of a "
+        f"{doc_type} template (list of sections). Apply the user's instruction and "
+        "return the **complete revised template** as a JSON array of section "
+        "objects. Each object must have keys: id (kebab-case slug), title, kind "
+        "(one of: text, statements, steps, header_table, history), required (bool), "
+        "prompt_help (one sentence guiding what content belongs).\n\n"
+        "STRICT RULES:\n"
+        "- Return ONLY a JSON array, no markdown, no code fences, no commentary.\n"
+        "- Preserve existing section IDs when keeping a section; mint new kebab-case IDs only for newly added sections.\n"
+        "- Do not drop sections unless the instruction explicitly asks.\n\n"
+        f"CURRENT TEMPLATE:\n{current_desc}\n\n"
+        f"USER INSTRUCTION:\n{instruction}\n\n"
+        "JSON:"
+    )
+
+
+@policy_hub_bp.route("/template/<doc_type>", methods=["GET"])
+def get_template_endpoint(doc_type: str):
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    if doc_type not in _VALID_TEMPLATE_DOC_TYPES:
+        return jsonify({"error": f"doc_type must be one of {_VALID_TEMPLATE_DOC_TYPES}"}), 400
+
+    user_id = _resolve_template_user_id()
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    custom = load_custom_template(user_id, doc_type)
+    if custom:
+        sections = [serialize_section(s) for s in custom]
+        meta = get_custom_template_metadata(user_id, doc_type) or {}
+        return jsonify({
+            "doc_type": doc_type,
+            "sections": sections,
+            "is_custom": True,
+            "updated_at": meta.get("updated_at"),
+        }), 200
+
+    defaults = get_default_template(doc_type)
+    return jsonify({
+        "doc_type": doc_type,
+        "sections": [serialize_section(s) for s in defaults],
+        "is_custom": False,
+        "updated_at": None,
+    }), 200
+
+
+@policy_hub_bp.route("/template/<doc_type>", methods=["PUT"])
+def put_template_endpoint(doc_type: str):
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    if doc_type not in _VALID_TEMPLATE_DOC_TYPES:
+        return jsonify({"error": f"doc_type must be one of {_VALID_TEMPLATE_DOC_TYPES}"}), 400
+
+    user_id = _resolve_template_user_id()
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    body = request.get_json(silent=True) or {}
+    sections = body.get("sections")
+    if not isinstance(sections, list):
+        return jsonify({"error": "sections must be a list"}), 400
+
+    try:
+        save_custom_template(user_id, doc_type, sections)
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+    except Exception as exc:
+        logger.error("put_template_endpoint: save failed: %s", exc)
+        return jsonify({"error": "Failed to save template"}), 500
+
+    log_audit_event(
+        action=TEMPLATE_EDITED,
+        endpoint=f"/policy-hub/template/{doc_type}",
+        ip=request.remote_addr,
+        status="ok",
+        actor_user_id=user_id,
+        actor_email=get_email_by_id(user_id),
+        metadata={"doc_type": doc_type, "section_count": len(sections)},
+    )
+    return jsonify({"ok": True}), 200
+
+
+@policy_hub_bp.route("/template/<doc_type>/reset", methods=["POST"])
+def reset_template_endpoint(doc_type: str):
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    if doc_type not in _VALID_TEMPLATE_DOC_TYPES:
+        return jsonify({"error": f"doc_type must be one of {_VALID_TEMPLATE_DOC_TYPES}"}), 400
+
+    user_id = _resolve_template_user_id()
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    try:
+        delete_custom_template(user_id, doc_type)
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+
+    log_audit_event(
+        action=TEMPLATE_RESET,
+        endpoint=f"/policy-hub/template/{doc_type}/reset",
+        ip=request.remote_addr,
+        status="ok",
+        actor_user_id=user_id,
+        actor_email=get_email_by_id(user_id),
+        metadata={"doc_type": doc_type},
+    )
+    return jsonify({"ok": True}), 200
+
+
+@policy_hub_bp.route("/template/<doc_type>/chat", methods=["POST"])
+def template_chat_endpoint(doc_type: str):
+    """Revise the template draft based on a chat instruction. Returns revised sections."""
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    if doc_type not in _VALID_TEMPLATE_DOC_TYPES:
+        return jsonify({"error": f"doc_type must be one of {_VALID_TEMPLATE_DOC_TYPES}"}), 400
+
+    user_id = _resolve_template_user_id()
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    body = request.get_json(silent=True) or {}
+    instruction = (body.get("instruction") or "").strip()
+    current = body.get("current_sections")
+    if not instruction:
+        return jsonify({"error": "instruction is required"}), 400
+    if not isinstance(current, list) or not current:
+        return jsonify({"error": "current_sections must be a non-empty list"}), 400
+
+    try:
+        current_defs = [deserialize_section(s) for s in current]
+    except Exception as exc:
+        return jsonify({"error": f"invalid current_sections: {exc}"}), 400
+
+    prompt = _template_chat_prompt(current_defs, instruction, doc_type)
+    loop = asyncio.new_event_loop()
+    try:
+        raw = loop.run_until_complete(
+            get_fireworks_response2(
+                user_id=user_id,
+                user_message=prompt,
+                role="user",
+                credits=None,
+                temp=0.1,
+            )
+        )
+    except Exception as exc:
+        logger.error("template_chat_endpoint LLM call failed: %s", exc)
+        return jsonify({"error": "LLM call failed"}), 502
+    finally:
+        loop.close()
+
+    if raw == "INSUFFICIENT":
+        return jsonify({"error": "Insufficient credits"}), 402
+
+    parsed = _parse_llm_json(raw) if raw else None
+    # Accept either a bare array or { sections: [...] } in case the LLM wraps it
+    revised: list | None = None
+    if isinstance(parsed, list):
+        revised = parsed
+    elif isinstance(parsed, dict) and isinstance(parsed.get("sections"), list):
+        revised = parsed["sections"]
+
+    if not revised:
+        return jsonify({"error": "LLM returned unparseable JSON", "raw": (raw or "")[:500]}), 502
+
+    # Validate the LLM output via save_custom_template's checks (without saving)
+    seen = set()
+    for idx, s in enumerate(revised):
+        if not isinstance(s, dict):
+            return jsonify({"error": f"section[{idx}] is not an object"}), 502
+        sid = (s.get("id") or "").strip()
+        if not sid or sid in seen:
+            return jsonify({"error": f"section[{idx}] missing or duplicate id"}), 502
+        seen.add(sid)
+        if s.get("kind") not in ("text", "statements", "steps", "header_table", "history"):
+            return jsonify({"error": f"section[{idx}] invalid kind {s.get('kind')!r}"}), 502
+
+    return jsonify({"sections": revised}), 200
+
+
+@policy_hub_bp.route("/template/<doc_type>/apply", methods=["POST"])
+def apply_template_endpoint(doc_type: str):
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    if doc_type not in _VALID_TEMPLATE_DOC_TYPES:
+        return jsonify({"error": f"doc_type must be one of {_VALID_TEMPLATE_DOC_TYPES}"}), 400
+
+    user_id = _resolve_template_user_id()
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    # Custom template must exist — applying defaults wouldn't change anything
+    if load_custom_template(user_id, doc_type) is None:
+        return jsonify({"error": "No custom template saved. Edit and save the template before applying."}), 400
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+
+    from utils.celery_base import apply_template_to_org
+    task = apply_template_to_org.delay(user_id, doc_type, dry_run)
+
+    log_audit_event(
+        action=TEMPLATE_APPLIED,
+        endpoint=f"/policy-hub/template/{doc_type}/apply",
+        ip=request.remote_addr,
+        status="queued",
+        actor_user_id=user_id,
+        actor_email=get_email_by_id(user_id),
+        metadata={"doc_type": doc_type, "dry_run": dry_run, "task_id": task.id},
+    )
+    return jsonify({"task_id": task.id, "status": "queued", "doc_type": doc_type, "dry_run": dry_run}), 202
+
+
+@policy_hub_bp.route("/template/apply-status", methods=["GET"])
+def apply_template_status_endpoint():
+    auth_error = _require_framework_owner()
+    if auth_error:
+        return auth_error
+
+    task_id = request.args.get("task_id")
+    if not task_id:
+        return jsonify({"error": "task_id is required"}), 400
+
+    from utils.celery_base import apply_template_to_org
+    result = apply_template_to_org.AsyncResult(task_id)
+    state = result.state
+    payload = {"task_id": task_id, "state": state}
+    if state == "SUCCESS":
+        payload["result"] = result.result
+    elif state == "FAILURE":
+        payload["error"] = str(result.result)
     return jsonify(payload), 200

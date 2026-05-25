@@ -276,9 +276,51 @@ TEMPLATES: dict[str, list[SectionDef]] = {
 }
 
 
-def get_template(doc_type: str) -> list[SectionDef]:
-    """Return the template for *doc_type*, raising KeyError if unknown."""
+def get_default_template(doc_type: str) -> list[SectionDef]:
+    """Return Bytoid's hardcoded default template for *doc_type*."""
     return TEMPLATES[doc_type]
+
+
+def get_template(doc_type: str, user_id: str | None = None) -> list[SectionDef]:
+    """Return the template for *doc_type* — per-org override if present, else default.
+
+    If *user_id* is supplied, attempt to load a customised template from S3
+    via ``policy_hub.template_storage.load_custom_template``. Falls back to
+    the hardcoded default when no override exists or the load fails. Raises
+    KeyError if *doc_type* is unknown.
+    """
+    if user_id:
+        try:
+            from policy_hub.template_storage import load_custom_template
+            custom = load_custom_template(user_id, doc_type)
+            if custom:
+                return custom
+        except Exception:
+            # On any failure fall through to the default — never block reads.
+            pass
+    return TEMPLATES[doc_type]
+
+
+def serialize_section(s: SectionDef) -> dict:
+    """Convert a SectionDef into a plain dict for JSON/YAML transport."""
+    return {
+        "id": s.id,
+        "title": s.title,
+        "kind": s.kind,
+        "required": s.required,
+        "prompt_help": s.prompt_help,
+    }
+
+
+def deserialize_section(d: dict) -> SectionDef:
+    """Build a SectionDef from a plain dict (e.g. loaded from YAML/JSON)."""
+    return SectionDef(
+        id=str(d["id"]),
+        title=str(d.get("title", "")),
+        kind=d.get("kind", "text"),
+        required=bool(d.get("required", True)),
+        prompt_help=str(d.get("prompt_help", "")),
+    )
 
 
 @dataclass
@@ -289,15 +331,16 @@ class ValidationResult:
     statements_missing_ids: int = 0
 
 
-def validate(content_html: str, doc_type: str) -> ValidationResult:
+def validate(content_html: str, doc_type: str, user_id: str | None = None) -> ValidationResult:
     """Validate *content_html* against the template for *doc_type*.
 
-    Returns a ValidationResult. Does not raise on failure — callers decide
-    whether to block or surface a warning.
+    When *user_id* is supplied, the per-org override is used; otherwise the
+    default template is used. Returns a ValidationResult. Does not raise on
+    failure — callers decide whether to block or surface a warning.
     """
     from bs4 import BeautifulSoup
 
-    template = get_template(doc_type)
+    template = get_template(doc_type, user_id=user_id)
     soup = BeautifulSoup(content_html, "lxml")
 
     # Build index of present section ids from data-section-id attributes
