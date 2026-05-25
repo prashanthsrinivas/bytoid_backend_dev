@@ -53,6 +53,58 @@ class CreditManager:
         self.redis = get_redis()
 
     # -----------------------------------------------------
+    # INVITED USER → BILLING ADMIN RESOLUTION
+    # -----------------------------------------------------
+
+    def _resolve_billing_user_id(self, user_id: str) -> str:
+        """
+        If user_id belongs to an invited user, returns the admin's user_id.
+        Resolution order:
+          1. user_type != 'user' → return user_id unchanged
+          2. permissions.invited_by (non-null, non-'system') → look up admin by email
+          3. launch_id_fk fallback
+          4. Silent fail → return user_id unchanged
+        """
+        try:
+            cur = self.db.cursor(pymysql.cursors.DictCursor)
+            cur.execute(
+                "SELECT user_type, permissions, launch_id_fk FROM users WHERE user_id=%s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            cur.close()
+
+            if not row or row.get("user_type") != "user":
+                return user_id
+
+            # Check permissions.invited_by
+            try:
+                perms = json.loads(row["permissions"]) if row.get("permissions") else {}
+                invited_by_email = perms.get("invited_by") if isinstance(perms, dict) else None
+                if invited_by_email and invited_by_email != "system":
+                    cur2 = self.db.cursor(pymysql.cursors.DictCursor)
+                    cur2.execute(
+                        "SELECT user_id FROM users WHERE email=%s AND user_type='admin' LIMIT 1",
+                        (invited_by_email,),
+                    )
+                    admin_row = cur2.fetchone()
+                    cur2.close()
+                    if admin_row and admin_row.get("user_id"):
+                        return admin_row["user_id"]
+            except Exception:
+                pass
+
+            # Fallback: launch_id_fk
+            launch_id = (row.get("launch_id_fk") or "").strip()
+            if launch_id:
+                return launch_id
+
+        except Exception:
+            pass
+
+        return user_id
+
+    # -----------------------------------------------------
     # REDIS HELPERS
     # -----------------------------------------------------
 
@@ -64,6 +116,7 @@ class CreditManager:
     # -----------------------------------------------------
 
     async def sync_credits_to_redis(self, user_id: str) -> int:
+        user_id = self._resolve_billing_user_id(user_id)
         cur = self.db.cursor(pymysql.cursors.DictCursor)
         cur.execute(
             """
@@ -98,6 +151,7 @@ class CreditManager:
     # -----------------------------------------------------
 
     async def get_available_credits(self, user_id: str) -> int:
+        user_id = self._resolve_billing_user_id(user_id)
         # if self.redis:
         #     cached = await self.redis.hget(self._redis_key(user_id), "total_available")
         #     if cached is not None:
@@ -111,6 +165,7 @@ class CreditManager:
     # -----------------------------------------------------
 
     async def has_sufficient_credits(self, user_id: str, needed: int) -> bool:
+        user_id = self._resolve_billing_user_id(user_id)
         return await self.get_available_credits(user_id) >= needed
 
     # async def _write_credit_summary_to_redis(self, user_id: str):
@@ -205,7 +260,7 @@ class CreditManager:
         reason: str,
         reference_id: str,
     ) -> CreditUsageResult:
-
+        user_id = self._resolve_billing_user_id(user_id)
         remaining = credits_needed
         breakdown = []
 
@@ -320,6 +375,7 @@ class CreditManager:
                 # print("Cursor closed")
 
     def get_credit_summary(self, user_id: str) -> Dict:
+        user_id = self._resolve_billing_user_id(user_id)
         cur = self.db.cursor(pymysql.cursors.DictCursor)
 
         cur.execute(
@@ -438,6 +494,7 @@ class CreditManager:
         }
 
     def check_if_remaining(self, user_id: str) -> Dict:
+        user_id = self._resolve_billing_user_id(user_id)
         cur = self.db.cursor(pymysql.cursors.DictCursor)
 
         cur.execute(
@@ -507,6 +564,7 @@ class CreditManager:
     # -----------------------------------------------------
 
     def get_credit_balance(self, user_id: str) -> Dict:
+        user_id = self._resolve_billing_user_id(user_id)
         cur = self.db.cursor(pymysql.cursors.DictCursor)
         cur.execute(
             """

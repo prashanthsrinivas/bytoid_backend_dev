@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 import json
 from db.rds_db import connect_to_rds
-from db.db_checkers import get_email_by_id
+from db.db_checkers import get_email_by_id, get_billing_user_id, is_invited_user
 from flask import Blueprint, request, jsonify
 from utils.normal import parse_composite_user_id
 from services.redis_service import get_redis
@@ -145,6 +145,15 @@ def subscribe():
         email = get_email_by_id(user_id)
 
     try:
+        # Block invited users — payments must be made by their admin
+        if is_invited_user(user_id, conn):
+            return (
+                jsonify({
+                    "error": "Invited users cannot make payments. Please ask your admin to manage the subscription."
+                }),
+                403,
+            )
+
         # -----------------------------
         # 1️⃣ Fetch new plan amount
         # -----------------------------
@@ -323,6 +332,15 @@ def paymenttopup():
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
+        # Block invited users — payments must be made by their admin
+        if is_invited_user(user_id, connection):
+            return (
+                jsonify({
+                    "error": "Invited users cannot make payments. Please ask your admin to manage the subscription."
+                }),
+                403,
+            )
+
         cursor.execute(
             """
             SELECT stripe_price_id, is_topup,monthly_token_limit
@@ -431,6 +449,7 @@ def get_user_subscriptions(user_id):
     if not user_id or user_id in ("failure", "None"):
         return jsonify({"error": "user_id is required"}), 400
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    user_id = get_billing_user_id(user_id)  # redirect invited users to admin
     conn = connect_to_rds()
     if not conn:
         return jsonify({"error": "DB connection failed"}), 500
@@ -614,6 +633,7 @@ def get_user_payments(user_id):
     conn = connect_to_rds()
     cur = conn.cursor(pymysql.cursors.DictCursor)
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
+    user_id = get_billing_user_id(user_id)  # redirect invited users to admin
 
     try:
         cur.execute(

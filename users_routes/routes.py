@@ -28,6 +28,7 @@ from db.db_checkers import (
     fetch_user_domains,
     get_business_info,
     get_email_by_id,
+    is_invited_user,
 )
 from services.audit_log_service import (
     log_audit_event,
@@ -951,7 +952,11 @@ def user_login():
                     needs_baseline = True
                 else:
                     try:
-                        parsed = json.loads(raw_perms) if isinstance(raw_perms, str) else (raw_perms or {})
+                        parsed = (
+                            json.loads(raw_perms)
+                            if isinstance(raw_perms, str)
+                            else (raw_perms or {})
+                        )
                     except Exception:
                         parsed = {}
                     role_obj = (parsed or {}).get("role") or {}
@@ -1001,6 +1006,8 @@ def user_login():
                     "first_name": user["first_name"],
                     "last_name": user["last_name"],
                     "user_type": user["user_type"],
+                    "invited_user": is_invited_user(user["user_id"], conn),
+                    "launch_id_fk": user.get("launch_id_fk") or None,
                 },
                 "betaAgreementAccepted": newuser,
                 "has_totp": bool(user["totp_secret"]),
@@ -1983,6 +1990,7 @@ def rotate_encryption_key():
 def get_user_business_name(userid):
     try:
         from utils.normal import parse_composite_user_id
+
         _, user_id = parse_composite_user_id(userid)
         conn = connect_to_rds()
         info = get_business_info(user_id, conn) or {}

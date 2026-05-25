@@ -22,6 +22,7 @@ from db.db_checkers import (
     check_onboarding_user,
     ensure_starter_credits_for_user,
     fetch_apikey_from_launch,
+    is_invited_user,
 )
 from services.redis_service import get_redis
 from utils.base_logger import get_logger
@@ -677,9 +678,6 @@ async def receive_browser_url():
         credit_status = avail_credits.get("status")
         message = avail_credits.get("message")
 
-        cursor.close()
-        connection.close()
-
         if user_id in ACCESSIBLE_IDS:
             # Prepare response
             response = make_response(
@@ -694,6 +692,7 @@ async def receive_browser_url():
                         "credit_status": credit_status,
                         "message": message,
                         "bytoid_admin": True,
+                        "invited_user": is_invited_user(user_id, connection),
                     }
                 )
             )
@@ -710,6 +709,7 @@ async def receive_browser_url():
                         "service": "google",
                         "credit_status": credit_status,
                         "message": message,
+                        "invited_user": is_invited_user(user_id, connection),
                     }
                 )
             )
@@ -748,6 +748,9 @@ async def receive_browser_url():
     except Exception as e:
         logger.info("Error at login at browser_url", e)
         return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        connection.close()
 
 
 @google_bp.route("/sync-drive")

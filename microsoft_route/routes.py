@@ -13,7 +13,7 @@ from agent_route.ag_helperzz import (
     process_and_update_yaml,
     remove_https_prefix,
 )
-from db.db_checkers import ensure_starter_credits_for_user
+from db.db_checkers import ensure_starter_credits_for_user, is_invited_user
 from utils.normal import parse_composite_user_id
 from .microsoft_helpers import retrieve_auth_state_from_redis
 from integrations.integrations_helpers import get_all_integrations
@@ -891,9 +891,6 @@ async def microsoft_callback():
         credit_status = avail_credits.get("status")
         message = avail_credits.get("message")
 
-        cursor.close()
-        connection.close()
-
         response = make_response(
             jsonify(
                 {
@@ -904,6 +901,7 @@ async def microsoft_callback():
                     "service": "microsoft",
                     "credit_status": credit_status,
                     "message": message,
+                    "invited_user": is_invited_user(user_id, connection),
                 }
             )
         )
@@ -943,6 +941,9 @@ async def microsoft_callback():
         logger.error(f"Traceback: {traceback.format_exc()}")
 
         return redirect(f"{frontend_url}/login?error=callback_failed")
+    finally:
+        cursor.close()
+        connection.close()
 
 
 @permission_required_body("admin.manage_users")

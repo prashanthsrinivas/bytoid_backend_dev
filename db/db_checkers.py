@@ -1513,3 +1513,64 @@ def make_api_key(user_id):
     except Exception as e:
         # print(f"Error generating API key: {e}")  # Or use logging instead of print
         return jsonify({"error": f"Internal server error {e}"}), 500
+
+
+def get_billing_user_id(user_id: str, conn=None) -> str:
+    """
+    Returns the billing admin's user_id if user_id belongs to an invited user.
+    Otherwise returns user_id unchanged.
+
+    Resolution order:
+    1. If user_type != 'user' → not invited → return user_id
+    2. Parse permissions JSON: if invited_by is present and != 'system' →
+       look up admin by that email → return their user_id
+    3. Fallback: if launch_id_fk is non-empty → return it directly
+    4. Nothing found → return user_id unchanged
+    """
+    own_conn = conn is None
+    try:
+        if own_conn:
+            conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT user_type, permissions, launch_id_fk FROM users WHERE user_id=%s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row or row.get("user_type") != "user":
+                return user_id
+
+            # Check permissions.invited_by
+            try:
+                perms = json.loads(row["permissions"]) if row.get("permissions") else {}
+                invited_by_email = perms.get("invited_by") if isinstance(perms, dict) else None
+                if invited_by_email and invited_by_email != "system":
+                    cur.execute(
+                        "SELECT user_id FROM users WHERE email=%s AND user_type='admin' LIMIT 1",
+                        (invited_by_email,),
+                    )
+                    admin_row = cur.fetchone()
+                    if admin_row and admin_row.get("user_id"):
+                        return admin_row["user_id"]
+            except Exception:
+                pass
+
+            # Fallback: launch_id_fk
+            launch_id = (row.get("launch_id_fk") or "").strip()
+            if launch_id:
+                return launch_id
+
+        return user_id
+    except Exception:
+        return user_id
+    finally:
+        if own_conn and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def is_invited_user(user_id: str, conn=None) -> bool:
+    """Returns True if user_id belongs to a user who was invited by an admin."""
+    return get_billing_user_id(user_id, conn) != user_id
