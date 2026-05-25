@@ -1707,6 +1707,18 @@ def result_list(user_id):
             reverse=True,
         )
 
+        try:
+            from workflow_route.state_machine import get_workflow_states_for_docs
+
+            states_by_id = get_workflow_states_for_docs(
+                "runbook",
+                [r.get("result_id") for r in filtered_results if r.get("result_id")],
+            )
+            for r in filtered_results:
+                r["workflow_state"] = states_by_id.get(r.get("result_id"))
+        except Exception as wf_exc:
+            logger.warning("workflow_state lookup failed: %s", wf_exc)
+
         return (
             jsonify(
                 {
