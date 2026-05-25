@@ -3095,6 +3095,42 @@ def pb_temp_clone_min():
         if not workflow_json and is_global:
             workflow_json = read_json_from_s3(f"workflow/global/{base}/{filename}")
 
+        # Final fallback: frontend may have omitted assignment_id. Discover an
+        # assignment for this user whose workflow_filename matches our base, and
+        # try the admin's space for it.
+        if not workflow_json and not assignment_admin_id:
+            conn = connect_to_rds()
+            try:
+                with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                    cursor.execute(
+                        "SELECT admin_id, workflow_filename FROM intake_workflow_assignments "
+                        "WHERE recipient_user_id=%s "
+                        "AND (workflow_filename=%s OR workflow_filename=%s OR workflow_filename LIKE %s) "
+                        "ORDER BY assignment_id DESC LIMIT 1",
+                        (
+                            user_id,
+                            filename,
+                            filename[:-5] if filename.endswith(".json") else filename,
+                            f"{base}%",
+                        ),
+                    )
+                    asn = cursor.fetchone()
+            finally:
+                conn.close()
+            if asn:
+                discovered_admin = asn["admin_id"]
+                discovered_filename = asn["workflow_filename"]
+                if not discovered_filename.lower().endswith(".json"):
+                    discovered_filename = f"{discovered_filename}.json"
+                discovered_base = base_name(filename=discovered_filename)
+                admin_loc = f"{discovered_admin}/workflow/{discovered_base}/{discovered_filename}"
+                workflow_json = read_json_from_s3(admin_loc)
+                if workflow_json:
+                    source_user_id = discovered_admin
+                    filename = discovered_filename
+                    base = discovered_base
+                    assignment_admin_id = discovered_admin
+
         if not workflow_json:
             logger.error(
                 "pb_temp_clone: workflow not found. user=%s filename=%s assignment_id=%s admin=%s",
