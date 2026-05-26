@@ -1,11 +1,11 @@
 """
 Find who removed admin rights from a user, and who their current owning admin is.
 
-Usage on EC2 (from the project root, where .env / venv are set up):
+Usage on EC2 (run from the same directory as app.py, where .env / venv are set up):
 
-    python scripts/find_admin_change.py service@bytoid.ca
-    python scripts/find_admin_change.py service@bytoid.ca --days 365
-    python scripts/find_admin_change.py service@bytoid.ca --full-scan
+    python find_admin_change.py service@bytoid.ca
+    python find_admin_change.py service@bytoid.ca --days 365
+    python find_admin_change.py service@bytoid.ca --full-scan
 
 Notes:
 - "Current admin" = the row in `users` resolved via get_billing_user_id().
