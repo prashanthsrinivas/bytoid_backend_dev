@@ -1198,21 +1198,51 @@ class AutoMateService:
         # 🔧 HELPERS
         # ===========================
         def safe_json_load(response):
+            text = response.strip()
+
+            # Strip markdown code fences
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+            text = text.strip()
+
+            # Try direct parse first
             try:
-                return json.loads(response)
+                return json.loads(text)
             except Exception:
-                match = re.search(r"\[\s*{.*}\s*\]", response, re.DOTALL)
-                if match:
-                    json_str = match.group(0)
+                pass
 
-                    json_str = re.sub(r'(?<!\\)"\n', '\\"', json_str)
-                    json_str = re.sub(r"\n", " ", json_str)
-                    json_str = re.sub(r",\s*}", "}", json_str)
-                    json_str = re.sub(r",\s*]", "]", json_str)
+            # Extract the outermost JSON array
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            if not match:
+                raise ValueError("No JSON array found in response")
 
-                    return json.loads(json_str)
+            json_str = match.group(0)
 
-                raise ValueError("No valid JSON found in response")
+            # Fix trailing commas before } or ]
+            json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
+
+            # Fix unescaped control characters inside JSON string values
+            def _fix_string(m):
+                s = m.group(0)
+                # Replace literal newlines/tabs/carriage returns with escape sequences
+                s = s[1:-1]  # strip surrounding quotes
+                s = s.replace("\\n", "\x00NEWLINE\x00")  # protect already-escaped
+                s = s.replace("\\t", "\x00TAB\x00")
+                s = s.replace("\n", "\\n")
+                s = s.replace("\r", "\\r")
+                s = s.replace("\t", "\\t")
+                s = s.replace("\x00NEWLINE\x00", "\\n")
+                s = s.replace("\x00TAB\x00", "\\t")
+                return '"' + s + '"'
+
+            json_str = re.sub(r'"(?:[^"\\]|\\.)*"', _fix_string, json_str)
+
+            try:
+                return json.loads(json_str)
+            except Exception:
+                pass
+
+            raise ValueError("No valid JSON found in response")
 
         def clean_section(q):
             if q.get("section") and q.get("question"):
@@ -1225,6 +1255,7 @@ class AutoMateService:
         # ===========================
         all_questions = []
         global_index = 1
+        chunk_errors = []
 
         last_section = None
         last_subsection = None
@@ -1344,10 +1375,8 @@ class AutoMateService:
                 all_questions.extend(cleaned_chunk)
 
             except Exception as e:
-                return {
-                    "error": f"Chunk {chunk_idx} failed",
-                    "details": str(e),
-                }
+                chunk_errors.append({"chunk": chunk_idx, "error": str(e)})
+                continue
 
         # ❌ REMOVED DEDUPLICATION (IMPORTANT)
 
@@ -1372,11 +1401,14 @@ class AutoMateService:
         # ===========================
         # ✅ FINAL OUTPUT
         # ===========================
-        return {
+        result = {
             "questions": all_questions,
             "total_questions": len(all_questions),
             "total_chunks": len(chunks),
         }
+        if chunk_errors:
+            result["chunk_errors"] = chunk_errors
+        return result
 
     async def assign_or_show_questions_from_file(self):
         # Ensure workflow exists

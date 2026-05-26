@@ -3414,13 +3414,54 @@ class WorkflowRunnerV2:
 
             # last 3 chat messages for context
             chat_context = chats[-3:] if chats else []
-            # print("dsadasdas")
+
+            # --- Chunk-based context window ---
+            # Split steps and previous_results into fixed-size chunks, then pass
+            # only the chunk that contains the current step. This avoids token
+            # overflow on large workflows without losing any data fidelity within
+            # the relevant window.
+            STEP_CHUNK_SIZE = 10   # steps per chunk
+            RESULT_CHUNK_SIZE = 8  # result entries per chunk
+
+            def _chunk_dict(data: dict, chunk_size: int, anchor_key) -> dict:
+                """Return the chunk of `data` that contains `anchor_key`.
+                Keys are ordered as-is; the window is padded to include 1 chunk
+                before and after the anchor chunk so the AI sees neighbourhood
+                context."""
+                keys = list(data.keys())
+                anchor_str = str(anchor_key)
+                try:
+                    anchor_idx = next(
+                        i for i, k in enumerate(keys) if str(k) == anchor_str
+                    )
+                except StopIteration:
+                    anchor_idx = 0
+
+                chunk_idx = anchor_idx // chunk_size
+                # include neighbouring chunk for continuity
+                start_chunk = max(0, chunk_idx - 1)
+                end_chunk = chunk_idx + 2  # exclusive
+                start = start_chunk * chunk_size
+                end = min(len(keys), end_chunk * chunk_size)
+                window_keys = keys[start:end]
+                result = {k: data[k] for k in window_keys}
+                # Annotate so the AI knows its position in the full workflow
+                result["__chunk_meta__"] = {
+                    "showing_steps": f"{start + 1}–{start + len(window_keys)} of {len(keys)}",
+                    "current_step": anchor_str,
+                }
+                return result
+
+            steps_chunk = _chunk_dict(self.steps, STEP_CHUNK_SIZE, current_step)
+            results_chunk = _chunk_dict(
+                previous_results or {}, RESULT_CHUNK_SIZE, current_step
+            )
 
             prompt_text = (
-                detect_prompt.replace("{{workflow_json}}", json.dumps(self.steps))
+                detect_prompt.replace("{{workflow_json}}", json.dumps(steps_chunk))
                 .replace("{{current_step}}", str(current_step))
                 .replace("{{step_data}}", json.dumps(step_data))
-                .replace("{{previous_results}}", json.dumps(previous_results))
+                .replace("{{previous_results}}", json.dumps(results_chunk))
                 .replace("{{collected_inputs}}", json.dumps(collected_inputs))
                 .replace("{{user_message}}", user_message)
                 .replace(
