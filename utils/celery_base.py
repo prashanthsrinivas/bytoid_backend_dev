@@ -823,6 +823,45 @@ def run_schedule_azure_app_endpoint(self, userid, endpoint_id, context=None):
         self.retry(exc=e, countdown=5)
 
 
+@celery.task(bind=True, max_retries=3, name="tasks.schedule_gcp_app")
+def run_schedule_gcp_app(self, userid, app_id):
+    from gcp_integration.helpers import _execute_gcp_app_internal
+
+    try:
+        return asyncio.run(_execute_gcp_app_internal(app_id, userid))
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.schedule_gcp_app_endpoint")
+def run_schedule_gcp_app_endpoint(self, userid, endpoint_id, context=None):
+    from gcp_integration.helpers import _execute_gcp_endpoint_internal
+
+    try:
+        return asyncio.run(_execute_gcp_endpoint_internal(endpoint_id, userid))
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+
+@celery.task(bind=True, max_retries=3, name="tasks.run_gcp_endpoint_interval")
+def run_gcp_endpoint_interval(self, userid, endpoint_id, interval_seconds, stop_key=None):
+    from services.scheduler_service import GCPAPIConnectorScheduler
+    from gcp_integration.helpers import _execute_gcp_endpoint_internal
+
+    if stop_key and asyncio.run(GCPAPIConnectorScheduler.is_schedule_disabled(stop_key)):
+        return {"stopped": True}
+
+    try:
+        asyncio.run(_execute_gcp_endpoint_internal(endpoint_id, userid))
+    except Exception as e:
+        self.retry(exc=e, countdown=5)
+
+    self.apply_async(
+        args=[userid, endpoint_id, interval_seconds, stop_key],
+        countdown=interval_seconds,
+    )
+
+
 @celery.task(bind=True, max_retries=3, name="tasks.run_azure_endpoint_interval")
 def run_azure_endpoint_interval(self, userid, endpoint_id, interval_seconds, stop_key=None):
     """

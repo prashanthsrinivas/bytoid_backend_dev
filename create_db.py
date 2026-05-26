@@ -222,8 +222,7 @@ def create_external_app_user_auth_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS external_app_user_auth (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 app_id BIGINT NOT NULL,
@@ -242,8 +241,7 @@ def create_external_app_user_auth_table():
                     REFERENCES external_apps(id)
                     ON DELETE CASCADE
             );
-            """
-        )
+            """)
 
         connection.commit()
         print("✅ external_app_user_auth table created")
@@ -1002,16 +1000,14 @@ def expand_communication_columns():
             # print("✅ Updated users_clients.communication_id_fk to VARCHAR(128)")
 
             # 4. Recreate foreign key
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE users_clients
                 ADD CONSTRAINT fk_communication
                 FOREIGN KEY (communication_id_fk)
                 REFERENCES communication(communication_id)
                 ON DELETE CASCADE
                 ON UPDATE CASCADE;
-            """
-            )
+            """)
             # print("✅ Recreated foreign key fk_communication")
 
             connection.commit()
@@ -1056,14 +1052,12 @@ def expand_threads_columns_v2():
                 pass
 
             # 2️⃣ Clean up ticket_id_fk values that don't exist in tickets
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE threads t
                 LEFT JOIN tickets tk ON t.ticket_id_fk = tk.tickets_id
                 SET t.ticket_id_fk = NULL
                 WHERE tk.tickets_id IS NULL;
-            """
-            )
+            """)
 
             # 3️⃣ Alter column sizes
             # cursor.execute(
@@ -1084,41 +1078,33 @@ def expand_threads_columns_v2():
             #     MODIFY conversation_id_fk VARCHAR(128)
             # """
             # )
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE tickets
                 MODIFY tickets_id VARCHAR(128)
-            """
-            )
+            """)
 
             # 4️⃣ Recreate foreign keys
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE threads
                 ADD CONSTRAINT fk_integration
                 FOREIGN KEY (integration_id_fk)
                 REFERENCES integrations(integration_id)
                 ON DELETE SET NULL
-            """
-            )
-            cursor.execute(
-                """
+            """)
+            cursor.execute("""
                 ALTER TABLE threads
                 ADD CONSTRAINT fk_ticket
                 FOREIGN KEY (ticket_id_fk)
                 REFERENCES tickets(tickets_id)
                 ON DELETE SET NULL
-            """
-            )
-            cursor.execute(
-                """
+            """)
+            cursor.execute("""
                 ALTER TABLE tickets
                 ADD CONSTRAINT tickets_ibfk_1
                 FOREIGN KEY (conversation_id_fk)
                 REFERENCES threads(conversation_id)
                 ON DELETE SET NULL
-            """
-            )
+            """)
 
             connection.commit()
         # print("✅ threads and tickets columns updated successfully!")
@@ -1144,14 +1130,12 @@ def expand_assigned_columns():
         connection = connect_to_rds()
         with connection.cursor() as cursor:
             # 1️⃣ Find actual FK names dynamically
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT CONSTRAINT_NAME, COLUMN_NAME 
                 FROM information_schema.KEY_COLUMN_USAGE 
                 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='assigned'
                   AND REFERENCED_TABLE_NAME IS NOT NULL;
-            """
-            )
+            """)
             fks = cursor.fetchall()
             for fk in fks:
                 try:
@@ -1160,44 +1144,36 @@ def expand_assigned_columns():
                     pass  # ignore if already dropped
 
             # 2️⃣ Alter column sizes
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE assigned
                 MODIFY assigned_id VARCHAR(128) NOT NULL,
                 MODIFY user_id_fk VARCHAR(128),
                 MODIFY users_clients_id_fk VARCHAR(128),
                 MODIFY ticket_id_fk VARCHAR(128)
-            """
-            )
+            """)
 
             # 3️⃣ Recreate foreign keys
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE assigned
                 ADD CONSTRAINT assigned_user_fk
                 FOREIGN KEY (user_id_fk)
                 REFERENCES users(user_id)
                 ON DELETE SET NULL
-            """
-            )
-            cursor.execute(
-                """
+            """)
+            cursor.execute("""
                 ALTER TABLE assigned
                 ADD CONSTRAINT assigned_clients_fk
                 FOREIGN KEY (users_clients_id_fk)
                 REFERENCES users_clients(users_clients_id)
                 ON DELETE SET NULL
-            """
-            )
-            cursor.execute(
-                """
+            """)
+            cursor.execute("""
                 ALTER TABLE assigned
                 ADD CONSTRAINT assigned_ticket_fk
                 FOREIGN KEY (ticket_id_fk)
                 REFERENCES tickets(tickets_id)
                 ON DELETE SET NULL
-            """
-            )
+            """)
 
             connection.commit()
         # print("✅ assigned table columns updated successfully!")
@@ -1253,37 +1229,31 @@ def expand_messages_columns():
                 pass  # might not exist
 
             # 2️⃣ Clean up orphaned conversation_id_fk
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE messages m
                 LEFT JOIN threads t ON m.conversation_id_fk = t.conversation_id
                 SET m.conversation_id_fk = NULL
                 WHERE t.conversation_id IS NULL;
-            """
-            )
+            """)
 
             # 3️⃣ Alter columns
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE messages
                 MODIFY message_id VARCHAR(256) NOT NULL,
                 MODIFY conversation_id_fk VARCHAR(128),
                 MODIFY sender_id VARCHAR(128),
                 MODIFY content_ref VARCHAR(128),
                 MODIFY is_summary VARCHAR(128)
-            """
-            )
+            """)
 
             # 4️⃣ Recreate foreign key
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE messages
                 ADD CONSTRAINT fk_messages_conversation
                 FOREIGN KEY (conversation_id_fk)
                 REFERENCES threads(conversation_id)
                 ON DELETE SET NULL
-            """
-            )
+            """)
 
             connection.commit()
         # print("✅ messages table columns updated successfully!")
@@ -1914,15 +1884,13 @@ def add_stripe_columns_to_plans():
 
     try:
         # Check existing columns
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COLUMN_NAME
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'plans'
               AND COLUMN_NAME IN ('stripe_product_id', 'stripe_price_id')
-        """
-        )
+        """)
         existing_columns = {row[0] for row in cursor.fetchall()}
 
         alter_queries = []
@@ -2062,27 +2030,23 @@ def alter_payments_table():
         # -------------------------------------------------
         # 1️⃣ Check if column exists
         # -------------------------------------------------
-        cur.execute(
-            """
+        cur.execute("""
             SELECT COUNT(*)
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'payments'
               AND COLUMN_NAME = 'stripe_subscription_id';
-        """
-        )
+        """)
         exists = cur.fetchone()[0]
 
         if exists == 0:
             print("➕ Adding stripe_subscription_id column")
 
-            cur.execute(
-                """
+            cur.execute("""
                 ALTER TABLE payments
                 ADD COLUMN stripe_subscription_id VARCHAR(255) DEFAULT NULL
                 AFTER stripe_invoice_id;
-            """
-            )
+            """)
         else:
             print("ℹ️ stripe_subscription_id already exists")
 
@@ -2096,15 +2060,13 @@ def alter_payments_table():
         }
 
         for index_name, column in indexes.items():
-            cur.execute(
-                f"""
+            cur.execute(f"""
                 SELECT COUNT(*)
                 FROM INFORMATION_SCHEMA.STATISTICS
                 WHERE TABLE_SCHEMA = DATABASE()
                   AND TABLE_NAME = 'payments'
                   AND INDEX_NAME = '{index_name}';
-            """
-            )
+            """)
             idx_exists = cur.fetchone()[0]
 
             if idx_exists == 0:
@@ -2137,8 +2099,7 @@ def recreate_payments_table():
         cur.execute("DROP TABLE IF EXISTS payments;")
 
         print("➕ Creating payments table")
-        cur.execute(
-            """
+        cur.execute("""
             CREATE TABLE payments (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
@@ -2165,8 +2126,7 @@ def recreate_payments_table():
                 UNIQUE KEY uniq_checkout_session (stripe_checkout_session_id),
                 UNIQUE KEY uniq_invoice (stripe_invoice_id)
             );
-            """
-        )
+            """)
 
         conn.commit()
         print("✅ payments table recreated successfully")
@@ -2192,8 +2152,7 @@ def recreate_subscriptions_table():
         cur.execute("DROP TABLE IF EXISTS subscriptions;")
 
         print("➕ Creating subscriptions table")
-        cur.execute(
-            """
+        cur.execute("""
             CREATE TABLE subscriptions (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
@@ -2219,8 +2178,7 @@ def recreate_subscriptions_table():
 
                 UNIQUE KEY uniq_subscription (stripe_subscription_id)
             );
-            """
-        )
+            """)
 
         conn.commit()
         print("✅ subscriptions table recreated successfully")
@@ -2263,8 +2221,7 @@ def combo_create_credit_tables():
         # """
         # )
 
-        cur.execute(
-            """
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS credit_buckets (
             bucket_id      CHAR(36) PRIMARY KEY,
             user_id        VARCHAR(36) NOT NULL,
@@ -2283,11 +2240,9 @@ def combo_create_credit_tables():
             INDEX idx_user_expiry (user_id, expires_at),
             INDEX idx_user_active (user_id, is_expired)
         )
-        """
-        )
+        """)
 
-        cur.execute(
-            """
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS credit_usage_log (
             usage_id     CHAR(36) PRIMARY KEY,
             user_id      VARCHAR(36) NOT NULL,
@@ -2297,8 +2252,7 @@ def combo_create_credit_tables():
             reference_id VARCHAR(64),
             created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        """
-        )
+        """)
 
         conn.commit()
     except Exception as e:
@@ -2322,15 +2276,13 @@ def add_plan_type_columns():
         # -----------------------------------------
         # Check existing columns
         # -----------------------------------------
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COLUMN_NAME
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'plans'
               AND COLUMN_NAME IN ('is_subscription', 'is_topup')
-            """
-        )
+            """)
         existing_columns = {row[0] for row in cursor.fetchall()}
 
         alter_parts = []
@@ -2346,16 +2298,14 @@ def add_plan_type_columns():
             )
 
         # Add CHECK constraint only once
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT CONSTRAINT_NAME
             FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'plans'
               AND CONSTRAINT_TYPE = 'CHECK'
               AND CONSTRAINT_NAME = 'chk_plan_type'
-            """
-        )
+            """)
         constraint_exists = cursor.fetchone()
 
         if not constraint_exists:
@@ -2399,8 +2349,7 @@ def create_external_apps_table():
         cursor.execute("DROP TABLE IF EXISTS external_app_endpoints;")
         cursor.execute("DROP TABLE IF EXISTS external_apps;")
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE external_apps (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
@@ -2449,8 +2398,7 @@ def create_external_apps_table():
                     REFERENCES users(user_id)
                     ON DELETE CASCADE
             );
-            """
-        )
+            """)
 
         connection.commit()
         print("✅ external_apps table created")
@@ -2473,8 +2421,7 @@ def create_external_app_endpoints_table():
     cursor = connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE external_app_endpoints (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
@@ -2519,8 +2466,7 @@ def create_external_app_endpoints_table():
                     REFERENCES users(user_id)
                     ON DELETE CASCADE
             );
-            """
-        )
+            """)
 
         connection.commit()
         print("✅ external_app_endpoints table created")
@@ -2542,12 +2488,10 @@ def add_mail_sub_column():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             ALTER TABLE users
             ADD COLUMN mail_sub JSON NOT NULL DEFAULT ('{}')
-        """
-        )
+        """)
         connection.commit()
         print("Column mail_sub added successfully")
         return True
@@ -2567,80 +2511,64 @@ def update_external_apps_for_universal_visibility():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COUNT(*)
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'external_apps'
               AND COLUMN_NAME = 'method'
-            """
-        )
+            """)
         (method_exists,) = cursor.fetchone()
         if method_exists == 0:
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE external_apps
                 ADD COLUMN method ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET'
                     AFTER headers
-                """
-            )
+                """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COUNT(*)
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'external_apps'
               AND COLUMN_NAME = 'is_universal'
-            """
-        )
+            """)
         (is_universal_exists,) = cursor.fetchone()
         if is_universal_exists == 0:
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE external_apps
                 ADD COLUMN is_universal BOOLEAN NOT NULL DEFAULT FALSE
                     AFTER updated_at
-                """
-            )
+                """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COUNT(*)
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'external_apps'
               AND COLUMN_NAME = 'target_onboarding_role'
-            """
-        )
+            """)
         (target_role_exists,) = cursor.fetchone()
         if target_role_exists == 0:
-            cursor.execute(
-                """
+            cursor.execute("""
                 ALTER TABLE external_apps
                 ADD COLUMN target_onboarding_role VARCHAR(255) DEFAULT NULL
                     AFTER is_universal
-                """
-            )
+                """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COUNT(*)
             FROM information_schema.STATISTICS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME = 'external_apps'
               AND INDEX_NAME = 'idx_external_apps_universal_role'
-            """
-        )
+            """)
         (role_idx_exists,) = cursor.fetchone()
         if role_idx_exists == 0:
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE INDEX idx_external_apps_universal_role
                 ON external_apps (is_universal, target_onboarding_role)
-                """
-            )
+                """)
 
         connection.commit()
         print("✅ external_apps universal visibility migration complete")
@@ -2662,8 +2590,7 @@ def create_external_app_user_config_table():
     cursor = connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS external_app_user_config (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
@@ -2699,8 +2626,7 @@ def create_external_app_user_config_table():
                     REFERENCES users(user_id)
                     ON DELETE CASCADE
             );
-            """
-        )
+            """)
 
         connection.commit()
         print("✅ external_app_user_config table created")
@@ -2722,12 +2648,10 @@ def add_tTop_users():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             ALTER TABLE users
             ADD COLUMN totp_secret VARCHAR(128) DEFAULT NULL
-        """
-        )
+        """)
         connection.commit()
         print("Column totp_secret added successfully")
         return True
@@ -2738,6 +2662,7 @@ def add_tTop_users():
         cursor.close()
         connection.close()
 
+
 def add_domain_users():
     connection = connect_to_rds()
     if connection is None:
@@ -2746,8 +2671,7 @@ def add_domain_users():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """ALTER TABLE users
+        cursor.execute("""ALTER TABLE users
             ADD COLUMN domain JSON DEFAULT (JSON_OBJECT(
             'primary', NULL,
             'secondary', JSON_ARRAY()
@@ -2761,7 +2685,6 @@ def add_domain_users():
     finally:
         cursor.close()
         connection.close()
-
 
 
 import json
@@ -2907,8 +2830,7 @@ def create_global_apps_table():
         cursor.execute("DROP TABLE IF EXISTS global_app_endpoints;")
         cursor.execute("DROP TABLE IF EXISTS global_apps;")
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE global_apps (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
@@ -2947,8 +2869,7 @@ def create_global_apps_table():
                 INDEX idx_global_apps_status (status),
                 INDEX idx_global_apps_universal (is_universal)
             );
-            """
-        )
+            """)
 
         connection.commit()
         print("✅ global_apps table created")
@@ -2971,8 +2892,7 @@ def create_global_app_endpoints_table():
     cursor = connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE global_app_endpoints (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
 
@@ -3015,8 +2935,7 @@ def create_global_app_endpoints_table():
                     REFERENCES global_apps(id)
                     ON DELETE CASCADE
             );
-            """
-        )
+            """)
 
         connection.commit()
         print("✅ global_app_endpoints table created")
@@ -3029,6 +2948,7 @@ def create_global_app_endpoints_table():
         cursor.close()
         connection.close()
 
+
 def create_company_table():
     connection = connect_to_rds()
     if connection is None:
@@ -3037,8 +2957,7 @@ def create_company_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE company (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 company_name VARCHAR(255) NOT NULL,
@@ -3048,8 +2967,7 @@ def create_company_table():
                 CONSTRAINT chk_company_name_no_space
                 CHECK (company_name NOT LIKE '% %')
             );
-            """
-        )
+            """)
 
         connection.commit()
         print("✅ company table created")
@@ -3064,7 +2982,6 @@ def create_company_table():
         connection.close()
 
 
-
 def create_aws_idp_configs_table():
     connection = connect_to_rds()
     if connection is None:
@@ -3073,8 +2990,7 @@ def create_aws_idp_configs_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS aws_idp_configs (
                 id          INT AUTO_INCREMENT PRIMARY KEY,
                 user_id     VARCHAR(36) NOT NULL,
@@ -3086,8 +3002,7 @@ def create_aws_idp_configs_table():
                 updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uq_user (user_id)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ aws_idp_configs table created")
     except Exception as e:
@@ -3107,8 +3022,7 @@ def create_aws_saml_sessions_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS aws_saml_sessions (
                 id                    INT AUTO_INCREMENT PRIMARY KEY,
                 user_id               VARCHAR(36) NOT NULL,
@@ -3124,8 +3038,7 @@ def create_aws_saml_sessions_table():
                 UNIQUE KEY uq_user (user_id),
                 INDEX idx_expires (expires_at)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ aws_saml_sessions table created")
     except Exception as e:
@@ -3147,8 +3060,7 @@ def create_global_aws_apps_table():
     try:
         cursor.execute("DROP TABLE IF EXISTS global_aws_app_endpoints;")
         cursor.execute("DROP TABLE IF EXISTS global_aws_apps;")
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE global_aws_apps (
                 id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
                 app_name               VARCHAR(100) NOT NULL,
@@ -3173,8 +3085,7 @@ def create_global_aws_apps_table():
                 UNIQUE KEY uq_global_aws_app_name (app_name),
                 INDEX idx_global_aws_apps_status (status)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ global_aws_apps table created")
     except Exception as e:
@@ -3194,8 +3105,7 @@ def create_global_aws_app_endpoints_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE global_aws_app_endpoints (
                 id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
                 app_id                 BIGINT NOT NULL,
@@ -3225,8 +3135,7 @@ def create_global_aws_app_endpoints_table():
                     REFERENCES global_aws_apps(id)
                     ON DELETE CASCADE
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ global_aws_app_endpoints table created")
     except Exception as e:
@@ -3264,12 +3173,36 @@ def migrate_global_aws_schema():
             return cursor.fetchone()[0] > 0
 
         pending = [
-            ("global_aws_apps",          "category",        "ADD COLUMN category        VARCHAR(50)  DEFAULT NULL"),
-            ("global_aws_apps",          "priority",        "ADD COLUMN priority        VARCHAR(20)  DEFAULT NULL"),
-            ("global_aws_apps",          "connection_type", "ADD COLUMN connection_type VARCHAR(20)  DEFAULT NULL"),
-            ("global_aws_app_endpoints", "sigv4_service",   "ADD COLUMN sigv4_service     VARCHAR(50)  DEFAULT NULL"),
-            ("global_aws_app_endpoints", "body_params",     "ADD COLUMN body_params       JSON         DEFAULT NULL"),
-            ("global_aws_app_endpoints", "base_url_override","ADD COLUMN base_url_override VARCHAR(255) DEFAULT NULL"),
+            (
+                "global_aws_apps",
+                "category",
+                "ADD COLUMN category        VARCHAR(50)  DEFAULT NULL",
+            ),
+            (
+                "global_aws_apps",
+                "priority",
+                "ADD COLUMN priority        VARCHAR(20)  DEFAULT NULL",
+            ),
+            (
+                "global_aws_apps",
+                "connection_type",
+                "ADD COLUMN connection_type VARCHAR(20)  DEFAULT NULL",
+            ),
+            (
+                "global_aws_app_endpoints",
+                "sigv4_service",
+                "ADD COLUMN sigv4_service     VARCHAR(50)  DEFAULT NULL",
+            ),
+            (
+                "global_aws_app_endpoints",
+                "body_params",
+                "ADD COLUMN body_params       JSON         DEFAULT NULL",
+            ),
+            (
+                "global_aws_app_endpoints",
+                "base_url_override",
+                "ADD COLUMN base_url_override VARCHAR(255) DEFAULT NULL",
+            ),
         ]
 
         added = []
@@ -3302,15 +3235,13 @@ def alter_aws_external_apps_add_global_link():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COLUMN_NAME
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME   = 'aws_external_apps'
               AND COLUMN_NAME IN ('is_universal', 'source_global_aws_app_id')
-            """
-        )
+            """)
         existing = {row[0] for row in cursor.fetchall()}
 
         if "is_universal" not in existing:
@@ -3347,8 +3278,7 @@ def create_aws_external_apps_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS aws_external_apps (
                 id                       BIGINT AUTO_INCREMENT PRIMARY KEY,
                 user_id                  VARCHAR(64) NOT NULL,
@@ -3376,8 +3306,7 @@ def create_aws_external_apps_table():
                 UNIQUE KEY uq_user_app (user_id, app_name),
                 INDEX idx_aws_external_source (source_global_aws_app_id)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ aws_external_apps table created")
     except Exception as e:
@@ -3397,8 +3326,7 @@ def create_aws_external_app_endpoints_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS aws_external_app_endpoints (
                 id               BIGINT AUTO_INCREMENT PRIMARY KEY,
                 app_id           BIGINT NOT NULL,
@@ -3424,8 +3352,7 @@ def create_aws_external_app_endpoints_table():
                 INDEX idx_user_id (user_id),
                 FOREIGN KEY (app_id) REFERENCES aws_external_apps(id) ON DELETE CASCADE
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ aws_external_app_endpoints table created")
     except Exception as e:
@@ -3441,6 +3368,7 @@ def create_aws_external_app_endpoints_table():
 # Azure Integration tables (mirror of the AWS ones above)
 # ============================================================
 
+
 def create_azure_idp_configs_table():
     connection = connect_to_rds()
     if connection is None:
@@ -3449,8 +3377,7 @@ def create_azure_idp_configs_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS azure_idp_configs (
                 id            INT AUTO_INCREMENT PRIMARY KEY,
                 user_id       VARCHAR(36) NOT NULL,
@@ -3466,8 +3393,7 @@ def create_azure_idp_configs_table():
                 updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uq_user (user_id)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ azure_idp_configs table created")
     except Exception as e:
@@ -3487,8 +3413,7 @@ def create_azure_saml_sessions_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS azure_saml_sessions (
                 id               INT AUTO_INCREMENT PRIMARY KEY,
                 user_id          VARCHAR(36) NOT NULL,
@@ -3505,8 +3430,7 @@ def create_azure_saml_sessions_table():
                 UNIQUE KEY uq_user (user_id),
                 INDEX idx_expires (expires_at)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ azure_saml_sessions table created")
     except Exception as e:
@@ -3526,8 +3450,7 @@ def create_global_azure_apps_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS global_azure_apps (
                 id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
                 app_name               VARCHAR(100) NOT NULL,
@@ -3552,8 +3475,7 @@ def create_global_azure_apps_table():
                 UNIQUE KEY uq_global_azure_app_name (app_name),
                 INDEX idx_global_azure_apps_status (status)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ global_azure_apps table created")
     except Exception as e:
@@ -3573,8 +3495,7 @@ def create_global_azure_app_endpoints_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS global_azure_app_endpoints (
                 id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
                 app_id                 BIGINT NOT NULL,
@@ -3604,8 +3525,7 @@ def create_global_azure_app_endpoints_table():
                     REFERENCES global_azure_apps(id)
                     ON DELETE CASCADE
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ global_azure_app_endpoints table created")
     except Exception as e:
@@ -3641,12 +3561,36 @@ def migrate_global_azure_schema():
             return cursor.fetchone()[0] > 0
 
         pending = [
-            ("global_azure_apps",          "category",        "ADD COLUMN category        VARCHAR(50)  DEFAULT NULL"),
-            ("global_azure_apps",          "priority",        "ADD COLUMN priority        VARCHAR(20)  DEFAULT NULL"),
-            ("global_azure_apps",          "connection_type", "ADD COLUMN connection_type VARCHAR(20)  DEFAULT NULL"),
-            ("global_azure_app_endpoints", "graph_scope",     "ADD COLUMN graph_scope     VARCHAR(255) DEFAULT NULL"),
-            ("global_azure_app_endpoints", "body_params",     "ADD COLUMN body_params     JSON         DEFAULT NULL"),
-            ("global_azure_app_endpoints", "base_url_override","ADD COLUMN base_url_override VARCHAR(255) DEFAULT NULL"),
+            (
+                "global_azure_apps",
+                "category",
+                "ADD COLUMN category        VARCHAR(50)  DEFAULT NULL",
+            ),
+            (
+                "global_azure_apps",
+                "priority",
+                "ADD COLUMN priority        VARCHAR(20)  DEFAULT NULL",
+            ),
+            (
+                "global_azure_apps",
+                "connection_type",
+                "ADD COLUMN connection_type VARCHAR(20)  DEFAULT NULL",
+            ),
+            (
+                "global_azure_app_endpoints",
+                "graph_scope",
+                "ADD COLUMN graph_scope     VARCHAR(255) DEFAULT NULL",
+            ),
+            (
+                "global_azure_app_endpoints",
+                "body_params",
+                "ADD COLUMN body_params     JSON         DEFAULT NULL",
+            ),
+            (
+                "global_azure_app_endpoints",
+                "base_url_override",
+                "ADD COLUMN base_url_override VARCHAR(255) DEFAULT NULL",
+            ),
         ]
 
         added = []
@@ -3679,15 +3623,13 @@ def alter_azure_external_apps_add_global_link():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT COLUMN_NAME
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
               AND TABLE_NAME   = 'azure_external_apps'
               AND COLUMN_NAME IN ('is_universal', 'source_global_azure_app_id')
-            """
-        )
+            """)
         existing = {row[0] for row in cursor.fetchall()}
 
         if "is_universal" not in existing:
@@ -3706,7 +3648,9 @@ def alter_azure_external_apps_add_global_link():
             )
 
         connection.commit()
-        print("✅ azure_external_apps altered (is_universal + source_global_azure_app_id)")
+        print(
+            "✅ azure_external_apps altered (is_universal + source_global_azure_app_id)"
+        )
     except Exception as e:
         connection.rollback()
         print("❌ Failed to alter azure_external_apps:", str(e))
@@ -3724,8 +3668,7 @@ def create_azure_external_apps_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS azure_external_apps (
                 id                         BIGINT AUTO_INCREMENT PRIMARY KEY,
                 user_id                    VARCHAR(64) NOT NULL,
@@ -3753,8 +3696,7 @@ def create_azure_external_apps_table():
                 UNIQUE KEY uq_user_app (user_id, app_name),
                 INDEX idx_azure_external_source (source_global_azure_app_id)
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ azure_external_apps table created")
     except Exception as e:
@@ -3774,8 +3716,7 @@ def create_azure_external_app_endpoints_table():
 
     cursor = connection.cursor()
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS azure_external_app_endpoints (
                 id               BIGINT AUTO_INCREMENT PRIMARY KEY,
                 app_id           BIGINT NOT NULL,
@@ -3801,13 +3742,141 @@ def create_azure_external_app_endpoints_table():
                 INDEX idx_user_id (user_id),
                 FOREIGN KEY (app_id) REFERENCES azure_external_apps(id) ON DELETE CASCADE
             )
-            """
-        )
+            """)
         connection.commit()
         print("✅ azure_external_app_endpoints table created")
     except Exception as e:
         connection.rollback()
         print("❌ Failed to create azure_external_app_endpoints table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_gcp_configs_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gcp_configs (
+                id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id               VARCHAR(64) NOT NULL UNIQUE,
+                project_id            VARCHAR(255) NOT NULL,
+                service_account_email VARCHAR(255) NOT NULL,
+                service_account_key   TEXT NOT NULL,
+                default_scope         VARCHAR(500) DEFAULT 'https://www.googleapis.com/auth/cloud-platform',
+                gcp_region            VARCHAR(64) DEFAULT 'us-central1',
+                created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.commit()
+        print("✅ gcp_configs table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create gcp_configs table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_gcp_external_apps_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gcp_external_apps (
+                id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id               VARCHAR(64) NOT NULL,
+                app_name              VARCHAR(100) NOT NULL,
+                provider              VARCHAR(50) DEFAULT 'gcp',
+                base_url              TEXT NOT NULL,
+                auth_type             ENUM('bearer','api_key','basic','oauth2','gcp_oauth','none') DEFAULT 'gcp_oauth',
+                auth_config           JSON,
+                headers               JSON,
+                method                ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                query_params          JSON,
+                path_params           JSON,
+                timeout_seconds       INT DEFAULT 10,
+                retry_count           INT DEFAULT 0,
+                retry_backoff_seconds INT DEFAULT 0,
+                status                ENUM('active','inactive') DEFAULT 'active',
+                last_test_status      ENUM('success','failed'),
+                last_error            JSON,
+                last_tested_at        DATETIME,
+                schedules             JSON,
+                created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_user_app (user_id, app_name)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ gcp_external_apps table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create gcp_external_apps table:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_gcp_external_app_endpoints_table():
+    connection = connect_to_rds()
+    if connection is None:
+        print("❌ DB connection failed")
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gcp_external_app_endpoints (
+                id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+                app_id           BIGINT NOT NULL,
+                user_id          VARCHAR(64) NOT NULL,
+                name             VARCHAR(100) NOT NULL,
+                path             VARCHAR(255) NOT NULL,
+                method           ENUM('GET','POST','PUT','PATCH','DELETE') DEFAULT 'GET',
+                headers          JSON,
+                query_params     JSON,
+                path_params      JSON,
+                body_template    JSON,
+                timeout_seconds  INT,
+                is_active        BOOLEAN DEFAULT TRUE,
+                last_tested_at   DATETIME,
+                last_test_status ENUM('success','failed'),
+                last_error       JSON,
+                schedules        JSON,
+                created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_app_endpoint_name (app_id, name),
+                UNIQUE KEY uq_app_path_method (app_id, path, method),
+                INDEX idx_app_id (app_id),
+                INDEX idx_user_id (user_id),
+                FOREIGN KEY (app_id) REFERENCES gcp_external_apps(id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.commit()
+        print("✅ gcp_external_app_endpoints table created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create gcp_external_app_endpoints table:", str(e))
         raise
     finally:
         cursor.close()
@@ -3880,20 +3949,23 @@ if __name__ == "__main__":
     # create_global_apps_table()
     # create_global_app_endpoints_table()
     # create_company_table()
-    create_aws_idp_configs_table()
-    create_aws_saml_sessions_table()
-    create_aws_external_apps_table()
-    create_aws_external_app_endpoints_table()
-    alter_aws_external_apps_add_global_link()
-    create_global_aws_apps_table()
-    create_global_aws_app_endpoints_table()
-    migrate_global_aws_schema()
-    create_azure_idp_configs_table()
-    create_azure_saml_sessions_table()
-    create_azure_external_apps_table()
-    create_azure_external_app_endpoints_table()
-    alter_azure_external_apps_add_global_link()
-    create_global_azure_apps_table()
-    create_global_azure_app_endpoints_table()
-    migrate_global_azure_schema()
+    # create_aws_idp_configs_table()
+    # create_aws_saml_sessions_table()
+    # create_aws_external_apps_table()
+    # create_aws_external_app_endpoints_table()
+    # alter_aws_external_apps_add_global_link()
+    # create_global_aws_apps_table()
+    # create_global_aws_app_endpoints_table()
+    # migrate_global_aws_schema()
+    # create_azure_idp_configs_table()
+    # create_azure_saml_sessions_table()
+    # create_azure_external_apps_table()
+    # create_azure_external_app_endpoints_table()
+    # alter_azure_external_apps_add_global_link()
+    # create_global_azure_apps_table()
+    # create_global_azure_app_endpoints_table()
+    # migrate_global_azure_schema()
+    # create_gcp_configs_table()
+    # create_gcp_external_apps_table()
+    # create_gcp_external_app_endpoints_table()
     print("ok")

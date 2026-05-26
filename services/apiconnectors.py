@@ -51,6 +51,9 @@ class APIConnector:
         if auth_type == "azure_oauth" and "access_token" not in auth:
             raise ValueError("Azure OAuth auth requires: access_token")
 
+        if auth_type == "gcp_oauth" and "access_token" not in auth:
+            raise ValueError("GCP OAuth auth requires: access_token")
+
     # -------------------------
     # OAuth2
     # -------------------------
@@ -95,6 +98,9 @@ class APIConnector:
             headers["Authorization"] = f"Bearer {token}"
 
         elif auth_type == "azure_oauth":
+            headers["Authorization"] = f"Bearer {self._render(auth['access_token'])}"
+
+        elif auth_type == "gcp_oauth":
             headers["Authorization"] = f"Bearer {self._render(auth['access_token'])}"
 
         return headers
