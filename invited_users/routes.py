@@ -2686,7 +2686,7 @@ def get_notifications(user_id):
             # message and has no way to tell what to do.
             cursor.execute(
                 """
-                SELECT id, notification_id, message, is_read, created_at,
+                SELECT id, message, is_read, created_at,
                        doc_type, doc_id, workflow_id, workflow_state,
                        action_required
                 FROM notifications

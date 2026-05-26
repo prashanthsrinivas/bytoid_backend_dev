@@ -45,6 +45,7 @@ azure_integration_bp = Blueprint("azure_integration", __name__, url_prefix="/azu
 # Internal helpers specific to Azure tables
 # ─────────────────────────────────────────────────────────────
 
+
 def _save_azure_endpoint_schedule(endpoint_id, schedule_payload):
     conn = connect_to_rds()
     cur = conn.cursor()
@@ -106,6 +107,7 @@ def _parse_json_field(val):
 # IdP configuration (per-admin)
 # ─────────────────────────────────────────────────────────────
 
+
 @azure_integration_bp.route("/idp/config", methods=["POST"])
 def azure_save_idp_config():
     conn = None
@@ -144,7 +146,10 @@ def azure_save_idp_config():
             x509_cert = existing["x509_cert"]
         if not client_secret:
             if not existing:
-                return jsonify({"success": False, "error": "client_secret required"}), 400
+                return (
+                    jsonify({"success": False, "error": "client_secret required"}),
+                    400,
+                )
             client_secret = existing["client_secret"]
 
         conn = connect_to_rds()
@@ -167,8 +172,15 @@ def azure_save_idp_config():
                     updated_at    = NOW()
                 """,
                 (
-                    user_id, entity_id, sso_url, x509_cert, azure_region,
-                    tenant_id, client_id, client_secret, default_scope,
+                    user_id,
+                    entity_id,
+                    sso_url,
+                    x509_cert,
+                    azure_region,
+                    tenant_id,
+                    client_id,
+                    client_secret,
+                    default_scope,
                 ),
             )
         conn.commit()
@@ -191,15 +203,17 @@ def azure_get_idp_config():
 
     idp = _get_azure_idp_config(user_id)
     if idp:
-        return jsonify({
-            "configured": True,
-            "entity_id": idp["entity_id"],
-            "sso_url": idp["sso_url"],
-            "azure_region": idp.get("azure_region", "eastus"),
-            "tenant_id": idp.get("tenant_id"),
-            "client_id": idp.get("client_id"),
-            "default_scope": idp.get("default_scope"),
-        })
+        return jsonify(
+            {
+                "configured": True,
+                "entity_id": idp["entity_id"],
+                "sso_url": idp["sso_url"],
+                "azure_region": idp.get("azure_region", "eastus"),
+                "tenant_id": idp.get("tenant_id"),
+                "client_id": idp.get("client_id"),
+                "default_scope": idp.get("default_scope"),
+            }
+        )
     return jsonify({"configured": False})
 
 
@@ -231,6 +245,7 @@ def azure_delete_idp_config():
 # SAML — Login initiation
 # ─────────────────────────────────────────────────────────────
 
+
 @azure_integration_bp.route("/saml/login", methods=["GET"])
 def azure_saml_login():
     user_id = request.args.get("user_id") or _extract_user_id()
@@ -240,13 +255,28 @@ def azure_saml_login():
         return err
 
     if not _get_azure_idp_config(user_id):
-        return jsonify({"error": "Azure IdP not configured. Save your Entra ID details first."}), 400
+        return (
+            jsonify(
+                {"error": "Azure IdP not configured. Save your Entra ID details first."}
+            ),
+            400,
+        )
 
     redirect_url = request.args.get("redirect", "")
     parsed = urlparse(redirect_url)
     host_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
     if host_origin not in ALLOWED_ORIGINS:
-        redirect_url = "https://app.bytoid.ai/azure-integration"
+        # Infer the caller's origin from headers so dev instances redirect back
+        # to themselves (localhost, dev.bytoid.ai, etc.) rather than prod.
+        req_origin = request.headers.get("Origin") or ""
+        if not req_origin:
+            referer = request.headers.get("Referer") or ""
+            p = urlparse(referer)
+            req_origin = f"{p.scheme}://{p.netloc}" if p.netloc else ""
+        if req_origin in ALLOWED_ORIGINS:
+            redirect_url = f"{req_origin}/azure-integration"
+        else:
+            redirect_url = "https://app.bytoid.ai/azure-integration"
 
     # Store state in RelayState (echoed back by IdP in ACS POST) instead of
     # Flask session — session cookies are blocked on cross-site POST.
@@ -264,6 +294,7 @@ def azure_saml_login():
 # ─────────────────────────────────────────────────────────────
 # SAML — Assertion Consumer Service
 # ─────────────────────────────────────────────────────────────
+
 
 @azure_integration_bp.route("/saml/acs", methods=["POST"])
 def azure_saml_acs():
@@ -303,7 +334,10 @@ def azure_saml_acs():
         auth.process_response(request_id=None)
         errors = auth.get_errors()
         if errors:
-            return jsonify({"error": errors, "reason": auth.get_last_error_reason()}), 400
+            return (
+                jsonify({"error": errors, "reason": auth.get_last_error_reason()}),
+                400,
+            )
         if not auth.is_authenticated():
             return jsonify({"error": "Not authenticated"}), 401
 
@@ -320,20 +354,28 @@ def azure_saml_acs():
             return jsonify({"error": "Token exchange failed", "detail": exch_err}), 400
 
         attrs = auth.get_attributes() or {}
-        oid_list = attrs.get(
-            "http://schemas.microsoft.com/identity/claims/objectidentifier"
-        ) or []
+        oid_list = (
+            attrs.get("http://schemas.microsoft.com/identity/claims/objectidentifier")
+            or []
+        )
         azure_oid = oid_list[0] if oid_list else None
-        upn_list = attrs.get(
-            "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn"
-        ) or []
-        azure_upn = upn_list[0] if upn_list else (auth.get_nameid() if hasattr(auth, "get_nameid") else None)
+        upn_list = (
+            attrs.get("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn") or []
+        )
+        azure_upn = (
+            upn_list[0]
+            if upn_list
+            else (auth.get_nameid() if hasattr(auth, "get_nameid") else None)
+        )
 
         expires_at = (
             datetime.utcnow() + timedelta(seconds=int(token.get("expires_in", 3600)))
         ).strftime("%Y-%m-%d %H:%M:%S")
-        scope = token.get("scope") or idp_cfg.get("default_scope") \
+        scope = (
+            token.get("scope")
+            or idp_cfg.get("default_scope")
             or "https://graph.microsoft.com/.default"
+        )
         azure_region = idp_cfg.get("azure_region") or "eastus"
 
         conn = connect_to_rds()
@@ -396,6 +438,7 @@ def azure_saml_acs():
 # SAML — Status & Disconnect
 # ─────────────────────────────────────────────────────────────
 
+
 @azure_integration_bp.route("/saml/status", methods=["GET"])
 def azure_saml_status():
     user_id = request.args.get("user_id") or _extract_user_id()
@@ -406,14 +449,16 @@ def azure_saml_status():
 
     session_row = _get_active_azure_session(user_id)
     if session_row:
-        return jsonify({
-            "connected": True,
-            "azure_tenant_id": session_row.get("azure_tenant_id"),
-            "azure_upn": session_row.get("azure_upn"),
-            "azure_region": session_row.get("azure_region"),
-            "scope": session_row.get("scope"),
-            "expires_at": str(session_row.get("expires_at")),
-        })
+        return jsonify(
+            {
+                "connected": True,
+                "azure_tenant_id": session_row.get("azure_tenant_id"),
+                "azure_upn": session_row.get("azure_upn"),
+                "azure_region": session_row.get("azure_region"),
+                "scope": session_row.get("scope"),
+                "expires_at": str(session_row.get("expires_at")),
+            }
+        )
     return jsonify({"connected": False})
 
 
@@ -430,9 +475,7 @@ def azure_saml_disconnect():
     try:
         conn = connect_to_rds()
         with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM azure_saml_sessions WHERE user_id=%s", (user_id,)
-            )
+            cur.execute("DELETE FROM azure_saml_sessions WHERE user_id=%s", (user_id,))
         conn.commit()
 
         log_audit_event(
@@ -455,6 +498,7 @@ def azure_saml_disconnect():
 # ─────────────────────────────────────────────────────────────
 # Connector — Test (ad-hoc, no DB record required)
 # ─────────────────────────────────────────────────────────────
+
 
 @azure_integration_bp.route("/connector/test", methods=["POST"])
 def azure_connector_test():
@@ -503,11 +547,13 @@ def azure_connector_test():
         }
 
         result = APIConnector(userid=user_id, config=config).execute()
-        return jsonify({
-            "success": True,
-            "request": {"url": full_url, "method": method},
-            "response": result,
-        })
+        return jsonify(
+            {
+                "success": True,
+                "request": {"url": full_url, "method": method},
+                "response": result,
+            }
+        )
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -516,6 +562,7 @@ def azure_connector_test():
 # ─────────────────────────────────────────────────────────────
 # Connector — Apps CRUD
 # ─────────────────────────────────────────────────────────────
+
 
 @azure_integration_bp.route("/connector/apps", methods=["POST"])
 def azure_create_app():
@@ -567,12 +614,14 @@ def azure_create_app():
                     if existing_app.get(field):
                         existing_app[field] = str(existing_app[field])
                 conn.close()
-                return jsonify({
-                    "success": True,
-                    "already_exists": True,
-                    "app": existing_app,
-                    "message": f"'{app_name}' is already in your app list. You can manage it from there.",
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "already_exists": True,
+                        "app": existing_app,
+                        "message": f"'{app_name}' is already in your app list. You can manage it from there.",
+                    }
+                )
 
             cur.execute(
                 """
@@ -583,23 +632,31 @@ def azure_create_app():
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')
                 """,
                 (
-                    user_id, app_name, base_url, auth_type,
+                    user_id,
+                    app_name,
+                    base_url,
+                    auth_type,
                     json.dumps(auth_config),
-                    json.dumps(headers), json.dumps(query_params),
+                    json.dumps(headers),
+                    json.dumps(query_params),
                     json.dumps(path_params),
-                    timeout_seconds, retry_count, retry_backoff_seconds,
+                    timeout_seconds,
+                    retry_count,
+                    retry_backoff_seconds,
                 ),
             )
             app_id = cur.lastrowid
         conn.commit()
 
-        return jsonify({
-            "success": True,
-            "already_exists": False,
-            "app_id": app_id,
-            "app_name": app_name,
-            "message": "App created. Use the Test button to verify connectivity.",
-        })
+        return jsonify(
+            {
+                "success": True,
+                "already_exists": False,
+                "app_id": app_id,
+                "app_name": app_name,
+                "message": "App created. Use the Test button to verify connectivity.",
+            }
+        )
 
     except ValueError as ve:
         return jsonify({"success": False, "error": str(ve)}), 400
@@ -672,8 +729,15 @@ def azure_update_app(app_id):
             return jsonify({"success": False, "error": "App not found"}), 404
 
         fields = {}
-        for field in ("app_name", "base_url", "auth_type", "status",
-                      "timeout_seconds", "retry_count", "retry_backoff_seconds"):
+        for field in (
+            "app_name",
+            "base_url",
+            "auth_type",
+            "status",
+            "timeout_seconds",
+            "retry_count",
+            "retry_backoff_seconds",
+        ):
             if field in data:
                 fields[field] = data[field]
         for json_field in ("auth_config", "headers", "query_params", "path_params"):
@@ -706,7 +770,9 @@ def azure_delete_app(app_id):
     conn = None
     try:
         data = request.get_json(force=True) or {}
-        user_id = data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        user_id = (
+            data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        )
 
         ok, err = _admin_only_check(user_id)
         if not ok:
@@ -733,7 +799,9 @@ def azure_hard_delete_app(app_id):
     conn = None
     try:
         data = request.get_json(force=True) or {}
-        user_id = data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        user_id = (
+            data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        )
 
         ok, err = _admin_only_check(user_id)
         if not ok:
@@ -846,6 +914,7 @@ def azure_execute_app(app_id):
 # Connector — Endpoints CRUD
 # ─────────────────────────────────────────────────────────────
 
+
 @azure_integration_bp.route("/connector/apps/<int:app_id>/endpoints", methods=["POST"])
 def azure_create_endpoint(app_id):
     conn = None
@@ -888,8 +957,13 @@ def azure_create_endpoint(app_id):
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
-                    app_id, user_id, name, path, method,
-                    json.dumps(headers), json.dumps(query_params),
+                    app_id,
+                    user_id,
+                    name,
+                    path,
+                    method,
+                    json.dumps(headers),
+                    json.dumps(query_params),
                     json.dumps(path_params),
                     json.dumps(body_template) if body_template else None,
                     timeout_seconds,
@@ -936,7 +1010,12 @@ def azure_list_endpoints(app_id):
             for dt_field in ("last_tested_at", "created_at", "updated_at"):
                 if ep.get(dt_field):
                     ep[dt_field] = str(ep[dt_field])
-            for json_field in ("headers", "query_params", "path_params", "body_template"):
+            for json_field in (
+                "headers",
+                "query_params",
+                "path_params",
+                "body_template",
+            ):
                 if ep.get(json_field):
                     try:
                         ep[json_field] = json.loads(ep[json_field])
@@ -993,12 +1072,16 @@ def azure_update_endpoint(endpoint_id):
             conn.close()
 
 
-@azure_integration_bp.route("/connector/endpoints/<int:endpoint_id>", methods=["DELETE"])
+@azure_integration_bp.route(
+    "/connector/endpoints/<int:endpoint_id>", methods=["DELETE"]
+)
 def azure_delete_endpoint(endpoint_id):
     conn = None
     try:
         data = request.get_json(force=True) or {}
-        user_id = data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        user_id = (
+            data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        )
 
         ok, err = _admin_only_check(user_id)
         if not ok:
@@ -1024,13 +1107,16 @@ def azure_delete_endpoint(endpoint_id):
 # Connector — Cleanup inactive / duplicate records
 # ─────────────────────────────────────────────────────────────
 
+
 @azure_integration_bp.route("/connector/cleanup-inactive", methods=["DELETE"])
 def azure_cleanup_inactive():
     """Hard-deletes inactive apps and deactivated endpoints for the calling admin."""
     conn = None
     try:
         data = request.get_json(force=True) or {}
-        user_id = data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        user_id = (
+            data.get("user_id") or _extract_user_id() or request.args.get("user_id")
+        )
 
         ok, err = _admin_only_check(user_id)
         if not ok:
@@ -1051,11 +1137,13 @@ def azure_cleanup_inactive():
             deleted_apps = cur.rowcount
 
         conn.commit()
-        return jsonify({
-            "success": True,
-            "deleted_apps": deleted_apps,
-            "deleted_endpoints": deleted_endpoints,
-        })
+        return jsonify(
+            {
+                "success": True,
+                "deleted_apps": deleted_apps,
+                "deleted_endpoints": deleted_endpoints,
+            }
+        )
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -1068,7 +1156,10 @@ def azure_cleanup_inactive():
 # Connector — Endpoint test & execute
 # ─────────────────────────────────────────────────────────────
 
-@azure_integration_bp.route("/connector/endpoints/<int:endpoint_id>/test", methods=["POST"])
+
+@azure_integration_bp.route(
+    "/connector/endpoints/<int:endpoint_id>/test", methods=["POST"]
+)
 def azure_test_endpoint(endpoint_id):
     conn = None
     try:
@@ -1108,6 +1199,7 @@ def azure_test_endpoint(endpoint_id):
         }
 
         import re
+
         path = row["path"]
         final_path_params = {
             **json.loads(row["path_params"] or "{}"),
@@ -1115,7 +1207,12 @@ def azure_test_endpoint(endpoint_id):
         }
         for var in re.findall(r"\{(.*?)\}", path):
             if var not in final_path_params:
-                return jsonify({"success": False, "error": f"Missing path parameter: {var}"}), 400
+                return (
+                    jsonify(
+                        {"success": False, "error": f"Missing path parameter: {var}"}
+                    ),
+                    400,
+                )
             path = path.replace(f"{{{var}}}", str(final_path_params[var]))
 
         full_url = row["base_url"].rstrip("/") + path
@@ -1125,9 +1222,16 @@ def azure_test_endpoint(endpoint_id):
             "request": {
                 "url": full_url,
                 "method": row["method"],
-                "headers": {**json.loads(row["headers"] or "{}"), **runtime_params["headers"]},
-                "query_params": {**json.loads(row["query_params"] or "{}"), **runtime_params["query_params"]},
-                "body": runtime_params["body"] or json.loads(row["body_template"] or "null"),
+                "headers": {
+                    **json.loads(row["headers"] or "{}"),
+                    **runtime_params["headers"],
+                },
+                "query_params": {
+                    **json.loads(row["query_params"] or "{}"),
+                    **runtime_params["query_params"],
+                },
+                "body": runtime_params["body"]
+                or json.loads(row["body_template"] or "null"),
             },
             "timeout": row.get("timeout_seconds") or row.get("app_timeout") or 10,
             "retry": {"count": 1, "backoff": 1},
@@ -1163,7 +1267,9 @@ def azure_test_endpoint(endpoint_id):
             conn.close()
 
 
-@azure_integration_bp.route("/connector/endpoints/<int:endpoint_id>/execute", methods=["POST"])
+@azure_integration_bp.route(
+    "/connector/endpoints/<int:endpoint_id>/execute", methods=["POST"]
+)
 def azure_execute_endpoint(endpoint_id):
     try:
         data = request.get_json(force=True) or {}
@@ -1196,7 +1302,10 @@ def azure_execute_endpoint(endpoint_id):
 # Connector — Run history (S3)
 # ─────────────────────────────────────────────────────────────
 
-@azure_integration_bp.route("/connector/endpoints/<int:endpoint_id>/runs", methods=["GET"])
+
+@azure_integration_bp.route(
+    "/connector/endpoints/<int:endpoint_id>/runs", methods=["GET"]
+)
 def azure_list_endpoint_runs(endpoint_id):
     try:
         user_id = request.args.get("user_id") or _extract_user_id()
@@ -1262,6 +1371,7 @@ def azure_get_endpoint_run(endpoint_id, filename):
 # Connector — Scheduling (uses AzureAPIConnectorScheduler)
 # ─────────────────────────────────────────────────────────────
 
+
 @azure_integration_bp.route(
     "/connector/endpoints/<int:endpoint_id>/schedule", methods=["POST"]
 )
@@ -1298,12 +1408,16 @@ def azure_schedule_endpoint(endpoint_id):
         if schedule_type == "one_time":
             dt = datetime.fromisoformat(data["datetime"])
             result = asyncio.run(
-                AzureAPIConnectorScheduler.schedule_endpoint_once(user_id, endpoint_id, dt, timezone)
+                AzureAPIConnectorScheduler.schedule_endpoint_once(
+                    user_id, endpoint_id, dt, timezone
+                )
             )
         elif schedule_type == "daily":
             hour, minute = map(int, data["startTime"].split(":"))
             result = asyncio.run(
-                AzureAPIConnectorScheduler.schedule_endpoint_daily(user_id, endpoint_id, hour, minute, timezone)
+                AzureAPIConnectorScheduler.schedule_endpoint_daily(
+                    user_id, endpoint_id, hour, minute, timezone
+                )
             )
         elif schedule_type == "weekly":
             hour, minute = map(int, data["startTime"].split(":"))
@@ -1321,7 +1435,9 @@ def azure_schedule_endpoint(endpoint_id):
             )
         elif schedule_type == "interval":
             result = asyncio.run(
-                AzureAPIConnectorScheduler.schedule_endpoint_interval(user_id, endpoint_id, data["seconds"])
+                AzureAPIConnectorScheduler.schedule_endpoint_interval(
+                    user_id, endpoint_id, data["seconds"]
+                )
             )
         elif schedule_type == "custom":
             dates = expand_custom_dates(
@@ -1330,7 +1446,9 @@ def azure_schedule_endpoint(endpoint_id):
                 start_time=data["startTime"],
             )
             result = asyncio.run(
-                AzureAPIConnectorScheduler.schedule_endpoint_custom_dates(user_id, endpoint_id, dates, timezone)
+                AzureAPIConnectorScheduler.schedule_endpoint_custom_dates(
+                    user_id, endpoint_id, dates, timezone
+                )
             )
         else:
             return jsonify({"error": "Unsupported schedule type"}), 400
@@ -1368,6 +1486,7 @@ def azure_schedule_endpoint(endpoint_id):
 # Global Azure Apps (templates curated by service@bytoid.ca)
 # ─────────────────────────────────────────────────────────────
 
+
 @azure_integration_bp.route("/admin/pushapp", methods=["POST"])
 def azure_push_global_app():
     """Promote a local azure_external_apps row to a global_azure_apps template.
@@ -1385,7 +1504,15 @@ def azure_push_global_app():
     if not ok:
         return err
     if user_id not in ACCESSIBLE_IDS:
-        return jsonify({"success": False, "error": "Only service@bytoid.ca can push global Azure apps."}), 403
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Only service@bytoid.ca can push global Azure apps.",
+                }
+            ),
+            403,
+        )
 
     conn = None
     try:
@@ -1397,7 +1524,10 @@ def azure_push_global_app():
             )
             local = cur.fetchone()
             if not local:
-                return jsonify({"success": False, "error": "Local Azure app not found"}), 404
+                return (
+                    jsonify({"success": False, "error": "Local Azure app not found"}),
+                    404,
+                )
 
             app_name = (body.get("app_name") or local["app_name"]).strip()
             base_url = (body.get("base_url") or local["base_url"]).strip()
@@ -1427,7 +1557,11 @@ def azure_push_global_app():
                     True,
                     status,
                     notes,
-                    json.dumps(required_config_schema) if required_config_schema is not None else None,
+                    (
+                        json.dumps(required_config_schema)
+                        if required_config_schema is not None
+                        else None
+                    ),
                 ),
             )
             new_global_app_id = cur.lastrowid
@@ -1465,7 +1599,9 @@ def azure_push_global_app():
                             json.dumps(_parse_json_field(ep.get("headers")) or {}),
                             json.dumps(_parse_json_field(ep.get("query_params")) or {}),
                             json.dumps(_parse_json_field(ep.get("path_params")) or {}),
-                            json.dumps(_parse_json_field(ep.get("body_template")) or {}),
+                            json.dumps(
+                                _parse_json_field(ep.get("body_template")) or {}
+                            ),
                             ep.get("timeout_seconds"),
                             bool(ep.get("is_active", True)),
                             status,
@@ -1477,26 +1613,33 @@ def azure_push_global_app():
                     continue
 
         conn.commit()
-        return jsonify({
-            "success": True,
-            "global_app_id": new_global_app_id,
-            "endpoints_pushed": endpoints_pushed,
-            "message": (
-                f"Azure app pushed to global with {endpoints_pushed} endpoint(s)."
-                if endpoints_pushed
-                else "Azure app pushed to global successfully."
-            ),
-        })
+        return jsonify(
+            {
+                "success": True,
+                "global_app_id": new_global_app_id,
+                "endpoints_pushed": endpoints_pushed,
+                "message": (
+                    f"Azure app pushed to global with {endpoints_pushed} endpoint(s)."
+                    if endpoints_pushed
+                    else "Azure app pushed to global successfully."
+                ),
+            }
+        )
 
     except pymysql.err.IntegrityError as ie:
         if conn:
             conn.rollback()
         msg = str(ie)
         if "uq_global_azure_app_name" in msg or "Duplicate entry" in msg:
-            return jsonify({
-                "success": False,
-                "error": f"A global Azure app named '{app_name}' already exists.",
-            }), 409
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": f"A global Azure app named '{app_name}' already exists.",
+                    }
+                ),
+                409,
+            )
         return jsonify({"success": False, "error": msg}), 500
     except Exception as e:
         if conn:
@@ -1524,7 +1667,15 @@ def azure_unpush_global_app():
     if not ok:
         return err
     if user_id not in ACCESSIBLE_IDS:
-        return jsonify({"success": False, "error": "Only service@bytoid.ca can downgrade global Azure apps."}), 403
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Only service@bytoid.ca can downgrade global Azure apps.",
+                }
+            ),
+            403,
+        )
 
     conn = None
     try:
@@ -1536,10 +1687,21 @@ def azure_unpush_global_app():
             )
             row = cur.fetchone()
             if not row:
-                return jsonify({"success": False, "error": "Local Azure app not found"}), 404
+                return (
+                    jsonify({"success": False, "error": "Local Azure app not found"}),
+                    404,
+                )
             global_app_id = row.get("source_global_azure_app_id")
             if not global_app_id:
-                return jsonify({"success": False, "error": "This app is not linked to a Global template."}), 400
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "This app is not linked to a Global template.",
+                        }
+                    ),
+                    400,
+                )
 
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM azure_external_apps WHERE source_global_azure_app_id=%s AND user_id<>%s",
@@ -1566,16 +1728,18 @@ def azure_unpush_global_app():
             cur.execute("DELETE FROM global_azure_apps WHERE id=%s", (global_app_id,))
 
         conn.commit()
-        return jsonify({
-            "success": True,
-            "global_app_id": global_app_id,
-            "other_installs_detached": other_installs,
-            "message": (
-                f"Downgraded to local. {other_installs} other admin installation(s) detached."
-                if other_installs
-                else "Downgraded to local."
-            ),
-        })
+        return jsonify(
+            {
+                "success": True,
+                "global_app_id": global_app_id,
+                "other_installs_detached": other_installs,
+                "message": (
+                    f"Downgraded to local. {other_installs} other admin installation(s) detached."
+                    if other_installs
+                    else "Downgraded to local."
+                ),
+            }
+        )
 
     except Exception as e:
         if conn:
@@ -1603,7 +1767,15 @@ def azure_push_global_app_endpoint():
     if not ok:
         return err
     if user_id not in ACCESSIBLE_IDS:
-        return jsonify({"success": False, "error": "Only service@bytoid.ca can push global Azure endpoints."}), 403
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Only service@bytoid.ca can push global Azure endpoints.",
+                }
+            ),
+            403,
+        )
 
     conn = None
     try:
@@ -1619,10 +1791,15 @@ def azure_push_global_app_endpoint():
             )
             row = cur.fetchone()
             if not row or not row["source_global_azure_app_id"]:
-                return jsonify({
-                    "success": False,
-                    "error": "App is not global. Push the app to global first.",
-                }), 400
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "App is not global. Push the app to global first.",
+                        }
+                    ),
+                    400,
+                )
             global_app_id = row["source_global_azure_app_id"]
 
             local_ep = None
@@ -1633,7 +1810,12 @@ def azure_push_global_app_endpoint():
                 )
                 local_ep = cur.fetchone()
                 if not local_ep:
-                    return jsonify({"success": False, "error": "Local endpoint not found"}), 404
+                    return (
+                        jsonify(
+                            {"success": False, "error": "Local endpoint not found"}
+                        ),
+                        404,
+                    )
 
             def pick(field, default=None):
                 if body.get(field) is not None:
@@ -1645,7 +1827,10 @@ def azure_push_global_app_endpoint():
             name = (pick("name") or "").strip() if pick("name") else None
             path = pick("path")
             if not name or not path:
-                return jsonify({"success": False, "error": "name and path required"}), 400
+                return (
+                    jsonify({"success": False, "error": "name and path required"}),
+                    400,
+                )
 
             cur.execute(
                 """
@@ -1668,26 +1853,37 @@ def azure_push_global_app_endpoint():
                     bool(pick("is_active", True)),
                     body.get("status", "development"),
                     body.get("notes"),
-                    json.dumps(body["required_config_schema"]) if body.get("required_config_schema") is not None else None,
+                    (
+                        json.dumps(body["required_config_schema"])
+                        if body.get("required_config_schema") is not None
+                        else None
+                    ),
                 ),
             )
             new_global_endpoint_id = cur.lastrowid
         conn.commit()
-        return jsonify({
-            "success": True,
-            "global_endpoint_id": new_global_endpoint_id,
-            "global_app_id": global_app_id,
-        })
+        return jsonify(
+            {
+                "success": True,
+                "global_endpoint_id": new_global_endpoint_id,
+                "global_app_id": global_app_id,
+            }
+        )
 
     except pymysql.err.IntegrityError as ie:
         if conn:
             conn.rollback()
         msg = str(ie)
         if "Duplicate entry" in msg:
-            return jsonify({
-                "success": False,
-                "error": "An endpoint with the same name or (path, method) already exists in the global app.",
-            }), 409
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "An endpoint with the same name or (path, method) already exists in the global app.",
+                    }
+                ),
+                409,
+            )
         return jsonify({"success": False, "error": msg}), 500
     except Exception as e:
         if conn:
@@ -1759,7 +1955,9 @@ def azure_list_global_apps(user_id):
             conn.close()
 
 
-@azure_integration_bp.route("/global/app_endpoints/<string:user_id>/<int:app_id>", methods=["GET"])
+@azure_integration_bp.route(
+    "/global/app_endpoints/<string:user_id>/<int:app_id>", methods=["GET"]
+)
 def azure_list_global_app_endpoints(user_id, app_id):
     """List endpoints for a single global Azure app.
     Non-admins see only status='ready' endpoints."""
@@ -1808,7 +2006,9 @@ def azure_list_global_app_endpoints(user_id, app_id):
             ep["installed"] = local_id is not None
             ep["installed_local_endpoint_id"] = local_id
 
-        return jsonify({"success": True, "endpoints": endpoints, "is_admin": is_service_admin})
+        return jsonify(
+            {"success": True, "endpoints": endpoints, "is_admin": is_service_admin}
+        )
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
@@ -1847,12 +2047,14 @@ def azure_instantiate_global_app():
             )
             existing = cur.fetchone()
             if existing:
-                return jsonify({
-                    "success": True,
-                    "already_installed": True,
-                    "app_id": existing["id"],
-                    "message": "Already installed.",
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "already_installed": True,
+                        "app_id": existing["id"],
+                        "message": "Already installed.",
+                    }
+                )
 
             base_name = g["app_name"]
             app_name = base_name
@@ -1943,13 +2145,15 @@ def azure_instantiate_global_app():
                 installed_count += 1
 
         conn.commit()
-        return jsonify({
-            "success": True,
-            "app_id": new_app_id,
-            "app_name": app_name,
-            "auto_installed_endpoints": installed_count,
-            "message": "Global Azure app installed.",
-        })
+        return jsonify(
+            {
+                "success": True,
+                "app_id": new_app_id,
+                "app_name": app_name,
+                "auto_installed_endpoints": installed_count,
+                "message": "Global Azure app installed.",
+            }
+        )
     except Exception as e:
         if conn:
             conn.rollback()
@@ -2068,7 +2272,9 @@ def azure_install_all_global_apps():
                             json.dumps(_parse_json_field(ep.get("headers")) or {}),
                             json.dumps(_parse_json_field(ep.get("query_params")) or {}),
                             json.dumps(_parse_json_field(ep.get("path_params")) or {}),
-                            json.dumps(_parse_json_field(ep.get("body_template")) or {}),
+                            json.dumps(
+                                _parse_json_field(ep.get("body_template")) or {}
+                            ),
                             ep.get("timeout_seconds"),
                             1,
                         ),
@@ -2076,13 +2282,15 @@ def azure_install_all_global_apps():
                     endpoints_installed += 1
 
         conn.commit()
-        return jsonify({
-            "success": True,
-            "apps_installed": apps_installed,
-            "apps_skipped": apps_skipped,
-            "endpoints_installed": endpoints_installed,
-            "message": f"Installed {apps_installed} app(s), skipped {apps_skipped} already-installed.",
-        })
+        return jsonify(
+            {
+                "success": True,
+                "apps_installed": apps_installed,
+                "apps_skipped": apps_skipped,
+                "endpoints_installed": endpoints_installed,
+                "message": f"Installed {apps_installed} app(s), skipped {apps_skipped} already-installed.",
+            }
+        )
     except Exception as e:
         if conn:
             conn.rollback()
@@ -2100,7 +2308,12 @@ def azure_instantiate_global_endpoint():
     global_endpoint_id = body.get("global_endpoint_id") or body.get("endpoint_id")
 
     if not user_id or not global_endpoint_id:
-        return jsonify({"success": False, "error": "user_id and global_endpoint_id required"}), 400
+        return (
+            jsonify(
+                {"success": False, "error": "user_id and global_endpoint_id required"}
+            ),
+            400,
+        )
 
     ok, err = _admin_only_check(user_id)
     if not ok:
@@ -2116,7 +2329,10 @@ def azure_instantiate_global_endpoint():
             )
             ge = cur.fetchone()
             if not ge:
-                return jsonify({"success": False, "error": "Global endpoint not found"}), 404
+                return (
+                    jsonify({"success": False, "error": "Global endpoint not found"}),
+                    404,
+                )
 
             cur.execute(
                 """
@@ -2128,10 +2344,15 @@ def azure_instantiate_global_endpoint():
             )
             parent = cur.fetchone()
             if not parent:
-                return jsonify({
-                    "success": False,
-                    "error": "Parent global app is not installed for this user. Install the app first.",
-                }), 400
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Parent global app is not installed for this user. Install the app first.",
+                        }
+                    ),
+                    400,
+                )
             local_app_id = parent["id"]
 
             cur.execute(
@@ -2144,11 +2365,13 @@ def azure_instantiate_global_endpoint():
             )
             existing = cur.fetchone()
             if existing:
-                return jsonify({
-                    "success": True,
-                    "already_installed": True,
-                    "endpoint_id": existing["id"],
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "already_installed": True,
+                        "endpoint_id": existing["id"],
+                    }
+                )
 
             cur.execute(
                 """
@@ -2174,11 +2397,13 @@ def azure_instantiate_global_endpoint():
             )
             new_endpoint_id = cur.lastrowid
         conn.commit()
-        return jsonify({
-            "success": True,
-            "endpoint_id": new_endpoint_id,
-            "local_app_id": local_app_id,
-        })
+        return jsonify(
+            {
+                "success": True,
+                "endpoint_id": new_endpoint_id,
+                "local_app_id": local_app_id,
+            }
+        )
     except Exception as e:
         if conn:
             conn.rollback()
@@ -2233,11 +2458,21 @@ def _read_test_results():
 def azure_get_test_results():
     user_id = request.args.get("user_id") or _extract_user_id()
     if not user_id or user_id not in ACCESSIBLE_IDS:
-        return jsonify({"success": False, "error": "Access restricted to service@bytoid.ca"}), 403
+        return (
+            jsonify(
+                {"success": False, "error": "Access restricted to service@bytoid.ca"}
+            ),
+            403,
+        )
 
     results = _read_test_results()
     if results is None:
-        return jsonify({"success": False, "error": "No test results found. Run tests first."}), 404
+        return (
+            jsonify(
+                {"success": False, "error": "No test results found. Run tests first."}
+            ),
+            404,
+        )
 
     return jsonify({"success": True, **results})
 
@@ -2247,7 +2482,12 @@ def azure_run_tests():
     data = request.get_json(force=True) or {}
     user_id = data.get("user_id") or _extract_user_id()
     if not user_id or user_id not in ACCESSIBLE_IDS:
-        return jsonify({"success": False, "error": "Access restricted to service@bytoid.ca"}), 403
+        return (
+            jsonify(
+                {"success": False, "error": "Access restricted to service@bytoid.ca"}
+            ),
+            403,
+        )
 
     results_dir = os.path.join(_PROJECT_ROOT, "testing", "results")
     os.makedirs(results_dir, exist_ok=True)
@@ -2263,8 +2503,11 @@ def azure_run_tests():
 
     try:
         proc = subprocess.run(
-            cmd + [
-                "testing/", "-v", "--tb=short",
+            cmd
+            + [
+                "testing/",
+                "-v",
+                "--tb=short",
                 "--json-report",
                 "--json-report-file=testing/results/latest.json",
             ],
@@ -2275,9 +2518,17 @@ def azure_run_tests():
             timeout=120,
         )
     except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "Test run timed out after 120s"}), 504
+        return (
+            jsonify({"success": False, "error": "Test run timed out after 120s"}),
+            504,
+        )
     except Exception as exc:
-        return jsonify({"success": False, "error": f"Failed to launch test runner: {exc}"}), 500
+        return (
+            jsonify(
+                {"success": False, "error": f"Failed to launch test runner: {exc}"}
+            ),
+            500,
+        )
 
     results = _read_test_results() or {}
     response = {

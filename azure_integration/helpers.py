@@ -126,7 +126,37 @@ def _refresh_azure_token(user_id):
 
     session_row = _get_any_azure_session(user_id)
     if not session_row or not session_row.get("refresh_token"):
-        return None
+        # client_credentials tokens have no refresh_token — just re-issue.
+        token, err = _fetch_client_credentials_token(idp_cfg)
+        if err or not token:
+            return None
+        expires_at = (
+            datetime.utcnow() + timedelta(seconds=int(token.get("expires_in", 3600)))
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        conn = None
+        try:
+            conn = connect_to_rds()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE azure_saml_sessions
+                    SET access_token=%s, scope=%s, expires_at=%s, updated_at=NOW()
+                    WHERE user_id=%s
+                    """,
+                    (
+                        token["access_token"],
+                        token.get("scope") or idp_cfg.get("default_scope"),
+                        expires_at,
+                        user_id,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            return None
+        finally:
+            if conn:
+                conn.close()
+        return _get_active_azure_session(user_id)
 
     token_url = f"https://login.microsoftonline.com/{idp_cfg['tenant_id']}/oauth2/v2.0/token"
     try:
@@ -319,31 +349,32 @@ def _init_saml_auth_azure(req, user_id):
 
 def exchange_saml_for_azure_token(idp_cfg, saml_response_b64):
     """
-    Exchanges a SAML response from Entra for an Azure AD access token using
-    the SAML 2.0 Bearer Assertion grant (RFC 7522).
+    Obtains an Azure access token after a successful SAML authentication.
+
+    Azure Entra issues the SAML assertion itself, so the SAML2 bearer assertion
+    grant (RFC 7522) is not applicable — Entra rejects its own assertions with
+    AADSTS50107/AADSTS7000013. The SAML flow proved identity; we get the token
+    for Graph API calls via client credentials (app-level grant).
+
     Returns (token_dict, None) on success, (None, error_string) on failure.
     """
-    try:
-        decoded = base64.b64decode(saml_response_b64)
-    except Exception as e:
-        return None, f"Invalid base64 SAMLResponse: {e}"
+    return _fetch_client_credentials_token(idp_cfg)
 
-    assertion_b64url = base64.urlsafe_b64encode(decoded).decode().rstrip("=")
 
+def _fetch_client_credentials_token(idp_cfg):
+    """Issues a client_credentials grant and returns (token_dict, error)."""
     token_url = (
         f"https://login.microsoftonline.com/{idp_cfg['tenant_id']}/oauth2/v2.0/token"
     )
+    scope = idp_cfg.get("default_scope") or "https://graph.microsoft.com/.default"
     try:
         resp = requests.post(
             token_url,
             data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:saml2-bearer",
-                "assertion": assertion_b64url,
+                "grant_type": "client_credentials",
                 "client_id": idp_cfg["client_id"],
                 "client_secret": idp_cfg["client_secret"],
-                "scope": idp_cfg.get("default_scope")
-                or "https://graph.microsoft.com/.default",
-                "requested_token_use": "on_behalf_of",
+                "scope": scope,
             },
             timeout=15,
         )
