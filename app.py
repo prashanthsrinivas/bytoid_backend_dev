@@ -52,6 +52,7 @@ from websockets_custom.routes import ws_bp
 from policy_hub.routes import policy_hub_bp
 from trust_center.routes import trust_center_bp
 from workflow_route.routes import workflow_bp
+from tests_routes.routes import tests_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -206,6 +207,7 @@ blueprints = [
     policy_hub_bp,
     trust_center_bp,
     workflow_bp,
+    tests_bp,
 ]
 
 for bp in blueprints:

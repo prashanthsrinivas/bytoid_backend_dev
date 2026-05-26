@@ -1,9 +1,6 @@
 import asyncio
 import json
 import os
-import shutil
-import subprocess
-import sys
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
@@ -2479,6 +2476,11 @@ def azure_get_test_results():
 
 @azure_integration_bp.route("/run-tests", methods=["POST"])
 def azure_run_tests():
+    """Legacy shim. Delegates to tests_routes.runners and returns the
+    legacy-compatible response shape so existing frontends keep working.
+
+    New integrations should call POST /tests/run (async via Celery) instead.
+    """
     data = request.get_json(force=True) or {}
     user_id = data.get("user_id") or _extract_user_id()
     if not user_id or user_id not in ACCESSIBLE_IDS:
@@ -2489,54 +2491,24 @@ def azure_run_tests():
             403,
         )
 
-    results_dir = os.path.join(_PROJECT_ROOT, "testing", "results")
-    os.makedirs(results_dir, exist_ok=True)
+    from tests_routes.result_store import new_run_id, read_category_result
+    from tests_routes.runners import run_pytest_category
 
-    pytest_bin = shutil.which("pytest") or shutil.which("pytest3")
-    if pytest_bin:
-        cmd = [pytest_bin]
-    else:
-        cmd = [sys.executable, "-m", "pytest"]
+    run_id = new_run_id()
+    result = run_pytest_category(
+        "backend_integration",
+        run_id,
+        pytest_targets=["testing/"],
+        timeout_seconds=120,
+    )
+    payload = read_category_result("backend_integration") or {}
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = _PROJECT_ROOT
-
-    try:
-        proc = subprocess.run(
-            cmd
-            + [
-                "testing/",
-                "-v",
-                "--tb=short",
-                "--json-report",
-                "--json-report-file=testing/results/latest.json",
-            ],
-            capture_output=True,
-            text=True,
-            cwd=_PROJECT_ROOT,
-            env=env,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        return (
-            jsonify({"success": False, "error": "Test run timed out after 120s"}),
-            504,
-        )
-    except Exception as exc:
-        return (
-            jsonify(
-                {"success": False, "error": f"Failed to launch test runner: {exc}"}
-            ),
-            500,
-        )
-
-    results = _read_test_results() or {}
-    response = {
-        "success": proc.returncode == 0,
-        "exit_code": proc.returncode,
-        **results,
-    }
-    if not results:
-        response["stdout"] = proc.stdout[-3000:] if proc.stdout else ""
-        response["stderr"] = proc.stderr[-3000:] if proc.stderr else ""
-    return jsonify(response)
+    return jsonify(
+        {
+            "success": result.get("status") == "passed",
+            "exit_code": 0 if result.get("status") == "passed" else 1,
+            "run_id": run_id,
+            "summary": payload.get("summary"),
+            "tests": payload.get("tests"),
+        }
+    )

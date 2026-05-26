@@ -281,3 +281,4 @@ pdfminer.six
 pytest>=8.0
 pytest-mock>=3.14
 pytest-json-report>=1.5
+locust>=2.20

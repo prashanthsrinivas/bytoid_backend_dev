@@ -1620,3 +1620,89 @@ def migrate_legacy_policies_org(self, user_id: str, dry_run: bool = False, polic
         raise
     finally:
         run_async(lock_client.delete(lock_key))
+
+
+# ─────────────────────────────────────────────────────────────
+# Unit Test Results — backend test runner Celery tasks.
+# Each task delegates to tests_routes/runners.py, which handles the
+# subprocess invocation, output normalization, and persistence.
+# ─────────────────────────────────────────────────────────────
+
+
+@new_celery.task(bind=True, name="tasks.tests.run_backend_unit")
+def run_backend_unit(self, run_id):
+    from tests_routes.runners import run_pytest_category
+
+    return run_pytest_category(
+        "backend_unit", run_id, pytest_targets=["tests/"], timeout_seconds=600
+    )
+
+
+@new_celery.task(bind=True, name="tasks.tests.run_backend_integration")
+def run_backend_integration(self, run_id):
+    from tests_routes.runners import run_pytest_category
+
+    return run_pytest_category(
+        "backend_integration",
+        run_id,
+        pytest_targets=["testing/"],
+        timeout_seconds=900,
+    )
+
+
+@new_celery.task(bind=True, name="tasks.tests.run_backend_regression")
+def run_backend_regression(self, run_id):
+    from tests_routes.runners import run_pytest_category
+
+    return run_pytest_category(
+        "backend_regression",
+        run_id,
+        pytest_targets=["tests/", "testing/"],
+        timeout_seconds=1800,
+    )
+
+
+@new_celery.task(bind=True, name="tasks.tests.run_backend_load")
+def run_backend_load(self, run_id, target_url, users, spawn_rate, run_time):
+    from tests_routes.runners import run_locust_category
+
+    return run_locust_category(
+        "backend_load",
+        run_id,
+        scenario="steady",
+        target_url=target_url,
+        users=users,
+        spawn_rate=spawn_rate,
+        run_time=run_time,
+    )
+
+
+@new_celery.task(bind=True, name="tasks.tests.run_backend_stress")
+def run_backend_stress(self, run_id, target_url, max_users, spawn_rate, run_time):
+    from tests_routes.runners import run_locust_category
+
+    return run_locust_category(
+        "backend_stress",
+        run_id,
+        scenario="stress",
+        target_url=target_url,
+        users=max_users,
+        spawn_rate=spawn_rate,
+        run_time=run_time,
+    )
+
+
+@new_celery.task(bind=True, name="tasks.tests.run_backend_performance")
+def run_backend_performance(self, run_id, target_url, run_time):
+    from tests_routes.runners import run_locust_category
+
+    # Performance probe: low concurrency, short duration, captures p95/p99.
+    return run_locust_category(
+        "backend_performance",
+        run_id,
+        scenario="performance",
+        target_url=target_url,
+        users=10,
+        spawn_rate=2,
+        run_time=run_time,
+    )
