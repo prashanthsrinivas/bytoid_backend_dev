@@ -278,9 +278,13 @@ def tests_run():
         },
     )
 
+    # success=True means "the request was accepted and processed". Per-category
+    # dispatch failures live in `failures[]` so the frontend can keep polling
+    # the tasks that DID start. If every category failed, dispatched=[] tells
+    # the frontend nothing is running.
     return jsonify(
         {
-            "success": not failures,
+            "success": True,
             "run_id": run_id,
             "dispatched": dispatched,
             "failures": failures,

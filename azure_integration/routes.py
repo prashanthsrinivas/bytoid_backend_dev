@@ -2421,33 +2421,61 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _read_test_results():
-    """Load and normalise the pytest-json-report output file."""
-    path = os.path.abspath(_RESULTS_FILE)
-    if not os.path.exists(path):
-        return None
-    with open(path, encoding="utf-8") as f:
-        raw = json.load(f)
+    """Legacy reader. Returns results in the pre-Unit-Test-Results shape so any
+    external caller of GET /azure/test-results keeps working. Data is sourced
+    from the new tests_routes/result_store backend_integration latest file,
+    falling back to the legacy testing/results/latest.json if present."""
+    from tests_routes.result_store import read_category_result
 
-    summary = raw.get("summary", {})
-    tests = [
-        {
-            "nodeid": t.get("nodeid"),
-            "outcome": t.get("outcome"),
-            "duration": round(t.get("duration", 0), 4),
-            "longrepr": (t.get("call") or {}).get("longrepr"),
+    payload = read_category_result("backend_integration")
+    if payload is None:
+        # Legacy fallback: pre-tests_routes single-file layout.
+        path = os.path.abspath(_RESULTS_FILE)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        summary = raw.get("summary", {})
+        return {
+            "summary": {
+                "total": summary.get("total", 0),
+                "passed": summary.get("passed", 0),
+                "failed": summary.get("failed", 0),
+                "error": summary.get("error", 0),
+                "duration": round(raw.get("duration", 0), 3),
+                "created": raw.get("created"),
+            },
+            "tests": [
+                {
+                    "nodeid": t.get("nodeid"),
+                    "outcome": t.get("outcome"),
+                    "duration": round(t.get("duration", 0), 4),
+                    "longrepr": (t.get("call") or {}).get("longrepr"),
+                }
+                for t in raw.get("tests", [])
+            ],
         }
-        for t in raw.get("tests", [])
-    ]
+
+    # Map canonical payload → legacy shape.
+    summary = payload.get("summary") or {}
     return {
         "summary": {
             "total": summary.get("total", 0),
             "passed": summary.get("passed", 0),
             "failed": summary.get("failed", 0),
-            "error": summary.get("error", 0),
-            "duration": round(raw.get("duration", 0), 3),
-            "created": raw.get("created"),
+            "error": summary.get("errors", 0),
+            "duration": round(payload.get("duration_seconds", 0) or 0, 3),
+            "created": payload.get("finished_at"),
         },
-        "tests": tests,
+        "tests": [
+            {
+                "nodeid": t.get("name"),
+                "outcome": t.get("outcome"),
+                "duration": round(t.get("duration", 0) or 0, 4),
+                "longrepr": t.get("message"),
+            }
+            for t in (payload.get("tests") or [])
+        ],
     }
 
 
