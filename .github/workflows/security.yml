@@ -1,0 +1,501 @@
+name: Security & Coverage
+
+# Phase 1 of the testing & security validation rollout.
+#
+# Runs Bandit, Semgrep, Gitleaks, TruffleHog, pip-audit, Safety, and
+# pytest-cov on every PR + push to main + nightly schedule. Each job
+# uploads SARIF where supported (consumed by the GitHub Security tab)
+# AND posts a normalized JSON payload to the backend webhook (consumed by
+# the Unit Test Results dashboard).
+#
+# Gate strategy (warn-only for non-protected paths on first rollout):
+#   * Every scanner job runs with `continue-on-error: true` so a finding
+#     does NOT fail the build by default.
+#   * The protected-module-guardrail workflow runs in parallel; for PRs
+#     touching protected paths it enforces strict gating itself.
+#   * Phase 6 of the plan flips this workflow's jobs to
+#     `continue-on-error: false` once the baseline is clean.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    # Daily 06:00 UTC — catches new CVEs in pinned deps even when no PRs land.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      categories:
+        description: "Comma-separated category list to run (default: all)"
+        required: false
+        default: "sast,secrets,deps,coverage"
+
+permissions:
+  contents: read
+  security-events: write   # for SARIF uploads to GitHub Security
+  pull-requests: write     # for the summary PR comment
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  BYTOID_BACKEND_URL: ${{ secrets.BYTOID_BACKEND_URL }}
+  FRONTEND_TESTS_WEBHOOK_SECRET: ${{ secrets.FRONTEND_TESTS_WEBHOOK_SECRET }}
+
+jobs:
+  # ── Bandit (Python SAST) ─────────────────────────────────────────────────
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install bandit
+        run: pip install "bandit[toml,sarif]>=1.7"
+
+      - name: Determine scan scope
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            mapfile -t changed < <(./scripts/changed-python-files.sh)
+            if [ "${#changed[@]}" -eq 0 ]; then
+              echo "No Python files changed; bandit will exit cleanly."
+              echo "targets=" >> "$GITHUB_OUTPUT"
+            else
+              echo "targets=${changed[*]}" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "targets=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Bandit
+        id: run
+        if: steps.scope.outputs.targets != ''
+        run: |
+          set +e
+          bandit -c pyproject.toml \
+            -f json -o bandit-report.json \
+            ${{ steps.scope.outputs.targets }}
+          json_rc=$?
+          bandit -c pyproject.toml \
+            -f sarif -o bandit.sarif \
+            ${{ steps.scope.outputs.targets }} || true
+          echo "rc=$json_rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload SARIF to GitHub Security tab
+        if: steps.scope.outputs.targets != '' && hashFiles('bandit.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          if [ ! -f bandit-report.json ]; then
+            echo '{"results":[]}' > bandit-report.json
+          fi
+          python scripts/post-scan-result.py \
+            --tool bandit \
+            --category backend_security_sast \
+            --input bandit-report.json \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-results
+          path: |
+            bandit-report.json
+            bandit.sarif
+          if-no-files-found: ignore
+
+  # ── Semgrep (rule-based SAST) ───────────────────────────────────────────
+  semgrep:
+    name: Semgrep (OWASP + Python + Flask + Protected rules)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container:
+      image: returntocorp/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Semgrep
+        id: run
+        run: |
+          set +e
+          # Layer the broad rulesets with our project-specific protected rules.
+          # The .semgrep/protected/* rules are CRITICAL severity and never warn-only;
+          # the protected-module-guardrail workflow enforces them separately on
+          # protected paths.
+          semgrep scan \
+            --config p/python \
+            --config p/owasp-top-ten \
+            --config p/flask \
+            --config p/jwt \
+            --config p/secrets \
+            --config .semgrep/protected/ \
+            --sarif --output semgrep.sarif \
+            --metrics off \
+            --error
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload SARIF to GitHub Security tab
+        if: hashFiles('semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          apk add --no-cache python3 py3-pip || true
+          pip3 install --break-system-packages pyyaml >/dev/null 2>&1 || pip3 install pyyaml
+          if [ ! -f semgrep.sarif ]; then
+            echo '{"runs":[]}' > semgrep.sarif
+          fi
+          python3 scripts/post-scan-result.py \
+            --tool semgrep \
+            --category backend_security_sast \
+            --input semgrep.sarif \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-results
+          path: semgrep.sarif
+          if-no-files-found: ignore
+
+  # ── Gitleaks (secrets) ──────────────────────────────────────────────────
+  gitleaks:
+    name: Gitleaks (secrets detection)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        id: run
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # Produce SARIF and JSON.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          GITLEAKS_ENABLE_SUMMARY: "true"
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security tab
+        if: hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: gitleaks
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install pyyaml
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          if [ ! -f results.sarif ]; then
+            echo '{"runs":[]}' > results.sarif
+          fi
+          python scripts/post-scan-result.py \
+            --tool gitleaks \
+            --category backend_security_secrets \
+            --input results.sarif \
+            --returncode "${{ steps.run.outcome == 'success' && 0 || 1 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-results
+          path: results.sarif
+          if-no-files-found: ignore
+
+  # ── TruffleHog (verified secrets) ───────────────────────────────────────
+  trufflehog:
+    name: TruffleHog (verified secrets)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog OSS
+        id: run
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          # Only flag secrets that actually authenticate to a service (low FP rate).
+          extra_args: --only-verified --json
+        continue-on-error: true
+
+      # TruffleHog action writes results to stdout; capture them.
+      - name: Capture trufflehog output
+        if: always()
+        run: |
+          # The action above writes to GitHub annotations; we run it again
+          # explicitly to capture json for the dashboard.
+          docker run --rm -v "${PWD}:/repo" \
+            trufflesecurity/trufflehog:latest filesystem \
+            --only-verified --json /repo > trufflehog.json || true
+          # Convert each line of trufflehog output to our normalizer's
+          # expected SARIF-ish wrapper (treating each match as a high-severity
+          # secret finding).
+          python <<'PY'
+          import json, os
+          matches = []
+          if os.path.exists('trufflehog.json'):
+              for line in open('trufflehog.json'):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      m = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  matches.append({
+                      "ruleId": m.get("DetectorName") or "trufflehog-verified",
+                      "level": "error",
+                      "message": {"text": m.get("Raw", "")[:200]},
+                      "locations": [{
+                          "physicalLocation": {
+                              "artifactLocation": {"uri": m.get("SourceMetadata", {}).get("Data", {}).get("Filesystem", {}).get("file", "")},
+                              "region": {"startLine": m.get("SourceMetadata", {}).get("Data", {}).get("Filesystem", {}).get("line", 1)}
+                          }
+                      }]
+                  })
+          out = {"runs": [{"tool": {"driver": {"name": "trufflehog"}}, "results": matches}]}
+          json.dump(out, open('trufflehog.sarif', 'w'))
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install pyyaml
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          python scripts/post-scan-result.py \
+            --tool gitleaks \
+            --category backend_security_secrets \
+            --input trufflehog.sarif \
+            --returncode 0 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trufflehog-results
+          path: |
+            trufflehog.json
+            trufflehog.sarif
+          if-no-files-found: ignore
+
+  # ── pip-audit (dep CVE scan) ────────────────────────────────────────────
+  pip_audit:
+    name: pip-audit (dependency CVE scan)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-audit
+        run: pip install "pip-audit>=2.6"
+
+      - name: Run pip-audit (SARIF + JSON)
+        id: run
+        run: |
+          set +e
+          pip-audit -r requirements.txt -f json -o pip-audit.json
+          rc=$?
+          pip-audit -r requirements.txt -f sarif -o pip-audit.sarif || true
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload SARIF to GitHub Security tab
+        if: hashFiles('pip-audit.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pip-audit.sarif
+          category: pip-audit
+
+      - run: pip install pyyaml
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          [ -f pip-audit.json ] || echo '{"dependencies":[]}' > pip-audit.json
+          python scripts/post-scan-result.py \
+            --tool pip-audit \
+            --category backend_security_deps \
+            --input pip-audit.json \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit-results
+          path: |
+            pip-audit.json
+            pip-audit.sarif
+
+  # ── Safety CLI (community DB) ───────────────────────────────────────────
+  safety:
+    name: Safety (community DB)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install safety
+        run: pip install "safety>=3.0"
+
+      - name: Run safety scan
+        id: run
+        env:
+          SAFETY_API_KEY: ${{ secrets.SAFETY_API_KEY }}
+        run: |
+          set +e
+          safety scan --output json --save-as json safety-report.json || rc=$?
+          echo "rc=${rc:-0}" >> "$GITHUB_OUTPUT"
+          [ -f safety-report.json ] || echo '{"vulnerabilities":[]}' > safety-report.json
+          exit 0
+
+      - run: pip install pyyaml
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          python scripts/post-scan-result.py \
+            --tool safety \
+            --category backend_security_deps \
+            --input safety-report.json \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: safety-results
+          path: safety-report.json
+
+  # ── Coverage (pytest-cov) ───────────────────────────────────────────────
+  coverage:
+    name: Coverage (pytest-cov, line+branch)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          pip install -r requirements.txt
+          # pytest-cov is in requirements.txt as of Phase 1; safety net here.
+          pip install "pytest-cov>=4.1"
+
+      - name: Run pytest with coverage
+        id: run
+        run: |
+          set +e
+          python -m pytest \
+            --cov=. --cov-branch \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-report=term-missing:skip-covered \
+            --json-report --json-report-file=testing/results/latest.json \
+            -q
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          [ -f coverage.xml ] || echo '<?xml version="1.0"?><coverage line-rate="0" branch-rate="0"/>' > coverage.xml
+          pip install pyyaml
+          python scripts/post-scan-result.py \
+            --tool coverage \
+            --category backend_coverage \
+            --input coverage.xml \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+
+  # ── Aggregate report ────────────────────────────────────────────────────
+  report:
+    name: Security & coverage summary
+    needs: [bandit, semgrep, gitleaks, trufflehog, pip_audit, safety, coverage]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Post summary to PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: security-summary
+          message: |
+            ### 🛡️ Security & Coverage — Phase 1 (warn-only)
+
+            All scanners ran. Results posted to the **Unit Test Results** dashboard.
+
+            | Scanner | Result |
+            |---|---|
+            | Bandit (SAST) | ${{ needs.bandit.result }} |
+            | Semgrep (SAST) | ${{ needs.semgrep.result }} |
+            | Gitleaks (secrets) | ${{ needs.gitleaks.result }} |
+            | TruffleHog (verified secrets) | ${{ needs.trufflehog.result }} |
+            | pip-audit (deps) | ${{ needs.pip_audit.result }} |
+            | Safety (deps) | ${{ needs.safety.result }} |
+            | Coverage (pytest-cov) | ${{ needs.coverage.result }} |
+
+            Findings also visible in the **Security** tab (SARIF) and as
+            workflow artifacts on this run.
+
+            > Phase 1 is **warn-only** for non-protected paths. Protected-module
+            > changes are gated by the `protected-module-guardrail` workflow
+            > and do not benefit from the warn-only carve-out.

@@ -1,0 +1,60 @@
+# Pre-commit hooks — install with: pre-commit install
+#
+# Runs locally on every `git commit`. Same scanners CI runs, but on the
+# changed files only, so the developer feedback loop is fast.
+#
+# CI is the authoritative gate; pre-commit is a developer convenience.
+
+repos:
+  # ── ruff (formatting + lint) ─────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.14
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # ── bandit (Python SAST, fast subset only) ───────────────────────────────
+  # `-lll` = report only LOW+ severity; the heavier full scan runs in CI.
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.10
+    hooks:
+      - id: bandit
+        args: ["-c", "bandit.yaml", "-lll", "-q"]
+        files: \.py$
+
+  # ── gitleaks (secrets detection) ─────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        args: ["--config", ".gitleaks.toml", "--no-banner"]
+
+  # ── protected-module guardrail (suppression-only mode locally) ───────────
+  # Runs the same script that CI uses, but in `--mode=suppression`, so it
+  # only blocks commits that add a new `# nosec` / `# noqa: S` / etc. on a
+  # protected file. The full guardrail (risk labels, AI-only approval) runs
+  # in CI.
+  - repo: local
+    hooks:
+      - id: protected-module-suppression-check
+        name: Block new suppressions in protected paths
+        entry: python scripts/protected-module-guardrail.py --mode=suppression
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+  # ── generic hygiene ──────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+        args: ["--unsafe"]   # allow custom tags in GH Actions workflows
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        exclude: \.(md|svg|txt)$
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]

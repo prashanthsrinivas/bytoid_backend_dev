@@ -31,6 +31,27 @@ BACKEND_CATEGORIES = {
         "runner": "locust",
         "delegated": False,
     },
+    # ── Phase 1 — security scanners + coverage (delegated to CI) ──────
+    "backend_security_sast": {
+        "display_name": "Backend SAST (Bandit + Semgrep)",
+        "runner": "multi-sast",
+        "delegated": True,
+    },
+    "backend_security_secrets": {
+        "display_name": "Backend Secrets (Gitleaks + TruffleHog)",
+        "runner": "secrets",
+        "delegated": True,
+    },
+    "backend_security_deps": {
+        "display_name": "Backend Dependencies (pip-audit + Safety)",
+        "runner": "deps",
+        "delegated": True,
+    },
+    "backend_coverage": {
+        "display_name": "Backend Coverage",
+        "runner": "coverage",
+        "delegated": True,
+    },
 }
 
 FRONTEND_CATEGORIES = {
@@ -74,3 +95,16 @@ def is_backend_category(category: str) -> bool:
 
 def is_frontend_category(category: str) -> bool:
     return category in FRONTEND_CATEGORIES
+
+
+def is_delegated(category: str) -> bool:
+    """True when results are posted back via the webhook rather than
+    produced by a Celery task. All frontend_* categories plus the Phase 1
+    `backend_security_*` / `backend_coverage` scanners are delegated."""
+    meta = ALL_CATEGORIES.get(category) or {}
+    return bool(meta.get("delegated"))
+
+
+def is_locally_dispatchable(category: str) -> bool:
+    """True for categories the backend can run via Celery itself."""
+    return is_backend_category(category) and not is_delegated(category)

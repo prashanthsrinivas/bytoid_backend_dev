@@ -1,0 +1,70 @@
+# Gitleaks configuration.
+# https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+#
+# Extends the default ruleset with project-specific tuning. The default
+# config catches AWS, GitHub, Google, Slack, Stripe, generic high-entropy
+# strings, etc. — see github.com/gitleaks/gitleaks for the full list.
+
+title = "Bytoid Gitleaks configuration"
+
+# Inherit upstream rules.
+[extend]
+useDefault = true
+
+# ── Allowlist ─────────────────────────────────────────────────────────────
+# Adding an entry that masks a leak in a protected path is BLOCKED by
+# scripts/protected-module-guardrail.py. Use sparingly; prefer rotating
+# the secret over allowlisting it.
+
+[allowlist]
+description = "Project-specific false-positive masks"
+
+# Paths we never want Gitleaks to touch (e.g. mock fixtures).
+paths = [
+  '''^testing/results/.*\.json$''',
+  '''^htmlcov/''',
+  '''^node_modules/''',
+  '''^\.git/''',
+  # The pytest JSON report includes test output that can pattern-match.
+  '''^testing/results/latest\.json$''',
+]
+
+# Commit SHAs known to contain demonstration / test fixtures, not real
+# secrets. Entries MUST include a `# REASON:` comment explaining why.
+# Example entry (none active today):
+#   commits = [
+#     "abc123...",   # REASON: example commit teaching the secret-scan UI.
+#   ]
+commits = []
+
+# Regular expressions for false-positive token shapes. Entries MUST be
+# tight enough that real secrets don't match. Each entry MUST be reviewed
+# by @bytoid/security-leads.
+regexes = [
+  # Placeholder values used in docs and examples.
+  '''AKIA[0-9A-Z]{16}_EXAMPLE''',
+  '''sk_test_[0-9A-Za-z]{24}_PLACEHOLDER''',
+]
+
+# ── Custom rules layered on top of upstream ───────────────────────────────
+
+[[rules]]
+id = "bytoid-rds-secrets-manager-arn"
+description = "AWS Secrets Manager ARN referenced in source (move to env)."
+regex = '''arn:aws:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_\-+=.]+'''
+tags = ["aws", "secrets-manager"]
+severity = "HIGH"
+
+[[rules]]
+id = "bytoid-fireworks-api-key"
+description = "Fireworks AI API key (looks like fw_*)."
+regex = '''(?i)fw_[A-Za-z0-9]{32,}'''
+tags = ["ai", "credentials"]
+severity = "HIGH"
+
+[[rules]]
+id = "bytoid-internal-rds-host"
+description = "Hardcoded internal RDS hostname in source."
+regex = '''bytoid(prod|db)\.c9ek8228ux41\.ca-central-1\.rds\.amazonaws\.com'''
+tags = ["infra"]
+severity = "MEDIUM"

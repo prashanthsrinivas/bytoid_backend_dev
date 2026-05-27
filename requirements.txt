@@ -282,3 +282,10 @@ pytest>=8.0
 pytest-mock>=3.14
 pytest-json-report>=1.5
 locust>=2.20
+# Phase 1 — SAST, dep scanning, coverage, pre-commit
+bandit>=1.7
+semgrep>=1.50
+pip-audit>=2.6
+safety>=3.0
+pytest-cov>=4.1
+pre-commit>=3.7

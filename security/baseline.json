@@ -1,0 +1,29 @@
+{
+  "_comment": [
+    "Security finding baseline.",
+    "",
+    "Entries here represent findings that have been triaged and explicitly",
+    "accepted by a reviewer. Every entry MUST include the fields documented",
+    "below. Entries that intersect a protected-module path require an",
+    "additional `protected_module_acknowledged` field naming the security",
+    "lead who acknowledged the risk, and a 14-day max `expires_at`.",
+    "",
+    "Adding an entry that masks a finding in a protected path is rejected",
+    "by scripts/protected-module-guardrail.py.",
+    "",
+    "Schema (per entry):",
+    "  tool:           bandit | semgrep | gitleaks | pip-audit | safety | trufflehog",
+    "  finding_id:     the tool's stable identifier (e.g. B602, owasp-top-ten.sql-injection)",
+    "  path:           file:line where the finding fires",
+    "  reason:         why this is accepted (be specific; 'false positive' alone is rejected)",
+    "  approver:       GitHub login of the reviewer who accepted this",
+    "  added_at:       ISO8601 date this entry was created",
+    "  expires_at:     ISO8601 date after which CI forces re-review",
+    "  protected_module_acknowledged?: optional, required when path is protected",
+    "",
+    "Entries past `expires_at` cause CI to fail until the entry is renewed",
+    "or the finding is fixed. There is no `expires_at = never`."
+  ],
+  "version": 1,
+  "entries": []
+}

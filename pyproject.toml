@@ -64,3 +64,41 @@ output = "coverage.xml"
 # Ruff config is already specified by the in-use version (0.14.14) via its
 # auto-discovered defaults; the explicit `[tool.ruff]` block lands in Phase 2
 # when we turn on the strict ruleset.
+
+[tool.bandit]
+# Mirrors bandit.yaml; pyproject.toml form takes precedence when both exist.
+exclude_dirs = [
+    "venv",
+    ".venv",
+    "env",
+    "node_modules",
+    "logs",
+    "testing/results",
+    "htmlcov",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    "dist",
+    "build",
+]
+# B101 (assert_used) is too noisy across the test corpus; we keep `assert`
+# semantics meaningful in production code via review, not via Bandit.
+skips = ["B101"]
+
+# Phase 1 security thresholds. The CI workflow reads these to decide whether
+# a build fails on bandit/semgrep/gitleaks output. Non-protected paths run
+# warn-only initially; protected paths block from day 1 (the guardrail
+# overrides these defaults for protected files).
+[tool.security]
+fail_on_sast = "warn"        # Phase 1 warn-only for non-protected paths
+fail_on_secrets = "any"      # gitleaks/trufflehog: blocking from Phase 1
+fail_on_dep_cve = "warn"     # Phase 1 warn-only for non-protected paths
+fail_on_coverage_drop = 5.0  # percent; Phase 1 lenient, ratcheted in Phase 6
+
+[tool.security.protected]
+# Stricter overrides for diffs touching security/protected_modules.yml paths.
+# These are NOT warn-only.
+fail_on_sast = "high"
+fail_on_secrets = "any"
+fail_on_dep_cve = "high"
+fail_on_coverage_drop = 0.0

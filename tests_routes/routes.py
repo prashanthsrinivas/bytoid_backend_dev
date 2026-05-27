@@ -27,7 +27,8 @@ from tests_routes.categories import (
     BACKEND_CATEGORIES,
     FRONTEND_CATEGORIES,
     is_backend_category,
-    is_frontend_category,
+    is_delegated,
+    is_locally_dispatchable,
     is_valid_category,
 )
 from tests_routes.result_store import (
@@ -257,6 +258,30 @@ def tests_run():
     dispatched = []
     failures = []
     for category in categories:
+        # Phase 1: backend_security_* and backend_coverage are delegated to
+        # the .github/workflows/security.yml CI workflow. They cannot be
+        # triggered from this endpoint; the frontend should surface a
+        # message indicating the workflow runs on push/PR.
+        if is_delegated(category):
+            failures.append(
+                {
+                    "category": category,
+                    "error": (
+                        "This category runs in the security.yml GitHub "
+                        "Actions workflow. Trigger via a PR or "
+                        "`gh workflow run security.yml`."
+                    ),
+                }
+            )
+            continue
+        if not is_locally_dispatchable(category):
+            failures.append(
+                {
+                    "category": category,
+                    "error": "Category is not locally dispatchable.",
+                }
+            )
+            continue
         try:
             async_result = _dispatch_backend_task(category, run_id, options)
             dispatched.append({"category": category, "task_id": async_result.id})
@@ -293,11 +318,12 @@ def tests_run():
 
 
 @tests_bp.route("/tests/webhook/frontend", methods=["POST"])
+@tests_bp.route("/tests/webhook/ci", methods=["POST"])
 def tests_webhook_frontend():
     if not verify_hmac(request):
         log_audit_event(
             action="TESTS_WEBHOOK_REJECTED",
-            endpoint="/tests/webhook/frontend",
+            endpoint=request.path,
             ip=request.remote_addr,
             status="failure",
             metadata={"reason": "invalid_signature"},
@@ -306,10 +332,14 @@ def tests_webhook_frontend():
 
     payload = request.get_json(silent=True) or {}
     category = payload.get("category")
-    if not category or not is_frontend_category(category):
+    # Accept ANY delegated category — frontend_* from bytoiddev plus the
+    # Phase 1 backend_security_* / backend_coverage runs from security.yml.
+    # The path /tests/webhook/frontend is preserved as an alias for the
+    # existing bytoiddev workflow; new callers should use /tests/webhook/ci.
+    if not category or not is_delegated(category):
         return (
             jsonify(
-                {"success": False, "error": "Invalid or missing frontend category"}
+                {"success": False, "error": "Invalid or non-delegated category"}
             ),
             400,
         )

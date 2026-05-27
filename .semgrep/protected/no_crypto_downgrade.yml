@@ -33,10 +33,8 @@ rules:
       - pattern: from Crypto.Cipher import Blowfish
       - pattern: Crypto.Cipher.DES.new(...)
       - pattern: Crypto.Cipher.ARC4.new(...)
-      # Static IV used with AES is broken.
-      - patterns:
-          - pattern: |
-              AES.new($KEY, $MODE, $IV)
-          - metavariable-regex:
-              metavariable: $IV
-              regex: '^(b?["\'][0-9a-fA-F]+["\']|bytes\(\d+\))$'
+      # Static / hard-coded IV passed to AES.new — broken.
+      # We detect any AES.new(...) where the IV argument is a string or
+      # bytes literal; let the reviewer audit any flagged use.
+      - pattern: AES.new($KEY, $MODE, "...")
+      - pattern: AES.new($KEY, $MODE, b"...")

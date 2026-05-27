@@ -33,22 +33,47 @@ protected-check: ## Run the protected-module guardrail against the current diff.
 protected-check-suppression: ## Stricter local check: only fail on new suppressions in protected paths.
 	$(PYTHON) scripts/protected-module-guardrail.py --mode=suppression
 
-# ── Phase 1 (placeholders; populated when phase lands) ─────────────────────
+# ── Phase 1 ────────────────────────────────────────────────────────────────
 
 .PHONY: security
-security: ## Run all security scanners (Phase 1).
-	@echo "Phase 1 not yet landed; see plan."
-	@exit 0
+security: security-sast security-secrets security-deps ## Run all Phase 1 security scanners.
+
+.PHONY: security-sast
+security-sast: ## Run Bandit + Semgrep SAST.
+	@echo "→ bandit"
+	bandit -c pyproject.toml -r . -f json -o bandit-report.json || true
+	@echo "→ semgrep (project ruleset + .semgrep/protected/)"
+	semgrep scan \
+		--config p/python \
+		--config p/owasp-top-ten \
+		--config p/flask \
+		--config p/secrets \
+		--config .semgrep/protected/ \
+		--sarif --output semgrep.sarif \
+		--metrics off || true
+	@echo "Reports: bandit-report.json, semgrep.sarif"
 
 .PHONY: security-secrets
-security-secrets: ## Run secrets scanners (Phase 1).
-	@echo "Phase 1 not yet landed; see plan."
-	@exit 0
+security-secrets: ## Run Gitleaks (TruffleHog needs Docker; see security-secrets-trufflehog).
+	gitleaks detect --config .gitleaks.toml --report-format sarif --report-path gitleaks.sarif --no-banner || true
+
+.PHONY: security-secrets-trufflehog
+security-secrets-trufflehog: ## Run TruffleHog against the working tree (requires Docker).
+	docker run --rm -v "$$PWD:/repo" trufflesecurity/trufflehog:latest \
+		filesystem --only-verified --json /repo > trufflehog.json || true
 
 .PHONY: security-deps
-security-deps: ## Run dependency vulnerability scanners (Phase 1).
-	@echo "Phase 1 not yet landed; see plan."
-	@exit 0
+security-deps: ## Run pip-audit + Safety against requirements.txt.
+	pip-audit -r requirements.txt -f json -o pip-audit.json || true
+	pip-audit -r requirements.txt -f sarif -o pip-audit.sarif || true
+	-safety scan --output json --save-as json safety-report.json
+
+.PHONY: security-baseline
+security-baseline: ## Check security/baseline.json for expired entries.
+	$(PYTHON) -c "import json,sys; from datetime import date; \
+data=json.load(open('security/baseline.json')); \
+expired=[e for e in data['entries'] if e.get('expires_at') and e['expires_at'] < str(date.today())]; \
+sys.exit(0 if not expired else (print(f'EXPIRED: {len(expired)}') or 1))"
 
 # ── Phase 2 (placeholders) ─────────────────────────────────────────────────
 

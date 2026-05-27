@@ -1,0 +1,39 @@
+# Semgrep ignore file — directories Semgrep should never scan.
+#
+# IMPORTANT: never add paths that intersect security/protected_modules.yml.
+# scripts/protected-module-guardrail.py blocks any diff that tries to.
+
+# Python build artifacts
+venv/
+.venv/
+env/
+__pycache__/
+*.egg-info/
+dist/
+build/
+
+# JS build artifacts (frontend lives in a separate repo, but in case)
+node_modules/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+
+# Test results (regeneratable, no security value)
+testing/results/
+
+# Generated scanner output
+bandit-report.*
+semgrep-results.*
+gitleaks-report.*
+trufflehog-report.*
+pip-audit.*
+safety-report.*
+
+# Logs
+logs/
+
+# Vendored / pinned dependency snapshots, if any (none today, but reserved)
+vendor/

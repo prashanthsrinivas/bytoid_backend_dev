@@ -1,0 +1,47 @@
+# Bandit configuration.
+# https://bandit.readthedocs.io/en/latest/config.html
+#
+# Suppressions here must include a `# REASON:` comment explaining why.
+# Adding entries that intersect any path in security/protected_modules.yml
+# is BLOCKED by scripts/protected-module-guardrail.py.
+
+# Directories Bandit should never scan.
+exclude_dirs:
+  - venv
+  - .venv
+  - env
+  - node_modules
+  - logs
+  - testing/results
+  - htmlcov
+  - .pytest_cache
+  - .ruff_cache
+  - .mypy_cache
+  - dist
+  - build
+
+# Test IDs we intentionally skip globally. Every entry MUST have a comment.
+skips:
+  # B101: assert_used — pytest assertions are fine; they're not hit at runtime in prod.
+  # We exclude the rule globally instead of inline `# nosec B101` so the test
+  # corpus doesn't get peppered with suppressions. Production code that uses
+  # `assert` for security checks must be flagged manually in code review.
+  - B101
+
+# Test IDs that we want Bandit to apply but with project-specific severity bumps.
+# (Bandit doesn't natively support per-test severity overrides; this list is
+# documentation. The CI workflow re-runs Bandit with --severity-level high so
+# only high+critical fail builds in Phase 1.)
+project_high_severity_tests:
+  - B201  # flask_debug_true
+  - B301  # pickle
+  - B403  # import_pickle
+  - B502  # ssl_with_bad_version
+  - B602  # subprocess_popen_with_shell_equals_true
+  - B608  # hardcoded_sql_expressions
+
+# Targets the CLI default includes. Phase 1 scans the whole repo on `main`
+# pushes; on PRs the CI workflow scopes to changed files via
+# scripts/changed-python-files.sh, so this setting only affects local runs.
+targets:
+  - "."
