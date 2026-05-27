@@ -1,0 +1,64 @@
+[MAIN]
+# Phase 2: pylint targets only the critical paths in auth_critical_paths.txt.
+# Fail the score gate at 7.0; CI is warn-only until Phase 6.
+fail-under=7.0
+jobs=1
+persistent=no
+# Never recurse; CI passes explicit file list from auth_critical_paths.txt.
+recursive=no
+
+[MESSAGES CONTROL]
+# Disable categories that ruff already handles (E/F/W) and noisy convention
+# checks. We only want logic errors (E) and key warnings (W) from pylint.
+disable=
+    C0103,
+    C0114,
+    C0115,
+    C0116,
+    C0301,
+    C0302,
+    C0411,
+    C0412,
+    C0413,
+    R0801,
+    R0901,
+    R0902,
+    R0903,
+    R0904,
+    R0911,
+    R0912,
+    R0913,
+    R0914,
+    R0915,
+    W0611,
+    W0614,
+    W0622,
+    W0703,
+    W1203,
+    W0212,
+    E0401
+
+[FORMAT]
+max-line-length=120
+indent-string='    '
+
+[DESIGN]
+max-args=12
+max-attributes=20
+
+[TYPECHECK]
+ignored-modules=
+    pymysql,
+    redis,
+    celery,
+    boto3,
+    botocore,
+    flask_cors,
+    lancedb,
+    langchain,
+    fireworks,
+    stripe
+
+[REPORTS]
+output-format=json
+score=yes

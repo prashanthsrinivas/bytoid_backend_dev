@@ -75,18 +75,26 @@ data=json.load(open('security/baseline.json')); \
 expired=[e for e in data['entries'] if e.get('expires_at') and e['expires_at'] < str(date.today())]; \
 sys.exit(0 if not expired else (print(f'EXPIRED: {len(expired)}') or 1))"
 
-# ── Phase 2 (placeholders) ─────────────────────────────────────────────────
+# ── Phase 2 ────────────────────────────────────────────────────────────────
 
 .PHONY: typecheck
-typecheck: ## Run mypy (Phase 2).
-	@echo "Phase 2 not yet landed; see plan."
-	@exit 0
+typecheck: ## Run mypy on the strictly-typed modules (tests_routes/, key services).
+	$(PYTHON) -m mypy \
+		tests_routes/ \
+		services/audit_log_service.py \
+		utils/permission_required.py \
+		--output=json --no-incremental 2>&1 | tee mypy-output.jsonl; true
 
 .PHONY: lint
-lint: ## Run ruff + pylint (Phase 2).
+lint: ## Run ruff (full repo) + pylint (critical paths from auth_critical_paths.txt).
 	ruff check .
+	@echo "→ pylint (critical paths)"
+	@FILES=$$(grep -v '^#' auth_critical_paths.txt | grep -v '^$$' | tr '\n' ' '); \
+	if [ -n "$$FILES" ]; then \
+		$(PYTHON) -m pylint $$FILES --rcfile=.pylintrc || true; \
+	fi
 
 # ── Aggregate ──────────────────────────────────────────────────────────────
 
 .PHONY: all-checks
-all-checks: lint test protected-check ## Run everything that's wired up so far.
+all-checks: lint typecheck test protected-check ## Run everything that's wired up so far.

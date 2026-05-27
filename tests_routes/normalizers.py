@@ -788,6 +788,179 @@ def _parse_generic_sarif(
     }
 
 
+# ── Phase 2 normalizers ───────────────────────────────────────────────────
+#
+# mypy   — `mypy --output=json` emits JSON Lines (one object per diagnostic).
+# pylint — `pylint --output-format=json` emits a JSON array.
+# ruff   — `ruff check --output-format=sarif` emits SARIF (same as Semgrep).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def parse_mypy_json(
+    *,
+    category: str,
+    run_id: str,
+    raw_text: str,
+    started_at: str,
+    finished_at: str,
+    returncode: int,
+) -> dict:
+    """mypy `--output=json` JSONL → canonical payload.
+
+    Each line is one diagnostic:
+      {"file": "...", "line": N, "column": N, "severity": "error"|"warning"|"note",
+       "message": "...", "code": "..."}
+    """
+    findings: list[dict] = []
+    for line in (raw_text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            diag = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        sev_raw = (diag.get("severity") or "note").lower()
+        sev = {"error": "high", "warning": "medium", "note": "low"}.get(sev_raw, "low")
+        outcome = _severity_to_outcome(sev)
+        loc = f"{diag.get('file', '')}:{diag.get('line', '')}".rstrip(":")
+        code = diag.get("code") or "mypy"
+        finding = {
+            "name": f"{code} {loc}".strip(),
+            "outcome": outcome,
+            "duration": 0.0,
+            "severity": sev,
+            "cwe": "CWE-unknown",
+            "owasp": "OWASP-unmapped",
+            "remediation": f"mypy code: {code}",
+            "body": diag.get("message") or "",
+            "test_id": code,
+            "path": loc,
+        }
+        finding["message"] = _format_message(finding)
+        findings.append(finding)
+
+    summary = _summary_from_findings(findings)
+    status = _status_from_findings(findings, threshold="high")
+    if returncode != 0 and summary["total"] == 0:
+        status = "failed"
+
+    return {
+        "category": category,
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": _duration(started_at, finished_at),
+        "summary": summary,
+        "status": status,
+        "tests": findings,
+        "metrics": {
+            "tool": "mypy",
+            "severity_breakdown": _bucket_breakdown(findings, "severity"),
+            "code_breakdown": _bucket_breakdown(findings, "test_id"),
+        },
+    }
+
+
+def parse_pylint_json(
+    *,
+    category: str,
+    run_id: str,
+    raw_text: str,
+    started_at: str,
+    finished_at: str,
+    returncode: int,
+) -> dict:
+    """pylint `--output-format=json` → canonical payload.
+
+    Each item:
+      {"type": "error"|"warning"|"refactor"|"convention"|"fatal",
+       "module": "...", "path": "...", "line": N, "symbol": "...",
+       "message": "...", "message-id": "E0001"}
+    """
+    try:
+        items = json.loads(raw_text) if raw_text and raw_text.strip() else []
+        if not isinstance(items, list):
+            items = []
+    except json.JSONDecodeError:
+        items = []
+
+    _pylint_sev = {
+        "fatal": "critical",
+        "error": "high",
+        "warning": "medium",
+        "refactor": "low",
+        "convention": "low",
+    }
+
+    findings: list[dict] = []
+    for item in items:
+        typ = (item.get("type") or "convention").lower()
+        sev = _pylint_sev.get(typ, "low")
+        outcome = _severity_to_outcome(sev)
+        path = item.get("path") or item.get("module") or ""
+        line = item.get("line") or ""
+        loc = f"{path}:{line}".rstrip(":")
+        msg_id = item.get("message-id") or item.get("messageId") or "pylint"
+        finding = {
+            "name": f"{msg_id} {loc}".strip(),
+            "outcome": outcome,
+            "duration": 0.0,
+            "severity": sev,
+            "cwe": "CWE-unknown",
+            "owasp": "OWASP-unmapped",
+            "remediation": f"pylint symbol: {item.get('symbol', msg_id)}",
+            "body": item.get("message") or "",
+            "test_id": msg_id,
+            "path": loc,
+        }
+        finding["message"] = _format_message(finding)
+        findings.append(finding)
+
+    summary = _summary_from_findings(findings)
+    status = _status_from_findings(findings, threshold="high")
+    if returncode not in {0, 4} and summary["total"] == 0:
+        # pylint exits 4 on "usage error"; 1/2/4 are warning/error/fatal bitmask.
+        status = "failed"
+
+    return {
+        "category": category,
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": _duration(started_at, finished_at),
+        "summary": summary,
+        "status": status,
+        "tests": findings,
+        "metrics": {
+            "tool": "pylint",
+            "severity_breakdown": _bucket_breakdown(findings, "severity"),
+            "symbol_breakdown": _bucket_breakdown(findings, "test_id"),
+        },
+    }
+
+
+def parse_ruff_sarif(
+    *,
+    category: str,
+    run_id: str,
+    raw_text: str,
+    started_at: str,
+    finished_at: str,
+    returncode: int,
+) -> dict:
+    """ruff `--output-format=sarif` → canonical payload (reuses SARIF parser)."""
+    return _parse_generic_sarif(
+        tool="ruff",
+        category=category,
+        run_id=run_id,
+        raw_text=raw_text,
+        started_at=started_at,
+        finished_at=finished_at,
+        returncode=returncode,
+    )
+
+
 # ── CWE → OWASP fallback map (best-effort) ────────────────────────────────
 
 

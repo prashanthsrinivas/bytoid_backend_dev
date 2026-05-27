@@ -42,7 +42,10 @@ from tests_routes.normalizers import (  # noqa: E402
     parse_bandit_json,
     parse_coverage_xml,
     parse_gitleaks_sarif,
+    parse_mypy_json,
     parse_pip_audit_json,
+    parse_pylint_json,
+    parse_ruff_sarif,
     parse_safety_json,
     parse_semgrep_sarif,
 )
@@ -54,6 +57,10 @@ TOOLS = {
     "pip-audit": parse_pip_audit_json,
     "safety": parse_safety_json,
     "coverage": parse_coverage_xml,
+    # Phase 2
+    "mypy": parse_mypy_json,
+    "pylint": parse_pylint_json,
+    "ruff": parse_ruff_sarif,
 }
 
 

@@ -52,6 +52,17 @@ BACKEND_CATEGORIES = {
         "runner": "coverage",
         "delegated": True,
     },
+    # ── Phase 2 — type safety + lint (delegated to CI) ─────────────
+    "backend_typecheck": {
+        "display_name": "Backend Type Check (mypy)",
+        "runner": "mypy",
+        "delegated": True,
+    },
+    "backend_lint": {
+        "display_name": "Backend Lint (ruff + pylint)",
+        "runner": "lint",
+        "delegated": True,
+    },
 }
 
 FRONTEND_CATEGORIES = {

@@ -464,10 +464,162 @@ jobs:
             coverage.xml
             htmlcov/
 
+  # ── mypy (type safety) ─────────────────────────────────────────────────
+  mypy:
+    name: mypy (type safety)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install mypy + minimal stubs
+        run: |
+          pip install "mypy>=1.10" mypy_extensions \
+            types-certifi types-urllib3 types-PyYAML \
+            types-python-dateutil types-requests || true
+
+      - name: Run mypy on strictly-typed modules
+        id: run
+        run: |
+          set +e
+          python -m mypy \
+            tests_routes/ \
+            services/audit_log_service.py \
+            utils/permission_required.py \
+            --output=json --no-incremental 2>&1 | tee mypy-output.jsonl
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - run: pip install pyyaml
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          [ -f mypy-output.jsonl ] || touch mypy-output.jsonl
+          python scripts/post-scan-result.py \
+            --tool mypy \
+            --category backend_typecheck \
+            --input mypy-output.jsonl \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mypy-results
+          path: mypy-output.jsonl
+          if-no-files-found: ignore
+
+  # ── ruff (strict lint, SARIF output) ────────────────────────────────────
+  ruff:
+    name: ruff (strict lint — S/B/RUF/ASYNC rules)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install "ruff==0.14.14"
+
+      - name: Run ruff with SARIF output
+        id: run
+        run: |
+          set +e
+          ruff check . --output-format=sarif -o ruff.sarif
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload SARIF to GitHub Security tab
+        if: hashFiles('ruff.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ruff.sarif
+          category: ruff
+
+      - run: pip install pyyaml
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          [ -f ruff.sarif ] || echo '{"runs":[]}' > ruff.sarif
+          python scripts/post-scan-result.py \
+            --tool ruff \
+            --category backend_lint \
+            --input ruff.sarif \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ruff-results
+          path: ruff.sarif
+          if-no-files-found: ignore
+
+  # ── pylint (critical paths) ─────────────────────────────────────────────
+  pylint:
+    name: pylint (critical & auth paths)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pylint + key imports
+        run: |
+          pip install "pylint>=3.0"
+          # Install enough of the project's deps so pylint can resolve imports.
+          pip install flask pymysql celery redis pydantic boto3 cryptography || true
+
+      - name: Run pylint on critical paths
+        id: run
+        run: |
+          set +e
+          FILES=$(grep -v '^#' auth_critical_paths.txt | grep -v '^$' | tr '\n' ' ')
+          if [ -z "$FILES" ]; then
+            echo "[]" > pylint-report.json
+            echo "rc=0" >> "$GITHUB_OUTPUT"
+          else
+            python -m pylint $FILES --rcfile=.pylintrc --output-format=json \
+              > pylint-report.json 2>&1
+            rc=$?
+            echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - run: pip install pyyaml
+
+      - name: Post normalized result to dashboard
+        if: always()
+        run: |
+          [ -f pylint-report.json ] || echo '[]' > pylint-report.json
+          python scripts/post-scan-result.py \
+            --tool pylint \
+            --category backend_lint \
+            --input pylint-report.json \
+            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pylint-results
+          path: pylint-report.json
+          if-no-files-found: ignore
+
   # ── Aggregate report ────────────────────────────────────────────────────
   report:
     name: Security & coverage summary
-    needs: [bandit, semgrep, gitleaks, trufflehog, pip_audit, safety, coverage]
+    needs: [bandit, semgrep, gitleaks, trufflehog, pip_audit, safety, coverage, mypy, ruff, pylint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -479,10 +631,11 @@ jobs:
         with:
           header: security-summary
           message: |
-            ### 🛡️ Security & Coverage — Phase 1 (warn-only)
+            ### Security & Coverage — Phase 2 (warn-only)
 
             All scanners ran. Results posted to the **Unit Test Results** dashboard.
 
+            **Security & Deps (Phase 1)**
             | Scanner | Result |
             |---|---|
             | Bandit (SAST) | ${{ needs.bandit.result }} |
@@ -493,9 +646,14 @@ jobs:
             | Safety (deps) | ${{ needs.safety.result }} |
             | Coverage (pytest-cov) | ${{ needs.coverage.result }} |
 
-            Findings also visible in the **Security** tab (SARIF) and as
-            workflow artifacts on this run.
+            **Type Safety & Lint (Phase 2)**
+            | Scanner | Result |
+            |---|---|
+            | mypy (type safety) | ${{ needs.mypy.result }} |
+            | ruff (strict lint) | ${{ needs.ruff.result }} |
+            | pylint (critical paths) | ${{ needs.pylint.result }} |
 
-            > Phase 1 is **warn-only** for non-protected paths. Protected-module
-            > changes are gated by the `protected-module-guardrail` workflow
-            > and do not benefit from the warn-only carve-out.
+            Findings visible in the **Security** tab (SARIF) and as workflow artifacts.
+
+            > All checks are **warn-only** for non-protected paths. Protected-module
+            > changes are gated by the `protected-module-guardrail` workflow.

@@ -1,0 +1,10 @@
+# Critical paths linted by pylint in Phase 2.
+# One file per line. Add new protected-module paths here as they're added to
+# security/protected_modules.yml — they should be checked by both pylint and mypy.
+utils/permission_required.py
+services/audit_log_service.py
+db/db_checkers.py
+tests_routes/categories.py
+tests_routes/normalizers.py
+tests_routes/routes.py
+tests_routes/webhook_auth.py

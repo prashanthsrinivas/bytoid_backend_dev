@@ -61,9 +61,48 @@ title = "Bytoid backend coverage"
 [tool.coverage.xml]
 output = "coverage.xml"
 
-# Ruff config is already specified by the in-use version (0.14.14) via its
-# auto-discovered defaults; the explicit `[tool.ruff]` block lands in Phase 2
-# when we turn on the strict ruleset.
+# ── Phase 2 — Type Safety ─────────────────────────────────────────────────
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_configs = true
+pretty = true
+show_error_codes = true
+strict = false
+
+# Strict untyped-def checking for the modules we own end-to-end.
+# Add more modules as the codebase gains type annotations.
+[[tool.mypy.overrides]]
+module = [
+    "tests_routes.*",
+    "services.audit_log_service",
+    "utils.permission_required",
+    "services.totp_service",
+]
+disallow_untyped_defs = true
+warn_return_any = true
+
+# ── Phase 2 — Lint (ruff extended ruleset) ────────────────────────────────
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# S  = flake8-bandit (security), B = bugbear, RUF = ruff-native, ASYNC = async safety.
+# These are additive over ruff's default E/F/W set.
+extend-select = ["S", "B", "RUF", "ASYNC"]
+ignore = [
+    "S101",   # assert — acceptable in tests
+    "S104",   # bind to 0.0.0.0 — intentional in app.py
+    "S107",   # hardcoded-password string — high FP rate
+    "S311",   # non-crypto random — OK outside security paths
+    "S603",   # subprocess with list args — safe by design
+    "S607",   # partial path to executable — acceptable in tooling
+    "B007",   # loop variable not used in body — minor style
+    "B008",   # function call in default arg — Flask idiom (e.g. request)
+    "RUF012", # mutable class-level attribute annotation — too noisy
+]
 
 [tool.bandit]
 # Mirrors bandit.yaml; pyproject.toml form takes precedence when both exist.
