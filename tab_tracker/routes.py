@@ -4001,8 +4001,13 @@ def _load_tracker(user_id: str, tracker_id: str):
     return tracker_meta, read_json_from_s3(tracker_meta["file_path"])
 
 
-async def _add_policy_worker(data: dict, job_id: str = None) -> dict:
-    """Background worker: create a per-policy column and AI-match each row to statements."""
+async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
+    """Background worker: create a per-policy column and AI-match each row to statements.
+
+    Emits a terminal ``job_success`` WS event on completion. Failures are
+    surfaced as ``job_error`` by the ``_add_policy_worker`` wrapper so the
+    client dialog never hangs waiting for a completion signal.
+    """
     baseuser = str(data.get("user_id", ""))
     tracker_id = data.get("tracker_id")
     policy_id = data.get("policy_id")
@@ -4213,8 +4218,41 @@ async def _add_policy_worker(data: dict, job_id: str = None) -> dict:
         metadata={"tracker_id": tracker_id, "policy_id": policy_id, "rows_assigned": rows_assigned},
     )
 
-    await emit(msg_builder_main.job_progress(job_id, session_id, "done", f"Policy linked — {rows_assigned} rows assigned", 100))
+    # Terminal completion event — the client dialog keys on job_success (not a
+    # progress=100 tick) to close. Mirrors _add_framework_worker.
+    await emit(msg_builder_main.job_success(job_id, session_id, f"Policy linked — {rows_assigned} rows assigned"))
     return {"rows_assigned": rows_assigned, "policy_id": policy_id}
+
+
+async def _add_policy_worker(data: dict, job_id: str = None) -> dict:
+    """Run the policy-mapping worker, guaranteeing a terminal WS event.
+
+    On any failure, emit ``job_error`` (mirroring _add_framework_worker's
+    except block) so the client stops waiting, then re-raise so JobManager
+    records the failure.
+    """
+    try:
+        return await _add_policy_worker_impl(data, job_id)
+    except Exception as e:
+        session_id = data.get("session_id")
+        if job_id and session_id:
+            _logged_in, user_id = parse_composite_user_id(str(data.get("user_id", "")))
+            try:
+                err = msg_builder_main.job_error(job_id, session_id, str(e))
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=err.get("message"),
+                    scope=err.get("scope", "job"),
+                    session_id=err.get("session_id"),
+                    job_id=err.get("job_id"),
+                    msg_type=err.get("type"),
+                    stage=err.get("stage"),
+                    progress=err.get("progress"),
+                    feature="tracker_policy_mapping",
+                )
+            except Exception:
+                pass
+        raise
 
 
 @tracker_bp.route("/tracker/add-policy", methods=["POST"])
