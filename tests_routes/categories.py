@@ -63,6 +63,27 @@ BACKEND_CATEGORIES = {
         "runner": "lint",
         "delegated": True,
     },
+    # ── Phase 4 — dedicated security test suites (delegated to CI) ─
+    "backend_security_authz": {
+        "display_name": "Backend Auth & RBAC Tests",
+        "runner": "pytest-security",
+        "delegated": True,
+    },
+    "backend_security_api": {
+        "display_name": "Backend API Security Tests",
+        "runner": "pytest-security",
+        "delegated": True,
+    },
+    "backend_security_llm": {
+        "display_name": "Backend LLM/RAG Safety Tests",
+        "runner": "pytest-security",
+        "delegated": True,
+    },
+    "backend_security_infra": {
+        "display_name": "Backend Infra Config Audit",
+        "runner": "pytest-security",
+        "delegated": True,
+    },
 }
 
 FRONTEND_CATEGORIES = {

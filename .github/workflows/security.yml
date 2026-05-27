@@ -616,10 +616,109 @@ jobs:
           path: pylint-report.json
           if-no-files-found: ignore
 
+  # ── Phase 4 — dedicated security test suites ──────────────────────────
+  security_tests:
+    name: Security test suites (authz / API / LLM / infra)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      FRONTEND_TESTS_WEBHOOK_SECRET: ${{ secrets.FRONTEND_TESTS_WEBHOOK_SECRET }}
+      BACKEND_WEBHOOK_URL: ${{ secrets.BACKEND_WEBHOOK_URL }}
+      BACKEND_WEBHOOK_SECRET: ${{ secrets.BACKEND_WEBHOOK_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          pip install --quiet \
+            pytest pytest-json-report pytest-timeout \
+            flask markupsafe hypothesis freezegun responses moto fakeredis
+
+      - name: Run security test suites
+        id: run
+        run: |
+          pytest tests/security/ \
+            -m security \
+            --timeout=60 \
+            --json-report \
+            --json-report-file=security-tests.json \
+            -q \
+            --tb=short \
+            2>&1 | tee security-tests.log
+          echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Post authz results
+        if: always()
+        env:
+          RC: ${{ steps.run.outputs.rc || 0 }}
+        run: |
+          python scripts/post-scan-result.py \
+            --tool pytest \
+            --input-file security-tests.json \
+            --category backend_security_authz \
+            --returncode "$RC" \
+            --marker authz \
+            || true
+
+      - name: Post API security results
+        if: always()
+        env:
+          RC: ${{ steps.run.outputs.rc || 0 }}
+        run: |
+          python scripts/post-scan-result.py \
+            --tool pytest \
+            --input-file security-tests.json \
+            --category backend_security_api \
+            --returncode "$RC" \
+            --marker api_security \
+            || true
+
+      - name: Post LLM safety results
+        if: always()
+        env:
+          RC: ${{ steps.run.outputs.rc || 0 }}
+        run: |
+          python scripts/post-scan-result.py \
+            --tool pytest \
+            --input-file security-tests.json \
+            --category backend_security_llm \
+            --returncode "$RC" \
+            --marker llm_safety \
+            || true
+
+      - name: Post infra audit results
+        if: always()
+        env:
+          RC: ${{ steps.run.outputs.rc || 0 }}
+        run: |
+          python scripts/post-scan-result.py \
+            --tool pytest \
+            --input-file security-tests.json \
+            --category backend_security_infra \
+            --returncode "$RC" \
+            --marker infra \
+            || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-tests-results
+          path: |
+            security-tests.json
+            security-tests.log
+          if-no-files-found: ignore
+
   # ── Aggregate report ────────────────────────────────────────────────────
   report:
     name: Security & coverage summary
-    needs: [bandit, semgrep, gitleaks, trufflehog, pip_audit, safety, coverage, mypy, ruff, pylint]
+    needs: [bandit, semgrep, gitleaks, trufflehog, pip_audit, safety, coverage, mypy, ruff, pylint, security_tests]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -631,7 +730,7 @@ jobs:
         with:
           header: security-summary
           message: |
-            ### Security & Coverage — Phase 2 (warn-only)
+            ### Security & Coverage — Phase 4 (warn-only)
 
             All scanners ran. Results posted to the **Unit Test Results** dashboard.
 
@@ -652,6 +751,14 @@ jobs:
             | mypy (type safety) | ${{ needs.mypy.result }} |
             | ruff (strict lint) | ${{ needs.ruff.result }} |
             | pylint (critical paths) | ${{ needs.pylint.result }} |
+
+            **Security Test Suites (Phase 4)**
+            | Suite | Result |
+            |---|---|
+            | Auth & RBAC tests | ${{ needs.security_tests.result }} |
+            | API Security tests | ${{ needs.security_tests.result }} |
+            | LLM/RAG Safety tests | ${{ needs.security_tests.result }} |
+            | Infra Config Audit | ${{ needs.security_tests.result }} |
 
             Findings visible in the **Security** tab (SARIF) and as workflow artifacts.
 
