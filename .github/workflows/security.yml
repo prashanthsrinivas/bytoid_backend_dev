@@ -106,15 +106,28 @@ jobs:
 
       - name: Post normalized result to dashboard
         if: always()
+        env:
+          BYTOID_BACKEND_URL: ${{ secrets.BYTOID_BACKEND_URL }}
+          FRONTEND_TESTS_WEBHOOK_SECRET: ${{ secrets.FRONTEND_TESTS_WEBHOOK_SECRET }}
         run: |
           if [ ! -f bandit-report.json ]; then
             echo '{"results":[]}' > bandit-report.json
           fi
+          # Connectivity check — shows the exact error in CI logs.
+          if [ -n "$BYTOID_BACKEND_URL" ]; then
+            echo "Backend URL is set ($(echo $BYTOID_BACKEND_URL | cut -c1-30)...)"
+            curl -sf --max-time 5 "${BYTOID_BACKEND_URL}/ping" -o /dev/null \
+              && echo "ping ok" || echo "ping failed — server unreachable from GitHub Actions (check EC2 security group / public URL)"
+          else
+            echo "BYTOID_BACKEND_URL not set — webhook will be skipped"
+          fi
+          pip install pyyaml -q
           python scripts/post-scan-result.py \
             --tool bandit \
             --category backend_security_sast \
             --input bandit-report.json \
-            --returncode "${{ steps.run.outputs.rc || 0 }}" || true
+            --returncode "${{ steps.run.outputs.rc || 0 }}" 2>&1
+          echo "post-result exit: $?"
 
       - uses: actions/upload-artifact@v4
         if: always()
