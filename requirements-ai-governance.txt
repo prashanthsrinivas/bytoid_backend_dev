@@ -1,0 +1,15 @@
+# AI Governance & Observability module dependencies
+# Install separately: pip install -r requirements-ai-governance.txt
+# Do NOT merge into requirements.txt — these packages are large and not
+# needed by the main Flask application or the standard Gunicorn workers.
+# The ai_governance Celery tasks (ai_governance/tasks.py) import these
+# lazily inside the task body, so the worker must have them installed.
+nemoguardrails>=0.9.1
+langfuse>=2.0.0
+mlflow>=2.13.0
+giskard>=2.0.0
+trulens-eval>=0.31.0
+deepeval>=0.21.0
+aif360>=0.6.1
+fairlearn>=0.10.0
+aequitas>=2.0.0

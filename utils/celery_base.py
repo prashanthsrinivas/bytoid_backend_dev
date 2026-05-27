@@ -1706,3 +1706,7 @@ def run_backend_performance(self, run_id, target_url, run_time):
         spawn_rate=2,
         run_time=run_time,
     )
+
+
+# Discover ai_governance Celery tasks so workers register them on startup.
+from ai_governance import tasks as _ai_gov_tasks  # noqa: E402, F401

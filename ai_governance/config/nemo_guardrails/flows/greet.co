@@ -1,0 +1,31 @@
+# Standard greeting flows.
+
+define user express greeting
+  "hello"
+  "hi"
+  "hey"
+  "good morning"
+  "good afternoon"
+  "good evening"
+  "howdy"
+
+define bot greet user
+  "Hello! How can I help you today?"
+
+define flow greet user
+  user express greeting
+  bot greet user
+
+define user say goodbye
+  "goodbye"
+  "bye"
+  "see you"
+  "take care"
+  "later"
+
+define bot say goodbye
+  "Goodbye! Have a great day."
+
+define flow say goodbye
+  user say goodbye
+  bot say goodbye

@@ -782,7 +782,7 @@ jobs:
         id: run
         run: |
           mutmut run \
-            --paths-to-mutate services/audit_log_service.py,utils/permission_required.py,tests_routes/result_store.py,tests_routes/runners.py \
+            --paths-to-mutate services/audit_log_service.py,utils/permission_required.py,tests_routes/result_store.py,tests_routes/runners.py,ai_governance/middleware/rbac.py \
             --runner "python -m pytest tests/ -x -q --no-header" \
             --no-progress 2>&1 || true
           mutmut results 2>&1 | tee mutmut-results.txt
