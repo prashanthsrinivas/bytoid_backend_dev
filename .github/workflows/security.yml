@@ -753,12 +753,11 @@ jobs:
             infra-results.json
           if-no-files-found: ignore
 
-  # ── Phase 5 — mutation testing (nightly only) ─────────────────────────
+  # ── Phase 5 — mutation testing ─────────────────────────────────────────
   mutation:
     name: Mutation testing (mutmut)
     runs-on: ubuntu-latest
     continue-on-error: true
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@v4
