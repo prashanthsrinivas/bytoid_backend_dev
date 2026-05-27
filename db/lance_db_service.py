@@ -338,6 +338,30 @@ class LanceDBServer:
         except Exception as e:
             logger.warning("_lazy_reencrypt_rows failed user=%s table=%s: %s", user_id, table_name, e)
 
+    async def _lazy_reencrypt_runbook_rows(self, user_id: str, rows: list, fields: tuple):
+        """Background: re-encrypt plaintext fields in runbook rows (keyed by runbook_id)."""
+        try:
+            table_name = f"runbook_{user_id}"
+            self.db = self._connect_if_needed()
+            table = await asyncio.to_thread(lambda: self.db.open_table(table_name))
+            for r in rows:
+                runbook_id = r.get("runbook_id")
+                if not runbook_id:
+                    continue
+                values = {}
+                for field in fields:
+                    val = r.get(field)
+                    if val and isinstance(val, str):
+                        values[field] = self._enc(user_id, val)
+                if values:
+                    await asyncio.to_thread(
+                        lambda v=values, rid=runbook_id: table.update(
+                            values=v, where=f'runbook_id == "{rid}"'
+                        )
+                    )
+        except Exception as e:
+            logger.warning("_lazy_reencrypt_runbook_rows failed user=%s: %s", user_id, e)
+
     async def _create_schema_dummy(self) -> pa.Schema:
         """Return the Arrow schema used for the table."""
         return pa.schema(
@@ -3239,11 +3263,12 @@ class LanceDBServer:
     async def insert_runbook(self, data: dict):
         table = await self._open_or_create_runbook_table(data["user_id"])
         # print("TABLE SCHEMA:", table.schema)
+        _uid = data["user_id"]
         row = {
             "runbook_id": data["runbook_id"],
-            "user_id": data["user_id"],
-            "name": data["name"],
-            "description": data.get("description", ""),
+            "user_id": _uid,
+            "name": self._enc(_uid, data["name"]) if data.get("name") else "",
+            "description": self._enc(_uid, data.get("description", "")) if data.get("description") else "",
             "runbook_type": data.get("runbook_type"),
             "schedule": data.get("schedule", {}),
             "input_type": data.get("input_type"),
@@ -3283,6 +3308,8 @@ class LanceDBServer:
 
         return row
 
+    _RUNBOOK_ENC_FIELDS = ("name", "description")
+
     # get runbook by id
     async def get_runbook_by_id(self, user_id: str, runbook_id: str):
 
@@ -3292,6 +3319,28 @@ class LanceDBServer:
             return table.search().where(f"runbook_id == '{runbook_id}'").to_list()
 
         result = await asyncio.to_thread(_query)
+
+        if not result:
+            return result
+
+        # Decrypt sensitive fields; lazily re-encrypt any plaintext rows
+        to_migrate = []
+        for row in result:
+            needs_migration = any(
+                row.get(f) and self._is_plaintext(row.get(f, ""))
+                for f in self._RUNBOOK_ENC_FIELDS
+            )
+            for field in self._RUNBOOK_ENC_FIELDS:
+                raw = row.get(field)
+                if raw:
+                    row[field] = self._dec(user_id, raw)
+            if needs_migration:
+                to_migrate.append(row)
+
+        if to_migrate:
+            asyncio.create_task(
+                self._lazy_reencrypt_runbook_rows(user_id, to_migrate, self._RUNBOOK_ENC_FIELDS)
+            )
 
         return result
 
@@ -3307,8 +3356,24 @@ class LanceDBServer:
         # Remove dummy/init row
         records = [r for r in records if r.get("runbook_id") != "init"]
 
-        # Optional (only if shared table)
-        # records = [r for r in records if r.get("user_id") == user_id]
+        # Decrypt sensitive fields; lazily re-encrypt any plaintext rows
+        to_migrate = []
+        for row in records:
+            needs_migration = any(
+                row.get(f) and self._is_plaintext(row.get(f, ""))
+                for f in self._RUNBOOK_ENC_FIELDS
+            )
+            for field in self._RUNBOOK_ENC_FIELDS:
+                raw = row.get(field)
+                if raw:
+                    row[field] = self._dec(user_id, raw)
+            if needs_migration:
+                to_migrate.append(row)
+
+        if to_migrate:
+            asyncio.create_task(
+                self._lazy_reencrypt_runbook_rows(user_id, to_migrate, self._RUNBOOK_ENC_FIELDS)
+            )
 
         return records
 
@@ -3367,6 +3432,11 @@ class LanceDBServer:
 
             existing_map.update(new_dict)
             return json.dumps(existing_map)
+
+        # Encrypt sensitive fields in updates before merging
+        for _f in self._RUNBOOK_ENC_FIELDS:
+            if _f in updates and isinstance(updates[_f], str) and updates[_f]:
+                updates[_f] = self._enc(user_id, updates[_f])
 
         # -------------------------------
         # Handle tracker_configuration
