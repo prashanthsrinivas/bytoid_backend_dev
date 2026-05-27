@@ -37,6 +37,6 @@ rules:
         - "credits/"
         - "credits_route/"
         - "plans/"
-        - "services/audit_log_service.py"
+        - "**/services/audit_log_service.py"
     # Detect commented-out audit calls.
     pattern-regex: '^\s*#\s*log_audit_event\('
