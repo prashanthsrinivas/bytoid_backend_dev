@@ -96,6 +96,9 @@ async def _migrate_one_policy(
 
     policy_id = data.get("policy_id", key)
     doc_type = data.get("type", "policy")
+    # key format: "{user_id}/policies/{policy_id}.yaml"
+    _key_parts = key.split("/")
+    _migration_user_id = _key_parts[0] if len(_key_parts) >= 3 else "migration"
 
     if dry_run:
         return {"policy_id": policy_id, "status": "dry_run"}
@@ -172,6 +175,7 @@ async def _migrate_one_policy(
             doc_type=doc_type,
             version=version,
             statements=all_stmts,
+            user_id=_migration_user_id,
         )
     except Exception as exc:
         logger.error("sync_statements_to_lance failed during migration for %s: %s", policy_id, exc)

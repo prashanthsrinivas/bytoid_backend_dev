@@ -37,6 +37,62 @@ from request_context import current_user_id
 from services.gmail_service import GmailService
 from microsoft_route.microsoft_helpers import OutlookSubscriptionManager
 
+from utils.key_rotation_manager import SecureKMSService as _KMSServiceUmail
+import json as _json_umail
+_kms_umail = _KMSServiceUmail()
+
+
+def _enc_umail(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    return _json_umail.dumps(_kms_umail.encrypt(user_id, v))
+
+
+def _dec_umail(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = _json_umail.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _kms_umail.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v  # plaintext pass-through for lazy migration
+
+
+def _decrypt_umail_messages(user_id, messages):
+    """Decrypt body/subject in every message dict. Returns (messages, any_was_plaintext)."""
+    any_plaintext = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        for field in ("body", "subject"):
+            raw = msg.get(field)
+            if raw and isinstance(raw, str):
+                decrypted = _dec_umail(user_id, raw)
+                msg[field] = decrypted
+                if decrypted == raw and not raw.startswith('{"ciphertext"'):
+                    any_plaintext = True
+    return messages, any_plaintext
+
+
+def _encrypt_umail_messages(user_id, messages):
+    """Return a new list with body/subject encrypted in each message dict."""
+    import copy
+    result = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            result.append(msg)
+            continue
+        m = copy.copy(msg)
+        for field in ("body", "subject"):
+            v = m.get(field)
+            if v and isinstance(v, str) and not v.startswith('{"ciphertext"'):
+                m[field] = _enc_umail(user_id, v)
+        result.append(m)
+    return result
+
+
 umail_bp = Blueprint("umail", __name__)
 logger = get_logger(__name__)
 
@@ -1220,6 +1276,20 @@ async def send_messages():
                             input_data_from_file = conv_file_data.get("input_data", [])
 
                             if input_data_from_file:
+                                # Decrypt body/subject; lazy-migrate if any plaintext found
+                                input_data_from_file, _had_plain1 = _decrypt_umail_messages(user_id, input_data_from_file)
+                                if _had_plain1:
+                                    try:
+                                        _enc_payload1 = {"input_data": _encrypt_umail_messages(user_id, input_data_from_file)}
+                                        import tempfile as _tf1
+                                        _tmp1 = _tf1.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8")
+                                        _json_umail.dump(_enc_payload1, _tmp1)
+                                        _tmp1.close()
+                                        upload_any_file(_tmp1.name, user_id, type="messages", s3_key_C=s3_conv_key)
+                                        import os as _os1; _os1.remove(_tmp1.name)
+                                    except Exception:
+                                        pass
+
                                 # Use latest message from conversation file to extract subject and thread_id
                                 latest_msg = (
                                     input_data_from_file[-1]
@@ -1299,6 +1369,19 @@ async def send_messages():
                 # print(f"📖 [DEBUG] Attempting to read existing conversation from S3...")
                 raw_data = read_json_from_s3(s3_conv_key)
                 input_data = raw_data.get("input_data", [])
+                # Decrypt body/subject; lazy-migrate if any plaintext found
+                input_data, _had_plain_r1 = _decrypt_umail_messages(user_id, input_data)
+                if _had_plain_r1:
+                    try:
+                        _enc_r1 = {"input_data": _encrypt_umail_messages(user_id, input_data)}
+                        import tempfile as _tf_r1
+                        _tmp_r1 = _tf_r1.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8")
+                        _json_umail.dump(_enc_r1, _tmp_r1)
+                        _tmp_r1.close()
+                        upload_any_file(_tmp_r1.name, user_id, type="messages", s3_key_C=s3_conv_key)
+                        import os as _os_r1; _os_r1.remove(_tmp_r1.name)
+                    except Exception:
+                        pass
                 # print(f"📖 [DEBUG] Loaded {len(input_data)} existing messages")
             except Exception as e:
                 print(f"📖 [DEBUG] No existing conversation found, starting fresh: {e}")
@@ -1762,8 +1845,10 @@ async def send_messages():
                     input_data = [input_data]
                 input_data.append(message)
                 conversation_data = {"input_data": input_data}
+                # Encrypt body/subject before writing to disk and S3
+                _enc_payload_w1 = {"input_data": _encrypt_umail_messages(user_id, input_data)}
                 with open(conv_filepath, "w", encoding="utf-8") as f:
-                    json.dump(conversation_data, f, indent=2)
+                    json.dump(_enc_payload_w1, f, indent=2)
 
                 # print(f"☁️ [DEBUG] Uploading to S3: {s3_conv_key}")
                 upload_any_file(
@@ -1778,7 +1863,7 @@ async def send_messages():
                 # print(f"❌ [DEBUG] Failed to update conversation file: {e}")
                 return jsonify({"error": "Failed to save conversation"}), 500
 
-            # updating lancedb
+            # updating lancedb — use plaintext conversation_data
             lance_data = conversation_data.get("input_data", [])
             client = UmailLanceClient(user_id)
             await client.embed_json_file_for_reply(
@@ -2059,6 +2144,20 @@ async def send_messages_test():
                         input_data_from_file = conv_file_data.get("input_data", [])
 
                         if input_data_from_file:
+                            # Decrypt body/subject; lazy-migrate if any plaintext found
+                            input_data_from_file, _had_plain_r2 = _decrypt_umail_messages(user_id, input_data_from_file)
+                            if _had_plain_r2:
+                                try:
+                                    _enc_r2 = {"input_data": _encrypt_umail_messages(user_id, input_data_from_file)}
+                                    import tempfile as _tf_r2
+                                    _tmp_r2 = _tf_r2.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8")
+                                    _json_umail.dump(_enc_r2, _tmp_r2)
+                                    _tmp_r2.close()
+                                    upload_any_file(_tmp_r2.name, user_id, type="messages", s3_key_C=s3_conv_key)
+                                    import os as _os_r2; _os_r2.remove(_tmp_r2.name)
+                                except Exception:
+                                    pass
+
                             # Use latest message from conversation file to extract subject and thread_id
                             latest_msg = (
                                 input_data_from_file[-1]
@@ -2134,6 +2233,19 @@ async def send_messages_test():
             # print(f"📖 [DEBUG] Attempting to read existing conversation from S3...")
             raw_data = read_json_from_s3(s3_conv_key)
             input_data = raw_data.get("input_data", [])
+            # Decrypt body/subject; lazy-migrate if any plaintext found
+            input_data, _had_plain_r3 = _decrypt_umail_messages(user_id, input_data)
+            if _had_plain_r3:
+                try:
+                    _enc_r3 = {"input_data": _encrypt_umail_messages(user_id, input_data)}
+                    import tempfile as _tf_r3
+                    _tmp_r3 = _tf_r3.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8")
+                    _json_umail.dump(_enc_r3, _tmp_r3)
+                    _tmp_r3.close()
+                    upload_any_file(_tmp_r3.name, user_id, type="messages", s3_key_C=s3_conv_key)
+                    import os as _os_r3; _os_r3.remove(_tmp_r3.name)
+                except Exception:
+                    pass
             # print(f"📖 [DEBUG] Loaded {len(input_data)} existing messages")
         except Exception as e:
             print(f"📖 [DEBUG] No existing conversation found, starting fresh: {e}")
@@ -2614,8 +2726,10 @@ async def send_messages_test():
             # print(f"📄 [DEBUG] Total messages in conversation: {len(input_data)}")
             # print(f"conversation_data : {conversation_data}")
             # print(f"💾 [DEBUG] Writing to local file: {conv_filepath}")
+            # Encrypt body/subject before writing to disk and S3
+            _enc_payload_w2 = {"input_data": _encrypt_umail_messages(user_id, input_data)}
             with open(conv_filepath, "w", encoding="utf-8") as f:
-                json.dump(conversation_data, f, indent=2)
+                json.dump(_enc_payload_w2, f, indent=2)
 
             # print(f"☁️ [DEBUG] Uploading to S3: {s3_conv_key}")
             upload_any_file(
@@ -2630,7 +2744,7 @@ async def send_messages_test():
             # print(f"❌ [DEBUG] Failed to update conversation file: {e}")
             return jsonify({"error": "Failed to save conversation"}), 500
 
-        # updating lancedb
+        # updating lancedb — use plaintext conversation_data
         lance_data = conversation_data.get("input_data", [])
         client = UmailLanceClient(user_id)
         await client.embed_json_file_for_reply(
@@ -3736,8 +3850,10 @@ async def send_mail_api():
         os.makedirs(local_folder, exist_ok=True)
 
         local_conv_path = f"{local_folder}/{conversation_id}.json"
+        # Encrypt body/subject before writing to disk and S3
+        _enc_payload_w3 = {"input_data": _encrypt_umail_messages(user_id, [message])}
         with open(local_conv_path, "w", encoding="utf-8") as f:
-            json.dump(conversation_payload, f, indent=2)
+            json.dump(_enc_payload_w3, f, indent=2)
 
         s3_conv_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
 
@@ -3749,7 +3865,7 @@ async def send_mail_api():
         )
 
         # ---------------------------------
-        # LanceDB Embed
+        # LanceDB Embed — use plaintext conversation_payload
         # ---------------------------------
         client = UmailLanceClient(user_id)
         # await client.embed_json_file_for_reply(

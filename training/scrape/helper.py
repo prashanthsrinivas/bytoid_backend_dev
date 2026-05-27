@@ -25,10 +25,10 @@ from utils.s3_utils import (
 )
 from credits_route.route import Credits
 from request_context import current_user_id
+from utils.key_rotation_manager import SecureKMSService as _KMSService
 
 logger = get_logger(__name__)
 
-from utils.key_rotation_manager import SecureKMSService as _KMSService
 _kms = _KMSService()
 
 
@@ -120,6 +120,18 @@ def _decrypt_scrape_entries(user_id, entries):
         e["title"] = _dec_scrape(user_id, raw_title) if raw_title is not None else raw_title
         e["summary"] = _dec_scrape(user_id, raw_summary) if raw_summary is not None else raw_summary
     return entries, was_migrated
+
+
+def _encrypt_scrape_entries(user_id, entries):
+    """Return a deep copy of entries with title/summary encrypted."""
+    import copy
+    enc_entries = copy.deepcopy(entries)
+    for e in enc_entries:
+        if e.get("title") and isinstance(e["title"], str):
+            e["title"] = _enc_scrape(user_id, e["title"])
+        if e.get("summary") and isinstance(e["summary"], str):
+            e["summary"] = _enc_scrape(user_id, e["summary"])
+    return enc_entries
 
 
 def flatten_list(lst):

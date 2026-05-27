@@ -394,6 +394,7 @@ async def sync_statements_to_lance(
     version: str,
     statements: list[Statement],
     superseded: Optional[list[Statement]] = None,
+    user_id: str = "system",
 ) -> None:
     """Upsert active statements into the index_policy_statements LanceDB table
     and mark superseded statements accordingly.
@@ -433,7 +434,7 @@ async def sync_statements_to_lance(
                 for stmt, vec in zip(statements, vecs)
             ]
 
-            await lance.upsert_policy_statements(rows)
+            await lance.upsert_policy_statements(rows, user_id=user_id)
             logger.info(
                 "Synced %d statements for policy=%s version=%s",
                 len(rows),

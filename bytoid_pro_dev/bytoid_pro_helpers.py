@@ -19,6 +19,29 @@ from flask import jsonify
 from utils.docu_extensions import extension_loader_map
 from utils.fireworkzz import fw
 
+from utils.key_rotation_manager import SecureKMSService as _KMSServiceBpro
+import json as _json_bpro
+_kms_bpro = _KMSServiceBpro()
+
+
+def _enc_bpro(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    return _json_bpro.dumps(_kms_bpro.encrypt(user_id, v))
+
+
+def _dec_bpro(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = _json_bpro.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _kms_bpro.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v  # plaintext pass-through for lazy migration
+
+
 MAX_CHARS_PER_CHUNK = 90_000  # ~30k tokens safe
 MAX_CONCURRENT_CHUNKS = 4
 
@@ -739,11 +762,35 @@ def save_conversation_to_json(user_id, chat_id, chat_vectors):
     else:
         old_chat = []
 
+    # Decrypt content in existing messages; lazy-migrate if any plaintext found
+    _had_plain_bp = False
+    for _msg in old_chat:
+        if isinstance(_msg, dict):
+            _raw = _msg.get("content")
+            if _raw and isinstance(_raw, str):
+                _dec = _dec_bpro(user_id, _raw)
+                _msg["content"] = _dec
+                if _dec == _raw and not _raw.startswith('{"ciphertext"'):
+                    _had_plain_bp = True
+
     old_chat.extend(new_chat)
+
+    # Encrypt content before writing to local file and S3
+    import copy as _copy_bp
+    _enc_chat = []
+    for _msg in old_chat:
+        if isinstance(_msg, dict):
+            _m = _copy_bp.copy(_msg)
+            _v = _m.get("content")
+            if _v and isinstance(_v, str) and not _v.startswith('{"ciphertext"'):
+                _m["content"] = _enc_bpro(user_id, _v)
+            _enc_chat.append(_m)
+        else:
+            _enc_chat.append(_msg)
 
     # ---- dump to local file -----#
     with open(conv_filepath, "w", encoding="utf-8") as f:
-        json.dump({"chat": old_chat}, f, indent=2)
+        json.dump({"chat": _enc_chat}, f, indent=2)
 
     # ----- upload to s3 -------- #
     try:
