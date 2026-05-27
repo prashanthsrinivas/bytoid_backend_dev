@@ -26,6 +26,9 @@ def _stub_if_missing(mod_name: str):
 for _mod in ("pptx", "pptx.util", "docx", "pytz"):
     _stub_if_missing(_mod)
 
+# Remove any stale stub for utils.normal set by earlier test files so we get the real module
+sys.modules.pop("utils.normal", None)
+
 # pytz.timezone() is called at runtime in some functions; make it return a usable mock
 if not hasattr(sys.modules.get("pytz", object()), "_real"):
     import datetime
