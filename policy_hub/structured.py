@@ -131,6 +131,7 @@ def _extract_metadata_from_table(tag: Tag) -> dict:
         "classification": "classification",
         "policy name": "title",
         "procedure name": "title",
+        "standard name": "title",
     }
     for row in tag.find_all("tr"):
         cells = row.find_all(["td", "th"])

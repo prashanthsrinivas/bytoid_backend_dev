@@ -126,9 +126,33 @@ def make_celery(app_name=__name__):
 new_celery = make_celery()
 celery = new_celery  # <— important for CLI
 
+# Nightly heal of the statement↔tracker reverse-lookup graph (02:00 UTC).
+# Harmless if no beat process is running; the task is also callable on demand
+# via `celery -A utils.celery_base call tasks.reconcile_statement_tracker_refs`.
+try:
+    from celery.schedules import crontab
+
+    new_celery.conf.beat_schedule = {
+        **(getattr(new_celery.conf, "beat_schedule", None) or {}),
+        "reconcile-statement-tracker-refs-nightly": {
+            "task": "tasks.reconcile_statement_tracker_refs",
+            "schedule": crontab(hour=2, minute=0),
+        },
+    }
+except Exception as _beat_exc:  # pragma: no cover - beat config is best-effort
+    logger.warning("could not register reconcile beat schedule: %s", _beat_exc)
+
 
 def backoff(retries):
     return min(2**retries, 300)
+
+
+@new_celery.task(bind=True, name="tasks.reconcile_statement_tracker_refs")
+def reconcile_statement_tracker_refs(self):
+    """Rebuild the statement↔tracker RDS graph from S3 tracker blobs."""
+    from tab_tracker.reconcile import reconcile_all
+
+    return reconcile_all()
 
 
 @new_celery.task(bind=True, name="tasks.umailSync")

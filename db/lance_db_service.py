@@ -4037,6 +4037,57 @@ class LanceDBServer:
             )
             raise
 
+    @staticmethod
+    def _lance_str_list(values) -> str:
+        """Render a Python iterable of strings as a LanceDB IN(...) list,
+        escaping embedded quotes to avoid breaking the filter expression."""
+        return ",".join('"' + str(v).replace('"', '""') + '"' for v in values)
+
+    async def query_statements_multi(
+        self,
+        embedding: list[float],
+        policy_ids: list[str],
+        top_k: int = 10,
+        doc_types: list[str] | None = None,
+        active_only: bool = True,
+        user_id: str = "system",
+    ) -> list[dict]:
+        """Cross-document semantic search over policy statements.
+
+        Scoped to ``policy_ids`` (the caller's visible documents) so there is no
+        cross-org leakage, optionally narrowed to ``doc_types``. Returns the
+        decrypted statement rows. Empty ``policy_ids`` returns ``[]`` rather
+        than searching the whole table.
+        """
+        if not policy_ids:
+            return []
+        try:
+            table = await asyncio.to_thread(self._get_policy_statements_table)
+            vec = np.array(embedding, dtype=np.float32)
+
+            conditions = [f"policy_id IN ({self._lance_str_list(policy_ids)})"]
+            if doc_types:
+                conditions.append(f"doc_type IN ({self._lance_str_list(doc_types)})")
+            if active_only:
+                conditions.append('status == "active"')
+            where_clause = " AND ".join(conditions)
+
+            def _search():
+                return (
+                    table.search(vec, vector_column_name="embedding")
+                    .where(where_clause)
+                    .limit(top_k)
+                    .to_list()
+                )
+
+            results = await asyncio.to_thread(_search)
+            for r in results:
+                r["text"] = self._dec(user_id, r.get("text", ""))
+            return results
+        except Exception as exc:
+            logger.exception("query_statements_multi failed: %s", exc)
+            raise
+
     async def query_policy_statements(
         self,
         policy_id: str,

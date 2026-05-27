@@ -27,6 +27,7 @@ from policy_hub.templates import (
     get_default_template,
     serialize_section,
     deserialize_section,
+    section_abbr_map,
     validate as validate_template,
 )
 from policy_hub.template_storage import (
@@ -41,7 +42,16 @@ from policy_hub.structured import (
     sync_statements_to_lance,
 )
 from policy_hub.extract import extract_any
+from policy_hub.titles import extract_title
+from policy_hub.doc_ref import mint_doc_ref
+from policy_hub.doc_types import (
+    enforce_heading as doc_type_enforce_heading,
+    enumeration_type_filter,
+    statement_display_number,
+    stmt_heading as doc_type_stmt_heading,
+)
 from policy_hub.workflow_autosubmit import auto_submit_policy
+from workflow_route.state_machine import get_user_org_id
 from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
 from utils.s3_utils import (
     s3bucket,
@@ -265,17 +275,45 @@ def _save_job(job_id: str, state: dict):
 # ── Prompt helpers ────────────────────────────────────────────────────────────
 
 
-def _extract_title(content: str, fallback: str) -> str:
-    # Try HTML <h1> first
-    m = re.search(r"<h1[^>]*>(.*?)</h1>", content, re.IGNORECASE | re.DOTALL)
-    if m:
-        return re.sub(r"<[^>]+>", "", m.group(1)).strip()
-    # Fallback: markdown # heading
-    for line in content.splitlines():
-        line = line.strip()
-        if line.startswith("# "):
-            return line[2:].strip()
-    return fallback
+# Title extraction lives in policy_hub/titles.py (stdlib-only, unit-testable).
+_extract_title = extract_title
+
+
+def _safe_mint_doc_ref(user_id: str, doc_type: str, title: str) -> str | None:
+    """Mint a doc_ref, swallowing any failure so document creation never breaks.
+
+    Returns the minted ref (e.g. ``ACC-0001``) or ``None`` when the org can't
+    be resolved or minting fails — such documents are picked up later by
+    ``policy_hub.backfill_doc_refs``.
+    """
+    try:
+        org_id = get_user_org_id(user_id)
+        if not org_id:
+            logger.info("doc_ref: skipping mint for user=%s — no resolvable org", user_id)
+            return None
+        return mint_doc_ref(org_id, doc_type, title)
+    except Exception as exc:
+        logger.warning("doc_ref: mint failed for user=%s type=%s: %s", user_id, doc_type, exc)
+        return None
+
+
+def _attach_display_numbers(item: dict, doc_type: str, user_id: str | None = None) -> None:
+    """Annotate each parsed statement in ``item['sections']`` with a
+    ``display_number`` (e.g. ``ACC-0001.STM.3``) derived from the doc_ref and
+    the section's abbreviation. No-op when the doc has no doc_ref or sections.
+    """
+    doc_ref = item.get("doc_ref")
+    sections = item.get("sections")
+    if not sections:
+        return
+    abbr_map = section_abbr_map(doc_type, user_id=user_id)
+    for sec in sections:
+        sec_id = sec.get("id")
+        abbr = abbr_map.get(sec_id, "")
+        for stmt in sec.get("statements", []) or []:
+            stmt["display_number"] = statement_display_number(
+                doc_ref, abbr, stmt.get("seq", 0)
+            )
 
 
 def _parse_docs_list(response: str) -> list:
@@ -304,11 +342,12 @@ def _enumeration_prompt(prompt: str, fw_list: str, type_filter: str) -> str:
     return (
         f"You are a compliance expert. An organization needs to comply with: {fw_list}.\n"
         f"Organization context: {prompt}\n\n"
-        "List ALL compliance documents (policies and procedures) that must be created for full compliance.\n"
+        "List ALL compliance documents (policies, procedures, and standards) that must be "
+        "created for full compliance.\n"
         f"{type_filter}\n\n"
         "Return ONLY a valid JSON array — no other text — where each element has:\n"
         '  "title": document title (e.g., "Access Control Policy")\n'
-        '  "type": "policy" or "procedure"\n'
+        '  "type": "policy", "procedure", or "standard"\n'
         '  "description": one sentence on the document\'s purpose\n\n'
         "JSON array:"
     )
@@ -350,8 +389,8 @@ def _doc_generation_prompt(
     v2: bool = False,
     user_id: str | None = None,
 ) -> str:
-    stmt_heading = "Policy Statement" if doc_type == "policy" else "Procedure Steps"
-    enforce_heading = "Enforcement" if doc_type == "policy" else "Compliance Monitoring"
+    stmt_heading = doc_type_stmt_heading(doc_type)
+    enforce_heading = doc_type_enforce_heading(doc_type)
 
     if controls:
         controls_block = (
@@ -754,9 +793,11 @@ def _generation_worker(
                 policy_id = str(uuid.uuid4())
                 created_at = datetime.now(timezone.utc).isoformat()
                 key = _s3_key(user_id, policy_id)
+                resolved_title = _extract_title(content, fallback=title, doc_type=d_type)
                 item = {
                     "policy_id": policy_id,
-                    "title": _extract_title(content, fallback=title),
+                    "title": resolved_title,
+                    "doc_ref": _safe_mint_doc_ref(user_id, d_type, resolved_title),
                     "type": d_type,
                     "frameworks": frameworks,
                     "content": content,
@@ -769,6 +810,7 @@ def _generation_worker(
                 # storage matching the section-divided UI. _enrich_v2 has an
                 # internal heading-bucketing fallback if structured parsing fails.
                 item = _enrich_v2(item, content, d_type, loop, user_id=user_id)
+                _attach_display_numbers(item, d_type, user_id=user_id)
 
                 _write_policy_yaml(user_id, key, item)
 
@@ -1040,13 +1082,14 @@ def _upload_worker(
                 key = _s3_key(user_id, policy_id)
                 fallback_title = os.path.splitext(filename)[0] or "Uploaded Document"
                 title = (
-                    _extract_title(html, fallback=fallback_title)
+                    _extract_title(html, fallback=fallback_title, doc_type=doc_type)
                     if not extraction_failed
                     else fallback_title
                 )
                 item = {
                     "policy_id": policy_id,
                     "title": title,
+                    "doc_ref": _safe_mint_doc_ref(user_id, doc_type, title),
                     "type": doc_type,
                     "frameworks": frameworks,
                     "content": html,
@@ -1130,6 +1173,8 @@ def _upload_worker(
                         # v2 disabled — still produce sections via heading-bucketing
                         # so every uploaded doc has structured sections in storage.
                         _enrich_v2(item, html, doc_type, loop, user_id=user_id)
+
+                    _attach_display_numbers(item, doc_type, user_id=user_id)
 
                     # 4a. Re-write the enriched YAML so /list returns the
                     # final structured version.
@@ -1243,8 +1288,9 @@ async def generate_policy():
         frameworks + uploaded_fw_names
     )  # static/custom + S3-resolved uploaded
     fw_list = ", ".join(all_frameworks) if all_frameworks else "general compliance"
-    # Always enumerate both policies AND procedures regardless of the tab the frontend is on
-    type_filter = "Include both policies and procedures."
+    # Enumerate per the requested tab; unspecified / "all" covers the full
+    # triad (policies, procedures, standards).
+    type_filter = enumeration_type_filter(doc_type)
 
     # Phase 1: enumerate all required documents (fast, completes well within timeout)
     credits = Credits()
@@ -1847,6 +1893,9 @@ def _reconcile_and_enrich_edit(
             new_sections_data.append(sec_dict)
 
         existing["sections"] = new_sections_data
+        # doc_ref is immutable across edits; recompute statement numbers since
+        # the seq/section layout may have changed during reconciliation.
+        _attach_display_numbers(existing, doc_type, user_id=user_id)
 
         # Sync to LanceDB
         try:
@@ -2045,6 +2094,27 @@ def list_policies():
     except Exception as wf_exc:
         logger.warning("policy workflow_state lookup failed: %s", wf_exc)
 
+    # Ensure every item's statements carry a display_number so the detail view
+    # renders numbering without a second round-trip. Cheap: abbr maps for the
+    # default templates are in-memory; only custom templates touch S3.
+    try:
+        abbr_cache: dict[str, dict[str, str]] = {}
+        for it in items:
+            if not it.get("sections"):
+                continue
+            dt = it.get("type", "policy")
+            if dt not in abbr_cache:
+                abbr_cache[dt] = section_abbr_map(dt)
+            doc_ref = it.get("doc_ref")
+            for sec in it["sections"]:
+                abbr = abbr_cache[dt].get(sec.get("id"), "")
+                for stmt in sec.get("statements", []) or []:
+                    stmt["display_number"] = statement_display_number(
+                        doc_ref, abbr, stmt.get("seq", 0)
+                    )
+    except Exception as dn_exc:
+        logger.warning("display_number attach failed in /list: %s", dn_exc)
+
     items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return jsonify({"items": items}), 200
 
@@ -2111,6 +2181,350 @@ def update_policy():
         return jsonify({"error": "Failed to update policy"}), 500
 
     return jsonify({"status": "ok"}), 200
+
+
+def _statements_from_item(item: dict) -> list[dict]:
+    """Flatten a policy item's sections into a numbered statement list.
+
+    Recomputes ``display_number`` on the fly so legacy docs (persisted before
+    the numbering feature) and freshly-edited docs both render consistently.
+    """
+    doc_type = item.get("type", "policy")
+    doc_ref = item.get("doc_ref")
+    abbr_map = section_abbr_map(doc_type)
+    out: list[dict] = []
+    for sec in item.get("sections", []) or []:
+        sec_id = sec.get("id")
+        abbr = abbr_map.get(sec_id, "")
+        for stmt in sec.get("statements", []) or []:
+            seq = stmt.get("seq", 0)
+            out.append({
+                "statement_id": stmt.get("id"),
+                "policy_id": item.get("policy_id"),
+                "doc_ref": doc_ref,
+                "doc_type": doc_type,
+                "section_id": sec_id,
+                "section_abbr": abbr,
+                "seq": seq,
+                "display_number": statement_display_number(doc_ref, abbr, seq),
+                "text": stmt.get("text"),
+                "status": stmt.get("status", "active"),
+                "version": item.get("metadata", {}).get("version", "1.0"),
+            })
+    return out
+
+
+@policy_hub_bp.route("/<policy_id>/statements", methods=["GET"])
+@permission_required_body("policyhub.view")
+def list_policy_statements(policy_id: str):
+    """Return the numbered, individually-addressable statements of a document.
+
+    Query: user_id. Each statement carries its ``display_number``
+    (e.g. ``ACC-0001.STM.3``) so clients render a consistent scheme.
+    """
+    baseuser = request.args.get("user_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id is required"}), 400
+    owner_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    item = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id))
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+
+    return jsonify({
+        "policy_id": policy_id,
+        "doc_ref": item.get("doc_ref"),
+        "title": item.get("title"),
+        "doc_type": item.get("type", "policy"),
+        "statements": _statements_from_item(item),
+    }), 200
+
+
+def _user_policy_ids(user_id: str) -> dict[str, dict]:
+    """Map ``policy_id -> {doc_ref, title, type}`` for the user's own documents.
+
+    Reads YAMLs from the owner's S3 prefix. Used to scope cross-doc search to
+    the caller's library and to enrich search hits with doc_ref/title.
+    """
+    out: dict[str, dict] = {}
+    prefix = f"{user_id}/policies/"
+    for obj in list_all_files(folder=prefix) or []:
+        key = obj.get("Key", "")
+        if not key.endswith(".yaml") or "/jobs/" in key or "/raw/" in key:
+            continue
+        data = load_yaml_from_s3(key)
+        if data and data.get("policy_id"):
+            out[data["policy_id"]] = {
+                "doc_ref": data.get("doc_ref"),
+                "title": data.get("title"),
+                "type": data.get("type", "policy"),
+            }
+    return out
+
+
+@policy_hub_bp.route("/search", methods=["GET"])
+@permission_required_body("policyhub.view")
+async def search_statements():
+    """Cross-document semantic search over policy/procedure/standard statements.
+
+    Query: q (required), types? (csv of policy,procedure,standard), top_k?,
+    user_id. Scoped to the caller's own documents (no cross-org leakage).
+    """
+    baseuser = request.args.get("user_id")
+    q = (request.args.get("q") or "").strip()
+    if not baseuser:
+        return jsonify({"error": "user_id is required"}), 400
+    if not q:
+        return jsonify({"error": "q (query) is required"}), 400
+    _logged_in, user_id = parse_composite_user_id(baseuser)
+
+    types_raw = (request.args.get("types") or "").strip()
+    doc_types = [t.strip() for t in types_raw.split(",") if t.strip()] or None
+    try:
+        top_k = min(int(request.args.get("top_k", 10)), 50)
+    except (TypeError, ValueError):
+        top_k = 10
+
+    doc_index = _user_policy_ids(user_id)
+    if not doc_index:
+        return jsonify({"results": [], "query": q, "total": 0}), 200
+
+    embeddings = await get_firework_embedding()
+    vec = await asyncio.to_thread(embeddings.embed_query, q)
+
+    lance = LanceDBServer()
+    hits = await lance.query_statements_multi(
+        embedding=vec,
+        policy_ids=list(doc_index.keys()),
+        top_k=top_k,
+        doc_types=doc_types,
+        user_id=user_id,
+    )
+
+    results = []
+    for h in hits:
+        pid = h.get("policy_id")
+        meta = doc_index.get(pid, {})
+        results.append({
+            "policy_id": pid,
+            "doc_ref": meta.get("doc_ref"),
+            "title": meta.get("title"),
+            "doc_type": h.get("doc_type"),
+            "statement_id": h.get("statement_id"),
+            "section_id": h.get("section_id"),
+            "seq": h.get("seq"),
+            "text": h.get("text"),
+            "score": h.get("_distance"),
+        })
+    return jsonify({"results": results, "query": q, "total": len(results)}), 200
+
+
+def _doc_query_text(item: dict) -> str:
+    """Build a representative query string from a document's purpose + statements
+    for 'related documents' similarity search."""
+    parts: list[str] = []
+    for sec in item.get("sections", []) or []:
+        sid = sec.get("id", "")
+        if sid.endswith(".purpose"):
+            parts.append(sec.get("body_html", ""))
+        for stmt in sec.get("statements", []) or []:
+            parts.append(stmt.get("text", ""))
+    text = " ".join(p for p in parts if p)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:2000]
+
+
+@policy_hub_bp.route("/<policy_id>/related", methods=["GET"])
+@permission_required_body("policyhub.view")
+async def related_documents(policy_id: str):
+    """Suggest related documents by statement similarity (excludes self).
+
+    Query: user_id, top_k?. Returns distinct documents ranked by their best
+    matching statement, plus any pinned ``linked_doc_refs``.
+    """
+    baseuser = request.args.get("user_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id is required"}), 400
+    owner_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+    try:
+        top_k = min(int(request.args.get("top_k", 5)), 25)
+    except (TypeError, ValueError):
+        top_k = 5
+
+    item = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id))
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+
+    doc_index = _user_policy_ids(owner_id)
+    other_ids = [pid for pid in doc_index if pid != policy_id]
+    query_text = _doc_query_text(item)
+    related: list[dict] = []
+    if other_ids and query_text:
+        embeddings = await get_firework_embedding()
+        vec = await asyncio.to_thread(embeddings.embed_query, query_text)
+        lance = LanceDBServer()
+        # over-fetch so we can collapse to distinct documents
+        hits = await lance.query_statements_multi(
+            embedding=vec, policy_ids=other_ids, top_k=top_k * 4, user_id=owner_id,
+        )
+        seen: set[str] = set()
+        for h in hits:
+            pid = h.get("policy_id")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            meta = doc_index.get(pid, {})
+            related.append({
+                "policy_id": pid,
+                "doc_ref": meta.get("doc_ref"),
+                "title": meta.get("title"),
+                "doc_type": meta.get("type"),
+                "best_match_text": h.get("text"),
+                "score": h.get("_distance"),
+            })
+            if len(related) >= top_k:
+                break
+
+    return jsonify({
+        "policy_id": policy_id,
+        "related": related,
+        "linked_doc_refs": item.get("linked_doc_refs", []),
+    }), 200
+
+
+def _update_linked_doc_refs(policy_id: str, baseuser: str, doc_ref: str, add: bool):
+    owner_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+    if not doc_ref:
+        return jsonify({"error": "doc_ref is required"}), 400
+    key = _s3_key(owner_id, policy_id)
+    item = _read_policy_yaml(owner_id, key)
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+    linked = list(item.get("linked_doc_refs", []))
+    if add and doc_ref not in linked:
+        linked.append(doc_ref)
+    elif not add and doc_ref in linked:
+        linked.remove(doc_ref)
+    item["linked_doc_refs"] = linked
+    item["etag"] = str(uuid.uuid4())
+    _write_policy_yaml(owner_id, key, item)
+    return jsonify({"policy_id": policy_id, "linked_doc_refs": linked}), 200
+
+
+@policy_hub_bp.route("/<policy_id>/related/pin", methods=["POST"])
+@permission_required_body("policyhub.edit")
+def pin_related_document(policy_id: str):
+    """Pin a related document by its doc_ref onto this document. Body: {user_id, doc_ref}."""
+    body = request.get_json(silent=True) or {}
+    return _update_linked_doc_refs(policy_id, body.get("user_id"), body.get("doc_ref"), add=True)
+
+
+@policy_hub_bp.route("/<policy_id>/related/unpin", methods=["POST"])
+@permission_required_body("policyhub.edit")
+def unpin_related_document(policy_id: str):
+    """Unpin a related document. Body: {user_id, doc_ref}."""
+    body = request.get_json(silent=True) or {}
+    return _update_linked_doc_refs(policy_id, body.get("user_id"), body.get("doc_ref"), add=False)
+
+
+@policy_hub_bp.route("/statement/<statement_id>/trackers", methods=["GET"])
+@permission_required_body("policyhub.view")
+def statement_trackers(statement_id: str):
+    """Reverse lookup: which tracker rows reference this statement.
+
+    Query: user_id, page?, page_size?. Powers the inline "N referenced rows"
+    badge next to a statement and its accordion drill-down.
+    """
+    baseuser = request.args.get("user_id")
+    if not baseuser or not statement_id:
+        return jsonify({"error": "user_id is required"}), 400
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+        page_size = min(200, max(1, int(request.args.get("page_size") or 50)))
+    except (TypeError, ValueError):
+        page, page_size = 1, 50
+
+    from services.statement_tracker_refs import get_trackers_for_statement
+    rows, total = get_trackers_for_statement(statement_id, page=page, page_size=page_size)
+    return jsonify({
+        "statement_id": statement_id,
+        "trackers": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }), 200
+
+
+@policy_hub_bp.route("/<policy_id>/trackers", methods=["GET"])
+@permission_required_body("policyhub.view")
+def policy_trackers(policy_id: str):
+    """Distinct trackers referencing this document, with mapped-row counts.
+
+    Powers the drag-and-drop tracker tag set shown above the statement list.
+    Query: user_id.
+    """
+    baseuser = request.args.get("user_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id is required"}), 400
+    owner_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    from services.statement_tracker_refs import get_trackers_for_policy
+    return jsonify({"policy_id": policy_id, "trackers": get_trackers_for_policy(policy_id)}), 200
+
+
+@policy_hub_bp.route("/<policy_id>/tracker-map", methods=["GET"])
+@permission_required_body("policyhub.view")
+def policy_tracker_map(policy_id: str):
+    """Per-statement view of the rows a given tracker maps to this document.
+
+    Query: user_id, tracker_id. Powers the accordion side panel — one entry
+    per statement with the referencing rows nested underneath. Single
+    round-trip to avoid N+1 from the per-statement badge endpoint.
+    """
+    baseuser = request.args.get("user_id")
+    tracker_id = request.args.get("tracker_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id is required"}), 400
+    if not tracker_id:
+        return jsonify({"error": "tracker_id is required"}), 400
+    owner_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    item = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id))
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+
+    from services.statement_tracker_refs import get_refs_for_policy
+    refs = get_refs_for_policy(policy_id, tracker_id=tracker_id)
+    rows_by_statement: dict[str, list[dict]] = {}
+    for r in refs:
+        rows_by_statement.setdefault(r["statement_id"], []).append(
+            {"row_id": r["row_id"], "column_id": r["column_id"], "status": r.get("status")}
+        )
+
+    statements = []
+    for st in _statements_from_item(item):
+        statements.append({
+            "statement_id": st["statement_id"],
+            "display_number": st["display_number"],
+            "text": st["text"],
+            "rows": rows_by_statement.get(st["statement_id"], []),
+        })
+
+    return jsonify({
+        "policy_id": policy_id,
+        "tracker_id": tracker_id,
+        "statements": statements,
+    }), 200
 
 
 # ── 4. DELETE ─────────────────────────────────────────────────────────────────

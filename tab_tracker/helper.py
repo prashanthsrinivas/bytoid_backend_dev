@@ -121,8 +121,11 @@ def create_tracker_config(
     tracker_id = f"trk_{uuid.uuid4().hex[:6]}"
     file_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
 
+    from tab_tracker.abbrev import safe_mint_tracker_abbrev
+
     new_tracker = {
         "tracker_id": tracker_id,
+        "tracker_abbrev": safe_mint_tracker_abbrev(user_id, name),
         "name": name,
         "type": tracker_type,  # table | matrix | scorecard
         "runbook_id": runbook_id,

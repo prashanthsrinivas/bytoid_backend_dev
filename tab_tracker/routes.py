@@ -450,6 +450,14 @@ async def delete_tracker():
         # Step 2: Delete the tracker data file from S3
         delete_file_from_s3(f"{user_id}/tracker/{tracker_id}/tracker.json")
 
+        # Cascade: drop all reverse-lookup refs for this tracker.
+        try:
+            from services.statement_tracker_refs import delete_refs_for_tracker
+            delete_refs_for_tracker(tracker_id)
+        except Exception as ref_exc:
+            logging.warning("statement_tracker_refs cascade delete failed for tracker=%s: %s",
+                            tracker_id, ref_exc)
+
         # Step 2: Remove the block_id entry from the runbook's tracker_configuration
         if runbook_id and block_id:
             try:
@@ -4154,10 +4162,43 @@ async def _add_policy_worker(data: dict, job_id: str = None) -> dict:
                 if new_entries:
                     rows_assigned += 1
 
+    # Persist the reverse-lookup graph to RDS (source of truth) BEFORE the S3
+    # tracker blob, so reconciliation always knows which side to trust. If the
+    # S3 save fails afterwards, the RDS rows for this policy are rolled back.
+    tracker_abbrev = tracker_meta.get("tracker_abbrev")
+    try:
+        from services.statement_tracker_refs import replace_cell_refs
+        for row in rows_for_analysis:
+            entries = row.get("values", {}).get(new_col_id) or []
+            replace_cell_refs(
+                tracker_id, row.get("row_id"), new_col_id, policy_id, doc_type,
+                tracker_abbrev,
+                [
+                    {"statement_id": e.get("statement_id"), "status": e.get("status", "not_assessed")}
+                    for e in entries if e.get("statement_id")
+                ],
+            )
+    except Exception as ref_exc:
+        logging.warning(
+            "statement_tracker_refs upsert failed for tracker=%s policy=%s: %s — "
+            "nightly reconcile will heal", tracker_id, policy_id, ref_exc,
+        )
+
     tracker_data.setdefault("policies", []).append(
         {"id": policy_id, "name": policy_name, "type": doc_type, "version": policy_version}
     )
-    save_tracker_file(user_id, tracker_id, tracker_data)
+    try:
+        save_tracker_file(user_id, tracker_id, tracker_data)
+    except Exception:
+        # Compensate: the S3 write failed after the RDS upsert, so drop the
+        # RDS rows we just wrote to keep the graph from drifting ahead of S3.
+        try:
+            from services.statement_tracker_refs import delete_refs_for_policy
+            delete_refs_for_policy(tracker_id, policy_id)
+        except Exception as comp_exc:
+            logging.warning("compensating ref delete failed for tracker=%s policy=%s: %s",
+                            tracker_id, policy_id, comp_exc)
+        raise
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
     log_audit_event(
@@ -4281,6 +4322,16 @@ def remove_tracker_policy():
                     del row["values"][pol_col_id]
             tracker_data["schema"]["columns"] = [col for col in schema_cols if col.get("id") != pol_col_id]
             column_removed = True
+
+        # RDS-first: drop the reverse-lookup refs before persisting S3. If the
+        # S3 save fails the nightly reconcile re-adds refs from the surviving
+        # cell data, so the graph self-heals.
+        try:
+            from services.statement_tracker_refs import delete_refs_for_policy
+            delete_refs_for_policy(tracker_id, policy_id)
+        except Exception as ref_exc:
+            logging.warning("statement_tracker_refs delete failed for tracker=%s policy=%s: %s",
+                            tracker_id, policy_id, ref_exc)
 
         save_tracker_file(user_id, tracker_id, tracker_data)
 
@@ -4551,6 +4602,13 @@ def sync_policy_status():
         updated = propagate_assessment_status_to_policy_cells(tracker_data, result_id)
         if updated:
             save_tracker_file(user_id, tracker_id, tracker_data)
+            # Mirror the new cell statuses into the RDS reverse-lookup graph.
+            try:
+                from tab_tracker.refs_sync import sync_tracker_refs
+                sync_tracker_refs(tracker_id, tracker_meta.get("tracker_abbrev"), tracker_data)
+            except Exception as ref_exc:
+                logging.warning("statement_tracker_refs status sync failed for tracker=%s: %s",
+                                tracker_id, ref_exc)
 
         return jsonify({"status": "ok", "cells_updated": updated}), 200
 

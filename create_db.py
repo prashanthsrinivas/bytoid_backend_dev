@@ -3883,10 +3883,78 @@ def create_gcp_external_app_endpoints_table():
         connection.close()
 
 
+def create_policy_hub_governance_tables():
+    """Sequence counters and the statement↔tracker reverse-lookup table.
+
+    Idempotent. The application also creates these lazily via inline
+    ``CREATE TABLE IF NOT EXISTS`` on first use (policy_hub/doc_ref.py,
+    tab_tracker abbrev minter, services/statement_tracker_refs.py), so running
+    this is belt-and-suspenders for fresh environments.
+    """
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS policy_hub_doc_ref_seq (
+                org_id   VARCHAR(255) NOT NULL,
+                prefix   VARCHAR(8)   NOT NULL,
+                doc_type VARCHAR(16)  NOT NULL,
+                seed     VARCHAR(64)  NOT NULL,
+                next_seq INT          NOT NULL DEFAULT 1,
+                PRIMARY KEY (org_id, prefix, doc_type)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tab_tracker_abbrev_seq (
+                org_id   VARCHAR(255) NOT NULL,
+                prefix   VARCHAR(8)   NOT NULL,
+                seed     VARCHAR(64)  NOT NULL,
+                next_seq INT          NOT NULL DEFAULT 1,
+                PRIMARY KEY (org_id, prefix)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS statement_tracker_refs (
+                statement_id   VARCHAR(64)  NOT NULL,
+                policy_id      VARCHAR(64)  NOT NULL,
+                doc_type       VARCHAR(16)  NOT NULL,
+                tracker_id     VARCHAR(64)  NOT NULL,
+                tracker_abbrev VARCHAR(16)  NULL,
+                row_id         VARCHAR(64)  NOT NULL,
+                column_id      VARCHAR(64)  NOT NULL,
+                status         VARCHAR(24)  NOT NULL DEFAULT 'active',
+                updated_at     DATETIME     NOT NULL,
+                PRIMARY KEY (tracker_id, row_id, column_id, statement_id),
+                KEY idx_statement (statement_id),
+                KEY idx_policy (policy_id),
+                KEY idx_tracker (tracker_id)
+            )
+            """
+        )
+        connection.commit()
+        print("✅ policy hub governance tables created")
+    except Exception as e:
+        connection.rollback()
+        print("❌ Failed to create policy hub governance tables:", str(e))
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Run this when ready to create tables
 if __name__ == "__main__":
     # print("HHSS")
     # create_tables()
+    # create_policy_hub_governance_tables()
     # alter_tokens()
     # alter_subagents()
     # communication()

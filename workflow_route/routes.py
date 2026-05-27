@@ -304,7 +304,7 @@ def get_workflow_config_all():
     if not org_id:
         return jsonify({"error": "User org not found"}), 404
 
-    doc_types = ["policy", "procedure", "runbook", "report"]
+    doc_types = ["policy", "procedure", "standard", "runbook", "report"]
     configs = []
     for dt in doc_types:
         entry = get_workflow_config(org_id, dt)
@@ -325,7 +325,7 @@ def update_workflow_config(doc_type: str):
     if not org_id:
         return jsonify({"error": "User org not found"}), 404
 
-    if doc_type not in ("policy", "procedure", "runbook", "report"):
+    if doc_type not in ("policy", "procedure", "standard", "runbook", "report"):
         return jsonify({"error": f"Unknown doc_type: {doc_type}"}), 400
 
     assignment_mode = body.get("assignment_mode", "per_document")

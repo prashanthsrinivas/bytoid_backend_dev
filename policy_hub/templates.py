@@ -30,6 +30,10 @@ class SectionDef:
     kind: SectionKind
     required: bool = True
     prompt_help: str = ""
+    # Short code used to compose a statement's display number
+    # (e.g. ``ACC-0001.STM.3``). Only meaningful for statement/steps sections;
+    # blank for prose/table sections.
+    abbr: str = ""
 
 
 POLICY_TEMPLATE: list[SectionDef] = [
@@ -60,6 +64,7 @@ POLICY_TEMPLATE: list[SectionDef] = [
         id="policy.statements",
         title="Policy Statements",
         kind="statements",
+        abbr="STM",
         prompt_help=(
             "Write normative rules using 'must', 'shall', or 'is prohibited'. "
             "Each distinct directive belongs in its own <li data-statement-id> element."
@@ -154,6 +159,7 @@ PROCEDURE_TEMPLATE: list[SectionDef] = [
         id="procedure.steps",
         title="Procedure Steps",
         kind="steps",
+        abbr="STP",
         prompt_help=(
             "Write numbered, sequential, actionable instructions. "
             "Each step belongs in its own <li data-statement-id> element."
@@ -223,6 +229,7 @@ STANDARD_TEMPLATE: list[SectionDef] = [
         id="standard.requirements",
         title="Requirements",
         kind="statements",
+        abbr="REQ",
         prompt_help=(
             "Write normative, measurable requirements using 'must', 'shall', or 'is required'. "
             "Each distinct requirement belongs in its own <li data-statement-id> element."
@@ -309,6 +316,7 @@ def serialize_section(s: SectionDef) -> dict:
         "kind": s.kind,
         "required": s.required,
         "prompt_help": s.prompt_help,
+        "abbr": s.abbr,
     }
 
 
@@ -320,7 +328,22 @@ def deserialize_section(d: dict) -> SectionDef:
         kind=d.get("kind", "text"),
         required=bool(d.get("required", True)),
         prompt_help=str(d.get("prompt_help", "")),
+        abbr=str(d.get("abbr", "")),
     )
+
+
+def section_abbr_map(doc_type: str, user_id: str | None = None) -> dict[str, str]:
+    """Return ``{section_id: abbr}`` for the template's statement-bearing sections.
+
+    Used to compose statement display numbers. Falls back to a kind-based
+    default (STM for statements, STP for steps) when a section defines no
+    explicit ``abbr``.
+    """
+    out: dict[str, str] = {}
+    for sec in get_template(doc_type, user_id=user_id):
+        if sec.kind in ("statements", "steps"):
+            out[sec.id] = sec.abbr or ("STP" if sec.kind == "steps" else "STM")
+    return out
 
 
 @dataclass

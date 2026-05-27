@@ -3,11 +3,10 @@ from utils.base_logger import get_logger
 
 logger = get_logger(__name__)
 
-# Doc types that the workflow state machine actually accepts (see
-# workflow_route/routes.py:328). Policy hub also persists "standard"
-# documents, but the workflow layer rejects that type so we skip
-# auto-submit for them rather than 400 on every save.
-WORKFLOW_SUPPORTED_DOC_TYPES = ("policy", "procedure")
+# Doc types that the workflow state machine accepts (see
+# workflow_route/routes.py config validator). Policies, procedures, and
+# standards are all first-class review artifacts.
+WORKFLOW_SUPPORTED_DOC_TYPES = ("policy", "procedure", "standard")
 
 
 def auto_submit_policy(policy_id: str, doc_type: str, owner_user_id: str) -> None:
