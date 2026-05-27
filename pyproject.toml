@@ -129,15 +129,17 @@ skips = ["B101"]
 # warn-only initially; protected paths block from day 1 (the guardrail
 # overrides these defaults for protected files).
 [tool.security]
-fail_on_sast = "warn"        # Phase 1 warn-only for non-protected paths
-fail_on_secrets = "any"      # gitleaks/trufflehog: blocking from Phase 1
-fail_on_dep_cve = "warn"     # Phase 1 warn-only for non-protected paths
-fail_on_coverage_drop = 5.0  # percent; Phase 1 lenient, ratcheted in Phase 6
+# Phase 6 — gate escalation. Non-protected paths now block on high/critical.
+# Flip history: warn → high for SAST (Phase 6), any for secrets (Phase 1),
+# critical for CVEs (Phase 6). Coverage threshold tightened from 5% → 2%.
+fail_on_sast = "high"        # bandit/semgrep: block on HIGH+ severity
+fail_on_secrets = "any"      # gitleaks/trufflehog: any verified secret blocks
+fail_on_dep_cve = "critical" # pip-audit: block on CRITICAL CVEs
+fail_on_coverage_drop = 2.0  # percent; block if coverage falls > 2 points
 
 [tool.security.protected]
 # Stricter overrides for diffs touching security/protected_modules.yml paths.
-# These are NOT warn-only.
-fail_on_sast = "high"
+fail_on_sast = "medium"      # block on MEDIUM+ (stricter than non-protected)
 fail_on_secrets = "any"
 fail_on_dep_cve = "high"
-fail_on_coverage_drop = 0.0
+fail_on_coverage_drop = 0.0  # zero tolerance: any drop blocks

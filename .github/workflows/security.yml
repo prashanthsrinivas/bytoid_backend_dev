@@ -8,13 +8,13 @@ name: Security & Coverage
 # AND posts a normalized JSON payload to the backend webhook (consumed by
 # the Unit Test Results dashboard).
 #
-# Gate strategy (warn-only for non-protected paths on first rollout):
-#   * Every scanner job runs with `continue-on-error: true` so a finding
-#     does NOT fail the build by default.
-#   * The protected-module-guardrail workflow runs in parallel; for PRs
-#     touching protected paths it enforces strict gating itself.
-#   * Phase 6 of the plan flips this workflow's jobs to
-#     `continue-on-error: false` once the baseline is clean.
+# Gate strategy (Phase 6 — enforced for non-protected paths):
+#   * bandit, semgrep, gitleaks, trufflehog run with `continue-on-error: false`
+#     and severity-filtered flags so only HIGH+/secrets findings block CI.
+#   * pip-audit, safety, coverage, typecheck, lint, security_tests, mutation
+#     remain warn-only (continue-on-error: true) pending baseline cleanup.
+#   * The protected-module-guardrail runs in parallel and enforces stricter
+#     MEDIUM+ thresholds for any diff touching protected_modules.yml paths.
 
 on:
   pull_request:
@@ -50,7 +50,7 @@ jobs:
   bandit:
     name: Bandit (Python SAST)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: false  # Phase 6: blocks on HIGH+ findings
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,15 +83,19 @@ jobs:
         if: steps.scope.outputs.targets != ''
         run: |
           set +e
+          # --severity-level high: exit non-zero only on HIGH/CRITICAL findings
+          # (MEDIUM and below are reported to the dashboard but do not block CI).
           bandit -c pyproject.toml \
+            --severity-level high \
             -f json -o bandit-report.json \
             ${{ steps.scope.outputs.targets }}
           json_rc=$?
           bandit -c pyproject.toml \
+            --severity-level high \
             -f sarif -o bandit.sarif \
             ${{ steps.scope.outputs.targets }} || true
           echo "rc=$json_rc" >> "$GITHUB_OUTPUT"
-          exit 0
+          exit $json_rc
 
       - name: Upload SARIF to GitHub Security tab
         if: steps.scope.outputs.targets != '' && hashFiles('bandit.sarif') != ''
@@ -125,7 +129,7 @@ jobs:
   semgrep:
     name: Semgrep (OWASP + Python + Flask + Protected rules)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: false  # Phase 6: blocks on ERROR-severity findings
     container:
       image: returntocorp/semgrep:latest
     steps:
@@ -141,6 +145,8 @@ jobs:
           # The .semgrep/protected/* rules are CRITICAL severity and never warn-only;
           # the protected-module-guardrail workflow enforces them separately on
           # protected paths.
+          # --severity ERROR: only ERROR-level rules exit non-zero (WARNING/INFO
+          # are surfaced on the dashboard but do not block the build).
           semgrep scan \
             --config p/python \
             --config p/owasp-top-ten \
@@ -150,10 +156,11 @@ jobs:
             --config .semgrep/protected/ \
             --sarif --output semgrep.sarif \
             --metrics off \
+            --severity ERROR \
             --error
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          exit 0
+          exit $rc
 
       - name: Upload SARIF to GitHub Security tab
         if: hashFiles('semgrep.sarif') != ''
@@ -187,7 +194,7 @@ jobs:
   gitleaks:
     name: Gitleaks (secrets detection)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: false  # Phase 6: any detected secret blocks CI
     steps:
       - uses: actions/checkout@v4
         with:
@@ -202,7 +209,7 @@ jobs:
           # Produce SARIF and JSON.
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
           GITLEAKS_ENABLE_SUMMARY: "true"
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Upload SARIF to GitHub Security tab
         if: hashFiles('results.sarif') != ''
@@ -239,7 +246,7 @@ jobs:
   trufflehog:
     name: TruffleHog (verified secrets)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: false  # Phase 6: any verified secret blocks CI
     steps:
       - uses: actions/checkout@v4
         with:
@@ -252,7 +259,7 @@ jobs:
           path: ./
           # Only flag secrets that actually authenticate to a service (low FP rate).
           extra_args: --only-verified --json
-        continue-on-error: true
+        continue-on-error: false
 
       # TruffleHog action writes results to stdout; capture them.
       - name: Capture trufflehog output
@@ -804,29 +811,33 @@ jobs:
         with:
           header: security-summary
           message: |
-            ### Security & Coverage — Phase 5 (warn-only)
+            ### Security & Coverage — Phase 6 (enforced)
 
             All scanners ran. Results posted to the **Unit Test Results** dashboard.
 
-            **Security & Deps (Phase 1)**
+            **🔴 Blocking — Phase 6 enforced**
+            | Scanner | Threshold | Result |
+            |---|---|---|
+            | Bandit (SAST) | HIGH+ severity | ${{ needs.bandit.result }} |
+            | Semgrep (SAST) | ERROR severity | ${{ needs.semgrep.result }} |
+            | Gitleaks (secrets) | any finding | ${{ needs.gitleaks.result }} |
+            | TruffleHog (verified secrets) | any verified secret | ${{ needs.trufflehog.result }} |
+
+            **🟡 Warn-only (baseline still being cleaned)**
             | Scanner | Result |
             |---|---|
-            | Bandit (SAST) | ${{ needs.bandit.result }} |
-            | Semgrep (SAST) | ${{ needs.semgrep.result }} |
-            | Gitleaks (secrets) | ${{ needs.gitleaks.result }} |
-            | TruffleHog (verified secrets) | ${{ needs.trufflehog.result }} |
-            | pip-audit (deps) | ${{ needs.pip_audit.result }} |
-            | Safety (deps) | ${{ needs.safety.result }} |
+            | pip-audit (deps CVEs) | ${{ needs.pip_audit.result }} |
+            | Safety (deps advisories) | ${{ needs.safety.result }} |
             | Coverage (pytest-cov) | ${{ needs.coverage.result }} |
 
-            **Type Safety & Lint (Phase 2)**
+            **🟡 Warn-only — Phase 2 (type safety & lint)**
             | Scanner | Result |
             |---|---|
             | mypy (type safety) | ${{ needs.mypy.result }} |
             | ruff (strict lint) | ${{ needs.ruff.result }} |
             | pylint (critical paths) | ${{ needs.pylint.result }} |
 
-            **Security Test Suites (Phase 4)**
+            **🟡 Warn-only — Phase 4 (security test suites)**
             | Suite | Result |
             |---|---|
             | Auth & RBAC tests | ${{ needs.security_tests.result }} |
@@ -834,12 +845,13 @@ jobs:
             | LLM/RAG Safety tests | ${{ needs.security_tests.result }} |
             | Infra Config Audit | ${{ needs.security_tests.result }} |
 
-            **Mutation Testing (Phase 5 — nightly only)**
+            **🟡 Warn-only — Phase 5 (mutation, nightly)**
             | Tool | Result |
             |---|---|
             | mutmut (mutation testing) | ${{ needs.mutation.result }} |
 
             Findings visible in the **Security** tab (SARIF) and as workflow artifacts.
 
-            > All checks are **warn-only** for non-protected paths. Protected-module
-            > changes are gated by the `protected-module-guardrail` workflow.
+            > Protected-module diffs are gated at MEDIUM+ severity by the
+            > `protected-module-guardrail` workflow (stricter than HIGH+ above).
+            > To suppress a finding, follow the [Suppression Playbook](docs/security/SUPPRESSION_PLAYBOOK.md).

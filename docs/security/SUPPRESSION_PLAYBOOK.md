@@ -1,5 +1,10 @@
 # Suppression Playbook
 
+> **Phase 6 status**: Bandit (HIGH+), Semgrep (ERROR), Gitleaks, and TruffleHog
+> are now **blocking** in CI for all non-protected paths. A suppression is the
+> only way to merge code that triggers one of these scanners without fixing the
+> underlying issue. Read this document before adding any suppression token.
+
 Sometimes a security scanner flags code that is genuinely safe. This document explains the **only** acceptable ways to suppress such findings, and the hard prohibition on suppressing anything inside a protected module.
 
 ## Hard rule: protected modules

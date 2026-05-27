@@ -34,12 +34,17 @@ fi
 
 echo "Applying branch protection to ${REPO}@${BRANCH}…"
 
-# Minimum status checks we expect to exist. Add more as later phases land:
-#   security/* jobs come in Phase 1
-#   backend_typecheck / backend_lint come in Phase 2
+# Required status checks: updated in Phase 6 to include the four scanner
+# jobs that are now blocking (bandit, semgrep, gitleaks, trufflehog).
+# Phase 2 (mypy/ruff/pylint) and Phase 4/5 remain warn-only; add them here
+# once their baselines are clean.
 required_checks=(
   '"protected-module-guardrail / guardrail"'
-  '"analysis"'   # the existing SonarQube workflow
+  '"analysis"'                              # existing SonarQube workflow
+  '"Security & Coverage / bandit"'          # Phase 6: HIGH+ SAST findings block
+  '"Security & Coverage / semgrep"'         # Phase 6: ERROR SAST findings block
+  '"Security & Coverage / gitleaks"'        # Phase 6: any secret blocks
+  '"Security & Coverage / trufflehog"'      # Phase 6: any verified secret blocks
 )
 
 contexts=$(IFS=,; echo "${required_checks[*]}")
