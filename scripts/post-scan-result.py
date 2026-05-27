@@ -17,7 +17,7 @@ Usage:
                         --input coverage.xml --returncode $rc
 
 Required env:
-    BACKEND_URL                 — e.g. https://api-dev.bytoid.ai
+    BYTOID_BACKEND_URL                 — e.g. https://api-dev.bytoid.ai
     FRONTEND_TESTS_WEBHOOK_SECRET      — shared HMAC secret (same one bytoiddev uses)
 """
 
@@ -148,11 +148,11 @@ def main() -> int:
         print(json.dumps(payload, indent=2))
         return 0
 
-    backend_url = os.environ.get("BACKEND_URL")
+    backend_url = os.environ.get("BYTOID_BACKEND_URL")
     secret = os.environ.get("FRONTEND_TESTS_WEBHOOK_SECRET")
     if not backend_url or not secret:
         print(
-            "::warning::BACKEND_URL / FRONTEND_TESTS_WEBHOOK_SECRET not set; "
+            "::warning::BYTOID_BACKEND_URL / FRONTEND_TESTS_WEBHOOK_SECRET not set; "
             "skipping POST (treating as non-fatal).",
             file=sys.stderr,
         )

@@ -42,7 +42,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
-  BACKEND_URL: ${{ secrets.BACKEND_URL }}
+  BYTOID_BACKEND_URL: ${{ secrets.BYTOID_BACKEND_URL }}
   FRONTEND_TESTS_WEBHOOK_SECRET: ${{ secrets.FRONTEND_TESTS_WEBHOOK_SECRET }}
 
 jobs:
