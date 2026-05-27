@@ -758,11 +758,7 @@ jobs:
     name: Mutation testing (mutmut)
     runs-on: ubuntu-latest
     continue-on-error: true
-    # Only run on the nightly schedule, not on every PR/push.
-    if: github.event_name == 'schedule'
-    env:
-      BACKEND_WEBHOOK_URL: ${{ secrets.BACKEND_WEBHOOK_URL }}
-      BACKEND_WEBHOOK_SECRET: ${{ secrets.BACKEND_WEBHOOK_SECRET }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@v4
