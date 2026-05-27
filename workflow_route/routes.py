@@ -497,13 +497,29 @@ def submit_for_review():
     )
     g.audit_logged = True
 
-    return jsonify({
-        "workflow_id": wf["workflow_id"],
-        "state": wf["state"],
-        "state_version": wf.get("state_version"),
-        "auto_advanced_hops": max(0, len(chain) - 1),
-        "role_resolved": role_resolved,
-    }), 200
+    try:
+        enriched = enrich_workflow_for_viewer(wf, user_id)
+    except Exception as enrich_exc:
+        logger.warning(
+            "submit_for_review enrichment failed for workflow_id=%s: %s",
+            wf.get("workflow_id"), enrich_exc,
+        )
+        enriched = wf
+
+    from flask import Response
+    import json as _json
+    return Response(
+        _json.dumps({
+            "workflow_id": wf["workflow_id"],
+            "state": wf["state"],
+            "state_version": wf.get("state_version"),
+            "auto_advanced_hops": max(0, len(chain) - 1),
+            "role_resolved": role_resolved,
+            "workflow": enriched,
+        }, default=str),
+        status=200,
+        mimetype="application/json",
+    )
 
 
 # ── Review (stage-aware) ──────────────────────────────────────────────────────
@@ -730,12 +746,29 @@ def _dispatch_review(body: dict):
         extra_metadata={"stage": stage, "decision": decision},
     )
     g.audit_logged = True
-    return jsonify({
-        "workflow_id": workflow_id,
-        "state": updated["state"],
-        "state_version": updated["state_version"],
-        "auto_advanced_hops": max(0, len(chain) - 1),
-    }), 200
+
+    try:
+        enriched = enrich_workflow_for_viewer(updated, user_id)
+    except Exception as enrich_exc:
+        logger.warning(
+            "_dispatch_review enrichment failed for workflow_id=%s: %s",
+            workflow_id, enrich_exc,
+        )
+        enriched = updated
+
+    from flask import Response
+    import json as _json
+    return Response(
+        _json.dumps({
+            "workflow_id": workflow_id,
+            "state": updated["state"],
+            "state_version": updated["state_version"],
+            "auto_advanced_hops": max(0, len(chain) - 1),
+            "workflow": enriched,
+        }, default=str),
+        status=200,
+        mimetype="application/json",
+    )
 
 
 # ── By-doc lookup ─────────────────────────────────────────────────────────────

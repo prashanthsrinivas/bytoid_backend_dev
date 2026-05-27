@@ -1737,6 +1737,60 @@ def result_list(user_id):
             reverse=True,
         )
 
+        # Union results where this user is an active workflow party (QR / GR /
+        # Approver) but is neither the owner nor an explicit share recipient.
+        # The `_keep` gates (risk_score > 0, runbook_id known) don't apply to
+        # assigned items — a reviewer should see what was assigned to them.
+        try:
+            from workflow_route.state_machine import get_docs_assigned_to_user
+
+            seen_result_ids = {
+                r.get("result_id") for r in filtered_results if r.get("result_id")
+            }
+            existing_runbook_ids = {
+                rb.get("runbook_id") for rb in (runbooks or []) if rb.get("runbook_id")
+            }
+            for assignment in get_docs_assigned_to_user("runbook", user_id):
+                rid = assignment.get("doc_id")
+                owner_id = assignment.get("owner_user_id")
+                if not rid or not owner_id or rid in seen_result_ids:
+                    continue
+                if owner_id == user_id:
+                    continue
+                loop_a = asyncio.new_event_loop()
+                try:
+                    assigned_result = loop_a.run_until_complete(
+                        dbserver.runbook_get_result_by_id(owner_id, rid)
+                    )
+                finally:
+                    loop_a.close()
+                if not assigned_result:
+                    continue
+                assigned_result["assigned_for_review"] = True
+                assigned_result["assigned_role"] = assignment.get("role")
+                assigned_result["shared_by"] = owner_id
+                filtered_results.append(assigned_result)
+                seen_result_ids.add(rid)
+
+                parent_rb_id = assigned_result.get("runbook_id")
+                if parent_rb_id and parent_rb_id not in existing_runbook_ids:
+                    loop_b = asyncio.new_event_loop()
+                    try:
+                        parent_rb = loop_b.run_until_complete(
+                            dbserver.get_runbook_by_id(owner_id, parent_rb_id)
+                        )
+                    finally:
+                        loop_b.close()
+                    if parent_rb:
+                        if isinstance(parent_rb, list):
+                            parent_rb = parent_rb[0] if parent_rb else None
+                        if parent_rb:
+                            parent_rb["assigned_for_review"] = True
+                            runbooks = (runbooks or []) + [parent_rb]
+                            existing_runbook_ids.add(parent_rb_id)
+        except Exception as wf_assign_exc:
+            logger.warning("runbook assigned-for-review union failed: %s", wf_assign_exc)
+
         try:
             from workflow_route.state_machine import get_workflow_states_for_docs
 

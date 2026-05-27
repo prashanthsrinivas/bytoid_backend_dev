@@ -140,6 +140,74 @@ def get_workflow_states_for_docs(doc_type: str, doc_ids: list[str]) -> dict[str,
     return {doc_id: r["state"] for doc_id, r in latest.items()}
 
 
+def get_docs_assigned_to_user(
+    doc_type: str,
+    user_id: str,
+    include_published: bool = False,
+) -> list[dict]:
+    """Return active workflow rows where ``user_id`` is a QR/GR/Approver party.
+
+    Used by list endpoints (e.g. ``/policy-hub/list``, ``/runbook/results_list``)
+    to surface documents assigned to a reviewer/approver even though they are
+    neither the owner nor an explicit share recipient.
+
+    Each row in the returned list is a dict::
+
+        {workflow_id, doc_id, doc_version, owner_user_id, state, role, created_at}
+
+    where ``role`` is one of ``quality_reviewer``, ``governance_reviewer``,
+    ``approver`` — the column on which the user matched.
+
+    Excludes ``draft`` (not yet submitted) and ``cancelled`` rows. Includes
+    ``published`` only when ``include_published=True``. When multiple rows
+    exist for the same ``doc_id`` (e.g. different versions), the most recent
+    by ``created_at`` wins so the result has one row per ``doc_id``.
+    """
+    if not doc_type or not user_id:
+        return []
+
+    excluded = ["draft", "cancelled"]
+    if not include_published:
+        excluded.append("published")
+    placeholders = ",".join(["%s"] * len(excluded))
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                f"""SELECT workflow_id, doc_id, doc_version, owner_user_id,
+                           state, created_at,
+                           CASE
+                             WHEN current_quality_reviewer = %s THEN 'quality_reviewer'
+                             WHEN current_governance_reviewer = %s THEN 'governance_reviewer'
+                             WHEN current_approver = %s THEN 'approver'
+                           END AS role
+                    FROM document_workflow
+                    WHERE doc_type = %s
+                      AND state NOT IN ({placeholders})
+                      AND (current_quality_reviewer = %s
+                           OR current_governance_reviewer = %s
+                           OR current_approver = %s)
+                    ORDER BY created_at DESC""",
+                (
+                    user_id, user_id, user_id,
+                    doc_type,
+                    *excluded,
+                    user_id, user_id, user_id,
+                ),
+            )
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    latest: dict[str, dict] = {}
+    for r in rows:
+        prev = latest.get(r["doc_id"])
+        if not prev or (r.get("created_at") or 0) > (prev.get("created_at") or 0):
+            latest[r["doc_id"]] = dict(r)
+    return list(latest.values())
+
+
 def get_user_org_id(user_id: str) -> str | None:
     """Resolve org identifier for a user — company_name first, launch_id_fk as fallback.
 

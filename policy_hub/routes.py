@@ -1862,6 +1862,37 @@ def list_policies():
         owner_policy = {**owner_policy, "owner_user_id": owner_id, "shared": True}
         items.append(owner_policy)
 
+    # Union policies where this user is an active workflow party (QR / GR /
+    # Approver) but is neither the owner nor in the explicit share index.
+    # Without this, an assigned reviewer would not see the policy in their
+    # list at all — only /workflow/inbox would surface it.
+    try:
+        from policy_hub.workflow_autosubmit import WORKFLOW_SUPPORTED_DOC_TYPES
+        from workflow_route.state_machine import get_docs_assigned_to_user
+
+        seen_policy_ids = {it.get("policy_id") for it in items if it.get("policy_id")}
+        for wf_doc_type in WORKFLOW_SUPPORTED_DOC_TYPES:
+            for assignment in get_docs_assigned_to_user(wf_doc_type, user_id):
+                pid = assignment.get("doc_id")
+                owner_id = assignment.get("owner_user_id")
+                if not pid or not owner_id or pid in seen_policy_ids:
+                    continue
+                if owner_id == user_id:
+                    continue
+                owner_policy = load_yaml_from_s3(_s3_key(owner_id, pid))
+                if not owner_policy:
+                    continue
+                owner_policy = {
+                    **owner_policy,
+                    "owner_user_id": owner_id,
+                    "assigned_for_review": True,
+                    "assigned_role": assignment.get("role"),
+                }
+                items.append(owner_policy)
+                seen_policy_ids.add(pid)
+    except Exception as wf_assign_exc:
+        logger.warning("policy assigned-for-review union failed: %s", wf_assign_exc)
+
     try:
         from policy_hub.workflow_autosubmit import WORKFLOW_SUPPORTED_DOC_TYPES
         from workflow_route.state_machine import get_workflow_states_for_docs
