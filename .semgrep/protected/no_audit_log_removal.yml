@@ -1,0 +1,42 @@
+# Detects deletions of log_audit_event(...) calls or the audit_log_service import.
+# Removing audit logging from a protected module breaks the immutable
+# forensic trail and is BLOCKED.
+
+rules:
+  - id: bytoid.protected.no-audit-log-removal
+    languages: [python]
+    severity: ERROR
+    message: >-
+      An audit-log call appears to be missing or commented out in a
+      protected module. Audit logging must never be silenced; the
+      forensic trail is a compliance requirement.
+    metadata:
+      category: security
+      cwe: "CWE-778: Insufficient Logging"
+      owasp: "A09:2021-Security Logging and Monitoring Failures"
+      protected_module_rule: true
+      remediation: >-
+        Reinstate the log_audit_event(action=..., endpoint=..., status=...)
+        call before/after the state-changing operation. If the call shape
+        needs to change (e.g. new action constant), open a separate PR
+        adding the constant first.
+    paths:
+      include:
+        - "google_route/"
+        - "microsoft_route/"
+        - "users_routes/"
+        - "invited_users/"
+        - "sso_by/"
+        - "workflow_route/"
+        - "runbook/"
+        - "playbook/"
+        - "agent_routes/"
+        - "agent_hub/"
+        - "ai_assistant_chat/"
+        - "payments/"
+        - "credits/"
+        - "credits_route/"
+        - "plans/"
+        - "services/audit_log_service.py"
+    # Detect commented-out audit calls.
+    pattern-regex: '^\s*#\s*log_audit_event\('

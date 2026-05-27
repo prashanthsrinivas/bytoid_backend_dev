@@ -1,0 +1,170 @@
+name: Protected Module Guardrail
+
+# Runs FIRST on every pull request. Detects diffs that intersect any path
+# listed in security/protected_modules.yml and enforces the governance
+# requirements documented in docs/security/PROTECTED_MODULES.md.
+#
+# Failure modes:
+#   - missing risk label on a protected PR
+#   - AI-only approval (no human reviewer)
+#   - new suppression token introduced in a protected file
+#   - missing [ai-proposal] title prefix / structured block when author is a bot
+#
+# This workflow must NOT be skipped or auto-cancelled. If a protected PR
+# has the matching Semgrep CRITICAL rules run by .github/workflows/security.yml,
+# those must also pass before merge.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, review_requested, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # One guardrail check at a time per PR, but never cancel a running one
+  # (so review state at the moment of merge is correctly captured).
+  group: protected-guardrail-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guardrail:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request != null
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install guardrail deps
+        run: pip install --no-deps pyyaml
+
+      - name: Gather PR metadata
+        id: pr_meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # PR title / body / author already available in github.event.pull_request
+          # but reviews need an API call.
+          reviews_json=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUM}/reviews" \
+            --jq '[.[] | {user_login: .user.login, state: .state, submitted_at: .submitted_at}]')
+          # Persist for the next step.
+          {
+            echo "reviews_json<<EOF"
+            echo "$reviews_json"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run protected-module guardrail
+        id: guardrail
+        env:
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GITHUB_PR_TITLE: ${{ github.event.pull_request.title }}
+          GITHUB_PR_BODY: ${{ github.event.pull_request.body }}
+          GITHUB_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          GITHUB_PR_REVIEWS_JSON: ${{ steps.pr_meta.outputs.reviews_json }}
+        run: |
+          set +e
+          python scripts/protected-module-guardrail.py --mode=ci > guardrail-report.json
+          rc=$?
+          echo "guardrail exit code: $rc"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0  # Don't fail this step; we want the comment step to always run.
+
+      - name: Read guardrail report
+        id: read_report
+        run: |
+          # Make report available as job outputs for downstream steps.
+          {
+            echo "report<<EOF"
+            cat guardrail-report.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          python -c "
+          import json, sys
+          d = json.load(open('guardrail-report.json'))
+          # Emit clean booleans for downstream conditionals.
+          print(f\"::set-output name=is_protected::{'true' if d['protected_pr'] else 'false'}\")
+          print(f\"::set-output name=findings_count::{len(d['findings'])}\")
+          "
+
+      - name: Apply protected labels
+        if: steps.read_report.outputs.is_protected == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUM" --add-label "protected-module" --add-label "human-review:required" || true
+
+      - name: Post / update PR comment
+        if: steps.read_report.outputs.is_protected == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: protected-module-guardrail
+          message: |
+            ### 🔒 Protected Module Guardrail
+
+            This PR touches one or more **protected modules** (see
+            [`security/protected_modules.yml`](../blob/main/security/protected_modules.yml)
+            and [`docs/security/PROTECTED_MODULES.md`](../blob/main/docs/security/PROTECTED_MODULES.md)).
+
+            **Governance requirements:**
+            - Apply one of `risk:low`, `risk:medium`, `risk:high`, `risk:critical`
+            - At least one human (non-bot) approving review is required to merge
+            - No new `# nosec`, `# noqa: S`, `# type: ignore`, or `.semgrepignore` entries on protected paths
+            - All Semgrep CRITICAL rules under `.semgrep/protected/` must pass
+
+            <details><summary>Guardrail report</summary>
+
+            ```json
+            ${{ steps.read_report.outputs.report }}
+            ```
+            </details>
+
+      - name: Fail the check if any blocking finding
+        if: steps.guardrail.outputs.rc != '0'
+        run: |
+          echo "::error::Protected-module guardrail reported blocking finding(s). See the report above."
+          exit 1
+
+      - name: Emit audit event (best-effort)
+        if: steps.read_report.outputs.is_protected == 'true' && always()
+        env:
+          BYTOID_AUDIT_WEBHOOK_URL: ${{ secrets.BYTOID_AUDIT_WEBHOOK_URL }}
+          BYTOID_AUDIT_WEBHOOK_SECRET: ${{ secrets.BYTOID_AUDIT_WEBHOOK_SECRET }}
+        run: |
+          if [ -z "${BYTOID_AUDIT_WEBHOOK_URL:-}" ]; then
+            echo "Audit webhook not configured; skipping."
+            exit 0
+          fi
+          # Post a PROTECTED_MODULE_CHANGE audit event. The receiver
+          # (services/audit_log_service.py via a future ingest endpoint, or
+          # an S3 versioned object via aws s3 cp) records the immutable trail.
+          payload=$(jq -n \
+            --arg action "PROTECTED_MODULE_CHANGE" \
+            --arg pr     "${{ github.event.pull_request.number }}" \
+            --arg author "${{ github.event.pull_request.user.login }}" \
+            --arg sha    "${{ github.event.pull_request.head.sha }}" \
+            --arg run_id "${{ github.run_id }}" \
+            '{action: $action, pr_number: $pr, author: $author, head_sha: $sha, run_id: $run_id}')
+          sig="sha256=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$BYTOID_AUDIT_WEBHOOK_SECRET" | awk '{print $2}')"
+          curl -sS -X POST "$BYTOID_AUDIT_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Bytoid-Signature: $sig" \
+            -d "$payload" || echo "Audit webhook POST failed; continuing (never block on audit)."

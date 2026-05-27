@@ -1,0 +1,42 @@
+# Detects downgrades from strong crypto to weak or broken algorithms.
+# Switching from AESGCM/Fernet/PBKDF2 to MD5/SHA1/DES/RC4/static-IV is BLOCKED.
+
+rules:
+  - id: bytoid.protected.no-crypto-downgrade
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Use of a weak or broken cryptographic primitive in a protected module.
+      The Bytoid baseline requires AESGCM / Fernet for symmetric encryption,
+      PBKDF2/Argon2 for KDF, and SHA-256+ for hashing of security-sensitive
+      values.
+    metadata:
+      category: security
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      owasp: "A02:2021-Cryptographic Failures"
+      protected_module_rule: true
+      remediation: >-
+        Replace with a vetted primitive: AESGCM for symmetric encryption,
+        Fernet for opaque tokens, PBKDF2-HMAC-SHA256 (>= 200k iterations)
+        or Argon2id for password hashing, hashlib.sha256(...) for non-
+        password hashing.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: hashlib.md5(...)
+              - pattern: hashlib.sha1(...)
+          - pattern-not-inside: |
+              # Allow MD5 explicitly when usedforsecurity=False is set.
+              hashlib.md5(..., usedforsecurity=False)
+      - pattern: from Crypto.Cipher import DES
+      - pattern: from Crypto.Cipher import ARC4
+      - pattern: from Crypto.Cipher import Blowfish
+      - pattern: Crypto.Cipher.DES.new(...)
+      - pattern: Crypto.Cipher.ARC4.new(...)
+      # Static IV used with AES is broken.
+      - patterns:
+          - pattern: |
+              AES.new($KEY, $MODE, $IV)
+          - metavariable-regex:
+              metavariable: $IV
+              regex: '^(b?["\'][0-9a-fA-F]+["\']|bytes\(\d+\))$'

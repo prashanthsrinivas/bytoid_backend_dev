@@ -1,0 +1,36 @@
+# Detects switching Celery's serializer from json to pickle, or
+# direct use of pickle.loads on untrusted input. Both lead to RCE.
+
+rules:
+  - id: bytoid.protected.no-serializer-pickle
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Use of pickle as a Celery serializer or direct pickle.loads on
+      untrusted input. Pickle deserialization is equivalent to remote
+      code execution. The Bytoid baseline pins Celery to json
+      serialization (see utils/celery_base.py).
+    metadata:
+      category: security
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021-Software and Data Integrity Failures"
+      protected_module_rule: true
+      remediation: >-
+        Keep `task_serializer='json'`, `result_serializer='json'`, and
+        `accept_content=['json']` in the Celery config. Never call
+        pickle.loads on bytes that originate outside this process.
+    pattern-either:
+      - pattern: |
+          task_serializer="pickle"
+      - pattern: |
+          task_serializer='pickle'
+      - pattern: |
+          result_serializer="pickle"
+      - pattern: |
+          result_serializer='pickle'
+      - pattern: |
+          accept_content=[..., "pickle", ...]
+      - pattern: |
+          accept_content=[..., 'pickle', ...]
+      - pattern: pickle.loads(...)
+      - pattern: cPickle.loads(...)

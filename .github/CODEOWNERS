@@ -1,0 +1,70 @@
+# CODEOWNERS — required reviewers for protected modules.
+#
+# Globs MUST stay in sync with security/protected_modules.yml.
+# The protected-module guardrail workflow validates this on every PR.
+#
+# Teams referenced here are placeholders; the security-leads team owns
+# updates to this file via a separate CODEOWNERS-protected entry below.
+
+# ─── Authentication & identity ──────────────────────────────────────
+google_route/**            @bytoid/security-leads @bytoid/auth-owners
+microsoft_route/**         @bytoid/security-leads @bytoid/auth-owners
+users_routes/**            @bytoid/security-leads @bytoid/auth-owners
+invited_users/**           @bytoid/security-leads @bytoid/auth-owners
+session_middleware.py      @bytoid/security-leads @bytoid/auth-owners
+sso_by/**                  @bytoid/security-leads @bytoid/auth-owners
+services/totp_service.py   @bytoid/security-leads @bytoid/auth-owners
+
+# ─── RBAC / authorization ───────────────────────────────────────────
+utils/permission_required.py   @bytoid/security-leads @bytoid/auth-owners
+utils/permission_resolver.py   @bytoid/security-leads @bytoid/auth-owners
+utils/normal.py                @bytoid/security-leads @bytoid/auth-owners
+
+# ─── Tenant isolation ───────────────────────────────────────────────
+db/db_checkers.py          @bytoid/security-leads @bytoid/platform-owners
+app.py                     @bytoid/security-leads @bytoid/platform-owners
+
+# ─── Crypto / keys / tokens ─────────────────────────────────────────
+utils/key_rotation_manager.py  @bytoid/security-leads @bytoid/crypto-owners
+invited_users/uszr_helper.py   @bytoid/security-leads @bytoid/crypto-owners
+
+# ─── Secrets / credentials / sensitive config ───────────────────────
+db/rds_db.py                @bytoid/security-leads @bytoid/platform-owners
+utils/app_configs.py        @bytoid/security-leads @bytoid/platform-owners
+services/redis_service.py   @bytoid/security-leads @bytoid/platform-owners
+.env*                       @bytoid/security-leads
+
+# ─── Workflow orchestration ─────────────────────────────────────────
+workflow_route/**                @bytoid/security-leads @bytoid/workflow-owners
+runbook/**                       @bytoid/security-leads @bytoid/workflow-owners
+playbook/**                      @bytoid/security-leads @bytoid/workflow-owners
+services/workflow_service.py     @bytoid/security-leads @bytoid/workflow-owners
+services/automate_service.py     @bytoid/security-leads @bytoid/workflow-owners
+services/scheduler_service.py    @bytoid/security-leads @bytoid/workflow-owners
+
+# ─── AI agent execution ─────────────────────────────────────────────
+agent_routes/**                  @bytoid/security-leads @bytoid/ai-owners
+agent_hub/**                     @bytoid/security-leads @bytoid/ai-owners
+ai_assistant_chat/**             @bytoid/security-leads @bytoid/ai-owners
+services/web_scrape_service.py   @bytoid/security-leads @bytoid/ai-owners
+services/youtube_scrape_service.py @bytoid/security-leads @bytoid/ai-owners
+umail_lance/**                   @bytoid/security-leads @bytoid/ai-owners
+
+# ─── Audit / compliance / forensic logging ──────────────────────────
+services/audit_log_service.py  @bytoid/security-leads @bytoid/compliance-owners
+
+# ─── Billing / payments / financial ─────────────────────────────────
+payments/**                          @bytoid/security-leads @bytoid/finance-owners
+credits/**                           @bytoid/security-leads @bytoid/finance-owners
+credits_route/**                     @bytoid/security-leads @bytoid/finance-owners
+plans/**                             @bytoid/security-leads @bytoid/finance-owners
+services/stripe_webhook_handler.py   @bytoid/security-leads @bytoid/finance-owners
+services/credit_system.py            @bytoid/security-leads @bytoid/finance-owners
+
+# ─── Governance meta — only security leads can change governance itself ──
+.github/CODEOWNERS                                  @bytoid/security-leads
+.github/workflows/protected-module-guardrail.yml    @bytoid/security-leads
+security/protected_modules.yml                      @bytoid/security-leads
+scripts/protected-module-guardrail.py               @bytoid/security-leads
+.semgrep/protected/**                               @bytoid/security-leads
+scripts/branch-protection-init.sh                   @bytoid/security-leads

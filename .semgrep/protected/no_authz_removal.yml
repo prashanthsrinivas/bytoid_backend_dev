@@ -1,0 +1,76 @@
+# Detects diffs that weaken authorization by removing or commenting out
+# permission decorators on Flask route handlers in protected modules.
+#
+# Run via: semgrep --config .semgrep/protected/no_authz_removal.yml
+# Severity: ERROR (treated as CRITICAL by the guardrail; never warn-only).
+
+rules:
+  - id: bytoid.protected.no-authz-removal
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A Flask route handler in a protected module appears to be missing
+      a permission decorator (@permission_required / @permission_required_body).
+      Removing or commenting out an authorization decorator is a
+      protected-module weakening change and is BLOCKED. If you intentionally
+      need to expose this endpoint without auth, the only path is a
+      CODEOWNERS-approved PR that re-classifies the file in
+      security/protected_modules.yml.
+    metadata:
+      category: security
+      cwe: "CWE-862: Missing Authorization"
+      owasp: "A01:2021-Broken Access Control"
+      protected_module_rule: true
+      remediation: >-
+        Restore the @permission_required(...) / @permission_required_body(...)
+        decorator immediately above the route handler.
+    paths:
+      include:
+        # Globs MUST stay in sync with security/protected_modules.yml.
+        - "google_route/"
+        - "microsoft_route/"
+        - "users_routes/"
+        - "invited_users/"
+        - "sso_by/"
+        - "workflow_route/"
+        - "runbook/"
+        - "playbook/"
+        - "agent_routes/"
+        - "agent_hub/"
+        - "ai_assistant_chat/"
+        - "payments/"
+        - "credits/"
+        - "credits_route/"
+        - "plans/"
+    # A Flask route handler decorated with @<bp>.route(...) but NOT also
+    # decorated with @permission_required* on an adjacent line.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @$BP.route(...)
+              def $FUNC(...):
+                  ...
+          - pattern: |
+              @$BP.route(..., methods=[...])
+              def $FUNC(...):
+                  ...
+      - pattern-not: |
+          @$BP.route(...)
+          @permission_required(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$BP.route(...)
+          @permission_required_body(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$BP.route(..., methods=[...])
+          @permission_required(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$BP.route(..., methods=[...])
+          @permission_required_body(...)
+          def $FUNC(...):
+              ...

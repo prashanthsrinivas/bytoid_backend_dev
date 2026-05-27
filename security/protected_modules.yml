@@ -1,0 +1,144 @@
+# Protected Modules — single source of truth.
+#
+# Any PR whose diff intersects one of these globs is treated as a protected-module
+# change by .github/workflows/protected-module-guardrail.yml and the matching
+# pre-commit script scripts/protected-module-guardrail.py.
+#
+# Editing this file is itself a protected-module change.
+#
+# Required reviewers per category live in .github/CODEOWNERS.
+
+version: 1
+
+categories:
+  authentication_identity:
+    description: Authentication and identity-management systems.
+    default_risk: high
+    paths:
+      - "google_route/**"
+      - "microsoft_route/**"
+      - "users_routes/**"
+      - "invited_users/**"
+      - "session_middleware.py"
+      - "sso_by/**"
+      - "services/totp_service.py"
+
+  authorization_rbac:
+    description: RBAC / ABAC / permission evaluation / authorization enforcement.
+    default_risk: high
+    paths:
+      - "utils/permission_required.py"
+      - "utils/permission_resolver.py"
+      - "utils/normal.py"
+
+  tenant_isolation:
+    description: Multi-tenant access-control boundaries and workspace routing.
+    default_risk: high
+    paths:
+      - "db/db_checkers.py"
+      - "app.py"
+
+  cryptography_keys_tokens:
+    description: Encryption, cryptographic utilities, key management, secure token generation.
+    default_risk: critical
+    paths:
+      - "utils/key_rotation_manager.py"
+      - "users_routes/routes.py"
+      - "invited_users/uszr_helper.py"
+    # Additional dynamic check (handled by the guardrail script):
+    # any file containing `from cryptography` is treated as protected even if not listed.
+    dynamic_patterns:
+      - regex: '^from cryptography'
+        risk: critical
+
+  secrets_credentials:
+    description: Secrets management, credential handling, sensitive configuration.
+    default_risk: critical
+    paths:
+      - "db/rds_db.py"
+      - "utils/app_configs.py"
+      - ".env*"
+      - "services/redis_service.py"
+
+  workflow_orchestration:
+    description: Workflow orchestration, execution engines, autonomous action pipelines.
+    default_risk: high
+    paths:
+      - "workflow_route/**"
+      - "runbook/**"
+      - "playbook/**"
+      - "services/workflow_service.py"
+      - "services/automate_service.py"
+      - "services/scheduler_service.py"
+
+  ai_agent_execution:
+    description: AI agent execution layers, tool-invocation frameworks, model-action control.
+    default_risk: high
+    paths:
+      - "agent_routes/**"
+      - "agent_hub/**"
+      - "ai_assistant_chat/**"
+      - "services/web_scrape_service.py"
+      - "services/youtube_scrape_service.py"
+      - "umail_lance/**"
+
+  audit_compliance_logging:
+    description: Audit logging, compliance logging, immutable event trails, forensic records.
+    default_risk: critical
+    paths:
+      - "services/audit_log_service.py"
+
+  billing_payments_financial:
+    description: Billing, payments, subscriptions, invoicing, financial-transaction processing.
+    default_risk: critical
+    paths:
+      - "payments/**"
+      - "credits/**"
+      - "credits_route/**"
+      - "plans/**"
+      - "services/stripe_webhook_handler.py"
+      - "services/credit_system.py"
+
+  governance_meta:
+    description: The governance scaffolding itself; only security leads may modify.
+    default_risk: critical
+    paths:
+      - "security/protected_modules.yml"
+      - ".github/CODEOWNERS"
+      - ".github/workflows/protected-module-guardrail.yml"
+      - "scripts/protected-module-guardrail.py"
+      - ".semgrep/protected/**"
+      - "scripts/branch-protection-init.sh"
+
+# GitHub user logins that are known AI/bot actors. PRs authored or
+# approved by these accounts DO NOT count toward the required-approval
+# threshold on protected-module PRs.
+ai_actor_logins:
+  - "claude-bot"
+  - "claude[bot]"
+  - "anthropic-bot"
+  - "github-actions[bot]"
+  - "dependabot[bot]"
+  - "renovate[bot]"
+  - "copilot-pull-request-reviewer[bot]"
+
+# Patterns that, when added to a diff inside a protected path, are
+# treated as a new suppression and BLOCKED by the guardrail. Removing
+# an existing suppression is always allowed.
+forbidden_suppression_patterns:
+  - "# nosec"
+  - "# noqa: S"
+  - "# type: ignore"
+  - "# semgrep:ignore"
+  - "# pragma: no cover"
+
+# CRITICAL Semgrep rules — never warn-only, even in Phase 1's warn-only window.
+critical_rule_ids:
+  - "bytoid.protected.no-authz-removal"
+  - "bytoid.protected.no-audit-log-removal"
+  - "bytoid.protected.no-crypto-downgrade"
+  - "bytoid.protected.no-serializer-pickle"
+
+# How long an entry can sit in security/baseline.json before forced re-review
+# when it intersects a protected path. Non-protected entries have no max.
+protected_baseline_max_expiry_days: 14

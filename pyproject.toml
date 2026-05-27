@@ -1,0 +1,66 @@
+# Phase 0 subset — pytest, coverage, and bare-minimum tool configs.
+# Later phases will add [tool.mypy], expanded [tool.ruff.lint], [tool.bandit],
+# [tool.pylint], etc. We keep the file present from Phase 0 so subsequent
+# phases just edit it rather than introducing yet another config file.
+
+[tool.pytest.ini_options]
+# Mirrors pytest.ini (kept as the canonical for now to preserve historical
+# behaviour). When/if pytest.ini is removed, the values below take over.
+testpaths = ["tests", "testing"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--json-report",
+    "--json-report-file=testing/results/latest.json",
+]
+markers = [
+    "security: security-focused tests (auth, RBAC, injection, etc.)",
+    "regression: regression tests for previously fixed defects",
+    "integration: cross-component integration tests",
+    "e2e: end-to-end user-journey tests",
+    "fuzz: property-based / fuzz tests via Hypothesis",
+    "concurrency: race-condition / threading tests",
+    "chaos: fault-injection / chaos tests",
+    "slow: tests that take > 1s; skipped by default in local quick runs",
+    "live_llm: hits real LLM endpoints; gated by RUN_LIVE_LLM=1",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+# Skip the repos we definitely don't want to measure.
+omit = [
+    "tests/*",
+    "testing/*",
+    "venv/*",
+    ".venv/*",
+    "logs/*",
+    "scripts/*",
+    "*/__pycache__/*",
+    # Top-level utility scripts that aren't part of the served app.
+    "find_admin_change.py",
+]
+
+[tool.coverage.report]
+# Phase 0 baseline: no fail-under yet. Phase 6 ratchets this up.
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+title = "Bytoid backend coverage"
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+# Ruff config is already specified by the in-use version (0.14.14) via its
+# auto-discovered defaults; the explicit `[tool.ruff]` block lands in Phase 2
+# when we turn on the strict ruleset.
