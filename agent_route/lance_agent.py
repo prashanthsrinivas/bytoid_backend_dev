@@ -444,8 +444,8 @@ class LanceClient:
         record = {
             "id": minute_bucket,
             "foldername": minute_bucket,
-            "text": text_blob,
-            "original": original_blob,  # ✅ real JSON preserved
+            "text": self.service._enc(user_id, text_blob),
+            "original": self.service._enc(user_id, original_blob),
             "embedding": embedding,
         }
 

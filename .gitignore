@@ -45,7 +45,7 @@ trufflehog-report.*
 pip-audit.*
 safety-report.*
 guardrail-report.json
-
+tests/routes/*
 # Pre-commit
 .pre-commit-trash/
 

@@ -71,9 +71,135 @@ from shared_configuration import (
     get_user_shared_resources,
 )
 
+from utils.key_rotation_manager import SecureKMSService as _PhKMSService
+
 S3_BUCKET = os.getenv("S3_BUCKET")
 logger = get_logger(__name__)
 policy_hub_bp = Blueprint("policy_hub", __name__, url_prefix="/policy-hub")
+
+# ── Application-level encryption helpers ─────────────────────────────────────
+_ph_kms = _PhKMSService()
+
+
+def _enc_ph(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    return json.dumps(_ph_kms.encrypt(user_id, v))
+
+
+def _dec_ph(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = json.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _ph_kms.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v
+
+
+def _is_ph_enc(v) -> bool:
+    try:
+        d = json.loads(v)
+        return isinstance(d, dict) and "ciphertext" in d
+    except Exception:
+        return False
+
+
+def _encrypt_policy_fields(user_id: str, item: dict) -> dict:
+    """Return a copy of item with title, content, sections encrypted."""
+    enc = dict(item)
+    if enc.get("title"):
+        enc["title"] = _enc_ph(user_id, enc["title"])
+    if enc.get("content"):
+        enc["content"] = _enc_ph(user_id, enc["content"])
+    if "sections" in enc:
+        enc["sections"] = _enc_ph(user_id, json.dumps(enc["sections"]))
+    return enc
+
+
+def _decrypt_policy_fields(user_id: str, item: dict) -> tuple:
+    """Decrypt title, content, sections in-place. Returns (item, was_migrated)."""
+    was_migrated = False
+    for field in ("title", "content"):
+        raw = item.get(field, "")
+        if raw and not _is_ph_enc(raw):
+            was_migrated = True
+        item[field] = _dec_ph(user_id, raw)
+    raw_sec = item.get("sections")
+    if raw_sec is not None:
+        if isinstance(raw_sec, str):
+            if not _is_ph_enc(raw_sec):
+                was_migrated = True
+            dec = _dec_ph(user_id, raw_sec)
+            try:
+                item["sections"] = json.loads(dec)
+            except Exception:
+                item["sections"] = []
+    return item, was_migrated
+
+
+def _write_policy_yaml(user_id: str, key: str, item: dict):
+    _write_yaml_to_s3(key, _encrypt_policy_fields(user_id, item))
+
+
+def _read_policy_yaml(user_id: str, key: str) -> dict | None:
+    data = load_yaml_from_s3(key)
+    if not data:
+        return data
+    data, migrated = _decrypt_policy_fields(user_id, data)
+    if migrated:
+        try:
+            _write_policy_yaml(user_id, key, data)
+        except Exception as _e:
+            logger.warning("Policy lazy-migration re-save failed for %s: %s", key, _e)
+    return data
+
+
+def _encrypt_framework_fields(record: dict) -> dict:
+    enc = dict(record)
+    if enc.get("name"):
+        enc["name"] = _enc_ph(FRAMEWORK_OWNER, enc["name"])
+    if "rows" in enc:
+        enc["rows"] = _enc_ph(FRAMEWORK_OWNER, json.dumps(enc["rows"]))
+    return enc
+
+
+def _decrypt_framework_fields(record: dict) -> tuple:
+    was_migrated = False
+    raw_name = record.get("name", "")
+    if raw_name and not _is_ph_enc(raw_name):
+        was_migrated = True
+    record["name"] = _dec_ph(FRAMEWORK_OWNER, raw_name)
+    raw_rows = record.get("rows")
+    if raw_rows is not None:
+        if isinstance(raw_rows, str):
+            if not _is_ph_enc(raw_rows):
+                was_migrated = True
+            dec = _dec_ph(FRAMEWORK_OWNER, raw_rows)
+            try:
+                record["rows"] = json.loads(dec)
+            except Exception:
+                record["rows"] = []
+    return record, was_migrated
+
+
+def _write_framework_yaml(key: str, record: dict):
+    _write_yaml_to_s3(key, _encrypt_framework_fields(record))
+
+
+def _read_framework_yaml(key: str) -> dict | None:
+    data = load_yaml_from_s3(key)
+    if not data:
+        return data
+    data, migrated = _decrypt_framework_fields(data)
+    if migrated:
+        try:
+            _write_framework_yaml(key, data)
+        except Exception as _e:
+            logger.warning("Framework lazy-migration re-save failed for %s: %s", key, _e)
+    return data
 
 _jobs_lock = threading.Lock()
 
@@ -523,6 +649,7 @@ def _sync_statements(item: dict, user_id: str, doc_type: str, loop: asyncio.Abst
                 doc_type=doc_type,
                 version=version,
                 statements=statements,
+                user_id=user_id,
             )
         )
     except Exception as exc:
@@ -643,7 +770,7 @@ def _generation_worker(
                 # internal heading-bucketing fallback if structured parsing fails.
                 item = _enrich_v2(item, content, d_type, loop, user_id=user_id)
 
-                _write_yaml_to_s3(key, item)
+                _write_policy_yaml(user_id, key, item)
 
                 try:
                     auto_submit_policy(policy_id, d_type, user_id)
@@ -947,7 +1074,7 @@ def _upload_worker(
                 if extraction_failed:
                     item["migration_status"] = "extraction_failed"
                 try:
-                    _write_yaml_to_s3(key, item)
+                    _write_policy_yaml(user_id, key, item)
                 except Exception as exc:
                     logger.error(
                         "Baseline YAML write failed for %s: %s", filename, exc
@@ -1007,7 +1134,7 @@ def _upload_worker(
                     # 4a. Re-write the enriched YAML so /list returns the
                     # final structured version.
                     try:
-                        _write_yaml_to_s3(key, item)
+                        _write_policy_yaml(user_id, key, item)
                     except Exception as exc:
                         logger.error(
                             "Enriched YAML write failed for %s: %s", filename, exc
@@ -1106,7 +1233,7 @@ async def generate_policy():
     uploaded_fw_names = []
     for fw_id in framework_ids:
         try:
-            meta = load_yaml_from_s3(_fw_key(fw_id))
+            meta = _read_framework_yaml(_fw_key(fw_id))
             if meta and meta.get("name"):
                 uploaded_fw_names.append(meta["name"])
         except Exception:
@@ -1427,7 +1554,7 @@ def download_raw_policy():
     if err:
         return err
 
-    data = load_yaml_from_s3(_s3_key(user_id, policy_id))
+    data = _read_policy_yaml(user_id, _s3_key(user_id, policy_id))
     if not data:
         return jsonify({"error": "Policy not found"}), 404
 
@@ -1607,7 +1734,7 @@ def _edit_worker(
                 return
 
         key = _s3_key(user_id, policy_id)
-        existing = load_yaml_from_s3(key)
+        existing = _read_policy_yaml(user_id, key)
         if existing:
             existing["content"] = updated_content
             existing["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1622,7 +1749,7 @@ def _edit_worker(
                 )
 
             try:
-                _write_yaml_to_s3(key, existing)
+                _write_policy_yaml(user_id, key, existing)
             except Exception as e:
                 logger.error("Failed to persist edit for policy %s: %s", policy_id, e)
 
@@ -1730,6 +1857,7 @@ def _reconcile_and_enrich_edit(
                     version=version,
                     statements=all_active,
                     superseded=all_superseded,
+                    user_id=user_id,
                 )
             )
         except Exception as exc:
@@ -1840,7 +1968,7 @@ def list_policies():
         # skip job state files
         if not key.endswith(".yaml") or "/jobs/" in key:
             continue
-        data = load_yaml_from_s3(key)
+        data = _read_policy_yaml(user_id, key)
         if data:
             items.append(data)
 
@@ -1856,7 +1984,7 @@ def list_policies():
         owner_id = entry.get("mainuser_id")
         if not owner_id or owner_id == user_id:
             continue
-        owner_policy = load_yaml_from_s3(_s3_key(owner_id, policy_id))
+        owner_policy = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id))
         if not owner_policy:
             continue
         owner_policy = {**owner_policy, "owner_user_id": owner_id, "shared": True}
@@ -1938,7 +2066,7 @@ def update_policy():
         return err
 
     key = _s3_key(user_id, policy_id)
-    existing = load_yaml_from_s3(key)
+    existing = _read_policy_yaml(user_id, key)
     if not existing:
         return jsonify({"error": "Policy not found"}), 404
 
@@ -1977,7 +2105,7 @@ def update_policy():
             loop.close()
 
     try:
-        _write_yaml_to_s3(key, existing)
+        _write_policy_yaml(user_id, key, existing)
     except Exception as e:
         logger.error("Failed to update policy in S3: %s", e)
         return jsonify({"error": "Failed to update policy"}), 500
@@ -2007,7 +2135,7 @@ def delete_policy():
     # Look up any archived raw upload BEFORE deleting the YAML so we can clean it up too.
     raw_key = None
     try:
-        existing = load_yaml_from_s3(key)
+        existing = _read_policy_yaml(user_id, key)
         if existing and isinstance(existing.get("source_file"), dict):
             raw_key = existing["source_file"].get("s3_key")
     except Exception as exc:
@@ -2157,7 +2285,7 @@ def list_available_frameworks():
         key = obj.get("Key", "")
         if not key.endswith(".yaml"):
             continue
-        data = load_yaml_from_s3(key)
+        data = _read_framework_yaml(key)
         if data:
             frameworks.append(
                 {
@@ -2199,7 +2327,7 @@ def list_frameworks():
         key = obj.get("Key", "")
         if not key.endswith(".yaml"):
             continue
-        data = load_yaml_from_s3(key)
+        data = _read_framework_yaml(key)
         if data:
             # Rows live in LanceDB — strip them from the listing response
             meta = {k: v for k, v in data.items()}
@@ -2224,7 +2352,7 @@ def list_frameworks_rows():
         key = obj.get("Key", "")
         if not key.endswith(".yaml"):
             continue
-        data = load_yaml_from_s3(key)
+        data = _read_framework_yaml(key)
         if data:
             # Rows live in LanceDB — strip them from the listing response
             meta = {k: v for k, v in data.items()}
@@ -2305,7 +2433,7 @@ def save_framework():
     now = datetime.now(timezone.utc).isoformat()
     key = _fw_key(framework_id)
 
-    existing = load_yaml_from_s3(key)
+    existing = _read_framework_yaml(key)
     record = {
         "id": framework_id,
         "name": name,
@@ -2318,7 +2446,7 @@ def save_framework():
     }
 
     try:
-        _write_yaml_to_s3(key, record)
+        _write_framework_yaml(key, record)
     except Exception as e:
         logger.error("Failed to save framework %s: %s", framework_id, e)
         return jsonify({"error": "Failed to save framework"}), 500
@@ -2385,7 +2513,7 @@ def get_framework(framework_id: str):
     if denied:
         return denied
 
-    data = load_yaml_from_s3(_fw_key(framework_id))
+    data = _read_framework_yaml(_fw_key(framework_id))
     if not data:
         return jsonify({"error": "Framework not found"}), 404
     return jsonify({"framework": data}), 200
@@ -2439,7 +2567,7 @@ def share_policy():
         return jsonify({"error": "Invalid user_id"}), 400
 
     if not policy_name:
-        owner_policy = load_yaml_from_s3(_s3_key(admin_id, policy_id))
+        owner_policy = _read_policy_yaml(admin_id, _s3_key(admin_id, policy_id))
         if owner_policy:
             policy_name = owner_policy.get("title") or policy_id
         else:

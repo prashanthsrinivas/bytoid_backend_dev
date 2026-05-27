@@ -1,3 +1,4 @@
+import copy
 import logging
 from utils.base_logger import get_logger
 from utils.app_configs import IS_DEV
@@ -30,6 +31,49 @@ from cust_helpers import pathconfig
 from utils.s3_utils import upload_exefileany_file
 
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
+
+from utils.key_rotation_manager import SecureKMSService as _PbKMSService
+_pb_kms = _PbKMSService()
+
+_PLAYBOOK_CONTENT_FIELDS = ("input_data", "workflow", "chat", "testing", "online")
+
+
+def _enc_pb(user_id, v):
+    s = v if isinstance(v, str) else json.dumps(v, default=str)
+    enc = _pb_kms.encrypt(user_id, s)
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_pb(user_id, v):
+    if isinstance(v, dict) and "encrypted_key" in v:
+        raw = _pb_kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+    return v
+
+
+def load_playbook_from_s3(user_id, s3_path, filename=None):
+    """Load a playbook JSON from S3 and decrypt content fields. Lazily migrates if unencrypted."""
+    from utils.s3_utils import read_json_from_s3
+    pb = read_json_from_s3(s3_path)
+    if not pb:
+        return pb
+    was_migrated = False
+    for field in _PLAYBOOK_CONTENT_FIELDS:
+        if field in pb:
+            raw = pb[field]
+            # Detect plaintext (dict/list not being an encrypted envelope)
+            if not (isinstance(raw, dict) and "encrypted_key" in raw):
+                was_migrated = True
+            pb[field] = _dec_pb(user_id, raw)
+    if was_migrated and filename:
+        try:
+            save_playbook_to_s3(pb, user_id, "lazy-migration", filename)
+        except Exception:
+            pass
+    return pb
 
 
 def base_name(filename):
@@ -647,10 +691,16 @@ def returnconfigandpath(userid):
 def save_playbook_to_s3(
     playbook, user_id, success_message, filname, clarifications=None
 ):
+    # Deep-copy to avoid mutating the in-memory playbook used by callers after save
+    pb_to_save = copy.deepcopy(playbook)
+    for field in _PLAYBOOK_CONTENT_FIELDS:
+        if field in pb_to_save:
+            pb_to_save[field] = _enc_pb(user_id, pb_to_save[field])
+
     with tempfile.NamedTemporaryFile(
         delete=False, suffix=".json", mode="w"
     ) as tmp_file:
-        json.dump(playbook, tmp_file, indent=2)
+        json.dump(pb_to_save, tmp_file, indent=2)
         temp_file_path = tmp_file.name
 
     upload_any_file(
@@ -669,10 +719,16 @@ def save_playbook_to_s3(
 
 
 def save_execution_playbook_to_s3(playbook, user_id, success_message, filepath):
+    # Deep-copy and encrypt content fields before saving
+    pb_to_save = copy.deepcopy(playbook)
+    for field in _PLAYBOOK_CONTENT_FIELDS:
+        if field in pb_to_save:
+            pb_to_save[field] = _enc_pb(user_id, pb_to_save[field])
+
     with tempfile.NamedTemporaryFile(
         delete=False, suffix=".json", mode="w"
     ) as tmp_file:
-        json.dump(playbook, tmp_file, indent=2)
+        json.dump(pb_to_save, tmp_file, indent=2)
         temp_file_path = tmp_file.name
 
     upload_exefileany_file(file_path=temp_file_path, bfilepath=filepath)

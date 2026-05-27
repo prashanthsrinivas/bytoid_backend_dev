@@ -15,6 +15,24 @@ from db.rds_db import connect_to_rds
 from flask import jsonify
 from services.apiconnectors import APIConnector
 from utils.s3_utils import save_app_runbase_S3
+from utils.key_rotation_manager import SecureKMSService as _AzureRunKMSService
+_azure_run_kms = _AzureRunKMSService()
+
+
+def _enc_run(user_id, v):
+    s = v if isinstance(v, str) else json.dumps(v, default=str)
+    enc = _azure_run_kms.encrypt(user_id, s)
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_run(user_id, v):
+    if isinstance(v, dict) and "encrypted_key" in v:
+        raw = _azure_run_kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+    return v
 
 
 # ──────────────────────────────────────────────
@@ -406,8 +424,8 @@ async def save_azure_run_to_s3(
     record = {
         "ts": now.isoformat() + "Z",
         "trigger": trigger,
-        "request": request_cfg,
-        "response": result,
+        "request": _enc_run(user_id, request_cfg),
+        "response": _enc_run(user_id, result),
     }
 
     val = save_app_runbase_S3(record=record, key=key)

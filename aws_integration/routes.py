@@ -24,6 +24,7 @@ from aws_integration.helpers import (
     _resolve_aws_auth,
     prepare_flask_request_aws,
     save_aws_run_to_s3,
+    _dec_run,
 )
 from db.rds_db import connect_to_rds
 from services.apiconnectors import APIConnector
@@ -1234,6 +1235,10 @@ def aws_get_endpoint_run(endpoint_id, filename):
         app_id = row["app_id"]
         key = f"{user_id}/aws_connector/{app_id}/{endpoint_id}/{filename}"
         data = get_filedata_endp(key)
+        if isinstance(data, list):
+            for rec in data:
+                rec["request"] = _dec_run(user_id, rec.get("request"))
+                rec["response"] = _dec_run(user_id, rec.get("response"))
         return jsonify({"success": True, "data": data})
 
     except Exception as e:

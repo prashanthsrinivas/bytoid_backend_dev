@@ -16,6 +16,11 @@ BACKEND_CATEGORIES = {
         "runner": "pytest",
         "delegated": False,
     },
+    "backend_crypto": {
+        "display_name": "Backend Crypto (Encryption/Decryption)",
+        "runner": "pytest",
+        "delegated": False,
+    },
     "backend_load": {
         "display_name": "Backend Load",
         "runner": "locust",

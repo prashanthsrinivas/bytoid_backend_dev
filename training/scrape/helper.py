@@ -25,8 +25,113 @@ from utils.s3_utils import (
 )
 from credits_route.route import Credits
 from request_context import current_user_id
+from utils.key_rotation_manager import SecureKMSService as _KMSService
 
 logger = get_logger(__name__)
+
+_kms = _KMSService()
+
+
+def _enc_scrape(user_id, v):
+    """Encrypt a scrape field value; returns encryption envelope dict."""
+    if not v:
+        return v
+    enc = _kms.encrypt(user_id, str(v))
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_scrape(user_id, v):
+    """Decrypt a scrape field; pass through plaintext unchanged."""
+    if isinstance(v, dict) and "encrypted_key" in v:
+        return _kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+    return v
+
+
+def _enc_qa_field(user_id, v):
+    """Encrypt a Q&A text field using the module-level KMS."""
+    if not v or not isinstance(v, str):
+        return v
+    enc = _kms.encrypt(user_id, v)
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_qa_field(user_id, v):
+    """Decrypt a Q&A field; pass through plaintext."""
+    if isinstance(v, dict) and "encrypted_key" in v:
+        return _kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+    return v
+
+
+def _load_qa_entries(user_id, qa_filename):
+    """Load and decrypt Q&A YAML entries from S3. Lazy-migrates unencrypted data."""
+    path = f"{user_id}/yaml/{qa_filename}"
+    entries = load_yaml_from_s3(path) or []
+    if not entries:
+        return entries
+    was_migrated = False
+    for e in entries:
+        raw_user = e.get("User")
+        raw_ai = e.get("Ai Response")
+        if isinstance(raw_user, str) and raw_user:
+            was_migrated = True
+        if isinstance(raw_ai, str) and raw_ai:
+            was_migrated = True
+        if raw_user is not None:
+            e["User"] = _dec_qa_field(user_id, raw_user)
+        if raw_ai is not None:
+            e["Ai Response"] = _dec_qa_field(user_id, raw_ai)
+    if was_migrated:
+        try:
+            import copy
+            enc_entries = copy.deepcopy(entries)
+            for e in enc_entries:
+                if e.get("User") and isinstance(e["User"], str):
+                    e["User"] = _enc_qa_field(user_id, e["User"])
+                if e.get("Ai Response") and isinstance(e["Ai Response"], str):
+                    e["Ai Response"] = _enc_qa_field(user_id, e["Ai Response"])
+            save_yaml_to_s3(enc_entries, user_id, qa_filename)
+        except Exception:
+            pass
+    return entries
+
+
+def _save_qa_entries(user_id, entries, qa_filename):
+    """Encrypt Q&A entries and save to S3."""
+    import copy
+    enc_entries = copy.deepcopy(entries)
+    for e in enc_entries:
+        if e.get("User") and isinstance(e["User"], str):
+            e["User"] = _enc_qa_field(user_id, e["User"])
+        if e.get("Ai Response") and isinstance(e["Ai Response"], str):
+            e["Ai Response"] = _enc_qa_field(user_id, e["Ai Response"])
+    save_yaml_to_s3(data=enc_entries, user_id=user_id, filename=qa_filename)
+
+
+def _decrypt_scrape_entries(user_id, entries):
+    """Decrypt title/summary in a list of YAML entries. Returns (entries, was_migrated)."""
+    was_migrated = False
+    for e in entries:
+        raw_title = e.get("title")
+        raw_summary = e.get("summary")
+        if isinstance(raw_title, str):
+            was_migrated = True
+        if isinstance(raw_summary, str) and raw_summary:
+            was_migrated = True
+        e["title"] = _dec_scrape(user_id, raw_title) if raw_title is not None else raw_title
+        e["summary"] = _dec_scrape(user_id, raw_summary) if raw_summary is not None else raw_summary
+    return entries, was_migrated
+
+
+def _encrypt_scrape_entries(user_id, entries):
+    """Return a deep copy of entries with title/summary encrypted."""
+    import copy
+    enc_entries = copy.deepcopy(entries)
+    for e in enc_entries:
+        if e.get("title") and isinstance(e["title"], str):
+            e["title"] = _enc_scrape(user_id, e["title"])
+        if e.get("summary") and isinstance(e["summary"], str):
+            e["summary"] = _enc_scrape(user_id, e["summary"])
+    return enc_entries
 
 
 def flatten_list(lst):
@@ -305,7 +410,7 @@ def clarific_youtube(user_id, val, video_url, title):
     clarification_responses = []
     failed_key = f"{user_id}/yaml/failed_ques.yaml"
 
-    failed_ques = flatten_list(load_yaml_from_s3(failed_key) or [])
+    failed_ques = flatten_list(_load_qa_entries(user_id, "failed_ques.yaml"))
     failed_data = failed_ques
 
     # Check for existing YouTube clarifications to prevent duplicates
@@ -339,9 +444,9 @@ def clarific_youtube(user_id, val, video_url, title):
         clarification_responses.append(entry_obj)
         existing_questions.add(actual_q.lower())
 
-    # Merge and save
+    # Merge and save (encrypt before saving)
     updated_data = failed_data + clarification_responses
-    save_yaml_to_s3(data=updated_data, user_id=user_id, filename="failed_ques.yaml")
+    _save_qa_entries(user_id, updated_data, "failed_ques.yaml")
 
     return clarification_responses
 
@@ -353,11 +458,8 @@ async def validate_youtube_clarifications(user_id):
     try:
         prompts = load_yaml_file(path=pathconfig.agent_template)
 
-        passes_key = f"{user_id}/yaml/passed_ques.yaml"
-        failed_key = f"{user_id}/yaml/failed_ques.yaml"
-
-        passed_data = flatten_list(load_yaml_from_s3(passes_key) or [])
-        failed_data = flatten_list(load_yaml_from_s3(failed_key) or [])
+        passed_data = flatten_list(_load_qa_entries(user_id, "passed_ques.yaml"))
+        failed_data = flatten_list(_load_qa_entries(user_id, "failed_ques.yaml"))
 
         # Filter YouTube clarifications
         youtube_clarifications = [
@@ -470,9 +572,9 @@ async def validate_youtube_clarifications(user_id):
 
         # Save
         if npassed_data:
-            save_yaml_to_s3(npassed_data, user_id, "passed_ques.yaml")
+            _save_qa_entries(user_id, npassed_data, "passed_ques.yaml")
         if failed_data:
-            save_yaml_to_s3(failed_data, user_id, "failed_ques.yaml")
+            _save_qa_entries(user_id, failed_data, "failed_ques.yaml")
 
         logger.info(f"✅ Validated YouTube clarifications for user {user_id}")
 
@@ -779,8 +881,8 @@ async def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
 
                 website_entry = {
                     "url": url_to_scrape,
-                    "title": scraped_data.get("title", "No Title"),
-                    "summary": summary_text,
+                    "title": _enc_scrape(user_id, scraped_data.get("title", "No Title")),
+                    "summary": _enc_scrape(user_id, summary_text),
                     "timestamp": timestamp,
                     "clarifications_count": len(val.get("clarifications", [])),
                     "status": "active",
@@ -796,8 +898,8 @@ async def _scrape_and_process_async(user_id, url_to_scrape, is_youtube):
 
                 video_entry = {
                     "url": url_to_scrape,
-                    "title": scraped_data.get("title", "No Title"),
-                    "summary": summary_text,
+                    "title": _enc_scrape(user_id, scraped_data.get("title", "No Title")),
+                    "summary": _enc_scrape(user_id, summary_text),
                     "timestamp": timestamp,
                     "status": "active",
                 }
@@ -1047,7 +1149,7 @@ def clarific_scraping(user_id, val, url, title):
     clarification_responses = []
     failed_key = f"{user_id}/yaml/failed_ques.yaml"
 
-    failed_ques = flatten_list(load_yaml_from_s3(failed_key) or [])
+    failed_ques = flatten_list(_load_qa_entries(user_id, "failed_ques.yaml"))
     failed_data = failed_ques
 
     # Load existing clarifications to check for duplicates
@@ -1082,7 +1184,7 @@ def clarific_scraping(user_id, val, url, title):
     updated_data = failed_data + clarification_responses  # Now this works
 
     # Save back into YAML
-    save_yaml_to_s3(data=updated_data, user_id=user_id, filename="failed_ques.yaml")
+    _save_qa_entries(user_id, updated_data, "failed_ques.yaml")
 
     return clarification_responses
 
@@ -1221,9 +1323,9 @@ async def validate_scraping_clarifications(user_id):
 
         # Save back to S3
         if npassed_data:
-            save_yaml_to_s3(npassed_data, user_id, "passed_ques.yaml")
+            _save_qa_entries(user_id, npassed_data, "passed_ques.yaml")
         if failed_data:
-            save_yaml_to_s3(failed_data, user_id, "failed_ques.yaml")
+            _save_qa_entries(user_id, failed_data, "failed_ques.yaml")
 
         logger.info(f"✅ Validated scraping clarifications for user {user_id}")
 
@@ -1424,8 +1526,8 @@ def _save_website_to_s3(user_id: str, url: str, scraped_data: dict):
             # Create YouTube entry
             youtube_entry = {
                 "url": url,
-                "title": scraped_data.get("title", "YouTube Video"),
-                "summary": summary_text[:500],
+                "title": _enc_scrape(user_id, scraped_data.get("title", "YouTube Video")),
+                "summary": _enc_scrape(user_id, summary_text[:500]),
                 "timestamp": timestamp,
                 "status": scraped_data.get("status", "active"),
                 "content": scraped_data.get("content", ""),
@@ -1450,8 +1552,8 @@ def _save_website_to_s3(user_id: str, url: str, scraped_data: dict):
             # Create website entry
             website_entry = {
                 "url": url,
-                "title": scraped_data.get("title", "Website"),
-                "summary": scraped_data.get("content"),
+                "title": _enc_scrape(user_id, scraped_data.get("title", "Website")),
+                "summary": _enc_scrape(user_id, scraped_data.get("content")),
                 "pages_count": scraped_data["metadata"]["total_pages"],
                 "scraping_time": scraped_data["metadata"]["total_time_seconds"],
                 "timestamp": timestamp,
@@ -1487,10 +1589,8 @@ def _summary_update_lance_s3(user_id: str, url: str, summary: str):
             print("no link present")
             return False
 
-        # Update YAML object
-        current_link["summary"] = summary
-        # print("current link", current_link)
-        # print("existing websites", existing_websites)
+        # Update YAML object (encrypt summary)
+        current_link["summary"] = _enc_scrape(user_id, summary)
         # 1️⃣ Save S3 FIRST
         save_yaml_to_s3(existing_websites, user_id, "scraped_websites.yaml")
 

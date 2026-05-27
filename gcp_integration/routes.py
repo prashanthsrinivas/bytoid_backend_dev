@@ -17,6 +17,7 @@ from gcp_integration.helpers import (
     _fetch_service_account_token,
     _get_gcp_config,
     _resolve_gcp_auth,
+    _dec_run,
 )
 from db.rds_db import connect_to_rds
 from services.apiconnectors import APIConnector
@@ -1031,6 +1032,10 @@ def gcp_get_endpoint_run(endpoint_id, filename):
         app_id = row["app_id"]
         key = f"{user_id}/gcp_connector/{app_id}/{endpoint_id}/{filename}"
         data = get_filedata_endp(key)
+        if isinstance(data, list):
+            for rec in data:
+                rec["request"] = _dec_run(user_id, rec.get("request"))
+                rec["response"] = _dec_run(user_id, rec.get("response"))
         return jsonify({"success": True, "data": data})
 
     except Exception as e:

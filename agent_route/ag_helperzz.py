@@ -28,6 +28,69 @@ import threading
 
 logger = get_logger(__name__)
 
+from utils.key_rotation_manager import SecureKMSService as _QaKMSService
+_qa_kms = _QaKMSService()
+
+
+def _enc_qa(user_id, v):
+    """Encrypt a Q&A text field."""
+    if not v or not isinstance(v, str):
+        return v
+    enc = _qa_kms.encrypt(user_id, v)
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_qa(user_id, v):
+    """Decrypt a Q&A field; pass through plaintext unchanged."""
+    if isinstance(v, dict) and "encrypted_key" in v:
+        return _qa_kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+    return v
+
+
+def _decrypt_qa_entries(user_id, entries):
+    """Decrypt User and Ai Response in Q&A entries. Returns (entries, was_migrated)."""
+    if not entries:
+        return entries, False
+    was_migrated = False
+    for e in entries:
+        raw_user = e.get("User")
+        raw_ai = e.get("Ai Response")
+        if isinstance(raw_user, str) and raw_user:
+            was_migrated = True
+        if isinstance(raw_ai, str) and raw_ai:
+            was_migrated = True
+        if raw_user is not None:
+            e["User"] = _dec_qa(user_id, raw_user)
+        if raw_ai is not None:
+            e["Ai Response"] = _dec_qa(user_id, raw_ai)
+    return entries, was_migrated
+
+
+def _load_and_decrypt_qa(user_id, yaml_filename):
+    """Load a Q&A YAML file from S3 and decrypt User/Ai Response fields. Lazily migrates."""
+    path = f"{user_id}/yaml/{yaml_filename}"
+    entries = load_yaml_from_s3(path) or []
+    if not entries:
+        return entries
+    entries, was_migrated = _decrypt_qa_entries(user_id, entries)
+    if was_migrated:
+        try:
+            import copy
+            save_yaml_to_s3(_encrypt_qa_entries(user_id, copy.deepcopy(entries)), user_id, yaml_filename)
+        except Exception:
+            pass
+    return entries
+
+
+def _encrypt_qa_entries(user_id, entries):
+    """Encrypt User and Ai Response fields in Q&A entries (mutates in place)."""
+    for e in entries:
+        if e.get("User") and isinstance(e["User"], str):
+            e["User"] = _enc_qa(user_id, e["User"])
+        if e.get("Ai Response") and isinstance(e["Ai Response"], str):
+            e["Ai Response"] = _enc_qa(user_id, e["Ai Response"])
+    return entries
+
 
 # def get_usecases_for_smb(smb_name, data):
 #     for entry in data:

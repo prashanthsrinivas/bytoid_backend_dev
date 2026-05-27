@@ -65,7 +65,13 @@ class WorkflowRunnerV2:
         self.basename = base_name(filename)
         self.wf_loc = f"{userid}/workflow/{self.basename}/{filename}"
         self.on_loc = f"{userid}/workflow/{self.basename}/{execution_id}.json"
-        base_workflow = workflowJson or read_json_from_s3(self.wf_loc)
+        _raw_wf = workflowJson or read_json_from_s3(self.wf_loc)
+        if _raw_wf:
+            from playbook.helperzz import _dec_pb, _PLAYBOOK_CONTENT_FIELDS
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in _raw_wf:
+                    _raw_wf[_field] = _dec_pb(userid, _raw_wf[_field])
+        base_workflow = _raw_wf
         self.workflow_json = copy.deepcopy(base_workflow)
         self.userdetails = get_userinfo(self.userid)
         self.contacts = contacts or fetch_contacts_by_user(self.userid)
@@ -1041,6 +1047,97 @@ class WorkflowRunnerV2:
         self.saveworkflowtos3()
         return result
 
+    async def _extract_context_for_step(
+        self,
+        field_data: dict,
+        step_data: dict,
+        field_label: str = "data",
+        char_budget: int = 60_000,
+    ) -> dict:
+        """
+        Step-aware middle layer that condenses large context fields.
+
+        If field_data fits within char_budget it is returned unchanged — no AI
+        call is made. When the data is larger it is split into key-batches
+        (each ≤ CHUNK_CHARS) and each batch is sent to a focused AI call that
+        knows exactly what the current step needs. The AI returns only the
+        keys/values relevant to this step from that batch.
+
+        All batches are processed (nothing skipped) and their results are
+        merged into a single flat dict. The original full key list is
+        preserved in __all_keys__ so the main prompt knows what data exists.
+        """
+        CHUNK_CHARS = 40_000
+
+        raw = json.dumps(field_data)
+        if len(raw) <= char_budget:
+            return field_data
+
+        # Build step context for the extraction prompt
+        requirements = step_data.get("requirements_needed") or []
+        func_args = list(
+            (step_data.get("function_call") or {}).get("arguments", {}).keys()
+        )
+        step_context = json.dumps({
+            "title": step_data.get("title", ""),
+            "description": step_data.get("objective") or step_data.get("description", ""),
+            "requirements_needed": requirements,
+            "function_arguments": func_args,
+        })
+
+        # Split field_data into chunks that each fit in CHUNK_CHARS
+        all_keys = list(field_data.keys())
+        chunks: list[dict] = []
+        current_chunk: dict = {}
+        current_size = 0
+
+        for key, value in field_data.items():
+            v_str = json.dumps(value)
+            if current_size + len(v_str) > CHUNK_CHARS and current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = {}
+                current_size = 0
+            current_chunk[key] = value
+            current_size += len(v_str)
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        # Process every chunk with a step-aware extraction AI call
+        merged: dict = {}
+        for idx, chunk in enumerate(chunks, 1):
+            prompt = (
+                f"You are a context extractor for a workflow automation system.\n\n"
+                f"CURRENT STEP (what needs to execute next):\n{step_context}\n\n"
+                f"SOURCE DATA ({field_label}, chunk {idx}/{len(chunks)}):\n"
+                f"{json.dumps(chunk)}\n\n"
+                f"TASK:\n"
+                f"From the source data above, return ONLY the key-value pairs that are "
+                f"directly needed to execute the current step — specifically values that "
+                f"satisfy requirements_needed or fill function_arguments.\n"
+                f"Also include any prior step results this step depends on.\n"
+                f"If nothing in this chunk is relevant, return {{}}.\n\n"
+                f"Respond with a valid JSON object only. No explanation."
+            )
+            try:
+                response = await get_fireworks_response2(
+                    user_message=prompt,
+                    role="system",
+                    temp=0.1,
+                    user_id=self.userid,
+                    credits=self.credits,
+                ) or ""
+                response = response.strip()
+                response = re.sub(r"^```(?:json)?\s*|\s*```$", "", response, flags=re.MULTILINE).strip()
+                extracted = json.loads(response)
+                if isinstance(extracted, dict):
+                    merged.update(extracted)
+            except Exception:
+                # If extraction fails for a chunk, include the raw chunk so data isn't lost
+                merged.update(chunk)
+
+        merged["__all_keys__"] = all_keys
+        return merged
+
     async def get_parsed_fireworks_response(self, prompt_text, role="system", temp=0.3):
         """
         Get and parse Fireworks response.
@@ -1233,6 +1330,11 @@ class WorkflowRunnerV2:
         unallowed_keys = {"input_data", "workflow"}
 
         original_json = read_json_from_s3(self.wf_loc) or {}
+        if original_json:
+            from playbook.helperzz import _dec_pb, _PLAYBOOK_CONTENT_FIELDS
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in original_json:
+                    original_json[_field] = _dec_pb(self.userid, original_json[_field])
         # Update workflow metadata
         for key, value in self.workflow_json.items():
             if key not in unallowed_keys:
@@ -3457,12 +3559,34 @@ class WorkflowRunnerV2:
                 previous_results or {}, RESULT_CHUNK_SIZE, current_step
             )
 
+            # ------------------------------------------------------------------
+            # Step-aware context extraction.
+            # Each large field is passed through a middle-layer AI that knows
+            # exactly what the current step needs and returns only the relevant
+            # data. Processing is chunk-based so no data is ever skipped.
+            # If the field is already small enough it passes through unchanged.
+            # ------------------------------------------------------------------
+            FIELD_BUDGET = 60_000  # chars; ~20k tokens per field
+
+            safe_collected = await self._extract_context_for_step(
+                collected_inputs,
+                step_data,
+                field_label="collected_inputs",
+                char_budget=FIELD_BUDGET,
+            )
+            safe_results = await self._extract_context_for_step(
+                results_chunk,
+                step_data,
+                field_label="previous_results",
+                char_budget=FIELD_BUDGET,
+            )
+
             prompt_text = (
                 detect_prompt.replace("{{workflow_json}}", json.dumps(steps_chunk))
                 .replace("{{current_step}}", str(current_step))
                 .replace("{{step_data}}", json.dumps(step_data))
-                .replace("{{previous_results}}", json.dumps(results_chunk))
-                .replace("{{collected_inputs}}", json.dumps(collected_inputs))
+                .replace("{{previous_results}}", json.dumps(safe_results))
+                .replace("{{collected_inputs}}", json.dumps(safe_collected))
                 .replace("{{user_message}}", user_message)
                 .replace(
                     "{{last_options}}",

@@ -109,6 +109,8 @@ def _dispatch_backend_task(category: str, run_id: str, options: dict):
         return celery_base.run_backend_integration.delay(run_id)
     if category == "backend_regression":
         return celery_base.run_backend_regression.delay(run_id)
+    if category == "backend_crypto":
+        return celery_base.run_backend_crypto.delay(run_id)
     if category == "backend_load":
         opts = {**DEFAULT_LOAD_OPTIONS, **options}
         return celery_base.run_backend_load.delay(

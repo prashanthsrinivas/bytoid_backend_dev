@@ -22,6 +22,7 @@ from apiConnector.helpers import (
     normalize_row_dynamic,
     resolve_schedule_from_activation,
     save_endpoint_schedule,
+    _dec_run,
 )
 from utils.app_configs import ACCESSIBLE_IDS
 from utils.permission_required import permission_required_body
@@ -1756,6 +1757,10 @@ def get_endpoint_run(endpoint_id, filename):
 
         try:
             data = get_filedata_endp(key)
+            if isinstance(data, list):
+                for rec in data:
+                    rec["request"] = _dec_run(userid, rec.get("request"))
+                    rec["response"] = _dec_run(userid, rec.get("response"))
             return jsonify({"success": True, "data": data})
         except Exception:
             return jsonify({"success": False, "error": "Run not found"}), 404

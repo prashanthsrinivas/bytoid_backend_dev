@@ -31,6 +31,95 @@ import traceback
 import re
 import pymysql
 
+from utils.key_rotation_manager import SecureKMSService as _KMSServiceGmail
+import json as _json_gmail
+_kms_gmail = _KMSServiceGmail()
+
+
+def _enc_gmail(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    return _json_gmail.dumps(_kms_gmail.encrypt(user_id, v))
+
+
+def _dec_gmail(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = _json_gmail.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _kms_gmail.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v  # plaintext pass-through for lazy migration
+
+
+def _decrypt_gmail_messages(user_id, messages):
+    """Decrypt body/plain_text/subject in every message dict. Returns (messages, any_was_plaintext)."""
+    any_plaintext = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        for field in ("body", "plain_text", "subject"):
+            raw = msg.get(field)
+            if raw and isinstance(raw, str):
+                decrypted = _dec_gmail(user_id, raw)
+                msg[field] = decrypted
+                if decrypted == raw and not raw.startswith('{"ciphertext"'):
+                    any_plaintext = True
+    return messages, any_plaintext
+
+
+def _encrypt_gmail_messages(user_id, messages):
+    """Return a new list with body/plain_text/subject encrypted in each message dict."""
+    import copy as _copy_gmail
+    result = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            result.append(msg)
+            continue
+        m = _copy_gmail.copy(msg)
+        for field in ("body", "plain_text", "subject"):
+            v = m.get(field)
+            if v and isinstance(v, str) and not v.startswith('{"ciphertext"'):
+                m[field] = _enc_gmail(user_id, v)
+        result.append(m)
+    return result
+
+
+def _decrypt_gmail_input_data(user_id, input_data):
+    """Decrypt all messages in the nested input_data dict {client_id: {channel: [msgs]}}. Returns (data, any_plaintext)."""
+    any_plaintext = False
+    for client_id, channels in input_data.items():
+        if not isinstance(channels, dict):
+            continue
+        for channel, msgs in channels.items():
+            if not isinstance(msgs, list):
+                continue
+            msgs_dec, had = _decrypt_gmail_messages(user_id, msgs)
+            channels[channel] = msgs_dec
+            if had:
+                any_plaintext = True
+    return input_data, any_plaintext
+
+
+def _encrypt_gmail_input_data(user_id, input_data):
+    """Encrypt all messages in the nested input_data dict. Returns new dict."""
+    import copy as _copy_gid
+    result = {}
+    for client_id, channels in input_data.items():
+        result[client_id] = {}
+        if not isinstance(channels, dict):
+            result[client_id] = channels
+            continue
+        for channel, msgs in channels.items():
+            if isinstance(msgs, list):
+                result[client_id][channel] = _encrypt_gmail_messages(user_id, msgs)
+            else:
+                result[client_id][channel] = msgs
+    return result
+
+
 gmail_bp = Blueprint("gmail", __name__)
 
 
@@ -239,6 +328,8 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
                 existing_data = json.load(f)
 
         merged_messages = existing_data.get("input_data", {})
+        # Decrypt existing messages on read; lazy-migrate if any plaintext found
+        merged_messages, _had_plain_g1 = _decrypt_gmail_input_data(user_id, merged_messages)
 
         for client_id, channels in grouped_messages.items():
             for channel, messages in channels.items():
@@ -246,9 +337,11 @@ async def fetch_gmail_messages_batch(user_id, page_token=None, batch_size=100):
                     "gmail", []
                 ).extend(messages)
 
+        # Encrypt body/plain_text/subject before writing to disk
+        _enc_merged_g1 = _encrypt_gmail_input_data(user_id, merged_messages)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(
-                {"filename": filename, "input_data": merged_messages}, f, indent=2
+                {"filename": filename, "input_data": _enc_merged_g1}, f, indent=2
             )
 
         cursor.close()
@@ -606,6 +699,8 @@ async def v2fetch_gmail_messages_batch_og(
         existing_data = safe_json_load(filepath)
 
         merged_messages = existing_data.get("input_data", {})
+        # Decrypt existing messages on read; lazy-migrate if any plaintext found
+        merged_messages, _had_plain_g2 = _decrypt_gmail_input_data(user_id, merged_messages)
 
         for client_id, channels in grouped_messages.items():
             for channel, messages in channels.items():
@@ -613,9 +708,11 @@ async def v2fetch_gmail_messages_batch_og(
                     "gmail", []
                 ).extend(messages)
 
+        # Encrypt body/plain_text/subject before writing to disk
+        _enc_merged_g2 = _encrypt_gmail_input_data(user_id, merged_messages)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(
-                {"filename": filename, "input_data": merged_messages}, f, indent=2
+                {"filename": filename, "input_data": _enc_merged_g2}, f, indent=2
             )
 
         # cursor.close()
@@ -945,6 +1042,8 @@ async def v2fetch_gmail_messages_batch(
         existing_data = safe_json_load(filepath)
 
         merged_messages = existing_data.get("input_data", {})
+        # Decrypt existing messages on read; lazy-migrate if any plaintext found
+        merged_messages, _had_plain_g3 = _decrypt_gmail_input_data(user_id, merged_messages)
 
         for client_id, channels in grouped_messages.items():
             for channel, messages in channels.items():
@@ -952,9 +1051,11 @@ async def v2fetch_gmail_messages_batch(
                     "gmail", []
                 ).extend(messages)
 
+        # Encrypt body/plain_text/subject before writing to disk
+        _enc_merged_g3 = _encrypt_gmail_input_data(user_id, merged_messages)
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(
-                {"filename": filename, "input_data": merged_messages}, f, indent=2
+                {"filename": filename, "input_data": _enc_merged_g3}, f, indent=2
             )
 
         # cursor.close()

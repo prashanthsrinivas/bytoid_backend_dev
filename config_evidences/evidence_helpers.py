@@ -5,14 +5,66 @@ import re
 import logging
 from utils.normal import parse_composite_user_id
 from utils.app_configs import ACCESSIBLE_IDS
-from utils.s3_utils import save_any_s3, read_json_from_s3, s3bucket, S3_BUCKET
+from utils.s3_utils import save_any_s3, read_json_from_s3
 from radar.radar_helpers import process_file_payloads
 from utils.fireworkzz import get_extract_response
 from credits_route.route import Credits
 from db.rds_db import connect_to_rds
 from db.lance_db_service import LanceDBServer
+from utils.key_rotation_manager import SecureKMSService as _EvKMSService
 
 logger = logging.getLogger(__name__)
+
+_ev_kms = _EvKMSService()
+_EV_TEXT_FIELDS = ("artifact", "nature", "primaryUse", "expectations")
+
+
+def _enc_ev(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    return json.dumps(_ev_kms.encrypt(user_id, v))
+
+
+def _dec_ev(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = json.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _ev_kms.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:  # noqa: S110
+        pass
+    return v
+
+
+def _is_ev_enc(v) -> bool:
+    try:
+        d = json.loads(v)
+        return isinstance(d, dict) and "ciphertext" in d
+    except Exception:
+        return False
+
+
+def _encrypt_evidence_list(user_id: str, evidence_list: list) -> list:
+    result = []
+    for entry in evidence_list:
+        enc = dict(entry)
+        for f in _EV_TEXT_FIELDS:
+            if enc.get(f):
+                enc[f] = _enc_ev(user_id, enc[f])
+        result.append(enc)
+    return result
+
+
+def _decrypt_evidence_list(user_id: str, evidence_list: list) -> tuple:
+    was_migrated = False
+    for entry in evidence_list:
+        for f in _EV_TEXT_FIELDS:
+            raw = entry.get(f, "")
+            if raw and not _is_ev_enc(raw):
+                was_migrated = True
+            entry[f] = _dec_ev(user_id, raw)
+    return evidence_list, was_migrated
 
 
 # ============================================================
@@ -37,6 +89,13 @@ def _get_user_evidence(user_id):
         s3_key = _get_evidence_s3_key(user_id)
         user_evidence = read_json_from_s3(s3_key)
         if user_evidence:
+            if isinstance(user_evidence, list):
+                user_evidence, was_migrated = _decrypt_evidence_list(user_id, user_evidence)
+                if was_migrated:
+                    try:
+                        _save_user_evidence(user_id, user_evidence)
+                    except Exception:
+                        pass
             return user_evidence, True
     except Exception as e:
         logger.info(f"User evidence not found or error reading: {e}")
@@ -56,9 +115,10 @@ def get_only_evidence(user_id):
 
 def _save_user_evidence(user_id, data):
     try:
+        enc_data = _encrypt_evidence_list(user_id, data) if isinstance(data, list) else data
         tmp_path = f"/tmp/userevidence_{user_id}_{uuid.uuid4()}.json"
         with open(tmp_path, "w") as f:
-            json.dump(data, f)
+            json.dump(enc_data, f)
 
         s3_key = _get_evidence_s3_key(user_id)
         result = save_any_s3(tmp_path, s3_key)

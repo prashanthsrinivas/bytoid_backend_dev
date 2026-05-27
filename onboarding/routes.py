@@ -25,6 +25,29 @@ from botocore.exceptions import ClientError
 from agent_route.s_t_s import Speech2TextService
 import re
 
+from utils.key_rotation_manager import SecureKMSService as _KMSServiceOb
+import json as _json_ob
+_kms_ob = _KMSServiceOb()
+
+
+def _enc_ob(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    return _json_ob.dumps(_kms_ob.encrypt(user_id, v))
+
+
+def _dec_ob(user_id, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = _json_ob.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _kms_ob.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v  # plaintext pass-through for lazy migration
+
+
 # Initialize blueprint and logger
 onboarding_bps = Blueprint("onboarding", __name__)
 logger = get_logger(__name__)
@@ -1789,11 +1812,11 @@ def store_conversation_to_s3(user_id, role, message):
         s3_client = s3bucket()
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        # Create conversation entry
+        # Create conversation entry with encrypted message
         conversation_entry = {
             "timestamp": timestamp,
             "role": role,
-            "message": message,
+            "message": _enc_ob(user_id, message),
             "user_id": user_id,
         }
 
@@ -1858,6 +1881,32 @@ def get_conversation_from_s3(user_id, limit=10, source_folder=None):
                         isinstance(conversation_data, dict)
                         and "timestamp" in conversation_data
                     ):
+                        # Decrypt message field; lazy-migrate if plaintext
+                        _s3_key_ob = file_obj["Key"]
+                        _needs_migrate = False
+                        for _field in ("message", "question", "answer", "original_question", "original_answer"):
+                            _raw = conversation_data.get(_field)
+                            if _raw and isinstance(_raw, str):
+                                _dec = _dec_ob(user_id, _raw)
+                                conversation_data[_field] = _dec
+                                if _dec == _raw and not _raw.startswith('{"ciphertext"'):
+                                    _needs_migrate = True
+                        if _needs_migrate:
+                            try:
+                                _re_enc = {}
+                                for _k, _val in conversation_data.items():
+                                    if _k in ("message", "question", "answer", "original_question", "original_answer") and isinstance(_val, str) and not _val.startswith('{"ciphertext"'):
+                                        _re_enc[_k] = _enc_ob(user_id, _val)
+                                    else:
+                                        _re_enc[_k] = _val
+                                s3_client.put_object(
+                                    Bucket=S3_BUCKET,
+                                    Key=_s3_key_ob,
+                                    Body=json.dumps(_re_enc),
+                                    ContentType="application/json",
+                                )
+                            except Exception:
+                                pass
                         conversations.append(conversation_data)
                 except Exception as e:
                     logger.error(
@@ -2123,7 +2172,7 @@ def store_qa_conversation_as_json(user_id, transcript, answer):
         timestamp = datetime.now(timezone.utc)
         timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
 
-        # Create Q&A entry in FAQ format with corrected text
+        # Create Q&A entry in FAQ format with corrected text (plaintext for in-memory use)
         qa_entry = {
             "id": f"qa_{timestamp_str}_{user_id}",
             "timestamp": timestamp.isoformat(),
@@ -2138,6 +2187,12 @@ def store_qa_conversation_as_json(user_id, transcript, answer):
             "spelling_corrected": True,  # Flag that spelling was corrected
         }
 
+        # Encrypt sensitive fields before storing to S3
+        _qa_enc = dict(qa_entry)
+        for _f in ("question", "answer", "original_question", "original_answer"):
+            if _qa_enc.get(_f) and isinstance(_qa_enc[_f], str):
+                _qa_enc[_f] = _enc_ob(user_id, _qa_enc[_f])
+
         # Store individual Q&A file
         s3_client = s3bucket()
         qa_filename = f"qa_{timestamp_str}.json"
@@ -2146,7 +2201,7 @@ def store_qa_conversation_as_json(user_id, transcript, answer):
         s3_client.put_object(
             Bucket=S3_BUCKET,
             Key=s3_key,
-            Body=json.dumps(qa_entry, indent=2),
+            Body=json.dumps(_qa_enc, indent=2),
             ContentType="application/json",
         )
 
@@ -2204,7 +2259,20 @@ def update_user_faq_list(user_id, qa_entry):
                 "conversations": [],
             }
 
-        # Add new Q&A to the list
+        # Decrypt existing entries for consistency check and lazy migration
+        _faq_needs_migrate = False
+        for _entry in faq_data.get("conversations", []):
+            if not isinstance(_entry, dict):
+                continue
+            for _f in ("question", "answer", "original_question", "original_answer"):
+                _raw = _entry.get(_f)
+                if _raw and isinstance(_raw, str):
+                    _dec = _dec_ob(user_id, _raw)
+                    _entry[_f] = _dec
+                    if _dec == _raw and not _raw.startswith('{"ciphertext"'):
+                        _faq_needs_migrate = True
+
+        # Add new Q&A to the list (plaintext qa_entry; will be encrypted below)
         faq_data["conversations"].append(qa_entry)
         faq_data["total_conversations"] = len(faq_data["conversations"])
         faq_data["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -2213,6 +2281,20 @@ def update_user_faq_list(user_id, qa_entry):
         if len(faq_data["conversations"]) > 50:
             faq_data["conversations"] = faq_data["conversations"][-50:]
             faq_data["total_conversations"] = 50
+
+        # Encrypt sensitive fields in all conversation entries before saving
+        _enc_convs = []
+        for _entry in faq_data["conversations"]:
+            if not isinstance(_entry, dict):
+                _enc_convs.append(_entry)
+                continue
+            _e = dict(_entry)
+            for _f in ("question", "answer", "original_question", "original_answer"):
+                _v = _e.get(_f)
+                if _v and isinstance(_v, str) and not _v.startswith('{"ciphertext"'):
+                    _e[_f] = _enc_ob(user_id, _v)
+            _enc_convs.append(_e)
+        faq_data["conversations"] = _enc_convs
 
         # Upload updated FAQ list
         s3_client.put_object(

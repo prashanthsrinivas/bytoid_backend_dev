@@ -42,6 +42,9 @@ from utils.app_configs import ACCESSIBLE_IDS, ALLOWED_ORIGINS, IS_DEV
 from utils.base_logger import get_logger
 from utils.permission_required import permission_required_body
 
+from .helperzz import _PLAYBOOK_CONTENT_FIELDS
+from .helperzz import _dec_pb
+
 playbook_bp = Blueprint("playbook", __name__)
 logger = get_logger(__name__, log_level="DEBUG" if IS_DEV else "INFO")
 
@@ -455,7 +458,9 @@ def get_single_instruction():
         instruction_data = read_json_from_s3(s3_key)
         if not instruction_data:
             return jsonify({"error": "Instruction not found"}), 404
-        # instruction_data.pop("filepath", None)
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in instruction_data:
+                instruction_data[_field] = _dec_pb(user_id, instruction_data[_field])
         return jsonify(instruction_data)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch instruction: {str(e)}"}), 500
@@ -523,6 +528,10 @@ def add_a_step():
         filename = f"{filename}.json"
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
     playbook = read_json_from_s3(f"{user_id}/workflow/{base_name(filename)}/{filename}")
+    if playbook:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in playbook:
+                playbook[_field] = _dec_pb(user_id, playbook[_field])
     workflow = playbook.setdefault("workflow", {})
     steps = workflow.setdefault("steps", [])
 
@@ -635,6 +644,10 @@ def edit_a_step():
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     playbook = read_json_from_s3(f"{user_id}/workflow/{base_name(filename)}/{filename}")
+    if playbook:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in playbook:
+                playbook[_field] = _dec_pb(user_id, playbook[_field])
     steps = playbook.get("workflow", {}).get("steps", [])
 
     updated = False
@@ -688,6 +701,10 @@ def update_step_arguments():
         playbook = read_json_from_s3(
             f"{user_id}/workflow/{base_name(filename)}/{filename}"
         )
+        if playbook:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in playbook:
+                    playbook[_field] = _dec_pb(user_id, playbook[_field])
 
         steps = playbook.get("workflow", {}).get("steps", [])
         updated = False
@@ -844,6 +861,10 @@ def delete_step_argument():
     # Load playbook
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
     playbook = read_json_from_s3(f"{user_id}/workflow/{base_name(filename)}/{filename}")
+    if playbook:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in playbook:
+                playbook[_field] = _dec_pb(user_id, playbook[_field])
     steps = playbook.get("workflow", {}).get("steps", [])
 
     updated = False
@@ -929,6 +950,10 @@ def delete_a_step():
         playbook = read_json_from_s3(
             f"{user_id}/workflow/{base_name(filename)}/{filename}"
         )
+        if playbook:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in playbook:
+                    playbook[_field] = _dec_pb(user_id, playbook[_field])
     except Exception as e:
         return (
             jsonify(
@@ -1350,6 +1375,10 @@ def runWorkflow():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -1424,6 +1453,10 @@ def run_workflow_step():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -1478,6 +1511,10 @@ def testworkflowbyinput_stream():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -1543,6 +1580,10 @@ def clear_playground_data():
         workflow_json = read_json_from_s3(
             f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         )
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         # 🔹 Remove transient sections
         for key in [
@@ -1610,6 +1651,10 @@ def clear_testing_data():
         workflow_json = read_json_from_s3(
             f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         )
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         # 🔹 Remove only testing section
         if "testing" in workflow_json:
@@ -1966,6 +2011,10 @@ def schedule_workflow_checker():
         # -----------------------------
         wf_loc = f"{user_id}/workflow/{base_name(filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
 
@@ -2109,6 +2158,10 @@ def schedule_workflow():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -2270,6 +2323,10 @@ def updatequestionsworkflow():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         # current_user_id.reset(token)
@@ -2339,6 +2396,10 @@ def updatequestionsbulkworkflow():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return (
@@ -2393,6 +2454,10 @@ def updateformfieldworkflow():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return (
@@ -2463,6 +2528,10 @@ def updateformfieldsbulkworkflow():
     _, base_user_id = parse_composite_user_id(user_id)
     wf_loc = f"{base_user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return (
@@ -2509,6 +2578,10 @@ def autocheckworkflow():
     # ✅ Pre-validate workflow existence
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
     if not workflow_json:
         return (
             jsonify(
@@ -2560,6 +2633,10 @@ def autocheckstatusupdate():
     # ✅ Pre-validate workflow existence
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
     if not workflow_json:
         return (
             jsonify(
@@ -2610,6 +2687,10 @@ def workflow_conversation():
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
     if not workflow_json:
         return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -2662,6 +2743,10 @@ async def send_ques_byfile_bk(
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
     ai = AutoMateService(userid=user_id, credits=credits, workflow=workflow_json)
 
     result = await ai.generate_questions_from_file(extracted_files)
@@ -2736,6 +2821,10 @@ async def answer_ques_file_bk(
 
     wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
     workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
     with WorkflowRunnerV2(
         userid=user_id,
         filename=filename,
@@ -2899,6 +2988,10 @@ def evidence_ques_ans_attach_playbook():
 
         wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -2996,7 +3089,12 @@ def pb_temp_clone_min():
         is_global = data.get("is_global", False)
 
         if not user_id or not filename:
-            return jsonify({"status": "error", "message": "user_id and filename required"}), 400
+            return (
+                jsonify(
+                    {"status": "error", "message": "user_id and filename required"}
+                ),
+                400,
+            )
 
         _, user_id = parse_composite_user_id(user_id)
 
@@ -3013,14 +3111,23 @@ def pb_temp_clone_min():
         # ---------------------------------
         wf_loc = f"{user_id}/workflow/{base}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json and is_global:
             workflow_json = read_json_from_s3(f"workflow/global/{base}/{filename}")
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             logger.error(
                 "pb_temp_clone: workflow not found. user=%s filename=%s",
-                user_id, filename,
+                user_id,
+                filename,
             )
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
 
@@ -3267,6 +3374,10 @@ def share_pb_template():
         # Load workflow
         wf_loc = f"{user_id}/workflow/{base}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "workflow not found"}), 404
@@ -3485,6 +3596,10 @@ def make_global_playbook():
         # -----------------------
         wf_loc = f"{user_id}/workflow/{base}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "workflow not found"}), 404
@@ -3840,6 +3955,10 @@ def edit_assigned_question():
 
         wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -3893,6 +4012,10 @@ def delete_assigned_question():
 
         wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -3939,6 +4062,10 @@ def check_runbook_exists_playbook():
         wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
 
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -3986,6 +4113,10 @@ def clear_runbook_exists_playbook():
         wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
 
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -4087,6 +4218,10 @@ def morph_questions():
         # ----------------------------
         wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -4153,6 +4288,10 @@ def assign_evidence_to_question():
 
         wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
         workflow_json = read_json_from_s3(wf_loc)
+        if workflow_json:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in workflow_json:
+                    workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
 
         if not workflow_json:
             return jsonify({"status": "error", "message": "Workflow not found"}), 404
@@ -4241,6 +4380,10 @@ def get_evidence_confirmation():
         if not playbook:
             return jsonify({"status": "error", "message": "Playbook not found"}), 404
 
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in playbook:
+                playbook[_field] = _dec_pb(user_id, playbook[_field])
+
         confirmation = playbook.get("evidence_confirmation", {})
         if confirmation.get("confirmed") is True:
             return (
@@ -4304,6 +4447,10 @@ def post_evidence_confirmation():
         playbook = read_json_from_s3(wf_loc)
         if not playbook:
             return jsonify({"status": "error", "message": "Playbook not found"}), 404
+        if playbook:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in playbook:
+                    playbook[_field] = _dec_pb(user_id, playbook[_field])
 
         if playbook.get("evidence_confirmation", {}).get("confirmed") is True:
             return jsonify({"status": "already_confirmed"}), 200
@@ -4385,6 +4532,10 @@ def get_questionarie_confirmation():
         playbook = read_json_from_s3(wf_loc)
         if not playbook:
             return jsonify({"status": "error", "message": "Playbook not found"}), 404
+        if playbook:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in playbook:
+                    playbook[_field] = _dec_pb(user_id, playbook[_field])
 
         confirmation = playbook.get("questionarie_confirmation", {})
         if confirmation.get("confirmed") is True:
@@ -4451,6 +4602,10 @@ def post_questionarie_confirmation():
         if not playbook:
             return jsonify({"status": "error", "message": "Playbook not found"}), 404
 
+        if playbook:
+            for _field in _PLAYBOOK_CONTENT_FIELDS:
+                if _field in playbook:
+                    playbook[_field] = _dec_pb(user_id, playbook[_field])
         if playbook.get("questionarie_confirmation", {}).get("confirmed") is True:
             return jsonify({"status": "already_confirmed"}), 200
 
@@ -4467,4 +4622,3 @@ def post_questionarie_confirmation():
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
-

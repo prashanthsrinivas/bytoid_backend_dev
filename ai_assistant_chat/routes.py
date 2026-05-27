@@ -14,6 +14,21 @@ import os
 import json
 from umail_helper.mails_process import generate_subject
 from utils.normal import ensure_dir, parse_composite_user_id
+from utils.key_rotation_manager import SecureKMSService as _ChatKMSService
+_chat_kms = _ChatKMSService()
+
+
+def _enc_body(user_id, v):
+    if not v:
+        return v
+    enc = _chat_kms.encrypt(user_id, str(v))
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_body(user_id, v):
+    if isinstance(v, dict) and "encrypted_key" in v:
+        return _chat_kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+    return v
 
 import dns.resolver
 import smtplib
@@ -247,6 +262,13 @@ def update_existing_conv(user_id, client_id, conv_id, email, query, bot_response
     s3_key = f"{user_id}/messages/{client_id}/{conv_id}.json"
     s3_data = read_json_from_s3(s3_key)
     input_data = s3_data.get("input_data", [])
+    # Lazy migration: decrypt existing messages that are in plaintext
+    was_migrated = False
+    for msg in input_data:
+        raw_body = msg.get("body")
+        if isinstance(raw_body, str) and raw_body:
+            was_migrated = True
+        msg["body"] = _dec_body(user_id, raw_body) if raw_body is not None else raw_body
 
     conversation_id = ticket_id = ticket_name = "", "", ""
 
@@ -295,8 +317,15 @@ def update_existing_conv(user_id, client_id, conv_id, email, query, bot_response
 
         input_data.append(message)
 
+    # Encrypt body fields before persisting
+    import copy
+    input_data_to_save = copy.deepcopy(input_data)
+    for msg in input_data_to_save:
+        if isinstance(msg.get("body"), str):
+            msg["body"] = _enc_body(user_id, msg["body"])
+
     with open(conv_filepath, "w", encoding="utf-8") as f:
-        json.dump({"input_data": input_data}, f, indent=2)
+        json.dump({"input_data": input_data_to_save}, f, indent=2)
 
     upload_any_file(
         conv_filepath,
@@ -379,8 +408,15 @@ async def create_new_conv(user_id, client_id, email, query, bot_response):
         input_data.append(message)
         messages_id.append(msg_id)
 
+    # Encrypt body fields before persisting
+    import copy
+    input_data_to_save = copy.deepcopy(input_data)
+    for msg in input_data_to_save:
+        if isinstance(msg.get("body"), str):
+            msg["body"] = _enc_body(user_id, msg["body"])
+
     with open(conv_filepath, "w", encoding="utf-8") as f:
-        json.dump({"input_data": input_data}, f, indent=2)
+        json.dump({"input_data": input_data_to_save}, f, indent=2)
 
     upload_any_file(
         conv_filepath,
@@ -710,7 +746,8 @@ def get_website_msg():
 
         s3_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
         s3_data = read_json_from_s3(s3_key)
-        conversation_summary = s3_data.get("conversation_summary", "")
+        raw_summary = s3_data.get("conversation_summary", "")
+        conversation_summary = _dec_body(user_id, raw_summary)
 
         return jsonify(
             {"results": results, "conversation_summary": conversation_summary}
@@ -784,7 +821,7 @@ def update_summary():
         conv_filepath = os.path.join(conv_folder, conv_file_name)
         s3_config_key = f"{user_id}/messages/{client_id}/{conversation_id}.json"
 
-        s3_data["conversation_summary"] = conversation_summary
+        s3_data["conversation_summary"] = _enc_body(user_id, conversation_summary) if conversation_summary else conversation_summary
 
         # Save locally
         with open(conv_filepath, "w", encoding="utf-8") as f:

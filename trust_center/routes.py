@@ -45,8 +45,37 @@ from shared_configuration import (
     get_user_shared_resources,
 )
 
+from utils.key_rotation_manager import SecureKMSService as _TcKMSService
+
 S3_BUCKET = os.getenv("S3_BUCKET")
 logger = get_logger(__name__)
+_tc_kms = _TcKMSService()
+
+
+def _enc_tc(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    return json.dumps(_tc_kms.encrypt(user_id, v))
+
+
+def _dec_tc(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = json.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _tc_kms.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v
+
+
+def _is_tc_enc(v) -> bool:
+    try:
+        d = json.loads(v)
+        return isinstance(d, dict) and "ciphertext" in d
+    except Exception:
+        return False
 
 trust_center_bp = Blueprint("trust_center", __name__, url_prefix="/trust-center")
 
@@ -532,7 +561,7 @@ def _generate_whitepaper(user_id: str, job_id: str, session_id: str | None = Non
             wp_key,
             {
                 "title": "Trust & Compliance White Paper",
-                "content": html,
+                "content": _enc_tc(user_id, html),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "policy_count": len(policies),
             },
@@ -571,6 +600,18 @@ def get_trust_center():
     if tc and tc.get("whitepaper_s3_key"):
         try:
             wp_data = load_yaml_from_s3(tc["whitepaper_s3_key"]) or {}
+            raw_content = wp_data.get("content", "")
+            if raw_content:
+                was_plain = not _is_tc_enc(raw_content)
+                wp_data["content"] = _dec_tc(user_id, raw_content)
+                if was_plain:
+                    try:
+                        _write_yaml_to_s3(
+                            tc["whitepaper_s3_key"],
+                            {**wp_data, "content": _enc_tc(user_id, wp_data["content"])},
+                        )
+                    except Exception:
+                        pass
         except Exception:
             wp_data = {}
 

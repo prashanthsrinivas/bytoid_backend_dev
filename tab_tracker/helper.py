@@ -1,3 +1,4 @@
+import copy
 import uuid
 from datetime import datetime
 
@@ -11,6 +12,62 @@ from utils.s3_utils import (
     upload_any_file,
     save_any_s3,
 )
+from utils.key_rotation_manager import SecureKMSService as _TrackerKMSService
+_tracker_kms = _TrackerKMSService()
+
+
+def _enc_val(user_id, v):
+    """Encrypt a tracker cell/row value string."""
+    if not isinstance(v, str) or not v:
+        return v
+    enc = _tracker_kms.encrypt(user_id, v)
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_val(user_id, v):
+    """Decrypt a tracker cell/row value; pass through plaintext."""
+    if isinstance(v, dict) and "encrypted_key" in v:
+        return _tracker_kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+    return v
+
+
+def _load_and_decrypt_tracker(user_id, tracker_id):
+    """Load tracker JSON from S3 and decrypt all cell values. Saves back if lazily migrating."""
+    tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
+    tracker_data = read_json_from_s3(tracker_path)
+    if not tracker_data:
+        return tracker_data
+    tracker_data, was_migrated = _decrypt_tracker_data(user_id, tracker_data)
+    if was_migrated:
+        try:
+            save_tracker_file(user_id, tracker_id, tracker_data)
+        except Exception:
+            pass
+    return tracker_data
+
+
+def _decrypt_tracker_data(user_id, tracker_data):
+    """Decrypt all cell/row values in tracker_data. Returns (data, was_migrated)."""
+    if not tracker_data:
+        return tracker_data, False
+    was_migrated = False
+    for row in tracker_data.get("rows", []):
+        if isinstance(row.get("values"), dict):
+            for k, v in row["values"].items():
+                if isinstance(v, str) and v:
+                    was_migrated = True
+                row["values"][k] = _dec_val(user_id, v)
+    for cell in tracker_data.get("cells", []):
+        raw = cell.get("value")
+        if isinstance(raw, str) and raw:
+            was_migrated = True
+        cell["value"] = _dec_val(user_id, raw) if raw is not None else raw
+    for record in tracker_data.get("records", []):
+        raw = record.get("value")
+        if isinstance(raw, str) and raw:
+            was_migrated = True
+        record["value"] = _dec_val(user_id, raw) if raw is not None else raw
+    return tracker_data, was_migrated
 
 
 def _get_local_tmp_path():
@@ -683,8 +740,18 @@ def save_tracker_file(user_id, tracker_id, tracker_data):
     local_path = f"/tmp/{tracker_id}_tracker.json"
     s3_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
 
+    # Encrypt cell values before persisting (deep-copy to avoid mutating in-memory state)
+    td = copy.deepcopy(tracker_data)
+    for row in td.get("rows", []):
+        if isinstance(row.get("values"), dict):
+            row["values"] = {k: _enc_val(user_id, v) for k, v in row["values"].items()}
+    for cell in td.get("cells", []):
+        cell["value"] = _enc_val(user_id, cell.get("value", ""))
+    for record in td.get("records", []):
+        record["value"] = _enc_val(user_id, record.get("value", ""))
+
     with open(local_path, "w") as f:
-        json.dump(tracker_data, f, indent=2)
+        json.dump(td, f, indent=2)
 
     upload_any_file(
         file_path=local_path,
@@ -708,8 +775,7 @@ def ensure_tracker_file_exists(
     Check if tracker file exists. If not, create it with schema.
     Returns (exists: bool, tracker_data: dict)
     """
-    tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
-    tracker_data = read_json_from_s3(tracker_path)
+    tracker_data = _load_and_decrypt_tracker(user_id, tracker_id)
 
     if tracker_data:
         # Backfill missing schema/data keys so append functions don't KeyError
@@ -845,7 +911,7 @@ def sync_block_to_tracker(user_id, tracker_id, block, result_id):
     )
     if not tracker_entry:
         return
-    tracker_data = read_json_from_s3(tracker_entry["file_path"])
+    tracker_data = _load_and_decrypt_tracker(user_id, tracker_id)
     if not tracker_data:
         return
     _update_or_append_entries(tracker_data, block, result_id)
@@ -1311,8 +1377,7 @@ def update_tracker_evidence(user_id, tracker_id, row_id, column_id, s3_key):
         dict with success status and updated tracker info
     """
     try:
-        tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
-        tracker_data = read_json_from_s3(tracker_path)
+        tracker_data = _load_and_decrypt_tracker(user_id, tracker_id)
 
         if not tracker_data:
             return {"success": False, "error": "Tracker not found"}
@@ -1373,8 +1438,7 @@ def add_row_option(user_id, tracker_id, row_id, column_id, options):
         dict with success status, added count, skipped count, and current options
     """
     try:
-        tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
-        tracker_data = read_json_from_s3(tracker_path)
+        tracker_data = _load_and_decrypt_tracker(user_id, tracker_id)
 
         if not tracker_data:
             return {"success": False, "error": "Tracker not found"}
@@ -1463,8 +1527,7 @@ def remove_row_option(user_id, tracker_id, row_id, column_id, options):
         dict with success status, removed count, and current options
     """
     try:
-        tracker_path = f"{user_id}/tracker/{tracker_id}/tracker.json"
-        tracker_data = read_json_from_s3(tracker_path)
+        tracker_data = _load_and_decrypt_tracker(user_id, tracker_id)
 
         if not tracker_data:
             return {"success": False, "error": "Tracker not found"}

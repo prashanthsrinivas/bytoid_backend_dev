@@ -47,6 +47,8 @@ from tab_tracker.helper import (
     propagate_assessment_status_to_policy_cells,
     add_row_option,
     remove_row_option,
+    _load_and_decrypt_tracker,
+    _decrypt_tracker_data,
 )
 from utils.s3_utils import (
     upload_any_file,
@@ -260,6 +262,8 @@ async def create_tracker_api():
 
         # Read the newly created tracker
         tracker_data = read_json_from_s3(file_path)
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         data_appended = {"rows": 0, "cells": 0, "records": 0}
 
         # 🔹 STEP 5: OPTIONAL - APPEND DATA IF RESULT_ID PROVIDED
@@ -596,6 +600,8 @@ async def get_tracker_details_api():
 
         # Fetch tracker data from S3
         tracker_data = read_json_from_s3(tracker_path)
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
 
         file_initialized = tracker_data is not None
 
@@ -740,6 +746,8 @@ def check_duplicate_result_api():
 
             # Read tracker file
             tracker_data = read_json_from_s3(tracker_path)
+            if tracker_data:
+                tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
 
             if not tracker_data:
                 continue
@@ -866,6 +874,8 @@ def view_tracker_content_api():
 
         # Fetch tracker data
         tracker_data = read_json_from_s3(tracker_path)
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
 
         if not tracker_data:
             return jsonify({"error": f"Tracker file not found: {tracker_id}"}), 404
@@ -1545,6 +1555,8 @@ async def sync_block_to_tracker_api():
 
                             try:
                                 tracker_data = read_json_from_s3(tracker_file_path)
+                                if tracker_data:
+                                    tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
                                 logging.info(
                                     f"[TRACKER_UPDATE] Tracker data loaded: {bool(tracker_data)}"
                                 )
@@ -1717,6 +1729,8 @@ async def modify_tracker_details():
 
         tracker_type = tracker_meta.get("type")
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 
@@ -1825,6 +1839,8 @@ async def add_tracker_entry():
 
         tracker_type = tracker_meta.get("type")
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 
@@ -2016,6 +2032,8 @@ async def add_tracker_column():
 
         tracker_type = tracker_meta.get("type")
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 
@@ -2188,6 +2206,8 @@ async def delete_tracker_column():
 
         tracker_type = tracker_meta.get("type")
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 
@@ -2713,6 +2733,8 @@ async def _add_framework_worker(data: dict, job_id: str = None) -> dict:
         if not tracker_meta:
             raise Exception(f"Tracker not found: {tracker_id}")
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             raise Exception("Tracker file not found on storage")
 
@@ -2977,6 +2999,8 @@ async def add_tracker_framework():
         if not tracker_meta:
             return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 
@@ -3059,6 +3083,8 @@ async def _update_framework_worker(data: dict, job_id: str = None) -> dict:
         if not tracker_meta:
             raise Exception(f"Tracker not found: {tracker_id}")
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             raise Exception("Tracker file not found on storage")
 
@@ -3341,6 +3367,8 @@ async def update_tracker_framework():
         if not tracker_meta:
             return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 
@@ -3435,6 +3463,8 @@ def remove_tracker_framework():
             return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
 
         tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
         if not tracker_data:
             return jsonify({"error": "Tracker file not found on storage"}), 404
 

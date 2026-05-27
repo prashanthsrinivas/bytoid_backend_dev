@@ -3,6 +3,7 @@ from datetime import datetime
 from datetime import timezone
 from db.lance_db_service import LanceDBServer
 from flask import Blueprint, request, Response, jsonify
+from training.scrape.helper import _decrypt_scrape_entries, _encrypt_scrape_entries
 from utils.permission_required import permission_required_body
 from services.web_scrape_service import WebScrapingLanceClient
 from services.youtube_scrape_service import YouTubeScrapingClient
@@ -169,7 +170,7 @@ async def scrape_youtube_route():
 
         # ---------- calculate credits -------------------
 
-        total_input_chars = len(original_summary_text)
+        total_input_chars = len(summary_text)
         # total_output_chars = 0
         # total_output_chars += sum(len(vec) for vec in embedding_vector)
         total_output_chars = len(embedding_vector)
@@ -253,6 +254,13 @@ def fetch_youtube_summaries(user_id):
     if not videos_data:
         return []
 
+    videos_data, was_migrated = _decrypt_scrape_entries(user_id, videos_data)
+    if was_migrated:
+        try:
+            save_yaml_to_s3(_encrypt_scrape_entries(user_id, videos_data), user_id, "scraped_youtube.yaml")
+        except Exception as e:
+            logger.warning("fetch_youtube_summaries lazy migration save failed: %s", e)
+
     active_videos = []
     for v in videos_data:
         if v.get("status") == "active":
@@ -269,6 +277,13 @@ def fetch_website_summaries(user_id):
     if not websites_data:
         logger.info(f"No scraped websites file found for user {user_id}")
         return []
+
+    websites_data, was_migrated = _decrypt_scrape_entries(user_id, websites_data)
+    if was_migrated:
+        try:
+            save_yaml_to_s3(_encrypt_scrape_entries(user_id, websites_data), user_id, "scraped_websites.yaml")
+        except Exception as e:
+            logger.warning("fetch_website_summaries lazy migration save failed: %s", e)
 
     active_websites = []
     for w in websites_data:
@@ -469,7 +484,7 @@ async def scrape_website_route():
         # --- Step 3: Process the summarized text to get an embedding ---
         embedding_client = WebScrapingLanceClient(user_id=user_id)
 
-        full_content = f"{scraped_data['title_plain']}\n\n{summary_plain}"
+        full_content = f"{scraped_data['title_plain']}\n\n{summary_text}"
         embedding_vector = embedding_client.embeddings.embed_query(full_content)
 
         # -------- calculate credits ---------------
