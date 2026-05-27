@@ -1634,7 +1634,7 @@ def run_backend_unit(self, run_id):
     from tests_routes.runners import run_pytest_category
 
     return run_pytest_category(
-        "backend_unit", run_id, pytest_targets=["tests/"], timeout_seconds=600
+        "backend_unit", run_id, pytest_targets=["tests/unit/"], timeout_seconds=600
     )
 
 
@@ -1657,7 +1657,7 @@ def run_backend_regression(self, run_id):
     return run_pytest_category(
         "backend_regression",
         run_id,
-        pytest_targets=["tests/", "testing/"],
+        pytest_targets=["tests/regression/", "testing/"],
         timeout_seconds=1800,
     )
 
