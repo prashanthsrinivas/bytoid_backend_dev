@@ -433,14 +433,15 @@ jobs:
 
       - name: Install backend dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.txt || true
           # pytest-cov is in requirements.txt as of Phase 1; safety net here.
-          pip install "pytest-cov>=4.1"
+          pip install "pytest-cov>=4.1" pytest-json-report
 
       - name: Run pytest with coverage
         id: run
         run: |
           set +e
+          mkdir -p testing/results
           python -m pytest \
             --cov=. --cov-branch \
             --cov-report=xml:coverage.xml \
