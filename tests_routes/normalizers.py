@@ -961,6 +961,121 @@ def parse_ruff_sarif(
     )
 
 
+def parse_mutmut_results(
+    *,
+    category: str,
+    run_id: str,
+    raw_text: str,
+    started_at: str,
+    finished_at: str,
+    returncode: int,
+) -> dict:
+    """Parse `mutmut results` text output into the canonical payload.
+
+    mutmut results output looks like:
+        Timed out ⏰ 3
+        Suspicious 🤔 1
+        Killed 🎉 42
+        Survived 🙁 5
+
+    killed   → passed (tests caught the mutation — good)
+    survived → failed (tests missed the mutation — bad)
+    timed out + suspicious → errors
+    """
+    killed = 0
+    survived = 0
+    timed_out = 0
+    suspicious = 0
+
+    for line in (raw_text or "").splitlines():
+        line = line.strip()
+        # Strip emoji and extra whitespace for robust parsing
+        clean = line.encode("ascii", "ignore").decode().strip()
+        # e.g. "Killed  42" after emoji removal
+        lower = clean.lower()
+        parts = lower.split()
+        if not parts:
+            continue
+        try:
+            count = int(parts[-1])
+        except (ValueError, IndexError):
+            continue
+        if "killed" in lower:
+            killed = count
+        elif "survived" in lower:
+            survived = count
+        elif "timed out" in lower or "timeout" in lower:
+            timed_out = count
+        elif "suspicious" in lower:
+            suspicious = count
+
+    total = killed + survived + timed_out + suspicious
+    summary = {
+        "total": total,
+        "passed": killed,
+        "failed": survived,
+        "skipped": 0,
+        "errors": timed_out + suspicious,
+    }
+
+    # Build one test row per survived mutant (we don't have individual IDs from text output)
+    tests: list[dict] = []
+    if survived > 0:
+        tests.append({
+            "name": f"mutmut: {survived} mutant(s) survived",
+            "outcome": "failed",
+            "duration": 0.0,
+            "severity": "medium",
+            "message": (
+                f"{survived} mutant(s) survived — tests did not catch these mutations. "
+                f"Run `mutmut show <id>` to inspect. Killed: {killed}, "
+                f"Timed out: {timed_out}, Suspicious: {suspicious}."
+            ),
+        })
+    if killed > 0:
+        tests.append({
+            "name": f"mutmut: {killed} mutant(s) killed",
+            "outcome": "passed",
+            "duration": 0.0,
+            "severity": "info",
+            "message": f"{killed} mutant(s) killed by the test suite.",
+        })
+    if timed_out + suspicious > 0:
+        tests.append({
+            "name": f"mutmut: {timed_out + suspicious} mutant(s) timed out / suspicious",
+            "outcome": "failed",
+            "duration": 0.0,
+            "severity": "low",
+            "message": (
+                f"Timed out: {timed_out}, Suspicious: {suspicious}. "
+                "These may indicate infinite loops introduced by mutations."
+            ),
+        })
+
+    status = "passed" if survived == 0 and total > 0 else ("failed" if survived > 0 else "never_run")
+    if returncode != 0 and total == 0:
+        status = "failed"
+
+    return {
+        "category": category,
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": _duration(started_at, finished_at),
+        "summary": summary,
+        "status": status,
+        "tests": tests,
+        "metrics": {
+            "tool": "mutmut",
+            "killed": killed,
+            "survived": survived,
+            "timed_out": timed_out,
+            "suspicious": suspicious,
+            "mutation_score": round(killed / total * 100, 1) if total > 0 else 0.0,
+        },
+    }
+
+
 # ── CWE → OWASP fallback map (best-effort) ────────────────────────────────
 
 

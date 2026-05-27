@@ -94,7 +94,21 @@ lint: ## Run ruff (full repo) + pylint (critical paths from auth_critical_paths.
 		$(PYTHON) -m pylint $$FILES --rcfile=.pylintrc || true; \
 	fi
 
+# ── Phase 5 ────────────────────────────────────────────────────────────────
+
+.PHONY: chaos
+chaos: ## Run chaos / fault-injection tests (requires RUN_CHAOS=1).
+	RUN_CHAOS=1 $(PYTHON) -m pytest tests/chaos/ -m chaos -v --tb=short
+
+.PHONY: mutation
+mutation: ## Run mutmut mutation testing on safety-critical modules (slow, nightly).
+	mutmut run \
+		--paths-to-mutate services/audit_log_service.py,utils/permission_required.py,tests_routes/result_store.py,tests_routes/runners.py \
+		--runner "$(PYTHON) -m pytest -x -q" \
+		--no-progress
+	mutmut results 2>&1 | tee mutmut-results.txt
+
 # ── Aggregate ──────────────────────────────────────────────────────────────
 
 .PHONY: all-checks
-all-checks: lint typecheck test protected-check ## Run everything that's wired up so far.
+all-checks: lint typecheck test chaos protected-check ## Run everything that's wired up so far (chaos requires RUN_CHAOS=1).

@@ -84,6 +84,12 @@ BACKEND_CATEGORIES = {
         "runner": "pytest-security",
         "delegated": True,
     },
+    # ── Phase 5 — mutation testing (nightly, delegated to CI) ─────────────
+    "backend_mutation": {
+        "display_name": "Backend Mutation (mutmut)",
+        "runner": "mutmut",
+        "delegated": True,
+    },
 }
 
 FRONTEND_CATEGORIES = {

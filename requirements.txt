@@ -301,3 +301,5 @@ freezegun>=1.5
 responses>=0.25
 moto>=5.0
 fakeredis>=2.21
+# Phase 5 — mutation testing
+mutmut>=2.4

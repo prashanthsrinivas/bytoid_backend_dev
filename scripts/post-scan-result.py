@@ -42,13 +42,38 @@ from tests_routes.normalizers import (  # noqa: E402
     parse_bandit_json,
     parse_coverage_xml,
     parse_gitleaks_sarif,
+    parse_mutmut_results,
     parse_mypy_json,
     parse_pip_audit_json,
     parse_pylint_json,
+    parse_pytest_json,
     parse_ruff_sarif,
     parse_safety_json,
     parse_semgrep_sarif,
 )
+
+def _parse_pytest_from_text(
+    *,
+    category: str,
+    run_id: str,
+    raw_text: str,
+    started_at: str,
+    finished_at: str,
+    returncode: int,
+) -> dict:
+    try:
+        raw_json = json.loads(raw_text) if raw_text else None
+    except json.JSONDecodeError:
+        raw_json = None
+    return parse_pytest_json(
+        category=category,
+        run_id=run_id,
+        raw_json=raw_json,
+        started_at=started_at,
+        finished_at=finished_at,
+        returncode=returncode,
+    )
+
 
 TOOLS = {
     "bandit": parse_bandit_json,
@@ -61,6 +86,10 @@ TOOLS = {
     "mypy": parse_mypy_json,
     "pylint": parse_pylint_json,
     "ruff": parse_ruff_sarif,
+    # Phase 4 — security test suites
+    "pytest": _parse_pytest_from_text,
+    # Phase 5 — mutation testing
+    "mutmut": parse_mutmut_results,
 }
 
 
