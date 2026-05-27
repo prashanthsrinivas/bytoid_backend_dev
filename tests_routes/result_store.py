@@ -82,6 +82,12 @@ def write_category_result(category: str, run_id: str, payload: dict) -> None:
     _atomic_write_json(latest_path, payload)
     _atomic_write_json(history_path, payload)
 
+    if payload.get("status") == "failed":
+        from tests_routes.ai_summary import generate_failure_summary  # noqa: PLC0415
+        payload = {**payload, **generate_failure_summary(category, payload)}
+        _atomic_write_json(latest_path, payload)
+        _atomic_write_json(history_path, payload)
+
     summary = _load_summary()
     summary["categories"][category] = _summary_entry(payload)
     summary["updated_at"] = datetime.now(timezone.utc).isoformat()

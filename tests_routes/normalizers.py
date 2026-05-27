@@ -214,6 +214,8 @@ def make_failed_payload(
         "error": error,
         "stdout_tail": stdout_tail[-2000:] if stdout_tail else "",
         "stderr_tail": stderr_tail[-2000:] if stderr_tail else "",
+        "ai_summary": None,
+        "fix_prompt": None,
     }
 
 
