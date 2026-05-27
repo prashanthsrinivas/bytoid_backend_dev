@@ -12,6 +12,24 @@ from services.apiconnectors import APIConnector
 from utils.s3_utils import save_app_runbase_S3
 from agent_route.lance_agent import LanceClient
 from credits_route.route import Credits
+from utils.key_rotation_manager import SecureKMSService as _RunKMSService
+_run_kms = _RunKMSService()
+
+
+def _enc_run(user_id, v):
+    s = v if isinstance(v, str) else json.dumps(v, default=str)
+    enc = _run_kms.encrypt(user_id, s)
+    return {"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]}
+
+
+def _dec_run(user_id, v):
+    if isinstance(v, dict) and "encrypted_key" in v:
+        raw = _run_kms.decrypt(user_id, v["encrypted_key"], v["iv"], v["ciphertext"])
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+    return v
 
 
 async def save_app_run_to_s3(
@@ -28,8 +46,8 @@ async def save_app_run_to_s3(
     record = {
         "ts": now.isoformat() + "Z",
         "trigger": trigger,
-        "request": request_cfg,
-        "response": result,
+        "request": _enc_run(user_id, request_cfg),
+        "response": _enc_run(user_id, result),
     }
 
     val = save_app_runbase_S3(record=record, key=key)

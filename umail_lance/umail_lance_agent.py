@@ -275,32 +275,32 @@ class UmailLanceClient:
             else:
                 continue  # unknown format, skip
 
-            try:
-                ts = datetime.fromisoformat(
-                    latest_message["timestamp"].replace("Z", "+00:00")
-                )
-            except Exception:
-                continue
+            # Prefer DB-authoritative timestamp over stale Lance message timestamp
+            db_ts_str = row.get("db_timestamp")
+            if db_ts_str:
+                try:
+                    ts = datetime.fromisoformat(db_ts_str)
+                except Exception:
+                    db_ts_str = None
 
-            # try:
-            #     ts = datetime.fromisoformat(
-            #         messages["timestamp"].replace("Z", "+00:00")
-            #     )
-            # except Exception:
-            #     continue
+            if not db_ts_str:
+                try:
+                    ts = datetime.fromisoformat(
+                        latest_message["timestamp"].replace("Z", "+00:00")
+                    )
+                except Exception:
+                    continue
+
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
 
             # keep the latest per folder - fix timezone comparison issue
             if folder not in latest_per_folder:
                 should_update = True
             else:
                 existing_ts = latest_per_folder[folder]["ts"]
-                # Ensure both timestamps have timezone info for comparison
                 if existing_ts.tzinfo is None:
-                    # Make existing timestamp timezone-aware (assume UTC)
                     existing_ts = existing_ts.replace(tzinfo=timezone.utc)
-                elif ts.tzinfo is None:
-                    # Make new timestamp timezone-aware (assume UTC)
-                    ts = ts.replace(tzinfo=timezone.utc)
                 should_update = ts > existing_ts
 
             if should_update:

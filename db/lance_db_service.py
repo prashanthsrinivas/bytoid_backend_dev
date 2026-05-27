@@ -292,6 +292,52 @@ class LanceDBServer:
                 return e
         return self.db
 
+    # -------------------------
+    # Encryption helpers
+    # -------------------------
+    def _enc(self, user_id: str, plaintext: str) -> str:
+        """Encrypt a plaintext string and return a JSON-serialised envelope."""
+        enc = self.secure_kms.encrypt(user_id, plaintext)
+        return json.dumps({"ciphertext": enc["ciphertext"], "iv": enc["iv"], "encrypted_key": enc["encrypted_key"]})
+
+    def _dec(self, user_id: str, raw: str) -> str:
+        """Decrypt an encrypted envelope; pass through legacy plaintext unchanged."""
+        if not isinstance(raw, str):
+            return raw
+        try:
+            obj = json.loads(raw)
+        except (ValueError, TypeError):
+            return raw
+        if not isinstance(obj, dict) or "encrypted_key" not in obj:
+            return raw
+        return self.secure_kms.decrypt(user_id, obj["encrypted_key"], obj["iv"], obj["ciphertext"])
+
+    def _is_plaintext(self, raw: str) -> bool:
+        """Return True if raw is not an encrypted envelope (needs lazy migration)."""
+        if not isinstance(raw, str):
+            return False
+        try:
+            obj = json.loads(raw)
+            return not (isinstance(obj, dict) and "encrypted_key" in obj)
+        except (ValueError, TypeError):
+            return True
+
+    async def _lazy_reencrypt_rows(self, user_id: str, table_name: str, rows: list, field: str = "text"):
+        """Background: re-encrypt plaintext rows for a given field in a LanceDB table."""
+        try:
+            self.db = self._connect_if_needed()
+            table = await asyncio.to_thread(lambda: self.db.open_table(table_name))
+            for r in rows:
+                row_id = r.get("id")
+                if not row_id:
+                    continue
+                enc_val = self._enc(user_id, str(r.get(field, "")))
+                await asyncio.to_thread(
+                    lambda rv=enc_val, rid=row_id: table.update(values={field: rv}, where=f'id == "{rid}"')
+                )
+        except Exception as e:
+            logger.warning("_lazy_reencrypt_rows failed user=%s table=%s: %s", user_id, table_name, e)
+
     async def _create_schema_dummy(self) -> pa.Schema:
         """Return the Arrow schema used for the table."""
         return pa.schema(
@@ -434,7 +480,7 @@ class LanceDBServer:
 
             payload = {
                 "id": data.id,
-                "text": data.text,
+                "text": self._enc(data.user_id, data.text),
                 "embedding": embedding,
                 "foldername": data.foldername,
             }
@@ -516,7 +562,7 @@ class LanceDBServer:
             records = [
                 {
                     "id": v.id,
-                    "text": v.text,
+                    "text": self._enc(v.user_id, v.text),
                     "embedding": np.array(v.embedding, dtype=np.float32),
                     "foldername": v.foldername,
                 }
@@ -598,6 +644,11 @@ class LanceDBServer:
                 )
 
             results = await asyncio.to_thread(_search)
+            to_migrate = [r for r in results if self._is_plaintext(r.get("text", ""))]
+            for r in results:
+                r["text"] = self._dec(query.user_id, r["text"])
+            if to_migrate:
+                asyncio.create_task(self._lazy_reencrypt_rows(query.user_id, f"index_{query.user_id}", to_migrate))
             latency = time.time() - start
             logger.debug(
                 "query_vector user=%s top_k=%d results=%d latency=%.3fs",
@@ -665,6 +716,11 @@ class LanceDBServer:
                 )
 
             results = await asyncio.to_thread(_search)
+            to_migrate = [r for r in results if self._is_plaintext(r.get("text", ""))]
+            for r in results:
+                r["text"] = self._dec(query.user_id, r["text"])
+            if to_migrate:
+                asyncio.create_task(self._lazy_reencrypt_rows(query.user_id, f"index_{query.user_id}", to_migrate))
 
             latency = time.time() - start
             logger.debug(
@@ -732,6 +788,11 @@ class LanceDBServer:
                 )
 
             results = await asyncio.to_thread(_fetch)
+            to_migrate = [r for r in results if self._is_plaintext(r.get("text", ""))]
+            for r in results:
+                r["text"] = self._dec(user_id, r["text"])
+            if to_migrate:
+                asyncio.create_task(self._lazy_reencrypt_rows(user_id, f"index_{user_id}", to_migrate))
 
             latency = time.time() - start
             logger.debug(
@@ -817,6 +878,14 @@ class LanceDBServer:
 
             tasks = [_single_search(vec) for vec in query_embeddings]
             results = await asyncio.gather(*tasks)
+            to_migrate_all = []
+            for result_list in results:
+                for r in result_list:
+                    if self._is_plaintext(r.get("text", "")):
+                        to_migrate_all.append(r)
+                    r["text"] = self._dec(query.user_id, r["text"])
+            if to_migrate_all:
+                asyncio.create_task(self._lazy_reencrypt_rows(query.user_id, f"index_{query.user_id}", to_migrate_all))
 
             latency = time.time() - start
             logger.debug(
@@ -1064,7 +1133,21 @@ class LanceDBServer:
         except Exception:
             rows = table.to_pandas().to_dict("records")
 
-        return [{"id": r.get("id"), "text": r.get("text")} for r in rows]
+        result = []
+        to_migrate = []
+        for r in rows:
+            raw = r.get("text", "")
+            if self._is_plaintext(raw):
+                to_migrate.append(r)
+            result.append({"id": r.get("id"), "text": self._dec(user_id, raw)})
+        for r in to_migrate:
+            row_id = r.get("id")
+            if row_id:
+                try:
+                    table.update(values={"text": self._enc(user_id, str(r.get("text", "")))}, where=f'id == "{row_id}"')
+                except Exception as e:
+                    logger.warning("filter_umail_table lazy migration failed id=%s: %s", row_id, e)
+        return result
 
     def insert_umail_vectors(self, vectors):
         # print("in the insert umail")
@@ -1102,7 +1185,7 @@ class LanceDBServer:
         records = [
             {
                 "id": v.id,
-                "text": v.text,
+                "text": self._enc(v.user_id, v.text),
                 "user_id": v.user_id,
                 "embedding": np.array(v.embedding, dtype=np.float32),
                 "folder_name": v.folder_name,
@@ -1145,7 +1228,7 @@ class LanceDBServer:
             records.append(
                 {
                     "id": v.id,
-                    "text": v.text,
+                    "text": self._enc(v.user_id, v.text),
                     "user_id": v.user_id,
                     "embedding": np.array(v.embedding, dtype=np.float32),
                     "folder_name": v.folder_name,
@@ -1258,6 +1341,18 @@ class LanceDBServer:
             reverse=True,
         )
 
+        to_migrate = [r for r in records if self._is_plaintext(r.get("text", ""))]
+        table = self._get_umail_table(user_id)
+        for r in records:
+            r["text"] = self._dec(user_id, r.get("text", ""))
+        for r in to_migrate:
+            row_id = r.get("id")
+            if row_id:
+                try:
+                    table.update(values={"text": self._enc(user_id, str(r.get("text", "")))}, where=f'id == "{row_id}"')
+                except Exception as e:
+                    logger.warning("serverless_get_umail_page lazy migration failed id=%s: %s", row_id, e)
+
         next_cursor = (
             parse_ts(records[-1]["timestamp"]).isoformat() if records else None
         )
@@ -1309,7 +1404,7 @@ class LanceDBServer:
 
         collected = []
 
-        for conversation_id, client_id, timestamp in rows:
+        for conversation_id, client_id, db_created_at in rows:
             # print("Searching Lance for:", conversation_id, client_id)
 
             text_rows = (
@@ -1320,13 +1415,23 @@ class LanceDBServer:
 
             if text_rows:
                 text_rows.sort(key=lambda x: x["timestamp"], reverse=True)
-                collected.append(text_rows[0])
+                row = dict(text_rows[0])
+                # Stamp with the authoritative DB timestamp so stale Lance data
+                # doesn't cause new conversations to sort behind old ones.
+                if db_created_at is not None:
+                    if hasattr(db_created_at, "tzinfo") and db_created_at.tzinfo is None:
+                        db_created_at = db_created_at.replace(tzinfo=timezone.utc)
+                    row["db_timestamp"] = db_created_at.isoformat()
+                collected.append(row)
 
-        # Set next cursor = oldest item in this page
+        # Set next cursor = oldest item in this page (use db_timestamp when available)
         next_cursor = None
         if collected:
-            oldest_item = min(collected, key=lambda x: x["timestamp"])
-            next_cursor = oldest_item.get("timestamp")
+            oldest_item = min(
+                collected,
+                key=lambda x: x.get("db_timestamp") or x["timestamp"],
+            )
+            next_cursor = oldest_item.get("db_timestamp") or oldest_item.get("timestamp")
 
         return collected, next_cursor
 
@@ -1485,10 +1590,8 @@ class LanceDBServer:
         if not matches:
             return False
 
-        # Correct update call (NO keyword args!)
-        # table.update({"contacts": contacts_value}, f"url == {url}")
         table.update(
-            values={"content": content},
+            values={"content": self._enc(user_id, content)},
             where=f"url == '{url}'",
         )
 
@@ -1523,14 +1626,19 @@ class LanceDBServer:
 
         # Fetch parent row
         matches = (
-            table.search("pages_by_level").where(f"url == '{url}'").limit(1).to_list()
+            table.search().where(f"url == '{url}'").limit(1).to_list()
         )
 
         if not matches:
             return False
 
         row = matches[0]
-        pages_by_level = row.get("pages_by_level", {})
+        raw_pbl = row.get("pages_by_level", "{}")
+        decrypted_pbl = self._dec(user_id, raw_pbl)
+        try:
+            pages_by_level = json.loads(decrypted_pbl) if isinstance(decrypted_pbl, str) else decrypted_pbl
+        except Exception:
+            pages_by_level = {}
 
         updated = False
 
@@ -1550,9 +1658,9 @@ class LanceDBServer:
         if not updated:
             return False  # inner URL not found
 
-        # Persist update
+        # Persist update (re-encrypt)
         table.update(
-            values={"pages_by_level": pages_by_level},
+            values={"pages_by_level": self._enc(user_id, json.dumps(pages_by_level))},
             where=f"url == '{url}'",
         )
 
@@ -1562,14 +1670,19 @@ class LanceDBServer:
         table = self._get_scrape_table(user_id=user_id)
 
         matches = (
-            table.search("pages_by_level").where(f"url == '{url}'").limit(1).to_list()
+            table.search().where(f"url == '{url}'").limit(1).to_list()
         )
 
         if not matches:
             return False
 
         row = matches[0]
-        pages_by_level = row.get("pages_by_level", {})
+        raw_pbl = row.get("pages_by_level", "{}")
+        decrypted_pbl = self._dec(user_id, raw_pbl)
+        try:
+            pages_by_level = json.loads(decrypted_pbl) if isinstance(decrypted_pbl, str) else decrypted_pbl
+        except Exception:
+            pages_by_level = {}
         deleted = False
 
         for level in list(pages_by_level.keys()):
@@ -1590,7 +1703,7 @@ class LanceDBServer:
             return False
 
         table.update(
-            values={"pages_by_level": pages_by_level},
+            values={"pages_by_level": self._enc(user_id, json.dumps(pages_by_level))},
             where=f"url == '{url}'",
         )
 
@@ -1612,13 +1725,13 @@ class LanceDBServer:
                 {
                     "user_id": data.user_id,
                     "url": data.url,
-                    "title": data.title,
-                    "content": data.content,
+                    "title": self._enc(data.user_id, data.title),
+                    "content": self._enc(data.user_id, data.content),
                     "contacts": data.contacts,
                     "timestamp": data.timestamp,
                     "metadata": json.dumps(data.metadata),
                     "embedding": np.array(data.embedding, dtype=np.float32),
-                    "pages_by_level": json.dumps(data.pages_by_level),
+                    "pages_by_level": self._enc(data.user_id, json.dumps(data.pages_by_level)),
                 }
             ]
 
@@ -1720,15 +1833,20 @@ class LanceDBServer:
             if not results:
                 # print("no results found in base search")
                 return None
-            # for i in results:
-            #    #print("title", i["title"])
-            #    #print("distance", i["_distance"])
             # Pick the BEST (lowest cosine distance)
             best = min(results, key=lambda x: x.get("_distance", 999999))
             best_distance = best.get("_distance", 1)
             if len(results) >= 1 and best_distance > 0.8:
                 # print("result found and score > 0.8 → rejecting")
                 return None
+            # Decrypt content fields (backward-compatible)
+            best["title"] = self._dec(query.user_id, best.get("title", ""))
+            best["content"] = self._dec(query.user_id, best.get("content", ""))
+            raw_pbl = self._dec(query.user_id, best.get("pages_by_level", "{}"))
+            try:
+                best["pages_by_level"] = json.loads(raw_pbl) if isinstance(raw_pbl, str) else raw_pbl
+            except Exception:
+                best["pages_by_level"] = {}
             pages_by_level = best.get("pages_by_level")
             main_content = best.get("content", "")
             # print("len of main content", len(main_content))
@@ -1886,6 +2004,14 @@ class LanceDBServer:
                 # print("Weak match – rejecting")
                 return None
 
+            # Decrypt content fields (backward-compatible)
+            best["title"] = self._dec(query.user_id, best.get("title", ""))
+            best["content"] = self._dec(query.user_id, best.get("content", ""))
+            raw_pbl = self._dec(query.user_id, best.get("pages_by_level", "{}"))
+            try:
+                best["pages_by_level"] = json.loads(raw_pbl) if isinstance(raw_pbl, str) else raw_pbl
+            except Exception:
+                best["pages_by_level"] = {}
             pages_by_level = best.get("pages_by_level")
             main_content = best.get("content", "")
 
@@ -1953,7 +2079,7 @@ class LanceDBServer:
         # print(f"results: {results}")
         results = results[results["_distance"] < 1.5]
         # print(results[["_distance", "text"]])
-        text_results = results["text"].tolist()
+        text_results = [self._dec(data.user_id, t) for t in results["text"].tolist()]
 
         return text_results
 
@@ -1969,7 +2095,7 @@ class LanceDBServer:
             )
             .to_pandas()
         )
-        text_results = results["text"]
+        text_results = [self._dec(user_id, t) for t in results["text"].tolist()]
 
         return text_results
 
@@ -2483,11 +2609,12 @@ class LanceDBServer:
                         r[field] = None
                         continue
 
+                    val = self._dec(user_id, val)
+
                     try:
                         r[field] = json.loads(val)
-                    except json.JSONDecodeError:
-                        # leave as-is (string)
-                        pass
+                    except (json.JSONDecodeError, TypeError):
+                        r[field] = val
         return records
 
     async def delete_app_runs(self, user_id: str, app_id: str, endpoint_id: str):
@@ -2530,14 +2657,15 @@ class LanceDBServer:
         # 3️⃣ Run vector search
         results = query.limit(top_k).to_list()
 
-        # 4️⃣ Parse JSON payloads
+        # 4️⃣ Decrypt then parse JSON payloads
         final = []
         for r in results:
+            decrypted = self._dec(user_id, r["text"])
             final.append(
                 {
                     "score": r.get("_distance") or r.get("score"),
                     "foldername": r["foldername"],
-                    "data": json.loads(r["text"]),
+                    "data": json.loads(decrypted),
                 }
             )
 
@@ -3392,7 +3520,7 @@ class LanceDBServer:
             "execution_time_ms": (ended_at - started_at) * 1000,
             "input_mode": data.get("input_mode"),
             "risk_score": float(data.get("risk_score") or 0.0),
-            "result": json.dumps(data.get("result", {})),
+            "result": self._enc(data["user_id"], json.dumps(data.get("result", {}))),
         }
 
         try:
@@ -3419,7 +3547,8 @@ class LanceDBServer:
             return table.search().where(f'runbook_id == "{runbook_id}"').to_list()
 
         results = await asyncio.to_thread(_query)
-
+        for r in results:
+            r["result"] = self._dec(user_id, r.get("result", "{}"))
         return results
 
     async def get_runbook_results_by_user_id(self, user_id: str):
@@ -3430,7 +3559,8 @@ class LanceDBServer:
             return table.search().where(f'user_id == "{user_id}"').to_list()
 
         results = await asyncio.to_thread(_query)
-
+        for r in results:
+            r["result"] = self._dec(user_id, r.get("result", "{}"))
         return results
 
     async def delete_runbook_result(self, user_id: str, runbook_id: str):
@@ -3478,7 +3608,7 @@ class LanceDBServer:
         latest = max(
             results, key=lambda x: x.get("ended_at") or x.get("run_timestamp") or 0
         )
-
+        latest["result"] = self._dec(user_id, latest.get("result", "{}"))
         return latest
 
     async def get_runbooks_by_endpoint(self, user_id, app_id, endpoint_id):
@@ -3538,8 +3668,8 @@ class LanceDBServer:
                 "data": None,
             }
         row = rows[0]
-        # Parse result JSON safely
-        row["result"] = _safe_json_parse(row.get("result"))
+        # Decrypt then parse result JSON safely
+        row["result"] = _safe_json_parse(self._dec(user_id, row.get("result", "{}")))
         if row.get("status") != "completed":
             return {
                 "status": "running",
@@ -3574,7 +3704,7 @@ class LanceDBServer:
 
         # Pick most-recent by ended_at (handles compaction-lag duplicates)
         row = max(valid_rows, key=lambda r: r.get("ended_at") or 0)
-        row["result"] = _safe_json_parse(row.get("result"))
+        row["result"] = _safe_json_parse(self._dec(user_id, row.get("result", "{}")))
         return row
 
     async def update_runbook_result(
@@ -3602,7 +3732,7 @@ class LanceDBServer:
 
         # Only replace the result field; all other columns stay exactly as stored.
         updated_row = dict(existing)
-        updated_row["result"] = json.dumps(new_result)
+        updated_row["result"] = self._enc(user_id, json.dumps(new_result))
 
         await asyncio.to_thread(lambda: table.add([updated_row]))
 

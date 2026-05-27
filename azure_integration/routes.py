@@ -23,6 +23,7 @@ from azure_integration.helpers import (
     exchange_saml_for_azure_token,
     prepare_flask_request_azure,
     save_azure_run_to_s3,
+    _dec_run,
 )
 from db.rds_db import connect_to_rds
 from services.apiconnectors import APIConnector
@@ -1358,6 +1359,10 @@ def azure_get_endpoint_run(endpoint_id, filename):
         app_id = row["app_id"]
         key = f"{user_id}/azure_connector/{app_id}/{endpoint_id}/{filename}"
         data = get_filedata_endp(key)
+        if isinstance(data, list):
+            for rec in data:
+                rec["request"] = _dec_run(user_id, rec.get("request"))
+                rec["response"] = _dec_run(user_id, rec.get("response"))
         return jsonify({"success": True, "data": data})
 
     except Exception as e:

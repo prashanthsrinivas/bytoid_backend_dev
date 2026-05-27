@@ -581,44 +581,47 @@ def get_latest_conversations(user_id, next_cursor):
     # -----------------------
     existing_json = get_existing_umail_json(user_id)
 
+    if not existing_json:
+        # -----------------------
+        # Step 2: New user — serve from cache
+        # -----------------------
+        cached = get_cache_sync(user_id)
+
+        if cached:
+            if isinstance(cached, list):
+                cached = cached[0] if cached else {}
+
+            convo_messages = cached.get("grouped_messages", {})
+            cache_cursor = cached.get("next_page_token")
+
+            executor.submit(background_convo_fetch, user_id, next_cursor)
+
+            return handle_cache_data(
+                groupedmessages=convo_messages,
+                disp_messages=display_messages,
+                next_cursor=cache_cursor,
+                source="mid",
+            )
+
     # -----------------------
-    # Step 2: Cache Fetch
+    # Step 3: Existing user (or no cache) → fetch fresh from Lance synchronously
     # -----------------------
-    cached = get_cache_sync(user_id)
+    print("⚡ Existing user or no cache → fetching from Lance")
 
-    if cached:
-        if isinstance(cached, list):
-            cached = cached[0] if cached else {}
-
-        convo_messages = cached.get("grouped_messages", {})
-        cache_cursor = cached.get("next_page_token")
-
-        # 🚀 Background refresh always
-        executor.submit(background_convo_fetch, user_id, next_cursor)
-
-        # ✅ Keep ORIGINAL behavior
-        source = "mid"
-
-        return handle_cache_data(
-            groupedmessages=convo_messages,
-            disp_messages=display_messages,
-            next_cursor=cache_cursor,
-            source=source,
+    try:
+        client = UmailLanceClient(user_id)
+        convo_messages, bnext_cursor = client.latest_messages_from_lance(
+            user_id, next_cursor
         )
+    except Exception as e:
+        print("❌ Lance fetch error:", e)
+        convo_messages, bnext_cursor = [], None
 
-    # -----------------------
-    # Step 3: If no cache → fallback to Lance (but async)
-    # -----------------------
-    print("⚡ No cache → trigger background Lance")
-
-    executor.submit(background_convo_fetch, user_id, next_cursor)
-
-    # Return empty but valid response (non-blocking)
     return handle_lance_data(
-        convo_messages=[],
-        next_cursor=None,
+        convo_messages=convo_messages,
+        next_cursor=bnext_cursor,
         userid=user_id,
-        source="full",  # keep consistency
+        source="full",
     )
 
 

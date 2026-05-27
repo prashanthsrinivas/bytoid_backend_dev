@@ -1662,6 +1662,18 @@ def run_backend_regression(self, run_id):
     )
 
 
+@new_celery.task(bind=True, name="tasks.tests.run_backend_crypto")
+def run_backend_crypto(self, run_id):
+    from tests_routes.runners import run_pytest_category
+
+    return run_pytest_category(
+        "backend_crypto",
+        run_id,
+        pytest_targets=["tests/test_encryption.py"],
+        timeout_seconds=300,
+    )
+
+
 @new_celery.task(bind=True, name="tasks.tests.run_backend_load")
 def run_backend_load(self, run_id, target_url, users, spawn_rate, run_time):
     from tests_routes.runners import run_locust_category

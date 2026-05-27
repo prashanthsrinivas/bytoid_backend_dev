@@ -28,7 +28,6 @@ from utils.s3_utils import (
     upload_any_file,
 )
 from werkzeug.utils import secure_filename
-from request_context import current_user_id
 from credits_route.route import Credits
 from db.rds_db import connect_to_rds
 from utils.app_configs import BACKURL

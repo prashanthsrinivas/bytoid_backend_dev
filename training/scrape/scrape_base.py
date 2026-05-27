@@ -253,6 +253,13 @@ def fetch_youtube_summaries(user_id):
     if not videos_data:
         return []
 
+    videos_data, was_migrated = _decrypt_scrape_entries(user_id, videos_data)
+    if was_migrated:
+        try:
+            save_yaml_to_s3(videos_data, user_id, "scraped_youtube.yaml")
+        except Exception as e:
+            logger.warning("fetch_youtube_summaries lazy migration save failed: %s", e)
+
     active_videos = []
     for v in videos_data:
         if v.get("status") == "active":
@@ -269,6 +276,13 @@ def fetch_website_summaries(user_id):
     if not websites_data:
         logger.info(f"No scraped websites file found for user {user_id}")
         return []
+
+    websites_data, was_migrated = _decrypt_scrape_entries(user_id, websites_data)
+    if was_migrated:
+        try:
+            save_yaml_to_s3(websites_data, user_id, "scraped_websites.yaml")
+        except Exception as e:
+            logger.warning("fetch_website_summaries lazy migration save failed: %s", e)
 
     active_websites = []
     for w in websites_data:

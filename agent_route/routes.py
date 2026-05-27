@@ -13,6 +13,9 @@ from utils.app_configs import DEV_ORIGINS
 from utils.async_check import run_async
 from agent_route.ag_helperzz import (
     remove_https_prefix,
+    _decrypt_qa_entries,
+    _encrypt_qa_entries,
+    _load_and_decrypt_qa,
 )
 from agent_route.doc_clarity import (
     flatten_list,
@@ -411,6 +414,16 @@ def checkquerywithApiKeyog():
         valid_ones = load_yaml_from_s3(passed_yaml_path)
         if valid_ones and isinstance(valid_ones[0], list):
             valid_ones = [item for sublist in valid_ones for item in sublist]
+        if valid_ones:
+            valid_ones, _was_mig = _decrypt_qa_entries(userid, valid_ones)
+            if _was_mig:
+                try:
+                    import copy as _cp
+                    from utils.s3_utils import save_yaml_to_s3 as _syt
+                    from agent_route.ag_helperzz import _encrypt_qa_entries as _eqe
+                    _syt(_eqe(userid, _cp.deepcopy(valid_ones)), userid, "passed_ques.yaml")
+                except Exception:
+                    pass
 
         if valid_ones:
             for each in valid_ones:
@@ -869,8 +882,7 @@ async def process_query_worker(data, job_id=None):
                     )
                 )
                 # Check for exact match in passed_ques.yaml
-                passed_yaml_path = f"{userid}/yaml/passed_ques.yaml"
-                valid_ones = load_yaml_from_s3(passed_yaml_path)
+                valid_ones = _load_and_decrypt_qa(userid, "passed_ques.yaml")
                 if valid_ones and isinstance(valid_ones[0], list):
                     valid_ones = [item for sublist in valid_ones for item in sublist]
 
@@ -1205,8 +1217,7 @@ def makeuserDocClarifications(userid=None, industry=None):
             return jsonify({"error": "User ID is required"}), 400
 
         # Load failed questions YAML
-        failed_path = f"{fetched_userid}/yaml/failed_ques.yaml"
-        failed_entries = load_yaml_from_s3(failed_path) or []
+        failed_entries = _load_and_decrypt_qa(fetched_userid, "failed_ques.yaml")
         credits = Credits(db)
 
         if not failed_entries:
@@ -1286,11 +1297,8 @@ async def updateClarifications(userid=None, industry=None):
     if not fetched_queries or not isinstance(fetched_queries, list):
         return jsonify({"error": "Queries must be a non-empty list"}), 400
 
-    passed_path = f"{fetched_userid}/yaml/passed_ques.yaml"
-    failed_path = f"{fetched_userid}/yaml/failed_ques.yaml"
-
-    passed_entries = load_yaml_from_s3(passed_path) or []
-    failed_entries = load_yaml_from_s3(failed_path) or []
+    passed_entries = _load_and_decrypt_qa(fetched_userid, "passed_ques.yaml")
+    failed_entries = _load_and_decrypt_qa(fetched_userid, "failed_ques.yaml")
     if failed_entries and isinstance(failed_entries[0], list):
         failed_entries = [item for sublist in failed_entries for item in sublist]
     if passed_entries and isinstance(passed_entries[0], list):
@@ -1417,9 +1425,11 @@ async def updateClarifications(userid=None, industry=None):
         # with open(failed_path, "w", encoding="utf-8") as ff:
         #     yaml.dump(failed_entries, ff, allow_unicode=True, sort_keys=False)
         if passed_entries:
-            save_yaml_to_s3(passed_entries, userid, "passed_ques.yaml")
+            import copy as _cp
+            save_yaml_to_s3(_encrypt_qa_entries(userid, _cp.deepcopy(passed_entries)), userid, "passed_ques.yaml")
         if failed_entries:
-            save_yaml_to_s3(failed_entries, userid, "failed_ques.yaml")
+            import copy as _cp
+            save_yaml_to_s3(_encrypt_qa_entries(userid, _cp.deepcopy(failed_entries)), userid, "failed_ques.yaml")
 
         if len(failed_entries) > 0:
             clarifications = []
@@ -1568,10 +1578,7 @@ def fetch_scraping_clarifications():
             return jsonify({"error": "Invalid API Key"}), 401
 
         # Load failed questions (clarifications)
-        failed_key = f"{user_id}/yaml/failed_ques.yaml"
-        failed_entries = flatten_list(
-            load_yaml_from_s3(failed_key) or []
-        )  # CHANGED: failed_data to failed_entries
+        failed_entries = flatten_list(_load_and_decrypt_qa(user_id, "failed_ques.yaml"))
 
         # Filter only scraping clarifications that need user input
         scraping_clarifications = [
@@ -1613,14 +1620,11 @@ def update_single_scraping_clarification():
             return jsonify({"error": "Invalid API Key"}), 401
 
         # Load current failed questions
-        failed_key = f"{user_id}/yaml/failed_ques.yaml"
-        failed_entries = flatten_list(
-            load_yaml_from_s3(failed_key) or []
-        )  # CHANGED: failed_data to failed_entries
+        failed_entries = flatten_list(_load_and_decrypt_qa(user_id, "failed_ques.yaml"))
 
         # Find and update the specific clarification
         updated = False
-        for item in failed_entries:  # CHANGED: failed_data to failed_entries
+        for item in failed_entries:
             if (item.get("User") + "|" + item.get("filename")) == question_id:
                 item["Ai Response"] = user_answer
                 item["user_provided_answer"] = True
@@ -1631,10 +1635,11 @@ def update_single_scraping_clarification():
         if not updated:
             return jsonify({"error": "Clarification not found"}), 404
 
-        # Save updated data
+        # Save updated data (re-encrypt before saving)
+        import copy as _cp
         save_yaml_to_s3(
-            data=failed_entries, user_id=user_id, filename="failed_ques.yaml"
-        )  # CHANGED: failed_data to failed_entries
+            data=_encrypt_qa_entries(user_id, _cp.deepcopy(failed_entries)), user_id=user_id, filename="failed_ques.yaml"
+        )
 
         # Optionally trigger re-validation
         validate_scraping_clarifications(user_id)
