@@ -38,11 +38,27 @@ class TestLangfuseTraces:
 
         import ai_governance.clients.langfuse_client as lc
 
+        monkeypatch.setattr(lc, "is_configured", lambda: True)
         monkeypatch.setattr(lc, "get_langfuse", lambda: fake_lf)
 
         resp = client.get("/ai-governance/langfuse/traces", json={"user_id": SERVICE_UID})
         assert resp.status_code == 200
-        assert resp.get_json()["traces"] == [{"id": "t1"}]
+        body = resp.get_json()
+        assert body["traces"] == [{"id": "t1"}]
+        assert body.get("configured") is True
+
+    def test_not_configured_returns_empty_with_flag(
+        self, client, mock_service_user, monkeypatch
+    ):
+        import ai_governance.clients.langfuse_client as lc
+
+        monkeypatch.setattr(lc, "is_configured", lambda: False)
+
+        resp = client.get("/ai-governance/langfuse/traces", json={"user_id": SERVICE_UID})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["traces"] == []
+        assert body["configured"] is False
 
     def test_denied_for_admin(self, client, mock_admin_user):
         resp = client.get("/ai-governance/langfuse/traces", json={"user_id": ADMIN_UID})
@@ -55,6 +71,7 @@ class TestLangfuseScore:
 
         import ai_governance.clients.langfuse_client as lc
 
+        monkeypatch.setattr(lc, "is_configured", lambda: True)
         monkeypatch.setattr(lc, "get_langfuse", lambda: fake_lf)
 
         resp = client.post(
@@ -74,6 +91,7 @@ class TestLangfuseScore:
 
         import ai_governance.clients.langfuse_client as lc
 
+        monkeypatch.setattr(lc, "is_configured", lambda: True)
         monkeypatch.setattr(lc, "get_langfuse", lambda: fake_lf)
 
         resp = client.post(
@@ -214,7 +232,30 @@ class TestFairnessEndpoints:
 
 
 class TestGiskardScan:
-    def test_scan_dispatches_celery(self, client, mock_service_user, monkeypatch):
+    def test_scan_dispatches_celery_without_project_key(
+        self, client, mock_service_user, monkeypatch
+    ):
+        """OSS scan: no project_key required — empty body dispatches a task
+        that runs against the built-in sample dataset."""
+        fake_task = _fake_task()
+
+        import ai_governance.tasks as tasks_mod
+
+        monkeypatch.setattr(
+            tasks_mod.run_giskard_scan,
+            "delay",
+            lambda **kw: fake_task,
+        )
+
+        resp = client.post("/ai-governance/giskard/scan", json={"user_id": SERVICE_UID})
+        assert resp.status_code == 200
+        assert resp.get_json()["task_id"] == "fake-task-id-abc"
+
+    def test_scan_accepts_legacy_project_key_field(
+        self, client, mock_service_user, monkeypatch
+    ):
+        """Old frontends may still send project_key — it should be ignored,
+        not rejected, so a deploy can roll forward backend-first."""
         fake_task = _fake_task()
 
         import ai_governance.tasks as tasks_mod
@@ -227,19 +268,14 @@ class TestGiskardScan:
 
         resp = client.post(
             "/ai-governance/giskard/scan",
-            json={"user_id": SERVICE_UID, "project_key": "proj-1"},
+            json={"user_id": SERVICE_UID, "project_key": "legacy-ignored"},
         )
         assert resp.status_code == 200
-        assert resp.get_json()["task_id"] == "fake-task-id-abc"
-
-    def test_scan_missing_project_key_returns_400(self, client, mock_service_user):
-        resp = client.post("/ai-governance/giskard/scan", json={"user_id": SERVICE_UID})
-        assert resp.status_code == 400
 
     def test_scan_denied_for_admin(self, client, mock_admin_user):
         resp = client.post(
             "/ai-governance/giskard/scan",
-            json={"user_id": ADMIN_UID, "project_key": "p"},
+            json={"user_id": ADMIN_UID},
         )
         assert resp.status_code == 403
 

@@ -5,11 +5,51 @@ run the analysis, and return a JSON-serialisable dict.  They are designed
 to be called from Celery tasks (ai_governance/tasks.py) so that heavy
 Pandas/NumPy workloads do not block Gunicorn workers.
 
+A built-in sample dataset (simplified Adult/Census) is provided so the
+frontend's "Submit job" button can fire a real Celery task with no
+payload and surface real fairness metrics end-to-end.
+
 Imports are deferred to function bodies so the module can be imported
 without the AI governance packages installed (unit tests stub them).
 """
 
 from typing import Any
+
+
+def sample_fairness_dataset() -> dict:
+    """Tiny built-in fairness dataset (loosely modelled on Adult/Census):
+    `sex` is the protected attribute, `income` the binary label, `score`
+    the model prediction.  Same rows are used by all three tools so the
+    frontend can fire any of them with no upload step."""
+    rows = [
+        {"sex": 1, "age": 39, "hours_per_week": 40, "score": 0, "income": 0},
+        {"sex": 1, "age": 50, "hours_per_week": 13, "score": 0, "income": 0},
+        {"sex": 1, "age": 38, "hours_per_week": 40, "score": 0, "income": 0},
+        {"sex": 1, "age": 53, "hours_per_week": 40, "score": 0, "income": 0},
+        {"sex": 0, "age": 28, "hours_per_week": 40, "score": 0, "income": 0},
+        {"sex": 0, "age": 37, "hours_per_week": 40, "score": 0, "income": 0},
+        {"sex": 0, "age": 49, "hours_per_week": 16, "score": 0, "income": 0},
+        {"sex": 1, "age": 52, "hours_per_week": 45, "score": 1, "income": 1},
+        {"sex": 1, "age": 31, "hours_per_week": 50, "score": 1, "income": 1},
+        {"sex": 1, "age": 42, "hours_per_week": 40, "score": 1, "income": 1},
+        {"sex": 1, "age": 37, "hours_per_week": 80, "score": 1, "income": 1},
+        {"sex": 0, "age": 30, "hours_per_week": 40, "score": 0, "income": 1},
+        {"sex": 1, "age": 23, "hours_per_week": 30, "score": 0, "income": 0},
+        {"sex": 0, "age": 32, "hours_per_week": 50, "score": 1, "income": 1},
+        {"sex": 1, "age": 40, "hours_per_week": 40, "score": 0, "income": 1},
+        {"sex": 0, "age": 34, "hours_per_week": 45, "score": 1, "income": 1},
+        {"sex": 1, "age": 25, "hours_per_week": 35, "score": 0, "income": 0},
+        {"sex": 1, "age": 32, "hours_per_week": 40, "score": 1, "income": 0},
+        {"sex": 0, "age": 38, "hours_per_week": 45, "score": 1, "income": 1},
+        {"sex": 1, "age": 43, "hours_per_week": 45, "score": 0, "income": 0},
+    ]
+    return {
+        "rows": rows,
+        "protected_attribute": "sex",
+        "label_col": "income",
+        "score_col": "score",
+        "feature_cols": ["age", "hours_per_week", "sex"],
+    }
 
 
 def run_aif360_metrics(

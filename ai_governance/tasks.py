@@ -128,49 +128,26 @@ def run_fairness_aequitas(
 )
 def run_giskard_scan(
     self,
-    project_key: str,
-    model_config: dict,
-    dataset_config: dict,
+    model_config: dict | None,
+    dataset_config: dict | None,
     user_id: str,
 ) -> dict:
-    """Run a Giskard vulnerability scan.
+    """Run a Giskard OSS vulnerability scan locally.
 
-    model_config:   {"name": str, "description": str, "feature_names": [str]}
-    dataset_config: {"rows": [{...}], "target": str, "name": str}
+    No GiskardClient / no project key / no cloud account required.  See
+    `ai_governance.clients.giskard_client.run_local_giskard_scan` for the
+    accepted shapes of model_config and dataset_config.  When either is None,
+    a built-in sample dataset is used so the scan always has something to
+    chew on.
     """
-    import giskard
-    import pandas as pd
-
+    from ai_governance.clients.giskard_client import run_local_giskard_scan
     from services.audit_log_service import AI_GISKARD_SCAN_STARTED, log_audit_event
 
     try:
-        client = giskard.GiskardClient(
-            url=__import__("os").environ["GISKARD_URL"],
-            key=__import__("os").environ["GISKARD_API_KEY"],
+        result = run_local_giskard_scan(
+            model_config=model_config,
+            dataset_config=dataset_config,
         )
-        client.get_project(project_key)
-
-        df = pd.DataFrame(dataset_config["rows"])
-
-        # Placeholder model — real usage wraps the customer's prediction function
-        def predict_fn(df):
-            return df[dataset_config["target"]].tolist()
-
-        giskard_model = giskard.Model(
-            model=predict_fn,
-            model_type="classification",
-            name=model_config.get("name", "bytoid_model"),
-            description=model_config.get("description", ""),
-            feature_names=model_config.get("feature_names", list(df.columns)),
-        )
-
-        giskard_dataset = giskard.Dataset(
-            df=df,
-            target=dataset_config["target"],
-            name=dataset_config.get("name", "bytoid_dataset"),
-        )
-
-        scan_results = giskard.scan(giskard_model, giskard_dataset)
         log_audit_event(
             AI_GISKARD_SCAN_STARTED,
             endpoint="/ai-governance/giskard/scan",
@@ -178,7 +155,7 @@ def run_giskard_scan(
             status="success",
             actor_user_id=user_id,
         )
-        return scan_results.to_dict() if hasattr(scan_results, "to_dict") else {"status": "completed"}
+        return result
     except Exception as exc:
         raise self.retry(exc=exc, countdown=min(2 ** self.request.retries, 300)) from exc
 

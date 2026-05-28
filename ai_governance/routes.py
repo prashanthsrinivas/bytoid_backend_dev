@@ -120,21 +120,44 @@ def guardrails_reload():
 @ai_governance_bp.route("/langfuse/traces", methods=["GET"])
 @ai_governance_required(tier="superuser")
 def langfuse_traces():
-    """Fetch recent Langfuse traces."""
-    from ai_governance.clients.langfuse_client import get_langfuse
+    """Fetch recent Langfuse traces.
+
+    When Langfuse is not configured (no LANGFUSE_PUBLIC_KEY/SECRET_KEY),
+    returns an empty trace list with `configured: false` so the UI can
+    render a "not configured" hint instead of an error toast."""
+    from ai_governance.clients.langfuse_client import get_langfuse, is_configured
+
+    if not is_configured():
+        _audit(AI_OBSERVABILITY_TRACES_READ, status="not_configured")
+        return jsonify({
+            "traces": [],
+            "configured": False,
+            "message": "Langfuse not configured. Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY (and optionally LANGFUSE_HOST) to enable observability.",
+        })
 
     limit = min(int(request.args.get("limit", 20)), 100)
     lf = get_langfuse()
-    traces = lf.fetch_traces(limit=limit)
+    if lf is None:
+        return jsonify({"traces": [], "configured": False, "message": "Langfuse client failed to initialise."})
+
+    try:
+        traces = lf.fetch_traces(limit=limit)
+        items = [t.dict() for t in getattr(traces, "data", [])]
+    except Exception as exc:
+        return jsonify({"traces": [], "configured": True, "error": str(exc)}), 200
+
     _audit(AI_OBSERVABILITY_TRACES_READ)
-    return jsonify({"traces": [t.dict() for t in traces.data]})
+    return jsonify({"traces": items, "configured": True})
 
 
 @ai_governance_bp.route("/langfuse/score", methods=["POST"])
 @ai_governance_required(tier="superuser")
 def langfuse_score():
     """Post a manual evaluation score to a Langfuse trace."""
-    from ai_governance.clients.langfuse_client import get_langfuse
+    from ai_governance.clients.langfuse_client import get_langfuse, is_configured
+
+    if not is_configured():
+        return jsonify({"error": "Langfuse not configured"}), 503
 
     data = request.get_json(force=True) or {}
     required = {"trace_id", "name", "value"}
@@ -142,6 +165,9 @@ def langfuse_score():
         return jsonify({"error": f"Required fields: {required}"}), 400
 
     lf = get_langfuse()
+    if lf is None:
+        return jsonify({"error": "Langfuse client failed to initialise"}), 503
+
     lf.score(
         trace_id=data["trace_id"],
         name=data["name"],
@@ -158,16 +184,31 @@ def langfuse_score():
 @ai_governance_bp.route("/mlflow/runs", methods=["GET"])
 @ai_governance_required(tier="superuser")
 def mlflow_runs():
-    """List MLflow experiment runs."""
-    from ai_governance.clients.mlflow_client import get_mlflow
+    """List MLflow experiment runs.
+
+    Returns rows in the shape the frontend expects:
+        {"runs": [{"run_id": str, "run_name": str, "status": str,
+                   "start_time": str|None, ...all tags/metrics...}]}
+    """
+    from ai_governance.clients.mlflow_client import get_mlflow, get_experiment_name
 
     mlflow = get_mlflow()
-    experiment_name = request.args.get(
-        "experiment", __import__("os").getenv("MLFLOW_EXPERIMENT_NAME", "ai_governance")
-    )
-    runs = mlflow.search_runs(experiment_names=[experiment_name])
+    experiment_name = request.args.get("experiment", get_experiment_name())
+
+    runs_df = mlflow.search_runs(experiment_names=[experiment_name])
+    runs: list[dict] = []
+    if hasattr(runs_df, "to_dict") and not runs_df.empty:
+        for record in runs_df.to_dict(orient="records"):
+            runs.append({
+                "run_id": record.get("run_id", ""),
+                "run_name": record.get("tags.mlflow.runName") or record.get("run_name") or "(unnamed)",
+                "status": record.get("status", "UNKNOWN"),
+                "start_time": str(record.get("start_time")) if record.get("start_time") is not None else None,
+                **{k: v for k, v in record.items() if k.startswith("metrics.") or k.startswith("params.")},
+            })
+
     _audit(AI_MLFLOW_RUNS_READ)
-    return jsonify({"runs": runs.to_dict(orient="records") if hasattr(runs, "to_dict") else []})
+    return jsonify({"runs": runs, "experiment": experiment_name})
 
 
 @ai_governance_bp.route("/mlflow/log", methods=["POST"])
@@ -217,18 +258,36 @@ def mlflow_explain():
 @ai_governance_bp.route("/fairness/aif360", methods=["POST"])
 @ai_governance_required(tier="superuser")
 def fairness_aif360():
-    """Run an AIF360 bias analysis (dispatched to Celery)."""
+    """Run an AIF360 bias analysis (dispatched to Celery).
+
+    When the request body is empty the built-in sample dataset is used
+    (sex as the protected attribute, income as the label) so the
+    frontend's "Submit aif360 job" button always produces real metrics.
+    Caller may still pass {dataset, privileged_groups, unprivileged_groups}
+    to scan their own data."""
+    from ai_governance.clients.fairness_client import sample_fairness_dataset
     from ai_governance.tasks import run_fairness_aif360
 
     data = request.get_json(force=True) or {}
-    required = {"dataset", "privileged_groups", "unprivileged_groups"}
-    if not required.issubset(data):
-        return jsonify({"error": f"Required fields: {required}"}), 400
+    if {"dataset", "privileged_groups", "unprivileged_groups"}.issubset(data):
+        dataset_dict = data["dataset"]
+        privileged = data["privileged_groups"]
+        unprivileged = data["unprivileged_groups"]
+    else:
+        sample = sample_fairness_dataset()
+        dataset_dict = {
+            "df": sample["rows"],
+            "label_col": sample["label_col"],
+            "favorable_label": 1,
+            "protected_attribute_names": [sample["protected_attribute"]],
+        }
+        privileged = [{sample["protected_attribute"]: 1}]
+        unprivileged = [{sample["protected_attribute"]: 0}]
 
     task = run_fairness_aif360.delay(
-        dataset_dict=data["dataset"],
-        privileged_groups=data["privileged_groups"],
-        unprivileged_groups=data["unprivileged_groups"],
+        dataset_dict=dataset_dict,
+        privileged_groups=privileged,
+        unprivileged_groups=unprivileged,
         user_id=_resolve_user_id(),
     )
     _audit(AI_FAIRNESS_AIF360_ANALYZED, status="queued")
@@ -238,18 +297,29 @@ def fairness_aif360():
 @ai_governance_bp.route("/fairness/fairlearn", methods=["POST"])
 @ai_governance_required(tier="superuser")
 def fairness_fairlearn():
-    """Apply Fairlearn mitigation (dispatched to Celery)."""
+    """Apply Fairlearn mitigation (dispatched to Celery).
+
+    Falls back to the built-in sample dataset when X/y/sensitive_features
+    are not supplied."""
+    from ai_governance.clients.fairness_client import sample_fairness_dataset
     from ai_governance.tasks import run_fairness_fairlearn
 
     data = request.get_json(force=True) or {}
-    required = {"X", "y", "sensitive_features"}
-    if not required.issubset(data):
-        return jsonify({"error": f"Required fields: {required}"}), 400
+    if {"X", "y", "sensitive_features"}.issubset(data):
+        X = data["X"]
+        y = data["y"]
+        sensitive = data["sensitive_features"]
+    else:
+        sample = sample_fairness_dataset()
+        feature_cols = sample["feature_cols"]
+        X = [{c: row[c] for c in feature_cols} for row in sample["rows"]]
+        y = [row[sample["label_col"]] for row in sample["rows"]]
+        sensitive = [row[sample["protected_attribute"]] for row in sample["rows"]]
 
     task = run_fairness_fairlearn.delay(
-        X_dict=data["X"],
-        y=data["y"],
-        sensitive_features=data["sensitive_features"],
+        X_dict=X,
+        y=y,
+        sensitive_features=sensitive,
         estimator_config=data.get("estimator_config", {}),
         user_id=_resolve_user_id(),
     )
@@ -260,19 +330,31 @@ def fairness_fairlearn():
 @ai_governance_bp.route("/fairness/aequitas", methods=["POST"])
 @ai_governance_required(tier="superuser")
 def fairness_aequitas():
-    """Run an Aequitas bias audit (dispatched to Celery)."""
+    """Run an Aequitas bias audit (dispatched to Celery).
+
+    Falls back to the built-in sample dataset when rows/score/label/attr
+    are not supplied."""
+    from ai_governance.clients.fairness_client import sample_fairness_dataset
     from ai_governance.tasks import run_fairness_aequitas
 
     data = request.get_json(force=True) or {}
-    required = {"rows", "score_col", "label_col", "attr_cols"}
-    if not required.issubset(data):
-        return jsonify({"error": f"Required fields: {required}"}), 400
+    if {"rows", "score_col", "label_col", "attr_cols"}.issubset(data):
+        rows = data["rows"]
+        score_col = data["score_col"]
+        label_col = data["label_col"]
+        attr_cols = data["attr_cols"]
+    else:
+        sample = sample_fairness_dataset()
+        rows = sample["rows"]
+        score_col = sample["score_col"]
+        label_col = sample["label_col"]
+        attr_cols = [sample["protected_attribute"]]
 
     task = run_fairness_aequitas.delay(
-        df_dict=data["rows"],
-        score_col=data["score_col"],
-        label_col=data["label_col"],
-        attr_cols=data["attr_cols"],
+        df_dict=rows,
+        score_col=score_col,
+        label_col=label_col,
+        attr_cols=attr_cols,
         user_id=_resolve_user_id(),
     )
     _audit(AI_FAIRNESS_AEQUITAS_AUDITED, status="queued")
@@ -285,17 +367,21 @@ def fairness_aequitas():
 @ai_governance_bp.route("/giskard/scan", methods=["POST"])
 @ai_governance_required(tier="superuser")
 def giskard_scan():
-    """Launch a Giskard vulnerability scan (dispatched to Celery)."""
+    """Launch a Giskard OSS vulnerability scan (dispatched to Celery).
+
+    Body (all optional):
+      model_config:   see clients/giskard_client.run_local_giskard_scan
+      dataset_config: same — when omitted a built-in sample is scanned.
+
+    project_key was the old cloud-server field; it is now ignored if sent
+    (kept for one release so older frontends do not 400)."""
     from ai_governance.tasks import run_giskard_scan
 
     data = request.get_json(force=True) or {}
-    if not data.get("project_key"):
-        return jsonify({"error": "project_key is required"}), 400
 
     task = run_giskard_scan.delay(
-        project_key=data["project_key"],
-        model_config=data.get("model_config", {}),
-        dataset_config=data.get("dataset_config", {}),
+        model_config=data.get("model_config"),
+        dataset_config=data.get("dataset_config"),
         user_id=_resolve_user_id(),
     )
     _audit(AI_GISKARD_SCAN_STARTED, status="queued")

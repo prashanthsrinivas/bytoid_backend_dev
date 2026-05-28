@@ -89,29 +89,31 @@ class TestDeepEvalOffline:
 # ── Offline Giskard tests ─────────────────────────────────────────────────────
 
 
-class TestGiskardClientOffline:
-    """Verify get_giskard() singleton behaviour without real API."""
+class TestGiskardOSSScanOffline:
+    """Verify the OSS local scan helper is wired up correctly.
 
-    def test_singleton_returns_same_instance(self, monkeypatch):
+    Conftest stubs pandas/pytz so we cannot run the scan body itself here;
+    instead we assert the public surface that the routes / tasks rely on.
+    End-to-end behaviour is covered by the route tests in
+    test_superuser_routes.py."""
+
+    def test_module_exposes_oss_helpers_not_cloud_client(self):
         import ai_governance.clients.giskard_client as gc
 
-        fake_client = MagicMock()
-        monkeypatch.setenv("GISKARD_URL", "http://fake-giskard:19000")
-        monkeypatch.setenv("GISKARD_API_KEY", "fake-key")
+        assert callable(getattr(gc, "run_local_giskard_scan", None)), \
+            "run_local_giskard_scan must be the OSS-scan entry point"
+        # The cloud-client singleton was removed in the OSS migration.
+        assert not hasattr(gc, "get_giskard"), \
+            "get_giskard() (cloud client) should no longer exist"
 
-        import giskard
+    def test_sample_dataset_has_expected_shape(self):
+        import ai_governance.clients.giskard_client as gc
 
-        monkeypatch.setattr(giskard, "GiskardClient", lambda url, key: fake_client)
-
-        # Reset singleton
-        gc._giskard_client = None
-
-        c1 = gc.get_giskard()
-        c2 = gc.get_giskard()
-        assert c1 is c2
-
-        # Cleanup
-        gc._giskard_client = None
+        sample = gc._build_sample_dataset()
+        assert sample["target"] == "default"
+        assert sample["name"] == "sample_german_credit"
+        assert len(sample["rows"]) >= 10
+        assert all("default" in row for row in sample["rows"])
 
 
 # ── Offline TruLens tests ─────────────────────────────────────────────────────
