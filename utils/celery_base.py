@@ -145,6 +145,22 @@ try:
             "schedule": crontab(hour=2, minute=30),
         },
     }
+    # Platform-wide AI governance scan — opt-in (heavy: drives Bedrock per user).
+    # Enable by setting AI_GOVSCAN_BEAT_ENABLED=true on the beat host so it never
+    # fires in dev by accident.  Sunday 03:00 UTC, off-peak.
+    if os.getenv("AI_GOVSCAN_BEAT_ENABLED", "").lower() == "true":
+        new_celery.conf.beat_schedule["ai-governance-platform-scan-weekly"] = {
+            "task": "tasks.ai_governance.scan_platform",
+            "schedule": crontab(hour=3, minute=0, day_of_week=0),
+            "kwargs": {
+                "modes": ["tabular", "prompt", "raget", "guardrail"],
+                "sample_size": 200,
+                "max_questions": 10,
+                "run_id": None,
+                "user_limit": None,
+                "started_by": "system",
+            },
+        }
 except Exception as _beat_exc:  # pragma: no cover - beat config is best-effort
     logger.warning("could not register reconcile beat schedule: %s", _beat_exc)
 

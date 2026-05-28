@@ -61,6 +61,7 @@ flask-paginate==2024.4.12
 flower==2.0.1
 frozenlist==1.8.0
 gevent==25.9.1
+giskard==2.16.0
 google-api-core==2.29.0
 google-api-python-client==2.188.0
 google-auth==2.48.0

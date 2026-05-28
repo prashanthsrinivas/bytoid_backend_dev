@@ -134,3 +134,77 @@ def analyze(text: str, entities: list[str]) -> list[dict]:
             }
         )
     return out
+
+
+# ── Redaction ──────────────────────────────────────────────────────────────────
+
+
+def _collect_pii_spans(text: str, entities: list[str] | None) -> list[tuple[int, int, str]]:
+    """Return ``(start, end, key)`` spans for PII/SPI in ``text``.
+
+    Mirrors the two-pass detection in ``enforcer._eval_pii`` (regex via
+    ``metadata.PII_PATTERNS`` + Presidio NER via ``metadata.NER_ENTITY_MAP``)
+    but lives here so the redactor doesn't pull in the enforcer (which imports
+    the DB-backed rules store).  ``entities`` ``None``/empty means "every
+    entity the catalog supports".  Fails open: if Presidio is unavailable the
+    regex spans are still returned.
+    """
+    from ai_governance.metadata import NER_ENTITY_MAP, PII_PATTERNS
+
+    selected = entities or (list(PII_PATTERNS.keys()) + list(NER_ENTITY_MAP.keys()))
+    spans: list[tuple[int, int, str]] = []
+
+    # Regex pass.
+    for ent in selected:
+        rx = PII_PATTERNS.get(ent)
+        if not rx:
+            continue
+        for m in rx.finditer(text):
+            spans.append((m.start(), m.end(), ent))
+
+    # NER pass — only entities lacking a regex but mapped to a Presidio name.
+    ner_keys = [e for e in selected if e not in PII_PATTERNS and e in NER_ENTITY_MAP]
+    if ner_keys:
+        presidio_to_key = {NER_ENTITY_MAP[k]: k for k in ner_keys}
+        for m in analyze(text, list(presidio_to_key.keys())):
+            start, end = m["span"]
+            key = presidio_to_key.get(m["entity"], m["entity"].lower())
+            spans.append((start, end, key))
+
+    return spans
+
+
+def anonymize(text: str, entities: list[str] | None = None) -> str:
+    """Return ``text`` with detected PII/SPI replaced by ``[REDACTED:<key>]`` tags.
+
+    Used by the governance scan to scrub decrypted user content before it
+    reaches Giskard.  Overlapping matches are de-duplicated (longest wins) and
+    spliced right-to-left so earlier offsets stay valid.  Fails open: returns
+    the regex-redacted text (or the original) when Presidio is unavailable.  A
+    non-string input is returned unchanged.
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    try:
+        spans = _collect_pii_spans(text, entities)
+    except Exception as exc:  # never let scrubbing crash a scan
+        logger.warning("presidio: anonymize span collection failed: %s", exc)
+        return text
+    if not spans:
+        return text
+
+    # Resolve overlaps: prefer the longest span starting earliest, then drop
+    # any later span that intersects an already-kept one.
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    kept: list[tuple[int, int, str]] = []
+    last_end = -1
+    for start, end, key in spans:
+        if start >= last_end:
+            kept.append((start, end, key))
+            last_end = end
+
+    # Splice right-to-left.
+    for start, end, key in sorted(kept, key=lambda s: s[0], reverse=True):
+        text = f"{text[:start]}[REDACTED:{key}]{text[end:]}"
+    return text

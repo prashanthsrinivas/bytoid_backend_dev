@@ -31,6 +31,8 @@ from services.audit_log_service import (
     AI_FAIRNESS_AEQUITAS_AUDITED,
     AI_GISKARD_SCAN_STARTED,
     AI_GISKARD_RESULTS_READ,
+    AI_GOVSCAN_BATCH_STARTED,
+    AI_GOVSCAN_RESULTS_READ,
     AI_TRULENS_FEEDBACK_POSTED,
     AI_TRULENS_LEADERBOARD_READ,
     AI_DEEPEVAL_RUN,
@@ -403,6 +405,121 @@ def giskard_results(task_id):
         "status": result.status,
         "result": result.result if result.ready() else None,
     })
+
+
+# ── AI Governance scan (platform-wide sweep) ──────────────────────────────────
+
+
+@ai_governance_bp.route("/scan/platform", methods=["POST"])
+@ai_governance_required(tier="superuser")
+def scan_platform():
+    """Launch a platform-wide governance scan across all users (Celery chord).
+
+    Body (all optional): ``modes`` (subset of
+    ["tabular","prompt","raget","guardrail"]), ``sample_size``, ``max_questions``,
+    ``user_limit``.  Rejected with 409 if a platform scan is already in flight."""
+    from ai_governance.scan_orchestrator import ALL_MODES
+    from ai_governance.scan_results_store import (
+        create_run,
+        has_active_platform_run,
+        new_run_id,
+    )
+    from ai_governance.tasks import scan_platform_task
+
+    if has_active_platform_run():
+        return jsonify({"error": "a platform scan is already queued or running"}), 409
+
+    data = request.get_json(force=True) or {}
+    modes = data.get("modes") or ALL_MODES
+    sample_size = int(data.get("sample_size", 200))
+    max_questions = int(data.get("max_questions", 10))
+    user_limit = data.get("user_limit")
+    started_by = _resolve_user_id()
+
+    run_id = new_run_id()
+    create_run(run_id, scope="platform", modes=modes, started_by=started_by)
+    task = scan_platform_task.delay(
+        modes=modes,
+        sample_size=sample_size,
+        max_questions=max_questions,
+        run_id=run_id,
+        user_limit=user_limit,
+        started_by=started_by or "system",
+    )
+    _audit(AI_GOVSCAN_BATCH_STARTED, status="queued", metadata={"run_id": run_id})
+    return jsonify({"run_id": run_id, "task_id": task.id, "status": "queued"})
+
+
+@ai_governance_bp.route("/scan/user/<user_id>", methods=["POST"])
+@ai_governance_required(tier="superuser")
+def scan_user(user_id):
+    """Ad-hoc single-user scan (rollout / debugging). Same modes as the sweep."""
+    from celery import chord
+
+    from ai_governance.scan_orchestrator import ALL_MODES, enumerate_users
+    from ai_governance.scan_results_store import create_run, new_run_id
+    from ai_governance.tasks import aggregate_scan_task, scan_user_task
+
+    data = request.get_json(force=True) or {}
+    modes = data.get("modes") or ALL_MODES
+    sample_size = int(data.get("sample_size", 200))
+    max_questions = int(data.get("max_questions", 10))
+
+    matches = enumerate_users(user_filter=[user_id])
+    org_admin_id = matches[0]["org_admin_id"] if matches else user_id
+
+    run_id = new_run_id()
+    create_run(run_id, scope="user", modes=modes, started_by=_resolve_user_id())
+    # One-element chord so the run is finalized with a summary like a sweep.
+    result = chord(
+        [scan_user_task.s(user_id, org_admin_id, modes, sample_size, max_questions, run_id)]
+    )(aggregate_scan_task.s(run_id))
+    _audit(
+        AI_GOVSCAN_BATCH_STARTED,
+        status="queued",
+        metadata={"run_id": run_id, "user_id": user_id},
+    )
+    return jsonify({"run_id": run_id, "task_id": result.id, "status": "queued"})
+
+
+@ai_governance_bp.route("/scan/runs", methods=["GET"])
+@ai_governance_required(tier="superuser")
+def scan_runs():
+    """List recent scan runs (most recent first)."""
+    from ai_governance.scan_results_store import list_runs
+
+    runs = list_runs(limit=int(request.args.get("limit", 50)))
+    _audit(AI_GOVSCAN_RESULTS_READ)
+    return jsonify({"runs": runs})
+
+
+@ai_governance_bp.route("/scan/runs/<run_id>", methods=["GET"])
+@ai_governance_required(tier="superuser")
+def scan_run_detail(run_id):
+    """Aggregated platform/org rollup for one run."""
+    from ai_governance.scan_results_store import get_run
+
+    run = get_run(run_id)
+    if not run:
+        return jsonify({"error": "run not found"}), 404
+    _audit(AI_GOVSCAN_RESULTS_READ, metadata={"run_id": run_id})
+    return jsonify(run)
+
+
+@ai_governance_bp.route("/scan/runs/<run_id>/users", methods=["GET"])
+@ai_governance_required(tier="superuser")
+def scan_run_users(run_id):
+    """Per-user results for a run (paged; filter by ``org_admin_id``)."""
+    from ai_governance.scan_results_store import list_user_results
+
+    results = list_user_results(
+        run_id,
+        org_admin_id=request.args.get("org_admin_id"),
+        limit=int(request.args.get("limit", 200)),
+        offset=int(request.args.get("offset", 0)),
+    )
+    _audit(AI_GOVSCAN_RESULTS_READ, metadata={"run_id": run_id})
+    return jsonify({"run_id": run_id, "results": results})
 
 
 # ── TruLens ───────────────────────────────────────────────────────────────────

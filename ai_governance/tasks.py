@@ -14,7 +14,11 @@ Discovery: utils/celery_base.py imports this module as a side effect so
 Celery workers find these tasks on startup.
 """
 
+import logging
+
 from utils.celery_base import celery
+
+logger = logging.getLogger(__name__)
 
 
 # ── Fairness tasks ────────────────────────────────────────────────────────────
@@ -240,3 +244,168 @@ def run_mlflow_explain(
         return shap_dict
     except Exception as exc:
         raise self.retry(exc=exc, countdown=min(2 ** self.request.retries, 300)) from exc
+
+
+# ── AI Governance scan (platform-wide sweep) ──────────────────────────────────
+#
+# Fan-out shape: scan_platform -> chord(group(scan_user x N), aggregate_scan).
+# Failure isolation: scan_user NEVER re-raises (a bad user must not abort the
+# chord), so the aggregate callback always fires.  These tasks run on the
+# dedicated low-concurrency ``ai_governance_scan`` queue to protect the shared
+# Bedrock quota the live RAG model also uses.
+
+
+@celery.task(
+    bind=True,
+    max_retries=0,  # scan_one_user swallows its own errors; no retry storms
+    name="tasks.ai_governance.scan_user",
+    queue="ai_governance_scan",
+    soft_time_limit=900,
+    rate_limit="10/m",
+)
+def scan_user_task(
+    self,
+    user_id: str,
+    org_admin_id: str,
+    modes: list,
+    sample_size: int,
+    max_questions: int,
+    run_id: str,
+) -> dict:
+    """Scan one user and persist the result. Returns the result dict for the
+    chord callback; never raises (so the sweep always completes)."""
+    from ai_governance.scan_orchestrator import scan_one_user
+    from ai_governance.scan_results_store import record_user_result
+    from services.audit_log_service import (
+        AI_GOVSCAN_USER_COMPLETED,
+        AI_GOVSCAN_USER_FAILED,
+        log_audit_event,
+    )
+
+    try:
+        result = scan_one_user(
+            user_id,
+            modes=modes,
+            sample_size=sample_size,
+            max_questions=max_questions,
+            org_admin_id=org_admin_id,
+        )
+    except Exception as exc:  # defensive — scan_one_user is already isolated
+        result = {
+            "user_id": user_id,
+            "org_admin_id": org_admin_id,
+            "status": "error",
+            "modes": {},
+            "detail": str(exc),
+        }
+
+    try:
+        record_user_result(run_id, result)
+    except Exception:
+        # persistence failure must not break the chord
+        logger.warning("scan_user_task: record_user_result failed", exc_info=True)
+
+    action = (
+        AI_GOVSCAN_USER_FAILED
+        if result.get("status") == "error"
+        else AI_GOVSCAN_USER_COMPLETED
+    )
+    log_audit_event(
+        action,
+        endpoint="/ai-governance/scan/user",
+        ip="celery",
+        status=result.get("status", "ok"),
+        actor_user_id=user_id,
+        metadata={"run_id": run_id, "modes": modes},
+    )
+    return result
+
+
+@celery.task(
+    bind=True,
+    name="tasks.ai_governance.aggregate_scan",
+    queue="ai_governance_scan",
+)
+def aggregate_scan_task(self, per_user_results: list, run_id: str) -> dict:
+    """Chord callback: roll up per-user results and finalize the run."""
+    from ai_governance.scan_orchestrator import aggregate_results
+    from ai_governance.scan_results_store import finalize_run
+    from services.audit_log_service import AI_GOVSCAN_BATCH_COMPLETED, log_audit_event
+
+    cleaned = [r for r in (per_user_results or []) if isinstance(r, dict)]
+    summary = aggregate_results(cleaned)
+    finalize_run(run_id, summary, status="completed")
+    log_audit_event(
+        AI_GOVSCAN_BATCH_COMPLETED,
+        endpoint="/ai-governance/scan/platform",
+        ip="celery",
+        status="success",
+        actor_user_id="system",
+        metadata={"run_id": run_id, "user_count": summary.get("user_count", 0)},
+    )
+    return {"run_id": run_id, "summary": summary}
+
+
+@celery.task(
+    bind=True,
+    name="tasks.ai_governance.scan_platform",
+    queue="ai_governance_scan",
+)
+def scan_platform_task(
+    self,
+    modes: list,
+    sample_size: int,
+    max_questions: int,
+    run_id: str,
+    user_limit=None,
+    started_by: str = "system",
+) -> dict:
+    """Enumerate users and fan out a per-user scan chord.
+
+    ``run_id`` is created up-front by the caller (route) for idempotency; when a
+    beat-scheduled run passes ``None`` we mint one here.
+    """
+    from celery import chord
+
+    from ai_governance.scan_orchestrator import ALL_MODES, enumerate_users
+    from ai_governance.scan_results_store import (
+        create_run,
+        finalize_run,
+        new_run_id,
+        set_run_status,
+    )
+    from services.audit_log_service import AI_GOVSCAN_BATCH_STARTED, log_audit_event
+
+    modes = modes or ALL_MODES
+    if not run_id:
+        run_id = new_run_id()
+        create_run(run_id, scope="platform", modes=modes, started_by=started_by)
+
+    users = enumerate_users(limit=user_limit)
+    set_run_status(run_id, "running", user_count=len(users))
+    log_audit_event(
+        AI_GOVSCAN_BATCH_STARTED,
+        endpoint="/ai-governance/scan/platform",
+        ip="celery",
+        status="running",
+        actor_user_id=started_by,
+        metadata={"run_id": run_id, "user_count": len(users), "modes": modes},
+    )
+
+    if not users:
+        finalize_run(run_id, {"user_count": 0, "note": "no_users"}, status="completed")
+        return {"run_id": run_id, "user_count": 0}
+
+    header = [
+        scan_user_task.s(
+            u["user_id"],
+            u.get("org_admin_id"),
+            modes,
+            sample_size,
+            max_questions,
+            run_id,
+        )
+        for u in users
+    ]
+    chord(header)(aggregate_scan_task.s(run_id))
+    return {"run_id": run_id, "user_count": len(users)}

@@ -13,6 +13,24 @@ without the user having to upload anything.
 import threading
 from typing import Any
 
+
+class GiskardUnavailable(RuntimeError):
+    """Raised when the ``giskard`` package can't be imported in this environment.
+
+    Scan tasks catch this and report a clean ``status=error`` instead of
+    burning Celery retries on an ``ImportError`` (giskard is an optional,
+    worker-only dependency — see ``requirements.txt``)."""
+
+
+def require_giskard():
+    """Return the imported ``giskard`` module or raise ``GiskardUnavailable``."""
+    try:
+        import giskard
+    except Exception as exc:  # ImportError + any transitive init failure
+        raise GiskardUnavailable(f"giskard import failed: {exc}") from exc
+    return giskard
+
+
 # ── Giskard OSS local scan ────────────────────────────────────────────────────
 
 
