@@ -13,8 +13,7 @@ import uuid
 
 import pymysql.cursors
 
-from db.db_checkers import safe_execute
-from db.rds_db import connect_to_rds
+from db.rds_db import connect_to_rds, safe_execute
 
 logger = logging.getLogger(__name__)
 
