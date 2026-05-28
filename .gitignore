@@ -46,6 +46,7 @@ pip-audit.*
 safety-report.*
 guardrail-report.json
 tests/routes/*
+tests/files/*
 # Pre-commit
 .pre-commit-trash/
 
