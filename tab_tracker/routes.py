@@ -4034,11 +4034,13 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
 
     await emit(msg_builder_main.job_progress(job_id, session_id, "init", "Starting policy analysis…", 5))
 
-    # Load policy from S3
-    from utils.s3_utils import load_yaml_from_s3 as _load_yaml
-    from utils.app_configs import FRAMEWORK_OWNER as _FW_OWNER
+    # Load and decrypt the policy YAML. Using load_yaml_from_s3 directly
+    # leaves title/content/sections as ciphertext strings, which then breaks
+    # the LanceDB-fallback that iterates pol_data["sections"] (the bug:
+    # ``'str' object has no attribute 'get'`` when LanceDB had no statements).
+    from policy_hub.routes import _read_policy_yaml
     pol_key = f"{user_id}/policies/{policy_id}.yaml"
-    pol_data = _load_yaml(pol_key)
+    pol_data = _read_policy_yaml(user_id, pol_key)
     if not pol_data:
         raise Exception(f"Policy not found: {policy_id}")
     policy_name = pol_data.get("title", policy_id)
@@ -4274,8 +4276,9 @@ async def add_tracker_policy():
 
         logged_in_user_id, user_id = parse_composite_user_id(baseuser)
 
-        from utils.s3_utils import load_yaml_from_s3 as _load_yaml
-        pol_data = _load_yaml(f"{user_id}/policies/{policy_id}.yaml")
+        # Decrypt-aware load — same reason as in _add_policy_worker_impl.
+        from policy_hub.routes import _read_policy_yaml
+        pol_data = _read_policy_yaml(user_id, f"{user_id}/policies/{policy_id}.yaml")
         if not pol_data:
             return jsonify({"error": f"Policy not found: {policy_id}"}), 404
 
@@ -4427,8 +4430,9 @@ async def _update_policy_worker(data: dict, job_id: str = None) -> dict:
 
     await emit(msg_builder_main.job_progress(job_id, session_id, "init", "Re-mapping policy statements…", 5))
 
-    from utils.s3_utils import load_yaml_from_s3 as _load_yaml
-    pol_data = _load_yaml(f"{user_id}/policies/{policy_id}.yaml")
+    # Decrypt-aware load — see _add_policy_worker_impl for the bug context.
+    from policy_hub.routes import _read_policy_yaml
+    pol_data = _read_policy_yaml(user_id, f"{user_id}/policies/{policy_id}.yaml")
     if not pol_data:
         raise Exception(f"Policy not found: {policy_id}")
     policy_name = pol_data.get("title", policy_id)
