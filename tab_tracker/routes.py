@@ -4051,6 +4051,7 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
 
     # Fetch statements from LanceDB (fall back to parsing YAML sections)
     statements = await fetch_policy_statements(policy_id, version=policy_version)
+    stmt_source = "lancedb"
     if not statements:
         raw_sections = pol_data.get("sections", [])
         statements = [
@@ -4058,6 +4059,12 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
             for sec in raw_sections
             for i, s in enumerate(sec.get("statements", []))
         ]
+        stmt_source = "yaml_fallback"
+
+    logger.info(
+        "policy mapping: policy=%s tracker=%s loaded %d statements (source=%s)",
+        policy_id, tracker_id, len(statements), stmt_source,
+    )
 
     tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
     if not tracker_meta or not tracker_data:
@@ -4231,12 +4238,26 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
         metadata={"tracker_id": tracker_id, "policy_id": policy_id, "rows_assigned": rows_assigned},
     )
 
+    logger.info(
+        "policy mapping: policy=%s tracker=%s — %d/%d rows assigned",
+        policy_id, tracker_id, rows_assigned, len(rows_for_analysis),
+    )
+
     # Terminal completion event — the client dialog keys on job_success (not a
     # progress=100 tick) to close. Mirrors _add_framework_worker.
     await emit(msg_builder_main.job_success(job_id, session_id, f"Policy linked — {rows_assigned} rows assigned"))
-    # Global chatbot status — closes the loop for any screen.
+    # Global chatbot status — closes the loop for any screen. Be explicit
+    # when the matcher produced no assignments so users notice (a common
+    # cause is a policy whose Statements section was never populated).
+    if rows_assigned == 0:
+        chat_msg = (
+            f"Linked '{policy_name}' to '{tracker_name}', but no rows matched — "
+            f"the policy may have no statements to map. Check its Policy Statements section."
+        )
+    else:
+        chat_msg = f"Linked '{policy_name}' to '{tracker_name}' — {rows_assigned} rows mapped"
     await emit(msg_builder_main.chat_status(
-        f"Linked '{policy_name}' to '{tracker_name}' — {rows_assigned} rows mapped",
+        chat_msg,
         feature="tracker_policy_mapping",
         status="success",
         job_id=job_id,
