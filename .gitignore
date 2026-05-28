@@ -28,34 +28,11 @@ env/
 .DS_Store
 Thumbs.db
 
-# Test / coverage / scanner artifacts (Phase 0+)
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
-
-# Phase 1 scanner outputs
-bandit-report.*
-semgrep-results.*
-gitleaks-report.*
-trufflehog-report.*
-pip-audit.*
-safety-report.*
-guardrail-report.json
-tests/routes/*
-tests/files/*
-# Pre-commit
-.pre-commit-trash/
-
 # Logs
 *.log
 logs/
 
 schema.sql
-
 # Cache and Temporary Files
 *.cache
 *.bak
