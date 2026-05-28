@@ -102,27 +102,47 @@ def run_local_giskard_scan(
     ds_cfg = dataset_config or _build_sample_dataset()
     mc = model_config or {}
 
+    import numpy as np
+
     df = pd.DataFrame(ds_cfg["rows"])
     target = ds_cfg["target"]
     feature_names = ds_cfg.get("feature_names") or [c for c in df.columns if c != target]
+    model_type = mc.get("model_type", "classification")
+    classification_labels = mc.get("classification_labels", [0, 1])
 
     # Baseline predict function — copies the target column.  This lets Giskard
     # run its data drift / leakage / fairness detectors without a real model.
     # When the caller wants a real scan they should pass a real prediction
     # function via a future model-upload endpoint; the OSS scan API is the
     # same either way.
+    #
+    # Giskard requires a *classification* model's predict function to return
+    # per-class probabilities (floats), shaped (n_rows, n_classes) and aligned
+    # to `classification_labels` — not the integer class labels.  We emit a
+    # one-hot probability matrix from the copied target column.  For a
+    # regression model we return float predictions directly.
+    label_index = {label: i for i, label in enumerate(classification_labels)}
+
     def predict_fn(input_df: "pd.DataFrame"):
         if target in input_df.columns:
-            return input_df[target].astype(int).tolist()
-        return [0] * len(input_df)
+            raw = input_df[target].tolist()
+        else:
+            raw = [classification_labels[0]] * len(input_df)
+
+        if model_type == "classification":
+            probs = np.zeros((len(raw), len(classification_labels)), dtype=float)
+            for row, value in enumerate(raw):
+                probs[row, label_index.get(value, 0)] = 1.0
+            return probs
+        return np.asarray(raw, dtype=float)
 
     giskard_model = giskard.Model(
         model=predict_fn,
-        model_type=mc.get("model_type", "classification"),
+        model_type=model_type,
         name=mc.get("name", "bytoid_baseline_model"),
         description=mc.get("description", "Baseline model for OSS Giskard scan"),
         feature_names=feature_names,
-        classification_labels=mc.get("classification_labels", [0, 1]),
+        classification_labels=classification_labels,
     )
 
     giskard_dataset = giskard.Dataset(
