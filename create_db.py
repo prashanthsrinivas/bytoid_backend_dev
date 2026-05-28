@@ -3939,6 +3939,28 @@ def create_policy_hub_governance_tables():
             )
             """
         )
+        # Lightweight metadata index for /policy-hub/list — avoids one S3 GET
+        # per document. S3 stays authoritative for full content; this row is
+        # written-through by _write_policy_yaml and reconciled nightly.
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS policy_hub_documents (
+                policy_id         VARCHAR(64)  NOT NULL,
+                user_id           VARCHAR(64)  NOT NULL,
+                org_id            VARCHAR(255) NULL,
+                title_enc         TEXT         NULL,
+                doc_ref           VARCHAR(16)  NULL,
+                doc_type          VARCHAR(16)  NOT NULL,
+                frameworks_json   TEXT         NULL,
+                validation_status VARCHAR(32)  NULL,
+                etag              VARCHAR(64)  NULL,
+                created_at        VARCHAR(40)  NULL,
+                updated_at        VARCHAR(40)  NULL,
+                PRIMARY KEY (policy_id),
+                KEY idx_owner (user_id, doc_type, created_at)
+            )
+            """
+        )
         connection.commit()
         print("✅ policy hub governance tables created")
     except Exception as e:

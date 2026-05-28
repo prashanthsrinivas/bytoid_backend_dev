@@ -152,6 +152,14 @@ def _decrypt_policy_fields(user_id: str, item: dict) -> tuple:
 
 def _write_policy_yaml(user_id: str, key: str, item: dict):
     _write_yaml_to_s3(key, _encrypt_policy_fields(user_id, item))
+    # Write-through the lightweight metadata index so /list stays a single
+    # indexed query. Best-effort: an index failure must never block the
+    # authoritative S3 write — the nightly reconcile heals any gap.
+    try:
+        from policy_hub.doc_index import upsert_document
+        upsert_document(user_id, item)
+    except Exception as idx_exc:
+        logger.warning("doc_index upsert failed for key=%s: %s", key, idx_exc)
 
 
 def _read_policy_yaml(user_id: str, key: str) -> dict | None:
@@ -1998,9 +2006,13 @@ def edit_status():
 
 # ── 2. LIST ───────────────────────────────────────────────────────────────────
 
+# Fast-path flag: serve /list from the RDS metadata index (policy_hub_documents)
+# instead of one S3 GET per document. Flip to False to fall back to the legacy
+# S3 scan everywhere if the index ever misbehaves.
+POLICY_INDEX_ENABLED = True
+
 
 @policy_hub_bp.route("/list", methods=["GET"])
-@permission_required_body("policyhub.view")
 @permission_required_body("policyhub.view")
 def list_policies():
     raw_user_id = request.args.get("user_id")
@@ -2008,67 +2020,107 @@ def list_policies():
         return jsonify({"error": "user_id is required"}), 400
     logged_in_user_id, user_id = parse_composite_user_id(raw_user_id)
 
-    prefix = f"{user_id}/policies/"
-    s3_objects = list_all_files(folder=prefix)
+    # ── Owner's documents ──────────────────────────────────────────────────
+    # Fast path: the RDS metadata index answers the list in one indexed query.
+    # Fall back to the S3 scan (and lazily populate) when the index is empty
+    # for this user.
+    items: list[dict] = []
+    used_index = False
+    if POLICY_INDEX_ENABLED:
+        try:
+            from policy_hub.doc_index import list_documents
+            owned = list_documents(user_id)
+            if owned:
+                items.extend(owned)
+                used_index = True
+        except Exception as idx_exc:
+            logger.warning("doc_index list_documents failed, S3 fallback: %s", idx_exc)
+    if not used_index:
+        from policy_hub.doc_index import scan_policies_from_s3
+        # Pass _read_policy_yaml so the helper decrypts using the local
+        # routes-module helpers without re-entering an import cycle.
+        items.extend(scan_policies_from_s3(user_id, read_fn=_read_policy_yaml))
 
-    items = []
-    for obj in s3_objects:
-        key = obj.get("Key", "")
-        # skip job state files
-        if not key.endswith(".yaml") or "/jobs/" in key:
-            continue
-        data = _read_policy_yaml(user_id, key)
-        if data:
-            items.append(data)
+    seen_policy_ids = {it.get("policy_id") for it in items if it.get("policy_id")}
 
-    # Union any policies shared TO `user_id` (the resolved owner from the parsed
-    # request — equals the requester for plain user_ids, equals the impersonation
-    # target for composite). This must run for both cases, otherwise composite
-    # admin views miss their shared-to-them policies.
+    # ── Collect foreign-owned documents to union in ────────────────────────
+    # Shared TO this user (resolved owner — handles composite/impersonation).
     try:
         shared_index = get_user_shared_resources(user_id, "policy") or {}
     except Exception:
         shared_index = {}
+    shared_targets: list[tuple[str, str]] = []  # (policy_id, owner_id)
     for policy_id, entry in shared_index.items():
         owner_id = entry.get("mainuser_id")
-        if not owner_id or owner_id == user_id:
+        if not owner_id or owner_id == user_id or policy_id in seen_policy_ids:
             continue
-        owner_policy = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id))
-        if not owner_policy:
-            continue
-        owner_policy = {**owner_policy, "owner_user_id": owner_id, "shared": True}
-        items.append(owner_policy)
+        shared_targets.append((policy_id, owner_id))
 
-    # Union policies where this user is an active workflow party (QR / GR /
-    # Approver) but is neither the owner nor in the explicit share index.
-    # Without this, an assigned reviewer would not see the policy in their
-    # list at all — only /workflow/inbox would surface it.
+    # Workflow-assigned (QR / GR / Approver) but neither owner nor shared —
+    # otherwise an assigned reviewer would only see it via /workflow/inbox.
+    assigned_targets: list[tuple[str, str, str]] = []  # (policy_id, owner_id, role)
+    shared_ids = {t[0] for t in shared_targets}
     try:
         from policy_hub.workflow_autosubmit import WORKFLOW_SUPPORTED_DOC_TYPES
         from workflow_route.state_machine import get_docs_assigned_to_user
 
-        seen_policy_ids = {it.get("policy_id") for it in items if it.get("policy_id")}
         for wf_doc_type in WORKFLOW_SUPPORTED_DOC_TYPES:
             for assignment in get_docs_assigned_to_user(wf_doc_type, user_id):
                 pid = assignment.get("doc_id")
                 owner_id = assignment.get("owner_user_id")
-                if not pid or not owner_id or pid in seen_policy_ids:
+                if not pid or not owner_id or owner_id == user_id:
                     continue
-                if owner_id == user_id:
+                if pid in seen_policy_ids or pid in shared_ids:
                     continue
-                owner_policy = load_yaml_from_s3(_s3_key(owner_id, pid))
-                if not owner_policy:
-                    continue
-                owner_policy = {
-                    **owner_policy,
-                    "owner_user_id": owner_id,
-                    "assigned_for_review": True,
-                    "assigned_role": assignment.get("role"),
-                }
-                items.append(owner_policy)
-                seen_policy_ids.add(pid)
+                assigned_targets.append((pid, owner_id, assignment.get("role")))
     except Exception as wf_assign_exc:
         logger.warning("policy assigned-for-review union failed: %s", wf_assign_exc)
+
+    # ── Resolve foreign documents: index first (one batched query), S3 only
+    # for ids the index hasn't caught up on yet (then lazily populate). ─────
+    foreign_ids = [t[0] for t in shared_targets] + [t[0] for t in assigned_targets]
+    index_hits: dict[str, dict] = {}
+    if foreign_ids:
+        try:
+            from policy_hub.doc_index import get_documents
+            index_hits = get_documents(foreign_ids)
+        except Exception as gd_exc:
+            logger.warning("doc_index get_documents failed: %s", gd_exc)
+
+    def _resolve_foreign(pid: str, owner_id: str) -> dict | None:
+        hit = index_hits.get(pid)
+        if hit:
+            return dict(hit)
+        full = _read_policy_yaml(owner_id, _s3_key(owner_id, pid))
+        if not full:
+            return None
+        try:
+            from policy_hub.doc_index import upsert_document
+            upsert_document(owner_id, full)
+        except Exception:
+            pass
+        return full
+
+    for pid, owner_id in shared_targets:
+        it = _resolve_foreign(pid, owner_id)
+        if not it:
+            continue
+        items.append({**it, "owner_user_id": owner_id, "shared": True})
+        seen_policy_ids.add(pid)
+
+    for pid, owner_id, role in assigned_targets:
+        if pid in seen_policy_ids:
+            continue
+        it = _resolve_foreign(pid, owner_id)
+        if not it:
+            continue
+        items.append({
+            **it,
+            "owner_user_id": owner_id,
+            "assigned_for_review": True,
+            "assigned_role": role,
+        })
+        seen_policy_ids.add(pid)
 
     try:
         from policy_hub.workflow_autosubmit import WORKFLOW_SUPPORTED_DOC_TYPES
@@ -2567,6 +2619,13 @@ def delete_policy():
                 "Raw file cleanup failed for policy=%s raw_key=%s: %s",
                 policy_id, raw_key, exc,
             )
+
+    # Delete-through the metadata index (best-effort; reconcile heals drift).
+    try:
+        from policy_hub.doc_index import delete_document
+        delete_document(policy_id)
+    except Exception as idx_exc:
+        logger.warning("doc_index delete failed for policy=%s: %s", policy_id, idx_exc)
 
     return jsonify({"status": "ok"}), 200
 

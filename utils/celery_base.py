@@ -138,6 +138,12 @@ try:
             "task": "tasks.reconcile_statement_tracker_refs",
             "schedule": crontab(hour=2, minute=0),
         },
+        # Heal the policy_hub_documents metadata index against S3 nightly.
+        # Offset 30 minutes after the tracker reconcile to spread DB load.
+        "reconcile-policy-hub-documents-nightly": {
+            "task": "tasks.reconcile_policy_hub_documents",
+            "schedule": crontab(hour=2, minute=30),
+        },
     }
 except Exception as _beat_exc:  # pragma: no cover - beat config is best-effort
     logger.warning("could not register reconcile beat schedule: %s", _beat_exc)
@@ -151,6 +157,14 @@ def backoff(retries):
 def reconcile_statement_tracker_refs(self):
     """Rebuild the statement↔tracker RDS graph from S3 tracker blobs."""
     from tab_tracker.reconcile import reconcile_all
+
+    return reconcile_all()
+
+
+@new_celery.task(bind=True, name="tasks.reconcile_policy_hub_documents")
+def reconcile_policy_hub_documents(self):
+    """Heal policy_hub_documents against S3 (upsert missing, delete orphaned)."""
+    from policy_hub.reconcile_doc_index import reconcile_all
 
     return reconcile_all()
 
