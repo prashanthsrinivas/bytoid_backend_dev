@@ -45,6 +45,7 @@ from policy_hub.extract import extract_any
 from policy_hub.titles import extract_title
 from policy_hub.doc_ref import mint_doc_ref
 from policy_hub.doc_types import (
+    display_doc_ref,
     enforce_heading as doc_type_enforce_heading,
     enumeration_type_filter,
     statement_display_number,
@@ -307,8 +308,8 @@ def _safe_mint_doc_ref(user_id: str, doc_type: str, title: str) -> str | None:
 
 def _attach_display_numbers(item: dict, doc_type: str, user_id: str | None = None) -> None:
     """Annotate each parsed statement in ``item['sections']`` with a
-    ``display_number`` (e.g. ``ACC-0001.STM.3``) derived from the doc_ref and
-    the section's abbreviation. No-op when the doc has no doc_ref or sections.
+    ``display_number`` (e.g. ``ACC-001-003``) derived from the doc_ref.
+    No-op when the doc has no doc_ref or sections.
     """
     doc_ref = item.get("doc_ref")
     sections = item.get("sections")
@@ -2243,6 +2244,7 @@ def _statements_from_item(item: dict) -> list[dict]:
     """
     doc_type = item.get("type", "policy")
     doc_ref = item.get("doc_ref")
+    doc_ref_disp = display_doc_ref(doc_ref)
     abbr_map = section_abbr_map(doc_type)
     out: list[dict] = []
     for sec in item.get("sections", []) or []:
@@ -2253,7 +2255,7 @@ def _statements_from_item(item: dict) -> list[dict]:
             out.append({
                 "statement_id": stmt.get("id"),
                 "policy_id": item.get("policy_id"),
-                "doc_ref": doc_ref,
+                "doc_ref": doc_ref_disp,
                 "doc_type": doc_type,
                 "section_id": sec_id,
                 "section_abbr": abbr,
@@ -2272,7 +2274,7 @@ def list_policy_statements(policy_id: str):
     """Return the numbered, individually-addressable statements of a document.
 
     Query: user_id. Each statement carries its ``display_number``
-    (e.g. ``ACC-0001.STM.3``) so clients render a consistent scheme.
+    (e.g. ``ACC-001-003``) so clients render a consistent scheme.
     """
     baseuser = request.args.get("user_id")
     if not baseuser or not policy_id:
@@ -2287,7 +2289,7 @@ def list_policy_statements(policy_id: str):
 
     return jsonify({
         "policy_id": policy_id,
-        "doc_ref": item.get("doc_ref"),
+        "doc_ref": display_doc_ref(item.get("doc_ref")),
         "title": item.get("title"),
         "doc_type": item.get("type", "policy"),
         "statements": _statements_from_item(item),

@@ -30,9 +30,10 @@ class SectionDef:
     kind: SectionKind
     required: bool = True
     prompt_help: str = ""
-    # Short code used to compose a statement's display number
-    # (e.g. ``ACC-0001.STM.3``). Only meaningful for statement/steps sections;
-    # blank for prose/table sections.
+    # Short code (e.g. ``STM`` / ``STP`` / ``REQ``) surfaced on statements as
+    # ``section_abbr``. No longer rendered in the user-facing display number,
+    # but kept for clients that group statements by section kind. Blank for
+    # prose/table sections.
     abbr: str = ""
 
 
