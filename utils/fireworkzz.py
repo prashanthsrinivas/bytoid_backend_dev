@@ -2382,15 +2382,19 @@ async def _analyze_single_row_policy(
     row_id = row["row_id"]
     prompt = (
         f'You are a compliance analyst. For the SINGLE tracker row below, identify which '
-        f'statements from the policy "{policy_name}" cover or apply to it. '
-        f"MATCHING GUIDANCE: Policies are written broadly; tracker rows describe specific "
-        f"controls, risks, threats, processes, or activities. Assign a statement when the "
-        f"row falls within the statement's scope or subject area — exact-wording overlap is "
-        f"NOT required. Include statements that establish the governance, requirement, "
-        f"expectation, or safeguard the row implements, mitigates, or evidences. A single "
-        f"specific row may map to multiple broad statements when several apply. "
-        f"Only skip statements that are clearly unrelated (different domain, no plausible "
-        f"compliance reader would link them). When the topic aligns but you're unsure, INCLUDE it. "
+        f'statements from the policy "{policy_name}" specifically apply to it. '
+        f"MATCHING GUIDANCE: Be precise, not broad. Assign a statement ONLY when the row is "
+        f"directly governed by, required by, or describes the specific subject of that "
+        f"statement. The statement must address the row's actual control, risk, process, or "
+        f"activity — not just the same general domain. "
+        f"REJECT: shared-theme matches (e.g. both touch 'security' or 'data'), umbrella/"
+        f"introductory statements that apply to everything, adjacent-but-different subjects, "
+        f"and statements that merely COULD be read to cover the row. If a compliance auditor "
+        f"would push back on the link as too generic, do NOT assign it. "
+        f"When in doubt, EXCLUDE. Returning an empty list is correct when no statement "
+        f"specifically applies — broad coverage is a failure mode, not a goal. "
+        f"Prefer the few most specific statements over many loosely-related ones; a row "
+        f"typically maps to 0–3 statements, not 5+. "
         f"TRACKER ROW: {row_json} "
         f"POLICY STATEMENTS (each has an index and statement_id): {stmts_json} "
         f'Return ONLY valid JSON (no markdown, no explanation): '
@@ -2527,15 +2531,17 @@ async def _review_single_row_policy_assignments(
 
     prompt = (
         f'You are a compliance quality reviewer. For the tracker row below, decide '
-        f'which proposed "{policy_name}" statement assignments are reasonable to keep.\n\n'
-        f"GUIDANCE: Policies are broad; tracker rows are specific. Approve a mapping when "
-        f"the row falls within the statement's scope — even if the wording differs. Approve "
-        f"when the statement establishes the governance, requirement, expectation, or "
-        f"safeguard that the row implements, mitigates, or evidences. Thematic alignment "
-        f"with a plausible compliance reading is enough; an exact 1:1 control match is NOT "
-        f"required.\n\n"
-        f"REJECT ONLY when the mapping is clearly wrong — different domain, or no plausible "
-        f"compliance reader would accept the link. When in doubt, KEEP the mapping.\n\n"
+        f'which proposed "{policy_name}" statement assignments are accurate enough to keep.\n\n'
+        f"GUIDANCE: Be strict. Keep a mapping ONLY when the statement specifically governs, "
+        f"requires, or describes the row's actual subject — same control, same risk, same "
+        f"process. The bar is direct applicability, not thematic alignment.\n\n"
+        f"DROP mappings that are: shared-theme (both about 'security', 'data', 'access', etc.) "
+        f"without specific overlap; umbrella/introductory statements that apply to everything; "
+        f"adjacent-but-different topics; or statements that merely COULD plausibly be read to "
+        f"cover the row. If a compliance auditor would call the link too generic, drop it.\n\n"
+        f"When in doubt, DROP. An empty result is correct when nothing specifically applies. "
+        f"Broad mappings are the failure mode this review exists to fix — prefer fewer, more "
+        f"precise links over keeping everything proposed.\n\n"
         f"TRACKER ROW:\n{row_json}\n\n"
         f"PROPOSED STATEMENT ASSIGNMENTS:\n{proposed_json}\n\n"
         f"Return ONLY valid JSON listing the approved indices:\n"
