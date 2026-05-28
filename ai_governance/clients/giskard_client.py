@@ -50,31 +50,55 @@ def _build_sample_dataset():
     }
 
 
-def _scan_to_jsonable(scan_results: Any) -> dict:
-    """Coerce a giskard.scan() result into a JSON-serialisable summary.
+def _jsonable_metrics(meta: Any) -> dict:
+    """Keep only the JSON-primitive entries from a Giskard issue's `meta` dict
+    (metric name → value), so the result survives the Celery/Redis backend."""
+    out: dict = {}
+    if not isinstance(meta, dict):
+        return out
+    for key, value in meta.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            out[str(key)] = value
+    return out
 
-    The Giskard ScanReport object exposes `to_dict()` / `to_html()` /
-    `issues` depending on version — we try them in order and fall back to a
-    string representation so the response is never empty."""
-    if hasattr(scan_results, "to_dict"):
-        try:
-            return {"status": "completed", "report": scan_results.to_dict()}
-        except Exception:  # noqa: S110  fall through to issues / summary
-            pass
-    if hasattr(scan_results, "issues"):
-        try:
-            issues = []
-            for issue in scan_results.issues or []:
-                issues.append({
-                    "group": getattr(issue, "group", None) and str(issue.group),
-                    "level": getattr(issue, "level", None) and str(issue.level),
-                    "description": getattr(issue, "description", None),
-                    "slicing_fn": str(getattr(issue, "slicing_fn", "") or ""),
-                })
-            return {"status": "completed", "issues": issues, "issue_count": len(issues)}
-        except Exception:  # noqa: S110  fall through to string summary
-            pass
-    return {"status": "completed", "summary": str(scan_results)}
+
+def _scan_to_jsonable(scan_results: Any) -> dict:
+    """Coerce a giskard.scan() result into a consistent, drill-down-friendly
+    summary.
+
+    The Giskard ScanReport exposes an `.issues` list (each issue has `group`,
+    `level`, `description`, `slicing_fn`, `features`, `meta`).  We normalise
+    every issue into a flat dict and add a `counts_by_level` rollup so the
+    frontend can render a severity summary + an expandable per-issue table.
+    Falls back to a string summary so the response is never empty."""
+    raw_issues = getattr(scan_results, "issues", None)
+    if raw_issues is None and not hasattr(scan_results, "issues"):
+        return {"status": "completed", "issue_count": 0, "summary": str(scan_results)}
+
+    issues: list[dict] = []
+    counts_by_level: dict[str, int] = {}
+    for issue in raw_issues or []:
+        level_obj = getattr(issue, "level", None)
+        level = getattr(level_obj, "value", None) or (str(level_obj) if level_obj is not None else "unknown")
+        group_obj = getattr(issue, "group", None)
+        group = getattr(group_obj, "name", None) or (str(group_obj) if group_obj is not None else None)
+
+        counts_by_level[level] = counts_by_level.get(level, 0) + 1
+        issues.append({
+            "group": group,
+            "level": level,
+            "description": getattr(issue, "description", None),
+            "slice": str(getattr(issue, "slicing_fn", "") or "") or None,
+            "features": list(getattr(issue, "features", []) or []),
+            "metrics": _jsonable_metrics(getattr(issue, "meta", None)),
+        })
+
+    return {
+        "status": "completed",
+        "issue_count": len(issues),
+        "counts_by_level": counts_by_level,
+        "issues": issues,
+    }
 
 
 def run_local_giskard_scan(
