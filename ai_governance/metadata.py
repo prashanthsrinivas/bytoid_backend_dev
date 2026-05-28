@@ -20,7 +20,16 @@ import re
 #                  precision)
 # category "spi" — sensitive personal attributes (demographics, beliefs).
 #                  Regex matches are best-effort; for production-grade name
-#                  detection a NER engine (e.g. Presidio) is required.
+#                  detection a NER engine (Presidio + spaCy) is used.
+#
+# An entity is detected via:
+#   - ``pattern``  — compiled regex, evaluated in-process by the enforcer
+#   - ``ner_entity`` — Presidio entity name (e.g. "PERSON"), evaluated via
+#                     the Presidio analyzer singleton.  Requires Presidio +
+#                     spaCy + a language model to be installed; otherwise
+#                     the entity is exposed in the catalog as unavailable
+#                     and the enforcer silently skips it.
+# An entity may declare both — regex is preferred when both are present.
 
 _ENTITIES: list[dict] = [
     # ── PII ───────────────────────────────────────────────────────────────────
@@ -161,9 +170,61 @@ _ENTITIES: list[dict] = [
             re.IGNORECASE,
         ),
     },
+    # ── NER-backed (Presidio + spaCy) ─────────────────────────────────────────
+    {
+        "key": "name",
+        "label": "Person name",
+        "category": "pii",
+        "ner_entity": "PERSON",
+    },
+    {
+        "key": "location",
+        "label": "Location / address",
+        "category": "pii",
+        "ner_entity": "LOCATION",
+    },
+    {
+        "key": "organization",
+        "label": "Organization",
+        "category": "pii",
+        "ner_entity": "ORGANIZATION",
+    },
+    {
+        "key": "nrp",
+        "label": "Nationality / religion / politics (NER)",
+        "category": "spi",
+        "ner_entity": "NRP",
+    },
+    {
+        "key": "medical_license",
+        "label": "Medical license number",
+        "category": "pii",
+        "ner_entity": "MEDICAL_LICENSE",
+    },
+    {
+        "key": "crypto_wallet",
+        "label": "Crypto wallet",
+        "category": "pii",
+        "ner_entity": "CRYPTO",
+    },
+    {
+        "key": "url",
+        "label": "URL",
+        "category": "pii",
+        "ner_entity": "URL",
+    },
 ]
 
-PII_PATTERNS: dict[str, re.Pattern] = {e["key"]: e["pattern"] for e in _ENTITIES}
+PII_PATTERNS: dict[str, re.Pattern] = {
+    e["key"]: e["pattern"] for e in _ENTITIES if e.get("pattern") is not None
+}
+
+# Key → Presidio entity name, for entities that require the NER engine.
+# Used by the enforcer when an entity has no in-process regex.
+NER_ENTITY_MAP: dict[str, str] = {
+    e["key"]: e["ner_entity"] for e in _ENTITIES if e.get("ner_entity")
+}
+
 ENTITY_KEYS: list[str] = [e["key"] for e in _ENTITIES]
 
 
@@ -243,13 +304,39 @@ VALID_ACTIONS: set[str] = {a["id"] for a in _ACTIONS}
 
 
 def get_catalog() -> dict:
-    """Return the full metadata catalog used by the guardrail authoring UI."""
+    """Return the full metadata catalog used by the guardrail authoring UI.
+
+    Each entity carries:
+      ``requires_ner`` — true when detection needs the Presidio analyzer
+      ``available``    — false only for NER entities when Presidio + spaCy
+                         are not importable in this environment
+    """
+    # Import is local so the metadata module remains free of heavy deps.
+    from ai_governance.clients.presidio_client import (
+        is_available as ner_available,
+        unavailable_reason as ner_unavailable_reason,
+    )
+
+    ner_on = ner_available()
+    ner_reason = ner_unavailable_reason() if not ner_on else None
+
+    def _entity_payload(e: dict) -> dict:
+        requires_ner = e.get("pattern") is None and bool(e.get("ner_entity"))
+        return {
+            "key": e["key"],
+            "label": e["label"],
+            "category": e["category"],
+            "requires_ner": requires_ner,
+            "available": (not requires_ner) or ner_on,
+        }
+
     return {
         "rule_types": _RULE_TYPES,
         "directions": _DIRECTIONS,
         "actions": _ACTIONS,
-        "entities": [
-            {"key": e["key"], "label": e["label"], "category": e["category"]}
-            for e in _ENTITIES
-        ],
+        "entities": [_entity_payload(e) for e in _ENTITIES],
+        "ner": {
+            "available": ner_on,
+            "unavailable_reason": ner_reason,
+        },
     }

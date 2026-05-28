@@ -27,7 +27,10 @@ import re
 import threading
 from typing import Any
 
-from ai_governance.metadata import PII_PATTERNS as _PII_PATTERNS
+from ai_governance.metadata import (
+    NER_ENTITY_MAP as _NER_ENTITY_MAP,
+    PII_PATTERNS as _PII_PATTERNS,
+)
 from ai_governance.rules_store import list_rules_cached, record_violation
 from services.audit_log_service import AI_GUARDRAIL_VIOLATION, log_audit_event
 
@@ -251,10 +254,24 @@ def _eval_regex(text: str, rule: dict, _direction: str) -> list[dict]:
 
 
 def _eval_pii(text: str, rule: dict, _direction: str) -> list[dict]:
+    """Detect selected PII / SPI entities.
+
+    Selected entities split into two pipelines:
+      • regex-detectable → evaluated in-process against ``_PII_PATTERNS``
+      • NER-required    → evaluated via the Presidio analyzer singleton
+    Empty ``entities`` config means "all entities the catalog supports".
+    The NER pipeline fails open: if Presidio isn't installed the regex
+    matches still apply and the rule continues to enforce.
+    """
     cfg = rule.get("config") or {}
-    entities = cfg.get("entities") or list(_PII_PATTERNS.keys())
+    selected = cfg.get("entities") or (
+        list(_PII_PATTERNS.keys()) + list(_NER_ENTITY_MAP.keys())
+    )
+
     out: list[dict] = []
-    for ent in entities:
+
+    # ── Regex pass ────────────────────────────────────────────────────────
+    for ent in selected:
         rx = _PII_PATTERNS.get(ent)
         if not rx:
             continue
@@ -266,6 +283,37 @@ def _eval_pii(text: str, rule: dict, _direction: str) -> list[dict]:
                     "replacement": f"[REDACTED:{ent}]",
                 }
             )
+
+    # ── NER pass ──────────────────────────────────────────────────────────
+    # Only entities lacking a regex AND mapped to a Presidio entity name.
+    ner_keys = [
+        ent for ent in selected
+        if ent not in _PII_PATTERNS and ent in _NER_ENTITY_MAP
+    ]
+    if ner_keys:
+        try:
+            from ai_governance.clients.presidio_client import analyze as _ner_analyze
+        except Exception:
+            _ner_analyze = None
+        if _ner_analyze is not None:
+            presidio_to_key = {
+                _NER_ENTITY_MAP[k]: k for k in ner_keys
+            }
+            try:
+                matches = _ner_analyze(text, list(presidio_to_key.keys()))
+            except Exception as exc:
+                logger.warning("enforcer: presidio analyze failed: %s", exc)
+                matches = []
+            for m in matches:
+                key = presidio_to_key.get(m["entity"], m["entity"].lower())
+                out.append(
+                    {
+                        "excerpt": m["excerpt"],
+                        "span": m["span"],
+                        "replacement": f"[REDACTED:{key}]",
+                    }
+                )
+
     return out
 
 
