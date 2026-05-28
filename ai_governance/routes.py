@@ -18,6 +18,9 @@ from services.audit_log_service import (
     AI_GUARDRAILS_CHECK,
     AI_GUARDRAILS_CONFIG_READ,
     AI_GUARDRAILS_RELOAD,
+    AI_GUARDRAIL_RULE_CREATED,
+    AI_GUARDRAIL_RULE_UPDATED,
+    AI_GUARDRAIL_RULE_DELETED,
     AI_OBSERVABILITY_TRACES_READ,
     AI_OBSERVABILITY_SCORE_POSTED,
     AI_MLFLOW_RUNS_READ,
@@ -397,3 +400,134 @@ def task_status(task_id):
         else:
             payload["error"] = str(result.result)
     return jsonify(payload)
+
+
+# ── Structured guardrail rules (DB-backed, authored from the frontend) ────────
+
+
+def _caller_org_id() -> str:
+    """Org scope for rule CRUD — currently the caller's own user_id, which is
+    how the audit log treats workspace ownership for self-access."""
+    return _resolve_user_id() or "system"
+
+
+@ai_governance_bp.route("/rules", methods=["GET"])
+@ai_governance_required(tier="guardrails")
+def list_guardrail_rules():
+    from ai_governance.rules_store import list_rules
+
+    rules = list_rules(_caller_org_id(), include_disabled=True)
+    return jsonify({"rules": rules})
+
+
+@ai_governance_bp.route("/rules", methods=["POST"])
+@ai_governance_required(tier="guardrails")
+def create_guardrail_rule():
+    from ai_governance.rules_store import create_rule
+
+    payload = request.get_json(force=True) or {}
+    try:
+        rule = create_rule(_caller_org_id(), payload, created_by=_resolve_user_id())
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    _audit(AI_GUARDRAIL_RULE_CREATED, metadata={"rule_id": rule.get("rule_id")})
+    return jsonify(rule), 201
+
+
+@ai_governance_bp.route("/rules/<rule_id>", methods=["GET"])
+@ai_governance_required(tier="guardrails")
+def get_guardrail_rule(rule_id):
+    from ai_governance.rules_store import get_rule
+
+    rule = get_rule(_caller_org_id(), rule_id)
+    if not rule:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(rule)
+
+
+@ai_governance_bp.route("/rules/<rule_id>", methods=["PATCH"])
+@ai_governance_required(tier="guardrails")
+def update_guardrail_rule(rule_id):
+    from ai_governance.rules_store import update_rule
+
+    payload = request.get_json(force=True) or {}
+    try:
+        rule = update_rule(_caller_org_id(), rule_id, payload)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if rule is None:
+        return jsonify({"error": "not found"}), 404
+    _audit(AI_GUARDRAIL_RULE_UPDATED, metadata={"rule_id": rule_id})
+    return jsonify(rule)
+
+
+@ai_governance_bp.route("/rules/<rule_id>", methods=["DELETE"])
+@ai_governance_required(tier="guardrails")
+def delete_guardrail_rule(rule_id):
+    from ai_governance.rules_store import delete_rule
+
+    deleted = delete_rule(_caller_org_id(), rule_id)
+    if not deleted:
+        return jsonify({"error": "not found"}), 404
+    _audit(AI_GUARDRAIL_RULE_DELETED, metadata={"rule_id": rule_id})
+    return jsonify({"status": "deleted"})
+
+
+@ai_governance_bp.route("/rules/test", methods=["POST"])
+@ai_governance_required(tier="guardrails")
+def test_guardrail_rule():
+    """Dry-run the active rule set (or a provided rule) against a sample
+    prompt without mutating anything.  Returns matched rules and what each
+    would have done."""
+    from ai_governance.enforcer import _EVALUATORS, _applies, build_ctx
+    from ai_governance.rules_store import list_rules_cached
+
+    data = request.get_json(force=True) or {}
+    sample = data.get("prompt", "")
+    direction = data.get("direction", "input")
+    ad_hoc = data.get("rule")
+
+    org = _caller_org_id()
+    candidates = [ad_hoc] if ad_hoc else list_rules_cached(org)
+    ctx = build_ctx(user_id=_resolve_user_id(), feature=data.get("feature"), model=data.get("model"))
+
+    results = []
+    for rule in candidates:
+        if not rule:
+            continue
+        if not ad_hoc and not _applies(rule, direction, ctx.get("feature"), ctx.get("model")):
+            continue
+        evaluator = _EVALUATORS.get(rule.get("rule_type"))
+        if evaluator is None:
+            continue
+        try:
+            matches = evaluator(sample, rule, direction)
+        except Exception as exc:
+            matches = []
+            results.append({"rule_id": rule.get("rule_id"), "error": str(exc)})
+            continue
+        if matches:
+            results.append(
+                {
+                    "rule_id": rule.get("rule_id"),
+                    "rule_name": rule.get("name"),
+                    "action": rule.get("action", "audit"),
+                    "matches": [{"excerpt": m.get("excerpt"), "replacement": m.get("replacement")} for m in matches],
+                }
+            )
+    return jsonify({"direction": direction, "matched": results})
+
+
+@ai_governance_bp.route("/violations", methods=["GET"])
+@ai_governance_required(tier="guardrails")
+def list_guardrail_violations():
+    from ai_governance.rules_store import list_violations
+
+    rows = list_violations(
+        _caller_org_id(),
+        limit=min(int(request.args.get("limit", 50)), 200),
+        offset=int(request.args.get("offset", 0)),
+        feature=request.args.get("feature"),
+        rule_id=request.args.get("rule_id"),
+    )
+    return jsonify({"violations": rows})

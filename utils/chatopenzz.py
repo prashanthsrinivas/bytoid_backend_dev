@@ -12,18 +12,40 @@ import os
 import requests
 from credits_route.route import Credits
 
+from ai_governance.enforcer import (
+    GuardrailViolation,
+    build_ctx,
+    check_input,
+    check_output,
+)
+
 load_dotenv()
 
 logger = get_logger(__name__)
 
+GUARDRAIL_BLOCKED = "BLOCKED_BY_GUARDRAIL"
+
 
 def evaluator(prompt, model, query, context, industry):
+    ctx = build_ctx(user_id=None, feature="chatopenzz.evaluator", model=model)
+    try:
+        query = check_input(query, ctx)
+    except GuardrailViolation as v:
+        return f"{GUARDRAIL_BLOCKED}: {v.message}"
+
     llm = ChatOpenAI(model=model, temperature=0.2)
     prompt_template = ChatPromptTemplate.from_template(prompt)
     relavance_checker = prompt_template | llm
     response = relavance_checker.invoke(
         {"user": query, "response": context, "industry": industry}
     )
+
+    text = getattr(response, "content", None)
+    if isinstance(text, str):
+        try:
+            response.content = check_output(text, ctx)
+        except GuardrailViolation as v:
+            return f"{GUARDRAIL_BLOCKED}: {v.message}"
     return response
 
 
@@ -37,6 +59,12 @@ def get_evaluator_gpt4(prompt: str) -> str:
     """
     Sends a system message to GPT-4 via LangChain and returns the assistant's response.
     """
+    ctx = build_ctx(user_id=None, feature="chatopenzz.get_evaluator_gpt4", model="gpt-4")
+    try:
+        prompt = check_input(prompt, ctx)
+    except GuardrailViolation as v:
+        return f"{GUARDRAIL_BLOCKED}: {v.message}"
+
     chat_model = ChatOpenAI(model_name="gpt-4", temperature=0.7)
 
     # Wrap the prompt as a system message
@@ -45,7 +73,11 @@ def get_evaluator_gpt4(prompt: str) -> str:
     # Use the recommended invoke method
     response = chat_model.invoke(messages)
 
-    return response.content.strip()
+    out = response.content.strip()
+    try:
+        return check_output(out, ctx)
+    except GuardrailViolation as v:
+        return f"{GUARDRAIL_BLOCKED}: {v.message}"
 
 
 def generate_usecases_questions(

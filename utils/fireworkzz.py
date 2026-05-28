@@ -42,6 +42,38 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 
 
+# ── AI Governance guardrails (input/output safety) ─────────────────────────────
+# Every LLM entry point in this module passes text through check_input/check_output
+# so rules authored in the frontend (POST /ai-governance/rules) enforce on real
+# traffic.  Fails open on infrastructure errors; only explicit `block` rules raise.
+
+from ai_governance.enforcer import (  # noqa: E402
+    GuardrailViolation,
+    build_ctx,
+    check_input,
+    check_output,
+)
+
+GUARDRAIL_BLOCKED = "BLOCKED_BY_GUARDRAIL"
+
+
+def _guard_in(text: str, *, user_id, feature: str, model: str):
+    """Returns (text_or_None, ctx_or_message). On block returns (None, message)."""
+    ctx = build_ctx(user_id=user_id, feature=feature, model=model)
+    try:
+        return check_input(text, ctx), ctx
+    except GuardrailViolation as v:
+        return None, f"{GUARDRAIL_BLOCKED}: {v.message}"
+
+
+def _guard_out(text: str, ctx: dict):
+    """Returns text_or_message. On block returns sentinel string."""
+    try:
+        return check_output(text, ctx)
+    except GuardrailViolation as v:
+        return f"{GUARDRAIL_BLOCKED}: {v.message}"
+
+
 def extract_bedrock_text(response_body: dict) -> str:
     """
     Robust extractor for Qwen on Bedrock (OpenAI-style).
@@ -57,6 +89,13 @@ def extract_bedrock_text(response_body: dict) -> str:
 
 
 async def get_fireworks_response(user_message: str, role: str, credits, user_id) -> str:
+
+    user_message, ctx_or_msg = _guard_in(
+        user_message, user_id=user_id, feature="get_fireworks_response", model=NORMAL_MODEL
+    )
+    if user_message is None:
+        return ctx_or_msg
+    ctx = ctx_or_msg
 
     total_input_chars = len(user_message)
 
@@ -95,7 +134,7 @@ async def get_fireworks_response(user_message: str, role: str, credits, user_id)
         reference_id="get_bedrock_response",
     )
 
-    return response_text
+    return _guard_out(response_text, ctx)
 
 
 async def get_fireworks_response2(
@@ -105,6 +144,13 @@ async def get_fireworks_response2(
     credits,
     temp: float = 0.7,
 ) -> str:
+
+    user_message, ctx_or_msg = _guard_in(
+        user_message, user_id=user_id, feature="get_fireworks_response2", model=NORMAL_MODEL
+    )
+    if user_message is None:
+        return ctx_or_msg
+    ctx = ctx_or_msg
 
     total_input_chars = len(user_message)
 
@@ -144,7 +190,7 @@ async def get_fireworks_response2(
             reference_id="get_bedrock_response2",
         )
 
-    return response_text
+    return _guard_out(response_text, ctx)
 
 
 async def get_firework_embedding():
@@ -170,6 +216,13 @@ async def get_evaluator_fireworks(
     credits,
     temp=0.7,
 ) -> str:
+    user_message, ctx_or_msg = _guard_in(
+        user_message, user_id=user_id, feature="get_evaluator_fireworks", model=THINK_MODEL
+    )
+    if user_message is None:
+        return ctx_or_msg
+    ctx = ctx_or_msg
+
     # credits = Credits()
     total_input_chars = len(user_message)
 
@@ -212,7 +265,7 @@ async def get_evaluator_fireworks(
                 total_chars=total_chars,
                 reference_id="get_evaluator_bedrock",
             )
-        return output
+        return _guard_out(output, ctx) if output else output
 
     except requests.exceptions.RequestException as e:
         # print("❌ Fireworks API error:", e)
@@ -362,6 +415,13 @@ async def get_think_fire_response_og(
     credits,
     image_url: Optional[List[str]] = None,
 ):
+    user_message, ctx_or_msg = _guard_in(
+        user_message, user_id=user_id, feature="get_think_fire_response_og", model=THINK_MODEL
+    )
+    if user_message is None:
+        return ctx_or_msg
+    ctx = ctx_or_msg
+
     print("image_url value:", image_url, type(image_url))
     # credits = Credits()
     print(user_message)
@@ -491,7 +551,7 @@ async def get_think_fire_response_og(
             reference_id="get_think_fire_response",
         )
 
-    return response_text
+    return _guard_out(response_text, ctx) if response_text else response_text
 
 
 async def get_think_fire_response2_chunked(
@@ -634,6 +694,13 @@ async def get_think_fire_response2_chunked(
 async def get_think_fire_response2_og(
     user_message: str, user_id, credits, total_input_chars=None
 ):
+    user_message, ctx_or_msg = _guard_in(
+        user_message, user_id=user_id, feature="get_think_fire_response2_og", model=THINK_MODEL
+    )
+    if user_message is None:
+        return ctx_or_msg
+    ctx = ctx_or_msg
+
     if not total_input_chars:
         total_input_chars = len(user_message)
 
@@ -677,7 +744,7 @@ async def get_think_fire_response2_og(
         )
 
     # print("main response here",response_text)
-    return response_text
+    return _guard_out(response_text, ctx) if response_text else response_text
 
 
 import json
@@ -1754,6 +1821,14 @@ async def get_extract_response(
 
     Use this for reduction/extraction tasks, NOT for multi-block report generation.
     """
+    # Guardrail input check on the data payload (template is internal).
+    data, ctx_or_msg = _guard_in(
+        data, user_id=user_id, feature="get_extract_response", model=THINK_MODEL
+    )
+    if data is None:
+        return ctx_or_msg
+    ctx = ctx_or_msg
+
     total_input_chars = len(prompt_template) + len(data)
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
         return ""
@@ -1811,7 +1886,8 @@ async def get_extract_response(
         reference_id="get_extract_response",
     )
 
-    return "\n\n".join(aggregated_parts)
+    joined = "\n\n".join(aggregated_parts)
+    return _guard_out(joined, ctx) if joined else joined
 
 
 async def get_think_bedrok_response(
@@ -1829,6 +1905,13 @@ async def get_think_bedrok_response(
 ):
     import json
     import asyncio
+
+    # Output is structured JSON (list of dicts) — input check only.
+    user_message, ctx_or_msg = _guard_in(
+        user_message, user_id=user_id, feature="get_think_bedrok_response", model=THINK_MODEL
+    )
+    if user_message is None:
+        return ctx_or_msg
 
     if not total_input_chars:
         total_input_chars = len(user_message)
@@ -2308,6 +2391,13 @@ def download_file(url: str) -> bytes:
 
 async def get_coder_fire_response(user_message: str, role: str, credits, user_id):
 
+    user_message, ctx_or_msg = _guard_in(
+        user_message, user_id=user_id, feature="get_coder_fire_response", model=NORMAL_MODEL
+    )
+    if user_message is None:
+        return ctx_or_msg
+    ctx = ctx_or_msg
+
     total_input_chars = len(user_message)
 
     if not await credits.has_ai_credits(total_chars=total_input_chars, user_id=user_id):
@@ -2366,7 +2456,7 @@ async def get_coder_fire_response(user_message: str, role: str, credits, user_id
             reference_id="get_coder_fire_response",
         )
 
-    return response_text
+    return _guard_out(response_text, ctx) if response_text else response_text
 
 
 # ── Policy statement tracker mapping ─────────────────────────────────────────
