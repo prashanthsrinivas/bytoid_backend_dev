@@ -3949,6 +3949,7 @@ def create_policy_hub_governance_tables():
                 user_id           VARCHAR(64)  NOT NULL,
                 org_id            VARCHAR(255) NULL,
                 title_enc         TEXT         NULL,
+                sections_enc      LONGTEXT     NULL,
                 doc_ref           VARCHAR(16)  NULL,
                 doc_type          VARCHAR(16)  NOT NULL,
                 frameworks_json   TEXT         NULL,
@@ -3961,6 +3962,12 @@ def create_policy_hub_governance_tables():
             )
             """
         )
+        try:
+            cursor.execute(
+                "ALTER TABLE policy_hub_documents ADD COLUMN sections_enc LONGTEXT NULL"
+            )
+        except Exception:
+            pass  # column already exists on upgraded environments
         connection.commit()
         print("✅ policy hub governance tables created")
     except Exception as e:

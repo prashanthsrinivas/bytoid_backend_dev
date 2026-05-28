@@ -31,14 +31,16 @@ class _FakeCursor:
 
     def execute(self, sql, params=()):
         s = " ".join(sql.split()).lower()
-        if s.startswith("create table"):
+        if s.startswith("create table") or s.startswith("alter table"):
             return
         if s.startswith("insert into policy_hub_documents"):
-            (policy_id, user_id, org_id, title_enc, doc_ref, doc_type,
-             frameworks_json, validation_status, etag, created_at, updated_at) = params
+            (policy_id, user_id, org_id, title_enc, sections_enc, doc_ref,
+             doc_type, frameworks_json, validation_status, etag,
+             created_at, updated_at) = params
             self._store[policy_id] = {
                 "policy_id": policy_id, "user_id": user_id, "org_id": org_id,
-                "title_enc": title_enc, "doc_ref": doc_ref, "doc_type": doc_type,
+                "title_enc": title_enc, "sections_enc": sections_enc,
+                "doc_ref": doc_ref, "doc_type": doc_type,
                 "frameworks_json": frameworks_json,
                 "validation_status": validation_status, "etag": etag,
                 "created_at": created_at, "updated_at": updated_at,
@@ -100,11 +102,14 @@ class _FakeConn:
 def fake_db(monkeypatch):
     store: dict = {}
     lock = threading.Lock()
+    di._SCHEMA_READY = False  # let each test exercise the lazy CREATE/ALTER
     monkeypatch.setattr(di, "connect_to_rds", lambda: _FakeConn(store, lock))
     # Bypass routes import for encryption — identity makes it easy to assert
-    # the round-trip; encryption is exercised separately in test_doc_index_list.
+    # the round-trip; real encryption is exercised in test_doc_index_list.
     monkeypatch.setattr(di, "_encrypt_title", lambda _u, t: t)
     monkeypatch.setattr(di, "_decrypt_title", lambda _u, v: v or "")
+    monkeypatch.setattr(di, "_encrypt_sections", lambda _u, s: __import__("json").dumps(s) if s else None)
+    monkeypatch.setattr(di, "_decrypt_sections", lambda _u, v: __import__("json").loads(v) if v else [])
     monkeypatch.setattr(di, "_resolve_org", lambda _u: "org-test")
     return store
 

@@ -17,6 +17,7 @@ from tests.unit.policy_hub.test_doc_index_upsert import _FakeConn  # noqa: E402
 def fake_db(monkeypatch):
     store: dict = {}
     lock = threading.Lock()
+    di._SCHEMA_READY = False  # let lazy CREATE/ALTER run
     monkeypatch.setattr(di, "connect_to_rds", lambda: _FakeConn(store, lock))
     monkeypatch.setattr(di, "_resolve_org", lambda _u: "org-test")
     return store
@@ -24,8 +25,11 @@ def fake_db(monkeypatch):
 
 @pytest.fixture
 def fake_db_identity(fake_db, monkeypatch):
+    import json as _json
     monkeypatch.setattr(di, "_encrypt_title", lambda _u, t: t)
     monkeypatch.setattr(di, "_decrypt_title", lambda _u, v: v or "")
+    monkeypatch.setattr(di, "_encrypt_sections", lambda _u, s: _json.dumps(s) if s else None)
+    monkeypatch.setattr(di, "_decrypt_sections", lambda _u, v: _json.loads(v) if v else [])
     return fake_db
 
 
@@ -77,17 +81,39 @@ class TestListDocuments:
         assert di.list_documents("nobody") == []
         assert di.list_documents("") == []
 
-    def test_heavy_fields_are_empty_not_missing(self, fake_db_identity):
-        # The fast path must not carry the heavy content/sections values, but
-        # the *keys* must be present (as empty) so frontend `.map`/`.length`
-        # over them never hits `undefined`. Detail view loads the real data.
-        di.upsert_document("u1", {**SAMPLE_A, "content": "<html>...</html>",
-                                   "sections": [{"id": "s", "statements": []}]})
+    def test_content_excluded_sections_included(self, fake_db_identity):
+        # The heavy ``content`` (full HTML) stays out of the index — the
+        # dominant cost win. The much smaller structured ``sections`` are
+        # stored encrypted and returned so the detail panel still renders.
+        di.upsert_document("u1", {**SAMPLE_A,
+                                   "content": "<html>...heavy...</html>",
+                                   "sections": [{
+                                       "id": "policy.statements",
+                                       "title": "Statements",
+                                       "statements": [
+                                           {"id": "s1", "text": "First"},
+                                           {"id": "s2", "text": "Second"},
+                                       ],
+                                   }]})
         row = di.list_documents("u1")[0]
-        # Present but empty — shape contract for the frontend.
+        # Content (the big HTML) stays empty — detail view loads it on demand.
         assert row["content"] == ""
+        # Sections round-trip in full.
+        assert len(row["sections"]) == 1
+        assert row["sections"][0]["id"] == "policy.statements"
+        assert len(row["sections"][0]["statements"]) == 2
+        # ``statements`` is exposed as the flattened union for frontends that
+        # iterate it at the top level.
+        assert [s["id"] for s in row["statements"]] == ["s1", "s2"]
+
+    def test_missing_sections_still_present_as_empty(self, fake_db_identity):
+        # Docs without a sections field still get sections=[] / statements=[]
+        # so the frontend never hits ``undefined.map``.
+        di.upsert_document("u1", {**SAMPLE_A})  # no sections key
+        row = di.list_documents("u1")[0]
         assert row["sections"] == []
         assert row["statements"] == []
+        assert row["content"] == ""
 
 
 @pytest.mark.unit

@@ -28,7 +28,19 @@ from utils.base_logger import get_logger
 logger = get_logger(__name__)
 
 
+_SCHEMA_READY = False
+
+
 def _ensure_table(cur) -> None:
+    """Create the table if missing and add any newer columns to old schemas.
+
+    The ALTER step covers environments where the table was created before
+    ``sections_enc`` existed. It runs at most once per process to avoid the
+    cost (and the brief lock) on every read/write.
+    """
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS policy_hub_documents (
@@ -36,6 +48,7 @@ def _ensure_table(cur) -> None:
             user_id           VARCHAR(64)  NOT NULL,
             org_id            VARCHAR(255) NULL,
             title_enc         TEXT         NULL,
+            sections_enc      LONGTEXT     NULL,
             doc_ref           VARCHAR(16)  NULL,
             doc_type          VARCHAR(16)  NOT NULL,
             frameworks_json   TEXT         NULL,
@@ -48,6 +61,13 @@ def _ensure_table(cur) -> None:
         )
         """
     )
+    # Upgrade older schemas in place. ALTER ADD COLUMN fails with a duplicate-
+    # column error on already-migrated tables; that's the expected no-op path.
+    try:
+        cur.execute("ALTER TABLE policy_hub_documents ADD COLUMN sections_enc LONGTEXT NULL")
+    except Exception:
+        pass
+    _SCHEMA_READY = True
 
 
 def _encrypt_title(user_id: str, title: str | None) -> str | None:
@@ -77,6 +97,46 @@ def _decrypt_title(user_id: str, value) -> str:
         return value if isinstance(value, str) else ""
 
 
+def _encrypt_sections(user_id: str, sections) -> str | None:
+    """Encrypt the JSON-serialised ``sections`` list (same scheme as the S3 blob).
+
+    Stored in the index so the detail view can render section blocks without
+    a separate S3 round-trip. The heavy ``content`` HTML deliberately stays
+    out — it lives in S3 and is loaded only on explicit detail fetches.
+    """
+    if not sections:
+        return None
+    try:
+        from policy_hub.routes import _enc_ph
+        return _enc_ph(user_id, json.dumps(sections))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("doc_index sections encryption unavailable, storing plaintext: %s", exc)
+        try:
+            return json.dumps(sections)
+        except Exception:
+            return None
+
+
+def _decrypt_sections(user_id: str, value) -> list:
+    if not value:
+        return []
+    try:
+        from policy_hub.routes import _dec_ph
+        raw = _dec_ph(user_id, value) if isinstance(value, str) else value
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("doc_index sections decryption unavailable: %s", exc)
+        raw = value
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
 def _resolve_org(user_id: str) -> str | None:
     try:
         from workflow_route.state_machine import get_user_org_id
@@ -88,11 +148,12 @@ def _resolve_org(user_id: str) -> str | None:
 def _row_to_item(row: dict) -> dict:
     """Shape a table row into the list-item dict the API returns.
 
-    The heavy ``content``/``sections``/``statements`` are intentionally not
-    stored in the index — they live in S3 and are loaded by the single-doc
-    detail endpoint. We still return empty defaults for them here so the
-    list-response shape stays compatible with frontends that ``.map`` over
-    those fields without a guard.
+    The heavy ``content`` (full HTML) is intentionally not stored in the
+    index — that was the dominant cost. The much smaller structured
+    ``sections`` are stored encrypted and returned here so the detail panel
+    can render without a separate S3 round-trip. ``statements`` is exposed
+    as the union across sections so frontends that iterate it at the top
+    level keep working.
     """
     user_id = row.get("user_id")
     frameworks = []
@@ -102,6 +163,11 @@ def _row_to_item(row: dict) -> dict:
             frameworks = json.loads(raw_fw)
         except Exception:
             frameworks = []
+    sections = _decrypt_sections(user_id, row.get("sections_enc"))
+    statements = []
+    for sec in sections:
+        if isinstance(sec, dict):
+            statements.extend(sec.get("statements") or [])
     return {
         "policy_id": row.get("policy_id"),
         "title": _decrypt_title(user_id, row.get("title_enc")),
@@ -112,12 +178,12 @@ def _row_to_item(row: dict) -> dict:
         "created_at": row.get("created_at"),
         "etag": row.get("etag"),
         "owner_user_id": user_id,
-        # Shape-compat defaults — empty, but present so the frontend's .map /
-        # .length on these fields never sees ``undefined``. Detail view loads
-        # the real values from S3.
+        "sections": sections,
+        "statements": statements,
+        # ``content`` (full HTML) stays out of the index for the speed win;
+        # the detail view loads it from S3 on demand. Keep the key present
+        # as empty so the frontend's reads don't see ``undefined``.
         "content": "",
-        "sections": [],
-        "statements": [],
     }
 
 
@@ -128,6 +194,7 @@ def upsert_document(user_id: str, item: dict) -> None:
         return
     now = datetime.now(timezone.utc).isoformat()
     title_enc = _encrypt_title(user_id, item.get("title"))
+    sections_enc = _encrypt_sections(user_id, item.get("sections"))
     frameworks_json = json.dumps(item.get("frameworks") or [])
     org_id = _resolve_org(user_id)
 
@@ -138,13 +205,15 @@ def upsert_document(user_id: str, item: dict) -> None:
             cur.execute(
                 """
                 INSERT INTO policy_hub_documents
-                    (policy_id, user_id, org_id, title_enc, doc_ref, doc_type,
-                     frameworks_json, validation_status, etag, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (policy_id, user_id, org_id, title_enc, sections_enc,
+                     doc_ref, doc_type, frameworks_json, validation_status,
+                     etag, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     user_id=VALUES(user_id),
                     org_id=VALUES(org_id),
                     title_enc=VALUES(title_enc),
+                    sections_enc=VALUES(sections_enc),
                     doc_ref=VALUES(doc_ref),
                     doc_type=VALUES(doc_type),
                     frameworks_json=VALUES(frameworks_json),
@@ -154,7 +223,7 @@ def upsert_document(user_id: str, item: dict) -> None:
                     updated_at=VALUES(updated_at)
                 """,
                 (
-                    policy_id, user_id, org_id, title_enc,
+                    policy_id, user_id, org_id, title_enc, sections_enc,
                     item.get("doc_ref"), item.get("type") or "policy",
                     frameworks_json, item.get("validation_status"),
                     item.get("etag"), item.get("created_at"), now,
