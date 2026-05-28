@@ -4066,6 +4066,17 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
     if any(p["id"] == policy_id for p in tracker_data.get("policies", [])):
         raise Exception("Policy already linked to this tracker")
 
+    # Global chatbot status — surfaces background-job state regardless of
+    # which screen the user is on. The per-row ticks below stay job-scope.
+    tracker_name = tracker_meta.get("name") or "tracker"
+    await emit(msg_builder_main.chat_status(
+        f"Linking '{policy_name}' to '{tracker_name}'…",
+        feature="tracker_policy_mapping",
+        status="processing",
+        job_id=job_id,
+        session_id=session_id,
+    ))
+
     # Create per-policy column
     await emit(msg_builder_main.job_progress(job_id, session_id, "setup", f"Creating {policy_name} column", 20))
 
@@ -4223,6 +4234,14 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
     # Terminal completion event — the client dialog keys on job_success (not a
     # progress=100 tick) to close. Mirrors _add_framework_worker.
     await emit(msg_builder_main.job_success(job_id, session_id, f"Policy linked — {rows_assigned} rows assigned"))
+    # Global chatbot status — closes the loop for any screen.
+    await emit(msg_builder_main.chat_status(
+        f"Linked '{policy_name}' to '{tracker_name}' — {rows_assigned} rows mapped",
+        feature="tracker_policy_mapping",
+        status="success",
+        job_id=job_id,
+        session_id=session_id,
+    ))
     return {"rows_assigned": rows_assigned, "policy_id": policy_id}
 
 
@@ -4250,6 +4269,23 @@ async def _add_policy_worker(data: dict, job_id: str = None) -> dict:
                     msg_type=err.get("type"),
                     stage=err.get("stage"),
                     progress=err.get("progress"),
+                    feature="tracker_policy_mapping",
+                )
+                # Also surface the failure to the global chatbot.
+                chat = msg_builder_main.chat_status(
+                    f"Policy mapping failed: {str(e)[:200]}",
+                    feature="tracker_policy_mapping",
+                    status="error",
+                    job_id=job_id,
+                    session_id=session_id,
+                )
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=chat.get("message"),
+                    scope=chat.get("scope", "global"),
+                    session_id=chat.get("session_id"),
+                    job_id=chat.get("job_id"),
+                    msg_type=chat.get("type"),
                     feature="tracker_policy_mapping",
                 )
             except Exception:

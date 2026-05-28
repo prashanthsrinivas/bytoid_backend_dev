@@ -230,3 +230,26 @@ class WSMessageBuilder:
             "report_name": report_name,
             "status": status,
         }
+
+    @staticmethod
+    def chat_status(message, feature, status="processing", job_id=None, session_id=None):
+        """Global event for the floating chatbot (e.g. Eva Assistant).
+
+        Workers emit one of these at meaningful milestones (start / success /
+        error) so the chatbot surfaces background-job status to the user
+        regardless of which screen they're on. Use job-scope ``job_progress``
+        for per-row ticks that should only update the originating dialog.
+
+        status: "processing" | "success" | "error"
+        feature: identifier the chatbot can use to route or label the event
+                 (e.g. "tracker_policy_mapping", "tracker_framework_mapping").
+        """
+        return {
+            "scope": "global",
+            "type": "chat_status",
+            "message": message,
+            "feature": feature,
+            "status": status,
+            "job_id": job_id,
+            "session_id": session_id,
+        }
