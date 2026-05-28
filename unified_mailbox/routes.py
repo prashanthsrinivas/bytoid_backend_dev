@@ -14,6 +14,35 @@ from services.audit_log_service import (
     log_audit_event, build_audit_actor,
     NOTE_CREATED, NOTE_UPDATED, NOTE_DELETED, NOTE_SHARED,
 )
+from utils.key_rotation_manager import SecureKMSService as _NotesKMSService
+
+_notes_kms = _NotesKMSService()
+
+
+def _enc_note(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    return json.dumps(_notes_kms.encrypt(user_id, v))
+
+
+def _dec_note(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = json.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _notes_kms.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v
+
+
+def _is_note_enc(v) -> bool:
+    try:
+        d = json.loads(v)
+        return isinstance(d, dict) and "ciphertext" in d
+    except Exception:
+        return False
 
 
 def get_user_login_method(user_id):
@@ -582,18 +611,20 @@ def create_note():
         note_id = str(uuid.uuid4())
         created_at = datetime.now()
 
+        note_content_enc = _enc_note(user_id, note_content)
+
         # Insert into conversation_notes table
         # print(f"[DEBUG] About to insert note with ID: {note_id}")
         cursor.execute(
-            """INSERT INTO conversation_notes 
-               (note_id, conversation_id, user_id, sender_id, note_content, note_type, created_at, updated_at, is_active) 
+            """INSERT INTO conversation_notes
+               (note_id, conversation_id, user_id, sender_id, note_content, note_type, created_at, updated_at, is_active)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 note_id,
                 conversation_id,
                 user_id,
                 sender_id,
-                note_content,
+                note_content_enc,
                 note_type,
                 created_at,
                 created_at,
@@ -717,11 +748,12 @@ def get_conversation_notes():
         # print(f"[DEBUG] Found {len(rows)} rows")
 
         notes = []
+        needs_migration = []
         for row in rows:
             note_id = row[0]
             note_user_id = row[2]
             sender_id = row[3]
-            content = row[4]
+            raw_content = row[4]
             note_type = row[5]
             created_at = row[6].isoformat() if row[6] else None
             updated_at = row[7].isoformat() if row[7] else None
@@ -729,18 +761,36 @@ def get_conversation_notes():
             last_name = row[9] or ""
             author_name = f"{first_name} {last_name}".strip() or note_user_id
 
+            plain_content = _dec_note(note_user_id, raw_content)
+            if raw_content and not _is_note_enc(raw_content):
+                needs_migration.append((note_user_id, note_id, raw_content))
+
             notes.append(
                 {
                     "note_id": note_id,
                     "user_id": note_user_id,
                     "sender_id": sender_id,
-                    "content": content,
+                    "content": plain_content,
                     "type": note_type,
                     "created_at": created_at,
                     "updated_at": updated_at,
                     "author": author_name,
                 }
             )
+
+        for owner_id, nid, plaintext in needs_migration:
+            try:
+                cursor.execute(
+                    "UPDATE conversation_notes SET note_content = %s WHERE note_id = %s",
+                    (_enc_note(owner_id, plaintext), nid),
+                )
+            except Exception as _me:
+                pass
+        if needs_migration:
+            try:
+                connection.commit()
+            except Exception:
+                pass
 
         # print(f"[DEBUG] Returning {len(notes)} notes")
         return jsonify({"notes": notes})
@@ -806,10 +856,12 @@ def update_note():
             if not permission or permission[0] not in ["write", "admin"]:
                 return jsonify({"error": "Permission denied"}), 403
 
+        note_content_enc = _enc_note(note_owner, note_content)
+
         # Update the note
         cursor.execute(
             "UPDATE conversation_notes SET note_content = %s, updated_at = %s WHERE note_id = %s",
-            (note_content, datetime.now(), note_id),
+            (note_content_enc, datetime.now(), note_id),
         )
 
         # Log the change in note_history
@@ -824,7 +876,7 @@ def update_note():
                 editor_id,
                 "updated",
                 old_content,
-                note_content,
+                note_content_enc,
                 datetime.now(),
             ),
         )

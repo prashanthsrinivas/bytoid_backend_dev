@@ -64,7 +64,11 @@ def _run_async(coro):
 
     loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(coro)
+        result = loop.run_until_complete(coro)
+        pending = asyncio.all_tasks(loop)
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        return result
     finally:
         loop.close()
 

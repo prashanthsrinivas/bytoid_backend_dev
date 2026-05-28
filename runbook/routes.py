@@ -79,7 +79,15 @@ def _run_async(coro):
 
     loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(coro)
+        result = loop.run_until_complete(coro)
+        # Drain any background tasks (e.g. lazy re-encryption) scheduled via
+        # create_task during the coroutine. Without this the loop closes while
+        # those tasks are still pending, producing "Task destroyed but pending"
+        # warnings and silently skipping the background work.
+        pending = asyncio.all_tasks(loop)
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        return result
     finally:
         loop.close()
 

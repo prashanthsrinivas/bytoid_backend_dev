@@ -5,6 +5,35 @@ from .rds_db import connect_to_rds, get_cursor
 from datetime import datetime, timezone, timedelta
 import uuid
 import pymysql
+from utils.key_rotation_manager import SecureKMSService as _NoteKMSService
+
+_note_kms = _NoteKMSService()
+
+
+def _dec_note_content(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    try:
+        d = json.loads(v)
+        if isinstance(d, dict) and "ciphertext" in d:
+            return _note_kms.decrypt(user_id, d["encrypted_key"], d["iv"], d["ciphertext"])
+    except Exception:
+        pass
+    return v
+
+
+def _is_note_content_enc(v) -> bool:
+    try:
+        d = json.loads(v)
+        return isinstance(d, dict) and "ciphertext" in d
+    except Exception:
+        return False
+
+
+def _enc_note_content(user_id: str, v):
+    if not v or not isinstance(v, str):
+        return v
+    return json.dumps(_note_kms.encrypt(user_id, v))
 
 
 def fetch_userid_from_launch(apikey, connection=None):
@@ -1131,11 +1160,12 @@ def get_notes_data(user_id):
         # Process notes first
         notes = []
         conversation_ids = set()
+        needs_migration = []
         for row in rows:
             note_id = row[0]
             conversation_id = row[1]
             creator_id = row[2]
-            content = row[3]
+            raw_content = row[3]
             note_type = row[4]
             created_at = row[5].isoformat() if row[5] else None
             updated_at = row[6].isoformat() if row[6] else None
@@ -1148,12 +1178,16 @@ def get_notes_data(user_id):
             )
             conversation_ids.add(conversation_id)
 
+            plain_content = _dec_note_content(creator_id, raw_content)
+            if raw_content and not _is_note_content_enc(raw_content):
+                needs_migration.append((creator_id, note_id, raw_content))
+
             note = {
                 "note_id": note_id,
                 "conversation_id": conversation_id,
                 "user_id": creator_id,
                 "user_name": creator_name,
-                "note_content": content,
+                "note_content": plain_content,
                 "note_type": note_type,
                 "created_at": created_at,
                 "updated_at": updated_at,
@@ -1162,6 +1196,20 @@ def get_notes_data(user_id):
                 "is_shared": note_type == "shared" or permission_level != "owner",
             }
             notes.append(note)
+
+        for owner_id, nid, plaintext in needs_migration:
+            try:
+                cursor.execute(
+                    "UPDATE conversation_notes SET note_content = %s WHERE note_id = %s",
+                    (_enc_note_content(owner_id, plaintext), nid),
+                )
+            except Exception:
+                pass
+        if needs_migration:
+            try:
+                connection.commit()
+            except Exception:
+                pass
 
         # Now get conversation details in a separate query
         if conversation_ids:
