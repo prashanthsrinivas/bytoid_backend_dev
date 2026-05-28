@@ -402,6 +402,21 @@ def task_status(task_id):
     return jsonify(payload)
 
 
+# ── Authoring metadata (rule types, directions, actions, PII/SPI entities) ────
+
+
+@ai_governance_bp.route("/metadata", methods=["GET"])
+@ai_governance_required(tier="guardrails")
+def guardrail_metadata():
+    """Return the catalog the frontend uses to render guardrail authoring
+    controls.  All guardrail dropdowns and entity chips are driven by this
+    response — adding a new rule type or PII/SPI entity is a backend-only
+    change."""
+    from ai_governance.metadata import get_catalog
+
+    return jsonify(get_catalog())
+
+
 # ── Structured guardrail rules (DB-backed, authored from the frontend) ────────
 
 

@@ -27,6 +27,7 @@ import re
 import threading
 from typing import Any
 
+from ai_governance.metadata import PII_PATTERNS as _PII_PATTERNS
 from ai_governance.rules_store import list_rules_cached, record_violation
 from services.audit_log_service import AI_GUARDRAIL_VIOLATION, log_audit_event
 
@@ -247,17 +248,6 @@ def _eval_regex(text: str, rule: dict, _direction: str) -> list[dict]:
             }
         )
     return out
-
-
-_PII_PATTERNS: dict[str, re.Pattern] = {
-    "email": re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),
-    "phone": re.compile(
-        r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
-    ),
-    "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-    "credit_card": re.compile(r"\b(?:\d[ -]*?){13,16}\b"),
-    "ip": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-}
 
 
 def _eval_pii(text: str, rule: dict, _direction: str) -> list[dict]:

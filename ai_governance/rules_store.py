@@ -13,6 +13,11 @@ import uuid
 
 import pymysql.cursors
 
+from ai_governance.metadata import (
+    VALID_ACTIONS as _VALID_ACTIONS,
+    VALID_APPLIES as _VALID_APPLIES,
+    VALID_TYPES as _VALID_TYPES,
+)
 from db.rds_db import connect_to_rds, safe_execute
 
 logger = logging.getLogger(__name__)
@@ -156,17 +161,6 @@ def get_rule(org_admin_id: str, rule_id: str) -> dict | None:
 
 
 # ── Write path ────────────────────────────────────────────────────────────────
-
-_VALID_TYPES = {
-    "blocked_phrase",
-    "regex",
-    "pii",
-    "topic",
-    "max_tokens",
-    "model_allowlist",
-}
-_VALID_APPLIES = {"input", "output", "both"}
-_VALID_ACTIONS = {"block", "redact", "warn", "audit"}
 
 
 def _validate(payload: dict) -> str | None:
