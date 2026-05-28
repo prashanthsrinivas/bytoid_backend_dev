@@ -3645,6 +3645,122 @@ def add_row_option_api():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
+@tracker_bp.route("/tracker/add-statement-option", methods=["POST"])
+@permission_required_body("trackers.table.edit")
+def add_statement_option_api():
+    """Manually add policy/procedure/standard statements to a row's cell.
+
+    Use this when the AI matcher returned no rows for a policy or the user
+    wants to pin specific statements — mirrors ``/tracker/add-row-option``
+    but for ``policy_statements`` columns (dedup by statement_id).
+
+    Body:
+        - user_id, tracker_id, row_id, column_id
+        - statements: list of ``{statement_id, statement_text,
+          section_id?, status?}`` — section_id and status are optional.
+    """
+    try:
+        from tab_tracker.helper import add_statement_option
+        body = request.get_json() or {}
+        baseuser = str(body.get("user_id") or "")
+        tracker_id = body.get("tracker_id")
+        row_id = body.get("row_id")
+        column_id = body.get("column_id")
+        statements = body.get("statements")
+
+        if not all([baseuser, tracker_id, row_id, column_id]):
+            return jsonify({"error": "Missing required fields: user_id, tracker_id, row_id, column_id"}), 400
+        if not isinstance(statements, list) or not statements:
+            return jsonify({"error": "statements must be a non-empty list"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        result = add_statement_option(user_id, tracker_id, row_id, column_id, statements)
+        if not result.get("success"):
+            status = 404 if "not found" in (result.get("error") or "") else 400
+            return jsonify(result), status
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_ROW_OPTION_ADDED,
+            endpoint="/tracker/add-statement-option",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "row_id": row_id,
+                "column_id": column_id,
+                "added_count": result.get("added"),
+                "skipped_count": result.get("skipped_duplicates"),
+                "shape": "policy_statements",
+            },
+        )
+        return jsonify(result), 200
+
+    except Exception as e:
+        logging.error(f"Add statement option error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@tracker_bp.route("/tracker/remove-statement-option", methods=["POST"])
+@permission_required_body("trackers.table.edit")
+def remove_statement_option_api():
+    """Remove specific statements from a row's policy_statements cell.
+
+    Body:
+        - user_id, tracker_id, row_id, column_id
+        - statement_ids: list of statement_id strings to remove.
+    """
+    try:
+        from tab_tracker.helper import remove_statement_option
+        body = request.get_json() or {}
+        baseuser = str(body.get("user_id") or "")
+        tracker_id = body.get("tracker_id")
+        row_id = body.get("row_id")
+        column_id = body.get("column_id")
+        statement_ids = body.get("statement_ids")
+
+        if not all([baseuser, tracker_id, row_id, column_id]):
+            return jsonify({"error": "Missing required fields: user_id, tracker_id, row_id, column_id"}), 400
+        if not isinstance(statement_ids, list) or not statement_ids:
+            return jsonify({"error": "statement_ids must be a non-empty list"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        result = remove_statement_option(user_id, tracker_id, row_id, column_id, statement_ids)
+        if not result.get("success"):
+            status = 404 if "not found" in (result.get("error") or "") else 400
+            return jsonify(result), status
+
+        actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_ROW_OPTION_REMOVED,
+            endpoint="/tracker/remove-statement-option",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_uid,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=behalf_uid,
+            acting_on_behalf_of_email=behalf_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "row_id": row_id,
+                "column_id": column_id,
+                "removed_count": result.get("removed"),
+                "shape": "policy_statements",
+            },
+        )
+        return jsonify(result), 200
+
+    except Exception as e:
+        logging.error(f"Remove statement option error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
 @tracker_bp.route("/tracker/remove-row-option", methods=["POST"])
 @permission_required_body("trackers.table.edit")
 def remove_row_option_api():
@@ -4186,6 +4302,15 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
                 row["values"][new_col_id] = new_entries
                 if new_entries:
                     rows_assigned += 1
+
+    # Stamp the column with evaluation metadata so the frontend can render
+    # "Analyzed — no matching statements found" precisely (empty cell with
+    # last_evaluated_at set ≠ empty cell on an un-evaluated column).
+    from datetime import datetime as _dt, timezone as _tz
+    new_col["last_evaluated_at"] = _dt.now(_tz.utc).isoformat()
+    new_col["evaluated_rows"] = len(rows_for_analysis)
+    new_col["matched_rows"] = rows_assigned
+    new_col["statements_considered"] = len(statements)
 
     # Persist the reverse-lookup graph to RDS (source of truth) BEFORE the S3
     # tracker blob, so reconciliation always knows which side to trust. If the

@@ -13,7 +13,10 @@ from utils.s3_utils import (
     save_any_s3,
 )
 from utils.key_rotation_manager import SecureKMSService as _TrackerKMSService
+from utils.base_logger import get_logger
+
 _tracker_kms = _TrackerKMSService()
+logger = get_logger(__name__)
 
 
 def _enc_val(user_id, v):
@@ -1594,6 +1597,217 @@ def remove_row_option(user_id, tracker_id, row_id, column_id, options):
             "row_id": row_id,
             "column_id": column_id,
             "removed": removed_count,
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _find_policy_column(schema_cols: list, column_id: str) -> dict | None:
+    """Return the policy_statements column dict for ``column_id``, or None.
+
+    Manual statement add/remove only makes sense on a ``policy_statements``
+    (``source_column == 'policies'``) column. Returning None tells the caller
+    to reject the request rather than scribble onto a framework cell with
+    the wrong shape.
+    """
+    for col in schema_cols or []:
+        if col.get("id") == column_id and (
+            col.get("source_column") == "policies"
+            or col.get("type") == "policy_statements"
+        ):
+            return col
+    return None
+
+
+def _sync_statement_refs_for_cell(
+    tracker_id: str,
+    tracker_abbrev: str | None,
+    column: dict,
+    row_id: str,
+    cell_entries: list,
+) -> None:
+    """Mirror the current contents of a policy-statements cell into the RDS
+    reverse-lookup graph. Best-effort: a failure here is logged and swallowed
+    because the nightly reconcile will heal any drift (same discipline as
+    the worker's write path).
+    """
+    try:
+        from services.statement_tracker_refs import replace_cell_refs
+        replace_cell_refs(
+            tracker_id,
+            row_id,
+            column.get("id"),
+            column.get("policy_id"),
+            column.get("doc_type", "policy"),
+            tracker_abbrev,
+            [
+                {"statement_id": e.get("statement_id"),
+                 "status": e.get("status", "not_assessed")}
+                for e in (cell_entries or []) if e.get("statement_id")
+            ],
+        )
+    except Exception as exc:
+        logger.warning(
+            "statement_tracker_refs sync failed for tracker=%s row=%s col=%s: %s — "
+            "nightly reconcile will heal",
+            tracker_id, row_id, column.get("id"), exc,
+        )
+
+
+def add_statement_option(user_id, tracker_id, row_id, column_id, statements):
+    """Append manually-picked statements to a policy_statements cell.
+
+    Mirrors :func:`add_row_option` but for the policy_statements column shape.
+    Dedup is by ``statement_id`` (not the (requirement, section) tuple).
+
+    Args:
+        statements: list of dicts. Required: ``statement_id``,
+            ``statement_text``. Optional: ``section_id``, ``status``
+            (defaults to ``"not_assessed"``).
+
+    Side effects: marks the row as ``last_updated_from = "manual"``, saves
+    the tracker, and resyncs the ``statement_tracker_refs`` reverse-lookup
+    graph for this cell so policy-hub views update immediately.
+    """
+    try:
+        tracker_data = _load_and_decrypt_tracker(user_id, tracker_id)
+        if not tracker_data:
+            return {"success": False, "error": "Tracker not found"}
+        if tracker_data.get("type") != "table":
+            return {"success": False,
+                    "error": "Statements can only be added to table trackers"}
+        if not isinstance(statements, list) or not statements:
+            return {"success": False,
+                    "error": "statements must be a non-empty list"}
+
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        column = _find_policy_column(schema_cols, column_id)
+        if not column:
+            return {"success": False,
+                    "error": f"Column '{column_id}' is not a policy_statements column"}
+        policy_version = column.get("policy_version") or "1.0"
+
+        added_count = 0
+        skipped_count = 0
+        target_row = None
+        for row in tracker_data.get("rows", []) or []:
+            if row.get("row_id") != row_id:
+                continue
+            target_row = row
+            row.setdefault("values", {})
+            if not isinstance(row["values"].get(column_id), list):
+                row["values"][column_id] = []
+            current = row["values"][column_id]
+            existing_ids = {e.get("statement_id") for e in current if e.get("statement_id")}
+            for s in statements:
+                sid = s.get("statement_id")
+                if not sid:
+                    skipped_count += 1
+                    continue
+                if sid in existing_ids:
+                    skipped_count += 1
+                    continue
+                current.append({
+                    "statement_id": sid,
+                    "statement_text": s.get("statement_text", ""),
+                    "section_id": s.get("section_id", ""),
+                    "mapped_against_version": policy_version,
+                    "status": s.get("status", "not_assessed"),
+                })
+                existing_ids.add(sid)
+                added_count += 1
+            row["last_updated_from"] = "manual"
+            break
+
+        if target_row is None:
+            return {"success": False, "error": f"Row '{row_id}' not found in tracker"}
+
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        # Resync reverse-lookup graph for this cell using its new contents.
+        tracker_abbrev = tracker_data.get("tracker_abbrev")
+        _sync_statement_refs_for_cell(
+            tracker_id, tracker_abbrev, column, row_id,
+            target_row["values"][column_id],
+        )
+
+        return {
+            "success": True,
+            "message": "Statements added to tracker row",
+            "tracker_id": tracker_id,
+            "row_id": row_id,
+            "column_id": column_id,
+            "added": added_count,
+            "skipped_duplicates": skipped_count,
+            "current_options": target_row["values"][column_id],
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def remove_statement_option(user_id, tracker_id, row_id, column_id, statement_ids):
+    """Remove statements from a policy_statements cell by ``statement_id``.
+
+    Mirrors :func:`remove_row_option`. ``statement_ids`` is a list of str.
+    Resyncs the ``statement_tracker_refs`` reverse-lookup graph.
+    """
+    try:
+        tracker_data = _load_and_decrypt_tracker(user_id, tracker_id)
+        if not tracker_data:
+            return {"success": False, "error": "Tracker not found"}
+        if tracker_data.get("type") != "table":
+            return {"success": False,
+                    "error": "Statements can only be removed from table trackers"}
+        if not isinstance(statement_ids, list) or not statement_ids:
+            return {"success": False,
+                    "error": "statement_ids must be a non-empty list"}
+
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        column = _find_policy_column(schema_cols, column_id)
+        if not column:
+            return {"success": False,
+                    "error": f"Column '{column_id}' is not a policy_statements column"}
+
+        to_remove = {sid for sid in statement_ids if sid}
+        removed_count = 0
+        target_row = None
+        for row in tracker_data.get("rows", []) or []:
+            if row.get("row_id") != row_id:
+                continue
+            target_row = row
+            row.setdefault("values", {})
+            if not isinstance(row["values"].get(column_id), list):
+                row["values"][column_id] = []
+            before = len(row["values"][column_id])
+            row["values"][column_id] = [
+                e for e in row["values"][column_id]
+                if e.get("statement_id") not in to_remove
+            ]
+            removed_count = before - len(row["values"][column_id])
+            row["last_updated_from"] = "manual"
+            break
+
+        if target_row is None:
+            return {"success": False, "error": f"Row '{row_id}' not found in tracker"}
+
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        tracker_abbrev = tracker_data.get("tracker_abbrev")
+        _sync_statement_refs_for_cell(
+            tracker_id, tracker_abbrev, column, row_id,
+            target_row["values"][column_id],
+        )
+
+        return {
+            "success": True,
+            "message": "Statements removed from tracker row",
+            "tracker_id": tracker_id,
+            "row_id": row_id,
+            "column_id": column_id,
+            "removed": removed_count,
+            "current_options": target_row["values"][column_id],
         }
 
     except Exception as e:
