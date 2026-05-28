@@ -2382,9 +2382,15 @@ async def _analyze_single_row_policy(
     row_id = row["row_id"]
     prompt = (
         f'You are a compliance analyst. For the SINGLE tracker row below, identify which '
-        f'statements from the policy "{policy_name}" it directly relates to. '
-        f"STRICT MATCHING RULES: Only assign a statement when there is a CLEAR, DIRECT, "
-        f"SPECIFIC relationship. When in doubt, return []. "
+        f'statements from the policy "{policy_name}" cover or apply to it. '
+        f"MATCHING GUIDANCE: Policies are written broadly; tracker rows describe specific "
+        f"controls, risks, threats, processes, or activities. Assign a statement when the "
+        f"row falls within the statement's scope or subject area — exact-wording overlap is "
+        f"NOT required. Include statements that establish the governance, requirement, "
+        f"expectation, or safeguard the row implements, mitigates, or evidences. A single "
+        f"specific row may map to multiple broad statements when several apply. "
+        f"Only skip statements that are clearly unrelated (different domain, no plausible "
+        f"compliance reader would link them). When the topic aligns but you're unsure, INCLUDE it. "
         f"TRACKER ROW: {row_json} "
         f"POLICY STATEMENTS (each has an index and statement_id): {stmts_json} "
         f'Return ONLY valid JSON (no markdown, no explanation): '
@@ -2520,15 +2526,19 @@ async def _review_single_row_policy_assignments(
     proposed_json = json.dumps(proposed, indent=2)
 
     prompt = (
-        f'You are a strict compliance quality reviewer. For the tracker row below, decide '
-        f'which proposed "{policy_name}" statement assignments are genuinely valid.\n\n'
-        f"APPROVAL CRITERIA — approve ONLY if ALL hold:\n"
-        f"1. The row content clearly and directly addresses the subject matter of the statement.\n"
-        f"2. The relationship is specific and meaningful, not thematically adjacent.\n"
-        f"3. A compliance auditor would recognize this as a valid, defensible mapping.\n\n"
+        f'You are a compliance quality reviewer. For the tracker row below, decide '
+        f'which proposed "{policy_name}" statement assignments are reasonable to keep.\n\n'
+        f"GUIDANCE: Policies are broad; tracker rows are specific. Approve a mapping when "
+        f"the row falls within the statement's scope — even if the wording differs. Approve "
+        f"when the statement establishes the governance, requirement, expectation, or "
+        f"safeguard that the row implements, mitigates, or evidences. Thematic alignment "
+        f"with a plausible compliance reading is enough; an exact 1:1 control match is NOT "
+        f"required.\n\n"
+        f"REJECT ONLY when the mapping is clearly wrong — different domain, or no plausible "
+        f"compliance reader would accept the link. When in doubt, KEEP the mapping.\n\n"
         f"TRACKER ROW:\n{row_json}\n\n"
         f"PROPOSED STATEMENT ASSIGNMENTS:\n{proposed_json}\n\n"
-        f"Return ONLY valid JSON listing only the approved indices:\n"
+        f"Return ONLY valid JSON listing the approved indices:\n"
         f'{{"row_id": "{row_id}", "valid_indices": [0, 2]}}'
     )
     payload = {
