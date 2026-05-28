@@ -2321,7 +2321,16 @@ def _user_policy_ids(user_id: str) -> dict[str, dict]:
 @policy_hub_bp.route("/search", methods=["GET"])
 @permission_required_body("policyhub.view")
 async def search_statements():
-    """Cross-document semantic search over policy/procedure/standard statements.
+    """Cross-document search powering the document picker and statement search.
+
+    Returns two kinds of hits, merged, in one shape:
+
+    - **Title matches** (``match_type="title"``): documents whose decrypted title
+      contains ``q`` as a case-insensitive substring. These are the authoritative
+      result when ``q`` looks like a doc name (e.g. ``privileged``) and surface
+      regardless of LanceDB indexing latency. Placed first.
+    - **Statement matches** (``match_type="statement"``): LanceDB semantic
+      similarity over indexed statements. Useful when ``q`` is conceptual.
 
     Query: q (required), types? (csv of policy,procedure,standard), top_k?,
     user_id. Scoped to the caller's own documents (no cross-org leakage).
@@ -2341,9 +2350,57 @@ async def search_statements():
     except (TypeError, ValueError):
         top_k = 10
 
-    doc_index = _user_policy_ids(user_id)
+    # Use the decrypted index (titles in plaintext) so title matching works and
+    # response titles aren't ciphertext blobs. Falls back to an S3 scan when the
+    # index is empty (newly-bootstrapped user), matching the /list behaviour.
+    from policy_hub.doc_index import list_documents, scan_policies_from_s3
+    indexed = list_documents(user_id)
+    if not indexed:
+        indexed = scan_policies_from_s3(user_id, read_fn=_read_policy_yaml)
+    doc_index: dict[str, dict] = {
+        it.get("policy_id"): {
+            "doc_ref": it.get("doc_ref"),
+            "title": it.get("title"),
+            "type": it.get("type"),
+        }
+        for it in indexed
+        if it.get("policy_id")
+    }
     if not doc_index:
         return jsonify({"results": [], "query": q, "total": 0}), 200
+
+    needle = q.casefold()
+    type_filter = set(doc_types) if doc_types else None
+    title_hits: list[dict] = []
+    for pid, meta in doc_index.items():
+        title = meta.get("title") or ""
+        if not isinstance(title, str) or needle not in title.casefold():
+            continue
+        if type_filter and meta.get("type") not in type_filter:
+            continue
+        title_hits.append({
+            "policy_id": pid,
+            "doc_ref": display_doc_ref(meta.get("doc_ref")),
+            "title": title,
+            "doc_type": meta.get("type"),
+            "statement_id": None,
+            "section_id": None,
+            "seq": None,
+            "text": title,
+            "score": None,
+            "match_type": "title",
+        })
+    # Stable order: exact > prefix > contains, then alphabetical within each tier.
+    def _title_rank(hit: dict) -> tuple[int, str]:
+        title = (hit.get("title") or "").casefold()
+        if title == needle:
+            tier = 0
+        elif title.startswith(needle):
+            tier = 1
+        else:
+            tier = 2
+        return (tier, title)
+    title_hits.sort(key=_title_rank)
 
     embeddings = await get_firework_embedding()
     vec = await asyncio.to_thread(embeddings.embed_query, q)
@@ -2357,13 +2414,13 @@ async def search_statements():
         user_id=user_id,
     )
 
-    results = []
+    statement_hits: list[dict] = []
     for h in hits:
         pid = h.get("policy_id")
         meta = doc_index.get(pid, {})
-        results.append({
+        statement_hits.append({
             "policy_id": pid,
-            "doc_ref": meta.get("doc_ref"),
+            "doc_ref": display_doc_ref(meta.get("doc_ref")),
             "title": meta.get("title"),
             "doc_type": h.get("doc_type"),
             "statement_id": h.get("statement_id"),
@@ -2371,7 +2428,14 @@ async def search_statements():
             "seq": h.get("seq"),
             "text": h.get("text"),
             "score": h.get("_distance"),
+            "match_type": "statement",
         })
+
+    # Title matches first; drop any statement match for a doc already surfaced
+    # by title so the picker doesn't show the same doc twice.
+    titled_pids = {r["policy_id"] for r in title_hits}
+    results = title_hits + [r for r in statement_hits if r["policy_id"] not in titled_pids]
+    results = results[:top_k]
     return jsonify({"results": results, "query": q, "total": len(results)}), 200
 
 
