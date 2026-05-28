@@ -77,13 +77,17 @@ class TestListDocuments:
         assert di.list_documents("nobody") == []
         assert di.list_documents("") == []
 
-    def test_does_not_leak_content_or_sections(self, fake_db_identity):
-        # The fast path must not return the heavy content/sections fields.
+    def test_heavy_fields_are_empty_not_missing(self, fake_db_identity):
+        # The fast path must not carry the heavy content/sections values, but
+        # the *keys* must be present (as empty) so frontend `.map`/`.length`
+        # over them never hits `undefined`. Detail view loads the real data.
         di.upsert_document("u1", {**SAMPLE_A, "content": "<html>...</html>",
                                    "sections": [{"id": "s", "statements": []}]})
         row = di.list_documents("u1")[0]
-        assert "content" not in row
-        assert "sections" not in row
+        # Present but empty — shape contract for the frontend.
+        assert row["content"] == ""
+        assert row["sections"] == []
+        assert row["statements"] == []
 
 
 @pytest.mark.unit

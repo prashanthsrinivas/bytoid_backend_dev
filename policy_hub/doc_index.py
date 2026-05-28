@@ -86,7 +86,14 @@ def _resolve_org(user_id: str) -> str | None:
 
 
 def _row_to_item(row: dict) -> dict:
-    """Shape a table row into the list-item dict the API returns."""
+    """Shape a table row into the list-item dict the API returns.
+
+    The heavy ``content``/``sections``/``statements`` are intentionally not
+    stored in the index — they live in S3 and are loaded by the single-doc
+    detail endpoint. We still return empty defaults for them here so the
+    list-response shape stays compatible with frontends that ``.map`` over
+    those fields without a guard.
+    """
     user_id = row.get("user_id")
     frameworks = []
     raw_fw = row.get("frameworks_json")
@@ -105,6 +112,12 @@ def _row_to_item(row: dict) -> dict:
         "created_at": row.get("created_at"),
         "etag": row.get("etag"),
         "owner_user_id": user_id,
+        # Shape-compat defaults — empty, but present so the frontend's .map /
+        # .length on these fields never sees ``undefined``. Detail view loads
+        # the real values from S3.
+        "content": "",
+        "sections": [],
+        "statements": [],
     }
 
 
