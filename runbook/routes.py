@@ -1811,6 +1811,18 @@ def result_list(user_id):
         except Exception as wf_exc:
             logger.warning("workflow_state lookup failed: %s", wf_exc)
 
+        # Collapse duplicate runbook_id entries. For shared/normal users a
+        # runbook is appended once per shared report, so the same runbook_id
+        # can arrive multiple times; keep the row tied to the latest execution.
+        latest_exec_by_id = {}
+        for r in filtered_results:
+            rid = r.get("runbook_id")
+            if rid:
+                ts = r.get("started_at") or 0
+                if ts >= latest_exec_by_id.get(rid, 0):
+                    latest_exec_by_id[rid] = ts
+        runbooks = dbserver._dedupe_runbooks_by_id(runbooks, latest_exec_by_id)
+
         return (
             jsonify(
                 {
@@ -1862,6 +1874,10 @@ def list_runbooks(user_id):
                 runbooks.append(shared_record)
         except Exception as e:
             logger.warning(f"Could not fetch shared runbook {shared_id}: {e}")
+
+    # Multiple shared reports can point to the same runbook_id, so the loop
+    # above appends the same runbook more than once — collapse the duplicates.
+    runbooks = dbserver._dedupe_runbooks_by_id(runbooks)
 
     return jsonify({"success": True, "runbooks": runbooks})
 
