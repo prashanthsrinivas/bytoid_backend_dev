@@ -24,26 +24,38 @@ from datetime import date, datetime, timezone
 
 # enum value -> interval in months. Order is the canonical display order.
 REVIEW_FREQUENCIES: dict[str, int] = {
-    "quarterly": 3,
-    "semi_annual": 6,
-    "annual": 12,
-    "biennial": 24,
+    "3_months": 3,
+    "6_months": 6,
+    "9_months": 9,
+    "12_months": 12,
 }
-DEFAULT_REVIEW_FREQUENCY = "annual"
+DEFAULT_REVIEW_FREQUENCY = "12_months"
 
 _FREQUENCY_LABELS = {
-    "quarterly": "Quarterly",
-    "semi_annual": "Semi-annual",
-    "annual": "Annual",
-    "biennial": "Biennial",
+    "3_months": "3 months",
+    "6_months": "6 months",
+    "9_months": "9 months",
+    "12_months": "1 year",
+}
+
+# Legacy enum values that may already be stored; mapped to the new keys so
+# existing org rows keep working after the cadence options changed.
+_LEGACY_FREQUENCY_ALIASES = {
+    "quarterly": "3_months",
+    "semi_annual": "6_months",
+    "annual": "12_months",
+    "biennial": "12_months",
 }
 
 
 def normalize_frequency(frequency: str | None) -> str:
-    """Return a valid frequency enum, falling back to the default."""
-    if frequency and frequency in REVIEW_FREQUENCIES:
+    """Return a valid frequency enum, mapping legacy values and falling back
+    to the default for anything unrecognized."""
+    if not frequency:
+        return DEFAULT_REVIEW_FREQUENCY
+    if frequency in REVIEW_FREQUENCIES:
         return frequency
-    return DEFAULT_REVIEW_FREQUENCY
+    return _LEGACY_FREQUENCY_ALIASES.get(frequency, DEFAULT_REVIEW_FREQUENCY)
 
 
 def frequency_options() -> list[dict]:

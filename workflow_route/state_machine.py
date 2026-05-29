@@ -1303,7 +1303,7 @@ def bootstrap_schema() -> None:
         # months is resolved in policy_hub.review_lifecycle).
         """CREATE TABLE IF NOT EXISTS org_review_config (
           org_id            VARCHAR(64)  NOT NULL,
-          review_frequency  VARCHAR(32)  NOT NULL DEFAULT 'annual',
+          review_frequency  VARCHAR(32)  NOT NULL DEFAULT '12_months',
           updated_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           PRIMARY KEY (org_id)
         )""",

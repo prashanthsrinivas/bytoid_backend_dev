@@ -11,10 +11,10 @@ CREATE TABLE IF NOT EXISTS workflow_config (
 );
 
 -- Org-wide document review cadence. One row per org; every document follows
--- the same review cycle. frequency enum: 'quarterly'|'semi_annual'|'annual'|'biennial'.
+-- the same review cycle. frequency enum: '3_months'|'6_months'|'9_months'|'12_months'.
 CREATE TABLE IF NOT EXISTS org_review_config (
   org_id            VARCHAR(64)  NOT NULL,
-  review_frequency  VARCHAR(32)  NOT NULL DEFAULT 'annual',
+  review_frequency  VARCHAR(32)  NOT NULL DEFAULT '12_months',
   updated_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (org_id)
 );
