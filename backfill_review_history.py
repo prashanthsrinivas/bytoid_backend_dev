@@ -17,10 +17,10 @@ Idempotent: the apply_publication_to_* functions skip a doc whose latest history
 row already records the same version as published, so re-running is safe.
 
 Usage:
-    python backfill_review_history.py --dry-run          # report only, no writes
-    python backfill_review_history.py                     # apply to all doc types
-    python backfill_review_history.py --doc-type runbook  # restrict to one type
-    python backfill_review_history.py --owner <user_id>   # restrict to one owner
+    python3 backfill_review_history.py --dry-run          # report only, no writes
+    python3 backfill_review_history.py                     # apply to all doc types
+    python3 backfill_review_history.py --doc-type runbook  # restrict to one type
+    python3 backfill_review_history.py --owner <user_id>   # restrict to one owner
 """
 
 from __future__ import annotations
