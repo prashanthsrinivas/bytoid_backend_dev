@@ -95,26 +95,53 @@ POLICY_HUB_DOC_TYPES = {"policy", "procedure", "standard"}
 def _apply_publish_effects(workflow: dict, actor_email: str) -> None:
     """Stamp review-cycle metadata + revision history on a published doc.
 
-    Best-effort and never raises: a Policy Hub I/O failure must not roll back
-    the (already-committed) workflow transition. Only applies to Policy Hub
-    doc types; runbooks/reports are no-ops here.
+    Best-effort and never raises: a downstream I/O failure must not roll back
+    the (already-committed) workflow transition. Dispatches by doc_type: Policy
+    Hub docs get revision history + cadence in S3 YAML; runbook reports get
+    cadence stamped into their result blob; standalone reports into users.reports.
+    The review cadence is configured per doc-type category (see
+    get_org_review_frequency / _cadence_category).
     """
     try:
         doc_type = workflow.get("doc_type")
-        if doc_type not in POLICY_HUB_DOC_TYPES:
-            return
-        frequency = get_org_review_frequency(workflow.get("org_id"))
-        # Lazy import avoids any import-time coupling to the policy_hub blueprint.
-        from policy_hub.routes import apply_publication_to_policy
+        org_id = workflow.get("org_id")
+        owner_id = workflow.get("owner_user_id")
+        doc_id = workflow.get("doc_id")
+        doc_version = workflow.get("doc_version", "1.0")
+        frequency = get_org_review_frequency(org_id, doc_type)
 
-        apply_publication_to_policy(
-            owner_id=workflow.get("owner_user_id"),
-            policy_id=workflow.get("doc_id"),
-            doc_type=doc_type,
-            doc_version=workflow.get("doc_version", "1.0"),
-            author_email=actor_email or "",
-            frequency=frequency,
-        )
+        # Lazy imports avoid import-time coupling to the feature blueprints.
+        if doc_type in POLICY_HUB_DOC_TYPES:
+            from policy_hub.routes import apply_publication_to_policy
+
+            apply_publication_to_policy(
+                owner_id=owner_id,
+                policy_id=doc_id,
+                doc_type=doc_type,
+                doc_version=doc_version,
+                author_email=actor_email or "",
+                frequency=frequency,
+            )
+        elif doc_type == "runbook":
+            from runbook.routes import apply_publication_to_runbook_result
+
+            apply_publication_to_runbook_result(
+                owner_id=owner_id,
+                result_id=doc_id,
+                doc_version=doc_version,
+                author_email=actor_email or "",
+                frequency=frequency,
+            )
+        elif doc_type == "report":
+            from ai_reporting.routes import apply_publication_to_report
+
+            apply_publication_to_report(
+                owner_id=owner_id,
+                report_id=doc_id,
+                doc_version=doc_version,
+                author_email=actor_email or "",
+                frequency=frequency,
+            )
     except Exception as exc:
         logger.warning(
             "_apply_publish_effects failed for workflow=%s doc=%s: %s",
@@ -437,27 +464,41 @@ def update_workflow_config(doc_type: str):
 # ── Org-wide review cadence ─────────────────────────────────────────────────────
 
 
+# Cadence categories surfaced to the settings UI (one selector per category).
+REVIEW_CADENCE_CATEGORIES = ("policy", "runbook", "report")
+
+
 @workflow_bp.route("/review-frequency", methods=["GET"])
 @permission_required_body("workflow.config.manage")
 def get_review_frequency():
-    """Return the org-wide document review cadence + selectable options.
+    """Return per-doc-type review cadences + selectable options.
 
-    Query: user_id
-    Response: { org_id, frequency, interval_months, options:[{value,label,interval_months}] }
+    Query: user_id, [doc_type]
+    - With doc_type: returns that category's cadence.
+    - Without: returns the 'policy' cadence (backward compatible) plus a
+      `cadences` map covering all categories (policy / runbook / report).
+    Response: { org_id, frequency, interval_months, cadences, options }
     """
     from policy_hub.review_lifecycle import REVIEW_FREQUENCIES, frequency_options
 
     baseuser = request.args.get("user_id", "")
+    doc_type = request.args.get("doc_type") or "policy"
     logged_in, user_id = parse_composite_user_id(baseuser)
     org_id = _get_user_org(user_id)
     if not org_id:
         return jsonify({"error": "User org not found"}), 404
 
-    frequency = get_org_review_frequency(org_id)
+    frequency = get_org_review_frequency(org_id, doc_type)
+    cadences = {
+        cat: get_org_review_frequency(org_id, cat)
+        for cat in REVIEW_CADENCE_CATEGORIES
+    }
     return jsonify({
         "org_id": org_id,
+        "doc_type": doc_type,
         "frequency": frequency,
         "interval_months": REVIEW_FREQUENCIES[frequency],
+        "cadences": cadences,
         "options": frequency_options(),
     }), 200
 
@@ -465,16 +506,20 @@ def get_review_frequency():
 @workflow_bp.route("/review-frequency", methods=["PUT"])
 @permission_required_body("workflow.config.manage")
 def update_review_frequency():
-    """Set the org-wide review cadence that every document follows.
+    """Set the review cadence for a doc-type category.
 
-    Body: { user_id, frequency }  (frequency ∈ quarterly|semi_annual|annual|biennial)
-    Response: { status, org_id, frequency, interval_months }
+    Body: { user_id, frequency, [doc_type] }
+      frequency ∈ 3_months|6_months|9_months|12_months
+      doc_type  ∈ policy|runbook|report  (default 'policy'; policy covers
+                  policy/procedure/standard)
+    Response: { status, org_id, doc_type, frequency, interval_months }
     """
     from policy_hub.review_lifecycle import REVIEW_FREQUENCIES
 
     body = request.get_json(silent=True) or {}
     baseuser = body.get("user_id", "")
     frequency = body.get("frequency")
+    doc_type = body.get("doc_type") or "policy"
     logged_in, user_id = parse_composite_user_id(baseuser)
     org_id = _get_user_org(user_id)
     if not org_id:
@@ -484,10 +529,11 @@ def update_review_frequency():
             "error": f"frequency must be one of: {', '.join(REVIEW_FREQUENCIES)}"
         }), 400
 
-    stored = set_org_review_frequency(org_id, frequency)
+    stored = set_org_review_frequency(org_id, frequency, doc_type)
     return jsonify({
         "status": "ok",
         "org_id": org_id,
+        "doc_type": doc_type,
         "frequency": stored,
         "interval_months": REVIEW_FREQUENCIES[stored],
     }), 200

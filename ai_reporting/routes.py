@@ -2320,6 +2320,84 @@ async def list_all_draft_reports(client, user_id):
     # print(f"  Content: {json.dumps(report_data, indent=2)}\n")
 
 
+def apply_publication_to_report(
+    owner_id, report_id, doc_version, author_email, frequency, published_at=None
+):
+    """Stamp review-cycle metadata onto a published standalone report.
+
+    Called by the workflow publish hook when a standalone report
+    (doc_type='report') reaches 'published'. Updates the matching report dict in
+    the persistent ``users.reports`` JSON column. Best-effort: never raises so a
+    publish transition is not rolled back by a DB hiccup. Returns True if updated.
+    """
+    conn = None
+    try:
+        from datetime import datetime, timezone
+
+        from policy_hub.review_lifecycle import (
+            REVIEW_FREQUENCIES,
+            compute_next_review_date,
+            normalize_frequency,
+        )
+
+        conn = connect_to_rds()
+        with conn.cursor() as cur:
+            cur.execute("SELECT reports FROM users WHERE user_id=%s", (owner_id,))
+            row = cur.fetchone()
+            raw = row[0] if row else None
+            if not raw:
+                logger.warning(
+                    "apply_publication_to_report: no reports for owner %s", owner_id
+                )
+                return False
+            reports = json.loads(raw)
+
+            target = next(
+                (r for r in reports if r.get("report_id") == report_id), None
+            )
+            if target is None:
+                logger.warning(
+                    "apply_publication_to_report: report %s not found for owner %s",
+                    report_id, owner_id,
+                )
+                return False
+
+            # Idempotency: publish hooks can replay on auto-advance / retries.
+            if target.get("review_published_version") == str(doc_version):
+                return False
+
+            freq = normalize_frequency(frequency)
+            published_at = published_at or datetime.now(timezone.utc)
+            review_date = (
+                published_at.date().isoformat()
+                if hasattr(published_at, "date")
+                else str(published_at)
+            )
+
+            target["review_frequency"] = freq
+            target["review_interval_months"] = REVIEW_FREQUENCIES[freq]
+            target["last_reviewed_at"] = review_date
+            target["next_review_date"] = compute_next_review_date(published_at, freq)
+            target["review_published_version"] = str(doc_version)
+
+            cur.execute(
+                "UPDATE users SET reports=%s WHERE user_id=%s",
+                (json.dumps(reports), owner_id),
+            )
+        conn.commit()
+        logger.info(
+            "stamped review cadence on report %s (owner=%s, next_review=%s)",
+            report_id, owner_id, target.get("next_review_date"),
+        )
+        return True
+    except Exception as exc:
+        logger.error("apply_publication_to_report failed for %s: %s", report_id, exc)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @ai_reporting_bp.route("/change_name", methods=["POST"])
 async def change_name():
     data = request.get_json()

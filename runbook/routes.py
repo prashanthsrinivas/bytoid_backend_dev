@@ -1811,6 +1811,24 @@ def result_list(user_id):
         except Exception as wf_exc:
             logger.warning("workflow_state lookup failed: %s", wf_exc)
 
+        # Surface each report's individual name at the top level so the UI
+        # doesn't have to parse the result blob (owned rows carry `result` as a
+        # JSON string, shared rows as a dict). Prefer the stored report_name;
+        # fall back to the parent runbook name so legacy reports still render.
+        from runbook.utils import _safe_json_parse_full as _parse_blob
+
+        runbook_name_by_id = {
+            rb.get("runbook_id"): rb.get("name")
+            for rb in (runbooks or [])
+            if rb.get("runbook_id")
+        }
+        for r in filtered_results:
+            blob = r.get("result")
+            if not isinstance(blob, dict):
+                blob = _parse_blob(blob) or {}
+            name = blob.get("report_name") if isinstance(blob, dict) else None
+            r["report_name"] = name or runbook_name_by_id.get(r.get("runbook_id"))
+
         # Collapse duplicate runbook_id entries. For shared/normal users a
         # runbook is appended once per shared report, so the same runbook_id
         # can arrive multiple times; keep the row tied to the latest execution.
@@ -2601,6 +2619,68 @@ def rename_runbook_result(result_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def apply_publication_to_runbook_result(
+    owner_id, result_id, doc_version, author_email, frequency, published_at=None
+):
+    """Stamp review-cycle metadata onto a published runbook report.
+
+    Called by the workflow publish hook when a runbook report (doc_type=
+    'runbook') reaches 'published'. Mirrors apply_publication_to_policy but
+    writes into the runbook result blob (which already carries report_name etc.)
+    rather than Policy Hub YAML. Best-effort: never raises so a publish
+    transition is not rolled back by a LanceDB hiccup. Returns True if updated.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from policy_hub.review_lifecycle import (
+            REVIEW_FREQUENCIES,
+            compute_next_review_date,
+            normalize_frequency,
+        )
+
+        row = _run_async(dbserver.runbook_get_result(owner_id, result_id))
+        if not isinstance(row, dict) or row.get("status") == "not_found":
+            logger.warning(
+                "apply_publication_to_runbook_result: result %s not found for owner %s",
+                result_id, owner_id,
+            )
+            return False
+        blob = row.get("result")
+        if not isinstance(blob, dict):
+            blob = {}
+
+        # Idempotency: publish hooks can replay on auto-advance / retries.
+        if blob.get("review_published_version") == str(doc_version):
+            return False
+
+        freq = normalize_frequency(frequency)
+        published_at = published_at or datetime.now(timezone.utc)
+        review_date = (
+            published_at.date().isoformat()
+            if hasattr(published_at, "date")
+            else str(published_at)
+        )
+
+        blob["review_frequency"] = freq
+        blob["review_interval_months"] = REVIEW_FREQUENCIES[freq]
+        blob["last_reviewed_at"] = review_date
+        blob["next_review_date"] = compute_next_review_date(published_at, freq)
+        blob["review_published_version"] = str(doc_version)
+
+        _run_async(dbserver.update_runbook_result(owner_id, result_id, blob))
+        logger.info(
+            "stamped review cadence on runbook result %s (owner=%s, next_review=%s)",
+            result_id, owner_id, blob.get("next_review_date"),
+        )
+        return True
+    except Exception as exc:
+        logger.error(
+            "apply_publication_to_runbook_result failed for %s: %s", result_id, exc
+        )
+        return False
 
 
 @runbook_bp.route("/schedule_runbook", methods=["POST"])

@@ -1574,6 +1574,18 @@ async def run_runbook_execution_engine(
         # by-doc with result_id) can find it.
         _auto_submit_runbook_workflow(runbook_id, user_id, result_id=new_result_id)
 
+        # Give each report an individual, human-readable name (runbook name +
+        # 2-3 word AI descriptor from the first paragraph) so reports of the same
+        # runbook don't all share one name. Best-effort; never blocks generation.
+        try:
+            from runbook.report_naming import build_report_name
+
+            merged_result["report_name"] = await build_report_name(
+                runbook.get("name"), merged_result, credits, user_id
+            )
+        except Exception:
+            logger.warning("report_name generation failed", exc_info=IS_DEV)
+
         # Persist the completed result LAST. The frontend's "Report ready" pill
         # polls /runbook/results and turns green the moment it sees a row with
         # status='completed' — writing the row before tracker push + workflow

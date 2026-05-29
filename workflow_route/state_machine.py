@@ -80,38 +80,69 @@ def get_workflow_config(org_id: str, doc_type: str) -> dict:
     }
 
 
-def get_org_review_frequency(org_id: str) -> str:
-    """Return the org's document review cadence enum, or the default ('annual')."""
+# Document review cadence is configured per doc-type *category*. The three
+# Policy Hub doc types share one cadence ('policy'); runbook and standalone
+# reports each get their own. Anything unrecognized falls back to 'policy'.
+_CADENCE_CATEGORIES = {
+    "policy": "policy",
+    "procedure": "policy",
+    "standard": "policy",
+    "runbook": "runbook",
+    "report": "report",
+}
+
+
+def _cadence_category(doc_type: str | None) -> str:
+    """Normalize a workflow doc_type to its review-cadence category."""
+    return _CADENCE_CATEGORIES.get((doc_type or "policy"), "policy")
+
+
+def get_org_review_frequency(org_id: str, doc_type: str = "policy") -> str:
+    """Return the org's review cadence enum for a doc-type category.
+
+    Falls back to the 'policy' category row (so orgs configured before cadence
+    became per-doc-type keep working), then to the module default.
+    """
     from policy_hub.review_lifecycle import DEFAULT_REVIEW_FREQUENCY, normalize_frequency
 
     if not org_id:
         return DEFAULT_REVIEW_FREQUENCY
+    category = _cadence_category(doc_type)
     conn = connect_to_rds()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
-                "SELECT review_frequency FROM org_review_config WHERE org_id=%s",
-                (org_id,),
+                "SELECT doc_type, review_frequency FROM org_review_config "
+                "WHERE org_id=%s AND doc_type IN (%s, 'policy')",
+                (org_id, category),
             )
-            row = cur.fetchone()
+            rows = cur.fetchall() or []
     finally:
         conn.close()
-    return normalize_frequency(row["review_frequency"] if row else None)
+    by_type = {r["doc_type"]: r["review_frequency"] for r in rows}
+    chosen = by_type.get(category, by_type.get("policy"))
+    return normalize_frequency(chosen)
 
 
-def set_org_review_frequency(org_id: str, frequency: str) -> str:
-    """Upsert the org's review cadence. Returns the stored (normalized) value."""
+def set_org_review_frequency(
+    org_id: str, frequency: str, doc_type: str = "policy"
+) -> str:
+    """Upsert the org's review cadence for a doc-type category.
+
+    Returns the stored (normalized) value.
+    """
     from policy_hub.review_lifecycle import normalize_frequency
 
     freq = normalize_frequency(frequency)
+    category = _cadence_category(doc_type)
     conn = connect_to_rds()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO org_review_config (org_id, review_frequency)
-                   VALUES (%s, %s)
+                """INSERT INTO org_review_config (org_id, doc_type, review_frequency)
+                   VALUES (%s, %s, %s)
                    ON DUPLICATE KEY UPDATE review_frequency=VALUES(review_frequency)""",
-                (org_id, freq),
+                (org_id, category, freq),
             )
         conn.commit()
     finally:
@@ -1298,15 +1329,30 @@ def bootstrap_schema() -> None:
           updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           PRIMARY KEY (org_id, flag_name)
         )""",
-        # Org-wide document review cadence. One row per org; every document in
-        # the org follows the same review cycle (frequency enum -> interval in
-        # months is resolved in policy_hub.review_lifecycle).
+        # Document review cadence, one row per (org, doc-type category). Every
+        # document of a category follows that category's review cycle (frequency
+        # enum -> interval in months is resolved in policy_hub.review_lifecycle).
+        # Categories: 'policy' (covers policy/procedure/standard), 'runbook',
+        # 'report'. See _cadence_category().
         """CREATE TABLE IF NOT EXISTS org_review_config (
           org_id            VARCHAR(64)  NOT NULL,
+          doc_type          VARCHAR(32)  NOT NULL DEFAULT 'policy',
           review_frequency  VARCHAR(32)  NOT NULL DEFAULT '12_months',
           updated_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          PRIMARY KEY (org_id)
+          PRIMARY KEY (org_id, doc_type)
         )""",
+    ]
+    # Migration for orgs created before review cadence became per-doc-type.
+    # Existing single-row configs were keyed on org_id alone; backfilling
+    # doc_type='policy' (the column default) preserves their cadence for the
+    # Policy Hub doc types while leaving runbook/report categories unset (they
+    # fall back to the policy row until configured). Run via try/except since
+    # the column/PK may already be in the new shape.
+    _review_config_alters = [
+        "ALTER TABLE org_review_config "
+        "ADD COLUMN doc_type VARCHAR(32) NOT NULL DEFAULT 'policy'",
+        "ALTER TABLE org_review_config DROP PRIMARY KEY, "
+        "ADD PRIMARY KEY (org_id, doc_type)",
     ]
     _notification_alters = [
         "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS doc_type VARCHAR(32) NULL",
@@ -1366,6 +1412,11 @@ def bootstrap_schema() -> None:
                     cur.execute(stmt)
                 except Exception:
                     pass  # column/index may already exist; ignore
+            for stmt in _review_config_alters:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    pass  # column/PK may already be in the new shape; ignore
         conn.commit()
         logger.info("workflow schema bootstrap complete")
     except Exception as exc:

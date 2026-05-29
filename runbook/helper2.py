@@ -1038,6 +1038,17 @@ async def modify_run_runbook_execution_engine(
     merged_result["result_id"] = new_result_id
     merged_result["previous_result_id"] = result_id
 
+    # Give each regenerated report an individual, human-readable name (runbook
+    # name + 2-3 word AI descriptor from the first paragraph). Best-effort.
+    try:
+        from runbook.report_naming import build_report_name
+
+        merged_result["report_name"] = await build_report_name(
+            runbook.get("name"), merged_result, credits, user_id
+        )
+    except Exception:
+        logger.warning("report_name generation failed", exc_info=IS_DEV)
+
     await dbserver.insert_runbook_result(
         {
             "execution_id": execution_id,

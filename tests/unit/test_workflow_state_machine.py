@@ -35,6 +35,23 @@ def test_next_forward_state(state, expected):
 
 # ── _is_forward_hop ──────────────────────────────────────────────────────────
 
+# ── _cadence_category ─────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+@pytest.mark.parametrize("doc_type,expected", [
+    ("policy", "policy"),
+    ("procedure", "policy"),
+    ("standard", "policy"),
+    ("runbook", "runbook"),
+    ("report", "report"),
+    ("unknown", "policy"),
+    ("", "policy"),
+    (None, "policy"),
+])
+def test_cadence_category(doc_type, expected):
+    assert sm._cadence_category(doc_type) == expected
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("from_state,to_state,expected", [
     ("draft", "quality_review", True),
