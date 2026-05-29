@@ -2052,6 +2052,17 @@ def edit_status():
 # S3 scan everywhere if the index ever misbehaves.
 POLICY_INDEX_ENABLED = True
 
+# Human labels for the workflow/approval states, aligned with
+# workflow_route.state_machine.DEFAULT_STATES_JSON["states"]. Used to give each
+# list card a ready-to-render approval status.
+_WORKFLOW_STATE_LABELS = {
+    "draft": "Draft",
+    "quality_review": "Quality Review",
+    "governance_review": "Governance Review",
+    "approval": "Approval",
+    "published": "Published",
+}
+
 
 @policy_hub_bp.route("/list", methods=["GET"])
 @permission_required_body("policyhub.view")
@@ -2169,8 +2180,8 @@ def list_policies():
 
         # /list returns mixed types (policy / procedure / standard). The workflow
         # state machine keys by (doc_type, doc_id), so group ids by type and
-        # query each supported doc_type once. "standard" is not workflow-supported
-        # by the backend so those items stay at workflow_state=None.
+        # query each supported doc_type once. All three Policy Hub doc types are
+        # workflow-supported (see WORKFLOW_SUPPORTED_DOC_TYPES).
         ids_by_type: dict[str, list[str]] = {}
         for it in items:
             t = it.get("type")
@@ -2186,6 +2197,19 @@ def list_policies():
             it["workflow_state"] = states_by_id.get(it.get("policy_id"))
     except Exception as wf_exc:
         logger.warning("policy workflow_state lookup failed: %s", wf_exc)
+
+    # Surface a card-ready approval status on every item (policy / procedure /
+    # standard). A document with no workflow row yet is effectively still a
+    # draft, so the status defaults to "draft" rather than null — the second-pane
+    # cards always have something to render. This pass always runs, even if the
+    # workflow lookup above failed.
+    for it in items:
+        state = it.get("workflow_state") or "draft"
+        it["approval_status"] = state
+        it["approval_status_label"] = _WORKFLOW_STATE_LABELS.get(
+            state, state.replace("_", " ").title()
+        )
+        it["is_published"] = state == "published"
 
     # Ensure every item's statements carry a display_number so the detail view
     # renders numbering without a second round-trip. Cheap: abbr maps for the

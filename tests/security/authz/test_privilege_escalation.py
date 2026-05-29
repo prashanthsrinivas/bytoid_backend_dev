@@ -1,9 +1,15 @@
-"""Privilege escalation tests. Verifies the decorator and route logic prevent cross-user and cross-admin access without proper grants."""
+"""Privilege escalation tests. Verifies the decorator and route logic prevent cross-user and cross-admin access without proper grants.
+
+Identity model under test: the ACTING user comes from the authenticated session
+(set here via ``session_transaction``); the request-supplied ``user_id`` is only
+ever the *target/owner* being accessed. A request with no session is
+unauthenticated and must be rejected.
+"""
 
 import json
 import sys
 import urllib.parse
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -81,6 +87,35 @@ def _make_conn(fetchone_side_effect):
     return conn
 
 
+def _do_request(app, conn, *, actor_id, target_id, method="get", patches=None):
+    """Drive a request through the protected route.
+
+    `actor_id` is stamped into the session (the authenticated caller). `target_id`
+    is the owner being accessed, passed as the request's `user_id` (None to omit).
+    """
+    ctx_patches = [patch("utils.permission_required.connect_to_rds", return_value=conn)]
+    for p in patches or []:
+        ctx_patches.append(p)
+
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        for p in ctx_patches:
+            stack.enter_context(p)
+        with app.test_client() as client:
+            if actor_id is not None:
+                with client.session_transaction() as sess:
+                    sess["user_id"] = actor_id
+            path_owner = target_id if target_id is not None else "some-owner-id"
+            url = f"/protected/{urllib.parse.quote(str(path_owner), safe='')}"
+            if target_id is not None:
+                url += f"?user_id={urllib.parse.quote(str(target_id), safe='')}"
+            kwargs = {}
+            if method == "post":
+                kwargs = {"data": "{}", "content_type": "application/json"}
+            return getattr(client, method)(url, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -88,28 +123,22 @@ def _make_conn(fetchone_side_effect):
 @pytest.mark.security
 @pytest.mark.authz
 def test_admin_self_access_allowed():
-    """Admin accessing their own data (plain user_id — same logged-in and target) must get 200."""
+    """Admin accessing their own data (target == session actor) must get 200."""
     admin_id = "admin-001"
-    # With a plain user_id (no ##SU## separator), parse_composite_user_id returns
-    # (admin_id, admin_id) — logged_in == target → self-access path
     conn = _make_conn([
         {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{admin_id}?user_id={admin_id}")
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=admin_id)
     assert resp.status_code == 200
 
 
 @pytest.mark.security
 @pytest.mark.authz
 def test_admin_cross_normal_user_allowed():
-    """Admin accessing a normal user's data via composite user_id must get 200."""
+    """Admin accessing a normal user's data (same org) must get 200."""
     admin_id = "admin-001"
     normal_id = "user-002"
-    # URL-encode the composite because # is treated as fragment start in URLs
-    composite_uid = urllib.parse.quote(f"{admin_id}##SU##{normal_id}", safe="")
     conn = _make_conn([
         # Logged-in user row (admin)
         {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
@@ -117,35 +146,31 @@ def test_admin_cross_normal_user_allowed():
         {"user_type": "user", "launch_id_fk": "org-1", "email": "user@example.com"},
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{normal_id}?user_id={composite_uid}")
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=normal_id)
     assert resp.status_code == 200
 
 
 @pytest.mark.security
 @pytest.mark.authz
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known bug: permission_required has a tautological self-access check — "
-        "'if not owner_user_id or owner_user_id == user_id' where owner_user_id IS user_id "
-        "(both assigned from parse_composite_user_id). The check is always True, so the "
-        "cross-admin gate is never reached. Bug: should compare against logged_in_user_id. "
-        "This xfail documents the existing bypass and will start passing once the bug is fixed."
-    ),
-)
-def test_admin_cross_admin_without_grant_forbidden():
-    """Admin accessing another admin (via composite uid) without a special_access grant must get 403.
+def test_admin_cross_org_normal_user_forbidden():
+    """Admin accessing a normal user in a DIFFERENT org must get 403."""
+    admin_id = "admin-001"
+    normal_id = "user-002"
+    conn = _make_conn([
+        {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
+        {"user_type": "user", "launch_id_fk": "org-2", "email": "user@example.com"},
+    ])
+    app = _build_app()
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=normal_id)
+    assert resp.status_code == 403
 
-    NOTE: This test documents a known bug — the current decorator always returns 200 for
-    admins due to a tautological self-access check. The xfail will flip to passing when
-    the bug in permission_required.py is fixed.
-    """
+
+@pytest.mark.security
+@pytest.mark.authz
+def test_admin_cross_admin_without_grant_forbidden():
+    """Admin accessing another admin without a special_access grant must get 403."""
     admin_id = "admin-001"
     target_admin_id = "admin-002"
-    # URL-encode the composite: # would be treated as fragment by the URL parser
-    composite_uid = urllib.parse.quote(f"{admin_id}##SU##{target_admin_id}", safe="")
     conn = _make_conn([
         # Logged-in user row
         {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
@@ -155,9 +180,7 @@ def test_admin_cross_admin_without_grant_forbidden():
         None,
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{target_admin_id}?user_id={composite_uid}")
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=target_admin_id)
     assert resp.status_code == 403
     data = resp.get_json()
     assert "error" in data
@@ -166,10 +189,9 @@ def test_admin_cross_admin_without_grant_forbidden():
 @pytest.mark.security
 @pytest.mark.authz
 def test_admin_cross_admin_with_grant_allowed():
-    """Admin accessing another admin (via composite uid) WITH a special_access grant must get 200."""
+    """Admin accessing another admin WITH a special_access grant must get 200."""
     admin_id = "admin-001"
     target_admin_id = "admin-002"
-    composite_uid = urllib.parse.quote(f"{admin_id}##SU##{target_admin_id}", safe="")
     conn = _make_conn([
         # Logged-in user row
         {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
@@ -179,9 +201,7 @@ def test_admin_cross_admin_with_grant_allowed():
         {"access_level": "full"},
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{target_admin_id}?user_id={composite_uid}")
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=target_admin_id)
     assert resp.status_code == 200
 
 
@@ -190,8 +210,6 @@ def test_admin_cross_admin_with_grant_allowed():
 def test_normal_user_with_active_role_and_permission_allowed():
     """Normal user with an active role that includes the required permission must get 200."""
     user_id = "user-100"
-    owner_id = user_id  # self-access is simplest path, but we test through normal-user path
-    # Simulate non-admin user accessing own data; decorator takes normal-user path
     required_perm = "some.permission"
     perms_json = json.dumps({
         "role": {"permissions": [required_perm]},
@@ -204,13 +222,32 @@ def test_normal_user_with_active_role_and_permission_allowed():
         {"permissions": perms_json},
     ])
     app = _build_app()
-
-    # resolve_permissions must return the required perm
-    with patch("utils.permission_required.connect_to_rds", return_value=conn), \
-         patch("utils.permission_required.resolve_permissions", return_value=[required_perm]):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{owner_id}?user_id={user_id}")
+    resp = _do_request(
+        app, conn, actor_id=user_id, target_id=user_id,
+        patches=[patch("utils.permission_required.resolve_permissions", return_value=[required_perm])],
+    )
     assert resp.status_code == 200
+
+
+@pytest.mark.security
+@pytest.mark.authz
+def test_normal_user_cross_user_without_share_forbidden():
+    """Normal user accessing ANOTHER user's workspace without a share must get 403."""
+    attacker_id = "user-100"
+    victim_id = "user-999"
+    conn = _make_conn([
+        # Logged-in user row (non-admin)
+        {"user_id": attacker_id, "user_type": "user", "launch_id_fk": "org-1"},
+    ])
+    app = _build_app()
+    # No active share → cross-user access is denied before any permission check.
+    resp = _do_request(
+        app, conn, actor_id=attacker_id, target_id=victim_id,
+        patches=[patch("utils.permission_required._actor_has_share_with", return_value=False)],
+    )
+    assert resp.status_code == 403
+    data = resp.get_json()
+    assert "error" in data
 
 
 @pytest.mark.security
@@ -218,7 +255,6 @@ def test_normal_user_with_active_role_and_permission_allowed():
 def test_normal_user_without_permission_denied():
     """Normal user whose role doesn't include the required permission must get 403."""
     user_id = "user-101"
-    owner_id = user_id
     perms_json = json.dumps({
         "role": {"permissions": ["other.permission"]},
         "status": "active",
@@ -228,10 +264,10 @@ def test_normal_user_without_permission_denied():
         {"permissions": perms_json},
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn), \
-         patch("utils.permission_required.resolve_permissions", return_value=["other.permission"]):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{owner_id}?user_id={user_id}")
+    resp = _do_request(
+        app, conn, actor_id=user_id, target_id=user_id,
+        patches=[patch("utils.permission_required.resolve_permissions", return_value=["other.permission"])],
+    )
     assert resp.status_code == 403
     data = resp.get_json()
     assert "error" in data
@@ -242,7 +278,6 @@ def test_normal_user_without_permission_denied():
 def test_normal_user_inactive_role_denied():
     """Normal user with a role that has status != 'active' must get 403."""
     user_id = "user-102"
-    owner_id = user_id
     required_perm = "some.permission"
     perms_json = json.dumps({
         "role": {"permissions": [required_perm]},
@@ -253,20 +288,25 @@ def test_normal_user_inactive_role_denied():
         {"permissions": perms_json},
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn), \
-         patch("utils.permission_required.resolve_permissions", return_value=[required_perm]):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{owner_id}?user_id={user_id}")
+    resp = _do_request(
+        app, conn, actor_id=user_id, target_id=user_id,
+        patches=[patch("utils.permission_required.resolve_permissions", return_value=[required_perm])],
+    )
     assert resp.status_code == 403
 
 
 @pytest.mark.security
 @pytest.mark.authz
-def test_no_user_id_returns_401():
-    """Request with no user_id in any context must get 401."""
+def test_no_session_returns_401():
+    """Request with no authenticated session must get 401 — even if it supplies a user_id.
+
+    This is the authentication gate: a caller that has not completed login
+    (e.g. password ok but 2FA pending) has no session user_id, so passing a
+    user_id in the URL/body must NOT grant access.
+    """
+    conn = _make_conn([])
     app = _build_app()
-    with app.test_client() as client:
-        resp = client.get("/protected/some-owner-id")
+    resp = _do_request(app, conn, actor_id=None, target_id="some-owner-id")
     assert resp.status_code == 401
     data = resp.get_json()
     assert "error" in data
@@ -274,35 +314,17 @@ def test_no_user_id_returns_401():
 
 @pytest.mark.security
 @pytest.mark.authz
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known bug: same tautological self-access check prevents the viewer-access "
-        "gate from being reached. The special_access row is never fetched, so the "
-        "viewer POST restriction cannot be enforced. Will pass once the bug is fixed."
-    ),
-)
 def test_viewer_access_blocks_write_methods():
-    """Admin with viewer-level special_access must be blocked from POST/PUT/PATCH/DELETE.
-
-    NOTE: xfail — see test_admin_cross_admin_without_grant_forbidden for the root cause.
-    """
+    """Admin with viewer-level special_access must be blocked from POST/PUT/PATCH/DELETE."""
     admin_id = "admin-001"
     target_admin_id = "admin-002"
-    composite_uid = urllib.parse.quote(f"{admin_id}##SU##{target_admin_id}", safe="")
     conn = _make_conn([
         {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
         {"user_type": "admin", "launch_id_fk": "org-1", "email": "other@example.com"},
         {"access_level": "viewer"},
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn):
-        with app.test_client() as client:
-            resp = client.post(
-                f"/protected/{target_admin_id}?user_id={composite_uid}",
-                data="{}",
-                content_type="application/json",
-            )
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=target_admin_id, method="post")
     assert resp.status_code == 403
     data = resp.get_json()
     assert "viewer" in data.get("error", "").lower() or "modify" in data.get("error", "").lower()
@@ -314,14 +336,11 @@ def test_viewer_access_allows_read_methods():
     """Admin with viewer-level special_access must be allowed to GET."""
     admin_id = "admin-001"
     target_admin_id = "admin-002"
-    composite_uid = urllib.parse.quote(f"{admin_id}##SU##{target_admin_id}", safe="")
     conn = _make_conn([
         {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
         {"user_type": "admin", "launch_id_fk": "org-1", "email": "other@example.com"},
         {"access_level": "viewer"},
     ])
     app = _build_app()
-    with patch("utils.permission_required.connect_to_rds", return_value=conn):
-        with app.test_client() as client:
-            resp = client.get(f"/protected/{target_admin_id}?user_id={composite_uid}")
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=target_admin_id)
     assert resp.status_code == 200
