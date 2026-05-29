@@ -80,6 +80,45 @@ def get_workflow_config(org_id: str, doc_type: str) -> dict:
     }
 
 
+def get_org_review_frequency(org_id: str) -> str:
+    """Return the org's document review cadence enum, or the default ('annual')."""
+    from policy_hub.review_lifecycle import DEFAULT_REVIEW_FREQUENCY, normalize_frequency
+
+    if not org_id:
+        return DEFAULT_REVIEW_FREQUENCY
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT review_frequency FROM org_review_config WHERE org_id=%s",
+                (org_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return normalize_frequency(row["review_frequency"] if row else None)
+
+
+def set_org_review_frequency(org_id: str, frequency: str) -> str:
+    """Upsert the org's review cadence. Returns the stored (normalized) value."""
+    from policy_hub.review_lifecycle import normalize_frequency
+
+    freq = normalize_frequency(frequency)
+    conn = connect_to_rds()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO org_review_config (org_id, review_frequency)
+                   VALUES (%s, %s)
+                   ON DUPLICATE KEY UPDATE review_frequency=VALUES(review_frequency)""",
+                (org_id, freq),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return freq
+
+
 def get_workflow(workflow_id: str) -> dict:
     conn = connect_to_rds()
     try:
@@ -1258,6 +1297,15 @@ def bootstrap_schema() -> None:
           flag_value  VARCHAR(255) NOT NULL DEFAULT 'false',
           updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           PRIMARY KEY (org_id, flag_name)
+        )""",
+        # Org-wide document review cadence. One row per org; every document in
+        # the org follows the same review cycle (frequency enum -> interval in
+        # months is resolved in policy_hub.review_lifecycle).
+        """CREATE TABLE IF NOT EXISTS org_review_config (
+          org_id            VARCHAR(64)  NOT NULL,
+          review_frequency  VARCHAR(32)  NOT NULL DEFAULT 'annual',
+          updated_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (org_id)
         )""",
     ]
     _notification_alters = [

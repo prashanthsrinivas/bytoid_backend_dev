@@ -3,6 +3,8 @@
 Endpoints:
   GET  /workflow/config
   PUT  /workflow/config/<doc_type>
+  GET  /workflow/review-frequency
+  PUT  /workflow/review-frequency
   POST /workflow/submit
   POST /workflow/review
   POST /workflow/approve
@@ -39,9 +41,11 @@ from workflow_route.state_machine import (
     create_workflow,
     enrich_workflow_for_viewer,
     get_inbox,
+    get_org_review_frequency,
     get_user_org_id,
     get_workflow,
     get_workflow_config,
+    set_org_review_frequency,
     get_workflow_for_doc,
     get_workflow_for_doc_any_role,
     get_workflow_history,
@@ -81,6 +85,41 @@ WORKFLOW_CHANGES_REQUESTED = WORKFLOW_QUALITY_SENT_BACK
 # workflow_route.state_machine so non-route callers (e.g. runbook.helper)
 # can use the same resolution without importing this module.
 _get_user_org = get_user_org_id
+
+
+# Doc types whose source-of-truth lives in Policy Hub (S3 YAML). These get a
+# revision-history entry + next-review date stamped when a workflow publishes.
+POLICY_HUB_DOC_TYPES = {"policy", "procedure", "standard"}
+
+
+def _apply_publish_effects(workflow: dict, actor_email: str) -> None:
+    """Stamp review-cycle metadata + revision history on a published doc.
+
+    Best-effort and never raises: a Policy Hub I/O failure must not roll back
+    the (already-committed) workflow transition. Only applies to Policy Hub
+    doc types; runbooks/reports are no-ops here.
+    """
+    try:
+        doc_type = workflow.get("doc_type")
+        if doc_type not in POLICY_HUB_DOC_TYPES:
+            return
+        frequency = get_org_review_frequency(workflow.get("org_id"))
+        # Lazy import avoids any import-time coupling to the policy_hub blueprint.
+        from policy_hub.routes import apply_publication_to_policy
+
+        apply_publication_to_policy(
+            owner_id=workflow.get("owner_user_id"),
+            policy_id=workflow.get("doc_id"),
+            doc_type=doc_type,
+            doc_version=workflow.get("doc_version", "1.0"),
+            author_email=actor_email or "",
+            frequency=frequency,
+        )
+    except Exception as exc:
+        logger.warning(
+            "_apply_publish_effects failed for workflow=%s doc=%s: %s",
+            workflow.get("workflow_id"), workflow.get("doc_id"), exc,
+        )
 
 
 def _notify(workflow: dict, event_type: str, comment: str | None = None, **kwargs):
@@ -232,7 +271,8 @@ def get_assignable_users():
 
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 cur.execute(
-                    "SELECT permissions FROM users WHERE user_id=%s LIMIT 1",
+                    "SELECT user_id, email, user_type, permissions "
+                    "FROM users WHERE user_id=%s LIMIT 1",
                     (admin_id,),
                 )
                 admin_row = cur.fetchone()
@@ -265,6 +305,19 @@ def get_assignable_users():
                     (*email_set, user_id),
                 )
                 rows = cur.fetchall()
+
+            # The root admin (org owner) is a valid reviewer/approver, but is
+            # never present in their own shared/invites list, so they would
+            # otherwise be missing from the assignable list. Include them
+            # explicitly (unless the admin is the caller — self is excluded
+            # everywhere else in this endpoint).
+            if (
+                admin_id != user_id
+                and admin_row
+                and admin_row.get("email")
+                and not any(r["user_id"] == admin_id for r in rows)
+            ):
+                rows = [*rows, admin_row]
 
     except Exception as exc:
         logger.exception("get_assignable_users error: %s", exc)
@@ -352,6 +405,65 @@ def update_workflow_config(doc_type: str):
         conn.close()
 
     return jsonify({"status": "ok", "org_id": org_id, "doc_type": doc_type}), 200
+
+
+# ── Org-wide review cadence ─────────────────────────────────────────────────────
+
+
+@workflow_bp.route("/review-frequency", methods=["GET"])
+@permission_required_body("workflow.config.manage")
+def get_review_frequency():
+    """Return the org-wide document review cadence + selectable options.
+
+    Query: user_id
+    Response: { org_id, frequency, interval_months, options:[{value,label,interval_months}] }
+    """
+    from policy_hub.review_lifecycle import REVIEW_FREQUENCIES, frequency_options
+
+    baseuser = request.args.get("user_id", "")
+    logged_in, user_id = parse_composite_user_id(baseuser)
+    org_id = _get_user_org(user_id)
+    if not org_id:
+        return jsonify({"error": "User org not found"}), 404
+
+    frequency = get_org_review_frequency(org_id)
+    return jsonify({
+        "org_id": org_id,
+        "frequency": frequency,
+        "interval_months": REVIEW_FREQUENCIES[frequency],
+        "options": frequency_options(),
+    }), 200
+
+
+@workflow_bp.route("/review-frequency", methods=["PUT"])
+@permission_required_body("workflow.config.manage")
+def update_review_frequency():
+    """Set the org-wide review cadence that every document follows.
+
+    Body: { user_id, frequency }  (frequency ∈ quarterly|semi_annual|annual|biennial)
+    Response: { status, org_id, frequency, interval_months }
+    """
+    from policy_hub.review_lifecycle import REVIEW_FREQUENCIES
+
+    body = request.get_json(silent=True) or {}
+    baseuser = body.get("user_id", "")
+    frequency = body.get("frequency")
+    logged_in, user_id = parse_composite_user_id(baseuser)
+    org_id = _get_user_org(user_id)
+    if not org_id:
+        return jsonify({"error": "User org not found"}), 404
+    if frequency not in REVIEW_FREQUENCIES:
+        return jsonify({
+            "error": f"frequency must be one of: {', '.join(REVIEW_FREQUENCIES)}"
+        }), 400
+
+    stored = set_org_review_frequency(org_id, frequency)
+    return jsonify({
+        "status": "ok",
+        "org_id": org_id,
+        "frequency": stored,
+        "interval_months": REVIEW_FREQUENCIES[stored],
+    }), 200
 
 
 # ── Submit ────────────────────────────────────────────────────────────────────
@@ -483,6 +595,8 @@ def submit_for_review():
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    if wf.get("state") == "published":
+        _apply_publish_effects(wf, actor_email)
     extra_meta = {"doc_type": doc_type, "doc_id": doc_id}
     if role_resolved:
         extra_meta["role_resolved"] = role_resolved
@@ -736,6 +850,8 @@ def _dispatch_review(body: dict):
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    if updated.get("state") == "published":
+        _apply_publish_effects(updated, actor_email)
     _log_chain_audits(
         chain,
         first_action=audit_action,

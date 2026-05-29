@@ -2236,6 +2236,249 @@ def update_policy():
     return jsonify({"status": "ok"}), 200
 
 
+def apply_publication_to_policy(
+    owner_id: str,
+    policy_id: str,
+    doc_type: str,
+    doc_version: str,
+    author_email: str,
+    frequency: str,
+) -> bool:
+    """Record an approval/publish on a Policy Hub document.
+
+    Called by the workflow publish hook. Sets the review-cycle metadata
+    (``next_review_date`` etc.) and appends a "Review and Revision History"
+    entry. Returns True if the document was updated. Best-effort: never raises
+    so a publish transition is not rolled back by a Policy Hub I/O hiccup.
+    """
+    try:
+        from policy_hub.review_lifecycle import record_publication
+
+        key = _s3_key(owner_id, policy_id)
+        item = _read_policy_yaml(owner_id, key)
+        if not item:
+            logger.warning(
+                "apply_publication_to_policy: policy %s not found for owner %s",
+                policy_id, owner_id,
+            )
+            return False
+
+        # Idempotency guard: skip if this exact version was already recorded as
+        # published (publish hooks can fire on retries / auto-advance replays).
+        history = item.get("revision_history") or []
+        if history and history[-1].get("version") == str(doc_version) and \
+                history[-1].get("action") == "published":
+            return False
+
+        record_publication(
+            item,
+            doc_type=doc_type,
+            version=doc_version,
+            author=author_email,
+            frequency=frequency,
+        )
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        item["etag"] = str(uuid.uuid4())
+        _write_policy_yaml(owner_id, key, item)
+        logger.info(
+            "recorded publication for %s %s (owner=%s, next_review=%s)",
+            doc_type, policy_id, owner_id, item.get("next_review_date"),
+        )
+        return True
+    except Exception as exc:
+        logger.error(
+            "apply_publication_to_policy failed for %s %s: %s",
+            doc_type, policy_id, exc,
+        )
+        return False
+
+
+def _replace_section_body(content: str, section_id: str, new_body_html: str, title: str) -> str | None:
+    """Replace one section's body (keeping its <h2>) with ``new_body_html``.
+
+    ``new_body_html`` is the section content *without* the heading — the same
+    shape ``render_document_html`` emits as a section body. Returns the updated
+    full-document HTML, or None if the section isn't present.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(content or "", "lxml")
+    section = soup.find(attrs={"data-section-id": section_id})
+    if section is None:
+        return None
+
+    heading = section.find("h2")
+    section.clear()
+    if heading is not None:
+        section.append(heading)
+    else:
+        h2 = soup.new_tag("h2")
+        h2.string = title or ""
+        section.append(h2)
+
+    frag = BeautifulSoup(new_body_html or "", "lxml")
+    container = frag.body if frag.body is not None else frag
+    for node in list(container.children):
+        section.append(node)
+
+    root = soup.find("div", class_="policy-document")
+    if root is not None:
+        return str(root)
+    if soup.body is not None:
+        return soup.body.decode_contents()
+    return str(soup)
+
+
+def _section_statement_diff(item: dict, section_id: str, merged_content: str, doc_type: str) -> dict:
+    """Diff a section's statements before/after a manual edit, by text equality."""
+    parsed = parse_document_html(merged_content, doc_type)
+    new_sec = next((s for s in parsed.sections if s.id == section_id), None)
+    new_texts = [st.text for st in (new_sec.statements if new_sec else [])]
+    old_sec = next(
+        (s for s in item.get("sections", []) if s.get("id") == section_id), None
+    )
+    old_stmts = (old_sec or {}).get("statements", []) if old_sec else []
+    old_by_text = {s["text"]: s["id"] for s in old_stmts}
+    new_text_set = set(new_texts)
+    return {
+        "kept": [sid for txt, sid in old_by_text.items() if txt in new_text_set],
+        "removed": [sid for txt, sid in old_by_text.items() if txt not in new_text_set],
+        "added": [t for t in new_texts if t not in old_by_text],
+        "old_count": len(old_stmts),
+        "new_count": len(new_texts),
+    }
+
+
+@policy_hub_bp.route("/<policy_id>/block/preview", methods=["POST"])
+@permission_required_body("policyhub.edit")
+def preview_block_edit(policy_id: str):
+    """Preview a manual single-section edit without persisting.
+
+    Mirrors the report (/radar/changeblock) preview step, but the change is
+    manual: the client supplies the section's new body HTML directly.
+
+    Body: { user_id, section_id, new_html }
+    Response: { policy_id, section_id, old_html, new_html, validation_status,
+                statement_changes:{kept,removed,added,old_count,new_count} }
+    """
+    body = request.get_json(silent=True) or {}
+    baseuser = body.get("user_id")
+    section_id = (body.get("section_id") or "").strip()
+    new_html = body.get("new_html", "")
+
+    if not baseuser or not policy_id or not section_id:
+        return jsonify({"error": "user_id, policy_id, and section_id are required"}), 400
+    user_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    item = _read_policy_yaml(user_id, _s3_key(user_id, policy_id))
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+
+    doc_type = item.get("type", "policy")
+    old_sec = next(
+        (s for s in item.get("sections", []) if s.get("id") == section_id), None
+    )
+    if old_sec is None:
+        return jsonify({"error": f"Unknown section_id: {section_id}"}), 404
+
+    merged = _replace_section_body(
+        item.get("content", ""), section_id, new_html, old_sec.get("title", "")
+    )
+    if merged is None:
+        return jsonify({"error": f"Section {section_id} not found in document"}), 404
+
+    validation = validate_template(merged, doc_type, user_id=user_id)
+    return jsonify({
+        "policy_id": policy_id,
+        "section_id": section_id,
+        "old_html": old_sec.get("body_html", ""),
+        "new_html": new_html,
+        "validation_status": "ok" if validation.ok else "needs_review",
+        "statement_changes": _section_statement_diff(item, section_id, merged, doc_type),
+    }), 200
+
+
+@policy_hub_bp.route("/<policy_id>/block/confirm", methods=["POST"])
+@permission_required_body("policyhub.edit")
+def confirm_block_edit(policy_id: str):
+    """Persist a manual single-section edit.
+
+    Replaces the section body, reconciles statement IDs across the whole
+    document, re-syncs LanceDB, and writes the new YAML. Optimistic-locked via
+    ``etag`` for V2 documents.
+
+    Body: { user_id, section_id, new_html, etag? }
+    Response: { status, policy_id, etag, section:{id,title,kind,body_html,statements?} }
+    """
+    body = request.get_json(silent=True) or {}
+    baseuser = body.get("user_id")
+    section_id = (body.get("section_id") or "").strip()
+    new_html = body.get("new_html", "")
+
+    if not baseuser or not policy_id or not section_id:
+        return jsonify({"error": "user_id, policy_id, and section_id are required"}), 400
+    user_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    key = _s3_key(user_id, policy_id)
+    item = _read_policy_yaml(user_id, key)
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+
+    v2 = policy_hub_v2_enabled(user_id)
+    if v2 and "etag" in body and body["etag"] != item.get("etag"):
+        return jsonify({
+            "error": "Document was modified since you last loaded it. Please reload.",
+            "current_etag": item.get("etag"),
+        }), 409
+
+    doc_type = item.get("type", "policy")
+    old_sec = next(
+        (s for s in item.get("sections", []) if s.get("id") == section_id), None
+    )
+    if old_sec is None:
+        return jsonify({"error": f"Unknown section_id: {section_id}"}), 404
+
+    merged = _replace_section_body(
+        item.get("content", ""), section_id, new_html, old_sec.get("title", "")
+    )
+    if merged is None:
+        return jsonify({"error": f"Section {section_id} not found in document"}), 404
+
+    item["content"] = merged
+    item["updated_at"] = datetime.now(timezone.utc).isoformat()
+    item["etag"] = str(uuid.uuid4())
+
+    if v2:
+        threshold = statement_reid_threshold(user_id)
+        loop = asyncio.new_event_loop()
+        try:
+            item = _reconcile_and_enrich_edit(
+                item, merged, doc_type, threshold, loop, user_id=user_id
+            )
+        finally:
+            loop.close()
+
+    try:
+        _write_policy_yaml(user_id, key, item)
+    except Exception as e:
+        logger.error("Failed to persist block edit for policy %s: %s", policy_id, e)
+        return jsonify({"error": "Failed to update policy"}), 500
+
+    updated_sec = next(
+        (s for s in item.get("sections", []) if s.get("id") == section_id), old_sec
+    )
+    return jsonify({
+        "status": "ok",
+        "policy_id": policy_id,
+        "etag": item["etag"],
+        "section": updated_sec,
+    }), 200
+
+
 def _statements_from_item(item: dict) -> list[dict]:
     """Flatten a policy item's sections into a numbered statement list.
 
@@ -2482,30 +2725,41 @@ async def related_documents(policy_id: str):
     query_text = _doc_query_text(item)
     related: list[dict] = []
     if other_ids and query_text:
-        embeddings = await get_firework_embedding()
-        vec = await asyncio.to_thread(embeddings.embed_query, query_text)
-        lance = LanceDBServer()
-        # over-fetch so we can collapse to distinct documents
-        hits = await lance.query_statements_multi(
-            embedding=vec, policy_ids=other_ids, top_k=top_k * 4, user_id=owner_id,
-        )
-        seen: set[str] = set()
-        for h in hits:
-            pid = h.get("policy_id")
-            if not pid or pid in seen:
-                continue
-            seen.add(pid)
-            meta = doc_index.get(pid, {})
-            related.append({
-                "policy_id": pid,
-                "doc_ref": meta.get("doc_ref"),
-                "title": meta.get("title"),
-                "doc_type": meta.get("type"),
-                "best_match_text": h.get("text"),
-                "score": h.get("_distance"),
-            })
-            if len(related) >= top_k:
-                break
+        # Suggested-document similarity is a best-effort enrichment that depends
+        # on the external embedding service + the LanceDB index. If either is
+        # unavailable, degrade gracefully (empty suggestions + pinned links)
+        # rather than 500-ing the whole panel with a "Service unavailable" toast.
+        try:
+            embeddings = await get_firework_embedding()
+            vec = await asyncio.to_thread(embeddings.embed_query, query_text)
+            lance = LanceDBServer()
+            # over-fetch so we can collapse to distinct documents
+            hits = await lance.query_statements_multi(
+                embedding=vec, policy_ids=other_ids, top_k=top_k * 4, user_id=owner_id,
+            )
+            seen: set[str] = set()
+            for h in hits:
+                pid = h.get("policy_id")
+                if not pid or pid in seen:
+                    continue
+                seen.add(pid)
+                meta = doc_index.get(pid, {})
+                related.append({
+                    "policy_id": pid,
+                    "doc_ref": meta.get("doc_ref"),
+                    "title": meta.get("title"),
+                    "doc_type": meta.get("type"),
+                    "best_match_text": h.get("text"),
+                    "score": h.get("_distance"),
+                })
+                if len(related) >= top_k:
+                    break
+        except Exception as exc:
+            logger.warning(
+                "related_documents similarity search failed for policy %s "
+                "(owner %s); returning pinned links only: %s",
+                policy_id, owner_id, exc,
+            )
 
     return jsonify({
         "policy_id": policy_id,
