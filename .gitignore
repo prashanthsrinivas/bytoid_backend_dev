@@ -71,3 +71,6 @@ awsredis.pem
 tab_tracker/tab_ai_tracker/res.json
 tab_tracker/tab_ai_tracker/tes.json
 testing/results/
+tests/routes/
+tests/files/
+mlruns/
