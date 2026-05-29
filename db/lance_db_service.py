@@ -3241,6 +3241,29 @@ class LanceDBServer:
             ]
         )
 
+    @staticmethod
+    def _dedupe_runbooks_by_id(runbooks):
+        """Collapse rows that share the same runbook_id, keeping the most
+        recently created one. The runbook table is append-only (`table.add`),
+        so historical/retried writes can leave several rows for one runbook_id;
+        without this the Workspace renders the same runbook multiple times,
+        each matched to the same set of results."""
+        latest = {}
+        order = []
+        for rb in runbooks:
+            rid = rb.get("runbook_id")
+            if not rid:
+                # No id to dedupe on — keep as-is.
+                order.append(rb)
+                continue
+            existing = latest.get(rid)
+            if existing is None:
+                latest[rid] = rb
+                order.append(rid)
+            elif (rb.get("created_at") or "") >= (existing.get("created_at") or ""):
+                latest[rid] = rb
+        return [item if not isinstance(item, str) else latest[item] for item in order]
+
     async def _open_or_create_runbook_table(self, user_id: str):
 
         table_name = f"runbook_{user_id}"
@@ -3306,6 +3329,12 @@ class LanceDBServer:
             print([filtered_row])
             return table.add([filtered_row])
 
+        # Idempotent insert: drop any pre-existing row with the same
+        # runbook_id before adding, so a retried create can't leave duplicates.
+        def _delete_existing():
+            table.delete(f"runbook_id == '{data['runbook_id']}'")
+
+        await asyncio.to_thread(_delete_existing)
         await asyncio.to_thread(_insert)
 
         return row
@@ -3357,6 +3386,9 @@ class LanceDBServer:
 
         # Remove dummy/init row
         records = [r for r in records if r.get("runbook_id") != "init"]
+
+        # Collapse duplicate runbook_id rows (append-only table).
+        records = self._dedupe_runbooks_by_id(records)
 
         # Decrypt sensitive fields; lazily re-encrypt any plaintext rows
         to_migrate = []
@@ -3520,6 +3552,10 @@ class LanceDBServer:
 
         # Remove dummy row
         runbooks = [r for r in runbooks if r["runbook_id"] != "init"]
+
+        # Collapse duplicate runbook_id rows (append-only table) so the same
+        # runbook isn't returned multiple times.
+        runbooks = self._dedupe_runbooks_by_id(runbooks)
 
         for rb in runbooks:
             for _f in self._RUNBOOK_ENC_FIELDS:
