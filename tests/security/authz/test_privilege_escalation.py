@@ -320,16 +320,18 @@ def test_no_session_returns_401():
 @pytest.mark.authz
 def test_totp_pending_session_blocked():
     """A password-authenticated session with 2FA still pending must be blocked
-    from protected routes (401), even though it has a session user_id."""
+    from protected routes. Returned as 403 (not 401) so the frontend keeps the
+    user on the 2FA page instead of hard-redirecting to login."""
     admin_id = "admin-001"
     conn = _make_conn([
         {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
     ])
     app = _build_app()
     resp = _do_request(app, conn, actor_id=admin_id, target_id=admin_id, totp_pending=True)
-    assert resp.status_code == 401
+    assert resp.status_code == 403
     data = resp.get_json()
     assert "error" in data
+    assert data.get("totp_required") is True
 
 
 @pytest.mark.security

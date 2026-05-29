@@ -189,19 +189,22 @@ def _evaluate_access(required_permission):
         return jsonify({"error": "Unauthorized"}), 401
 
     # 2FA gate: a session that authenticated by password but has not yet
-    # completed TOTP must not reach any protected resource. The client stays
-    # "in session" (so it remains on the 2FA page rather than being bounced to
-    # /login), but every protected route is blocked until /totp_verify clears
-    # the flag.
+    # completed TOTP must not reach any protected resource. Returned as 403
+    # (authenticated-but-forbidden), NOT 401 — the caller IS logged in, they
+    # just haven't finished 2FA. A 401 makes the frontend treat the session as
+    # dead and hard-redirect to the login URL (which is hardcoded to prod),
+    # bouncing the user off the 2FA page. 403 keeps them on /totp-verify while
+    # still blocking every protected route until /totp_verify clears the flag.
     if session.get("totp_pending"):
         return (
             jsonify(
                 {
                     "error": "Two-factor authentication required",
                     "redirect": "/totp-verify",
+                    "totp_required": True,
                 }
             ),
-            401,
+            403,
         )
 
     owner_id = req_owner or actor_id
