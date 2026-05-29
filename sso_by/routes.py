@@ -24,6 +24,7 @@ import os
 import json
 import requests
 from datetime import datetime
+from urllib.parse import urlsplit
 
 logger = get_logger(__name__)
 
@@ -298,6 +299,43 @@ def init_saml_auth(req):
     return OneLogin_Saml2_Auth(req, custom_base_path=saml_path)
 
 
+def _resolve_return_origin():
+    """Pick a safe frontend origin to return to after the SAML round-trip.
+
+    Resolution order, each validated against ALLOWED_ORIGINS:
+      1. Explicit ``?redirect=`` query param (the FE's stated return target).
+      2. The request's ``Origin`` header.
+      3. The origin parsed from the ``Referer`` header.
+      4. Last resort: the production app URL.
+
+    This keeps a local/preview frontend on its own domain through the SAML
+    flow instead of hard-bouncing every login to production. Only origins
+    already on the allowlist are honored, so it can't be used to redirect to
+    an attacker-controlled site.
+    """
+    for raw in (
+        request.args.get("redirect"),
+        request.headers.get("Origin"),
+        request.headers.get("Referer"),
+    ):
+        if not raw:
+            continue
+        parts = urlsplit(raw)
+        # Candidate forms to match: the raw value, the scheme://host origin, and
+        # the bare host (the allowlist carries some entries without a scheme).
+        forms = [raw]
+        clean_origin = None
+        if parts.scheme and parts.netloc:
+            clean_origin = f"{parts.scheme}://{parts.netloc}"
+            forms.extend([clean_origin, parts.netloc])
+        for form in forms:
+            if form in ALLOWED_ORIGINS:
+                # Return a clean scheme://host (strips any Referer path/query).
+                return clean_origin or form
+
+    return "https://app.bytoid.ai"
+
+
 # =========================
 # SAML LOGIN
 # =========================
@@ -314,10 +352,10 @@ def saml_login():
     if not is_valid_org(org):
         return jsonify({"error": "INVALID_ORG"}), 400
 
-    origin = request.args.get("redirect")
-
-    if origin not in ALLOWED_ORIGINS:
-        origin = "https://app.bytoid.ai"
+    # Resolve where to send the user after SAML completes. Honors the explicit
+    # ?redirect= param, then the Origin/Referer of this request (all validated
+    # against ALLOWED_ORIGINS), instead of hard-defaulting every login to prod.
+    origin = _resolve_return_origin()
 
     session["saml_org"] = org
     session["saml_redirect"] = origin
