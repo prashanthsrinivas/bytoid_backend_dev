@@ -1,4 +1,5 @@
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 
 
@@ -35,7 +36,19 @@ upi_pattern = Pattern("UPI", r"\b[\w\.\-]{2,256}@[a-z]{2,64}\b", 0.8)
 upi_recognizer = PatternRecognizer(supported_entity="UPI_ID", patterns= [upi_pattern])
 
 
-analyzer = AnalyzerEngine()
+_nlp_config = {
+    "nlp_engine_name": "spacy",
+    "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}],
+    "ner_model_configuration": {
+        "labels_to_ignore": [
+            "CARDINAL", "DATE", "EVENT", "FAC", "LANGUAGE", "LAW",
+            "MONEY", "NORP", "ORDINAL", "PERCENT", "PRODUCT",
+            "QUANTITY", "TIME", "WORK_OF_ART",
+        ],
+    },
+}
+_nlp_engine = NlpEngineProvider(nlp_configuration=_nlp_config).create_engine()
+analyzer = AnalyzerEngine(nlp_engine=_nlp_engine, supported_languages=["en"])
 
 # Add all Indian PII recognizers
 for r in [

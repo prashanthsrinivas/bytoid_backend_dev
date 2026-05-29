@@ -1774,5 +1774,24 @@ def run_backend_performance(self, run_id, target_url, run_time):
     )
 
 
+@celery.task(bind=True, max_retries=2, name="tasks.lazy_reencrypt_runbook_rows")
+def lazy_reencrypt_runbook_rows_task(self, user_id: str, rows: list, fields: list):
+    """Re-encrypt plaintext runbook fields in LanceDB as a background Celery task.
+
+    Replaces the asyncio.create_task() pattern that caused 'Task destroyed but
+    pending' errors when the per-request event loop closed before the work finished.
+    """
+    from db.lance_db_service import LanceDBServer
+
+    async def _run():
+        server = LanceDBServer()
+        await server._lazy_reencrypt_runbook_rows(user_id, rows, tuple(fields))
+
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        logger.warning("lazy_reencrypt_runbook_rows_task failed user=%s: %s", user_id, exc)
+
+
 # Discover ai_governance Celery tasks so workers register them on startup.
 from ai_governance import tasks as _ai_gov_tasks  # noqa: E402, F401

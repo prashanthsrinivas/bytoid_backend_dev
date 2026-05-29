@@ -39,9 +39,20 @@ def _build_analyzer() -> Any:
     from presidio_analyzer import AnalyzerEngine
     from presidio_analyzer.nlp_engine import NlpEngineProvider
 
+    # spaCy entity types that have no Presidio equivalent — suppress the
+    # "not mapped to a Presidio entity" warning they would otherwise produce.
+    _SPACY_LABELS_TO_IGNORE = [
+        "CARDINAL", "DATE", "EVENT", "FAC", "LANGUAGE", "LAW",
+        "MONEY", "NORP", "ORDINAL", "PERCENT", "PRODUCT",
+        "QUANTITY", "TIME", "WORK_OF_ART",
+    ]
+
     nlp_config = {
         "nlp_engine_name": "spacy",
         "models": [{"lang_code": "en", "model_name": SPACY_MODEL}],
+        "ner_model_configuration": {
+            "labels_to_ignore": _SPACY_LABELS_TO_IGNORE,
+        },
     }
     provider = NlpEngineProvider(nlp_configuration=nlp_config)
     nlp_engine = provider.create_engine()

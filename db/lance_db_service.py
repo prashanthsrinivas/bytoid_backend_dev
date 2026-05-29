@@ -3151,6 +3151,8 @@ class LanceDBServer:
             return table.search().to_list()
 
         rows = await asyncio.to_thread(_query) or []
+        for row in rows:
+            self._dec_radar_row(user_id, row)
         return rows
 
     async def radar_get_review_index(self, user_id: str):
@@ -3166,7 +3168,7 @@ class LanceDBServer:
                 "id": r.get("id"),
                 "name": r.get("name"),
                 "review_id": r.get("review_id"),
-                "user_input": r.get("user_input"),
+                "user_input": self._dec(user_id, r["user_input"]) if r.get("user_input") else None,
                 "status": r.get("status"),
                 "started_at": r.get("started_at", 0),
             }
@@ -3338,9 +3340,9 @@ class LanceDBServer:
                 to_migrate.append(row)
 
         if to_migrate:
-            asyncio.create_task(
-                self._lazy_reencrypt_runbook_rows(user_id, to_migrate, self._RUNBOOK_ENC_FIELDS)
-            )
+            from utils.celery_base import lazy_reencrypt_runbook_rows_task
+            slim = [{f: r.get(f) for f in ("runbook_id",) + self._RUNBOOK_ENC_FIELDS} for r in to_migrate]
+            lazy_reencrypt_runbook_rows_task.delay(user_id, slim, list(self._RUNBOOK_ENC_FIELDS))
 
         return result
 
@@ -3371,9 +3373,9 @@ class LanceDBServer:
                 to_migrate.append(row)
 
         if to_migrate:
-            asyncio.create_task(
-                self._lazy_reencrypt_runbook_rows(user_id, to_migrate, self._RUNBOOK_ENC_FIELDS)
-            )
+            from utils.celery_base import lazy_reencrypt_runbook_rows_task
+            slim = [{f: r.get(f) for f in ("runbook_id",) + self._RUNBOOK_ENC_FIELDS} for r in to_migrate]
+            lazy_reencrypt_runbook_rows_task.delay(user_id, slim, list(self._RUNBOOK_ENC_FIELDS))
 
         return records
 
@@ -3502,7 +3504,10 @@ class LanceDBServer:
         # ✅ IMPORTANT: insert first, then delete
         await asyncio.to_thread(_delete)
         await asyncio.to_thread(_insert)
-        
+
+        for _f in self._RUNBOOK_ENC_FIELDS:
+            if updated_row.get(_f):
+                updated_row[_f] = self._dec(user_id, updated_row[_f])
 
         return updated_row
 
@@ -3515,6 +3520,11 @@ class LanceDBServer:
 
         # Remove dummy row
         runbooks = [r for r in runbooks if r["runbook_id"] != "init"]
+
+        for rb in runbooks:
+            for _f in self._RUNBOOK_ENC_FIELDS:
+                if rb.get(_f):
+                    rb[_f] = self._dec(user_id, rb[_f])
 
         # ✅ Fetch ALL results in ONE call
         all_results = await self.get_runbook_results_by_user_id(user_id)
@@ -3766,7 +3776,9 @@ class LanceDBServer:
         if isinstance(latest_runbook, str):
             latest_runbook = json.loads(latest_runbook)
 
-        # print("latest result: ",latest_runbook)
+        for _f in self._RUNBOOK_ENC_FIELDS:
+            if latest_runbook.get(_f):
+                latest_runbook[_f] = self._dec(user_id, latest_runbook[_f])
 
         return latest_runbook
         # return results  # ✅ ALWAYS RETURN LIST
@@ -3782,6 +3794,11 @@ class LanceDBServer:
             )
 
         result = await asyncio.to_thread(_query)
+
+        for row in (result or []):
+            for _f in self._RUNBOOK_ENC_FIELDS:
+                if row.get(_f):
+                    row[_f] = self._dec(user_id, row[_f])
 
         return result
 
