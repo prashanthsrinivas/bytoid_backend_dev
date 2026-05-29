@@ -2243,13 +2243,17 @@ def apply_publication_to_policy(
     doc_version: str,
     author_email: str,
     frequency: str,
+    published_at=None,
+    summary: str | None = None,
 ) -> bool:
     """Record an approval/publish on a Policy Hub document.
 
-    Called by the workflow publish hook. Sets the review-cycle metadata
-    (``next_review_date`` etc.) and appends a "Review and Revision History"
-    entry. Returns True if the document was updated. Best-effort: never raises
-    so a publish transition is not rolled back by a Policy Hub I/O hiccup.
+    Called by the workflow publish hook (and the backfill endpoint). Sets the
+    review-cycle metadata (``next_review_date`` etc.) and appends a "Review and
+    Revision History" entry. ``published_at`` defaults to now; pass the original
+    publish timestamp when backfilling an already-published doc. Returns True if
+    the document was updated. Best-effort: never raises so a publish transition
+    is not rolled back by a Policy Hub I/O hiccup.
     """
     try:
         from policy_hub.review_lifecycle import record_publication
@@ -2264,7 +2268,8 @@ def apply_publication_to_policy(
             return False
 
         # Idempotency guard: skip if this exact version was already recorded as
-        # published (publish hooks can fire on retries / auto-advance replays).
+        # published (publish hooks can fire on retries / auto-advance replays,
+        # and backfill must not double-write a row already present).
         history = item.get("revision_history") or []
         if history and history[-1].get("version") == str(doc_version) and \
                 history[-1].get("action") == "published":
@@ -2276,6 +2281,8 @@ def apply_publication_to_policy(
             version=doc_version,
             author=author_email,
             frequency=frequency,
+            published_at=published_at,
+            summary=summary,
         )
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         item["etag"] = str(uuid.uuid4())
@@ -2476,6 +2483,98 @@ def confirm_block_edit(policy_id: str):
         "policy_id": policy_id,
         "etag": item["etag"],
         "section": updated_sec,
+    }), 200
+
+
+def _latest_published_workflow(doc_type: str, doc_id: str) -> dict | None:
+    """Return the most recently published document_workflow row for a doc."""
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM document_workflow "
+                "WHERE doc_type=%s AND doc_id=%s AND state='published' "
+                "ORDER BY published_at DESC, created_at DESC LIMIT 1",
+                (doc_type, doc_id),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def _resolve_email(user_id: str) -> str | None:
+    if not user_id:
+        return None
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT email FROM users WHERE user_id=%s LIMIT 1", (user_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return row.get("email") if row else None
+
+
+@policy_hub_bp.route("/<policy_id>/backfill-history", methods=["POST"])
+@permission_required_body("policyhub.edit")
+def backfill_review_history(policy_id: str):
+    """Backfill a Review & Revision History row for an already-published doc.
+
+    The publish hook only records history at the moment a workflow transitions
+    to 'published'. Documents published before that hook existed have an empty
+    history; this endpoint reconstructs the entry from the existing published
+    workflow row (its published_at, doc_version, and approver) and stamps the
+    review-cycle metadata (next_review_date etc.).
+
+    Idempotent: a no-op (updated=false) if the latest history row already records
+    this version as published.
+
+    Body: { user_id }
+    Response: { status, updated, revision_history, next_review_date }
+    """
+    body = request.get_json(silent=True) or {}
+    baseuser = body.get("user_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id and policy_id are required"}), 400
+    user_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    item = _read_policy_yaml(user_id, _s3_key(user_id, policy_id))
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+    doc_type = item.get("type", "policy")
+
+    wf = _latest_published_workflow(doc_type, policy_id)
+    if not wf:
+        return jsonify({
+            "error": "No published workflow found for this document; nothing to backfill."
+        }), 400
+
+    from workflow_route.state_machine import get_org_review_frequency
+
+    published_at = wf.get("published_at") or wf.get("approved_at")
+    doc_version = wf.get("doc_version") or item.get("metadata", {}).get("version", "1.0")
+    approver_email = _resolve_email(wf.get("current_approver")) or ""
+    frequency = get_org_review_frequency(get_user_org_id(user_id))
+
+    updated = apply_publication_to_policy(
+        owner_id=user_id,
+        policy_id=policy_id,
+        doc_type=doc_type,
+        doc_version=doc_version,
+        author_email=approver_email,
+        frequency=frequency,
+        published_at=published_at,
+    )
+
+    item = _read_policy_yaml(user_id, _s3_key(user_id, policy_id)) or item
+    return jsonify({
+        "status": "ok",
+        "updated": updated,
+        "revision_history": item.get("revision_history", []),
+        "next_review_date": item.get("next_review_date"),
     }), 200
 
 
