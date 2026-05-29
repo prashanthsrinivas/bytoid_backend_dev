@@ -226,20 +226,60 @@ _jobs_lock = threading.Lock()
 # ── Share access helper ──────────────────────────────────────────────────────
 
 
+def _resolve_workflow_owner(policy_id: str, user_id: str) -> str | None:
+    """Return the document owner if ``user_id`` is a workflow-assigned reviewer/
+    approver for ``policy_id`` (any supported doc type), else None.
+
+    A doc "shared for review" goes through the workflow (document_workflow), not
+    the shared_users table — the assigned reviewer never owns a copy and sends a
+    plain user_id. We resolve the real owner the same way /policy-hub/list does,
+    so any doc visible in the reviewer's list is also openable here.
+    """
+    try:
+        from policy_hub.workflow_autosubmit import WORKFLOW_SUPPORTED_DOC_TYPES
+        from workflow_route.state_machine import get_docs_assigned_to_user
+
+        for dt in WORKFLOW_SUPPORTED_DOC_TYPES:
+            for assignment in get_docs_assigned_to_user(dt, user_id, include_published=True):
+                if assignment.get("doc_id") == policy_id and assignment.get("owner_user_id"):
+                    return assignment["owner_user_id"]
+    except Exception as exc:
+        logger.warning(
+            "workflow owner resolution failed for policy=%s user=%s: %s",
+            policy_id, user_id, exc,
+        )
+    return None
+
+
 def _check_policy_share_access(baseuser, policy_id):
-    """Resolve owner and ensure the requester has access. Returns (owner_id, err_tuple)."""
+    """Resolve owner and ensure the requester has access. Returns (owner_id, err_tuple).
+
+    Grants access to (a) the document owner, (b) explicit shared_users recipients
+    (composite user_id), and (c) workflow-assigned reviewers/approvers — who send
+    a plain user_id and own no copy, so the real owner is resolved from the active
+    workflow row.
+    """
     logged_in_user_id, owner_id = parse_composite_user_id(baseuser)
     if not owner_id:
         return None, (jsonify({"error": "Invalid user_id"}), 400)
     if not logged_in_user_id or logged_in_user_id == owner_id:
+        # Plain caller: usually the owner, but may be a reviewer/approver for a
+        # doc owned by someone else — resolve the real owner from the workflow.
+        wf_owner = _resolve_workflow_owner(policy_id, owner_id)
+        if wf_owner and wf_owner != owner_id:
+            return wf_owner, None
         return owner_id, None
     access = get_user_resource_access("policy", owner_id, policy_id, logged_in_user_id)
-    if not access.get("granted"):
-        return None, (
-            jsonify({"error": "Access to this policy has not been granted"}),
-            403,
-        )
-    return owner_id, None
+    if access.get("granted"):
+        return owner_id, None
+    # Not an explicit share — fall back to a workflow assignment for the caller.
+    wf_owner = _resolve_workflow_owner(policy_id, logged_in_user_id)
+    if wf_owner:
+        return wf_owner, None
+    return None, (
+        jsonify({"error": "Access to this policy has not been granted"}),
+        403,
+    )
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
