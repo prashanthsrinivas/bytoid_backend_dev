@@ -87,11 +87,13 @@ def _make_conn(fetchone_side_effect):
     return conn
 
 
-def _do_request(app, conn, *, actor_id, target_id, method="get", patches=None):
+def _do_request(app, conn, *, actor_id, target_id, method="get", patches=None, totp_pending=False):
     """Drive a request through the protected route.
 
     `actor_id` is stamped into the session (the authenticated caller). `target_id`
     is the owner being accessed, passed as the request's `user_id` (None to omit).
+    `totp_pending` simulates a password-authenticated session that hasn't yet
+    completed 2FA.
     """
     ctx_patches = [patch("utils.permission_required.connect_to_rds", return_value=conn)]
     for p in patches or []:
@@ -106,6 +108,8 @@ def _do_request(app, conn, *, actor_id, target_id, method="get", patches=None):
             if actor_id is not None:
                 with client.session_transaction() as sess:
                     sess["user_id"] = actor_id
+                    if totp_pending:
+                        sess["totp_pending"] = True
             path_owner = target_id if target_id is not None else "some-owner-id"
             url = f"/protected/{urllib.parse.quote(str(path_owner), safe='')}"
             if target_id is not None:
@@ -307,6 +311,22 @@ def test_no_session_returns_401():
     conn = _make_conn([])
     app = _build_app()
     resp = _do_request(app, conn, actor_id=None, target_id="some-owner-id")
+    assert resp.status_code == 401
+    data = resp.get_json()
+    assert "error" in data
+
+
+@pytest.mark.security
+@pytest.mark.authz
+def test_totp_pending_session_blocked():
+    """A password-authenticated session with 2FA still pending must be blocked
+    from protected routes (401), even though it has a session user_id."""
+    admin_id = "admin-001"
+    conn = _make_conn([
+        {"user_id": admin_id, "user_type": "admin", "launch_id_fk": "org-1"},
+    ])
+    app = _build_app()
+    resp = _do_request(app, conn, actor_id=admin_id, target_id=admin_id, totp_pending=True)
     assert resp.status_code == 401
     data = resp.get_json()
     assert "error" in data

@@ -1016,15 +1016,17 @@ def user_login():
         conn.close()
         logger.info("Login successfull")
         session.pop("active_workspace_id", None)
+        session["user_id"] = user["user_id"]
         if user["totp_secret"]:
-            # TOTP enabled: password alone must NOT establish an authenticated
-            # session. Stash a pending marker and require /totp_verify to promote
-            # it. Without this, the session cookie is already valid after the
-            # password step, so navigating back/refreshing bypasses 2FA entirely.
-            session.pop("user_id", None)
-            session["pending_totp_user_id"] = user["user_id"]
+            # 2FA enabled: keep the client "in session" so it stays on the 2FA
+            # page (rather than being bounced to /login), but mark the session
+            # as pending. The authorization layer blocks every protected route
+            # while `totp_pending` is set, so no data is reachable until
+            # /totp_verify clears it — password alone never grants access.
+            session["totp_pending"] = True
         else:
-            session["user_id"] = user["user_id"]
+            session.pop("totp_pending", None)
+        session.pop("pending_totp_user_id", None)
         log_audit_event(
             action=LOGIN_SUCCESS,
             endpoint="/user_login",
@@ -1097,10 +1099,9 @@ def totp_verify():
     data = request.get_json() or {}
     code = data.get("code")
     # The user being verified is the one that just passed the password step
-    # (stashed in the session by /user_login). Never trust a user_id from the
-    # request body for promotion — that would let a caller mint a session for
-    # an arbitrary account if they ever obtained a valid code.
-    user_id = session.get("pending_totp_user_id") or data.get("user_id")
+    # (their id is on the session). Prefer the session over any body-supplied
+    # id so a caller can't verify on behalf of a different account.
+    user_id = session.get("user_id") or data.get("user_id")
     if not user_id:
         logger.error("No pending TOTP login")
         return jsonify({"error": "No pending login to verify"}), 401
@@ -1124,8 +1125,9 @@ def totp_verify():
             logger.error("TOTP verification failed")
             return jsonify({"error": "TOTP not verified"}), 400
         logger.info("TOTP verified successfully")
-        # Promote the pending login to a fully authenticated session. Only here
-        # does the session become usable for protected routes.
+        # Clear the 2FA gate: the session is now fully usable for protected
+        # routes. Until this point `totp_pending` blocked every protected route.
+        session.pop("totp_pending", None)
         session.pop("pending_totp_user_id", None)
         session["user_id"] = user_id
         session.pop("active_workspace_id", None)

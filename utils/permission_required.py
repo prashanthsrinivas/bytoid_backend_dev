@@ -188,6 +188,22 @@ def _evaluate_access(required_permission):
     if not actor_id:
         return jsonify({"error": "Unauthorized"}), 401
 
+    # 2FA gate: a session that authenticated by password but has not yet
+    # completed TOTP must not reach any protected resource. The client stays
+    # "in session" (so it remains on the 2FA page rather than being bounced to
+    # /login), but every protected route is blocked until /totp_verify clears
+    # the flag.
+    if session.get("totp_pending"):
+        return (
+            jsonify(
+                {
+                    "error": "Two-factor authentication required",
+                    "redirect": "/totp-verify",
+                }
+            ),
+            401,
+        )
+
     owner_id = req_owner or actor_id
 
     conn = connect_to_rds()
