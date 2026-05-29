@@ -700,6 +700,30 @@ def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEv
         sections_data = _fallback_sections_from_html(content, doc_type, user_id=user_id)
         validation_ok = False
 
+    # The "Review and Revision History" section is authoritative on the
+    # structured ``revision_history`` list (populated on each publish). Render
+    # its body straight from that list so the row shows regardless of whether the
+    # stored content HTML carried the proper data-section-id wrapper. Only
+    # override when we actually have structured entries, so a manually-authored
+    # history body is preserved when no structured rows exist yet.
+    try:
+        from policy_hub.review_lifecycle import (
+            render_history_rows_html,
+            _HISTORY_SUFFIX,
+        )
+
+        history_html = render_history_rows_html(item.get("revision_history"))
+        if history_html:
+            for sec in sections_data:
+                if str(sec.get("id", "")).endswith(_HISTORY_SUFFIX):
+                    sec["body_html"] = history_html
+                    break
+    except Exception as exc:
+        logger.warning(
+            "_enrich_v2 history render failed for policy=%s: %s",
+            item.get("policy_id"), exc,
+        )
+
     item["template_version"] = 1
     item["validation_status"] = "ok" if validation_ok else "needs_review"
     item["migration_status"] = "ok"

@@ -2648,6 +2648,8 @@ def apply_publication_to_runbook_result(
 
         from policy_hub.review_lifecycle import (
             REVIEW_FREQUENCIES,
+            append_revision_entry,
+            build_revision_entry,
             compute_next_review_date,
             normalize_frequency,
         )
@@ -2680,6 +2682,17 @@ def apply_publication_to_runbook_result(
         blob["last_reviewed_at"] = review_date
         blob["next_review_date"] = compute_next_review_date(published_at, freq)
         blob["review_published_version"] = str(doc_version)
+
+        # Append a Review & Revision History row so runbook reports carry the
+        # same audit trail as Policy Hub documents.
+        append_revision_entry(
+            blob,
+            build_revision_entry(
+                version=doc_version,
+                author=author_email,
+                published_at=published_at,
+            ),
+        )
 
         _run_async(dbserver.update_runbook_result(owner_id, result_id, blob))
         logger.info(

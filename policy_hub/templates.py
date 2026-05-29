@@ -48,6 +48,14 @@ POLICY_TEMPLATE: list[SectionDef] = [
         ),
     ),
     SectionDef(
+        id="policy.revision_history",
+        title="Review and Revision History",
+        kind="history",
+        prompt_help=(
+            "Render as a <table> with columns: Version, Date, Author, Summary of Changes."
+        ),
+    ),
+    SectionDef(
         id="policy.purpose",
         title="Purpose",
         kind="text",
@@ -107,14 +115,6 @@ POLICY_TEMPLATE: list[SectionDef] = [
         required=False,
         prompt_help="Define key terminology used in this document.",
     ),
-    SectionDef(
-        id="policy.revision_history",
-        title="Review and Revision History",
-        kind="history",
-        prompt_help=(
-            "Render as a <table> with columns: Version, Date, Author, Summary of Changes."
-        ),
-    ),
 ]
 
 PROCEDURE_TEMPLATE: list[SectionDef] = [
@@ -125,6 +125,14 @@ PROCEDURE_TEMPLATE: list[SectionDef] = [
         prompt_help=(
             "Render as a <table> with rows for: Procedure Name, Document ID, "
             "Version, Effective Date, Classification."
+        ),
+    ),
+    SectionDef(
+        id="procedure.revision_history",
+        title="Revision History",
+        kind="history",
+        prompt_help=(
+            "Render as a <table> with columns: Version, Date, Author, Summary of Changes."
         ),
     ),
     SectionDef(
@@ -192,14 +200,6 @@ PROCEDURE_TEMPLATE: list[SectionDef] = [
             "Reference the parent policy, related procedures, and templates."
         ),
     ),
-    SectionDef(
-        id="procedure.revision_history",
-        title="Revision History",
-        kind="history",
-        prompt_help=(
-            "Render as a <table> with columns: Version, Date, Author, Summary of Changes."
-        ),
-    ),
 ]
 
 STANDARD_TEMPLATE: list[SectionDef] = [
@@ -210,6 +210,14 @@ STANDARD_TEMPLATE: list[SectionDef] = [
         prompt_help=(
             "Render as a <table> with rows for: Standard Name, Document ID, "
             "Version, Effective Date, Classification."
+        ),
+    ),
+    SectionDef(
+        id="standard.revision_history",
+        title="Review and Revision History",
+        kind="history",
+        prompt_help=(
+            "Render as a <table> with columns: Version, Date, Author, Summary of Changes."
         ),
     ),
     SectionDef(
@@ -265,14 +273,6 @@ STANDARD_TEMPLATE: list[SectionDef] = [
         prompt_help=(
             "Reference the parent policy, related procedures, and external framework controls "
             "(e.g. ISO 27001 Annex A, NIST SP 800-53)."
-        ),
-    ),
-    SectionDef(
-        id="standard.revision_history",
-        title="Review and Revision History",
-        kind="history",
-        prompt_help=(
-            "Render as a <table> with columns: Version, Date, Author, Summary of Changes."
         ),
     ),
 ]

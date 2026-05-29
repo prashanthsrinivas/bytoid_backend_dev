@@ -118,12 +118,74 @@ def history_section_id(doc_type: str) -> str:
     return f"{doc_type}{_HISTORY_SUFFIX}"
 
 
+def build_revision_entry(
+    version,
+    author: str,
+    summary: str | None = None,
+    published_at=None,
+    action: str = "published",
+) -> dict:
+    """Build one structured Review & Revision History row.
+
+    Shared by every doc type (policy/procedure/standard via ``record_publication``
+    and reports/runbook results via their publish hooks) so the stored shape is
+    identical everywhere: ``version``, ``date`` (ISO), ``author``, ``summary``,
+    ``action``.
+    """
+    published_at = published_at or datetime.now(timezone.utc)
+    return {
+        "version": str(version or "1.0"),
+        "date": _coerce_date(published_at).isoformat(),
+        "author": author or "",
+        "summary": summary or "Approved and published via review workflow.",
+        "action": action,
+    }
+
+
+def append_revision_entry(container: dict, entry: dict) -> list:
+    """Append ``entry`` to ``container['revision_history']`` (created if absent).
+
+    Returns the updated list. Callers own idempotency (publish hooks can replay).
+    """
+    history = list(container.get("revision_history") or [])
+    history.append(entry)
+    container["revision_history"] = history
+    return history
+
+
 def _esc(text: str) -> str:
     return (
         str(text)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+    )
+
+
+def render_history_rows_html(entries: list[dict] | None) -> str:
+    """Render a structured ``revision_history`` list as a standalone HTML table.
+
+    This is the authoritative renderer for the "Review and Revision History"
+    section body: it builds the table straight from the structured entries so the
+    display never depends on HTML surgery succeeding inside ``content`` (uploaded
+    or AI-generated documents often lack the ``data-section-id`` wrappers that
+    ``render_history_into_content`` relies on). Returns "" when there are no
+    entries so callers can keep any manually-authored body instead.
+    """
+    rows = [e for e in (entries or []) if isinstance(e, dict)]
+    if not rows:
+        return ""
+    head = "".join(f"<th>{_esc(col)}</th>" for col in _HISTORY_COLUMNS)
+    body_rows = []
+    for e in rows:
+        cells = "".join(
+            f"<td>{_esc(e.get(key, ''))}</td>"
+            for key in ("version", "date", "author", "summary")
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+    return (
+        f"<table><thead><tr>{head}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody></table>"
     )
 
 
@@ -238,19 +300,26 @@ def record_publication(
     history.append(entry)
     item["revision_history"] = history
 
-    if item.get("content"):
-        item["content"] = render_history_into_content(item["content"], doc_type, entry)
-        # Keep the cached section's body_html in step with content if present.
-        for sec in item.get("sections", []) or []:
-            if str(sec.get("id", "")).endswith(_HISTORY_SUFFIX):
-                from bs4 import BeautifulSoup
+    # Best-effort sync of the rendered HTML. This must never throw: the
+    # structured ``revision_history`` above is the source of truth (the read path
+    # renders the section body straight from it), so a BeautifulSoup/parse hiccup
+    # here cannot be allowed to abort the publish or drop the structured entry.
+    try:
+        if item.get("content"):
+            item["content"] = render_history_into_content(item["content"], doc_type, entry)
+            # Keep the cached section's body_html in step with content if present.
+            for sec in item.get("sections", []) or []:
+                if str(sec.get("id", "")).endswith(_HISTORY_SUFFIX):
+                    from bs4 import BeautifulSoup
 
-                soup = BeautifulSoup(item["content"], "lxml")
-                el = soup.find(attrs={"data-section-id": sec["id"]})
-                if el is not None:
-                    inner = "".join(str(c) for c in el.children
-                                    if getattr(c, "name", None) != "h2")
-                    sec["body_html"] = inner.strip()
-                break
+                    soup = BeautifulSoup(item["content"], "lxml")
+                    el = soup.find(attrs={"data-section-id": sec["id"]})
+                    if el is not None:
+                        inner = "".join(str(c) for c in el.children
+                                        if getattr(c, "name", None) != "h2")
+                        sec["body_html"] = inner.strip()
+                    break
+    except Exception:
+        pass
 
     return item

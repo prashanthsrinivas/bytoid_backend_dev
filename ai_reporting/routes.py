@@ -2336,6 +2336,8 @@ def apply_publication_to_report(
 
         from policy_hub.review_lifecycle import (
             REVIEW_FREQUENCIES,
+            append_revision_entry,
+            build_revision_entry,
             compute_next_review_date,
             normalize_frequency,
         )
@@ -2379,6 +2381,17 @@ def apply_publication_to_report(
             target["last_reviewed_at"] = review_date
             target["next_review_date"] = compute_next_review_date(published_at, freq)
             target["review_published_version"] = str(doc_version)
+
+            # Append a Review & Revision History row so reports carry the same
+            # audit trail as Policy Hub documents.
+            append_revision_entry(
+                target,
+                build_revision_entry(
+                    version=doc_version,
+                    author=author_email,
+                    published_at=published_at,
+                ),
+            )
 
             cur.execute(
                 "UPDATE users SET reports=%s WHERE user_id=%s",
