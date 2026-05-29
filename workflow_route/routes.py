@@ -224,13 +224,17 @@ def get_assignable_users():
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
-                "SELECT user_id, user_type, company_name, launch_id_fk, permissions "
+                "SELECT user_id, email, user_type, company_name, launch_id_fk, permissions "
                 "FROM users WHERE user_id=%s LIMIT 1",
                 (user_id,),
             )
             caller = cur.fetchone()
         if not caller:
             return jsonify({"users": []}), 200
+
+        # Resolved root admin row (non-SAML). Declared up front so the
+        # always-include-admin step below can reference it in both branches.
+        admin_row = None
 
         company_name = (caller.get("company_name") or "").strip()
         launch_id = (caller.get("launch_id_fk") or "").strip()
@@ -294,30 +298,53 @@ def get_assignable_users():
                 if entry.get("email") and entry.get("status") not in ("revoked", "pending"):
                     email_set.add(entry["email"].lower())
 
-            if not email_set:
-                return jsonify({"users": []}), 200
+            # No early return on an empty invite list — the org admin/owner is
+            # still a valid reviewer/approver and is appended in the shared
+            # always-include-admin step below.
+            if email_set:
+                with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                    placeholders = ",".join(["%s"] * len(email_set))
+                    cur.execute(
+                        f"SELECT user_id, email, user_type, permissions FROM users "
+                        f"WHERE email IN ({placeholders}) AND user_id != %s",
+                        (*email_set, user_id),
+                    )
+                    rows = cur.fetchall()
+            else:
+                rows = []
 
-            with conn.cursor(pymysql.cursors.DictCursor) as cur:
-                placeholders = ",".join(["%s"] * len(email_set))
-                cur.execute(
-                    f"SELECT user_id, email, user_type, permissions FROM users "
-                    f"WHERE email IN ({placeholders}) AND user_id != %s",
-                    (*email_set, user_id),
-                )
-                rows = cur.fetchall()
-
-            # The root admin (org owner) is a valid reviewer/approver, but is
-            # never present in their own shared/invites list, so they would
-            # otherwise be missing from the assignable list. Include them
-            # explicitly (unless the admin is the caller — self is excluded
-            # everywhere else in this endpoint).
-            if (
-                admin_id != user_id
-                and admin_row
-                and admin_row.get("email")
-                and not any(r["user_id"] == admin_id for r in rows)
-            ):
-                rows = [*rows, admin_row]
+        # Always include the org admin/owner as assignable — including when they
+        # are the caller. A small-org admin is frequently their own reviewer or
+        # approver, and the admin is never present in their own shared/invites
+        # list. Both branches exclude the caller, so without this the admin
+        # would be missing from the picker (the repeatedly-reported bug).
+        rows = list(rows)
+        existing_ids = {r["user_id"] for r in rows}
+        admins_to_add = []
+        # The caller themselves, when they are an admin (covers the SAML branch,
+        # where no single root admin is resolved, and the non-SAML self case).
+        if caller.get("user_type") == "admin" and caller.get("email"):
+            admins_to_add.append({
+                "user_id": user_id,
+                "email": caller["email"],
+                "user_type": "admin",
+                "permissions": caller.get("permissions"),
+            })
+        # The resolved root admin for non-SAML orgs (may differ from the caller).
+        # Guarded on user_type because admin_id falls back to the caller's own id
+        # for orphaned users with no resolvable inviter — we must not self-include
+        # a non-admin there.
+        if (
+            not company_name
+            and admin_row
+            and admin_row.get("email")
+            and admin_row.get("user_type") == "admin"
+        ):
+            admins_to_add.append(admin_row)
+        for adm in admins_to_add:
+            if adm["user_id"] not in existing_ids:
+                rows.append(adm)
+                existing_ids.add(adm["user_id"])
 
     except Exception as exc:
         logger.exception("get_assignable_users error: %s", exc)
