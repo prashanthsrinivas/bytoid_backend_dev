@@ -3242,13 +3242,29 @@ class LanceDBServer:
         )
 
     @staticmethod
-    def _dedupe_runbooks_by_id(runbooks):
-        """Collapse rows that share the same runbook_id, keeping the most
-        recently created one. The runbook table is append-only (`table.add`),
-        so historical/retried writes can leave several rows for one runbook_id;
-        without this the Workspace renders the same runbook multiple times,
-        each matched to the same set of results."""
-        latest = {}
+    def _dedupe_runbooks_by_id(runbooks, latest_exec_by_id=None):
+        """Collapse rows that share the same runbook_id, keeping the "best" row.
+
+        The runbook table is append-only (`table.add`), so historical/retried
+        writes can leave several rows for one runbook_id; without this the
+        Workspace renders the same runbook multiple times, each matched to the
+        same set of results.
+
+        Preference order when duplicates exist:
+          1. the row whose runbook_id has the most recent completed execution
+             (via ``latest_exec_by_id`` — a {runbook_id: started_at} map), then
+          2. the most recent ``created_at``.
+        """
+        latest_exec_by_id = latest_exec_by_id or {}
+
+        def _rank(rb):
+            rid = rb.get("runbook_id")
+            return (
+                latest_exec_by_id.get(rid) or 0,
+                rb.get("created_at") or "",
+            )
+
+        best = {}
         order = []
         for rb in runbooks:
             rid = rb.get("runbook_id")
@@ -3256,13 +3272,13 @@ class LanceDBServer:
                 # No id to dedupe on — keep as-is.
                 order.append(rb)
                 continue
-            existing = latest.get(rid)
+            existing = best.get(rid)
             if existing is None:
-                latest[rid] = rb
+                best[rid] = rb
                 order.append(rid)
-            elif (rb.get("created_at") or "") >= (existing.get("created_at") or ""):
-                latest[rid] = rb
-        return [item if not isinstance(item, str) else latest[item] for item in order]
+            elif _rank(rb) >= _rank(existing):
+                best[rid] = rb
+        return [item if not isinstance(item, str) else best[item] for item in order]
 
     async def _open_or_create_runbook_table(self, user_id: str):
 
@@ -3553,16 +3569,7 @@ class LanceDBServer:
         # Remove dummy row
         runbooks = [r for r in runbooks if r["runbook_id"] != "init"]
 
-        # Collapse duplicate runbook_id rows (append-only table) so the same
-        # runbook isn't returned multiple times.
-        runbooks = self._dedupe_runbooks_by_id(runbooks)
-
-        for rb in runbooks:
-            for _f in self._RUNBOOK_ENC_FIELDS:
-                if rb.get(_f):
-                    rb[_f] = self._dec(user_id, rb[_f])
-
-        # ✅ Fetch ALL results in ONE call
+        # ✅ Fetch ALL results in ONE call (also drives duplicate-row dedup below)
         all_results = await self.get_runbook_results_by_user_id(user_id)
 
         result_map = {}
@@ -3581,6 +3588,19 @@ class LanceDBServer:
                         or r["started_at"] > result_map[rid]["started_at"]
                     ):
                         result_map[rid] = r
+
+        # Collapse duplicate runbook_id rows (append-only table). When several
+        # rows share a runbook_id, keep the one tied to the most recent
+        # execution, falling back to created_at.
+        latest_exec_by_id = {
+            rid: rr.get("started_at") or 0 for rid, rr in result_map.items()
+        }
+        runbooks = self._dedupe_runbooks_by_id(runbooks, latest_exec_by_id)
+
+        for rb in runbooks:
+            for _f in self._RUNBOOK_ENC_FIELDS:
+                if rb.get(_f):
+                    rb[_f] = self._dec(user_id, rb[_f])
 
         # ✅ Return only runbooks with completed executions
         final_results = []
