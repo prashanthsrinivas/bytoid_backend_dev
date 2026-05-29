@@ -1826,8 +1826,19 @@ def result_list(user_id):
             blob = r.get("result")
             if not isinstance(blob, dict):
                 blob = _parse_blob(blob) or {}
-            name = blob.get("report_name") if isinstance(blob, dict) else None
+            if not isinstance(blob, dict):
+                blob = {}
+            name = blob.get("report_name")
             r["report_name"] = name or runbook_name_by_id.get(r.get("runbook_id"))
+            # Surface review-cycle metadata (stamped on publish) at the top
+            # level so the UI need not parse the blob. Absent until published.
+            for _f in (
+                "review_frequency",
+                "review_interval_months",
+                "last_reviewed_at",
+                "next_review_date",
+            ):
+                r[_f] = blob.get(_f)
 
         # Collapse duplicate runbook_id entries. For shared/normal users a
         # runbook is appended once per shared report, so the same runbook_id

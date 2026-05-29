@@ -1015,8 +1015,16 @@ def user_login():
         )
         conn.close()
         logger.info("Login successfull")
-        session["user_id"] = user["user_id"]
         session.pop("active_workspace_id", None)
+        if user["totp_secret"]:
+            # TOTP enabled: password alone must NOT establish an authenticated
+            # session. Stash a pending marker and require /totp_verify to promote
+            # it. Without this, the session cookie is already valid after the
+            # password step, so navigating back/refreshing bypasses 2FA entirely.
+            session.pop("user_id", None)
+            session["pending_totp_user_id"] = user["user_id"]
+        else:
+            session["user_id"] = user["user_id"]
         log_audit_event(
             action=LOGIN_SUCCESS,
             endpoint="/user_login",
@@ -1086,9 +1094,16 @@ def totp_setup():
 # TOtP verify
 @users_bp.route("/totp_verify", methods=["POST"])
 def totp_verify():
-    data = request.get_json()
-    user_id = data.get("user_id")
+    data = request.get_json() or {}
     code = data.get("code")
+    # The user being verified is the one that just passed the password step
+    # (stashed in the session by /user_login). Never trust a user_id from the
+    # request body for promotion — that would let a caller mint a session for
+    # an arbitrary account if they ever obtained a valid code.
+    user_id = session.get("pending_totp_user_id") or data.get("user_id")
+    if not user_id:
+        logger.error("No pending TOTP login")
+        return jsonify({"error": "No pending login to verify"}), 401
     if not code:
         logger.error("Code is required")
         return jsonify({"error": "Code is required "}), 400
@@ -1109,6 +1124,11 @@ def totp_verify():
             logger.error("TOTP verification failed")
             return jsonify({"error": "TOTP not verified"}), 400
         logger.info("TOTP verified successfully")
+        # Promote the pending login to a fully authenticated session. Only here
+        # does the session become usable for protected routes.
+        session.pop("pending_totp_user_id", None)
+        session["user_id"] = user_id
+        session.pop("active_workspace_id", None)
         log_audit_event(
             action=TOTP_VERIFIED,
             endpoint="/totp_verify",
