@@ -964,7 +964,11 @@ def _dispatch_review(body: dict):
 
 
 @workflow_bp.route("/by-doc/<doc_type>/<path:doc_id>", methods=["GET"])
-@permission_required_body("workflow.review")
+# Read-only: viewing a doc's governance status is part of reading the doc, not
+# acting as its reviewer. Gate on the baseline read capability so any user who
+# can see the document can see its workflow stepper. The handler below still
+# only returns the workflow when the caller is owner/reviewer/approver/shared.
+@permission_required_body("compliance.runbook.read")
 def workflow_by_doc(doc_type: str, doc_id: str):
     """Return the active WorkflowRow for a doc if the caller is owner/reviewer/approver.
 
@@ -1104,7 +1108,9 @@ def publish_document():
 
 
 @workflow_bp.route("/inbox", methods=["GET"])
-@permission_required_body("workflow.review")
+# Read-only inbox; the query is already scoped to the calling user's assigned
+# review/approval items, so the baseline read capability is sufficient.
+@permission_required_body("compliance.runbook.read")
 def workflow_inbox():
     """Paginated inbox for reviewers and approvers.
 
@@ -1146,7 +1152,8 @@ def workflow_inbox():
 
 
 @workflow_bp.route("/history/<workflow_id>", methods=["GET"])
-@permission_required_body("workflow.review")
+# Read-only event history for a workflow the caller can already see.
+@permission_required_body("compliance.runbook.read")
 def workflow_history(workflow_id: str):
     """Paginated event history for a workflow.
 

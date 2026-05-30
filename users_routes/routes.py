@@ -944,10 +944,17 @@ def user_login():
         # Skips admins (they get permissions="ALL" downstream) and skips any
         # user who already has an explicit active role with a non-empty
         # permissions list — never overrides an intentional admin grant.
+        #
+        # Top-up: a user who already carries the system "Default User" role gets
+        # any permissions newly added to DEFAULT_USER_PERMISSIONS merged in. This
+        # is how existing users pick up newly-shipped baseline capabilities (e.g.
+        # the document-workflow perms) without a manual DB migration. It only
+        # ever touches the system role — admin-named roles are left untouched.
         try:
             if user.get("user_type") == "user":
                 raw_perms = user.get("permissions")
                 needs_baseline = False
+                parsed = {}
                 if not raw_perms:
                     needs_baseline = True
                 else:
@@ -986,6 +993,29 @@ def user_login():
                     logger.info(
                         "baseline role auto-assigned to user %s", user["user_id"]
                     )
+                else:
+                    # Top up the system "Default User" role with any baseline
+                    # permissions added since this user was provisioned.
+                    role_obj = (parsed or {}).get("role") or {}
+                    if role_obj.get("name") == "Default User":
+                        role_perms = role_obj.get("permissions") or []
+                        missing = [
+                            p for p in DEFAULT_USER_PERMISSIONS if p not in role_perms
+                        ]
+                        if missing:
+                            role_obj["permissions"] = role_perms + missing
+                            parsed["role"] = role_obj
+                            parsed["applied_at"] = datetime.utcnow().isoformat()
+                            cursor.execute(
+                                "UPDATE users SET permissions=%s WHERE user_id=%s",
+                                (json.dumps(parsed), user["user_id"]),
+                            )
+                            conn.commit()
+                            logger.info(
+                                "baseline role topped up for user %s with %s",
+                                user["user_id"],
+                                missing,
+                            )
         except Exception as baseline_err:
             logger.warning(
                 "baseline role auto-assign failed for %s: %s",

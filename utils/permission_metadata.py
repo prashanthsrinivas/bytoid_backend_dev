@@ -226,6 +226,41 @@ PERMISSION_METADATA = {
         "dependencies": ["workflow.template.create"]
     },
 
+    # ============ DOCUMENT REVIEW & APPROVAL LIFECYCLE ============
+    # Governance workflow for compliance artifacts (policy/procedure/standard/
+    # runbook/report). Distinct from the "Workflow Builder" perms above.
+    # NOTE: these were referenced by the workflow_route decorators but never
+    # registered here, so resolve_permissions() silently dropped them and the
+    # decorator's `required_permission not in effective_perms` check always
+    # failed — every workflow endpoint returned 403 for every normal user.
+    # The endpoint handlers themselves enforce per-document authorization
+    # (assigned reviewer / approver / owner / shared), so these act only as a
+    # coarse capability gate.
+    "workflow.submit": {
+        "label": "Submit Documents for Review",
+        "module": "Document Workflow",
+        "type": "execute",
+        "dependencies": []
+    },
+    "workflow.review": {
+        "label": "Review Documents",
+        "module": "Document Workflow",
+        "type": "execute",
+        "dependencies": []
+    },
+    "workflow.approve": {
+        "label": "Approve Documents",
+        "module": "Document Workflow",
+        "type": "execute",
+        "dependencies": []
+    },
+    "workflow.config.manage": {
+        "label": "Manage Workflow Configuration",
+        "module": "Document Workflow",
+        "type": "update",
+        "dependencies": []
+    },
+
     # ================= EVIDENCE ===============================
     "evidence.view": {
         "label": "View Evidence",
@@ -834,4 +869,7 @@ DEFAULT_USER_PERMISSIONS = [
     "notes.filter",
     "trackers.table.view",
     "policyhub.view",
+    "workflow.submit",
+    "workflow.review",
+    "workflow.approve",
 ]
