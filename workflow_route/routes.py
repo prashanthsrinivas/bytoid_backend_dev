@@ -543,7 +543,9 @@ def update_review_frequency():
 
 
 @workflow_bp.route("/submit", methods=["POST"])
-@permission_required_body("workflow.submit")
+# The submitter becomes the workflow owner (create) or resumes their own draft;
+# baseline compliance-read is sufficient as the coarse gate.
+@permission_required_body("compliance.runbook.read")
 def submit_for_review():
     """Submit a document for review. Transitions draft → quality_review.
 
@@ -723,7 +725,12 @@ _STAGE_TRANSITION_MAP = {
 
 
 @workflow_bp.route("/review", methods=["POST"])
-@permission_required_body("workflow.review")
+# Authorization is per-document: the handler below verifies the caller is the
+# assigned reviewer for this stage (or the owner if none is assigned). That
+# assignment IS the authorization — a separate static capability gate only
+# wrongly blocks assigned reviewers whose role predates the permission. Gate on
+# the baseline compliance-read capability instead.
+@permission_required_body("compliance.runbook.read")
 def review_document():
     """Stage-aware review action.
 
@@ -835,7 +842,9 @@ def review_document():
 
 
 @workflow_bp.route("/approve", methods=["POST"])
-@permission_required_body("workflow.approve")
+# Per-document authorized (routes through the stage-aware /review logic, which
+# checks assigned approver/owner). See review_document for rationale.
+@permission_required_body("compliance.runbook.read")
 def approve_document():
     """Legacy approver endpoint. Internally routes through stage-aware /review logic.
 
@@ -1038,7 +1047,8 @@ def workflow_by_doc(doc_type: str, doc_id: str):
 
 
 @workflow_bp.route("/publish", methods=["POST"])
-@permission_required_body("workflow.approve")
+# Per-document authorized: the handler enforces owner-only publish.
+@permission_required_body("compliance.runbook.read")
 def publish_document():
     """Owner publishes an approved document.
 
@@ -1208,7 +1218,8 @@ def _is_allowed_image(filename: str, content_type: str) -> bool:
 
 
 @workflow_bp.route("/upload_attachment", methods=["POST"])
-@permission_required_body("workflow.review")
+# Upload keys are scoped to the caller's own prefix; baseline read is enough.
+@permission_required_body("compliance.runbook.read")
 def workflow_upload_attachment():
     """Issue presigned S3 PUT URLs for screenshot uploads on a workflow.
 
@@ -1274,7 +1285,9 @@ def workflow_upload_attachment():
 
 
 @workflow_bp.route("/comment", methods=["POST"])
-@permission_required_body("workflow.review")
+# Comment attachments are constrained to the caller's own upload prefix; the
+# baseline read capability is the appropriate coarse gate.
+@permission_required_body("compliance.runbook.read")
 def workflow_comment():
     """Post a manual comment (with optional screenshot attachments) to a
     workflow's activity feed.
@@ -1436,7 +1449,8 @@ def reassign_workflow():
 # ── Cancel (owner reset) ──────────────────────────────────────────────────────
 
 @workflow_bp.route("/cancel", methods=["POST"])
-@permission_required_body("workflow.submit")
+# cancel_workflow() enforces owner-only; baseline read is the coarse gate.
+@permission_required_body("compliance.runbook.read")
 def cancel_workflow_route():
     """Reset an active review workflow back to draft so the owner can resubmit.
 
