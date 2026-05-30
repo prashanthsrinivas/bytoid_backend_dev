@@ -67,6 +67,51 @@ def get_risk_config(user_id):
     return cfg
 
 
+# Set once the column is known to exist, so the check below runs at most once per
+# process (and re-runs only if it ever fails to confirm/create the column).
+_risk_config_column_ready = False
+
+
+def ensure_risk_config_column():
+    """Idempotently make sure ``users.risk_config`` exists before a write.
+
+    The column is normally added by ``create_db.update_users_risk_config()``, but
+    that migration is run manually and separately from a code deploy — so a freshly
+    deployed/unmigrated DB has the code but not the column, and every save 500s with
+    "Unknown column 'risk_config'". The read path tolerates this (falls back to
+    defaults), which hides the gap until the first save. Self-heal the write path so
+    saving works without a manual migration step. Guarded by INFORMATION_SCHEMA and
+    cached, so it's a no-op after the first successful check.
+    """
+    global _risk_config_column_ready
+    if _risk_config_column_ready:
+        return
+    conn = connect_to_rds()
+    if conn is None:
+        return
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'users'
+                  AND COLUMN_NAME = 'risk_config'
+                """
+            )
+            (col_exists,) = cursor.fetchone()
+            if not col_exists:
+                cursor.execute("ALTER TABLE users ADD COLUMN risk_config JSON")
+                logger.info("Added missing 'risk_config' column to 'users' table.")
+        conn.commit()
+        _risk_config_column_ready = True
+    except Exception:
+        logger.warning("ensure_risk_config_column failed", exc_info=IS_DEV)
+    finally:
+        conn.close()
+
+
 def _truthy(value):
     if isinstance(value, bool):
         return value

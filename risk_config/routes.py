@@ -14,6 +14,7 @@ from flask import Blueprint, g, jsonify, request
 from db.rds_db import connect_to_rds
 from runbook.risk_engine import (
     DEFAULT_RISK_CONFIG,
+    ensure_risk_config_column,
     get_risk_config,
     validate_risk_config,
 )
@@ -73,6 +74,10 @@ def update_risk_config_endpoint():
     if not ok:
         return jsonify({"error": err}), 400
 
+    # Self-heal an unmigrated DB (code deployed, migration not yet run) so the save
+    # doesn't 500 on a missing column. No-op once the column is confirmed present.
+    ensure_risk_config_column()
+
     try:
         conn = connect_to_rds()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -83,7 +88,7 @@ def update_risk_config_endpoint():
         conn.commit()
         conn.close()
     except Exception as e:
-        logger.error("update_risk_config failed: %s", e)
+        logger.error("update_risk_config failed: %s", e, exc_info=True)
         return jsonify({"error": "Failed to save risk config"}), 500
 
     return jsonify({"status": "ok", "config": config})
