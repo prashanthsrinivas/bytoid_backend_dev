@@ -211,6 +211,27 @@ def compute_risk(risks, config=None):
     }
 
 
+def relabel_risk_analysis(blob, config):
+    """Re-derive risk_level labels from stored numeric scores using current bands.
+
+    Read-time only: mutates and returns ``blob`` in place, leaving every stored
+    ``risk_score``/``final_risk_score`` untouched — it only remaps each score to a
+    label via the current org config so band renames / range edits show up on
+    existing reports without a migration. Tolerant of missing keys; never raises.
+    """
+    if not isinstance(blob, dict):
+        return blob
+    bands = (config or {}).get("bands") or DEFAULT_RISK_CONFIG["bands"]
+    ra = blob.get("risk_analysis")
+    if isinstance(ra, dict):
+        if ra.get("final_risk_score") is not None:
+            ra["risk_level"] = _level_for_score(ra["final_risk_score"], bands)
+        for r in ra.get("risks") or []:
+            if isinstance(r, dict) and r.get("risk_score") is not None:
+                r["risk_level"] = _level_for_score(r["risk_score"], bands)
+    return blob
+
+
 def validate_risk_config(config):
     """Validate a user-submitted config. Returns (ok, error_message)."""
     if not isinstance(config, dict):

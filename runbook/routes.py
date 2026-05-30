@@ -1862,6 +1862,13 @@ def result_list(user_id):
         # JSON string, shared rows as a dict). Prefer the stored report_name;
         # fall back to the parent runbook name so legacy reports still render.
         from runbook.utils import _safe_json_parse_full as _parse_blob
+        from runbook.risk_engine import get_risk_config, relabel_risk_analysis
+
+        # Risk-level labels are baked into each report blob at generation time, so a
+        # later band rename/range edit in the Risk Analysis config wouldn't show here.
+        # Re-derive the label live from the stored numeric score using the owner's
+        # current config (numbers are left untouched).
+        risk_cfg = get_risk_config(user_id)
 
         runbook_name_by_id = {
             rb.get("runbook_id"): rb.get("name")
@@ -1869,11 +1876,24 @@ def result_list(user_id):
             if rb.get("runbook_id")
         }
         for r in filtered_results:
-            blob = r.get("result")
-            if not isinstance(blob, dict):
-                blob = _parse_blob(blob) or {}
+            raw_blob = r.get("result")
+            was_str = isinstance(raw_blob, str)
+            blob = raw_blob if isinstance(raw_blob, dict) else (_parse_blob(raw_blob) or {})
             if not isinstance(blob, dict):
                 blob = {}
+            relabel_risk_analysis(blob, risk_cfg)
+            # Write the relabeled blob back preserving the original wire type (owned
+            # rows carry `result` as a JSON string, shared rows as a dict) so the UI
+            # picks up the new label from inside `result`.
+            if was_str:
+                try:
+                    r["result"] = json.dumps(blob)
+                except Exception:
+                    pass
+            else:
+                r["result"] = blob
+            ra = blob.get("risk_analysis")
+            r["risk_level"] = ra.get("risk_level") if isinstance(ra, dict) else None
             name = blob.get("report_name")
             r["report_name"] = name or runbook_name_by_id.get(r.get("runbook_id"))
             # Surface review-cycle metadata (stamped on publish) at the top
@@ -2323,6 +2343,17 @@ def result_by_id(result_id):
         user_id = session.get("user_id")
         logged_in_user_id, user_id = parse_composite_user_id(user_id)
         res = _run_async(dbserver.runbook_get_result(user_id, result_id))
+        # Re-derive risk_level labels from stored scores using the current config so
+        # band renames/range edits reflect on existing reports (numbers untouched).
+        from runbook.risk_engine import get_risk_config, relabel_risk_analysis
+
+        cfg = get_risk_config(user_id)
+        doc = (
+            res.get("result")
+            if isinstance(res, dict) and isinstance(res.get("result"), dict)
+            else res
+        )
+        relabel_risk_analysis(doc, cfg)
         return jsonify({"result": res}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
