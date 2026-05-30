@@ -163,8 +163,8 @@ def _write_policy_yaml(user_id: str, key: str, item: dict):
         logger.warning("doc_index upsert failed for key=%s: %s", key, idx_exc)
 
 
-def _read_policy_yaml(user_id: str, key: str) -> dict | None:
-    data = load_yaml_from_s3(key)
+def _read_policy_yaml(user_id: str, key: str, strict: bool = False) -> dict | None:
+    data = load_yaml_from_s3(key, strict=strict)
     if not data:
         return data
     data, migrated = _decrypt_policy_fields(user_id, data)
@@ -2772,9 +2772,34 @@ def list_policy_statements(policy_id: str):
     if err:
         return err
 
-    item = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id))
+    # Read in strict mode so a genuinely-deleted policy (NoSuchKey -> None) is told
+    # apart from a transient S3 failure (raises). A tracker can still reference a
+    # policy that was later deleted; surface that clearly instead of erroring the
+    # whole page, and keep transient blips honestly retryable.
+    try:
+        item = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id), strict=True)
+    except Exception:
+        logger.warning(
+            "list_policy_statements: transient read failure for policy=%s",
+            policy_id, exc_info=True,
+        )
+        return jsonify(
+            {"error": "Service temporarily unavailable. Please try again later."}
+        ), 503
+
     if not item:
-        return jsonify({"error": "Policy not found"}), 404
+        # The policy is gone (e.g. a tracker cell still references a deleted doc).
+        # Return 200 with an explicit `deleted` flag so the client can tell the
+        # user the policy was deleted, rather than firing a generic error toast.
+        return jsonify({
+            "policy_id": policy_id,
+            "doc_ref": None,
+            "title": None,
+            "doc_type": None,
+            "statements": [],
+            "deleted": True,
+            "message": "This policy has been deleted.",
+        }), 200
 
     return jsonify({
         "policy_id": policy_id,

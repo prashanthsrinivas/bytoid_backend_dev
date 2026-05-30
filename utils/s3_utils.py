@@ -219,7 +219,18 @@ def read_binary_from_s3(filepath):
 # ---------------------------------------------------
 # LOAD YAML
 # ---------------------------------------------------
-def load_yaml_from_s3(filepath):
+def load_yaml_from_s3(filepath, strict=False):
+    """Load and parse a YAML object from S3.
+
+    Returns the parsed object, or ``None`` when the key genuinely does not exist
+    (``NoSuchKey``).
+
+    By default transient failures (throttling, network, decode errors) are also
+    swallowed and return ``None`` — convenient, but it makes a deleted object
+    indistinguishable from an outage. Pass ``strict=True`` to re-raise on anything
+    that is *not* a genuine ``NoSuchKey``, so callers can tell "deleted" apart from
+    "try again later" and respond accordingly.
+    """
     if filepath is None:
         return None
     s3 = s3bucket()
@@ -242,10 +253,14 @@ def load_yaml_from_s3(filepath):
             return None
 
         logger.error(f"S3 ClientError: {e}", exc_info=True)
+        if strict:
+            raise
         return None
 
     except Exception as e:
         logger.error(f"Error loading YAML: {e}", exc_info=True)
+        if strict:
+            raise
         return None
 
 
