@@ -1017,11 +1017,24 @@ def get_workflow_for_doc_any_role(
     doc_id: str,
     user_id: str,
 ) -> dict | None:
-    """Return the active WorkflowRow for a doc if the user is a party to it.
+    """Return the active WorkflowRow for a doc if the user may view it.
 
-    Visible if the user is owner / quality_reviewer / governance_reviewer / approver.
-    Returns None if no row exists or the user is not a party.
+    Visible if the user is a party to the workflow (owner / quality_reviewer /
+    governance_reviewer / approver) **or** belongs to the same org as the
+    workflow. The party check alone is too narrow: an invited reviewer who is
+    not the *currently-named* assignee on the latest row (e.g. once the doc is
+    published, or if their stored reviewer id differs from the id resolved on
+    the read request) drops out of it and sees the frontend's empty "Draft"
+    fallback instead of the real stepper — while the immutable owner column
+    keeps working for the admin, producing the admin-vs-reviewer asymmetry.
+    The org match keeps the read scoped to the document's org, so cross-org
+    callers still get None. This is purely additive over the party check, so it
+    cannot hide a workflow that was previously visible.
     """
+    try:
+        org_id = get_user_org_id(user_id)
+    except Exception:
+        org_id = None
     conn = connect_to_rds()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
@@ -1030,9 +1043,10 @@ def get_workflow_for_doc_any_role(
                    WHERE doc_type=%s AND doc_id=%s
                      AND (owner_user_id=%s OR current_reviewer=%s
                           OR current_quality_reviewer=%s OR current_governance_reviewer=%s
-                          OR current_approver=%s)
+                          OR current_approver=%s
+                          OR (%s IS NOT NULL AND org_id=%s))
                    ORDER BY created_at DESC LIMIT 1""",
-                (doc_type, doc_id, user_id, user_id, user_id, user_id, user_id),
+                (doc_type, doc_id, user_id, user_id, user_id, user_id, user_id, org_id, org_id),
             )
             row = cur.fetchone()
     finally:
