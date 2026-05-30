@@ -2722,7 +2722,18 @@ nist_risk_score_prompt: |
 
   --------------------------------------------------
   OBJECTIVE:
-  Evaluate the overall cybersecurity risk posture and produce a realistic risk score (1–100).
+  Identify the cybersecurity risks and, for EACH risk, assign an Impact and a Likelihood
+  rating. You do NOT compute any numeric risk score or overall score — a downstream system
+  multiplies Impact × Likelihood and aggregates them deterministically. Your job is only to
+  produce the risk set with accurate Impact and Likelihood ratings plus a justification.
+
+  --------------------------------------------------
+  SCORING SCALE (set by the organization's configuration):
+
+  - Impact     = integer from 1 to {{impact_scale}}   (1 = negligible, {{impact_scale}} = catastrophic)
+  - Likelihood = integer from 1 to {{likelihood_scale}} (1 = rare, {{likelihood_scale}} = almost certain)
+
+  Use the FULL range and be realistic. Do not default everything to the maximum.
 
   --------------------------------------------------
   CRITICAL LOGIC FOR INPUT USAGE:
@@ -2733,50 +2744,25 @@ nist_risk_score_prompt: |
   2. If {{report_data}} is PRESENT:
      - Analyze its content carefully.
 
-     IF it contains:
-     - explicit risks
-     - threat/vulnerability descriptions
-     - risk scores
-     - assessment findings
-
-     THEN:
+     IF it contains explicit risks, threat/vulnerability descriptions, ratings or assessment findings:
      - Use those risks as PRIMARY INPUT
-     - Validate, refine, and normalize them
+     - Validate, refine, and re-rate them on the 1–{{impact_scale}} / 1–{{likelihood_scale}} scales
      - DO NOT ignore them
 
      ELSE (if report_data is just structure/text/template):
-     - Ignore it for scoring
+     - Ignore it for rating
      - Fall back to inference from {{analysis_result}}
 
   --------------------------------------------------
-  IMPORTANT RULES:
-
-  1. You MUST NOT return a risk score of 0.
-  2. You MUST evaluate based on:
-     - quality of methodology
-     - presence/absence of implementation evidence
-     - inferred enterprise risks
-     - typical control gaps (IAM, logging, monitoring, vendor risk, etc.)
-  3. You MUST infer risks if they are missing.
-  4. You MUST prioritize real risks from report_data when valid.
-
-  --------------------------------------------------
   STEP 1: Understand System Maturity
-
-  Analyze:
-  - Is this only a framework or actual implementation?
+  - Is this only a framework or an actual implementation?
   - Are controls described or just methodology?
   - Is there evidence of real risk data?
-  - Does report_data contain actual evaluated risks or just structure?
 
-  --------------------------------------------------
   STEP 2: Build Risk Set
 
   CASE A — report_data contains valid risks:
-  - Extract risks
-  - Normalize into:
-    threat, vulnerability, likelihood, impact
-  - Adjust unrealistic scoring if needed
+  - Extract risks and normalize into: threat, vulnerability, likelihood, impact
 
   CASE B — no usable risks:
   - Infer 6–10 realistic enterprise risks such as:
@@ -2788,68 +2774,26 @@ nist_risk_score_prompt: |
     - Third-party/vendor risk
     - Incident response weaknesses
 
-  --------------------------------------------------
-  STEP 3: Assign Scores
-
-  Use:
-  Very High = 10
-  High = 8
-  Moderate = 5
-  Low = 2
-  Very Low = 1
-
-  For each risk:
-  - assign likelihood
-  - assign impact
-  - compute risk_score = likelihood × impact
-
-  --------------------------------------------------
-  STEP 4: Compute Final Risk Score
-
-  - final_risk_score = average of all risk_scores
-  - normalize to 1–100 if needed
-
-  --------------------------------------------------
-  STEP 5: Adjust Based on Maturity
-
-  LOWER risk if:
-  - strong structured methodology
-  - governance is clearly defined
-  - monitoring/logging is well designed
-
-  INCREASE risk if:
-  - no implementation evidence
-  - no real asset-level risks
-  - report_data shows weak or inconsistent scoring
-  - missing validation or testing
-
-  --------------------------------------------------
-  STEP 6: Assign Risk Level
-
-  1–20 → Very Low  
-  21–40 → Low  
-  41–60 → Moderate  
-  61–80 → High  
-  81–100 → Very High  
+  STEP 3: Rate each risk
+  - Assign an Impact (1–{{impact_scale}}) reflecting how damaging the risk would be.
+  - Assign a Likelihood (1–{{likelihood_scale}}) reflecting how probable it is given the
+    maturity/evidence you observed. Strong methodology, governance and monitoring LOWER
+    likelihood; missing implementation evidence or weak controls RAISE it.
 
   --------------------------------------------------
   OUTPUT REQUIREMENTS:
 
   - MUST include at least 6 risks
   - MUST NOT return empty risks
-  - MUST NOT return 0
+  - Impact and Likelihood MUST be integers within their configured ranges
+  - DO NOT include any risk_score, final_risk_score or risk_level fields — those are computed downstream
   - MUST reflect realistic enterprise scenarios
 
   --------------------------------------------------
   JUSTIFICATION REQUIREMENTS:
 
-  - You MUST explain:
-    - Whether report_data was used or ignored
-    - WHY it was used (e.g., contained actual risks)
-    - Reference specific patterns from input:
-      - "report_data includes explicit risk entries..."
-      - "only structural template found, so risks were inferred..."
-      - "lack of implementation evidence increased score..."
+  - Explain whether report_data was used or ignored, WHY, and how the maturity/evidence
+    influenced the Impact and Likelihood ratings.
 
   --------------------------------------------------
   Return STRICT JSON:
@@ -2859,14 +2803,11 @@ nist_risk_score_prompt: |
       {
         "threat": "...",
         "vulnerability": "...",
-        "likelihood": 8,
-        "impact": 8,
-        "risk_score": 64
+        "likelihood": 4,
+        "impact": 5
       }
     ],
-    "final_risk_score": 68,
-    "risk_level": "High",
-    "justification": "Clear explanation referencing whether report_data was used, what was found in it, and how it impacted scoring"
+    "justification": "Clear explanation referencing whether report_data was used, what was found in it, and how it influenced the Impact and Likelihood ratings"
   }
 
 questionnaire_response_prompt: |

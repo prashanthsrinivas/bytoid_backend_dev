@@ -1304,6 +1304,44 @@ def update_users_reports():
         connection.close()
 
 
+def update_users_risk_config():
+    """Add the per-org `risk_config` JSON column used by the risk-analysis engine."""
+    connection = connect_to_rds()
+    if connection is None:
+        return
+
+    cursor = connection.cursor()
+    try:
+        check_column_query = """
+        SELECT COUNT(*)
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'users'
+          AND COLUMN_NAME = 'risk_config';
+        """
+        cursor.execute(check_column_query)
+        (col_exists,) = cursor.fetchone()
+
+        if col_exists == 0:
+            cursor.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN risk_config JSON;
+                """
+            )
+            connection.commit()
+            print("✅ Added 'risk_config' column to 'users' table.")
+        else:
+            print("ℹ️ Column 'risk_config' already exists in 'users' table.")
+
+    except pymysql.MySQLError as e:
+        print(f"MySQL Error: {e}")
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def update_users_special_access():
     connection = connect_to_rds()
     if connection is None:
@@ -4065,4 +4103,5 @@ if __name__ == "__main__":
     # create_gcp_configs_table()
     # create_gcp_external_apps_table()
     # create_gcp_external_app_endpoints_table()
+    update_users_risk_config()
     print("ok")

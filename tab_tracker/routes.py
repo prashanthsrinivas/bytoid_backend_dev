@@ -395,6 +395,152 @@ async def create_tracker_api():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
+# Columns for a risk tracker. The first six mirror the report's risk analysis;
+# the rest turn it into a living tracker (status / owner / mitigation / due date).
+_RISK_TRACKER_COLUMNS = [
+    {"name": "Threat", "type": "text"},
+    {"name": "Vulnerability", "type": "text"},
+    {"name": "Impact", "type": "number"},
+    {"name": "Likelihood", "type": "number"},
+    {"name": "Risk Score", "type": "number"},
+    {"name": "Risk Level", "type": "text"},
+    {
+        "name": "Status",
+        "type": "select",
+        "enum": ["Open", "In Progress", "Mitigated", "Accepted", "Closed"],
+    },
+    {"name": "Owner", "type": "text"},
+    {"name": "Mitigation", "type": "text"},
+    {"name": "Due Date", "type": "date"},
+]
+
+
+@tracker_bp.route("/tracker/from-risk", methods=["POST"])
+@permission_required_body("trackers.table.create")
+async def create_tracker_from_risk():
+    """Materialize a report's risk_analysis into a standalone table tracker.
+
+    The risk analysis is rendered as a card (not a real structure_theme block), so
+    the normal /tracker/create block_id path can't be used. This builds a fixed
+    risk schema and populates one row per risk.
+
+    Body: { user_id, runbook_id, result_id, name? }
+    """
+    try:
+        data = request.json or {}
+        baseuser = str(data.get("user_id"))
+        runbook_id = data.get("runbook_id")
+        result_id = data.get("result_id")
+        name = (data.get("name") or "").strip()
+
+        if not all([baseuser, runbook_id, result_id]):
+            return (
+                jsonify(
+                    {"error": "Missing required fields: user_id, runbook_id, result_id"}
+                ),
+                400,
+            )
+
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        # Fetch the result and pull its risk analysis.
+        result_row = await dbserver.runbook_get_result_by_id(
+            user_id=user_id, result_id=result_id
+        )
+        if not result_row:
+            return jsonify({"error": f"Result not found: {result_id}"}), 404
+
+        result_content = result_row.get("result") or {}
+        if isinstance(result_content, str):
+            result_content = json.loads(result_content)
+
+        risk_analysis = (result_content or {}).get("risk_analysis") or {}
+        risks = risk_analysis.get("risks") or []
+        if not risks:
+            return (
+                jsonify({"error": "This report has no risk analysis to transfer"}),
+                400,
+            )
+
+        if not name:
+            base_name = result_content.get("report_name") or "Risk Analysis"
+            name = f"{base_name} — Risk Tracker"
+
+        # Config + tracker entry (synthetic block_id since there is no real block).
+        config_path, config_data = check_config_exist(user_id)
+        if not config_data:
+            create_empty_tracker_config(user_id)
+            config_path, config_data = check_config_exist(user_id)
+
+        block_id = f"risk-analysis-{result_id}"
+        tracker_id, file_path = create_tracker_config(
+            config_path=config_path,
+            user_id=user_id,
+            name=name,
+            tracker_type="table",
+            runbook_id=runbook_id,
+            block_id=block_id,
+        )
+
+        create_tracker_file(
+            user_id=user_id,
+            tracker_id=tracker_id,
+            tracker_type="table",
+            runbook_id=runbook_id,
+            block_config={"columns": _RISK_TRACKER_COLUMNS},
+        )
+
+        # Build one row per risk and append.
+        headers = [c["name"] for c in _RISK_TRACKER_COLUMNS]
+        rows = []
+        for risk in risks:
+            rows.append(
+                {
+                    "Threat": risk.get("threat", ""),
+                    "Vulnerability": risk.get("vulnerability", ""),
+                    "Impact": risk.get("impact", ""),
+                    "Likelihood": risk.get("likelihood", ""),
+                    "Risk Score": risk.get("risk_score", ""),
+                    "Risk Level": risk.get("risk_level", ""),
+                    "Status": "Open",
+                    "Owner": "",
+                    "Mitigation": "",
+                    "Due Date": "",
+                }
+            )
+
+        tracker_data = read_json_from_s3(file_path)
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
+            block = {
+                "block_id": block_id,
+                "block_title": name,
+                "headers": headers,
+                "rows": rows,
+            }
+            append_to_tracker(tracker_data, block, result_id)
+            save_tracker_file(user_id, tracker_id, tracker_data)
+
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "message": "Risk analysis transferred to tracker",
+                    "tracker_id": tracker_id,
+                    "name": name,
+                    "rows": len(rows),
+                }
+            ),
+            200,
+        )
+
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+    except Exception as e:
+        logging.error(f"Tracker-from-risk error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
 @tracker_bp.route("/tracker/delete", methods=["DELETE"])
 @permission_required_body("trackers.table.delete")
 async def delete_tracker():

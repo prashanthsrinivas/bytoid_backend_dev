@@ -47,6 +47,7 @@ from utils.app_configs import IS_DEV, FRAMEWORK_OWNER
 from .utils import *
 from .utils import _safe_json_parse
 from .utils import _safe_json_parse_full
+from .risk_engine import get_risk_config, compute_risk, risk_analysis_disabled
 from utils.scheduler import scheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -1456,79 +1457,100 @@ async def run_runbook_execution_engine(
                     progress,
                 )
             )
-        newdata_risk = ""
-        if structure_file_content:
-            logger.debug("Processing structure content")
-            riskbaseprompt = """
-                You are a risk data compressor.
+        # Risk analysis can be turned off per-runbook at creation time. When
+        # disabled, skip the whole block (no LLM call) and mark the report so the
+        # UI hides the section and the results filter keeps it visible.
+        if risk_analysis_disabled(runbook):
+            logger.debug("Risk analysis disabled for this runbook; skipping")
+            merged_result["risk_analysis"] = None
+            merged_result["risk_score"] = None
+            merged_result["risk_analysis_disabled"] = True
+        else:
+            newdata_risk = ""
+            if structure_file_content:
+                logger.debug("Processing structure content")
+                riskbaseprompt = """
+                    You are a risk data compressor.
 
-                INPUT:
-                {{structure_file_content}}
+                    INPUT:
+                    {{structure_file_content}}
 
-                TASK:
-                Extract ONLY critical fields needed for risk scoring.
+                    TASK:
+                    Extract ONLY critical fields needed for risk scoring.
 
-                STRICT RULES:
-                - Output must be under 1500 tokens
-                - Remove all descriptions, explanations, and duplicates
-                - Keep only:
-                - metrics
-                - scores
-                - counts
-                - risk indicators
-                - important flags
-                - Convert verbose text → short key-value pairs
-                - Ignore UI structure, headings, formatting
+                    STRICT RULES:
+                    - Output must be under 1500 tokens
+                    - Remove all descriptions, explanations, and duplicates
+                    - Keep only:
+                    - metrics
+                    - scores
+                    - counts
+                    - risk indicators
+                    - important flags
+                    - Convert verbose text → short key-value pairs
+                    - Ignore UI structure, headings, formatting
 
-                OUTPUT FORMAT (STRICT JSON):
-                {
-                "key_metrics": {},
-                "risk_indicators": [],
-                "scores": {},
-                "flags": []
-                }
-                """
-            newdata_risk = await get_think_fire_response2_og(
-                user_message=riskbaseprompt,
-                user_id=user_id,
-                credits=credits,
-                total_input_chars=len(riskbaseprompt),
-            )
-            structure_file_content = newdata_risk
+                    OUTPUT FORMAT (STRICT JSON):
+                    {
+                    "key_metrics": {},
+                    "risk_indicators": [],
+                    "scores": {},
+                    "flags": []
+                    }
+                    """
+                newdata_risk = await get_think_fire_response2_og(
+                    user_message=riskbaseprompt,
+                    user_id=user_id,
+                    credits=credits,
+                    total_input_chars=len(riskbaseprompt),
+                )
+                structure_file_content = newdata_risk
 
-        risk_prompt = (
-            RADAR_TEMPLATE["nist_risk_score_prompt"]
-            .replace("{{analysis_result}}", json.dumps(merged_result))
-            .replace(
-                "{{report_data}}",
-                json.dumps(structure_file_content) if structure_file_content else "",
-            )
-        )
-        if merged_result:
-            progress = 80
-
-            await emit(
-                msg_builder.job_progress(
-                    job_id,
-                    session_id,
-                    "risk analysis",
-                    "generating risk analysis",
-                    progress,
+            # Per-org configurable scales (default Impact/Likelihood out of 5).
+            risk_cfg = get_risk_config(user_id)
+            risk_prompt = (
+                RADAR_TEMPLATE["nist_risk_score_prompt"]
+                .replace("{{analysis_result}}", json.dumps(merged_result))
+                .replace(
+                    "{{report_data}}",
+                    json.dumps(structure_file_content)
+                    if structure_file_content
+                    else "",
+                )
+                .replace("{{impact_scale}}", str(risk_cfg.get("impact_scale", 5)))
+                .replace(
+                    "{{likelihood_scale}}", str(risk_cfg.get("likelihood_scale", 5))
                 )
             )
-        logger.debug("Before risk analysis")
+            if merged_result:
+                progress = 80
 
-        risk_result = await get_think_bedrok_response(
-            user_message=risk_prompt,
-            user_id=user_id,
-            credits=credits,
-            total_input_chars=len(risk_prompt),
-        )
+                await emit(
+                    msg_builder.job_progress(
+                        job_id,
+                        session_id,
+                        "risk analysis",
+                        "generating risk analysis",
+                        progress,
+                    )
+                )
+            logger.debug("Before risk analysis")
 
-        risk_data = _safe_json_parse(risk_result)
+            risk_result = await get_think_bedrok_response(
+                user_message=risk_prompt,
+                user_id=user_id,
+                credits=credits,
+                total_input_chars=len(risk_prompt),
+            )
 
-        merged_result["risk_analysis"] = risk_data
-        merged_result["risk_score"] = risk_data.get("final_risk_score", 0)
+            risk_data = _safe_json_parse(risk_result) or {}
+
+            # Deterministic scoring: the LLM only assigned Impact/Likelihood; the
+            # backend computes risk_score, final_risk_score and risk_level here.
+            computed = compute_risk(risk_data.get("risks", []), risk_cfg)
+            computed["justification"] = risk_data.get("justification", "")
+            merged_result["risk_analysis"] = computed
+            merged_result["risk_score"] = computed["final_risk_score"]
 
         if data_checked:
             logger.debug("data_checked length: %d", len(data_checked))

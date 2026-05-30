@@ -44,6 +44,7 @@ from azure_integration.routes import azure_integration_bp
 from gcp_integration.routes import gcp_integration_bp
 from radar.routes import radar_bp
 from runbook.routes import runbook_bp
+from risk_config.routes import risk_config_bp
 from config_evidences.routes import config_evidences_bp
 from sso_by.routes import sso_bp
 from tab_tracker.routes import tracker_bp
@@ -200,6 +201,7 @@ blueprints = [
     apiconnector_bp,
     radar_bp,
     runbook_bp,
+    risk_config_bp,
     config_evidences_bp,
     sso_bp,
     ws_bp,

@@ -546,6 +546,14 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
             ),
         }
 
+        # Per-runbook toggle: when set, the engine skips risk-analysis generation.
+        # Carried on the in-memory dict for the immediate run; also persisted into
+        # structure_theme below so re-runs honor it.
+        disable_risk_analysis = str(
+            data.get("disable_risk_analysis") or ""
+        ).strip().lower() in ("true", "1", "yes", "on")
+        runbook_data["disable_risk_analysis"] = disable_risk_analysis
+
         # Normalize is_template to a proper Python bool — FormData always sends
         # it as the string "true" / "false", so we can't rely on truthiness.
         is_template = str(runbook_data.get("is_template") or "").lower() in (
@@ -650,6 +658,18 @@ async def execute_runbook_create(data, job_id=None, session_id=None):
                 )
 
         runbook_data["files"] = json.dumps(runbook_data["files"])
+
+        # Persist the risk-analysis toggle inside structure_theme (a free-form JSON
+        # blob the engine already reads) so re-runs that reload the runbook from the
+        # DB honor it even though the LanceDB schema has no dedicated column.
+        try:
+            _st = runbook_data.get("structure_theme")
+            _st = json.loads(_st) if isinstance(_st, str) else (_st or {})
+            if isinstance(_st, dict):
+                _st["risk_analysis_enabled"] = not disable_risk_analysis
+                runbook_data["structure_theme"] = json.dumps(_st)
+        except Exception:
+            logger.warning("could not persist risk_analysis flag", exc_info=IS_DEV)
 
         # 💾 DB SAVE
         await emit(
@@ -1610,6 +1630,26 @@ def get_runbook_results(runbook_id):
         )
 
 
+def _result_risk_disabled(r):
+    """True when a result row was generated with risk analysis disabled.
+
+    The marker lives inside the result's JSON blob (``risk_analysis_disabled``),
+    which `get_runbook_results_by_user_id` returns decrypted in ``r["result"]``.
+    """
+    if not isinstance(r, dict):
+        return False
+    if r.get("risk_analysis_disabled") is True:
+        return True
+    raw = r.get("result")
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return isinstance(parsed, dict) and parsed.get("risk_analysis_disabled") is True
+    except Exception:
+        return False
+
+
 @runbook_bp.route("/runbook/results_list/<user_id>", methods=["GET"])
 @permission_required_body("compliance.runbook.read")
 def result_list(user_id):
@@ -1731,8 +1771,14 @@ def result_list(user_id):
                 return False
             # For owned-but-not-shared results, require a non-zero risk score so
             # that draft/test runs created via SU mode (scored 0) don't surface
-            # unless the admin explicitly assigned them for review.
-            if is_owned and not is_shared and (r.get("risk_score") or 0) == 0:
+            # unless the admin explicitly assigned them for review. Reports created
+            # with risk analysis disabled legitimately have no score, so keep them.
+            if (
+                is_owned
+                and not is_shared
+                and (r.get("risk_score") or 0) == 0
+                and not _result_risk_disabled(r)
+            ):
                 return False
             if is_owned and not is_shared and r.get("runbook_id") not in runbook_ids:
                 return False
