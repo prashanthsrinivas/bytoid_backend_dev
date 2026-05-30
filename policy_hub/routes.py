@@ -732,6 +732,228 @@ def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEv
     return item
 
 
+# ── AI gap-fill: complete empty template sections ────────────────────────────
+
+
+def _empty_required_section_ids(
+    item: dict, doc_type: str, user_id: str | None = None
+) -> list[str]:
+    """Return ids of required template sections that are missing or empty in *item*.
+
+    A prose ("text") section counts as empty when its body_html has no visible
+    text; a "statements"/"steps" section when it carries no statements. The
+    ``header_table`` and ``history`` kinds are excluded — the metadata table and
+    the Review & Revision History are populated by other paths (the header at
+    creation time, history by the workflow publish/milestone hooks), not by the
+    content-authoring gap-fill pass, so their emptiness must not be treated as an
+    authoring gap.
+    """
+    try:
+        template = get_template(doc_type, user_id=user_id)
+    except KeyError:
+        return []
+    by_id = {s.get("id"): s for s in item.get("sections", []) or []}
+    missing: list[str] = []
+    for sd in template:
+        if not sd.required or sd.kind in ("header_table", "history"):
+            continue
+        sec = by_id.get(sd.id)
+        if sec is None:
+            missing.append(sd.id)
+            continue
+        if sd.kind in ("statements", "steps"):
+            if not (sec.get("statements") or []):
+                missing.append(sd.id)
+        elif not _strip_html_to_text(sec.get("body_html", "") or "").strip():
+            missing.append(sd.id)
+    return missing
+
+
+def _recompute_validation_status(
+    item: dict, doc_type: str, user_id: str | None = None
+) -> None:
+    """Set ``validation_status`` from authored-section completeness.
+
+    Once every required prose/statement section is filled the "sections may be
+    missing or incomplete" banner should clear — even if the header/history
+    sections are still being populated by their own (non-authoring) code paths.
+    """
+    remaining = _empty_required_section_ids(item, doc_type, user_id=user_id)
+    item["validation_status"] = "ok" if not remaining else "needs_review"
+
+
+def _document_context_text(item: dict, max_chars: int = 6000) -> str:
+    """Build grounding context from the document's already-present sections.
+
+    Concatenates the title and each non-empty section's title + stripped prose +
+    statement text so the gap-fill model stays consistent with the existing
+    document instead of inventing unrelated content.
+    """
+    parts: list[str] = []
+    title = item.get("title") or (item.get("metadata") or {}).get("title")
+    if title:
+        parts.append(f"DOCUMENT TITLE: {title}")
+    for sec in item.get("sections", []) or []:
+        body = _strip_html_to_text(sec.get("body_html", "") or "", max_chars=1500)
+        stmts = [s.get("text", "") for s in (sec.get("statements") or []) if s.get("text")]
+        chunk = " ".join(p for p in (body, " ".join(stmts)) if p).strip()
+        if chunk:
+            parts.append(f"## {sec.get('title', '')}\n{chunk}")
+    return "\n\n".join(parts)[:max_chars]
+
+
+def _gap_fill_prompt(
+    item: dict,
+    doc_type: str,
+    missing_ids: list[str],
+    fw_list: str,
+    user_id: str | None = None,
+) -> str:
+    """Prompt the model to author ONLY the empty sections, grounded in the doc."""
+    template = {s.id: s for s in get_template(doc_type, user_id=user_id)}
+    targets: list[str] = []
+    for sid in missing_ids:
+        sd = template.get(sid)
+        if not sd:
+            continue
+        shape = (
+            '{"statements": [{"text": "..."}]}'
+            if sd.kind in ("statements", "steps")
+            else '{"body_html": "<p>...</p>"}'
+        )
+        targets.append(
+            f"  - id={sid}  title={sd.title!r}  kind={sd.kind}  shape={shape}  hint={sd.prompt_help!r}"
+        )
+    context = _document_context_text(item)
+    return (
+        f"You are a senior compliance writer completing an existing {doc_type} document "
+        f"for an organization that must comply with: {fw_list}.\n\n"
+        "Several template sections are missing or empty. Write ONLY those sections, "
+        "drawing strictly on the substance of the document below — stay consistent with "
+        "its scope, terminology, named roles, and frameworks. Do NOT contradict or "
+        "duplicate existing sections, and do NOT invent facts that conflict with the "
+        "document. For statements/steps sections, write specific, normative items "
+        "('The organization shall …', 'All employees must …').\n\n"
+        "EXISTING DOCUMENT CONTENT:\n"
+        f"{context or '(no other content available — infer from the title and frameworks)'}\n\n"
+        "SECTIONS TO WRITE (output each by id, using the given shape):\n"
+        f"{chr(10).join(targets)}\n\n"
+        "Return ONLY valid JSON mapping each section id to its content object, e.g.:\n"
+        '{\n  "<section_id>": {"body_html": "<p>…</p>"},\n'
+        '  "<section_id>": {"statements": [{"text": "The organization shall …"}]}\n}\n'
+        "No markdown, no code fences, no commentary."
+    )
+
+
+def _fill_missing_sections(
+    item: dict,
+    doc_type: str,
+    missing_ids: list[str],
+    fw_list: str,
+    loop: asyncio.AbstractEventLoop,
+    user_id: str | None = None,
+    mark_ai: bool = False,
+) -> bool:
+    """Fill empty required sections with one grounded LLM pass.
+
+    Merges the generated content into ``item['sections']`` (creating section dicts
+    for any that were absent, re-sorted into template order), mints UUIDs for new
+    statements, optionally marks filled sections ``ai_generated`` so the frontend
+    can highlight AI-authored content, and recomputes ``validation_status``.
+    Best-effort: any failure is logged and leaves *item* unchanged. Returns True
+    if at least one section was filled.
+    """
+    if not missing_ids:
+        return False
+    try:
+        template = get_template(doc_type, user_id=user_id)
+    except KeyError:
+        return False
+    template_index = {s.id: s for s in template}
+
+    try:
+        raw = loop.run_until_complete(
+            get_fireworks_response2(
+                user_id=user_id or "gap-fill",
+                user_message=_gap_fill_prompt(
+                    item, doc_type, missing_ids, fw_list, user_id=user_id
+                ),
+                role="user",
+                credits=None,
+                temp=0.1,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "gap-fill LLM call failed for policy=%s: %s", item.get("policy_id"), exc
+        )
+        return False
+    if not raw or raw == "INSUFFICIENT":
+        return False
+
+    data = _parse_llm_json(raw)
+    if not isinstance(data, dict):
+        logger.warning(
+            "gap-fill returned unparseable JSON for policy=%s", item.get("policy_id")
+        )
+        return False
+
+    sections = item.get("sections") or []
+    by_id = {s.get("id"): s for s in sections}
+    filled = False
+
+    for sid in missing_ids:
+        payload = data.get(sid)
+        sd = template_index.get(sid)
+        if not isinstance(payload, dict) or sd is None:
+            continue
+
+        sec = by_id.get(sid)
+        if sec is None:
+            sec = {"id": sid, "title": sd.title, "kind": sd.kind, "body_html": ""}
+            sections.append(sec)
+            by_id[sid] = sec
+
+        if sd.kind in ("statements", "steps"):
+            new_stmts = []
+            for seq, st in enumerate(payload.get("statements") or [], start=1):
+                text = (st.get("text") if isinstance(st, dict) else str(st)) or ""
+                text = text.strip()
+                if text:
+                    new_stmts.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "text": text,
+                            "seq": seq,
+                            "section_id": sid,
+                            "status": "active",
+                        }
+                    )
+            if not new_stmts:
+                continue
+            sec["statements"] = new_stmts
+            sec["body_html"] = ""
+        else:
+            body = (payload.get("body_html") or "").strip()
+            if not body:
+                continue
+            sec["body_html"] = body
+
+        if mark_ai:
+            sec["ai_generated"] = True
+        filled = True
+
+    if not filled:
+        return False
+
+    # Keep template order so merged-in sections render in the right place.
+    order = {s.id: i for i, s in enumerate(template)}
+    sections.sort(key=lambda s: order.get(s.get("id"), 999))
+    item["sections"] = sections
+    _recompute_validation_status(item, doc_type, user_id=user_id)
+    return True
+
+
 def _sync_statements(item: dict, user_id: str, doc_type: str, loop: asyncio.AbstractEventLoop) -> None:
     """Sync policy statements to LanceDB in the background thread's event loop."""
     from policy_hub.structured import Statement
@@ -883,6 +1105,19 @@ def _generation_worker(
                 # storage matching the section-divided UI. _enrich_v2 has an
                 # internal heading-bucketing fallback if structured parsing fails.
                 item = _enrich_v2(item, content, d_type, loop, user_id=user_id)
+
+                # Completeness pass: if the model left any required prose/statement
+                # section empty, fill it from the rest of the document so every
+                # generated doc covers the full template. mark_ai stays False — the
+                # whole document is AI-authored, so per-section provenance is moot.
+                missing = _empty_required_section_ids(item, d_type, user_id=user_id)
+                if missing:
+                    _fill_missing_sections(
+                        item, d_type, missing, fw_list, loop, user_id=user_id, mark_ai=False
+                    )
+                # Recompute regardless: clears the validation banner once every
+                # authored section is present, even when no gap-fill was needed.
+                _recompute_validation_status(item, d_type, user_id=user_id)
                 _attach_display_numbers(item, d_type, user_id=user_id)
 
                 _write_policy_yaml(user_id, key, item)
@@ -1115,8 +1350,14 @@ def _upload_worker(
     frameworks: list,
     remote_addr: str | None,
     actor_email: str | None,
+    fill_missing: bool = True,
 ):
-    """Background worker. For each uploaded file: extract → classify → write YAML → LLM-map → index."""
+    """Background worker. For each uploaded file: extract → classify → write YAML → LLM-map → index.
+
+    When ``fill_missing`` is set, any required template section the uploaded file
+    did not cover is authored by a grounded gap-fill LLM pass and marked
+    ``ai_generated`` so the frontend can distinguish it from the user's content.
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     v2 = policy_hub_v2_enabled(user_id)
@@ -1246,6 +1487,19 @@ def _upload_worker(
                         # v2 disabled — still produce sections via heading-bucketing
                         # so every uploaded doc has structured sections in storage.
                         _enrich_v2(item, html, doc_type, loop, user_id=user_id)
+
+                    # Gap-fill: author any template section the upload didn't cover,
+                    # grounded in the document's own content, and mark it ai_generated
+                    # so the frontend highlights AI-authored vs uploaded sections.
+                    # Gated on v2 (the fill is itself a credit-costing LLM call).
+                    if v2 and fill_missing:
+                        missing = _empty_required_section_ids(item, doc_type, user_id=user_id)
+                        if missing:
+                            fw_text = ", ".join(frameworks) if frameworks else "general compliance"
+                            _fill_missing_sections(
+                                item, doc_type, missing, fw_text, loop,
+                                user_id=user_id, mark_ai=True,
+                            )
 
                     _attach_display_numbers(item, doc_type, user_id=user_id)
 
@@ -1473,6 +1727,8 @@ def upload_policies():
       frameworks   (optional) — JSON-encoded list of framework names
       types        (optional) — JSON-encoded map of filename -> doc type
       default_type (optional) — fallback doc type for files without a hint
+      fill_missing (optional) — "false" to disable AI gap-fill of empty template
+                                sections (default on)
     """
     logged_in_user_id, user_id = _resolve_user_id_multi_source()
     if not user_id:
@@ -1504,6 +1760,10 @@ def upload_policies():
             types_map = {}
     except json.JSONDecodeError:
         return jsonify({"error": "types must be a JSON object mapping filename to type"}), 400
+
+    # Default on: uploaded docs come out template-complete unless the caller
+    # explicitly opts out (frontend checkbox sends "false").
+    fill_missing = (request.form.get("fill_missing") or "true").strip().lower() != "false"
 
     default_type = (request.form.get("default_type") or "").strip().lower()
     if default_type and default_type not in VALID_DOC_TYPES:
@@ -1615,7 +1875,7 @@ def upload_policies():
 
     threading.Thread(
         target=_upload_worker,
-        args=(user_id, job_id, files_payload, frameworks, remote_addr, actor_email),
+        args=(user_id, job_id, files_payload, frameworks, remote_addr, actor_email, fill_missing),
         daemon=True,
     ).start()
 
@@ -2324,6 +2584,30 @@ def update_policy():
     return jsonify({"status": "ok"}), 200
 
 
+def _sync_history_section_body(item: dict) -> None:
+    """Re-render the history section's body_html from the structured history.
+
+    ``/list`` (and the frontend) read the stored ``sections`` directly — they do
+    not re-render the Review & Revision History from ``revision_history`` — so the
+    history section's body_html must be kept in step whenever the structured list
+    changes. ``render_history_rows_html`` rebuilds the whole table from the rows,
+    so this stays correct for per-stage milestones, not just the publish row.
+    Best-effort: no-ops when there are no rows or no history section.
+    """
+    try:
+        from policy_hub.review_lifecycle import render_history_rows_html, _HISTORY_SUFFIX
+
+        html = render_history_rows_html(item.get("revision_history"))
+        if not html:
+            return
+        for sec in item.get("sections", []) or []:
+            if str(sec.get("id", "")).endswith(_HISTORY_SUFFIX):
+                sec["body_html"] = html
+                return
+    except Exception as exc:
+        logger.debug("_sync_history_section_body skipped for %s: %s", item.get("policy_id"), exc)
+
+
 def append_revision_entries_to_policy(owner_id, policy_id, doc_type, entries, only_if_empty=False):
     """Append one or more Review & Revision History rows to a Policy Hub doc.
 
@@ -2371,6 +2655,9 @@ def append_revision_entries_to_policy(owner_id, policy_id, doc_type, entries, on
                     policy_id, render_exc,
                 )
 
+        # Rebuild the history section body from the full structured list so the
+        # stored sections (read by /list and the frontend) show every row.
+        _sync_history_section_body(item)
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         item["etag"] = str(uuid.uuid4())
         _write_policy_yaml(owner_id, key, item)
@@ -2431,6 +2718,9 @@ def apply_publication_to_policy(
             published_at=published_at,
             summary=summary,
         )
+        # Rebuild the history section body from the full structured list (covers
+        # any per-stage rows added before this publish row).
+        _sync_history_section_body(item)
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         item["etag"] = str(uuid.uuid4())
         _write_policy_yaml(owner_id, key, item)
@@ -2633,23 +2923,6 @@ def confirm_block_edit(policy_id: str):
     }), 200
 
 
-def _latest_published_workflow(doc_type: str, doc_id: str) -> dict | None:
-    """Return the most recently published document_workflow row for a doc."""
-    conn = connect_to_rds()
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            cur.execute(
-                "SELECT * FROM document_workflow "
-                "WHERE doc_type=%s AND doc_id=%s AND state='published' "
-                "ORDER BY published_at DESC, created_at DESC LIMIT 1",
-                (doc_type, doc_id),
-            )
-            row = cur.fetchone()
-    finally:
-        conn.close()
-    return dict(row) if row else None
-
-
 def _resolve_email(user_id: str) -> str | None:
     if not user_id:
         return None
@@ -2663,19 +2936,100 @@ def _resolve_email(user_id: str) -> str | None:
     return row.get("email") if row else None
 
 
+def _latest_workflow_for_doc(doc_type: str, doc_id: str) -> dict | None:
+    """Return the most recent document_workflow row for a doc, any state.
+
+    Covers in-flight reviews as well as published ones so the Review & Revision
+    History can be reconstructed from the process steps before the document
+    reaches 'published'.
+    """
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM document_workflow "
+                "WHERE doc_type=%s AND doc_id=%s "
+                "ORDER BY published_at DESC, created_at DESC LIMIT 1",
+                (doc_type, doc_id),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def _reconstruct_review_entries_from_events(workflow_id: str, doc_version: str) -> list[dict]:
+    """Rebuild the per-stage Review & Revision History from workflow events.
+
+    Reads every ``document_workflow_events`` row for the workflow in chronological
+    order and maps each transition (submit / quality / governance / send-back) to a
+    revision entry using the same descriptions the live recorder produces
+    (``_milestone_for_hop``). The terminal ``published`` hop is intentionally
+    excluded — apply_publication_to_policy appends that row with cadence metadata.
+    Mirrors backfill_review_history.py::_reconstruct_entries_from_events.
+    """
+    if not workflow_id:
+        return []
+    from policy_hub.review_lifecycle import build_revision_entry
+    from workflow_route.routes import _milestone_for_hop
+    from workflow_route.state_machine import AUTO_ADVANCE_COMMENT
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT from_state, to_state, actor_user_id, comment, created_at "
+                "FROM document_workflow_events WHERE workflow_id=%s "
+                "ORDER BY created_at ASC, event_id ASC",
+                (workflow_id,),
+            )
+            events = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    entries: list[dict] = []
+    email_cache: dict = {}
+    for ev in events:
+        actor = ev.get("actor_user_id")
+        if actor not in email_cache:
+            email_cache[actor] = _resolve_email(actor) or ""
+        is_auto = ev.get("comment") == AUTO_ADVANCE_COMMENT
+        milestone = _milestone_for_hop({
+            "from_state": ev.get("from_state"),
+            "to_state": ev.get("to_state"),
+            "comment": "" if is_auto else ev.get("comment"),
+            "auto": is_auto,
+        })
+        if not milestone:
+            continue
+        action, summary = milestone
+        entries.append(build_revision_entry(
+            version=doc_version,
+            author=email_cache[actor],
+            summary=summary,
+            action=action,
+            published_at=ev.get("created_at"),
+        ))
+    return entries
+
+
 @policy_hub_bp.route("/<policy_id>/backfill-history", methods=["POST"])
 @permission_required_body("policyhub.edit")
 def backfill_review_history(policy_id: str):
-    """Backfill a Review & Revision History row for an already-published doc.
+    """Reconstruct the Review & Revision History from a document's process steps.
 
-    The publish hook only records history at the moment a workflow transitions
-    to 'published'. Documents published before that hook existed have an empty
-    history; this endpoint reconstructs the entry from the existing published
-    workflow row (its published_at, doc_version, and approver) and stamps the
-    review-cycle metadata (next_review_date etc.).
+    The live recorder only writes history for documents that flowed through the
+    workflow *after* the per-stage recorder existed; legacy/auto-advanced docs show
+    "No history recorded" despite completed steps. This endpoint rebuilds the full
+    trail from ``document_workflow_events``:
 
-    Idempotent: a no-op (updated=false) if the latest history row already records
-    this version as published.
+      1. Reconstruct per-stage rows (submit / quality / governance / send-back) from
+         the workflow's events — only when the document has no history yet, so it is
+         non-destructive (``only_if_empty``).
+      2. If the workflow has reached 'published', stamp the review-cycle metadata
+         (next_review_date etc.) and append the terminal published row.
+
+    Idempotent: re-runs are no-ops once history is present.
 
     Body: { user_id }
     Response: { status, updated, revision_history, next_review_date }
@@ -2693,33 +3047,42 @@ def backfill_review_history(policy_id: str):
         return jsonify({"error": "Policy not found"}), 404
     doc_type = item.get("type", "policy")
 
-    wf = _latest_published_workflow(doc_type, policy_id)
+    wf = _latest_workflow_for_doc(doc_type, policy_id)
     if not wf:
         return jsonify({
-            "error": "No published workflow found for this document; nothing to backfill."
+            "error": "No review workflow found for this document; nothing to backfill."
         }), 400
 
     from workflow_route.state_machine import get_org_review_frequency
 
-    published_at = wf.get("published_at") or wf.get("approved_at")
     doc_version = wf.get("doc_version") or item.get("metadata", {}).get("version", "1.0")
-    approver_email = _resolve_email(wf.get("current_approver")) or ""
-    frequency = get_org_review_frequency(get_user_org_id(user_id))
 
-    updated = apply_publication_to_policy(
-        owner_id=user_id,
-        policy_id=policy_id,
-        doc_type=doc_type,
-        doc_version=doc_version,
-        author_email=approver_email,
-        frequency=frequency,
-        published_at=published_at,
+    # 1. Per-stage trail from the workflow events (only when history is empty).
+    perstage = _reconstruct_review_entries_from_events(wf.get("workflow_id"), doc_version)
+    appended = append_revision_entries_to_policy(
+        user_id, policy_id, doc_type, perstage, only_if_empty=True
     )
+
+    # 2. Terminal publish row + cadence metadata, only for published workflows.
+    published = False
+    if wf.get("state") == "published":
+        published_at = wf.get("published_at") or wf.get("approved_at")
+        approver_email = _resolve_email(wf.get("current_approver")) or ""
+        frequency = get_org_review_frequency(get_user_org_id(user_id))
+        published = apply_publication_to_policy(
+            owner_id=user_id,
+            policy_id=policy_id,
+            doc_type=doc_type,
+            doc_version=doc_version,
+            author_email=approver_email,
+            frequency=frequency,
+            published_at=published_at,
+        )
 
     item = _read_policy_yaml(user_id, _s3_key(user_id, policy_id)) or item
     return jsonify({
         "status": "ok",
-        "updated": updated,
+        "updated": bool(appended or published),
         "revision_history": item.get("revision_history", []),
         "next_review_date": item.get("next_review_date"),
     }), 200
