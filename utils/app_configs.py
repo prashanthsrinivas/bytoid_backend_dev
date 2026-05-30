@@ -27,6 +27,10 @@ DEV_ORIGINS = {
     "https://dev.bytoid.ai",
     "dev.bytoid.ai",
     "http://localhost:8080",
+    # Browsers treat 127.0.0.1 and localhost as distinct origins, so the
+    # loopback IP must be allow-listed separately or CORS blocks every request
+    # (surfaces as "Failed to fetch") when the app is opened via 127.0.0.1.
+    "http://127.0.0.1:8080",
 }
 FRAMEWORK_OWNER = "service@bytoid.ca"
 ALLOWED_ORIGINS = PROD_ORIGINS | STAGING_ORIGINS | (DEV_ORIGINS if IS_DEV else set())
