@@ -39,11 +39,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import types
 
-from db.lance_db_service import LanceDBServer
-from runbook.risk_engine import compute_risk, get_risk_config
-from runbook.utils import _safe_json_parse_full as _parse_blob
+# --- Make the project's own packages win over any site-packages shadow. ---
+# Run as `scripts/backfill_risk_scores.py`, only scripts/ (not the repo root)
+# lands on sys.path, so project imports must be bootstrapped. Worse, this
+# project's top-level packages (db, runbook, utils, services) are *namespace*
+# packages (no __init__.py), and a namespace package loses to any *regular*
+# same-named package found later on sys.path. Some venvs carry a stray PyPI
+# `db` distribution (Python 2 code) that shadows ours and blows up on import.
+# Pre-register the local directories as the canonical packages to avoid both.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+for _pkg in ("db", "runbook", "utils", "services"):
+    _pkg_dir = os.path.join(_REPO_ROOT, _pkg)
+    if os.path.isdir(_pkg_dir) and _pkg not in sys.modules:
+        _mod = types.ModuleType(_pkg)
+        _mod.__path__ = [_pkg_dir]
+        sys.modules[_pkg] = _mod
+
+from db.lance_db_service import LanceDBServer  # noqa: E402
+from runbook.risk_engine import compute_risk, get_risk_config  # noqa: E402
+from runbook.utils import _safe_json_parse_full as _parse_blob  # noqa: E402
 
 FINAL_STATUSES = {"completed", "success", "done", "draft"}
 RESULTS_PREFIX = "runbook_results_"
