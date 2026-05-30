@@ -1,12 +1,15 @@
 """Backfill Review & Revision History for already-published documents.
 
-The publish hook only records a revision-history row at the moment a workflow
-transitions to ``published``. Documents published *before* that hook existed have
-an empty history and show "No history recorded" in the UI. This script walks
-every published ``document_workflow`` row and reconstructs the missing entry from
-that row (its ``published_at``, ``doc_version`` and approver), then stamps the
-review-cycle metadata — exactly what the live publish hook does, but using the
-original publish timestamp instead of "now".
+Documents that completed their review workflow *before* the per-stage recorder
+existed have an empty history and show "No history recorded" in the UI. This
+script walks every published ``document_workflow`` row and, for each:
+
+  1. Reconstructs the full per-stage trail (submit / quality / governance /
+     send-back) from ``document_workflow_events`` — only when the document has no
+     history yet, so it is non-destructive.
+  2. Stamps the review-cycle metadata and appends the terminal ``published`` row
+     from the workflow row (``published_at``, ``doc_version``, approver) — exactly
+     what the live publish hook does, but using the original publish timestamp.
 
 Covers every workflow doc type:
   - policy / procedure / standard -> policy_hub.routes.apply_publication_to_policy
@@ -76,6 +79,90 @@ def _fetch_published_workflows(doc_type: str | None, owner: str | None) -> list[
     return list(latest.values())
 
 
+def _reconstruct_entries_from_events(wf: dict) -> list[dict]:
+    """Rebuild the per-stage Review & Revision History from workflow events.
+
+    Reads every ``document_workflow_events`` row for the workflow in chronological
+    order and maps each transition (submit / quality / governance / send-back) to
+    a revision entry, using the same descriptions the live recorder produces. The
+    terminal ``published`` hop is intentionally excluded — the publish backfill
+    (apply_publication_to_*) appends that row, with the review-cadence metadata.
+    """
+    from policy_hub.routes import _resolve_email
+    from policy_hub.review_lifecycle import build_revision_entry
+    from workflow_route.routes import _milestone_for_hop
+    from workflow_route.state_machine import AUTO_ADVANCE_COMMENT
+
+    workflow_id = wf.get("workflow_id")
+    if not workflow_id:
+        return []
+    doc_version = wf.get("doc_version") or "1.0"
+
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT from_state, to_state, actor_user_id, comment, created_at "
+                "FROM document_workflow_events WHERE workflow_id=%s "
+                "ORDER BY created_at ASC, event_id ASC",
+                (workflow_id,),
+            )
+            events = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    entries: list[dict] = []
+    email_cache: dict = {}
+    for ev in events:
+        actor = ev.get("actor_user_id")
+        if actor not in email_cache:
+            email_cache[actor] = _resolve_email(actor) or ""
+        is_auto = ev.get("comment") == AUTO_ADVANCE_COMMENT
+        milestone = _milestone_for_hop({
+            "from_state": ev.get("from_state"),
+            "to_state": ev.get("to_state"),
+            "comment": "" if is_auto else ev.get("comment"),
+            "auto": is_auto,
+        })
+        if not milestone:
+            continue
+        action, summary = milestone
+        entries.append(build_revision_entry(
+            version=doc_version,
+            author=email_cache[actor],
+            summary=summary,
+            action=action,
+            published_at=ev.get("created_at"),
+        ))
+    return entries
+
+
+def _backfill_perstage_history(wf: dict) -> bool:
+    """Write the reconstructed per-stage history (idempotent, only-if-empty)."""
+    entries = _reconstruct_entries_from_events(wf)
+    if not entries:
+        return False
+    doc_type = wf.get("doc_type")
+    owner_id = wf.get("owner_user_id")
+    doc_id = wf.get("doc_id")
+    if doc_type in POLICY_HUB_DOC_TYPES:
+        from policy_hub.routes import append_revision_entries_to_policy
+
+        return bool(append_revision_entries_to_policy(
+            owner_id, doc_id, doc_type, entries, only_if_empty=True))
+    if doc_type == "runbook":
+        from runbook.routes import append_revision_entries_to_runbook_result
+
+        return bool(append_revision_entries_to_runbook_result(
+            owner_id, doc_id, entries, only_if_empty=True))
+    if doc_type == "report":
+        from ai_reporting.routes import append_revision_entries_to_report
+
+        return bool(append_revision_entries_to_report(
+            owner_id, doc_id, entries, only_if_empty=True))
+    return False
+
+
 def _apply_one(wf: dict, dry_run: bool) -> str:
     """Backfill one published workflow row. Returns a status string for tallying."""
     # Lazy imports keep this script importable without dragging in every blueprint
@@ -101,6 +188,10 @@ def _apply_one(wf: dict, dry_run: bool) -> str:
             doc_type, doc_id, owner_id, doc_version, published_at,
         )
         return "would_update"
+
+    # Rebuild the full per-stage trail from workflow events first (only when the
+    # document has no history yet), then stamp cadence + the published row below.
+    _backfill_perstage_history(wf)
 
     if doc_type in POLICY_HUB_DOC_TYPES:
         updated = apply_publication_to_policy(

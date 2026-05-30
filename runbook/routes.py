@@ -2632,6 +2632,48 @@ def rename_runbook_result(result_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def append_revision_entries_to_runbook_result(owner_id, result_id, entries, only_if_empty=False):
+    """Append one or more Review & Revision History rows to a runbook result.
+
+    Used by the workflow milestone recorder to log each review-stage transition
+    (submit / quality / governance / send-back / cancel) into the result blob's
+    ``revision_history`` as it happens — so the document shows the full review
+    trail, not just the terminal publish row. ``only_if_empty=True`` (used by the
+    backfill) makes it idempotent and non-destructive: it writes only when no
+    history exists yet, so re-runs and live-recorded docs are left untouched.
+    Best-effort: never raises so a history write can't roll back the (committed)
+    workflow transition. Returns True if the blob was updated.
+    """
+    if not entries:
+        return False
+    try:
+        row = _run_async(dbserver.runbook_get_result(owner_id, result_id))
+        if not isinstance(row, dict) or row.get("status") == "not_found":
+            logger.warning(
+                "append_revision_entries_to_runbook_result: result %s not found for owner %s",
+                result_id, owner_id,
+            )
+            return False
+        blob = row.get("result")
+        if not isinstance(blob, dict):
+            blob = {}
+
+        history = list(blob.get("revision_history") or [])
+        if only_if_empty and history:
+            return False
+        history.extend(entries)
+        blob["revision_history"] = history
+
+        _run_async(dbserver.update_runbook_result(owner_id, result_id, blob))
+        return True
+    except Exception as exc:
+        logger.error(
+            "append_revision_entries_to_runbook_result failed for %s: %s",
+            result_id, exc,
+        )
+        return False
+
+
 def apply_publication_to_runbook_result(
     owner_id, result_id, doc_version, author_email, frequency, published_at=None
 ):

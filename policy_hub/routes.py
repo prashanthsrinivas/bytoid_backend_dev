@@ -2324,6 +2324,65 @@ def update_policy():
     return jsonify({"status": "ok"}), 200
 
 
+def append_revision_entries_to_policy(owner_id, policy_id, doc_type, entries, only_if_empty=False):
+    """Append one or more Review & Revision History rows to a Policy Hub doc.
+
+    Used by the workflow milestone recorder to log each review-stage transition
+    into the document's ``revision_history`` (and keep the rendered HTML table in
+    sync) as it happens — not just on publish. ``only_if_empty=True`` (used by the
+    backfill) makes it idempotent and non-destructive: it writes only when no
+    history exists yet. Best-effort: never raises so a history write can't roll
+    back the (committed) workflow transition. Returns True if the document was
+    updated.
+    """
+    if not entries:
+        return False
+    try:
+        from policy_hub.review_lifecycle import (
+            append_revision_entry,
+            render_history_into_content,
+        )
+
+        key = _s3_key(owner_id, policy_id)
+        item = _read_policy_yaml(owner_id, key)
+        if not item:
+            logger.warning(
+                "append_revision_entries_to_policy: policy %s not found for owner %s",
+                policy_id, owner_id,
+            )
+            return False
+
+        if only_if_empty and (item.get("revision_history") or []):
+            return False
+
+        for entry in entries:
+            append_revision_entry(item, entry)
+            # Keep the rendered HTML history table in step (best-effort): the
+            # structured revision_history above is the source of truth, so a
+            # render hiccup must not drop the entry or abort the write.
+            try:
+                if item.get("content"):
+                    item["content"] = render_history_into_content(
+                        item["content"], doc_type, entry
+                    )
+            except Exception as render_exc:
+                logger.debug(
+                    "append_revision_entries_to_policy HTML sync skipped for %s: %s",
+                    policy_id, render_exc,
+                )
+
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        item["etag"] = str(uuid.uuid4())
+        _write_policy_yaml(owner_id, key, item)
+        return True
+    except Exception as exc:
+        logger.error(
+            "append_revision_entries_to_policy failed for %s %s: %s",
+            doc_type, policy_id, exc,
+        )
+        return False
+
+
 def apply_publication_to_policy(
     owner_id: str,
     policy_id: str,

@@ -2320,6 +2320,65 @@ async def list_all_draft_reports(client, user_id):
     # print(f"  Content: {json.dumps(report_data, indent=2)}\n")
 
 
+def append_revision_entries_to_report(owner_id, report_id, entries, only_if_empty=False):
+    """Append one or more Review & Revision History rows to a standalone report.
+
+    Used by the workflow milestone recorder to log each review-stage transition
+    into the report's ``revision_history`` (inside the ``users.reports`` JSON
+    column) as it happens. ``only_if_empty=True`` (used by the backfill) makes it
+    idempotent and non-destructive: it writes only when no history exists yet.
+    Best-effort: never raises so a history write can't roll back the (committed)
+    workflow transition. Returns True if updated.
+    """
+    if not entries:
+        return False
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor() as cur:
+            cur.execute("SELECT reports FROM users WHERE user_id=%s", (owner_id,))
+            row = cur.fetchone()
+            raw = row[0] if row else None
+            if not raw:
+                logger.warning(
+                    "append_revision_entries_to_report: no reports for owner %s",
+                    owner_id,
+                )
+                return False
+            reports = json.loads(raw)
+
+            target = next(
+                (r for r in reports if r.get("report_id") == report_id), None
+            )
+            if target is None:
+                logger.warning(
+                    "append_revision_entries_to_report: report %s not found for owner %s",
+                    report_id, owner_id,
+                )
+                return False
+
+            history = list(target.get("revision_history") or [])
+            if only_if_empty and history:
+                return False
+            history.extend(entries)
+            target["revision_history"] = history
+
+            cur.execute(
+                "UPDATE users SET reports=%s WHERE user_id=%s",
+                (json.dumps(reports), owner_id),
+            )
+        conn.commit()
+        return True
+    except Exception as exc:
+        logger.error(
+            "append_revision_entries_to_report failed for %s: %s", report_id, exc
+        )
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def apply_publication_to_report(
     owner_id, report_id, doc_version, author_email, frequency, published_at=None
 ):

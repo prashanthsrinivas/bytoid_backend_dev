@@ -149,6 +149,122 @@ def _apply_publish_effects(workflow: dict, actor_email: str) -> None:
         )
 
 
+def _milestone_for_hop(hop: dict):
+    """Map one workflow transition to a (action, summary) for the document's
+    Review & Revision History, or None to skip it.
+
+    The terminal ``→ published`` hop is intentionally skipped: _apply_publish_effects
+    records that one (with review-cadence metadata). Everything else — submit,
+    each stage approval, and send-backs — is recorded here so the history shows
+    the full trail, every time the document cycles through the process.
+    """
+    frm = hop.get("from_state")
+    to = hop.get("to_state")
+    # Auto-advanced hops carry an internal AUTO_ADVANCE_COMMENT, not a human
+    # note — don't surface it. Only manual hops contribute a reviewer comment.
+    comment = "" if hop.get("auto") else (hop.get("comment") or "").strip()
+    auto = " (auto-advanced)" if hop.get("auto") else ""
+    suffix = f": {comment}" if comment else ""
+
+    if to == "published":
+        return None
+    if (frm, to) == ("draft", "quality_review"):
+        return "submitted", f"Submitted for quality review{auto}{suffix}."
+    if (frm, to) == ("quality_review", "governance_review"):
+        return "quality_approved", f"Quality review approved{auto}{suffix}."
+    if (frm, to) == ("governance_review", "approval"):
+        return "governance_approved", f"Governance review approved{auto}{suffix}."
+    if to == "draft":
+        stage = {
+            "quality_review": "quality review",
+            "governance_review": "governance review",
+            "approval": "approval",
+        }.get(frm, frm)
+        return "sent_back", f"Sent back from {stage} to draft{suffix}."
+    # Any other transition — record generically rather than silently drop it.
+    return "transition", f"{frm} → {to}{auto}{suffix}."
+
+
+def _build_milestone_entries(workflow: dict, chain: list, actor_email: str) -> list:
+    """Build the Review & Revision History rows for an auto-advance chain."""
+    from policy_hub.review_lifecycle import build_revision_entry
+
+    doc_version = workflow.get("doc_version", "1.0")
+    entries = []
+    for hop in chain or []:
+        milestone = _milestone_for_hop(hop)
+        if not milestone:
+            continue
+        action, summary = milestone
+        entries.append(
+            build_revision_entry(
+                version=doc_version,
+                author=actor_email or "",
+                summary=summary,
+                action=action,
+            )
+        )
+    return entries
+
+
+def _append_doc_revision_entries(workflow: dict, entries: list) -> None:
+    """Persist Review & Revision History rows onto the document, by doc_type.
+
+    Best-effort and never raises: a history write must not roll back the
+    already-committed workflow transition.
+    """
+    if not entries:
+        return
+    try:
+        doc_type = workflow.get("doc_type")
+        owner_id = workflow.get("owner_user_id")
+        doc_id = workflow.get("doc_id")
+
+        if doc_type in POLICY_HUB_DOC_TYPES:
+            from policy_hub.routes import append_revision_entries_to_policy
+
+            append_revision_entries_to_policy(owner_id, doc_id, doc_type, entries)
+        elif doc_type == "runbook":
+            from runbook.routes import append_revision_entries_to_runbook_result
+
+            append_revision_entries_to_runbook_result(owner_id, doc_id, entries)
+        elif doc_type == "report":
+            from ai_reporting.routes import append_revision_entries_to_report
+
+            append_revision_entries_to_report(owner_id, doc_id, entries)
+    except Exception as exc:
+        logger.warning(
+            "_append_doc_revision_entries failed for workflow=%s doc=%s: %s",
+            workflow.get("workflow_id"), workflow.get("doc_id"), exc,
+        )
+
+
+def _record_review_milestones(workflow: dict, chain: list, actor_email: str) -> None:
+    """Append a Review & Revision History entry per workflow transition.
+
+    The terminal publish hop is handled by _apply_publish_effects; this records
+    submit, each stage approval, and send-backs so the document's history
+    reflects the whole review lifecycle across every cycle.
+    """
+    _append_doc_revision_entries(
+        workflow, _build_milestone_entries(workflow, chain, actor_email)
+    )
+
+
+def _record_cancel_milestone(workflow: dict, actor_email: str, comment: str | None) -> None:
+    """Record a 'review cancelled' row when an owner resets a workflow to draft."""
+    from policy_hub.review_lifecycle import build_revision_entry
+
+    note = f": {comment.strip()}" if (comment or "").strip() else ""
+    entry = build_revision_entry(
+        version=workflow.get("doc_version", "1.0"),
+        author=actor_email or "",
+        summary=f"Review cancelled; document reset to draft{note}.",
+        action="cancelled",
+    )
+    _append_doc_revision_entries(workflow, [entry])
+
+
 def _notify(workflow: dict, event_type: str, comment: str | None = None, **kwargs):
     try:
         from services.workflow_notifications_service import notify_workflow_event
@@ -670,6 +786,9 @@ def submit_for_review():
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    # Record per-stage milestones before the terminal publish row so the history
+    # stays in chronological order when a single call auto-advances to published.
+    _record_review_milestones(wf, chain, actor_email)
     if wf.get("state") == "published":
         _apply_publish_effects(wf, actor_email)
     extra_meta = {"doc_type": doc_type, "doc_id": doc_id}
@@ -820,6 +939,10 @@ def review_document():
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    # Per-stage milestones first, then the terminal publish row (chronological).
+    _record_review_milestones(updated, chain, actor_email)
+    if updated.get("state") == "published":
+        _apply_publish_effects(updated, actor_email)
     _log_chain_audits(
         chain,
         first_action=audit_action,
@@ -932,6 +1055,8 @@ def _dispatch_review(body: dict):
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    # Per-stage milestones first, then the terminal publish row (chronological).
+    _record_review_milestones(updated, chain, actor_email)
     if updated.get("state") == "published":
         _apply_publish_effects(updated, actor_email)
     _log_chain_audits(
@@ -1098,6 +1223,8 @@ def publish_document():
     )
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    if updated.get("state") == "published":
+        _apply_publish_effects(updated, actor_email)
     log_audit_event(
         action=WORKFLOW_PUBLISHED, endpoint="/workflow/publish", ip=request.remote_addr,
         status="success", actor_user_id=actor_uid, actor_email=actor_email,
@@ -1491,6 +1618,7 @@ def cancel_workflow_route():
     logger.info("workflow %s cancelled by actor=%s comment=%r", workflow_id, user_id, comment)
 
     actor_uid, actor_email, behalf_uid, behalf_email = build_audit_actor(baseuser)
+    _record_cancel_milestone(updated, actor_email, comment)
     log_audit_event(
         action=WORKFLOW_CANCELLED, endpoint="/workflow/cancel", ip=request.remote_addr,
         status="success", actor_user_id=actor_uid, actor_email=actor_email,
