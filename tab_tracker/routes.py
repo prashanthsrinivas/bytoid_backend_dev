@@ -454,12 +454,6 @@ async def create_tracker_from_risk():
         if isinstance(result_content, str):
             result_content = json.loads(result_content)
 
-        # Re-derive risk_level labels from stored scores via the owner's current
-        # config so the transferred snapshot uses the latest band labels.
-        from runbook.risk_engine import get_risk_config, relabel_risk_analysis
-
-        relabel_risk_analysis(result_content, get_risk_config(user_id))
-
         risk_analysis = (result_content or {}).get("risk_analysis") or {}
         risks = risk_analysis.get("risks") or []
         if not risks:
