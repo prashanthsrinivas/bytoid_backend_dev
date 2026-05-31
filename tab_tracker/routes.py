@@ -54,7 +54,6 @@ from utils.s3_utils import (
     upload_any_file,
     read_json_from_s3,
     delete_file_from_s3,
-    load_yaml_from_s3,
 )
 from utils.fireworkzz import (
     analyze_tracker_framework_rows,
@@ -1280,6 +1279,8 @@ async def append_tracker_api():
 
                 if new_rows:
                     credits = Credits(user_id)
+                    from policy_hub.routes import _read_framework_yaml
+
                     for fw_entry in linked_frameworks:
                         fw_id = fw_entry.get("id")
                         fw_name = fw_entry.get("name")
@@ -1302,7 +1303,7 @@ async def append_tracker_api():
                             row["values"].setdefault(fw_col_id, [])
 
                         fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{fw_id}.yaml"
-                        fw_data = load_yaml_from_s3(fw_s3_key)
+                        fw_data = _read_framework_yaml(fw_s3_key)
                         if not fw_data:
                             continue
 
@@ -2845,8 +2846,10 @@ async def _add_framework_worker(data: dict, job_id: str = None) -> dict:
         )
 
         # Load framework YAML
+        from policy_hub.routes import _read_framework_yaml
+
         fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
-        fw_data = load_yaml_from_s3(fw_s3_key)
+        fw_data = _read_framework_yaml(fw_s3_key)
         if not fw_data:
             raise Exception(f"Framework not found in policyhub: {framework_id}")
         framework_name = fw_data.get("name")
@@ -3122,8 +3125,10 @@ async def add_tracker_framework():
             )
 
         # Quick validation: framework exists in S3
+        from policy_hub.routes import _read_framework_yaml
+
         fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
-        fw_data = load_yaml_from_s3(fw_s3_key)
+        fw_data = _read_framework_yaml(fw_s3_key)
         if not fw_data:
             return (
                 jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
@@ -3266,8 +3271,10 @@ async def _update_framework_worker(data: dict, job_id: str = None) -> dict:
             )
         )
 
+        from policy_hub.routes import _read_framework_yaml
+
         fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
-        fw_data = load_yaml_from_s3(fw_s3_key)
+        fw_data = _read_framework_yaml(fw_s3_key)
         if not fw_data:
             raise Exception(f"Framework not found in policyhub: {framework_id}")
         framework_name = fw_data.get("name")
@@ -3544,8 +3551,10 @@ async def update_tracker_framework():
             )
 
         # Quick validation: framework YAML exists
+        from policy_hub.routes import _read_framework_yaml
+
         fw_s3_key = f"{FRAMEWORK_OWNER}/frameworks/{framework_id}.yaml"
-        fw_data = load_yaml_from_s3(fw_s3_key)
+        fw_data = _read_framework_yaml(fw_s3_key)
         if not fw_data:
             return (
                 jsonify({"error": f"Framework not found in policyhub: {framework_id}"}),
