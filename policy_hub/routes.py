@@ -735,18 +735,40 @@ def _enrich_v2(item: dict, content: str, doc_type: str, loop: asyncio.AbstractEv
 # ── AI gap-fill: complete empty template sections ────────────────────────────
 
 
+def _section_body_text(body_html: str) -> str:
+    """Visible text of a section body, EXCLUDING its heading.
+
+    A stored section's ``body_html`` keeps the whole ``<div data-section-id>`` —
+    including its ``<h2>`` heading (see structured.parse_document_html). A section
+    the model emitted as a bare heading with no content would therefore look
+    non-empty if we measured the heading text. Drop heading tags first so an
+    empty-body section is correctly detected as a gap to fill.
+    """
+    if not body_html or not body_html.strip():
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(body_html, "lxml")
+        for h in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+            h.decompose()
+        return soup.get_text(" ", strip=True)
+    except Exception:
+        return _strip_html_to_text(body_html).strip()
+
+
 def _empty_required_section_ids(
     item: dict, doc_type: str, user_id: str | None = None
 ) -> list[str]:
     """Return ids of required template sections that are missing or empty in *item*.
 
-    A prose ("text") section counts as empty when its body_html has no visible
-    text; a "statements"/"steps" section when it carries no statements. The
-    ``header_table`` and ``history`` kinds are excluded — the metadata table and
-    the Review & Revision History are populated by other paths (the header at
-    creation time, history by the workflow publish/milestone hooks), not by the
-    content-authoring gap-fill pass, so their emptiness must not be treated as an
-    authoring gap.
+    A prose ("text") section counts as empty when its body — excluding the
+    heading — has no visible text; a "statements"/"steps" section when it carries
+    no statements. The ``header_table`` and ``history`` kinds are excluded — the
+    metadata table and the Review & Revision History are populated by other paths
+    (the header at creation time, history by the workflow publish/milestone
+    hooks), not by the content-authoring gap-fill pass, so their emptiness must
+    not be treated as an authoring gap.
     """
     try:
         template = get_template(doc_type, user_id=user_id)
@@ -764,7 +786,7 @@ def _empty_required_section_ids(
         if sd.kind in ("statements", "steps"):
             if not (sec.get("statements") or []):
                 missing.append(sd.id)
-        elif not _strip_html_to_text(sec.get("body_html", "") or "").strip():
+        elif not _section_body_text(sec.get("body_html", "") or ""):
             missing.append(sd.id)
     return missing
 
