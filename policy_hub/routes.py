@@ -875,6 +875,7 @@ def _fill_missing_sections(
     loop: asyncio.AbstractEventLoop,
     user_id: str | None = None,
     mark_ai: bool = False,
+    credits=None,
 ) -> bool:
     """Fill empty required sections with one grounded LLM pass.
 
@@ -893,6 +894,11 @@ def _fill_missing_sections(
         return False
     template_index = {s.id: s for s in template}
 
+    # get_fireworks_response2 calls credits.has_ai_credits(); it requires a real
+    # Credits instance, not None.
+    if credits is None:
+        credits = Credits()
+
     try:
         raw = loop.run_until_complete(
             get_fireworks_response2(
@@ -901,7 +907,7 @@ def _fill_missing_sections(
                     item, doc_type, missing_ids, fw_list, user_id=user_id
                 ),
                 role="user",
-                credits=None,
+                credits=credits,
                 temp=0.1,
             )
         )
@@ -1135,7 +1141,8 @@ def _generation_worker(
                 missing = _empty_required_section_ids(item, d_type, user_id=user_id)
                 if missing:
                     _fill_missing_sections(
-                        item, d_type, missing, fw_list, loop, user_id=user_id, mark_ai=False
+                        item, d_type, missing, fw_list, loop,
+                        user_id=user_id, mark_ai=False, credits=credits,
                     )
                 # Recompute regardless: clears the validation banner once every
                 # authored section is present, even when no gap-fill was needed.
