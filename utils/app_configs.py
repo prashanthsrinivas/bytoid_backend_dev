@@ -20,6 +20,10 @@ STAGING_ORIGINS = {
     "https://preview--bytoid-45.lovable.app",
     "preview--bytoiddev.lovable.app",
     "preview--bytoid-45.lovable.app",
+    "https://bytoiddev.lovable.app",
+    "bytoiddev.lovable.app",
+    "https://demo.bytoid.ai",
+    "demo.bytoid.ai",
 }
 
 # Dev-only origins
