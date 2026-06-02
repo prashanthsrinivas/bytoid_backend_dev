@@ -347,13 +347,35 @@ def get_or_create_thread(
     On creation the workflow's owner/reviewers/approver are seeded as internal
     participants; the caller is added if not already among them.
     """
-    if context_type != "workflow":
-        raise ChatValidationError("only context_type='workflow' is supported")
-    wf_id = workflow_id or context_id
-    if not wf_id:
-        raise ChatValidationError("workflow_id (context_id) is required")
+    if not context_id:
+        raise ChatValidationError("context_id is required")
+    context_type = context_type or "workflow"
 
-    # Existing thread → ensure caller may see it, then return.
+    # A review workflow is OPTIONAL — the conversation is available immediately,
+    # before "Send for review". Find a workflow for this context if one exists
+    # (now or later) so we can seed/back-fill the reviewer/approver roles.
+    wf = None
+    if workflow_id:
+        try:
+            wf = _workflow_row(workflow_id)
+        except Exception:
+            wf = None
+    if not wf and doc_type and doc_id:
+        try:
+            from workflow_route.state_machine import get_workflow_for_doc_any_role
+            wf = get_workflow_for_doc_any_role(doc_type, doc_id, user_id)
+        except Exception:
+            wf = None
+
+    org_id = (wf or {}).get("org_id") or get_user_org_id(user_id)
+    org_users = list_org_users(user_id)
+    workflow_party_ids = {wf.get(col) for col, _ in _WORKFLOW_ROLE_COLS if wf and wf.get(col)}
+    caller_is_member = user_id in org_users or user_id in workflow_party_ids
+    if not caller_is_member:
+        raise ChatPermissionError("you do not have access to this assessment")
+
+    # Existing thread → seat the caller; back-fill workflow parties if a review
+    # workflow has appeared since the thread was first created pre-review.
     conn = connect_to_rds()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
@@ -365,20 +387,11 @@ def get_or_create_thread(
     finally:
         conn.close()
 
-    wf = _workflow_row(wf_id)
-    if not wf:
-        raise ChatNotFoundError("workflow not found")
-
-    org_id = wf.get("org_id") or get_user_org_id(user_id)
-    org_users = list_org_users(user_id)
-    workflow_party_ids = {wf.get(col) for col, _ in _WORKFLOW_ROLE_COLS if wf.get(col)}
-    caller_is_member = user_id in org_users or user_id in workflow_party_ids
-    if not caller_is_member:
-        raise ChatPermissionError("you do not have access to this assessment")
-
     if existing:
         thread = dict(existing)
-        # Make sure an authorized caller who isn't yet a participant gets a seat.
+        if wf and not thread.get("workflow_id"):
+            _attach_workflow(thread["thread_id"], wf, user_id, org_users)
+            thread = get_thread(thread["thread_id"])
         if not get_participant(thread["thread_id"], user_id):
             _ensure_caller_participant(thread["thread_id"], user_id, wf, org_users)
         return thread
@@ -394,28 +407,34 @@ def get_or_create_thread(
                     doc_type, doc_id, created_by, email_subject)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
-                    thread_id, org_id, context_type, context_id, wf_id,
-                    doc_type or wf.get("doc_type"), doc_id or wf.get("doc_id"),
+                    thread_id, org_id, context_type, context_id,
+                    (wf or {}).get("workflow_id"),
+                    doc_type or (wf or {}).get("doc_type"),
+                    doc_id or (wf or {}).get("doc_id"),
                     user_id, email_subject,
                 ),
             )
-            # Seed workflow parties (internal). First role per user wins.
+            # Seed workflow parties (internal) when a review workflow exists.
+            # First role per user wins.
             seeded: set[str] = set()
-            for col, role in _WORKFLOW_ROLE_COLS:
-                uid = wf.get(col)
-                if uid and uid not in seeded:
-                    seeded.add(uid)
-                    _insert_participant(
-                        cur, thread_id,
-                        user_id=uid, email=org_users.get(uid, {}).get("email"),
-                        role=role, side=SIDE_INTERNAL, added_by=user_id,
-                    )
-            # Caller, if not already seeded.
+            if wf:
+                for col, role in _WORKFLOW_ROLE_COLS:
+                    uid = wf.get(col)
+                    if uid and uid not in seeded:
+                        seeded.add(uid)
+                        _insert_participant(
+                            cur, thread_id,
+                            user_id=uid, email=org_users.get(uid, {}).get("email"),
+                            role=role, side=SIDE_INTERNAL, added_by=user_id,
+                        )
+            # Caller: the initiator becomes 'owner' pre-workflow (so they hold
+            # admin/assigner power to invite others); once a workflow exists they
+            # keep their workflow role or join as 'added'.
             if user_id not in seeded:
                 _insert_participant(
                     cur, thread_id,
                     user_id=user_id, email=org_users.get(user_id, {}).get("email"),
-                    role="added", side=SIDE_INTERNAL, added_by=user_id,
+                    role=("added" if wf else "owner"), side=SIDE_INTERNAL, added_by=user_id,
                 )
         conn.commit()
     finally:
@@ -424,13 +443,14 @@ def get_or_create_thread(
     return get_thread(thread_id)
 
 
-def _ensure_caller_participant(thread_id: str, user_id: str, wf: dict, org_users: dict) -> None:
+def _ensure_caller_participant(thread_id: str, user_id: str, wf: dict | None, org_users: dict) -> None:
     """Add an authorized caller (workflow party or org member) as a participant."""
     role = "added"
-    for col, r in _WORKFLOW_ROLE_COLS:
-        if wf.get(col) == user_id:
-            role = r
-            break
+    if wf:
+        for col, r in _WORKFLOW_ROLE_COLS:
+            if wf.get(col) == user_id:
+                role = r
+                break
     conn = connect_to_rds()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
@@ -439,6 +459,32 @@ def _ensure_caller_participant(thread_id: str, user_id: str, wf: dict, org_users
                 user_id=user_id, email=org_users.get(user_id, {}).get("email"),
                 role=role, side=SIDE_INTERNAL, added_by=user_id,
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _attach_workflow(thread_id: str, wf: dict, user_id: str, org_users: dict) -> None:
+    """Back-fill a thread created pre-review once its review workflow appears:
+    stamp workflow_id/doc fields and seed the workflow's reviewer/approver
+    parties as internal participants."""
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "UPDATE chat_thread SET workflow_id=%s, "
+                "doc_type=COALESCE(doc_type,%s), doc_id=COALESCE(doc_id,%s) "
+                "WHERE thread_id=%s",
+                (wf.get("workflow_id"), wf.get("doc_type"), wf.get("doc_id"), thread_id),
+            )
+            for col, role in _WORKFLOW_ROLE_COLS:
+                uid = wf.get(col)
+                if uid:
+                    _insert_participant(
+                        cur, thread_id,
+                        user_id=uid, email=org_users.get(uid, {}).get("email"),
+                        role=role, side=SIDE_INTERNAL, added_by=user_id,
+                    )
         conn.commit()
     finally:
         conn.close()

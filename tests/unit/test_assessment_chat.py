@@ -350,6 +350,41 @@ def test_thread_seeds_workflow_roles_as_internal(chat):
     assert all(p["side"] == "internal" for p in parts.values())
 
 
+def test_thread_available_before_any_workflow(chat):
+    # Anchored on a runbook that has NOT been sent for review (no document_workflow).
+    svc = chat.service
+    t = svc.get_or_create_thread("U_admin", "runbook", "RB_NEW", doc_type="runbook", doc_id="RB_NEW")
+    assert t["context_type"] == "runbook"
+    assert t["context_id"] == "RB_NEW"
+    assert not t["workflow_id"]  # no review workflow yet
+    parts = {p["user_id"]: p for p in svc.list_participants(t["thread_id"])}
+    # The initiator is seeded as internal owner and can invite others / post.
+    assert parts["U_admin"]["role"] == "owner"
+    assert parts["U_admin"]["side"] == "internal"
+    msg = svc.post_message(t["thread_id"], "U_admin", "kicking off before review")
+    view, _ = svc.list_messages(t["thread_id"], "U_admin")
+    assert any(m["message_id"] == msg["message_id"] for m in view)
+    # Owner can add an org member pre-workflow.
+    svc.add_participant(t["thread_id"], "U_admin", target_user_id="U_qr")
+    assert "U_qr" in {p["user_id"] for p in svc.list_participants(t["thread_id"])}
+
+
+def test_thread_backfills_workflow_parties_when_sent_for_review(chat):
+    # Create the conversation pre-review, then "send for review" → the workflow's
+    # reviewer/approver parties are back-filled into the same thread.
+    svc = chat.service
+    t = svc.get_or_create_thread("U_admin", "runbook", "RB_NEW", doc_type="runbook", doc_id="RB_NEW")
+    assert not t["workflow_id"]
+    # Same context, now with a real workflow id (WF1 exists in the fixture).
+    t2 = svc.get_or_create_thread("U_admin", "runbook", "RB_NEW", workflow_id="WF1", doc_type="runbook", doc_id="RB_NEW")
+    assert t2["thread_id"] == t["thread_id"]  # same anchored thread
+    assert t2["workflow_id"] == "WF1"
+    roles = {p["user_id"]: p["role"] for p in svc.list_participants(t["thread_id"])}
+    assert roles.get("U_qr") == "quality_reviewer"
+    assert roles.get("U_gr") == "governance_reviewer"
+    assert roles.get("U_appr") == "approver"
+
+
 def test_get_or_create_is_idempotent(chat):
     t1 = chat.service.get_or_create_thread("U_admin", "workflow", "WF1", workflow_id="WF1")
     t2 = chat.service.get_or_create_thread("U_qr", "workflow", "WF1", workflow_id="WF1")

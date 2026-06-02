@@ -85,23 +85,34 @@ def languages():
 
 @assessment_chat_bp.route("/thread", methods=["POST"])
 def thread():
-    """Get-or-create the chat thread for a workflow context.
+    """Get-or-create the chat thread for an assessment context.
 
-    Body: {user_id, workflow_id (or context_id), doc_type?, doc_id?, email_subject?}
+    The conversation is anchored to ``(context_type, context_id)`` — typically
+    the assessment doc ('runbook'/<runbook_id>) or an intake run
+    ('intake'/<run_id>). A review workflow is OPTIONAL: the chat is available
+    before "Send for review"; when a ``document_workflow`` exists (found via
+    ``workflow_id`` or ``doc_type``+``doc_id``) its reviewer/approver parties are
+    seeded automatically.
+
+    Body: {user_id, context_type?, context_id (or workflow_id or doc_id),
+           workflow_id?, doc_type?, doc_id?, email_subject?}
     """
     user_id = _caller()
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
     body = request.get_json(silent=True) or {}
-    context_id = body.get("workflow_id") or body.get("context_id")
+    # Stable anchor: explicit context_id, else doc_id, else workflow_id.
+    context_id = body.get("context_id") or body.get("doc_id") or body.get("workflow_id")
     if not context_id:
-        return jsonify({"error": "workflow_id is required"}), 400
+        return jsonify({"error": "context_id, doc_id or workflow_id is required"}), 400
+    # Default the context type: 'runbook' when anchored on a doc, else 'workflow'.
+    default_type = "runbook" if body.get("doc_id") else "workflow"
     try:
         t = get_or_create_thread(
             user_id,
-            context_type=body.get("context_type", "workflow"),
+            context_type=body.get("context_type") or default_type,
             context_id=context_id,
-            workflow_id=body.get("workflow_id") or context_id,
+            workflow_id=body.get("workflow_id"),
             doc_type=body.get("doc_type"),
             doc_id=body.get("doc_id"),
             email_subject=body.get("email_subject"),
