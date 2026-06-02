@@ -663,6 +663,26 @@ async def v2fetch_gmail_messages_batch_og(
                 ).append(message)
                 count_new += 1
 
+                # Assessment-chat email bridge: if this inbound message belongs
+                # to a bridged chat thread, mirror it into the conversation.
+                # Guarded so it can never disrupt mailbox sync.
+                if direction == "inbound":
+                    try:
+                        from assessment_chat.email_bridge import ingest_inbound_email
+
+                        ingest_inbound_email(
+                            provider="gmail",
+                            from_email=from_email,
+                            subject=subject,
+                            body=extracted_body,
+                            email_thread_id=thread_id,
+                            # Prefer the RFC Message-ID (used for In-Reply-To
+                            # threading); fall back to the internal row id.
+                            email_message_id=msg.get("messageId") or row_id,
+                        )
+                    except Exception:
+                        pass
+
                 if client_id not in configs_created:
 
                     # Create config files if needed (your existing logic)
@@ -1005,6 +1025,26 @@ async def v2fetch_gmail_messages_batch(
                     "gmail", []
                 ).append(message)
                 count_new += 1
+
+                # Assessment-chat email bridge: if this inbound message belongs
+                # to a bridged chat thread, mirror it into the conversation.
+                # Guarded so it can never disrupt mailbox sync.
+                if direction == "inbound":
+                    try:
+                        from assessment_chat.email_bridge import ingest_inbound_email
+
+                        ingest_inbound_email(
+                            provider="gmail",
+                            from_email=from_email,
+                            subject=subject,
+                            body=extracted_body,
+                            email_thread_id=thread_id,
+                            # Prefer the RFC Message-ID (used for In-Reply-To
+                            # threading); fall back to the internal row id.
+                            email_message_id=msg.get("messageId") or row_id,
+                        )
+                    except Exception:
+                        pass
 
                 if client_id not in configs_created:
 

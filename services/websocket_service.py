@@ -87,6 +87,7 @@ class WebSocketService:
         feature=None,
         result_id=None,
         previous_result_id=None,
+        extra=None,
     ):
         import json, time, asyncio
         from botocore.exceptions import ClientError
@@ -112,6 +113,11 @@ class WebSocketService:
             "result_id": result_id,
             "previous_result_id": previous_result_id,
         }
+
+        # Feature-specific fields (e.g. assessment chat thread_id/message_id).
+        # Additive and backward-compatible: existing callers pass no `extra`.
+        if extra and isinstance(extra, dict):
+            payload.update(extra)
 
         for sess_id, conn_id in connections.items():
 
@@ -229,6 +235,28 @@ class WSMessageBuilder:
             "message": message,
             "report_name": report_name,
             "status": status,
+        }
+
+    @staticmethod
+    def assessment_chat_event(thread_id, message_id, sender_user_id, event="message", preview=None):
+        """Realtime event for the assessment-chat panel.
+
+        Carries identifiers (not translated text) so the client re-fetches
+        ``/assessment-chat/messages`` and gets per-viewer translation +
+        visibility filtering applied server-side. Pass the dict's ``extra`` to
+        ``WebSocketService.emit(extra=...)`` and ``message=preview``.
+        """
+        return {
+            "scope": "global",
+            "type": "assessment_chat",
+            "message": preview or "",
+            "extra": {
+                "feature": "assessment_chat",
+                "event": event,
+                "thread_id": thread_id,
+                "message_id": message_id,
+                "sender_user_id": sender_user_id,
+            },
         }
 
     @staticmethod

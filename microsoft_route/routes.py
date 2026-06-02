@@ -1747,6 +1747,26 @@ def microsoft_get_email():
                             conversation_id,
                         )
                         processed_count += 1
+
+                        # Assessment-chat email bridge: mirror an inbound reply
+                        # into its bridged chat thread. Guarded — never breaks
+                        # mailbox sync.
+                        if direction == "inbound":
+                            try:
+                                from assessment_chat.email_bridge import (
+                                    ingest_inbound_email,
+                                )
+
+                                ingest_inbound_email(
+                                    provider="outlook",
+                                    from_email=from_address,
+                                    subject=subject,
+                                    body=plain_text,
+                                    email_thread_id=conversation_id,
+                                    email_message_id=internet_message_id,
+                                )
+                            except Exception:
+                                pass
                     else:
                         logger.debug(f"📧 Email {email_id} already exists, skipping")
 
@@ -2164,6 +2184,25 @@ def microsoft_fetch_all_emails():
                         conversation_id,
                     )
                     processed_count += 1
+
+                    # Assessment-chat email bridge: mirror an inbound reply into
+                    # its bridged chat thread. Guarded — never breaks sync.
+                    if direction == "inbound":
+                        try:
+                            from assessment_chat.email_bridge import (
+                                ingest_inbound_email,
+                            )
+
+                            ingest_inbound_email(
+                                provider="outlook",
+                                from_email=from_address,
+                                subject=subject,
+                                body=plain_text,
+                                email_thread_id=conversation_id,
+                                email_message_id=internet_message_id,
+                            )
+                        except Exception:
+                            pass
 
                 except Exception as e:
                     error_count += 1
