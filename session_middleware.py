@@ -14,12 +14,12 @@ import pymysql
 import json
 
 logger = get_logger(__name__)
-BASE_ORGINS = [
-    "http://172.31.12.212",
-    "https://www.bytoid.ai",
-    "https://bytoid.ai",
-    "https://app.bytoid.ai",
-]
+# Source allowed origins from the single canonical list so this (currently
+# disabled) middleware can't drift from app.py and silently drop e.g.
+# demo.bytoid.ai if it is ever re-enabled.
+from utils.app_configs import ALLOWED_ORIGINS
+
+BASE_ORGINS = list(ALLOWED_ORIGINS)
 
 EXEMPT_PATHS = [
     "/generate_session",

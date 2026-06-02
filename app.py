@@ -101,6 +101,21 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 
+# Cross-site cookie reliability (esp. Safari ITP): the session cookie is only
+# sent on cross-subdomain requests when the app and API share a registrable
+# domain (e.g. app.bytoid.ai -> api.bytoid.ai). Scope the cookie to the parent
+# domain so it rides on every *.bytoid.ai subdomain.
+#
+# IMPORTANT: a server can only set a Domain for its OWN registrable domain. While
+# the API is served from the raw API Gateway host (*.amazonaws.com), setting this
+# to ".bytoid.ai" would make the browser REJECT the cookie entirely. So it is
+# env-gated and unset by default: once the API is fronted by api.bytoid.ai, set
+# SESSION_COOKIE_DOMAIN=.bytoid.ai in the environment to activate it — no code
+# change needed.
+_session_cookie_domain = os.getenv("SESSION_COOKIE_DOMAIN")
+if _session_cookie_domain:
+    app.config["SESSION_COOKIE_DOMAIN"] = _session_cookie_domain
+
 ALLOWED_SCHEMES = ["bytoid", "user-app", "exp"]
 
 
@@ -134,6 +149,11 @@ def cors_after_request(response):
     if is_origin_allowed(origin):
         if origin:
             response.headers["Access-Control-Allow-Origin"] = origin
+            # ACAO varies by request Origin — tell caches so one origin's
+            # response is never reused for another (append; don't clobber
+            # an existing Vary such as Accept-Encoding from Compress).
+            existing_vary = response.headers.get("Vary")
+            response.headers["Vary"] = f"{existing_vary}, Origin" if existing_vary and "Origin" not in existing_vary else (existing_vary or "Origin")
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Methods"] = (
             "GET, POST, PUT, DELETE, OPTIONS"
